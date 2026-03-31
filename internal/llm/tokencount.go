@@ -1,0 +1,175 @@
+package llm
+
+import (
+	"log/slog"
+	"strings"
+	"sync"
+
+	"github.com/pkoukk/tiktoken-go"
+)
+
+// TokenCounter — interface for counting tokens to manage context budget.
+type TokenCounter interface {
+	// Count returns approximate token count for a text string.
+	Count(text string) int
+
+	// CountMessages returns total token count across all messages.
+	CountMessages(msgs []Message) int
+}
+
+// SimpleTokenCounter — approximate token counter using ~4 chars = 1 token rule.
+type SimpleTokenCounter struct{}
+
+func NewSimpleTokenCounter() *SimpleTokenCounter {
+	return &SimpleTokenCounter{}
+}
+
+func (c *SimpleTokenCounter) Count(text string) int {
+	if len(text) == 0 {
+		return 0
+	}
+	return (len(text) + 3) / 4 // ceiling division
+}
+
+func (c *SimpleTokenCounter) CountMessages(msgs []Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += c.Count(msg.Role)
+		total += c.Count(msg.Content)
+		for _, tc := range msg.ToolCalls {
+			total += c.Count(tc.Name)
+			total += c.Count(string(tc.Input))
+		}
+		// Add small overhead per message for framing
+		total += 4
+	}
+	return total
+}
+
+// TiktokenCounter — accurate token counter using tiktoken-go for OpenAI models.
+type TiktokenCounter struct {
+	tkm *tiktoken.Tiktoken
+	mu  sync.RWMutex
+}
+
+// NewTiktokenCounter creates a new TiktokenCounter with the specified encoding.
+// Valid encodings include: "o200k_base", "cl100k_base", "p50k_base", etc.
+func NewTiktokenCounter(encoding string) (*TiktokenCounter, error) {
+	tkm, err := tiktoken.GetEncoding(encoding)
+	if err != nil {
+		return nil, err
+	}
+	return &TiktokenCounter{tkm: tkm}, nil
+}
+
+func (c *TiktokenCounter) Count(text string) int {
+	if len(text) == 0 {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	tokens := c.tkm.Encode(text, nil, nil)
+	return len(tokens)
+}
+
+func (c *TiktokenCounter) CountMessages(msgs []Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += c.Count(msg.Role)
+		total += c.Count(msg.Content)
+		for _, tc := range msg.ToolCalls {
+			total += c.Count(tc.Name)
+			total += c.Count(string(tc.Input))
+		}
+		// Add small overhead per message for framing
+		total += 4
+	}
+	return total
+}
+
+// NewTokenCounter creates a TokenCounter based on the tokenizer type.
+// Supported types:
+//   - "tiktoken/o200k_base" → TiktokenCounter with o200k_base encoding
+//   - "tiktoken/cl100k_base" → TiktokenCounter with cl100k_base encoding
+//   - "anthropic-api" → SimpleTokenCounter (rely on API correction)
+//   - "approximate" or "" or unknown → SimpleTokenCounter
+func NewTokenCounter(tokenizerType string) TokenCounter {
+	switch {
+	case strings.HasPrefix(tokenizerType, "tiktoken/"):
+		encoding := strings.TrimPrefix(tokenizerType, "tiktoken/")
+		counter, err := NewTiktokenCounter(encoding)
+		if err != nil {
+			slog.Warn("failed to create tiktoken counter, falling back to simple",
+				"encoding", encoding,
+				"error", err)
+			return NewSimpleTokenCounter()
+		}
+		return counter
+	case tokenizerType == "anthropic-api":
+		// For Anthropic models, we rely on API correction rather than local counting
+		return NewSimpleTokenCounter()
+	case tokenizerType == "approximate" || tokenizerType == "":
+		return NewSimpleTokenCounter()
+	default:
+		// Unknown tokenizer type, fallback to simple
+		slog.Warn("unknown tokenizer type, using simple counter",
+			"tokenizerType", tokenizerType)
+		return NewSimpleTokenCounter()
+	}
+}
+
+// ContextTokenTracker — hybrid A+C coordinator that combines predictive counting
+// with API-corrected actuals. Uses predictive counter for estimates between API calls,
+// then corrects with actual usage from API responses.
+type ContextTokenTracker struct {
+	predictive    TokenCounter
+	lastKnownUsed int // from API response.usage.input_tokens
+	pendingDelta  int // estimated tokens added since last API call
+	mu            sync.RWMutex
+}
+
+// NewContextTokenTracker creates a new ContextTokenTracker with the given predictive counter.
+func NewContextTokenTracker(counter TokenCounter) *ContextTokenTracker {
+	return &ContextTokenTracker{
+		predictive:    counter,
+		lastKnownUsed: 0,
+		pendingDelta:  0,
+	}
+}
+
+// EstimateTotal returns the estimated total token count (lastKnownUsed + pendingDelta).
+func (t *ContextTokenTracker) EstimateTotal() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.lastKnownUsed + t.pendingDelta
+}
+
+// AddDelta adds the token count of the given text to pendingDelta.
+func (t *ContextTokenTracker) AddDelta(text string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pendingDelta += t.predictive.Count(text)
+}
+
+// AddDeltaMessages adds the token count of the given messages to pendingDelta.
+func (t *ContextTokenTracker) AddDeltaMessages(msgs []Message) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pendingDelta += t.predictive.CountMessages(msgs)
+}
+
+// Correct updates lastKnownUsed with the actual API input tokens and resets pendingDelta.
+func (t *ContextTokenTracker) Correct(apiInputTokens int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastKnownUsed = apiInputTokens
+	t.pendingDelta = 0
+}
+
+// Reset resets both lastKnownUsed and pendingDelta to 0.
+func (t *ContextTokenTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastKnownUsed = 0
+	t.pendingDelta = 0
+}

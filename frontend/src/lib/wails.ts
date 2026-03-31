@@ -1,0 +1,137 @@
+// Type definitions for Wails v2 runtime
+// These match the Go backend types
+
+export interface SessionInfo {
+  id: string
+  name: string
+  created_at: string
+  last_active_at: string
+  archived: boolean
+  active: boolean
+}
+
+export interface ChatMessage {
+  id: number
+  session_id: string
+  role: string // "user" | "assistant" | "tool_call" | "tool_result" | "routing" | "eval" | "reflection" | "error"
+  content: string
+  metadata: string // JSON
+  created_at: string
+}
+
+// Event data types
+export interface RoutingData {
+  mode: string
+  domain: string
+  complexity: string
+}
+
+export interface ToolCallData {
+  step: number
+  tool: string
+  args: string
+}
+
+export interface ToolResultData {
+  step: number
+  result_len: number
+  result_preview?: string
+}
+
+export interface ThoughtData {
+  step_num: number
+  content: string
+}
+
+export interface StepData {
+  step: number
+}
+
+export interface PlanStepData {
+  description: string
+  status: string // "pending" | "running" | "completed" | "failed"
+}
+
+export interface PlanData {
+  step_count: number
+  steps?: PlanStepData[]
+}
+
+export interface EvalCriterionData {
+  name: string
+  description: string
+  passed: boolean
+}
+
+export interface EvalData {
+  passed: number
+  total: number
+  criteria?: EvalCriterionData[]
+}
+
+export interface ReflectionData {
+  summary: string
+  insights?: string[]
+  attempt?: number
+  max_attempts?: number
+}
+
+// Additional event types
+export interface RetryData {
+  attempt: number
+  max_attempts: number
+}
+
+export interface EscalationData {
+  from_mode: string
+  to_mode: string
+}
+
+export interface ACExtractedData {
+  count: number
+}
+
+export interface SubAgentData {
+  step_id: string
+  description?: string
+  success?: boolean
+  duration?: number
+}
+
+export interface AssistantDoneData {
+  content: string
+  input_tokens: number
+  output_tokens: number
+}
+
+export interface TaskCompleteData {
+  session_id: string
+  output: string
+  attempt_count?: number
+  routing_decision?: RoutingData
+}
+
+export interface ToolConfirmData {
+  confirm_id: string
+  tool: string
+  args: string
+  reasoning?: string  // judge's explanation of why confirmation is needed
+}
+
+export interface PlanStepStartData {
+  step_id: string
+  description: string
+}
+
+export interface PlanStepCompleteData {
+  step_id: string
+  success: boolean
+  duration: number // milliseconds
+}
+
+export interface ContextFillData {
+  fill_percent: number
+  used_tokens: number
+  max_tokens: number
+  status: string // "ok" | "compact" | "warning" | "emergency" | "reject"
+}

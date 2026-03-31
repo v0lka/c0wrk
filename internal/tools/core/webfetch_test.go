@@ -1,0 +1,417 @@
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/user/agent/internal/tools"
+)
+
+func TestWebFetchTool_Descriptor(t *testing.T) {
+	tool := NewWebFetchTool(nil)
+
+	// Verify name
+	if name := tool.Name(); name != "web_fetch" {
+		t.Errorf("expected name 'web_fetch', got '%s'", name)
+	}
+
+	// Verify description is not empty
+	if desc := tool.Description(); desc == "" {
+		t.Error("expected non-empty description")
+	}
+
+	// Verify schema is valid JSON
+	schema := tool.InputSchema()
+	var schemaMap map[string]interface{}
+	if err := json.Unmarshal(schema, &schemaMap); err != nil {
+		t.Errorf("expected valid JSON schema, got error: %v", err)
+	}
+
+	// Verify schema has required structure
+	if schemaMap["type"] != "object" {
+		t.Error("expected schema type to be 'object'")
+	}
+
+	props, ok := schemaMap["properties"].(map[string]interface{})
+	if !ok {
+		t.Error("expected schema to have properties")
+	}
+
+	if _, ok := props["url"]; !ok {
+		t.Error("expected schema to have 'url' property")
+	}
+
+	if _, ok := props["prompt"]; !ok {
+		t.Error("expected schema to have 'prompt' property")
+	}
+
+	required, ok := schemaMap["required"].([]interface{})
+	if !ok {
+		t.Error("expected schema to have required array")
+	}
+
+	hasURL := false
+	for _, r := range required {
+		if r == "url" {
+			hasURL = true
+			break
+		}
+	}
+	if !hasURL {
+		t.Error("expected 'url' to be in required fields")
+	}
+}
+
+func TestWebFetchTool_ImplementsToolInterface(t *testing.T) {
+	tool := NewWebFetchTool(nil)
+
+	// Verify it implements the Tool interface
+	var _ tools.Tool = tool
+}
+
+func TestWebFetchTool_MissingURL(t *testing.T) {
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	// Test with empty input
+	input := json.RawMessage(`{}`)
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing URL")
+	}
+	if !strings.Contains(result.Content, "url") {
+		t.Errorf("expected error message to mention 'url', got: %s", result.Content)
+	}
+
+	// Test with empty URL
+	input = json.RawMessage(`{"url": ""}`)
+	result, err = tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for empty URL")
+	}
+}
+
+func TestWebFetchTool_InvalidURL(t *testing.T) {
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	testCases := []struct {
+		name  string
+		url   string
+		check string
+	}{
+		{"ftp scheme", "ftp://example.com/file", "http"},
+		{"file scheme", "file:///etc/passwd", "http"},
+		{"javascript scheme", "javascript:alert(1)", "http"},
+		{"no scheme", "example.com", "http"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			input, _ := json.Marshal(map[string]string{"url": tc.url})
+			result, err := tool.Execute(ctx, input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !result.IsError {
+				t.Error("expected IsError=true for invalid URL")
+			}
+			if !strings.Contains(result.Content, tc.check) {
+				t.Errorf("expected error message to mention '%s', got: %s", tc.check, result.Content)
+			}
+		})
+	}
+}
+
+func TestWebFetchTool_InvalidJSON(t *testing.T) {
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	input := json.RawMessage(`{invalid json`)
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid JSON")
+	}
+	if !strings.Contains(result.Content, "parse") {
+		t.Errorf("expected error message to mention 'parse', got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_HTTPServer(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>Test Page</title></head>
+<body>
+<h1>Hello World</h1>
+<p>This is a test paragraph.</p>
+<a href="https://example.com">Example Link</a>
+</body>
+</html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+
+	// Verify markdown conversion
+	if !strings.Contains(result.Content, "Hello World") {
+		t.Errorf("expected markdown to contain 'Hello World', got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "test paragraph") {
+		t.Errorf("expected markdown to contain 'test paragraph', got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_HTTPError(t *testing.T) {
+	// Create a test server that returns 404
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for HTTP 404")
+	}
+	if !strings.Contains(result.Content, "404") {
+		t.Errorf("expected error to contain '404', got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_WithSummarizer(t *testing.T) {
+	summarizerCalled := false
+	var capturedContent, capturedPrompt string
+
+	summarizer := func(ctx context.Context, content, prompt string) (string, error) {
+		summarizerCalled = true
+		capturedContent = content
+		capturedPrompt = prompt
+		return "Summarized: " + prompt, nil
+	}
+
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><p>Test content</p></body></html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool(summarizer)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{
+		"url":    server.URL,
+		"prompt": "Extract the main idea",
+	})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+
+	if !summarizerCalled {
+		t.Error("expected summarizer to be called")
+	}
+	if capturedPrompt != "Extract the main idea" {
+		t.Errorf("expected prompt 'Extract the main idea', got: %s", capturedPrompt)
+	}
+	if capturedContent == "" {
+		t.Error("expected content to be passed to summarizer")
+	}
+	if result.Content != "Summarized: Extract the main idea" {
+		t.Errorf("expected summarized result, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_SummarizerError(t *testing.T) {
+	summarizer := func(ctx context.Context, content, prompt string) (string, error) {
+		return "", errors.New("summarizer failed")
+	}
+
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><p>Test content</p></body></html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool(summarizer)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{
+		"url":    server.URL,
+		"prompt": "Extract something",
+	})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should not be an error - falls back to full content
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+	// Should contain note about extraction failure
+	if !strings.Contains(result.Content, "Extraction failed") {
+		t.Error("expected note about extraction failure")
+	}
+	// Should still contain the content
+	if !strings.Contains(result.Content, "Test content") {
+		t.Error("expected fallback content")
+	}
+}
+
+func TestWebFetchTool_WithoutSummarizer(t *testing.T) {
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><p>Original content</p></body></html>`))
+	}))
+	defer server.Close()
+
+	// No summarizer provided
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	// Prompt provided but no summarizer - should ignore prompt gracefully
+	input, _ := json.Marshal(map[string]string{
+		"url":    server.URL,
+		"prompt": "Extract something",
+	})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+	// Should return original content (prompt ignored)
+	if !strings.Contains(result.Content, "Original content") {
+		t.Errorf("expected original content, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_BodySizeLimit(t *testing.T) {
+	// Create a test server that returns large content
+	largeContent := strings.Repeat("x", 200*1024) // 200KB
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(largeContent))
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+
+	// Content should be truncated to ~100KB
+	if len(result.Content) > 110*1024 { // Allow some overhead for markdown conversion
+		t.Errorf("expected content to be truncated, got %d bytes", len(result.Content))
+	}
+}
+
+func TestWebFetchTool_FetchRealPage(t *testing.T) {
+	// Skip if running in CI or no network
+	t.Skip("Skipping integration test - requires network access")
+
+	tool := NewWebFetchTool(nil)
+	ctx := context.Background()
+
+	// Use a stable URL
+	input, _ := json.Marshal(map[string]string{"url": "https://example.com"})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Example Domain") {
+		t.Errorf("expected content from example.com, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_DefaultPolicy(t *testing.T) {
+	tool := NewWebFetchTool(nil)
+	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
+		t.Errorf("expected DefaultPolicy() to return PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
+	}
+}
+
+func TestWebFetchTool_ContextCancellation(t *testing.T) {
+	// Create a test server that delays response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if context was cancelled
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<html><body>OK</body></html>`))
+		}
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool(nil)
+
+	// Create cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should return error due to cancelled context
+	if !result.IsError {
+		t.Error("expected error for cancelled context")
+	}
+}

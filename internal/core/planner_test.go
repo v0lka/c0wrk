@@ -1,0 +1,448 @@
+package core
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/user/agent/internal/llm"
+	"github.com/user/agent/internal/tools"
+)
+
+// Tests use shared mock types from testhelpers_test.go:
+// - mockLLMCaller: implements LLMCaller (use callFn for custom behavior)
+
+func TestPlan_CreatesValidDAG(t *testing.T) {
+	// Mock returns 3-step plan with dependencies: step_2 depends on step_1, step_3 depends on step_1
+	mockResponse := `{
+		"steps": [
+			{"id": "step_1", "description": "Initialize project", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]},
+			{"id": "step_2", "description": "Create main module", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"], "relevant_ac": ["ac_2"]},
+			{"id": "step_3", "description": "Create tests", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"], "relevant_ac": ["ac_3"]}
+		]
+	}`
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: mockResponse,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "Project initialized"},
+		{ID: "ac_2", Description: "Main module created"},
+		{ID: "ac_3", Description: "Tests created"},
+	}
+
+	availableTools := []tools.ToolDescriptor{
+		{Name: "bash", Description: "Execute shell commands"},
+		{Name: "file_write", Description: "Write content to a file"},
+	}
+
+	plan, err := planner.Plan(context.Background(), "Create a new Go project", criteria, availableTools, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	// Verify structure
+	if len(plan.Steps) != 3 {
+		t.Errorf("Expected 3 steps, got %d", len(plan.Steps))
+	}
+
+	// Verify step_1
+	if plan.Steps[0].ID != "step_1" {
+		t.Errorf("Expected first step ID 'step_1', got '%s'", plan.Steps[0].ID)
+	}
+	if len(plan.Steps[0].DependsOn) != 0 {
+		t.Errorf("Expected step_1 to have no dependencies, got %v", plan.Steps[0].DependsOn)
+	}
+
+	// Verify step_2 depends on step_1
+	if plan.Steps[1].ID != "step_2" {
+		t.Errorf("Expected second step ID 'step_2', got '%s'", plan.Steps[1].ID)
+	}
+	if len(plan.Steps[1].DependsOn) != 1 || plan.Steps[1].DependsOn[0] != "step_1" {
+		t.Errorf("Expected step_2 to depend on step_1, got %v", plan.Steps[1].DependsOn)
+	}
+
+	// Verify step_3 depends on step_1
+	if plan.Steps[2].ID != "step_3" {
+		t.Errorf("Expected third step ID 'step_3', got '%s'", plan.Steps[2].ID)
+	}
+	if len(plan.Steps[2].DependsOn) != 1 || plan.Steps[2].DependsOn[0] != "step_1" {
+		t.Errorf("Expected step_3 to depend on step_1, got %v", plan.Steps[2].DependsOn)
+	}
+
+	// Verify parallelizable flags (step_2 and step_3 can run in parallel)
+	if !plan.Steps[1].Parallelizable || !plan.Steps[2].Parallelizable {
+		t.Error("Expected step_2 and step_3 to be parallelizable")
+	}
+}
+
+func TestPlan_IncludesToolsAndCriteria(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "Tests must pass"},
+		{ID: "ac_2", Description: "Code must compile"},
+	}
+
+	availableTools := []tools.ToolDescriptor{
+		{Name: "bash", Description: "Execute shell commands"},
+		{Name: "file_read", Description: "Read file contents"},
+	}
+
+	_, err := planner.Plan(context.Background(), "Build project", criteria, availableTools, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	// Verify system prompt contains tool names
+	systemPrompt := capturedRequest.Messages[0].Content
+	if !strings.Contains(systemPrompt, "bash") {
+		t.Error("System prompt should contain tool name 'bash'")
+	}
+	if !strings.Contains(systemPrompt, "file_read") {
+		t.Error("System prompt should contain tool name 'file_read'")
+	}
+	if !strings.Contains(systemPrompt, "Execute shell commands") {
+		t.Error("System prompt should contain tool description")
+	}
+
+	// Verify system prompt contains AC descriptions
+	if !strings.Contains(systemPrompt, "ac_1") {
+		t.Error("System prompt should contain AC ID 'ac_1'")
+	}
+	if !strings.Contains(systemPrompt, "Tests must pass") {
+		t.Error("System prompt should contain AC description 'Tests must pass'")
+	}
+	if !strings.Contains(systemPrompt, "Code must compile") {
+		t.Error("System prompt should contain AC description 'Code must compile'")
+	}
+}
+
+func TestReplan_ReturnsUpdatedPlan(t *testing.T) {
+	// Mock returns modified plan with only remaining steps
+	mockResponse := `{
+		"steps": [
+			{"id": "step_2_retry", "description": "Retry creating main module with fix", "depends_on": [], "parallelizable": false, "estimated_tools": ["file_write"], "relevant_ac": ["ac_2"]},
+			{"id": "step_3", "description": "Create tests", "depends_on": ["step_2_retry"], "parallelizable": false, "estimated_tools": ["file_write"], "relevant_ac": ["ac_3"]}
+		]
+	}`
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: mockResponse,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	originalPlan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "Initialize project", DependsOn: []string{}},
+			{ID: "step_2", Description: "Create main module", DependsOn: []string{"step_1"}},
+			{ID: "step_3", Description: "Create tests", DependsOn: []string{"step_2"}},
+		},
+	}
+
+	completedSteps := []CompletedStep{
+		{StepID: "step_1", Output: "Project initialized successfully"},
+	}
+
+	failedStep := CompletedStep{
+		StepID: "step_2",
+		Output: "Failed to create module",
+		Error:  nil,
+	}
+
+	reflection := &Reflection{
+		FailureAnalysis: "Module creation failed due to missing import",
+		RootCause:       "Import path was incorrect",
+		ActionPlan:      "Fix the import path and retry",
+	}
+
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_2", Description: "Main module created"},
+		{ID: "ac_3", Description: "Tests created"},
+	}
+
+	plan, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, criteria)
+	if err != nil {
+		t.Fatalf("Replan() returned error: %v", err)
+	}
+
+	// Verify updated plan structure
+	if len(plan.Steps) != 2 {
+		t.Errorf("Expected 2 steps in updated plan, got %d", len(plan.Steps))
+	}
+
+	// Verify first step is the retry
+	if plan.Steps[0].ID != "step_2_retry" {
+		t.Errorf("Expected first step ID 'step_2_retry', got '%s'", plan.Steps[0].ID)
+	}
+
+	// Verify second step depends on the retry
+	if len(plan.Steps[1].DependsOn) != 1 || plan.Steps[1].DependsOn[0] != "step_2_retry" {
+		t.Errorf("Expected step_3 to depend on step_2_retry, got %v", plan.Steps[1].DependsOn)
+	}
+}
+
+func TestPlan_WithReflections(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	reflections := []Reflection{
+		{
+			FailureAnalysis: "Previous attempt failed due to timeout",
+			RootCause:       "Network latency was too high",
+			ActionPlan:      "Increase timeout value",
+		},
+		{
+			FailureAnalysis: "Build failed",
+			RootCause:       "Missing dependency",
+			ActionPlan:      "Add missing dependency first",
+		},
+	}
+
+	_, err := planner.Plan(context.Background(), "Deploy application", nil, nil, reflections, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	// Verify reflections are included in the prompt
+	systemPrompt := capturedRequest.Messages[0].Content
+	if !strings.Contains(systemPrompt, "Previous attempt failed due to timeout") {
+		t.Error("System prompt should contain first reflection's failure analysis")
+	}
+	if !strings.Contains(systemPrompt, "Network latency was too high") {
+		t.Error("System prompt should contain first reflection's root cause")
+	}
+	if !strings.Contains(systemPrompt, "Increase timeout value") {
+		t.Error("System prompt should contain first reflection's action plan")
+	}
+	if !strings.Contains(systemPrompt, "Build failed") {
+		t.Error("System prompt should contain second reflection's failure analysis")
+	}
+	if !strings.Contains(systemPrompt, "Missing dependency") {
+		t.Error("System prompt should contain second reflection's root cause")
+	}
+	if !strings.Contains(systemPrompt, "Reflections from past attempts") {
+		t.Error("System prompt should contain reflections header")
+	}
+}
+
+func TestPlan_WithConstitution(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	constitution := []string{
+		"Always write tests before implementation",
+		"Never delete files without confirmation",
+	}
+
+	_, err := planner.Plan(context.Background(), "Build project", nil, nil, nil, constitution)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	// Verify constitution is included in the prompt
+	systemPrompt := capturedRequest.Messages[0].Content
+	if !strings.Contains(systemPrompt, "Always write tests before implementation") {
+		t.Error("System prompt should contain first constitution principle")
+	}
+	if !strings.Contains(systemPrompt, "Never delete files without confirmation") {
+		t.Error("System prompt should contain second constitution principle")
+	}
+	if !strings.Contains(systemPrompt, "Constitution principles") {
+		t.Error("System prompt should contain constitution header")
+	}
+}
+
+func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
+	mockResponse := "```json\n{\"steps\": [{\"id\": \"step_1\", \"description\": \"Test\", \"depends_on\": [], \"parallelizable\": true, \"estimated_tools\": [], \"relevant_ac\": []}]}\n```"
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: mockResponse,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	plan, err := planner.Plan(context.Background(), "Test task", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() should parse markdown code block, got error: %v", err)
+	}
+
+	if len(plan.Steps) != 1 {
+		t.Errorf("Expected 1 step, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].ID != "step_1" {
+		t.Errorf("Expected step ID 'step_1', got '%s'", plan.Steps[0].ID)
+	}
+}
+
+func TestPlan_UsesCorrectRole(t *testing.T) {
+	var capturedRole string
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRole = role
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": []}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+	_, _ = planner.Plan(context.Background(), "Test", nil, nil, nil, nil)
+
+	if capturedRole != "planner" {
+		t.Errorf("Expected LLM role 'planner', got '%s'", capturedRole)
+	}
+}
+
+func TestReplan_IncludesOriginalPlanAndFailureDetails(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": []}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	originalPlan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "First step"},
+		},
+	}
+
+	completedSteps := []CompletedStep{
+		{StepID: "step_1", Output: "Step 1 completed"},
+	}
+
+	failedStep := CompletedStep{
+		StepID: "step_2",
+		Output: "Failure output",
+	}
+
+	reflection := &Reflection{
+		FailureAnalysis: "Test failure analysis",
+		RootCause:       "Test root cause",
+		ActionPlan:      "Test action plan",
+	}
+
+	_, _ = planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, nil)
+
+	systemPrompt := capturedRequest.Messages[0].Content
+
+	// Verify original plan is included
+	if !strings.Contains(systemPrompt, "step_1") {
+		t.Error("System prompt should contain original plan step ID")
+	}
+	if !strings.Contains(systemPrompt, "First step") {
+		t.Error("System prompt should contain original plan step description")
+	}
+
+	// Verify completed steps are included
+	if !strings.Contains(systemPrompt, "Step 1 completed") {
+		t.Error("System prompt should contain completed step output")
+	}
+
+	// Verify failed step details are included
+	if !strings.Contains(systemPrompt, "step_2") {
+		t.Error("System prompt should contain failed step ID")
+	}
+	if !strings.Contains(systemPrompt, "Failure output") {
+		t.Error("System prompt should contain failed step output")
+	}
+
+	// Verify reflection is included
+	if !strings.Contains(systemPrompt, "Test failure analysis") {
+		t.Error("System prompt should contain reflection failure analysis")
+	}
+	if !strings.Contains(systemPrompt, "Test root cause") {
+		t.Error("System prompt should contain reflection root cause")
+	}
+	if !strings.Contains(systemPrompt, "Test action plan") {
+		t.Error("System prompt should contain reflection action plan")
+	}
+}
+

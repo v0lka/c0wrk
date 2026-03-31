@@ -1,0 +1,143 @@
+# Example configuration for the Agent
+# Copy this file to ~/.c0wrk/config.yaml and fill in your API keys
+
+log_level: DEBUG
+theme: system
+
+llm:
+  providers:
+    anthropic:
+      type: anthropic
+      api_key: "${ANTHROPIC_API_KEY}"
+      # base_url: ""        # Optional: custom API base URL
+      # project_id: ""      # Optional: provider project ID
+      # location: ""        # Optional: provider location/region
+    # Optional: OpenAI provider (needed for embeddings)
+    # openai:
+    #   type: openai
+    #   api_key: "${OPENAI_API_KEY}"
+  roles:
+    # Router role for making routing decisions (mode selection)
+    router:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    # Planner role for generating execution plans
+    planner:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    # Evaluator role for judging acceptance criteria
+    evaluator_judge:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    executor:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    # Summarizer role for WebFetch content extraction
+    summarizer:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+  defaults:
+    max_tokens: 4096
+    temperature: 0.0
+
+  # Model metadata overrides (optional, overrides built-in registry)
+  # models:
+  #   my-custom-model:
+  #     context_window: 32000
+  #     output_limit: 4096
+
+executor:
+  max_react_steps: 30
+  max_retries: 3
+  output_token_reserve: 4096
+  compaction:
+    sliding_window:
+      keep_first: 3
+      keep_last: 10
+    # summarization:
+    #   block_size: 7
+    # hierarchical:
+    #   enabled_above_steps: 40
+    # thresholds:
+    #   predictive_percent: 85
+    #   warning_percent: 92
+    #   emergency_percent: 98
+
+security:
+  # Default policy for tools not explicitly configured: "always_allow"|"always_deny"|"user_confirm"|"auto"
+  default_policy: "auto"
+
+  # Per-tool security policies
+  tool_policies:
+    bash_exec:
+      policy: "user_confirm"
+      blacklist:
+        - 'rm\s+-rf\s+/'
+        - 'sudo\s+'
+        - "mkfs"
+        - 'dd\s+if='
+        - '>\s*/dev/'
+    file_ops:
+      policy: "auto"
+    web_search:
+      policy: "always_allow"
+    web_fetch:
+      policy: "always_allow"
+
+  # LLM-based tool safety judge configuration
+  # judge:
+  #   enabled: true              # whether judge is active (default: true)
+  #   model: ""                   # LLM model override for judge calls (empty = use default provider)
+
+# Skills configuration (optional)
+skills:
+  # Directory where skills are stored (default: ~/.c0wrk/skills/)
+  directory: ""
+  docker:
+    # Number of containers to keep warm in the pool
+    warm_pool_threshold: 5
+    # Idle timeout for warm containers
+    warm_pool_idle_timeout: "5m"
+    # Default resource limits for skill containers
+    default_memory: "256m"
+    default_cpu: "0.5"
+    default_timeout: "30s"
+
+# Memory configuration (optional)
+memory:
+  # Episodic memory for storing past task reflections
+  episodic:
+    database: "" # default: ~/.c0wrk/episodic.db
+    retention_days: 90
+    retrieval_limit: 5
+  # Semantic memory for embedding-based search
+  semantic:
+    database: "" # default: ~/.c0wrk/semantic.db
+    # Set embedding_provider to enable semantic memory
+    # Requires OpenAI API key (via openai provider or OPENAI_API_KEY env var)
+    embedding_provider: "" # "openai" to enable
+    embedding_model: "text-embedding-3-small"
+  # Constitution (Phase 3) - guiding principles derived from experience
+  constitution:
+    file: "" # default: ~/.c0wrk/constitution.json
+    update_interval_sessions: 10 # meta-reflection interval (default: every 10 sessions)
+
+# MCP Servers (optional)
+# Connect to external MCP servers to extend agent capabilities
+mcp:
+  servers:
+    # Example: filesystem server
+    # filesystem:
+    #   command: npx
+    #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    #   env: {}
+
+# Web search configuration (optional)
+# Requires Tavily API key: https://tavily.com/
+search:
+  provider: "tavily"
+  api_key: "${TAVILY_API_KEY}" # Set TAVILY_API_KEY environment variable
+
+# Router configuration
+router:
+  history_window: 5

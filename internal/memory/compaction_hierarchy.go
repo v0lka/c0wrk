@@ -1,0 +1,193 @@
+package memory
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/user/agent/internal/core"
+	"github.com/user/agent/internal/llm"
+)
+
+// HierarchicalStrategy divides steps into 3 zones with different compression levels:
+// - Distant (oldest): aggressive summarization (large blocks)
+// - Middle: moderate summarization (smaller blocks)
+// - Recent: kept verbatim
+type HierarchicalStrategy struct {
+	distantRatio float64 // fraction of steps in distant zone (default: 0.4)
+	middleRatio  float64 // fraction in middle zone (default: 0.3)
+	recentRatio  float64 // fraction in recent zone (default: 0.3)
+	summarizer   func(ctx context.Context, text string) (string, error)
+}
+
+// NewHierarchicalStrategy creates a new HierarchicalStrategy.
+// distant, middle, recent are the fractions of steps in each zone.
+// They will be normalized to sum to 1.0 if they don't already.
+func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ctx context.Context, text string) (string, error)) *HierarchicalStrategy {
+	// Normalize ratios
+	total := distant + middle + recent
+	if total <= 0 {
+		// Use defaults
+		distant = 0.4
+		middle = 0.3
+		recent = 0.3
+	} else if total != 1.0 {
+		distant = distant / total
+		middle = middle / total
+		recent = recent / total
+	}
+
+	return &HierarchicalStrategy{
+		distantRatio: distant,
+		middleRatio:  middle,
+		recentRatio:  recent,
+		summarizer:   summarizer,
+	}
+}
+
+// Compact divides steps into 3 zones:
+// - Distant (oldest): aggressive summarization (large blocks, ~15 steps per summary)
+// - Middle: moderate summarization (smaller blocks, ~5 steps per summary)
+// - Recent: kept verbatim
+func (h *HierarchicalStrategy) Compact(steps []core.Step, budgetTokens int) []llm.Message {
+	n := len(steps)
+
+	// For very small step counts, just return all as messages
+	if n <= 5 {
+		return h.stepsToMessages(steps)
+	}
+
+	// Calculate zone boundaries
+	distantEnd := int(float64(n) * h.distantRatio)
+	middleEnd := int(float64(n) * (h.distantRatio + h.middleRatio))
+
+	// Ensure we have at least something in each zone if there are enough steps
+	if distantEnd < 1 && n > 3 {
+		distantEnd = 1
+	}
+	if middleEnd <= distantEnd && n > distantEnd+1 {
+		middleEnd = distantEnd + 1
+	}
+	if middleEnd >= n {
+		middleEnd = n - 1
+	}
+
+	distantSteps := steps[:distantEnd]
+	middleSteps := steps[distantEnd:middleEnd]
+	recentSteps := steps[middleEnd:]
+
+	var messages []llm.Message
+
+	// Distant zone: aggressive summarization (large blocks of ~15 steps)
+	distantBlockSize := 15
+	messages = append(messages, h.summarizeZone(distantSteps, distantBlockSize, "distant")...)
+
+	// Middle zone: moderate summarization (smaller blocks of ~5 steps)
+	middleBlockSize := 5
+	messages = append(messages, h.summarizeZone(middleSteps, middleBlockSize, "middle")...)
+
+	// Recent zone: kept verbatim
+	messages = append(messages, h.stepsToMessages(recentSteps)...)
+
+	return messages
+}
+
+// summarizeZone summarizes a zone of steps with the given block size.
+func (h *HierarchicalStrategy) summarizeZone(steps []core.Step, blockSize int, zoneName string) []llm.Message {
+	if len(steps) == 0 {
+		return nil
+	}
+
+	var messages []llm.Message
+
+	for i := 0; i < len(steps); i += blockSize {
+		end := i + blockSize
+		if end > len(steps) {
+			end = len(steps)
+		}
+		block := steps[i:end]
+
+		// Build text representation of the block
+		blockText := h.buildBlockText(block, zoneName)
+
+		// Summarize the block
+		var summary string
+		if h.summarizer != nil {
+			var err error
+			summary, err = h.summarizer(context.Background(), blockText)
+			if err != nil {
+				// Fallback to a simple indicator if summarization fails
+				summary = fmt.Sprintf("[%s zone: %d steps summarized (error: %v)]", zoneName, len(block), err)
+			}
+		} else {
+			// No summarizer provided, use a simple placeholder
+			summary = fmt.Sprintf("[%s zone: %d steps summarized]", zoneName, len(block))
+		}
+
+		// Add summary as a system message
+		summaryMsg := llm.Message{
+			Role:    "system",
+			Content: summary,
+		}
+		messages = append(messages, summaryMsg)
+	}
+
+	return messages
+}
+
+// buildBlockText creates a text representation of a block of steps for summarization.
+func (h *HierarchicalStrategy) buildBlockText(steps []core.Step, zoneName string) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("Summarize the following %d steps from the %s zone:", len(steps), zoneName))
+
+	for i, step := range steps {
+		stepText := fmt.Sprintf("\nStep %d:", i+1)
+		if step.Thought != "" {
+			stepText += fmt.Sprintf("\n  Thought: %s", step.Thought)
+		}
+		if step.Action.Name != "" {
+			stepText += fmt.Sprintf("\n  Action: %s", step.Action.Name)
+		}
+		if step.Observation != "" {
+			// Truncate long observations more aggressively for distant zone
+			maxLen := 300
+			if zoneName == "middle" {
+				maxLen = 500
+			}
+			obs := step.Observation
+			if len(obs) > maxLen {
+				obs = obs[:maxLen] + "..."
+			}
+			stepText += fmt.Sprintf("\n  Observation: %s", obs)
+		}
+		parts = append(parts, stepText)
+	}
+	return strings.Join(parts, "")
+}
+
+// stepsToMessages converts a slice of Steps to LLM messages.
+func (h *HierarchicalStrategy) stepsToMessages(steps []core.Step) []llm.Message {
+	var messages []llm.Message
+	for _, step := range steps {
+		// Assistant message with thought and action
+		assistantMsg := llm.Message{
+			Role:    "assistant",
+			Content: step.Thought,
+		}
+		if step.Action.ID != "" {
+			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
+		}
+		messages = append(messages, assistantMsg)
+
+		// Tool response message with observation
+		if step.Action.ID != "" {
+			toolMsg := llm.Message{
+				Role:       "tool",
+				Content:    step.Observation,
+				ToolCallID: step.Action.ID,
+			}
+			messages = append(messages, toolMsg)
+		}
+	}
+	return messages
+}

@@ -1,0 +1,200 @@
+# =============================================================================
+# OS Generated Files
+# =============================================================================
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Icon?
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.nfs*
+.directory
+.Trash-*
+
+# =============================================================================
+# Go
+# =============================================================================
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.out
+coverage.html
+*.cover
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# =============================================================================
+# Project Specific
+# =============================================================================
+
+# Compiled agent binary (project-specific)
+/agent
+
+# Compiled desktop binary
+/bin/
+
+# Configuration files with sensitive data
+config.local.yaml
+config.prod.yaml
+config.*.local.yaml
+*.env
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Log files
+*.log
+logs/
+
+# =============================================================================
+# IDE and Editors
+# =============================================================================
+
+# GoLand / IntelliJ
+.idea/
+*.iml
+*.iws
+out/
+
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# Qoder
+.qoder/
+
+# Vim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# Testing and CI
+# =============================================================================
+
+# Test artifacts
+test-results/
+junit.xml
+
+# CI/CD
+.circleci/
+.github/workflows/*.local.yml
+
+# =============================================================================
+# Temporary Files
+# =============================================================================
+
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+
+# =============================================================================
+# Debug
+# =============================================================================
+
+debug/
+__debug_bin
+__debug_bin*
+
+# =============================================================================
+# Node.js / Frontend
+# =============================================================================
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+/build/bin/
+.next/
+.nuxt/
+.output/
+
+# Vite
+.vite/
+*.tsbuildinfo
+
+# Testing
+coverage/
+.nyc_output/
+
+# Environment variables
+.env.local
+.env.*.local
+
+# =============================================================================
+# Misc
+# =============================================================================
+
+# Air (live reload) config
+.air.toml
+tmp/
+
+# Taskfile
+.task/
+
+# Docker
+.dockerignore
+
+# Local development scripts
+*.local.sh
+
+# Local only docs
+# TODO.md
