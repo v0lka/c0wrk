@@ -129,12 +129,12 @@ func TestDockerBuilder_BuildCommand(t *testing.T) {
 input_data = json.load(sys.stdin)
 print(json.dumps({"result": "ok"}))
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0o644); err != nil {
 		t.Fatalf("failed to write main.py: %v", err)
 	}
 
 	// Create requirements.txt
-	if err := os.WriteFile(filepath.Join(tmpDir, "requirements.txt"), []byte(""), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "requirements.txt"), []byte(""), 0o644); err != nil {
 		t.Fatalf("failed to write requirements.txt: %v", err)
 	}
 
@@ -162,7 +162,7 @@ print(json.dumps({"result": "ok"}))
 	}
 
 	// Clean up the built image
-	_ = exec.Command("docker", "rmi", imageTag).Run()
+	_ = exec.CommandContext(context.Background(), "docker", "rmi", imageTag).Run()
 }
 
 func TestDockerBuilder_BuildCreatesRequirements(t *testing.T) {
@@ -188,7 +188,7 @@ func TestDockerBuilder_BuildCreatesRequirements(t *testing.T) {
 	mainPy := `import json, sys
 print(json.dumps({"result": "ok"}))
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0o644); err != nil {
 		t.Fatalf("failed to write main.py: %v", err)
 	}
 
@@ -218,11 +218,11 @@ print(json.dumps({"result": "ok"}))
 	}
 
 	// Clean up the built image
-	_ = exec.Command("docker", "rmi", imageTag).Run()
+	_ = exec.CommandContext(context.Background(), "docker", "rmi", imageTag).Run()
 }
 
 // isDockerAvailable checks if Docker daemon is running and accessible.
 func isDockerAvailable() bool {
-	cmd := exec.Command("docker", "version")
+	cmd := exec.CommandContext(context.Background(), "docker", "version")
 	return cmd.Run() == nil
 }

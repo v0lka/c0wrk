@@ -9,20 +9,13 @@ interface EpisodicConfig {
   retrieval_limit: number
 }
 
-interface SemanticConfig {
-  embedding_provider: string
-  embedding_model: string
-}
-
 interface MemoryConfig {
   episodic: EpisodicConfig
-  semantic: SemanticConfig
 }
 
 export function MemorySettings() {
   const [config, setConfig] = useState<MemoryConfig>({
     episodic: { retention_days: 30, retrieval_limit: 10 },
-    semantic: { embedding_provider: '', embedding_model: '' },
   })
   const [isLoading, setIsLoading] = useState(true)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -37,10 +30,6 @@ export function MemorySettings() {
             episodic: {
               retention_days: memoryConfig.episodic?.retention_days ?? 30,
               retrieval_limit: memoryConfig.episodic?.retrieval_limit ?? 10,
-            },
-            semantic: {
-              embedding_provider: memoryConfig.semantic?.embedding_provider ?? '',
-              embedding_model: memoryConfig.semantic?.embedding_model ?? '',
             },
           })
         }
@@ -57,7 +46,6 @@ export function MemorySettings() {
     try {
       const request = new main.MemorySettingsRequest({
         episodic: newConfig.episodic,
-        semantic: newConfig.semantic,
       })
       await UpdateMemorySettings(request)
     } catch {
@@ -70,24 +58,6 @@ export function MemorySettings() {
       ...config,
       episodic: {
         ...config.episodic,
-        [field]: value,
-      },
-    }
-    setConfig(newConfig)
-
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current)
-    }
-    debounceRef.current = setTimeout(() => {
-      saveConfig(newConfig)
-    }, 300)
-  }
-
-  const handleSemanticChange = (field: keyof SemanticConfig, value: string) => {
-    const newConfig: MemoryConfig = {
-      ...config,
-      semantic: {
-        ...config.semantic,
         [field]: value,
       },
     }
@@ -159,38 +129,8 @@ export function MemorySettings() {
           <span className="text-sm font-medium">Semantic Memory</span>
         </div>
         <p className="text-xs text-muted-foreground">
-          Configure the embedding provider for semantic search.
+          Uses a built-in local embedding model (all-MiniLM-L6-v2). No configuration needed.
         </p>
-
-        <div className="flex flex-col gap-3 mt-2">
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Embedding Provider</label>
-            <Input
-              type="text"
-              value={config.semantic.embedding_provider}
-              onChange={(e) => handleSemanticChange('embedding_provider', e.target.value)}
-              placeholder="e.g., openai"
-              className="h-8"
-            />
-            <p className="text-xs text-muted-foreground">
-              Provider for generating embeddings.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Embedding Model</label>
-            <Input
-              type="text"
-              value={config.semantic.embedding_model}
-              onChange={(e) => handleSemanticChange('embedding_model', e.target.value)}
-              placeholder="e.g., text-embedding-3-small"
-              className="h-8"
-            />
-            <p className="text-xs text-muted-foreground">
-              Model name for generating embeddings.
-            </p>
-          </div>
-        </div>
       </div>
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">

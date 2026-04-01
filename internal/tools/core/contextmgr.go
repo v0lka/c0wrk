@@ -213,7 +213,7 @@ func (t *ContextManagerTool) Execute(ctx context.Context, input json.RawMessage)
 	case "switch_compaction":
 		return t.switchCompaction(params)
 	default:
-		return tools.ToolResult{Content: fmt.Sprintf("unknown action: %s", params.Action), IsError: true}, nil
+		return tools.ToolResult{Content: "unknown action: " + params.Action, IsError: true}, nil
 	}
 }
 
@@ -235,7 +235,7 @@ func (t *ContextManagerTool) memoryStore(ctx context.Context, params contextMana
 		return tools.ToolResult{Content: fmt.Sprintf("failed to store in semantic memory: %v", err), IsError: true}, nil
 	}
 
-	return tools.ToolResult{Content: fmt.Sprintf("successfully stored content with key: %s", params.Key), IsError: false}, nil
+	return tools.ToolResult{Content: "successfully stored content with key: " + params.Key, IsError: false}, nil
 }
 
 // memorySearch searches semantic memory.
@@ -301,7 +301,7 @@ func (t *ContextManagerTool) switchCompaction(params contextManagerInput) (tools
 		return tools.ToolResult{Content: fmt.Sprintf("failed to switch compaction strategy: %v", err), IsError: true}, nil
 	}
 
-	return tools.ToolResult{Content: fmt.Sprintf("successfully switched compaction strategy to: %s", params.Strategy), IsError: false}, nil
+	return tools.ToolResult{Content: "successfully switched compaction strategy to: " + params.Strategy, IsError: false}, nil
 }
 
 // episodicStore stores an entry in episodic memory.

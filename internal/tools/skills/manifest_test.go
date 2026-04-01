@@ -23,7 +23,7 @@ func TestParseManifest_Valid(t *testing.T) {
 		"capabilities": ["network"]
 	}`
 
-	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0o644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestParseManifest_InvalidJSON(t *testing.T) {
 	manifestPath := filepath.Join(tempDir, "skill.json")
 
 	// Write invalid JSON
-	if err := os.WriteFile(manifestPath, []byte(`{not valid json`), 0644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(`{not valid json`), 0o644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestParseManifest_MissingRequired(t *testing.T) {
 		"entry_point": "main.py"
 	}`
 
-	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0o644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
 	}
 
@@ -121,7 +121,7 @@ func TestParseManifest_AllFields(t *testing.T) {
 		"capabilities": ["network", "filesystem"]
 	}`
 
-	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0o644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestParseManifest_WithMetadataFields(t *testing.T) {
 		"created_by": "test_user"
 	}`
 
-	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0o644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
 	}
 
@@ -263,7 +263,7 @@ func TestParseManifest_WithoutMetadataFields(t *testing.T) {
 		"entry_point": "main.py"
 	}`
 
-	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0o644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
 	}
 

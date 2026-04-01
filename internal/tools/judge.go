@@ -148,10 +148,10 @@ func (j *ToolJudge) ResetCache() {
 //	REASON: <explanation>
 //
 // Falls back to reasonable defaults if parsing fails.
-func parseJudgeResponse(content string) (JudgeVerdict, string) {
+func parseJudgeResponse(content string) (verdict JudgeVerdict, reasoning string) {
 	lines := strings.Split(content, "\n")
-	verdict := VerdictConfirm // default to safe
-	reasoning := "Unable to parse judge response; requiring manual confirmation for safety"
+	verdict = VerdictConfirm // default to safe
+	reasoning = "Unable to parse judge response; requiring manual confirmation for safety"
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)

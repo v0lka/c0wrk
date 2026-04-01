@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -39,7 +40,7 @@ func (sc *SkillContainer) Build(ctx context.Context, skillDir string) error {
 // Run executes the skill with given JSON input, returns JSON output.
 func (sc *SkillContainer) Run(ctx context.Context, input map[string]interface{}) (string, error) {
 	if sc.imageTag == "" {
-		return "", fmt.Errorf("skill image not built, call Build() first")
+		return "", errors.New("skill image not built, call Build() first")
 	}
 
 	// Marshal input to JSON
@@ -78,6 +79,7 @@ func (sc *SkillContainer) buildDockerArgs() []string {
 	args := []string{"run", "--rm"}
 
 	// Default security options (always applied)
+	// Always provide tmpfs for /tmp (scripts may need temporary file storage)
 	args = append(args,
 		"--security-opt=no-new-privileges",
 		"--read-only",
@@ -85,10 +87,8 @@ func (sc *SkillContainer) buildDockerArgs() []string {
 		"--user=1000:1000",
 		"--memory=512m",
 		"--cpus=1",
+		"--tmpfs", "/tmp:size=64m",
 	)
-
-	// Always provide tmpfs for /tmp (scripts may need temporary file storage)
-	args = append(args, "--tmpfs", "/tmp:size=64m")
 
 	// Network isolation based on capabilities
 	if !sc.hasCapability("network") {
@@ -102,9 +102,9 @@ func (sc *SkillContainer) buildDockerArgs() []string {
 }
 
 // hasCapability checks if the manifest includes a specific capability.
-func (sc *SkillContainer) hasCapability(cap string) bool {
+func (sc *SkillContainer) hasCapability(capability string) bool {
 	for _, c := range sc.manifest.Capabilities {
-		if c == cap {
+		if c == capability {
 			return true
 		}
 	}

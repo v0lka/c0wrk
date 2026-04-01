@@ -5,18 +5,29 @@ log_level: DEBUG
 theme: system
 
 llm:
-  default_provider: openai
-  providers:
-    openai:
-      type: openai
-      api_key: "${OPENAI_API_KEY}"
-      model: gpt-5.4
-      # base_url: ""        # Optional: custom API base URL
-      # project_id: ""      # Optional: provider project ID
-      # location: ""        # Optional: provider location/region
-  defaults:
-    max_tokens: 98304
-    temperature: 0.0
+  active_provider: chatgpt
+
+  chatgpt:
+    api_key: "${OPENAI_API_KEY}"
+    model: gpt-4o
+
+  # anthropic:
+  #   api_key: "${ANTHROPIC_API_KEY}"
+  #   model: claude-sonnet-4-20250514
+
+  # gemini:
+  #   api_key: "${GEMINI_API_KEY}"
+  #   model: gemini-2.5-pro
+
+  # lmstudio:
+  #   base_url: "http://localhost:1234"
+  #   api_key: ""
+  #   model: my-local-model
+
+  # openai_compatible:
+  #   base_url: "https://api.deepseek.com"
+  #   api_key: "${DEEPSEEK_API_KEY}"
+  #   model: deepseek-chat
 
   # Model metadata overrides (optional, overrides built-in registry)
   # models:
@@ -83,18 +94,12 @@ skills:
 
 # Memory configuration (optional)
 memory:
+  # Single database for all persistent memory (episodic, semantic, reflexion)
+  database: "" # default: ~/.c0wrk/memory.db
   # Episodic memory for storing past task reflections
   episodic:
-    database: "" # default: ~/.c0wrk/episodic.db
     retention_days: 90
     retrieval_limit: 5
-  # Semantic memory for embedding-based search
-  semantic:
-    database: "" # default: ~/.c0wrk/semantic.db
-    # Set embedding_provider to enable semantic memory
-    # Requires OpenAI API key (via openai provider or OPENAI_API_KEY env var)
-    embedding_provider: "openai" # "openai" to enable
-    embedding_model: "text-embedding-3-small"
   # Constitution (Phase 3) - guiding principles derived from experience
   constitution:
     file: "" # default: ~/.c0wrk/constitution.json

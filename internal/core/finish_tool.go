@@ -52,6 +52,7 @@ func (t *FinishTool) Execute(ctx context.Context, input json.RawMessage) (tools.
 		Answer string `json:"answer"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
+		//nolint:nilerr // error is reported in ToolResult.Content
 		return tools.ToolResult{Content: "failed to parse finish input: " + err.Error(), IsError: true}, nil
 	}
 	return tools.ToolResult{Content: params.Answer, IsError: false}, nil

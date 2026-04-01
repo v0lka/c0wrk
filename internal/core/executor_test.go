@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -769,7 +770,7 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 // containsIgnoreCase is a helper function that checks if s contains substr (case-insensitive)
 func containsIgnoreCase(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr ||
-		(len(s) > 0 && containsIgnoreCaseHelper(s, substr)))
+		(s != "" && containsIgnoreCaseHelper(s, substr)))
 }
 
 func containsIgnoreCaseHelper(s, substr string) bool {
@@ -778,19 +779,19 @@ func containsIgnoreCaseHelper(s, substr string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if c >= 'A' && c <= 'Z' {
-			c = c + 32
+			c += 32
 		}
 		lowerS[i] = c
 	}
 	for i := 0; i < len(substr); i++ {
 		c := substr[i]
 		if c >= 'A' && c <= 'Z' {
-			c = c + 32
+			c += 32
 		}
 		lowerSubstr[i] = c
 	}
 	for i := 0; i <= len(lowerS)-len(lowerSubstr); i++ {
-		if string(lowerS[i:i+len(lowerSubstr)]) == string(lowerSubstr) {
+		if bytes.Equal(lowerS[i:i+len(lowerSubstr)], lowerSubstr) {
 			return true
 		}
 	}

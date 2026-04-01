@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -66,7 +67,7 @@ type mockJudgerTool struct {
 	judgeReasoning string
 }
 
-func (m *mockJudgerTool) Judge(ctx context.Context, input json.RawMessage) (bool, string) {
+func (m *mockJudgerTool) Judge(ctx context.Context, input json.RawMessage) (allow bool, reasoning string) {
 	return m.judgeAllow, m.judgeReasoning
 }
 
@@ -271,7 +272,7 @@ func TestConfirmFunc_DenyAndStop(t *testing.T) {
 	input := json.RawMessage(`{"data":"test"}`)
 
 	result, err := registry.Execute(ctx, "mutating", input)
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled error, got: %v", err)
 	}
 	if result.Content != "" || result.IsError {
@@ -340,7 +341,7 @@ func TestConfirmFunc_ConfirmFuncError(t *testing.T) {
 	input := json.RawMessage(`{"data":"test"}`)
 
 	_, err := registry.Execute(ctx, "mutating", input)
-	if err != expectedErr {
+	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
 }

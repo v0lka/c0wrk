@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // EpisodicEntry represents a general episodic memory entry from a task interaction.
@@ -28,24 +26,12 @@ type EpisodicMemory struct {
 	db *sql.DB
 }
 
-// NewEpisodicMemory opens SQLite at dbPath (use ":memory:" for testing).
-// Auto-creates tables and indexes.
-func NewEpisodicMemory(dbPath string) (*EpisodicMemory, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Enable WAL mode for better performance
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
+// NewEpisodicMemory creates a new EpisodicMemory using the provided database connection.
+// The database should be managed by the caller (e.g., MemorySystem).
+func NewEpisodicMemory(db *sql.DB) (*EpisodicMemory, error) {
 	em := &EpisodicMemory{db: db}
 
 	if err := em.createTables(); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
 
@@ -70,7 +56,7 @@ func (em *EpisodicMemory) createTables() error {
 	CREATE INDEX IF NOT EXISTS idx_episodic_entries_session ON episodic_entries(session_id);
 	CREATE INDEX IF NOT EXISTS idx_episodic_entries_created ON episodic_entries(created_at);
 	`
-	_, err := em.db.Exec(entriesSchema)
+	_, err := em.db.ExecContext(context.Background(), entriesSchema)
 	return err
 }
 
@@ -176,7 +162,3 @@ func (em *EpisodicMemory) CountBySession(ctx context.Context, sessionID string) 
 	return count, nil
 }
 
-// Close closes the database connection.
-func (em *EpisodicMemory) Close() error {
-	return em.db.Close()
-}

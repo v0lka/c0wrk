@@ -64,7 +64,7 @@ func (t *BashExecTool) DefaultPolicy() tools.ToolPolicy {
 
 // Judge evaluates whether a bash command is safe to execute.
 // It checks the command against compiled blacklist patterns.
-func (t *BashExecTool) Judge(ctx context.Context, input json.RawMessage) (bool, string) {
+func (t *BashExecTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
 	var params bashInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, "" // Defer to LLM Judge on parse error
@@ -72,7 +72,7 @@ func (t *BashExecTool) Judge(ctx context.Context, input json.RawMessage) (bool, 
 
 	for i, re := range t.compiled {
 		if re.MatchString(params.Command) {
-			return false, fmt.Sprintf("command matches blacklist pattern: %s", t.blacklist[i])
+			return false, "command matches blacklist pattern: " + t.blacklist[i]
 		}
 	}
 

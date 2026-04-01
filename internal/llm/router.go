@@ -2,120 +2,96 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/user/agent/internal/config"
 )
 
-// LLMRouter routes LLM calls to a default provider.
+// LLMRouter routes LLM calls to the active provider.
 type LLMRouter struct {
 	providers       map[string]LLMProvider
-	defaultProvider LLMProvider
-	defaultModel    string
-	defaults        LLMDefaults
-}
-
-// LLMDefaults holds default values for LLM calls.
-type LLMDefaults struct {
-	MaxTokens   int
-	Temperature float64
+	activeProvider  LLMProvider
+	activeModel     string
+	activeProviderName string
 }
 
 // NewLLMRouter creates a new LLMRouter from the given configuration.
 // If registry is provided, LM Studio providers will register their metadata sources.
 func NewLLMRouter(cfg config.LLMConfig, registry *ModelRegistry) (*LLMRouter, error) {
-	providers := make(map[string]LLMProvider)
-
-	// Create providers from config
-	for name, pcfg := range cfg.Providers {
-		provider, err := createProvider(name, pcfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create provider %q: %w", name, err)
-		}
-		providers[name] = provider
+	// Get active provider configuration
+	provType, apiKey, baseURL, model := cfg.GetActiveProviderConfig()
+	if provType == "" {
+		return nil, errors.New("no active provider configured")
 	}
 
-	// Register LM Studio providers as metadata sources
+	// Create the active provider
+	provider, err := createProviderFromConfig(provType, apiKey, baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create provider %q: %w", cfg.ActiveProvider, err)
+	}
+
+	// Register LM Studio provider as metadata source
 	if registry != nil {
-		for _, p := range providers {
-			if lms, ok := p.(*LMStudioProvider); ok {
-				registry.RegisterSource(lms.MetadataSource())
-			}
+		if lms, ok := provider.(*LMStudioProvider); ok {
+			registry.RegisterSource(lms.MetadataSource())
 		}
-	}
-
-	// Resolve default provider
-	defaultProvider, ok := providers[cfg.DefaultProvider]
-	if !ok {
-		return nil, fmt.Errorf("default provider %q not found", cfg.DefaultProvider)
-	}
-	defaultModel := cfg.Providers[cfg.DefaultProvider].Model
-
-	// Convert defaults
-	defaults := LLMDefaults{
-		MaxTokens:   cfg.Defaults.MaxTokens,
-		Temperature: cfg.Defaults.Temperature,
 	}
 
 	return &LLMRouter{
-		providers:       providers,
-		defaultProvider: defaultProvider,
-		defaultModel:    defaultModel,
-		defaults:        defaults,
+		providers: map[string]LLMProvider{
+			cfg.ActiveProvider: provider,
+		},
+		activeProvider:     provider,
+		activeModel:        model,
+		activeProviderName: cfg.ActiveProvider,
 	}, nil
 }
 
-// createProvider creates an LLMProvider based on the provider type.
-func createProvider(name string, pcfg config.ProviderConfig) (LLMProvider, error) {
-	switch pcfg.Type {
-	case "openai", "deepseek", "grok", "openrouter", "ollama":
+// createProviderFromConfig creates an LLMProvider based on the provider type.
+func createProviderFromConfig(provType, apiKey, baseURL string) (LLMProvider, error) {
+	switch provType {
+	case "openai":
 		return NewOpenAIProvider(OpenAIProviderConfig{
-			Name:    name,
-			APIKey:  pcfg.APIKey,
-			BaseURL: pcfg.BaseURL,
+			APIKey:  apiKey,
+			BaseURL: baseURL,
 		})
 
 	case "lmstudio":
 		return NewLMStudioProvider(LMStudioProviderConfig{
-			Name:    name,
-			APIKey:  pcfg.APIKey,
-			BaseURL: pcfg.BaseURL,
+			APIKey:  apiKey,
+			BaseURL: baseURL,
 		})
 
 	case "anthropic":
 		return NewAnthropicProvider(AnthropicProviderConfig{
-			APIKey: pcfg.APIKey,
+			APIKey: apiKey,
 		})
 
 	case "gemini":
 		return NewGeminiProvider(context.Background(), GeminiProviderConfig{
-			APIKey:    pcfg.APIKey,
-			ProjectID: pcfg.ProjectID,
-			Location:  pcfg.Location,
+			APIKey: apiKey,
 		})
 
 	default:
-		return nil, fmt.Errorf("unknown provider type: %s", pcfg.Type)
+		return nil, fmt.Errorf("unknown provider type: %s", provType)
 	}
 }
 
-// Call sends a chat request to the default provider.
+// Call sends a chat request to the active provider.
 func (r *LLMRouter) Call(ctx context.Context, role string, req ChatRequest) (*ChatResponse, error) {
 	// Set model if not specified
 	if req.Model == "" {
-		req.Model = r.defaultModel
+		req.Model = r.activeModel
 	}
 
-	// Apply defaults
-	if req.MaxTokens == 0 {
-		req.MaxTokens = r.defaults.MaxTokens
-	}
+	// Hardcode temperature=0 for deterministic output
 	if req.Temperature == nil {
-		temp := r.defaults.Temperature
+		temp := 0.0
 		req.Temperature = &temp
 	}
 
-	return r.defaultProvider.ChatCompletion(ctx, req)
+	return r.activeProvider.ChatCompletion(ctx, req)
 }
 
 // GetProvider returns a provider by name.
@@ -128,30 +104,24 @@ func (r *LLMRouter) GetProvider(name string) LLMProvider {
 	return provider
 }
 
-// GetDefaultProvider returns the first available provider.
-// Returns nil if no providers are configured.
+// GetDefaultProvider returns the active provider.
+// Returns nil if no provider is configured.
 func (r *LLMRouter) GetDefaultProvider() LLMProvider {
-	for _, provider := range r.providers {
-		return provider
-	}
-	return nil
+	return r.activeProvider
 }
 
-// Stream sends a streaming chat request to the default provider.
+// Stream sends a streaming chat request to the active provider.
 func (r *LLMRouter) Stream(ctx context.Context, role string, req ChatRequest) (<-chan ChatChunk, error) {
 	// Set model if not specified
 	if req.Model == "" {
-		req.Model = r.defaultModel
+		req.Model = r.activeModel
 	}
 
-	// Apply defaults
-	if req.MaxTokens == 0 {
-		req.MaxTokens = r.defaults.MaxTokens
-	}
+	// Hardcode temperature=0 for deterministic output
 	if req.Temperature == nil {
-		temp := r.defaults.Temperature
+		temp := 0.0
 		req.Temperature = &temp
 	}
 
-	return r.defaultProvider.StreamChatCompletion(ctx, req)
+	return r.activeProvider.StreamChatCompletion(ctx, req)
 }

@@ -19,18 +19,18 @@ type Router struct {
 }
 
 // NewRouter creates a new Router.
-func NewRouter(llm LLMCaller, historyWindow int) *Router {
+func NewRouter(caller LLMCaller, historyWindow int) *Router {
 	if historyWindow <= 0 {
 		historyWindow = 10
 	}
 	return &Router{
-		llm:           llm,
+		llm:           caller,
 		historyWindow: historyWindow,
 	}
 }
 
 // Route analyzes the user's request and determines the best execution strategy.
-func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message) (*RoutingDecision, error) {
+func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message) (decision *RoutingDecision, err error) {
 	// Build tool list for the prompt
 	var toolList strings.Builder
 	for _, t := range availableTools {
@@ -41,9 +41,8 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	systemPrompt := strings.ReplaceAll(prompts.RouterSystem, "AVAILABLE-TOOLS", toolList.String())
 
 	// Build messages for the request
-	messages := []llm.Message{
-		{Role: "system", Content: systemPrompt},
-	}
+	messages := make([]llm.Message, 0, len(history)+2)
+	messages = append(messages, llm.Message{Role: "system", Content: systemPrompt})
 
 	// Add recent history messages (up to historyWindow)
 	historyStart := 0
@@ -55,7 +54,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	// Add user message with the request to classify
 	messages = append(messages, llm.Message{
 		Role:    "user",
-		Content: fmt.Sprintf("Classify this request: %s", userMessage),
+		Content: "Classify this request: " + userMessage,
 	})
 
 	// Create chat request
@@ -73,20 +72,20 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	jsonStr := extractJSON(resp.Message.Content)
 
 	// Unmarshal into RoutingDecision
-	var decision RoutingDecision
-	if err := json.Unmarshal([]byte(jsonStr), &decision); err != nil {
+	var routingDecision RoutingDecision
+	if err := json.Unmarshal([]byte(jsonStr), &routingDecision); err != nil {
 		return nil, fmt.Errorf("failed to parse routing decision: %w", err)
 	}
 
 	// Validate and apply defaults
-	if decision.Mode == "" {
-		decision.Mode = "react"
+	if routingDecision.Mode == "" {
+		routingDecision.Mode = "react"
 	}
-	if decision.CompactionStrategy == "" {
-		decision.CompactionStrategy = applyCompactionStrategy(decision.Domain, decision.Complexity)
+	if routingDecision.CompactionStrategy == "" {
+		routingDecision.CompactionStrategy = applyCompactionStrategy(routingDecision.Domain, routingDecision.Complexity)
 	}
 
-	return &decision, nil
+	return &routingDecision, nil
 }
 
 // extractJSON extracts JSON from the response content, handling markdown code blocks.

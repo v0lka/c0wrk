@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestRunSubAgent_ContextCancellation(t *testing.T) {
 		if result.Error == nil {
 			t.Error("expected error due to context cancellation, got nil")
 		}
-		if result.Error != context.Canceled {
+		if !errors.Is(result.Error, context.Canceled) {
 			t.Errorf("expected context.Canceled error, got %v", result.Error)
 		}
 	case <-time.After(5 * time.Second):

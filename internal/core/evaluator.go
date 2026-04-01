@@ -17,10 +17,10 @@ type Evaluator struct {
 }
 
 // NewEvaluator creates a new Evaluator.
-func NewEvaluator(tools ToolExecutor, llm LLMCaller) *Evaluator {
+func NewEvaluator(tools ToolExecutor, caller LLMCaller) *Evaluator {
 	return &Evaluator{
 		tools: tools,
-		llm:   llm,
+		llm:   caller,
 	}
 }
 
@@ -45,7 +45,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []Acce
 			// Unknown check type - mark as unclear
 			detail = EvalDetail{
 				Criterion:  criterion,
-				Diagnostic: fmt.Sprintf("unknown check type: %s", criterion.CheckType),
+				Diagnostic: "unknown check type: " + criterion.CheckType,
 			}
 			evalResult.Unclear = append(evalResult.Unclear, detail)
 			continue
@@ -57,14 +57,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []Acce
 
 		// Categorize based on diagnostic prefix convention
 		// The evaluation methods set Diagnostic to indicate pass/fail
-		if detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "PASSED:") {
+		switch {
+		case detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "PASSED:"):
 			evalResult.Passed = append(evalResult.Passed, detail)
-		} else if detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "FAILED:") {
+		case detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "FAILED:"):
 			evalResult.Failed = append(evalResult.Failed, detail)
-		} else if detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "UNCLEAR:") {
-			evalResult.Unclear = append(evalResult.Unclear, detail)
-		} else {
-			// Default to unclear if no prefix
+		default:
+			// Default to unclear if no prefix or UNCLEAR prefix
 			evalResult.Unclear = append(evalResult.Unclear, detail)
 		}
 	}
@@ -135,11 +134,12 @@ func (e *Evaluator) evaluateLLMJudge(ctx context.Context, criterion AcceptanceCr
 	responseText := strings.TrimSpace(resp.Message.Content)
 	upperResponse := strings.ToUpper(responseText)
 
-	if strings.HasPrefix(upperResponse, "YES") {
+	switch {
+	case strings.HasPrefix(upperResponse, "YES"):
 		detail.Diagnostic = "PASSED:" + responseText
-	} else if strings.HasPrefix(upperResponse, "NO") {
+	case strings.HasPrefix(upperResponse, "NO"):
 		detail.Diagnostic = "FAILED:" + responseText
-	} else {
+	default:
 		detail.Diagnostic = "UNCLEAR:" + responseText
 	}
 

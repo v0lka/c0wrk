@@ -3,6 +3,7 @@ package skills
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -66,12 +67,12 @@ func (b *DockerBuilder) Build(ctx context.Context, skillDir string, manifest *Sk
 	// Generate the Dockerfile
 	dockerfileContent := b.GenerateDockerfile(manifest)
 	if dockerfileContent == "" {
-		return "", fmt.Errorf("failed to generate Dockerfile")
+		return "", errors.New("failed to generate Dockerfile")
 	}
 
 	// Write Dockerfile to skill directory
 	dockerfilePath := filepath.Join(skillDir, "Dockerfile")
-	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); err != nil {
+	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
 
@@ -79,7 +80,7 @@ func (b *DockerBuilder) Build(ctx context.Context, skillDir string, manifest *Sk
 	requirementsPath := filepath.Join(skillDir, "requirements.txt")
 	if _, err := os.Stat(requirementsPath); os.IsNotExist(err) {
 		requirementsContent := strings.Join(manifest.Dependencies, "\n")
-		if err := os.WriteFile(requirementsPath, []byte(requirementsContent), 0644); err != nil {
+		if err := os.WriteFile(requirementsPath, []byte(requirementsContent), 0o644); err != nil {
 			return "", fmt.Errorf("failed to write requirements.txt: %w", err)
 		}
 	}

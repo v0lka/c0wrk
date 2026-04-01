@@ -295,12 +295,12 @@ input_data = json.load(sys.stdin)
 output = {"received": input_data, "status": "ok"}
 print(json.dumps(output))
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0o644); err != nil {
 		t.Fatalf("failed to write main.py: %v", err)
 	}
 
 	// Create empty requirements.txt
-	if err := os.WriteFile(filepath.Join(tmpDir, "requirements.txt"), []byte(""), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "requirements.txt"), []byte(""), 0o644); err != nil {
 		t.Fatalf("failed to write requirements.txt: %v", err)
 	}
 
@@ -333,7 +333,7 @@ print(json.dumps(output))
 	}
 
 	// Clean up the built image
-	_ = exec.Command("docker", "rmi", sc.ImageTag()).Run()
+	_ = exec.CommandContext(context.Background(), "docker", "rmi", sc.ImageTag()).Run()
 }
 
 func TestSkillContainer_Integration_ContextCancellation(t *testing.T) {
@@ -366,11 +366,11 @@ import time
 time.sleep(60)
 print(json.dumps({"status": "done"}))
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.py"), []byte(mainPy), 0o644); err != nil {
 		t.Fatalf("failed to write main.py: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(tmpDir, "requirements.txt"), []byte(""), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "requirements.txt"), []byte(""), 0o644); err != nil {
 		t.Fatalf("failed to write requirements.txt: %v", err)
 	}
 
@@ -392,7 +392,7 @@ print(json.dumps({"status": "done"}))
 	}
 
 	// Clean up
-	_ = exec.Command("docker", "rmi", sc.ImageTag()).Run()
+	_ = exec.CommandContext(context.Background(), "docker", "rmi", sc.ImageTag()).Run()
 }
 
 func TestSkillContainer_hasCapability(t *testing.T) {

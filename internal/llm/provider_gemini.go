@@ -97,10 +97,7 @@ func (p *GeminiProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 
 // convertMessages converts our Message format to Gemini Content format.
 // Returns contents and system instruction separately.
-func (p *GeminiProvider) convertMessages(messages []Message) ([]*genai.Content, *genai.Content) {
-	var contents []*genai.Content
-	var systemInstruction *genai.Content
-
+func (p *GeminiProvider) convertMessages(messages []Message) (contents []*genai.Content, systemInstruction *genai.Content) {
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
@@ -179,7 +176,7 @@ func (p *GeminiProvider) buildConfig(req ChatRequest, systemInstruction *genai.C
 
 	// Convert tools
 	if len(req.Tools) > 0 {
-		var functionDeclarations []*genai.FunctionDeclaration
+		functionDeclarations := make([]*genai.FunctionDeclaration, 0, len(req.Tools))
 		for _, tool := range req.Tools {
 			fd := &genai.FunctionDeclaration{
 				Name:        tool.Name,
@@ -230,7 +227,7 @@ func (p *GeminiProvider) convertResponse(result *genai.GenerateContentResponse) 
 					}
 					// Generate ID if not provided
 					if toolCall.ID == "" {
-						toolCall.ID = fmt.Sprintf("call_%s", part.FunctionCall.Name)
+						toolCall.ID = "call_" + part.FunctionCall.Name
 					}
 					response.Message.ToolCalls = append(response.Message.ToolCalls, toolCall)
 				}
@@ -269,7 +266,7 @@ func (p *GeminiProvider) convertStreamResponse(result *genai.GenerateContentResp
 						Input: argsJSON,
 					}
 					if toolCall.ID == "" {
-						toolCall.ID = fmt.Sprintf("call_%s", part.FunctionCall.Name)
+						toolCall.ID = "call_" + part.FunctionCall.Name
 					}
 					chunks = append(chunks, ChatChunk{ToolCall: &toolCall})
 				}

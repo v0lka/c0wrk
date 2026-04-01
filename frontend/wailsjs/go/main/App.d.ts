@@ -25,6 +25,8 @@ export function GetSessionMemoryStats(arg1:string):Promise<Record<string, any>>;
 
 export function GetSessionTokens(arg1:string):Promise<Record<string, any>>;
 
+export function ListProviderModels(arg1:string):Promise<Array<string>>;
+
 export function ListSessions():Promise<Array<session.SessionInfo>>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;

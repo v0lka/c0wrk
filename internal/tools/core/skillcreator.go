@@ -150,13 +150,13 @@ func (t *SkillCreatorTool) Execute(ctx context.Context, input json.RawMessage) (
 	skillDir := filepath.Join(t.skillsDir, params.Name)
 	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
 		return tools.ToolResult{
-			Content: fmt.Sprintf("skill directory already exists: %s", skillDir),
+			Content: "skill directory already exists: " + skillDir,
 			IsError: true,
 		}, nil
 	}
 
 	// Create the directory
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		return tools.ToolResult{
 			Content: fmt.Sprintf("failed to create skill directory: %v", err),
 			IsError: true,
@@ -200,7 +200,7 @@ func (t *SkillCreatorTool) Execute(ctx context.Context, input json.RawMessage) (
 	}
 
 	manifestPath := filepath.Join(skillDir, "skill.json")
-	if err := os.WriteFile(manifestPath, manifestJSON, 0644); err != nil {
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
 		cleanupNeeded = true
 		return tools.ToolResult{
 			Content: fmt.Sprintf("failed to write skill.json: %v", err),
@@ -210,7 +210,7 @@ func (t *SkillCreatorTool) Execute(ctx context.Context, input json.RawMessage) (
 
 	// Write main.py
 	mainPyPath := filepath.Join(skillDir, "main.py")
-	if err := os.WriteFile(mainPyPath, []byte(params.Code), 0644); err != nil {
+	if err := os.WriteFile(mainPyPath, []byte(params.Code), 0o644); err != nil {
 		cleanupNeeded = true
 		return tools.ToolResult{
 			Content: fmt.Sprintf("failed to write main.py: %v", err),
@@ -224,7 +224,7 @@ func (t *SkillCreatorTool) Execute(ctx context.Context, input json.RawMessage) (
 		requirementsContent += "\n"
 	}
 	requirementsPath := filepath.Join(skillDir, "requirements.txt")
-	if err := os.WriteFile(requirementsPath, []byte(requirementsContent), 0644); err != nil {
+	if err := os.WriteFile(requirementsPath, []byte(requirementsContent), 0o644); err != nil {
 		cleanupNeeded = true
 		return tools.ToolResult{
 			Content: fmt.Sprintf("failed to write requirements.txt: %v", err),
@@ -240,7 +240,7 @@ func (t *SkillCreatorTool) Execute(ctx context.Context, input json.RawMessage) (
 			// Log warning but don't fail - skill files are already created
 			buildResult = fmt.Sprintf("Warning: Docker build failed: %v", err)
 		} else {
-			buildResult = fmt.Sprintf("Docker image built: %s", imageTag)
+			buildResult = "Docker image built: " + imageTag
 		}
 	} else {
 		buildResult = "Docker builder not available, skipping image build"
@@ -264,12 +264,12 @@ func (t *SkillCreatorTool) Execute(ctx context.Context, input json.RawMessage) (
 // writeAuditLog appends an entry to the audit log file.
 func (t *SkillCreatorTool) writeAuditLog(skillName, action string) error {
 	// Ensure skills directory exists
-	if err := os.MkdirAll(t.skillsDir, 0755); err != nil {
+	if err := os.MkdirAll(t.skillsDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create skills directory: %w", err)
 	}
 
 	auditLogPath := filepath.Join(t.skillsDir, "audit.log")
-	f, err := os.OpenFile(auditLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(auditLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("failed to open audit log: %w", err)
 	}

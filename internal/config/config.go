@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -26,34 +27,53 @@ type Config struct {
 	Search   SearchConfig   `yaml:"search"`
 }
 
-// LLMConfig holds LLM provider and role configuration.
+// LLMConfig holds LLM provider configuration with fixed provider schema.
 type LLMConfig struct {
-	DefaultProvider string                    `yaml:"default_provider"`
-	Providers       map[string]ProviderConfig `yaml:"providers"`
-	Defaults        LLMDefaults               `yaml:"defaults"`
-	Models          map[string]ModelOverride  `yaml:"models"`
+	ActiveProvider   string                   `yaml:"active_provider"` // "anthropic"|"gemini"|"lmstudio"|"openai_compatible"|"chatgpt"
+	Anthropic        AnthropicConfig          `yaml:"anthropic"`
+	Gemini           GeminiConfig             `yaml:"gemini"`
+	LMStudio         LMStudioConfig           `yaml:"lmstudio"`
+	OpenAICompatible OpenAICompatibleConfig   `yaml:"openai_compatible"`
+	ChatGPT          ChatGPTConfig            `yaml:"chatgpt"`
+	Models           map[string]ModelOverride `yaml:"models"`
+}
+
+// AnthropicConfig holds Anthropic provider configuration.
+type AnthropicConfig struct {
+	APIKey string `yaml:"api_key"`
+	Model  string `yaml:"model"`
+}
+
+// GeminiConfig holds Gemini provider configuration.
+type GeminiConfig struct {
+	APIKey string `yaml:"api_key"`
+	Model  string `yaml:"model"`
+}
+
+// LMStudioConfig holds LM Studio provider configuration.
+type LMStudioConfig struct {
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Model   string `yaml:"model"`
+}
+
+// OpenAICompatibleConfig holds OpenAI-compatible provider configuration.
+type OpenAICompatibleConfig struct {
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Model   string `yaml:"model"`
+}
+
+// ChatGPTConfig holds ChatGPT (OpenAI) provider configuration.
+type ChatGPTConfig struct {
+	APIKey string `yaml:"api_key"`
+	Model  string `yaml:"model"`
 }
 
 // ModelOverride allows overriding built-in model metadata.
 type ModelOverride struct {
 	ContextWindow int `yaml:"context_window"`
 	OutputLimit   int `yaml:"output_limit"`
-}
-
-// ProviderConfig defines an LLM provider's connection details.
-type ProviderConfig struct {
-	Type      string `yaml:"type"`
-	APIKey    string `yaml:"api_key"`
-	BaseURL   string `yaml:"base_url"`
-	ProjectID string `yaml:"project_id"`
-	Location  string `yaml:"location"`
-	Model     string `yaml:"model"`
-}
-
-// LLMDefaults contains default parameters for LLM calls.
-type LLMDefaults struct {
-	MaxTokens   int     `yaml:"max_tokens"`
-	Temperature float64 `yaml:"temperature"`
 }
 
 // MCPConfig holds MCP server configurations.
@@ -85,23 +105,15 @@ type DockerConfig struct {
 
 // MemoryConfig holds memory system configuration.
 type MemoryConfig struct {
+	Database     string             `yaml:"database"` // single DB path for all persistent memory
 	Episodic     EpisodicConfig     `yaml:"episodic"`
-	Semantic     SemanticConfig     `yaml:"semantic"`
 	Constitution ConstitutionConfig `yaml:"constitution"`
 }
 
 // EpisodicConfig configures episodic memory storage.
 type EpisodicConfig struct {
-	Database       string `yaml:"database"`
-	RetentionDays  int    `yaml:"retention_days"`
-	RetrievalLimit int    `yaml:"retrieval_limit"`
-}
-
-// SemanticConfig configures semantic memory and embeddings.
-type SemanticConfig struct {
-	Database          string `yaml:"database"`
-	EmbeddingProvider string `yaml:"embedding_provider"`
-	EmbeddingModel    string `yaml:"embedding_model"`
+	RetentionDays  int `yaml:"retention_days"`
+	RetrievalLimit int `yaml:"retrieval_limit"`
 }
 
 // ConstitutionConfig configures the agent's constitution.
@@ -182,9 +194,47 @@ type SearchConfig struct {
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
+// LoadResult contains the result of loading a configuration file.
+type LoadResult struct {
+	Config       *Config
+	Migrated     bool     // true if config was migrated from old format
+	MigrationMsg string   // human-readable migration message
+	LoadErrors   []string // non-fatal errors/warnings encountered during load
+}
+
+// GetActiveProviderConfig returns (providerType, apiKey, baseURL, model) for the active provider.
+// providerType is the Go provider type to create: "anthropic", "gemini", "lmstudio", "openai" (for both openai_compatible and chatgpt).
+func (c *LLMConfig) GetActiveProviderConfig() (providerType, apiKey, baseURL, model string) {
+	switch c.ActiveProvider {
+	case "anthropic":
+		return "anthropic", c.Anthropic.APIKey, "", c.Anthropic.Model
+	case "gemini":
+		return "gemini", c.Gemini.APIKey, "", c.Gemini.Model
+	case "lmstudio":
+		return "lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Model
+	case "openai_compatible":
+		return "openai", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Model
+	case "chatgpt":
+		return "openai", c.ChatGPT.APIKey, "", c.ChatGPT.Model
+	default:
+		return "", "", "", ""
+	}
+}
+
 // Load reads a configuration file, substitutes environment variables,
 // applies defaults, validates the configuration, and returns it.
+// For better error handling and migration support, use LoadWithResult.
 func Load(path string) (*Config, error) {
+	result, err := LoadWithResult(path)
+	if err != nil {
+		return nil, err
+	}
+	return result.Config, nil
+}
+
+// LoadWithResult reads a configuration file with full error reporting.
+// It substitutes environment variables, applies defaults, and validates.
+func LoadWithResult(path string) (*LoadResult, error) {
 	// Read file
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -198,7 +248,7 @@ func Load(path string) (*Config, error) {
 		return os.Getenv(varName)
 	})
 
-	// Unmarshal YAML
+	// Unmarshal as current format
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(content), &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
@@ -209,10 +259,13 @@ func Load(path string) (*Config, error) {
 
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
+		return &LoadResult{
+			Config:     &cfg,
+			LoadErrors: []string{"Config validation failed: " + err.Error()},
+		}, fmt.Errorf("config validation failed: %w", err)
 	}
 
-	return &cfg, nil
+	return &LoadResult{Config: &cfg}, nil
 }
 
 // Save writes the configuration to a YAML file atomically.
@@ -224,7 +277,7 @@ func Save(cfg *Config, path string) error {
 
 	// Write atomically: write to temp file, then rename
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write temp config file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -237,21 +290,27 @@ func Save(cfg *Config, path string) error {
 
 // validate checks that the configuration is valid.
 func validate(cfg *Config) error {
-	// Check that at least one provider is defined
-	if len(cfg.LLM.Providers) == 0 {
-		return fmt.Errorf("at least one LLM provider must be defined")
+	// Validate active_provider is one of known values
+	switch cfg.LLM.ActiveProvider {
+	case "anthropic", "gemini", "lmstudio", "openai_compatible", "chatgpt":
+		// valid
+	case "":
+		return errors.New("llm.active_provider must be specified")
+	default:
+		return fmt.Errorf("llm.active_provider %q is not a valid provider (must be anthropic, gemini, lmstudio, openai_compatible, or chatgpt)", cfg.LLM.ActiveProvider)
 	}
 
-	// Check that default provider references an existing provider
-	if cfg.LLM.DefaultProvider == "" {
-		return fmt.Errorf("llm.default_provider must be specified")
+	// Validate active provider has model set
+	_, _, _, model := cfg.LLM.GetActiveProviderConfig()
+	if model == "" {
+		return fmt.Errorf("active provider %q must have a model specified", cfg.LLM.ActiveProvider)
 	}
-	defaultProv, exists := cfg.LLM.Providers[cfg.LLM.DefaultProvider]
-	if !exists {
-		return fmt.Errorf("llm.default_provider references non-existent provider %q", cfg.LLM.DefaultProvider)
-	}
-	if defaultProv.Model == "" {
-		return fmt.Errorf("provider %q must have a model specified", cfg.LLM.DefaultProvider)
+
+	// Validate base_url for providers that require it
+	if cfg.LLM.ActiveProvider == "openai_compatible" {
+		if cfg.LLM.OpenAICompatible.BaseURL == "" {
+			return errors.New("openai_compatible provider requires base_url")
+		}
 	}
 
 	return nil

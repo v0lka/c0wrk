@@ -176,14 +176,16 @@ func TestLMStudioStreamChatCompletion(t *testing.T) {
 		t.Fatalf("StreamChatCompletion failed: %v", err)
 	}
 
-	var content string
+	var sb strings.Builder
 	var stopReason string
 	for chunk := range chunks {
-		content += chunk.Delta
+		sb.WriteString(chunk.Delta)
 		if chunk.StopReason != "" {
 			stopReason = chunk.StopReason
 		}
 	}
+
+	content := sb.String()
 
 	if content != "Hello world!" {
 		t.Errorf("expected content 'Hello world!', got %q", content)
@@ -226,10 +228,11 @@ func TestLMStudioStreamChatCompletionWithReasoning(t *testing.T) {
 		t.Fatalf("StreamChatCompletion failed: %v", err)
 	}
 
-	var content string
+	var sb strings.Builder
 	for chunk := range chunks {
-		content += chunk.Delta
+		sb.WriteString(chunk.Delta)
 	}
+	content := sb.String()
 
 	// Both reasoning and content deltas should be concatenated as Delta
 	expected := "Let me think... about this.The answer is 42."
@@ -932,8 +935,7 @@ func TestLMStudioStreamChatCompletionWithContextCancellation(t *testing.T) {
 
 	// Read chunks - should complete without blocking
 	<-started
-	for range chunks {
-		// Just drain the channel
+	for range chunks { //nolint:revive // intentionally draining channel
 	}
 }
 

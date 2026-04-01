@@ -32,7 +32,7 @@ func Init(level string) (*SessionLogger, error) {
 	}
 
 	// Create log directory
-	if err := os.MkdirAll(baseLogDir, 0750); err != nil {
+	if err := os.MkdirAll(baseLogDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
@@ -41,7 +41,7 @@ func Init(level string) (*SessionLogger, error) {
 	sessionFile := filepath.Join(baseLogDir, fmt.Sprintf("session-%s.log", timestamp))
 
 	// Open log file
-	file, err := os.OpenFile(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+	file, err := os.OpenFile(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/user/agent/internal/tools"
@@ -178,14 +179,14 @@ func (t *WebSearchTool) search(ctx context.Context, query string, maxResults int
 
 // formatResults formats the search results as a readable string.
 func (t *WebSearchTool) formatResults(results []tavilyResult) string {
-	var output string
+	var output strings.Builder
 	for i, result := range results {
 		if i > 0 {
-			output += "\n\n"
+			output.WriteString("\n\n")
 		}
-		output += fmt.Sprintf("%d. **%s**\n   URL: %s\n   Snippet: %s", i+1, result.Title, result.URL, result.Content)
+		fmt.Fprintf(&output, "%d. **%s**\n   URL: %s\n   Snippet: %s", i+1, result.Title, result.URL, result.Content)
 	}
-	return output
+	return output.String()
 }
 
 // SetBaseURL allows setting a custom base URL (useful for testing).

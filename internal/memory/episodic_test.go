@@ -2,16 +2,24 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestEpisodicMemory_Cleanup(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -68,11 +76,16 @@ func TestEpisodicMemory_Cleanup(t *testing.T) {
 
 func TestEpisodicMemory_AutoCreateTables(t *testing.T) {
 	// Open fresh DB - tables should be auto-created
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -104,11 +117,16 @@ func TestEpisodicMemory_AutoCreateTables(t *testing.T) {
 }
 
 func TestEpisodicMemory_Count(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -147,11 +165,16 @@ func TestEpisodicMemory_Count(t *testing.T) {
 }
 
 func TestStoreEntry(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -218,11 +241,16 @@ func TestStoreEntry(t *testing.T) {
 }
 
 func TestRetrieveEntries_BySession(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -296,11 +324,16 @@ func TestRetrieveEntries_BySession(t *testing.T) {
 }
 
 func TestRetrieveEntries_Limit(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -342,11 +375,16 @@ func TestRetrieveEntries_Limit(t *testing.T) {
 }
 
 func TestCount_EntriesOnly(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -374,11 +412,16 @@ func TestCount_EntriesOnly(t *testing.T) {
 }
 
 func TestCountBySession(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 
@@ -437,11 +480,16 @@ func TestCountBySession(t *testing.T) {
 
 
 func TestCleanup_IncludesEntries(t *testing.T) {
-	em, err := NewEpisodicMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	em, err := NewEpisodicMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create episodic memory: %v", err)
 	}
-	defer func() { _ = em.Close() }()
 
 	ctx := context.Background()
 

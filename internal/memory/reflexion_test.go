@@ -2,16 +2,24 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestReflexionMemory_StoreAndSearch(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -54,11 +62,16 @@ func TestReflexionMemory_StoreAndSearch(t *testing.T) {
 }
 
 func TestReflexionMemory_SearchCrossSession(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -113,11 +126,16 @@ func TestReflexionMemory_SearchCrossSession(t *testing.T) {
 }
 
 func TestReflexionMemory_Count(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -154,11 +172,16 @@ func TestReflexionMemory_Count(t *testing.T) {
 }
 
 func TestReflexionMemory_EmptySearch(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -178,11 +201,16 @@ func TestReflexionMemory_EmptySearch(t *testing.T) {
 }
 
 func TestReflexionMemory_SearchLimit(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -217,11 +245,16 @@ func TestReflexionMemory_SearchLimit(t *testing.T) {
 }
 
 func TestReflexionMemory_SearchByKeyword(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -275,11 +308,16 @@ func TestReflexionMemory_SearchByKeyword(t *testing.T) {
 }
 
 func TestReflexionMemory_NullHypotheses(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -312,11 +350,16 @@ func TestReflexionMemory_NullHypotheses(t *testing.T) {
 
 func TestReflexionMemory_AutoCreateTables(t *testing.T) {
 	// Open fresh DB - tables should be auto-created
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -344,11 +387,16 @@ func TestReflexionMemory_AutoCreateTables(t *testing.T) {
 }
 
 func TestReflexionMemory_EmptyQuery(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 
@@ -375,11 +423,16 @@ func TestReflexionMemory_EmptyQuery(t *testing.T) {
 }
 
 func TestReflexionMemory_DefaultTimestamp(t *testing.T) {
-	rm, err := NewReflexionMemory(":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewReflexionMemory(db)
 	if err != nil {
 		t.Fatalf("failed to create reflexion memory: %v", err)
 	}
-	defer func() { _ = rm.Close() }()
 
 	ctx := context.Background()
 

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestNewMemorySystem_AllComponents(t *testing.T) {
@@ -12,13 +14,13 @@ func TestNewMemorySystem_AllComponents(t *testing.T) {
 
 	// Create skills directory with a test skill
 	skillsDir := filepath.Join(tmpDir, "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create a test skill directory with skill.json
 	testSkillDir := filepath.Join(skillsDir, "test_skill")
-	if err := os.MkdirAll(testSkillDir, 0755); err != nil {
+	if err := os.MkdirAll(testSkillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	skillJSON := `{
@@ -26,15 +28,14 @@ func TestNewMemorySystem_AllComponents(t *testing.T) {
 		"description": "A test skill",
 		"version": "1.0.0"
 	}`
-	if err := os.WriteFile(filepath.Join(testSkillDir, "skill.json"), []byte(skillJSON), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(testSkillDir, "skill.json"), []byte(skillJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := MemorySystemConfig{
-		EpisodicDBPath: filepath.Join(tmpDir, "episodic.db"),
-		SemanticDBPath: filepath.Join(tmpDir, "semantic.db"),
-		SkillsDir:      skillsDir,
-		Embedder:       newMockEmbedder(),
+		DBPath:    filepath.Join(tmpDir, "memory.db"),
+		SkillsDir: skillsDir,
+		Embedder:  newMockEmbedder(),
 	}
 
 	ms, err := NewMemorySystem(cfg)
@@ -53,6 +54,9 @@ func TestNewMemorySystem_AllComponents(t *testing.T) {
 	if ms.Procedural == nil {
 		t.Error("Procedural memory should not be nil")
 	}
+	if ms.Reflexion == nil {
+		t.Error("Reflexion memory should not be nil")
+	}
 
 	// Verify procedural memory scanned the skill
 	skills := ms.Procedural.ListSkills()
@@ -68,9 +72,9 @@ func TestNewMemorySystem_Partial(t *testing.T) {
 	// Create temp directory for test files
 	tmpDir := t.TempDir()
 
-	// Only provide EpisodicDBPath
+	// Only provide DBPath
 	cfg := MemorySystemConfig{
-		EpisodicDBPath: filepath.Join(tmpDir, "episodic.db"),
+		DBPath: filepath.Join(tmpDir, "memory.db"),
 	}
 
 	ms, err := NewMemorySystem(cfg)
@@ -79,9 +83,14 @@ func TestNewMemorySystem_Partial(t *testing.T) {
 	}
 	defer func() { _ = ms.Close() }()
 
-	// Verify only episodic is initialized
+	// Verify episodic and reflexion are initialized (they only need DBPath)
+	// Semantic should be nil (needs Embedder)
+	// Procedural should be nil (needs SkillsDir)
 	if ms.Episodic == nil {
 		t.Error("Episodic memory should not be nil")
+	}
+	if ms.Reflexion == nil {
+		t.Error("Reflexion memory should not be nil")
 	}
 	if ms.Semantic != nil {
 		t.Error("Semantic memory should be nil")
@@ -111,6 +120,9 @@ func TestNewMemorySystem_Empty(t *testing.T) {
 	if ms.Procedural != nil {
 		t.Error("Procedural memory should be nil")
 	}
+	if ms.Reflexion != nil {
+		t.Error("Reflexion memory should be nil")
+	}
 }
 
 func TestMemorySystem_Close(t *testing.T) {
@@ -118,9 +130,8 @@ func TestMemorySystem_Close(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg := MemorySystemConfig{
-		EpisodicDBPath: filepath.Join(tmpDir, "episodic.db"),
-		SemanticDBPath: filepath.Join(tmpDir, "semantic.db"),
-		Embedder:       newMockEmbedder(),
+		DBPath:   filepath.Join(tmpDir, "memory.db"),
+		Embedder: newMockEmbedder(),
 	}
 
 	ms, err := NewMemorySystem(cfg)
@@ -133,7 +144,7 @@ func TestMemorySystem_Close(t *testing.T) {
 		t.Errorf("Close failed: %v", err)
 	}
 
-	// Closing again should be safe (databases already closed)
+	// Closing again should be safe (database already closed)
 	// Note: This may return an error depending on SQLite behavior, but shouldn't panic
 	_ = ms.Close()
 }
@@ -142,10 +153,10 @@ func TestNewMemorySystem_SemanticWithoutEmbedder(t *testing.T) {
 	// Create temp directory for test files
 	tmpDir := t.TempDir()
 
-	// Provide SemanticDBPath but no Embedder
+	// Provide DBPath but no Embedder
 	cfg := MemorySystemConfig{
-		SemanticDBPath: filepath.Join(tmpDir, "semantic.db"),
-		Embedder:       nil, // no embedder
+		DBPath:   filepath.Join(tmpDir, "memory.db"),
+		Embedder: nil, // no embedder
 	}
 
 	ms, err := NewMemorySystem(cfg)
@@ -154,6 +165,13 @@ func TestNewMemorySystem_SemanticWithoutEmbedder(t *testing.T) {
 	}
 	defer func() { _ = ms.Close() }()
 
+	// Episodic and Reflexion should be initialized (only need DBPath)
+	if ms.Episodic == nil {
+		t.Error("Episodic memory should not be nil")
+	}
+	if ms.Reflexion == nil {
+		t.Error("Reflexion memory should not be nil")
+	}
 	// Semantic should be nil because embedder is required
 	if ms.Semantic != nil {
 		t.Error("Semantic memory should be nil without embedder")

@@ -25,7 +25,7 @@ type mockSemanticStore struct {
 	searchErr     error
 }
 
-func (m *mockSemanticStore) Store(ctx context.Context, key string, content string, metadata map[string]string) error {
+func (m *mockSemanticStore) Store(ctx context.Context, key, content string, metadata map[string]string) error {
 	m.storeCalled = true
 	m.storeKey = key
 	m.storeContent = content

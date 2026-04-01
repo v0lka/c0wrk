@@ -1,11 +1,16 @@
 package memory
 
 import (
+	"context"
+	"database/sql"
 	"log"
+
+	_ "modernc.org/sqlite" // register SQLite driver
 )
 
 // MemorySystem is the aggregate that holds all memory subsystems per AD 5.1
 type MemorySystem struct {
+	db         *sql.DB // shared connection, unexported
 	Working    *ContextWindow
 	Episodic   *EpisodicMemory
 	Semantic   *SemanticMemory
@@ -15,10 +20,9 @@ type MemorySystem struct {
 
 // MemorySystemConfig holds configuration for creating a MemorySystem.
 type MemorySystemConfig struct {
-	EpisodicDBPath string
-	SemanticDBPath string
-	SkillsDir      string
-	Embedder       Embedder // can be nil
+	DBPath    string   // single DB path for all persistent memory
+	SkillsDir string
+	Embedder  Embedder // can be nil (semantic memory optional)
 }
 
 // NewMemorySystem creates and initializes all memory subsystems.
@@ -27,23 +31,45 @@ type MemorySystemConfig struct {
 func NewMemorySystem(cfg MemorySystemConfig) (*MemorySystem, error) {
 	ms := &MemorySystem{}
 
-	// Create EpisodicMemory if EpisodicDBPath is provided
-	if cfg.EpisodicDBPath != "" {
-		em, err := NewEpisodicMemory(cfg.EpisodicDBPath)
+	// Open shared database connection if DBPath is provided
+	if cfg.DBPath != "" {
+		db, err := sql.Open("sqlite", cfg.DBPath)
+		if err != nil {
+			log.Printf("warning: failed to open database: %v", err)
+			return ms, nil
+		}
+
+		// Set WAL mode for better concurrency
+		if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
+			log.Printf("warning: failed to set WAL mode: %v", err)
+		}
+
+		ms.db = db
+
+		// Create EpisodicMemory - always create if db is available
+		em, err := NewEpisodicMemory(db)
 		if err != nil {
 			log.Printf("warning: failed to initialize episodic memory: %v", err)
 		} else {
 			ms.Episodic = em
 		}
-	}
 
-	// Create SemanticMemory if SemanticDBPath and Embedder are provided
-	if cfg.SemanticDBPath != "" && cfg.Embedder != nil {
-		sm, err := NewSemanticMemory(cfg.SemanticDBPath, cfg.Embedder)
+		// Create SemanticMemory - only if embedder is also provided
+		if cfg.Embedder != nil {
+			sm, err := NewSemanticMemory(db, cfg.Embedder)
+			if err != nil {
+				log.Printf("warning: failed to initialize semantic memory: %v", err)
+			} else {
+				ms.Semantic = sm
+			}
+		}
+
+		// Create ReflexionMemory - always create if db is available
+		rm, err := NewReflexionMemory(db)
 		if err != nil {
-			log.Printf("warning: failed to initialize semantic memory: %v", err)
+			log.Printf("warning: failed to initialize reflexion memory: %v", err)
 		} else {
-			ms.Semantic = sm
+			ms.Reflexion = rm
 		}
 	}
 
@@ -59,25 +85,11 @@ func NewMemorySystem(cfg MemorySystemConfig) (*MemorySystem, error) {
 	return ms, nil
 }
 
-// Close closes all closeable memory subsystems.
+// Close closes the shared database connection.
 func (ms *MemorySystem) Close() error {
-	var lastErr error
-
-	if ms.Episodic != nil {
-		if err := ms.Episodic.Close(); err != nil {
-			log.Printf("warning: failed to close episodic memory: %v", err)
-			lastErr = err
-		}
+	if ms.db != nil {
+		return ms.db.Close()
 	}
-
-	if ms.Semantic != nil {
-		if err := ms.Semantic.Close(); err != nil {
-			log.Printf("warning: failed to close semantic memory: %v", err)
-			lastErr = err
-		}
-	}
-
 	// ProceduralMemory and ContextWindow don't need closing
-
-	return lastErr
+	return nil
 }

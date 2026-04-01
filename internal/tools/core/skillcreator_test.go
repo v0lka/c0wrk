@@ -21,7 +21,7 @@ type mockSkillBuilder struct {
 	buildImageTag string
 }
 
-func (m *mockSkillBuilder) Build(ctx context.Context, skillDir string, name string, version string) (string, error) {
+func (m *mockSkillBuilder) Build(ctx context.Context, skillDir, name, version string) (string, error) {
 	m.buildCalled = true
 	m.buildSkillDir = skillDir
 	m.buildName = name
@@ -83,7 +83,11 @@ func TestSkillCreatorTool_Descriptor(t *testing.T) {
 
 	requiredStrs := make([]string, len(required))
 	for i, r := range required {
-		requiredStrs[i] = r.(string)
+		s, ok := r.(string)
+		if !ok {
+			t.Fatal("expected string in required array")
+		}
+		requiredStrs[i] = s
 	}
 
 	for _, prop := range requiredProps {
@@ -295,7 +299,7 @@ func TestSkillCreatorTool_RequirementsTxtEmpty(t *testing.T) {
 		t.Fatalf("Failed to read requirements.txt: %v", err)
 	}
 
-	if string(requirementsData) != "" {
+	if len(requirementsData) != 0 {
 		t.Errorf("requirements.txt content = %q, want empty", string(requirementsData))
 	}
 }

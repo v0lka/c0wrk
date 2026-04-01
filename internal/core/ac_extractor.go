@@ -16,12 +16,12 @@ type ACExtractor struct {
 }
 
 // NewACExtractor creates a new ACExtractor.
-func NewACExtractor(llm LLMCaller) *ACExtractor {
-	return &ACExtractor{llm: llm}
+func NewACExtractor(caller LLMCaller) *ACExtractor {
+	return &ACExtractor{llm: caller}
 }
 
 // Extract extracts acceptance criteria from the user message using LLM.
-func (e *ACExtractor) Extract(ctx context.Context, userMessage string, domain string) ([]AcceptanceCriterion, error) {
+func (e *ACExtractor) Extract(ctx context.Context, userMessage, domain string) ([]AcceptanceCriterion, error) {
 	// Build user message with domain context
 	userPrompt := fmt.Sprintf("Domain: %s\n\nUser request:\n%s", domain, userMessage)
 

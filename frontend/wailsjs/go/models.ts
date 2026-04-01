@@ -14,71 +14,26 @@ export namespace main {
 	        this.retrieval_limit = source["retrieval_limit"];
 	    }
 	}
-	export class LLMDefaultsRequest {
-	    max_tokens: number;
-	    temperature: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new LLMDefaultsRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.max_tokens = source["max_tokens"];
-	        this.temperature = source["temperature"];
-	    }
-	}
 	export class LLMSettingsRequest {
-	    default_provider: string;
+	    active_provider: string;
+	    api_key: string;
+	    base_url: string;
 	    model: string;
-	    defaults: LLMDefaultsRequest;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LLMSettingsRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.default_provider = source["default_provider"];
+	        this.active_provider = source["active_provider"];
+	        this.api_key = source["api_key"];
+	        this.base_url = source["base_url"];
 	        this.model = source["model"];
-	        this.defaults = this.convertValues(source["defaults"], LLMDefaultsRequest);
-	    }
-
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class SemanticSettingsRequest {
-	    embedding_provider: string;
-	    embedding_model: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SemanticSettingsRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.embedding_provider = source["embedding_provider"];
-	        this.embedding_model = source["embedding_model"];
 	    }
 	}
 	export class MemorySettingsRequest {
 	    episodic: EpisodicSettingsRequest;
-	    semantic: SemanticSettingsRequest;
 	
 	    static createFrom(source: any = {}) {
 	        return new MemorySettingsRequest(source);
@@ -87,7 +42,6 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.episodic = this.convertValues(source["episodic"], EpisodicSettingsRequest);
-	        this.semantic = this.convertValues(source["semantic"], SemanticSettingsRequest);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -108,7 +62,6 @@ export namespace main {
 		    return a;
 		}
 	}
-	
 	export class SearchSettingsRequest {
 	    provider: string;
 	    api_key: string;
@@ -169,7 +122,6 @@ export namespace main {
 		    return a;
 		}
 	}
-	
 
 }
 

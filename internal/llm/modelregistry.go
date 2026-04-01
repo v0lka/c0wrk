@@ -1,11 +1,15 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -132,7 +136,7 @@ func (r *ModelRegistry) RegisterSource(src ModelMetadataSource) {
 func (r *ModelRegistry) fetchFromHuggingFace(model string) (ModelMetadata, error) {
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/config.json", model)
 	
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return ModelMetadata{}, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -165,7 +169,7 @@ func (r *ModelRegistry) fetchFromHuggingFace(model string) (ModelMetadata, error
 	}
 	
 	if config.MaxPositionEmbeddings == 0 {
-		return ModelMetadata{}, fmt.Errorf("max_position_embeddings not found in config")
+		return ModelMetadata{}, errors.New("max_position_embeddings not found in config")
 	}
 	
 	return ModelMetadata{
@@ -373,4 +377,31 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			TokenizerType: "approximate",
 		},
 	}
+}
+
+// BuiltInModelNames returns model names from the built-in registry filtered by tokenizer type.
+// If tokenizerType is empty, returns all model names.
+func BuiltInModelNames(tokenizerType string) []string {
+	registry := makeBuiltInRegistry()
+	names := []string{}
+	for name, meta := range registry {
+		if tokenizerType == "" || meta.TokenizerType == tokenizerType {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// BuiltInModelNamesByPrefix returns model names that start with the given prefix.
+func BuiltInModelNamesByPrefix(prefix string) []string {
+	registry := makeBuiltInRegistry()
+	names := []string{}
+	for name := range registry {
+		if strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }

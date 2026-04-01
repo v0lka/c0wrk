@@ -2,10 +2,13 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"math"
 	"os"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 // mockEmbedder is a deterministic embedder for testing.
@@ -53,8 +56,11 @@ func (m *mockEmbedder) setEmbedding(text string, embedding []float64) {
 }
 
 func TestSemanticMemory_StoreAndSearch(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	// Set up specific embeddings for predictable results
@@ -63,11 +69,10 @@ func TestSemanticMemory_StoreAndSearch(t *testing.T) {
 	embedder.setEmbedding("python programming", []float64{0, 1, 0, 0})      // different
 	embedder.setEmbedding("search for golang", []float64{0.95, 0.05, 0, 0}) // query
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -169,8 +174,11 @@ func TestSemanticMemory_CosineSimilarity(t *testing.T) {
 }
 
 func TestSemanticMemory_TopK(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	// Create embeddings with decreasing similarity to query
@@ -181,11 +189,10 @@ func TestSemanticMemory_TopK(t *testing.T) {
 		embedder.setEmbedding("doc"+string(rune('0'+i)), embedding)
 	}
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -218,8 +225,11 @@ func TestSemanticMemory_TopK(t *testing.T) {
 }
 
 func TestSemanticMemory_SearchRelevance(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	// Related topics have similar embeddings, unrelated have orthogonal
@@ -230,11 +240,10 @@ func TestSemanticMemory_SearchRelevance(t *testing.T) {
 	embedder.setEmbedding("gardening tips", []float64{0, 0, 1, 0})
 	embedder.setEmbedding("AI and ML overview", []float64{0.95, 0.05, 0, 0}) // query
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -285,18 +294,20 @@ func TestSemanticMemory_SearchRelevance(t *testing.T) {
 }
 
 func TestSemanticMemory_Metadata(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("test content", []float64{1, 0, 0, 0})
 	embedder.setEmbedding("search query", []float64{0.99, 0.01, 0, 0})
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -329,17 +340,19 @@ func TestSemanticMemory_Metadata(t *testing.T) {
 }
 
 func TestSemanticMemory_EmptyDatabase(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("query", []float64{1, 0, 0, 0})
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -355,19 +368,21 @@ func TestSemanticMemory_EmptyDatabase(t *testing.T) {
 }
 
 func TestSemanticMemory_UpdateEntry(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("original content", []float64{1, 0, 0, 0})
 	embedder.setEmbedding("updated content", []float64{0, 1, 0, 0})
 	embedder.setEmbedding("search updated", []float64{0, 0.99, 0, 0})
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -401,19 +416,21 @@ func TestSemanticMemory_UpdateEntry(t *testing.T) {
 }
 
 func TestSemanticMemory_Delete(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("content to delete", []float64{1, 0, 0, 0})
 	embedder.setEmbedding("content to keep", []float64{0, 1, 0, 0})
 	embedder.setEmbedding("search query", []float64{0.5, 0.5, 0, 0})
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -446,18 +463,20 @@ func TestSemanticMemory_Delete(t *testing.T) {
 }
 
 func TestSemanticMemory_NilMetadata(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("content", []float64{1, 0, 0, 0})
 	embedder.setEmbedding("query", []float64{0.99, 0, 0, 0})
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -486,12 +505,17 @@ func TestSemanticMemory_Persistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
+	db1, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("persistent content", []float64{1, 0, 0, 0})
 	embedder.setEmbedding("search query", []float64{0.99, 0, 0, 0})
 
 	// Create and store
-	sm1, err := NewSemanticMemory(dbPath, embedder)
+	sm1, err := NewSemanticMemory(db1, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
@@ -500,14 +524,19 @@ func TestSemanticMemory_Persistence(t *testing.T) {
 	if err := sm1.Store(ctx, "doc1", "persistent content", map[string]string{"key": "value"}); err != nil {
 		t.Fatalf("Store() error = %v", err)
 	}
-	_ = sm1.Close()
+	_ = db1.Close()
 
 	// Reopen and search
-	sm2, err := NewSemanticMemory(dbPath, embedder)
+	db2, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen database: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	sm2, err := NewSemanticMemory(db2, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() reopen error = %v", err)
 	}
-	defer func() { _ = sm2.Close() }()
 
 	results, err := sm2.Search(ctx, "search query", 1)
 	if err != nil {
@@ -528,16 +557,18 @@ func TestSemanticMemory_Persistence(t *testing.T) {
 }
 
 func TestSemanticMemory_ZeroTopK(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -552,16 +583,18 @@ func TestSemanticMemory_ZeroTopK(t *testing.T) {
 }
 
 func TestSemanticMemory_NegativeTopK(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -575,30 +608,25 @@ func TestSemanticMemory_NegativeTopK(t *testing.T) {
 	}
 }
 
-func TestNewSemanticMemory_InvalidPath(t *testing.T) {
-	embedder := newMockEmbedder()
-
-	// Try to create database in non-existent directory
-	_, err := NewSemanticMemory("/nonexistent/path/test.db", embedder)
-	if err == nil {
-		t.Error("Expected error for invalid path, got nil")
-	}
-}
+// Note: NewSemanticMemory requires a valid *sql.DB. Passing nil will panic.
+// The caller (MemorySystem) is responsible for providing a valid database connection.
 
 func TestSemanticMemory_TopKLargerThanEntries(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("content1", []float64{1, 0, 0, 0})
 	embedder.setEmbedding("content2", []float64{0, 1, 0, 0})
 	embedder.setEmbedding("query", []float64{0.5, 0.5, 0, 0})
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 
@@ -626,13 +654,18 @@ func TestSemanticMemory_FileCreated(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
 	embedder := newMockEmbedder()
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	_, err = NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	_ = sm.Close()
+	_ = db.Close()
 
 	// Verify file was created
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
@@ -641,19 +674,21 @@ func TestSemanticMemory_FileCreated(t *testing.T) {
 }
 
 func TestSemanticMemory_Count(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 
 	embedder := newMockEmbedder()
 	embedder.setEmbedding("content1", []float64{1, 0, 0, 0})
 	embedder.setEmbedding("content2", []float64{0, 1, 0, 0})
 	embedder.setEmbedding("content3", []float64{0, 0, 1, 0})
 
-	sm, err := NewSemanticMemory(dbPath, embedder)
+	sm, err := NewSemanticMemory(db, embedder)
 	if err != nil {
 		t.Fatalf("NewSemanticMemory() error = %v", err)
 	}
-	defer func() { _ = sm.Close() }()
 
 	ctx := context.Background()
 

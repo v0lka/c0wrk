@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/user/agent/internal/core"
@@ -32,9 +33,9 @@ func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ct
 		middle = 0.3
 		recent = 0.3
 	} else if total != 1.0 {
-		distant = distant / total
-		middle = middle / total
-		recent = recent / total
+		distant /= total
+		middle /= total
+		recent /= total
 	}
 
 	return &HierarchicalStrategy{
@@ -76,7 +77,9 @@ func (h *HierarchicalStrategy) Compact(steps []core.Step, budgetTokens int) []ll
 	middleSteps := steps[distantEnd:middleEnd]
 	recentSteps := steps[middleEnd:]
 
-	var messages []llm.Message
+	// Estimate messages: ~1 summary per block + recent steps verbatim
+	// Each step produces 2 messages (assistant + tool)
+	messages := make([]llm.Message, 0, len(steps)*2)
 
 	// Distant zone: aggressive summarization (large blocks of ~15 steps)
 	distantBlockSize := 15
@@ -137,16 +140,16 @@ func (h *HierarchicalStrategy) summarizeZone(steps []core.Step, blockSize int, z
 
 // buildBlockText creates a text representation of a block of steps for summarization.
 func (h *HierarchicalStrategy) buildBlockText(steps []core.Step, zoneName string) string {
-	var parts []string
-	parts = append(parts, fmt.Sprintf("Summarize the following %d steps from the %s zone:", len(steps), zoneName))
+	parts := make([]string, 1, 1+len(steps))
+	parts[0] = fmt.Sprintf("Summarize the following %d steps from the %s zone:", len(steps), zoneName)
 
 	for i, step := range steps {
-		stepText := fmt.Sprintf("\nStep %d:", i+1)
+		stepText := "\nStep " + strconv.Itoa(i+1) + ":"
 		if step.Thought != "" {
-			stepText += fmt.Sprintf("\n  Thought: %s", step.Thought)
+			stepText += "\n  Thought: " + step.Thought
 		}
 		if step.Action.Name != "" {
-			stepText += fmt.Sprintf("\n  Action: %s", step.Action.Name)
+			stepText += "\n  Action: " + step.Action.Name
 		}
 		if step.Observation != "" {
 			// Truncate long observations more aggressively for distant zone
@@ -158,7 +161,7 @@ func (h *HierarchicalStrategy) buildBlockText(steps []core.Step, zoneName string
 			if len(obs) > maxLen {
 				obs = obs[:maxLen] + "..."
 			}
-			stepText += fmt.Sprintf("\n  Observation: %s", obs)
+			stepText += "\n  Observation: " + obs
 		}
 		parts = append(parts, stepText)
 	}

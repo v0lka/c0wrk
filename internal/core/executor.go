@@ -15,12 +15,12 @@ const executorNudge = "[System] You have tools available that can help answer th
 
 // LLMCaller is the interface Executor needs from the LLM layer.
 type LLMCaller interface {
-	Call(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error)
+	Call(ctx context.Context, role string, req llm.ChatRequest) (resp *llm.ChatResponse, err error)
 }
 
 // ToolExecutor is the interface Executor needs from the tools layer.
 type ToolExecutor interface {
-	Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error)
+	Execute(ctx context.Context, name string, input json.RawMessage) (result tools.ToolResult, err error)
 }
 
 // CompactionStrategy defines an algorithm for compressing step history.

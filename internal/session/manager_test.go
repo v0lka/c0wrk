@@ -13,7 +13,7 @@ import (
 )
 
 // testManager creates a Manager with a mock factory for testing.
-func testManager(t *testing.T) (*Manager, chan Event, string) {
+func testManager(t *testing.T) (manager *Manager, events chan Event, dir string) {
 	t.Helper()
 
 	// Create temp directories for logs and workspaces
@@ -35,8 +35,10 @@ func testManager(t *testing.T) (*Manager, chan Event, string) {
 		return nil, nil
 	}
 
-	manager := NewManager(factory, emitFunc, logDir, workspacesDir)
-	return manager, eventChan, logDir
+	manager = NewManager(factory, emitFunc, logDir, workspacesDir)
+	events = eventChan
+	dir = logDir
+	return
 }
 
 // drainEvents drains all pending events from the channel.
@@ -293,11 +295,12 @@ func TestManager_RenameSession(t *testing.T) {
 			t.Errorf("Expected session_renamed event, got %s", event.Type)
 		}
 		data, ok := event.Data.(map[string]string)
-		if !ok {
+		switch {
+		case !ok:
 			t.Error("Event data is not map[string]string")
-		} else if data["old_name"] != oldName {
+		case data["old_name"] != oldName:
 			t.Errorf("Event old_name mismatch: got %s, want %s", data["old_name"], oldName)
-		} else if data["new_name"] != newName {
+		case data["new_name"] != newName:
 			t.Errorf("Event new_name mismatch: got %s, want %s", data["new_name"], newName)
 		}
 	case <-time.After(time.Second):

@@ -483,8 +483,8 @@ func TestContextTokenTracker_AddDeltaMessages(t *testing.T) {
 		msgs2 := []Message{
 			{Role: "assistant", Content: "Hello"},
 		}
-		tracker.AddDeltaMessages(msgs1) // user(1) + Hi(1) + 4 = 6
-		tracker.AddDeltaMessages(msgs2) // assistant(3) + Hello(2) + 4 = 9
+		tracker.AddDeltaMessages(msgs1) // expected: 6 tokens
+		tracker.AddDeltaMessages(msgs2) // expected: 9 tokens
 
 		got := tracker.EstimateTotal()
 		want := 15 // 6 + 9

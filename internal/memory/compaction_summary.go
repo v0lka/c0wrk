@@ -93,7 +93,7 @@ func (s *SummarizationStrategy) Compact(steps []core.Step, budgetTokens int) []l
 
 // buildBlockText creates a text representation of a block of steps for summarization.
 func (s *SummarizationStrategy) buildBlockText(steps []core.Step) string {
-	var parts []string
+	parts := make([]string, 0, len(steps))
 	for i, step := range steps {
 		stepText := fmt.Sprintf("Step %d:\n", i+1)
 		if step.Thought != "" {

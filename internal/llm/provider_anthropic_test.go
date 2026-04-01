@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -102,15 +103,17 @@ func TestAnthropicProvider_IntegrationStream(t *testing.T) {
 		t.Fatalf("StreamChatCompletion failed: %v", err)
 	}
 
-	var content string
+	var sb strings.Builder
 	var gotStopReason bool
 
 	for chunk := range chunks {
-		content += chunk.Delta
+		sb.WriteString(chunk.Delta)
 		if chunk.StopReason != "" {
 			gotStopReason = true
 		}
 	}
+
+	content := sb.String()
 
 	if content == "" {
 		t.Error("expected non-empty streamed content")

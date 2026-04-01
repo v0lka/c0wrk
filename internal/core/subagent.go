@@ -33,7 +33,7 @@ type SubAgentTask struct {
 // The goroutine respects context cancellation — when ctx is cancelled,
 // executor.Run will return because its LLM calls and tool executions use the same context.
 // emitter is optional (nil-safe) for console output.
-func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm ContextManager, task TaskDefinition, emitter Emitter) <-chan SubAgentResult {
+func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm ContextManager, task TaskDefinition, emitter Emitter) (resultCh <-chan SubAgentResult) {
 	// Use noopEmitter if nil to avoid nil checks
 	if emitter == nil {
 		emitter = &noopEmitter{}
@@ -77,7 +77,7 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 
 // RunSubAgentsParallel runs multiple SubAgents concurrently and collects results.
 // Returns results in the order they complete (not necessarily input order).
-func RunSubAgentsParallel(ctx context.Context, agents []SubAgentTask) []SubAgentResult {
+func RunSubAgentsParallel(ctx context.Context, agents []SubAgentTask) (results []SubAgentResult) {
 	if len(agents) == 0 {
 		return nil
 	}
@@ -89,7 +89,7 @@ func RunSubAgentsParallel(ctx context.Context, agents []SubAgentTask) []SubAgent
 	}
 
 	// Collect all results
-	results := make([]SubAgentResult, 0, len(agents))
+	results = make([]SubAgentResult, 0, len(agents))
 	for _, ch := range channels {
 		result := <-ch
 		results = append(results, result)

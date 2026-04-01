@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -57,7 +58,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 	}
 
 	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("openai: no choices in response")
+		return nil, errors.New("openai: no choices in response")
 	}
 
 	choice := resp.Choices[0]
@@ -95,7 +96,7 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 
 		for {
 			resp, err := stream.Recv()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return
 			}
 			if err != nil {

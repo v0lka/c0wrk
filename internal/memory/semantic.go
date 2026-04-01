@@ -5,10 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
-
-	_ "modernc.org/sqlite"
 )
 
 // Embedder interface for generating embeddings (avoids importing llm package).
@@ -33,13 +32,9 @@ type SemanticMemory struct {
 	embedder Embedder
 }
 
-// NewSemanticMemory creates a new SemanticMemory instance.
-func NewSemanticMemory(dbPath string, embedder Embedder) (*SemanticMemory, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-
+// NewSemanticMemory creates a new SemanticMemory instance using the provided database connection.
+// The database should be managed by the caller (e.g., MemorySystem).
+func NewSemanticMemory(db *sql.DB, embedder Embedder) (*SemanticMemory, error) {
 	// Create schema
 	schema := `
 		CREATE TABLE IF NOT EXISTS semantic_entries (
@@ -53,9 +48,27 @@ func NewSemanticMemory(dbPath string, embedder Embedder) (*SemanticMemory, error
 		CREATE INDEX IF NOT EXISTS idx_semantic_entries_key ON semantic_entries(key);
 	`
 
-	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
+	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		return nil, fmt.Errorf("create schema: %w", err)
+	}
+
+	// Validate embedding dimensions - clear incompatible data if model changed
+	if embedder != nil {
+		var existingEmbeddingJSON string
+		err := db.QueryRowContext(context.Background(), "SELECT embedding FROM semantic_entries LIMIT 1").Scan(&existingEmbeddingJSON)
+		if err == nil && existingEmbeddingJSON != "" {
+			var existingEmbedding []float64
+			if parseErr := json.Unmarshal([]byte(existingEmbeddingJSON), &existingEmbedding); parseErr == nil {
+				if len(existingEmbedding) != embedder.Dimensions() {
+					slog.Warn("embedding dimension mismatch, clearing semantic memory",
+						"expected", embedder.Dimensions(),
+						"found", len(existingEmbedding))
+					if _, delErr := db.ExecContext(context.Background(), "DELETE FROM semantic_entries"); delErr != nil {
+						slog.Error("failed to clear incompatible semantic entries", "error", delErr)
+					}
+				}
+			}
+		}
 	}
 
 	return &SemanticMemory{
@@ -65,7 +78,7 @@ func NewSemanticMemory(dbPath string, embedder Embedder) (*SemanticMemory, error
 }
 
 // Store embeds content and stores it with key and metadata.
-func (sm *SemanticMemory) Store(ctx context.Context, key string, content string, metadata map[string]string) error {
+func (sm *SemanticMemory) Store(ctx context.Context, key, content string, metadata map[string]string) error {
 	// Generate embedding
 	embedding, err := sm.embedder.Embed(ctx, content)
 	if err != nil {
@@ -217,11 +230,6 @@ func (sm *SemanticMemory) Count(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("counting semantic entries: %w", err)
 	}
 	return count, nil
-}
-
-// Close closes the database connection.
-func (sm *SemanticMemory) Close() error {
-	return sm.db.Close()
 }
 
 // cosineSimilarity computes the cosine similarity between two vectors.

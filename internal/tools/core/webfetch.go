@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,7 +35,7 @@ func NewWebFetchTool(summarizer LLMSummarizer) *WebFetchTool {
 			Timeout: 30 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
-					return fmt.Errorf("too many redirects (max 10)")
+					return errors.New("too many redirects (max 10)")
 				}
 				return nil
 			},
@@ -134,7 +135,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 // fetchPage performs HTTP GET and returns the response body.
 func (t *WebFetchTool) fetchPage(ctx context.Context, targetURL string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}

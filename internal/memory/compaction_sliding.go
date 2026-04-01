@@ -29,7 +29,8 @@ func (s *SlidingWindowStrategy) Compact(steps []core.Step, budgetTokens int) []l
 		return s.stepsToMessages(steps)
 	}
 
-	var messages []llm.Message
+	// Each step produces 2 messages (assistant + tool)
+	messages := make([]llm.Message, 0, len(steps)*2)
 
 	// Keep first K steps
 	firstSteps := steps[:s.keepFirst]

@@ -46,7 +46,7 @@ func TestFileOpsTool_ReadFile(t *testing.T) {
 	// Create a test file
 	testFile := filepath.Join(tmpDir, "test.txt")
 	testContent := "Hello, World!"
-	if err := os.WriteFile(testFile, []byte(testContent), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte(testContent), 0o644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestFileOpsTool_EditFile_UniqueMatch(t *testing.T) {
 
 	testFile := filepath.Join(tmpDir, "edit.txt")
 	originalContent := "Hello, World! This is a test."
-	if err := os.WriteFile(testFile, []byte(originalContent), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte(originalContent), 0o644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestFileOpsTool_EditFile_NonUniqueMatch(t *testing.T) {
 	testFile := filepath.Join(tmpDir, "edit.txt")
 	// Content with "test" appearing twice
 	originalContent := "This is a test. Another test here."
-	if err := os.WriteFile(testFile, []byte(originalContent), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte(originalContent), 0o644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestFileOpsTool_EditFile_NotFound(t *testing.T) {
 
 	testFile := filepath.Join(tmpDir, "edit.txt")
 	originalContent := "Hello, World!"
-	if err := os.WriteFile(testFile, []byte(originalContent), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte(originalContent), 0o644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
@@ -262,13 +262,13 @@ func TestFileOpsTool_ListDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create test files and directories
-	if err := os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("content1"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("content1"), 0o644); err != nil {
 		t.Fatalf("failed to create file1: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "file2.txt"), []byte("content2"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "file2.txt"), []byte("content2"), 0o644); err != nil {
 		t.Fatalf("failed to create file2: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(tmpDir, "subdir"), 0755); err != nil {
+	if err := os.Mkdir(filepath.Join(tmpDir, "subdir"), 0o755); err != nil {
 		t.Fatalf("failed to create subdir: %v", err)
 	}
 
@@ -309,22 +309,22 @@ func TestFileOpsTool_SearchFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create test files
-	if err := os.WriteFile(filepath.Join(tmpDir, "test1.txt"), []byte("content1"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "test1.txt"), []byte("content1"), 0o644); err != nil {
 		t.Fatalf("failed to create test1.txt: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "test2.txt"), []byte("content2"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "test2.txt"), []byte("content2"), 0o644); err != nil {
 		t.Fatalf("failed to create test2.txt: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "other.log"), []byte("log"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "other.log"), []byte("log"), 0o644); err != nil {
 		t.Fatalf("failed to create other.log: %v", err)
 	}
 
 	// Create nested file
 	subDir := filepath.Join(tmpDir, "subdir")
-	if err := os.Mkdir(subDir, 0755); err != nil {
+	if err := os.Mkdir(subDir, 0o755); err != nil {
 		t.Fatalf("failed to create subdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(subDir, "nested.txt"), []byte("nested"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(subDir, "nested.txt"), []byte("nested"), 0o644); err != nil {
 		t.Fatalf("failed to create nested.txt: %v", err)
 	}
 
@@ -364,19 +364,19 @@ func TestFileOpsTool_SearchContent(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create test files with known content
-	if err := os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("Hello World\nGoodbye World\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("Hello World\nGoodbye World\n"), 0o644); err != nil {
 		t.Fatalf("failed to create file1.txt: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "file2.txt"), []byte("No match here\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "file2.txt"), []byte("No match here\n"), 0o644); err != nil {
 		t.Fatalf("failed to create file2.txt: %v", err)
 	}
 
 	// Create nested file with match
 	subDir := filepath.Join(tmpDir, "subdir")
-	if err := os.Mkdir(subDir, 0755); err != nil {
+	if err := os.Mkdir(subDir, 0o755); err != nil {
 		t.Fatalf("failed to create subdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(subDir, "nested.txt"), []byte("Another World line\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(subDir, "nested.txt"), []byte("Another World line\n"), 0o644); err != nil {
 		t.Fatalf("failed to create nested.txt: %v", err)
 	}
 

@@ -3,6 +3,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -66,7 +67,7 @@ type Manager struct {
 }
 
 // NewManager creates a new session Manager.
-func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir string, workspacesDir string) *Manager {
+func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir, workspacesDir string) *Manager {
 	return &Manager{
 		sessions:            make(map[string]*Session),
 		orchestratorFactory: factory,
@@ -84,7 +85,7 @@ func (m *Manager) CreateSession() (*SessionInfo, error) {
 
 	// Create session workspace directory
 	workspacePath := filepath.Join(m.workspacesDir, id)
-	if err := os.MkdirAll(workspacePath, 0755); err != nil {
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create session workspace: %w", err)
 	}
 
@@ -110,7 +111,7 @@ func (m *Manager) CreateSession() (*SessionInfo, error) {
 	// Create session
 	session := &Session{
 		ID:            id,
-		Name:          fmt.Sprintf("Session %s", id[:8]), // Default name using first 8 chars of UUID
+		Name:          "Session " + id[:8], // Default name using first 8 chars of UUID
 		CreatedAt:     time.Now(),
 		Archived:      false,
 		WorkspacePath: workspacePath,
@@ -149,13 +150,13 @@ func (m *Manager) CreateSession() (*SessionInfo, error) {
 // Returns the logger, the file handle (for cleanup), and an error.
 func (m *Manager) createSessionLogger(sessionID string) (*slog.Logger, *os.File, error) {
 	// Create log directory if it doesn't exist
-	if err := os.MkdirAll(m.logDir, 0755); err != nil {
+	if err := os.MkdirAll(m.logDir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
 	// Create log file for this session
 	logFile := filepath.Join(m.logDir, fmt.Sprintf("session_%s.log", sessionID))
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 	}
@@ -328,7 +329,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 	// Check if already active
 	if session.active {
 		session.mu.Unlock()
-		return fmt.Errorf("session is already processing a task")
+		return errors.New("session is already processing a task")
 	}
 
 	// Set active and create cancellable context with session ID
@@ -421,7 +422,7 @@ func (m *Manager) CancelTask(id string) error {
 	defer session.mu.Unlock()
 
 	if !session.active {
-		return fmt.Errorf("no active task to cancel")
+		return errors.New("no active task to cancel")
 	}
 
 	if session.cancel != nil {

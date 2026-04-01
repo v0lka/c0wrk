@@ -6,16 +6,14 @@ import (
 	"testing"
 )
 
-// TestLoadMinimalConfig tests loading a minimal YAML config with one provider and default_provider.
+// TestLoadMinimalConfig tests loading a minimal YAML config with active_provider and provider config.
 func TestLoadMinimalConfig(t *testing.T) {
 	content := `
 llm:
-  default_provider: anthropic
-  providers:
-    anthropic:
-      type: anthropic
-      api_key: "test-key"
-      model: claude-3-haiku
+  active_provider: anthropic
+  anthropic:
+    api_key: "test-key"
+    model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
 
@@ -24,28 +22,17 @@ llm:
 		t.Fatalf("Load() failed: %v", err)
 	}
 
-	// Verify provider was loaded
-	if len(cfg.LLM.Providers) != 1 {
-		t.Errorf("Expected 1 provider, got %d", len(cfg.LLM.Providers))
+	// Verify active provider
+	if cfg.LLM.ActiveProvider != "anthropic" {
+		t.Errorf("Expected active_provider 'anthropic', got %q", cfg.LLM.ActiveProvider)
 	}
 
-	provider, ok := cfg.LLM.Providers["anthropic"]
-	if !ok {
-		t.Fatal("Expected 'anthropic' provider to exist")
+	// Verify anthropic config
+	if cfg.LLM.Anthropic.APIKey != "test-key" {
+		t.Errorf("Expected api_key 'test-key', got %q", cfg.LLM.Anthropic.APIKey)
 	}
-	if provider.Type != "anthropic" {
-		t.Errorf("Expected provider type 'anthropic', got %q", provider.Type)
-	}
-	if provider.APIKey != "test-key" {
-		t.Errorf("Expected api_key 'test-key', got %q", provider.APIKey)
-	}
-	if provider.Model != "claude-3-haiku" {
-		t.Errorf("Expected provider model 'claude-3-haiku', got %q", provider.Model)
-	}
-
-	// Verify default provider
-	if cfg.LLM.DefaultProvider != "anthropic" {
-		t.Errorf("Expected default_provider 'anthropic', got %q", cfg.LLM.DefaultProvider)
+	if cfg.LLM.Anthropic.Model != "claude-3-haiku" {
+		t.Errorf("Expected model 'claude-3-haiku', got %q", cfg.LLM.Anthropic.Model)
 	}
 }
 
@@ -57,12 +44,10 @@ func TestEnvVarSubstitution(t *testing.T) {
 
 	content := `
 llm:
-  default_provider: openai
-  providers:
-    openai:
-      type: openai
-      api_key: "${TEST_API_KEY}"
-      model: gpt-4
+  active_provider: anthropic
+  anthropic:
+    api_key: "${TEST_API_KEY}"
+    model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
 
@@ -71,35 +56,52 @@ llm:
 		t.Fatalf("Load() failed: %v", err)
 	}
 
-	provider, ok := cfg.LLM.Providers["openai"]
-	if !ok {
-		t.Fatal("Expected 'openai' provider to exist")
-	}
-	if provider.APIKey != testAPIKey {
-		t.Errorf("Expected api_key %q after env substitution, got %q", testAPIKey, provider.APIKey)
+	if cfg.LLM.Anthropic.APIKey != testAPIKey {
+		t.Errorf("Expected api_key %q after env substitution, got %q", testAPIKey, cfg.LLM.Anthropic.APIKey)
 	}
 }
 
-// TestNonExistentProviderError tests that referencing a non-existent provider returns an error.
-func TestNonExistentProviderError(t *testing.T) {
+// TestInvalidProviderError tests that an invalid active_provider returns an error.
+func TestInvalidProviderError(t *testing.T) {
 	content := `
 llm:
-  default_provider: nonexistent
-  providers:
-    anthropic:
-      type: anthropic
-      api_key: "test-key"
-      model: claude-3-haiku
+  active_provider: invalid_provider
+  anthropic:
+    api_key: "test-key"
+    model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
 
 	_, err := Load(configPath)
 	if err == nil {
-		t.Fatal("Expected error when default_provider references non-existent provider, got nil")
+		t.Fatal("Expected error when active_provider is invalid, got nil")
 	}
 
 	// Verify error message mentions the issue
-	expectedSubstring := "non-existent provider"
+	expectedSubstring := "not a valid provider"
+	if !contains(err.Error(), expectedSubstring) {
+		t.Errorf("Expected error to contain %q, got: %v", expectedSubstring, err)
+	}
+}
+
+// TestMissingModelError tests that missing model on active provider returns an error.
+func TestMissingModelError(t *testing.T) {
+	content := `
+llm:
+  active_provider: anthropic
+  anthropic:
+    api_key: "test-key"
+    # No model specified
+`
+	configPath := writeTestConfig(t, content)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Expected error when model is missing, got nil")
+	}
+
+	// Verify error message mentions the issue
+	expectedSubstring := "must have a model specified"
 	if !contains(err.Error(), expectedSubstring) {
 		t.Errorf("Expected error to contain %q, got: %v", expectedSubstring, err)
 	}
@@ -109,23 +111,16 @@ llm:
 func TestDefaultsApplied(t *testing.T) {
 	content := `
 llm:
-  default_provider: anthropic
-  providers:
-    anthropic:
-      type: anthropic
-      api_key: "test-key"
-      model: claude-3-haiku
+  active_provider: anthropic
+  anthropic:
+    api_key: "test-key"
+    model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
 
 	cfg, err := Load(configPath)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
-	}
-
-	// Check LLM defaults
-	if cfg.LLM.Defaults.MaxTokens != 4096 {
-		t.Errorf("Expected default max_tokens 4096, got %d", cfg.LLM.Defaults.MaxTokens)
 	}
 
 	// Check Executor defaults
@@ -207,20 +202,178 @@ llm:
 	if cfg.Skills.Docker.DefaultTimeout != "30s" {
 		t.Errorf("Expected default default_timeout '30s', got %q", cfg.Skills.Docker.DefaultTimeout)
 	}
+
+	// Check LMStudio default base URL
+	if cfg.LLM.LMStudio.BaseURL != "http://localhost:1234" {
+		t.Errorf("Expected default lmstudio base_url 'http://localhost:1234', got %q", cfg.LLM.LMStudio.BaseURL)
+	}
+
+	// Check Models map is initialized
+	if cfg.LLM.Models == nil {
+		t.Error("Expected Models map to be initialized")
+	}
 }
 
-// TestNoProviderError tests that an error is returned when no providers are defined.
-func TestNoProviderError(t *testing.T) {
+// TestOpenAICompatibleRequiresBaseURL tests that openai_compatible provider requires base_url.
+func TestOpenAICompatibleRequiresBaseURL(t *testing.T) {
 	content := `
 llm:
-  default_provider: anthropic
-  providers: {}
+  active_provider: openai_compatible
+  openai_compatible:
+    api_key: "test-key"
+    model: deepseek-chat
+    # No base_url specified
 `
 	configPath := writeTestConfig(t, content)
 
 	_, err := Load(configPath)
 	if err == nil {
-		t.Fatal("Expected error when no providers defined, got nil")
+		t.Fatal("Expected error when openai_compatible has no base_url, got nil")
+	}
+
+	// Verify error message mentions the issue
+	expectedSubstring := "requires base_url"
+	if !contains(err.Error(), expectedSubstring) {
+		t.Errorf("Expected error to contain %q, got: %v", expectedSubstring, err)
+	}
+}
+
+// TestLoadWithResult_NoErrors tests that clean load returns no errors.
+func TestLoadWithResult_NoErrors(t *testing.T) {
+	content := `
+llm:
+  active_provider: anthropic
+  anthropic:
+    api_key: "test-key"
+    model: claude-3-haiku
+`
+	configPath := writeTestConfig(t, content)
+
+	result, err := LoadWithResult(configPath)
+	if err != nil {
+		t.Fatalf("LoadWithResult() failed: %v", err)
+	}
+
+	// Verify no migration happened
+	if result.Migrated {
+		t.Error("Expected Migrated to be false")
+	}
+	if result.MigrationMsg != "" {
+		t.Errorf("Expected MigrationMsg to be empty, got %q", result.MigrationMsg)
+	}
+	if len(result.LoadErrors) != 0 {
+		t.Errorf("Expected no load errors, got %v", result.LoadErrors)
+	}
+}
+
+// TestGetActiveProviderConfig tests the GetActiveProviderConfig method for all providers.
+func TestGetActiveProviderConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		config         LLMConfig
+		wantProvType   string
+		wantAPIKey     string
+		wantBaseURL    string
+		wantModel      string
+	}{
+		{
+			name: "anthropic",
+			config: LLMConfig{
+				ActiveProvider: "anthropic",
+				Anthropic: AnthropicConfig{
+					APIKey: "anthropic-key",
+					Model:  "claude-3-haiku",
+				},
+			},
+			wantProvType: "anthropic",
+			wantAPIKey:   "anthropic-key",
+			wantBaseURL:  "",
+			wantModel:    "claude-3-haiku",
+		},
+		{
+			name: "gemini",
+			config: LLMConfig{
+				ActiveProvider: "gemini",
+				Gemini: GeminiConfig{
+					APIKey: "gemini-key",
+					Model:  "gemini-pro",
+				},
+			},
+			wantProvType: "gemini",
+			wantAPIKey:   "gemini-key",
+			wantBaseURL:  "",
+			wantModel:    "gemini-pro",
+		},
+		{
+			name: "lmstudio",
+			config: LLMConfig{
+				ActiveProvider: "lmstudio",
+				LMStudio: LMStudioConfig{
+					BaseURL: "http://localhost:1234",
+					APIKey:  "",
+					Model:   "local-model",
+				},
+			},
+			wantProvType: "lmstudio",
+			wantAPIKey:   "",
+			wantBaseURL:  "http://localhost:1234",
+			wantModel:    "local-model",
+		},
+		{
+			name: "openai_compatible",
+			config: LLMConfig{
+				ActiveProvider: "openai_compatible",
+				OpenAICompatible: OpenAICompatibleConfig{
+					BaseURL: "https://api.deepseek.com",
+					APIKey:  "deepseek-key",
+					Model:   "deepseek-chat",
+				},
+			},
+			wantProvType: "openai",
+			wantAPIKey:   "deepseek-key",
+			wantBaseURL:  "https://api.deepseek.com",
+			wantModel:    "deepseek-chat",
+		},
+		{
+			name: "chatgpt",
+			config: LLMConfig{
+				ActiveProvider: "chatgpt",
+				ChatGPT: ChatGPTConfig{
+					APIKey: "openai-key",
+					Model:  "gpt-4o",
+				},
+			},
+			wantProvType: "openai",
+			wantAPIKey:   "openai-key",
+			wantBaseURL:  "",
+			wantModel:    "gpt-4o",
+		},
+		{
+			name:           "unknown_provider",
+			config:         LLMConfig{ActiveProvider: "unknown"},
+			wantProvType:   "",
+			wantAPIKey:     "",
+			wantBaseURL:    "",
+			wantModel:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotProvType, gotAPIKey, gotBaseURL, gotModel := tt.config.GetActiveProviderConfig()
+			if gotProvType != tt.wantProvType {
+				t.Errorf("GetActiveProviderConfig() providerType = %q, want %q", gotProvType, tt.wantProvType)
+			}
+			if gotAPIKey != tt.wantAPIKey {
+				t.Errorf("GetActiveProviderConfig() apiKey = %q, want %q", gotAPIKey, tt.wantAPIKey)
+			}
+			if gotBaseURL != tt.wantBaseURL {
+				t.Errorf("GetActiveProviderConfig() baseURL = %q, want %q", gotBaseURL, tt.wantBaseURL)
+			}
+			if gotModel != tt.wantModel {
+				t.Errorf("GetActiveProviderConfig() model = %q, want %q", gotModel, tt.wantModel)
+			}
+		})
 	}
 }
 
@@ -237,8 +390,8 @@ func writeTestConfig(t *testing.T, content string) string {
 
 // contains checks if substr is in s.
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+	return len(s) >= len(substr) && (s == substr || substr == "" ||
+		(s != "" && substr != "" && findSubstring(s, substr)))
 }
 
 func findSubstring(s, substr string) bool {

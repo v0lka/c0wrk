@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,7 +152,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	}
 
 	// Emit routing decision
-	o.emitter.Routing(routing.Mode, routing.Domain, fmt.Sprintf("%d", routing.Complexity))
+	o.emitter.Routing(routing.Mode, routing.Domain, strconv.Itoa(routing.Complexity))
 	o.logInfo("routing_decision", "mode", routing.Mode, "domain", routing.Domain, "complexity", routing.Complexity)
 
 	// 3. Handle based on routing mode
@@ -159,19 +160,15 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	switch routing.Mode {
 	case "direct":
 		result, err = o.handleDirect(ctx, userMessage, routing, availableTools)
-
 	case "react":
 		result, err = o.handleReact(ctx, userMessage, routing, availableTools)
-
 	case "plan_execute":
 		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools)
-
 	case "needs_clarification":
 		result = &HandleResult{
 			Output:          "I need more information to help you. Could you please clarify your request?",
 			RoutingDecision: routing,
 		}
-
 	default:
 		result, err = o.handleReact(ctx, userMessage, routing, availableTools)
 	}
@@ -218,6 +215,7 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 	ac, acErr := o.acExtractor.Extract(ctx, userMessage, routing.Domain)
 	if acErr != nil || len(ac) == 0 {
 		// No AC available — return direct answer without evaluation
+		//nolint:nilerr // error is handled by embedding in result
 		return &HandleResult{
 			Output:          directOutput,
 			RoutingDecision: routing,
@@ -233,6 +231,7 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 	evalResult, evalErr := o.evaluator.Evaluate(ctx, directOutput, ac)
 	if evalErr != nil {
 		// Evaluation error — return direct answer without evaluation
+		//nolint:nilerr // error is handled by embedding in result
 		return &HandleResult{
 			Output:          directOutput,
 			RoutingDecision: routing,
@@ -351,6 +350,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 		evalResult, evalErr := o.evaluator.Evaluate(ctx, result.Output, ac)
 		if evalErr != nil {
 			// Return result even if evaluation fails
+			//nolint:nilerr // error is handled by embedding in result
 			return handleResult, nil
 		}
 		handleResult.EvalResult = evalResult
@@ -453,7 +453,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 
 	if lastEvalResult != nil && !lastEvalResult.AllPassed {
 		failedCriteria := o.formatFailedCriteria(lastEvalResult)
-		handleResult.Output = lastResult.Output + "\n\n[Evaluation: some criteria not met after " + fmt.Sprintf("%d", o.maxRetries+1) + " attempts: " + failedCriteria + "]"
+		handleResult.Output = lastResult.Output + "\n\n[Evaluation: some criteria not met after " + strconv.Itoa(o.maxRetries+1) + " attempts: " + failedCriteria + "]"
 	}
 
 	return handleResult, nil
@@ -461,7 +461,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 
 // buildEvalCriterionEvents converts EvalResult into EvalCriterionEvent slice.
 func (o *Orchestrator) buildEvalCriterionEvents(evalResult *EvalResult) []EvalCriterionEvent {
-	var criteria []EvalCriterionEvent
+	criteria := make([]EvalCriterionEvent, 0, len(evalResult.Passed)+len(evalResult.Failed)+len(evalResult.Unclear))
 	for _, d := range evalResult.Passed {
 		criteria = append(criteria, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: true})
 	}
@@ -547,6 +547,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 		evalResult, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac)
 		if evalErr != nil {
+			//nolint:nilerr // error is handled by embedding in result
 			return handleResult, nil
 		}
 		handleResult.EvalResult = evalResult
@@ -647,7 +648,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 	if lastEvalResult != nil && !lastEvalResult.AllPassed {
 		failedCriteria := o.formatFailedCriteria(lastEvalResult)
-		handleResult.Output = lastOutput + "\n\n[Evaluation: some criteria not met after " + fmt.Sprintf("%d", o.maxRetries+1) + " attempts: " + failedCriteria + "]"
+		handleResult.Output = lastOutput + "\n\n[Evaluation: some criteria not met after " + strconv.Itoa(o.maxRetries+1) + " attempts: " + failedCriteria + "]"
 	}
 
 	return handleResult, nil
@@ -907,13 +908,14 @@ func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, al
 	// Plan overview with "YOU ARE HERE" marker
 	taskBuilder.WriteString("Plan overview:\n")
 	for i, s := range plan.Steps {
-		if i < stepIndex {
+		switch {
+		case i < stepIndex:
 			// Completed step
 			fmt.Fprintf(&taskBuilder, "  ✓ Step %d: %s\n", i+1, s.Description)
-		} else if i == stepIndex {
+		case i == stepIndex:
 			// Current step
 			fmt.Fprintf(&taskBuilder, "  → Step %d: %s (THIS STEP)\n", i+1, s.Description)
-		} else {
+		default:
 			// Future step
 			fmt.Fprintf(&taskBuilder, "  · Step %d: %s\n", i+1, s.Description)
 		}

@@ -7,22 +7,23 @@ import (
 	"time"
 )
 
-func setupTestStore(t *testing.T) (*SQLiteSessionStore, func()) {
+func setupTestStore(t *testing.T) (store *SQLiteSessionStore, cleanup func()) {
 	t.Helper()
 
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test.db")
 
-	store, err := NewSQLiteSessionStore(dbPath)
+	var err error
+	store, err = NewSQLiteSessionStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}
 
-	cleanup := func() {
+	cleanup = func() {
 		_ = store.Close()
 	}
 
-	return store, cleanup
+	return
 }
 
 func TestSaveAndLoadSession(t *testing.T) {

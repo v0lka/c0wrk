@@ -12,13 +12,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Theme = "system"
 	}
 
-	// LLM defaults
-	if cfg.LLM.Defaults.MaxTokens == 0 {
-		cfg.LLM.Defaults.MaxTokens = 4096
-	}
-	// Temperature 0.0 is a valid value, but it's also the zero value,
-	// so we only set it if not explicitly configured (handled by YAML unmarshaling)
-
 	// Executor defaults
 	if cfg.Executor.MaxReactSteps == 0 {
 		cfg.Executor.MaxReactSteps = 30
@@ -58,6 +51,11 @@ func ApplyDefaults(cfg *Config) {
 	// Models defaults (initialize empty map if nil)
 	if cfg.LLM.Models == nil {
 		cfg.LLM.Models = make(map[string]ModelOverride)
+	}
+
+	// LMStudio default base URL
+	if cfg.LLM.LMStudio.BaseURL == "" {
+		cfg.LLM.LMStudio.BaseURL = "http://localhost:1234"
 	}
 
 	// Memory defaults
@@ -131,22 +129,5 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.Skills.Docker.DefaultTimeout == "" {
 		cfg.Skills.Docker.DefaultTimeout = "30s"
-	}
-
-	// Provider defaults: set default base URL for local providers
-	for name, prov := range cfg.LLM.Providers {
-		if prov.BaseURL == "" {
-			switch prov.Type {
-			case "lmstudio":
-				cfg.LLM.Providers[name] = ProviderConfig{
-					Type:      prov.Type,
-					APIKey:    prov.APIKey,
-					BaseURL:   "http://localhost:1234",
-					ProjectID: prov.ProjectID,
-					Location:  prov.Location,
-					Model:     prov.Model,
-				}
-			}
-		}
 	}
 }

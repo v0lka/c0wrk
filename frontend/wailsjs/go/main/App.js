@@ -46,6 +46,10 @@ export function GetSessionTokens(arg1) {
   return window['go']['main']['App']['GetSessionTokens'](arg1);
 }
 
+export function ListProviderModels(arg1) {
+  return window['go']['main']['App']['ListProviderModels'](arg1);
+}
+
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }

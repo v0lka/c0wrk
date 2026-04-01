@@ -2,41 +2,62 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Info } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import { GetConfig, UpdateLLMSettings } from '../../../wailsjs/go/main/App'
+import { GetConfig, UpdateLLMSettings, ListProviderModels } from '../../../wailsjs/go/main/App'
 import { main } from '../../../wailsjs/go/models'
 
-interface Provider {
-  type: string
+interface ProviderConfig {
   api_key: string
   base_url: string
   model: string
 }
 
-interface LLMDefaults {
-  max_tokens: number
-  temperature: number
+interface LLMConfig {
+  active_provider: string
+  anthropic: ProviderConfig
+  gemini: ProviderConfig
+  lmstudio: ProviderConfig
+  openai_compatible: ProviderConfig
+  chatgpt: ProviderConfig
 }
 
-interface LLMConfig {
-  default_provider: string
-  providers: Record<string, Provider>
-  defaults: LLMDefaults
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  anthropic: 'Anthropic',
+  gemini: 'Gemini',
+  lmstudio: 'LM Studio',
+  openai_compatible: 'OpenAI Compatible',
+  chatgpt: 'ChatGPT',
 }
+
+const PROVIDER_KEYS = ['anthropic', 'gemini', 'lmstudio', 'openai_compatible', 'chatgpt']
 
 export function LLMSettings() {
-  const [config, setConfig] = useState<LLMConfig | null>(null)
+  const [activeProvider, setActiveProvider] = useState<string>('')
+  const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
+  const [models, setModels] = useState<string[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const debounceRef = useRef<NodeJS.Timeout | null>(null)
 
+  const debounceRef = useRef<NodeJS.Timeout | null>(null)
+  const modelsDebounceRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Load config on mount
   const loadConfig = useCallback(async () => {
     try {
       const result = await GetConfig()
       const llmConfig = result?.llm as LLMConfig | undefined
       if (llmConfig) {
-        setConfig(llmConfig)
+        setActiveProvider(llmConfig.active_provider)
+        setProviderConfigs({
+          anthropic: llmConfig.anthropic,
+          gemini: llmConfig.gemini,
+          lmstudio: llmConfig.lmstudio,
+          openai_compatible: llmConfig.openai_compatible,
+          chatgpt: llmConfig.chatgpt,
+        })
       }
     } catch {
-      // Keep null if fetch fails
+      // Keep defaults if fetch fails
     } finally {
       setIsLoading(false)
     }
@@ -46,69 +67,146 @@ export function LLMSettings() {
     loadConfig()
   }, [loadConfig])
 
-  const saveSettings = useCallback(async (newConfig: LLMConfig) => {
+  // Fetch models when provider or credentials change
+  const fetchModels = useCallback(async (provider: string, config: ProviderConfig) => {
+    // Check if required fields are filled based on provider
+    const needsBaseUrl = provider === 'lmstudio' || provider === 'openai_compatible'
+    const needsApiKey = provider !== 'lmstudio'
+
+    if (needsBaseUrl && !config.base_url) {
+      setModels([])
+      return
+    }
+    if (needsApiKey && !config.api_key && config.api_key !== '***configured***') {
+      setModels([])
+      return
+    }
+    if (provider === 'openai_compatible' && (!config.base_url || (!config.api_key && config.api_key !== '***configured***'))) {
+      setModels([])
+      return
+    }
+
+    setModelsLoading(true)
+    setModelsError(null)
+
     try {
-      const defaultProv = newConfig.providers[newConfig.default_provider]
-      const request = new main.LLMSettingsRequest({
-        default_provider: newConfig.default_provider,
-        model: defaultProv?.model || '',
-        defaults: newConfig.defaults,
-      })
-      await UpdateLLMSettings(request)
-    } catch {
-      // Handle error silently
+      const modelList = await ListProviderModels(provider)
+      setModels(modelList || [])
+    } catch (err) {
+      setModelsError(err instanceof Error ? err.message : 'Failed to fetch models')
+      setModels([])
+    } finally {
+      setModelsLoading(false)
     }
   }, [])
 
-  const updateSettings = useCallback(
-    (newConfig: LLMConfig) => {
-      setConfig(newConfig)
+  // Debounced model fetch
+  const debouncedFetchModels = useCallback(
+    (provider: string, config: ProviderConfig) => {
+      if (modelsDebounceRef.current) {
+        clearTimeout(modelsDebounceRef.current)
+      }
+      modelsDebounceRef.current = setTimeout(() => {
+        fetchModels(provider, config)
+      }, 300)
+    },
+    [fetchModels]
+  )
 
+  // Fetch models when provider or credentials change
+  useEffect(() => {
+    if (activeProvider && providerConfigs[activeProvider]) {
+      debouncedFetchModels(activeProvider, providerConfigs[activeProvider])
+    }
+  }, [activeProvider, providerConfigs, debouncedFetchModels])
+
+  // Save settings
+  const saveSettings = useCallback(
+    async (provider: string, config: ProviderConfig) => {
+      try {
+        const request = new main.LLMSettingsRequest({
+          active_provider: provider,
+          api_key: config.api_key,
+          base_url: config.base_url,
+          model: config.model,
+        })
+        await UpdateLLMSettings(request)
+      } catch {
+        // Handle error silently
+      }
+    },
+    []
+  )
+
+  // Debounced save
+  const debouncedSave = useCallback(
+    (provider: string, config: ProviderConfig) => {
       if (debounceRef.current) {
         clearTimeout(debounceRef.current)
       }
       debounceRef.current = setTimeout(() => {
-        saveSettings(newConfig)
+        saveSettings(provider, config)
       }, 300)
     },
     [saveSettings]
   )
 
-  const handleDefaultProviderChange = (provider: string) => {
-    if (!config) return
-    const newConfig: LLMConfig = {
-      ...config,
-      default_provider: provider,
+  const handleProviderChange = (provider: string) => {
+    setActiveProvider(provider)
+    // Save immediately when changing provider
+    if (providerConfigs[provider]) {
+      saveSettings(provider, providerConfigs[provider])
     }
-    updateSettings(newConfig)
   }
 
-  const handleModelChange = (model: string) => {
-    if (!config) return
-    const currentProvider = config.default_provider
-    const newConfig: LLMConfig = {
-      ...config,
-      providers: {
-        ...config.providers,
-        [currentProvider]: {
-          ...config.providers[currentProvider],
-          model,
+  const updateProviderConfig = (provider: string, updates: Partial<ProviderConfig>) => {
+    setProviderConfigs((prev) => {
+      const newConfig = {
+        ...prev,
+        [provider]: {
+          ...prev[provider],
+          ...updates,
         },
-      },
-    }
-    updateSettings(newConfig)
+      }
+      debouncedSave(provider, newConfig[provider])
+      return newConfig
+    })
   }
 
-  const handleDefaultsChange = (key: keyof LLMDefaults, value: number) => {
-    if (!config) return
-    const newConfig: LLMConfig = {
-      ...config,
-      defaults: {
-        ...config.defaults,
-        [key]: value,
-      },
+  const isModelInputDisabled = (): boolean => {
+    const config = providerConfigs[activeProvider]
+    if (!config) return true
+
+    switch (activeProvider) {
+      case 'anthropic':
+      case 'gemini':
+      case 'chatgpt':
+        return !config.api_key && config.api_key !== '***configured***'
+      case 'lmstudio':
+        return !config.base_url
+      case 'openai_compatible':
+        return !config.base_url || (!config.api_key && config.api_key !== '***configured***')
+      default:
+        return true
     }
-    updateSettings(newConfig)
+  }
+
+  const getModelInputPlaceholder = (): string => {
+    if (isModelInputDisabled()) {
+      switch (activeProvider) {
+        case 'anthropic':
+        case 'gemini':
+        case 'chatgpt':
+          return 'Enter API key first'
+        case 'lmstudio':
+          return 'Enter base URL first'
+        case 'openai_compatible':
+          return 'Enter base URL and API key first'
+        default:
+          return 'Select provider first'
+      }
+    }
+    return modelsLoading ? 'Loading models...' : 'Select or type model name'
   }
 
   if (isLoading) {
@@ -119,16 +217,7 @@ export function LLMSettings() {
     )
   }
 
-  if (!config) {
-    return (
-      <div className="flex items-center justify-center py-8">
-        <span className="text-sm text-muted-foreground">Failed to load LLM settings</span>
-      </div>
-    )
-  }
-
-  const providerNames = Object.keys(config.providers)
-  const currentProvider = config.providers[config.default_provider]
+  const currentConfig = providerConfigs[activeProvider]
 
   return (
     <div className="flex flex-col gap-6">
@@ -136,83 +225,97 @@ export function LLMSettings() {
         Configure the LLM provider and model used for all agent tasks. Changes apply immediately.
       </div>
 
-      {/* Provider & Model Section */}
-      <div className="flex flex-col gap-4">
-        <span className="text-sm font-medium">Provider & Model</span>
+      {/* Provider Selection */}
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-muted-foreground">Provider</label>
+        <div className="flex items-center gap-3">
+          <select
+            value={activeProvider}
+            onChange={(e) => handleProviderChange(e.target.value)}
+            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring min-w-[180px]"
+          >
+            {PROVIDER_KEYS.map((key) => (
+              <option key={key} value={key}>
+                {PROVIDER_DISPLAY_NAMES[key]}
+              </option>
+            ))}
+          </select>
+          <Badge variant="secondary" className="text-xs">
+            {PROVIDER_DISPLAY_NAMES[activeProvider] || activeProvider}
+          </Badge>
+        </div>
+      </div>
+
+      {/* Provider-specific fields */}
+      {currentConfig && (
         <div className="flex flex-col gap-4">
+          {/* Base URL - for LM Studio and OpenAI Compatible */}
+          {(activeProvider === 'lmstudio' || activeProvider === 'openai_compatible') && (
+            <div className="flex flex-col gap-2">
+              <label className="text-xs text-muted-foreground">Base URL</label>
+              <Input
+                placeholder="http://localhost:1234"
+                value={currentConfig.base_url}
+                onChange={(e) => updateProviderConfig(activeProvider, { base_url: e.target.value })}
+                className="h-9 text-sm"
+              />
+            </div>
+          )}
+
+          {/* API Key - for all except LM Studio */}
+          {activeProvider !== 'lmstudio' && (
+            <div className="flex flex-col gap-2">
+              <label className="text-xs text-muted-foreground">API Key</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="password"
+                  placeholder="Enter API key"
+                  value={currentConfig.api_key === '***configured***' ? '' : currentConfig.api_key}
+                  onChange={(e) => updateProviderConfig(activeProvider, { api_key: e.target.value })}
+                  className="h-9 text-sm flex-1"
+                />
+                {currentConfig.api_key === '***configured***' && (
+                  <Badge variant="outline" className="text-xs">
+                    Configured
+                  </Badge>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Model selection */}
           <div className="flex flex-col gap-2">
-            <label className="text-xs text-muted-foreground">Default Provider</label>
-            <div className="flex items-center gap-3">
-              <select
-                value={config.default_provider}
-                onChange={(e) => handleDefaultProviderChange(e.target.value)}
-                className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring min-w-[180px]"
-              >
-                {providerNames.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
+            <label className="text-xs text-muted-foreground">Model</label>
+            <div className="flex flex-col gap-2">
+              <Input
+                list={`models-${activeProvider}`}
+                placeholder={getModelInputPlaceholder()}
+                value={currentConfig.model}
+                onChange={(e) => updateProviderConfig(activeProvider, { model: e.target.value })}
+                disabled={isModelInputDisabled()}
+                className="h-9 text-sm"
+              />
+              <datalist id={`models-${activeProvider}`}>
+                {(models || []).map((model) => (
+                  <option key={model} value={model} />
                 ))}
-              </select>
-              {currentProvider && (
-                <Badge variant="secondary" className="text-xs">
-                  {currentProvider.type}
-                </Badge>
+              </datalist>
+              {modelsLoading && (
+                <span className="text-xs text-muted-foreground">Loading models...</span>
+              )}
+              {modelsError && (
+                <span className="text-xs text-destructive">{modelsError}</span>
               )}
             </div>
           </div>
-          <div className="flex flex-col gap-2">
-            <label className="text-xs text-muted-foreground">Model</label>
-            <Input
-              placeholder="Model name (e.g., gpt-4o, claude-sonnet-4-20250514)"
-              value={currentProvider?.model || ''}
-              onChange={(e) => handleModelChange(e.target.value)}
-              className="h-9 text-sm"
-            />
-          </div>
         </div>
-      </div>
+      )}
 
-      {/* Defaults Section */}
-      <div className="flex flex-col gap-3">
-        <span className="text-sm font-medium">Default Parameters</span>
-        <div className="flex gap-4">
-          <div className="flex flex-col gap-2 flex-1">
-            <label className="text-xs text-muted-foreground">Max Tokens</label>
-            <Input
-              type="number"
-              min={1}
-              max={32768}
-              value={config.defaults.max_tokens}
-              onChange={(e) =>
-                handleDefaultsChange('max_tokens', parseInt(e.target.value, 10) || 0)
-              }
-              className="h-9 text-sm"
-            />
-          </div>
-          <div className="flex flex-col gap-2 flex-1">
-            <label className="text-xs text-muted-foreground">Temperature</label>
-            <Input
-              type="number"
-              min={0}
-              max={2}
-              step={0.1}
-              value={config.defaults.temperature}
-              onChange={(e) =>
-                handleDefaultsChange('temperature', parseFloat(e.target.value) || 0)
-              }
-              className="h-9 text-sm"
-            />
-          </div>
-        </div>
-      </div>
-
+      {/* Info note */}
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
         <p>
-          A single model is used for all agent tasks (routing, planning, execution, evaluation).
-          Temperature controls randomness (0 = deterministic, 2 = very random). Max tokens limits
-          response length.
+          Temperature is fixed at 0 (deterministic). Max tokens is calculated automatically based on model context window.
         </p>
       </div>
     </div>

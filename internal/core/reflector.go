@@ -20,8 +20,8 @@ type Reflector struct {
 }
 
 // NewReflector creates a new Reflector with the given LLM caller.
-func NewReflector(llm LLMCaller) *Reflector {
-	return &Reflector{llm: llm}
+func NewReflector(caller LLMCaller) *Reflector {
+	return &Reflector{llm: caller}
 }
 
 // Reflect analyzes execution trajectory and evaluation results to produce
@@ -34,7 +34,7 @@ func (r *Reflector) Reflect(
 	evalResult *EvalResult,
 	plan *Plan,
 	prevReflections []Reflection,
-) (*Reflection, error) {
+) (reflection *Reflection, err error) {
 	systemPrompt := r.buildSystemPrompt()
 	userMessage := r.buildUserMessage(trajectory, evalResult, plan, prevReflections)
 
@@ -52,7 +52,7 @@ func (r *Reflector) Reflect(
 		return nil, fmt.Errorf("reflector LLM call failed: %w", err)
 	}
 
-	reflection, err := r.parseReflectionResponse(resp.Message.Content)
+	reflection, err = r.parseReflectionResponse(resp.Message.Content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse reflection response: %w", err)
 	}

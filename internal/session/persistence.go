@@ -2,11 +2,12 @@
 package session
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // register SQLite driver
 )
 
 // SessionInfo is the public-facing session metadata.
@@ -70,13 +71,13 @@ func NewSQLiteSessionStore(dbPath string) (*SQLiteSessionStore, error) {
 	}
 
 	// Enable WAL mode for better performance
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	// Enable foreign keys for cascade deletes
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
+	if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
@@ -112,7 +113,7 @@ func (s *SQLiteSessionStore) createTables() error {
 
 	CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id);
 	`
-	if _, err := s.db.Exec(schema); err != nil {
+	if _, err := s.db.ExecContext(context.Background(), schema); err != nil {
 		return err
 	}
 
@@ -122,13 +123,13 @@ func (s *SQLiteSessionStore) createTables() error {
 		"ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0",
 	}
 	for _, m := range migrations {
-		_, _ = s.db.Exec(m)
+		_, _ = s.db.ExecContext(context.Background(), m)
 	}
 
 	// Migrate: add last_active_at column (ignore "duplicate column" errors)
-	_, _ = s.db.Exec("ALTER TABLE sessions ADD COLUMN last_active_at TIMESTAMP")
+	_, _ = s.db.ExecContext(context.Background(), "ALTER TABLE sessions ADD COLUMN last_active_at TIMESTAMP")
 	// Backfill: set last_active_at to created_at for existing rows where it's NULL
-	_, _ = s.db.Exec("UPDATE sessions SET last_active_at = created_at WHERE last_active_at IS NULL")
+	_, _ = s.db.ExecContext(context.Background(), "UPDATE sessions SET last_active_at = created_at WHERE last_active_at IS NULL")
 
 	return nil
 }
@@ -140,7 +141,7 @@ func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 	if lastActiveAt == "" {
 		lastActiveAt = info.CreatedAt
 	}
-	_, err := s.db.Exec(`
+	_, err := s.db.ExecContext(context.Background(), `
 		INSERT INTO sessions (id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -160,7 +161,7 @@ func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 // LoadSession loads a session by ID.
 func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
 	var info SessionInfo
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(context.Background(), `
 		SELECT id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions WHERE id = ?`,
 		id,
 	).Scan(&info.ID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens)
@@ -177,7 +178,7 @@ func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
 
 // ListSessions returns all sessions ordered by last activity time (newest first).
 func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(context.Background(), `
 		SELECT id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions
 		ORDER BY last_active_at DESC`)
 	if err != nil {
@@ -208,7 +209,7 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 
 // DeleteSession deletes a session and all its messages (cascade).
 func (s *SQLiteSessionStore) DeleteSession(id string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	_, err := s.db.ExecContext(context.Background(), `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
@@ -217,7 +218,7 @@ func (s *SQLiteSessionStore) DeleteSession(id string) error {
 
 // ArchiveSession sets the archived flag on a session.
 func (s *SQLiteSessionStore) ArchiveSession(id string, archived bool) error {
-	_, err := s.db.Exec(`UPDATE sessions SET archived = ? WHERE id = ?`, archived, id)
+	_, err := s.db.ExecContext(context.Background(), `UPDATE sessions SET archived = ? WHERE id = ?`, archived, id)
 	if err != nil {
 		return fmt.Errorf("failed to archive session: %w", err)
 	}
@@ -226,7 +227,7 @@ func (s *SQLiteSessionStore) ArchiveSession(id string, archived bool) error {
 
 // RenameSession updates a session's name.
 func (s *SQLiteSessionStore) RenameSession(id, name string) error {
-	_, err := s.db.Exec(`UPDATE sessions SET name = ? WHERE id = ?`, name, id)
+	_, err := s.db.ExecContext(context.Background(), `UPDATE sessions SET name = ? WHERE id = ?`, name, id)
 	if err != nil {
 		return fmt.Errorf("failed to rename session: %w", err)
 	}
@@ -235,7 +236,7 @@ func (s *SQLiteSessionStore) RenameSession(id, name string) error {
 
 // UpdateSessionTokens updates the accumulated token counts for a session.
 func (s *SQLiteSessionStore) UpdateSessionTokens(id string, inputTokens, outputTokens int) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.ExecContext(context.Background(), `
 		UPDATE sessions SET total_input_tokens = ?, total_output_tokens = ? WHERE id = ?`,
 		inputTokens, outputTokens, id,
 	)
@@ -248,7 +249,7 @@ func (s *SQLiteSessionStore) UpdateSessionTokens(id string, inputTokens, outputT
 // UpdateSessionActivity updates the last_active_at timestamp for a session.
 func (s *SQLiteSessionStore) UpdateSessionActivity(id string) error {
 	now := time.Now().Format(time.RFC3339)
-	_, err := s.db.Exec(`
+	_, err := s.db.ExecContext(context.Background(), `
 		UPDATE sessions SET last_active_at = ? WHERE id = ?`,
 		now, id,
 	)
@@ -260,7 +261,7 @@ func (s *SQLiteSessionStore) UpdateSessionActivity(id string) error {
 
 // SaveMessage saves a chat message.
 func (s *SQLiteSessionStore) SaveMessage(msg ChatMessage) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.ExecContext(context.Background(), `
 		INSERT INTO session_messages (session_id, role, content, metadata, created_at)
 		VALUES (?, ?, ?, ?, ?)`,
 		msg.SessionID, msg.Role, msg.Content, msg.Metadata, msg.CreatedAt,
@@ -273,7 +274,7 @@ func (s *SQLiteSessionStore) SaveMessage(msg ChatMessage) error {
 
 // LoadMessages loads all messages for a session ordered by creation time.
 func (s *SQLiteSessionStore) LoadMessages(sessionID string) ([]ChatMessage, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(context.Background(), `
 		SELECT id, session_id, role, content, metadata, created_at
 		FROM session_messages
 		WHERE session_id = ?
@@ -308,7 +309,7 @@ func (s *SQLiteSessionStore) LoadMessages(sessionID string) ([]ChatMessage, erro
 
 // DeleteMessages deletes all messages for a session.
 func (s *SQLiteSessionStore) DeleteMessages(sessionID string) error {
-	_, err := s.db.Exec(`DELETE FROM session_messages WHERE session_id = ?`, sessionID)
+	_, err := s.db.ExecContext(context.Background(), `DELETE FROM session_messages WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to delete messages: %w", err)
 	}

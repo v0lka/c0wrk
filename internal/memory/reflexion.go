@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // StoredReflexion represents a reflexion stored in reflexion memory.
@@ -27,24 +25,12 @@ type ReflexionMemory struct {
 	db *sql.DB
 }
 
-// NewReflexionMemory opens SQLite at dbPath (use ":memory:" for testing).
-// Auto-creates tables and indexes.
-func NewReflexionMemory(dbPath string) (*ReflexionMemory, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Enable WAL mode for better performance
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
+// NewReflexionMemory creates a new ReflexionMemory using the provided database connection.
+// The database should be managed by the caller (e.g., MemorySystem).
+func NewReflexionMemory(db *sql.DB) (*ReflexionMemory, error) {
 	rm := &ReflexionMemory{db: db}
 
 	if err := rm.createTables(); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
 
@@ -64,7 +50,7 @@ func (rm *ReflexionMemory) createTables() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_reflexions_created_at ON reflexions(created_at);
 	`
-	_, err := rm.db.Exec(schema)
+	_, err := rm.db.ExecContext(context.Background(), schema)
 	return err
 }
 
@@ -175,11 +161,6 @@ func (rm *ReflexionMemory) Count(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("counting reflexions: %w", err)
 	}
 	return count, nil
-}
-
-// Close closes the database connection.
-func (rm *ReflexionMemory) Close() error {
-	return rm.db.Close()
 }
 
 // extractKeywords splits a query into meaningful keywords.

@@ -154,7 +154,7 @@ func (c *Constitution) Save() error {
 func (c *Constitution) saveInternal() error {
 	// Ensure directory exists
 	dir := filepath.Dir(c.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -168,7 +168,7 @@ func (c *Constitution) saveInternal() error {
 		return fmt.Errorf("failed to marshal constitution: %w", err)
 	}
 
-	if err := os.WriteFile(c.filePath, jsonData, 0644); err != nil {
+	if err := os.WriteFile(c.filePath, jsonData, 0o644); err != nil {
 		return fmt.Errorf("failed to write constitution file: %w", err)
 	}
 

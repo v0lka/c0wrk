@@ -4,17 +4,20 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	openai "github.com/sashabaranov/go-openai"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/user/agent/internal/config"
@@ -115,15 +118,18 @@ type App struct {
 	toolRegistry *tools.ToolRegistry
 	mcpGateway   *mcp.MCPGateway
 
-	episodicMem   *memory.EpisodicMemory
-	reflexionMem  *memory.ReflexionMemory
-	semanticMem   *memory.SemanticMemory
+	memorySystem  *memory.MemorySystem
+	localEmbedder *llm.LocalEmbedder
 	constitution  *core.Constitution
-	proceduralMem *memory.ProceduralMemory
 	warmPool      *skills.WarmPool
 
 	sessionLogger *logger.SessionLogger
 	logLevel      string
+
+	// Config loading state for UI warnings
+	configMigrated     bool
+	configMigrationMsg string
+	configLoadErrors   []string
 
 	pendingConfirmations sync.Map
 }
@@ -161,34 +167,47 @@ func (a *App) startup(ctx context.Context) {
 		homeDir = "."
 	}
 	agentDir := filepath.Join(homeDir, config.DefaultAgentDir)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		log.Error("failed to create agent directory", "error", err)
 	}
 
 	configPath := filepath.Join(agentDir, "config.yaml")
-	cfg, err := config.Load(configPath)
+	result, err := config.LoadWithResult(configPath)
 	if err != nil {
 		// Fallback to local config.yaml if present
 		fallbackPath := "config.yaml"
 		if _, statErr := os.Stat(fallbackPath); statErr == nil {
-			cfg, err = config.Load(fallbackPath)
+			result, err = config.LoadWithResult(fallbackPath)
 			if err == nil {
 				configPath = fallbackPath
 			}
 		}
 	}
-	if err != nil {
+	if err != nil || result == nil {
 		// Use default config or log error
 		log.Error("failed to load config", "error", err)
-		cfg = &config.Config{}
-		config.ApplyDefaults(cfg)
-		log.Warn("config load failed, roles may be missing - check your config.yaml syntax")
+		a.config = &config.Config{}
+		config.ApplyDefaults(a.config)
+		log.Warn("config load failed, check your config.yaml syntax")
+		a.configLoadErrors = []string{"Failed to load config: " + err.Error()}
+	} else {
+		a.config = result.Config
+		a.configMigrated = result.Migrated
+		a.configMigrationMsg = result.MigrationMsg
+		a.configLoadErrors = result.LoadErrors
+		if result.Migrated {
+			log.Info("config migrated", "message", result.MigrationMsg)
+		}
+		if len(result.LoadErrors) > 0 {
+			for _, e := range result.LoadErrors {
+				log.Warn("config warning", "error", e)
+			}
+		}
 	}
-	a.config = cfg
 	a.configPath = configPath
 
 	// Initialize logLevel from config and re-init logger if level differs
-	a.logLevel = cfg.LogLevel
+	a.logLevel = a.config.LogLevel
 	if a.logLevel != "" && a.logLevel != "INFO" {
 		if newLogger, err := logger.Init(a.logLevel); err == nil {
 			if a.sessionLogger != nil {
@@ -319,7 +338,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Create ModelRegistry from config overrides (before router so providers can register sources)
 	overrides := make(map[string]llm.ModelMetadata)
-	for name, override := range cfg.LLM.Models {
+	for name, override := range a.config.LLM.Models {
 		overrides[name] = llm.ModelMetadata{
 			ContextWindow: override.ContextWindow,
 			OutputLimit:   override.OutputLimit,
@@ -330,14 +349,14 @@ func (a *App) startup(ctx context.Context) {
 
 	// Initialize LLM Router - CRITICAL: must succeed for the app to work
 	// Pass registry so LM Studio providers can register their metadata sources
-	llmRouter, err := llm.NewLLMRouter(cfg.LLM, modelRegistry)
+	llmRouter, err := llm.NewLLMRouter(a.config.LLM, modelRegistry)
 	if err != nil {
 		emitStartupError("failed to initialize LLM router", err)
 		// Don't set llmRouter - it will remain nil and orchestrator creation will fail
 		// with a descriptive error when the user tries to create a session
 	}
-	if llmRouter != nil && cfg.LLM.DefaultProvider == "" {
-		emitStartupError("no default LLM provider configured - check your config.yaml", fmt.Errorf("config has no default_provider defined under llm"))
+	if llmRouter != nil && a.config.LLM.ActiveProvider == "" {
+		emitStartupError("no active LLM provider configured - check your config.yaml", errors.New("config has no active_provider defined under llm"))
 	}
 	a.llmRouter = llmRouter
 
@@ -347,7 +366,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Register core tools
 	var bashBlacklist []string
-	if bashCfg, ok := cfg.Security.ToolPolicies["bash_exec"]; ok {
+	if bashCfg, ok := a.config.Security.ToolPolicies["bash_exec"]; ok {
 		bashBlacklist = bashCfg.Blacklist
 	}
 	bashTool := toolcore.NewBashExecTool(bashBlacklist)
@@ -379,15 +398,15 @@ func (a *App) startup(ctx context.Context) {
 	registry.Register(webFetchTool)
 
 	// WebSearch tool (requires Tavily API key)
-	if cfg.Search.APIKey != "" {
-		webSearchTool := toolcore.NewWebSearchTool(cfg.Search.APIKey)
+	if a.config.Search.APIKey != "" {
+		webSearchTool := toolcore.NewWebSearchTool(a.config.Search.APIKey)
 		registry.Register(webSearchTool)
 	}
 
 	// Initialize MCP Gateway (optional)
-	if len(cfg.MCP.Servers) > 0 {
+	if len(a.config.MCP.Servers) > 0 {
 		gateway := mcp.NewMCPGateway()
-		if err := gateway.Start(context.Background(), cfg.MCP.Servers); err != nil {
+		if err := gateway.Start(context.Background(), a.config.MCP.Servers); err != nil {
 			log.Warn("MCP gateway start errors", "error", err)
 			// MCP is optional; continue
 		}
@@ -399,40 +418,64 @@ func (a *App) startup(ctx context.Context) {
 		a.mcpGateway = gateway
 	}
 
-	// Initialize ProceduralMemory for skills
-	skillsDir := cfg.Skills.Directory
+	// Initialize MemorySystem (consolidated memory subsystem)
+	skillsDir := a.config.Skills.Directory
 	if skillsDir == "" {
 		skillsDir = filepath.Join(agentDir, "skills")
 	}
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		log.Warn("failed to create skills directory", "error", err)
 	}
-	proceduralMem := memory.NewProceduralMemory(skillsDir)
-	if err := proceduralMem.Scan(); err != nil {
-		log.Warn("skill scan failed", "error", err)
+
+	// Get DB path from config or use default
+	memDBPath := a.config.Memory.Database
+	if memDBPath == "" {
+		memDBPath = filepath.Join(agentDir, "memory.db")
 	}
-	a.proceduralMem = proceduralMem
+
+	// Initialize local embedder for semantic memory
+	var embedder memory.Embedder
+	if emb, err := llm.NewLocalEmbedder(); err != nil {
+		log.Warn("local embedder unavailable, semantic memory disabled", "error", err)
+	} else {
+		a.localEmbedder = emb
+		embedder = emb
+	}
+
+	memSys, err := memory.NewMemorySystem(memory.MemorySystemConfig{
+		DBPath:    memDBPath,
+		SkillsDir: skillsDir,
+		Embedder:  embedder,
+	})
+	if err != nil {
+		log.Warn("failed to initialize memory system", "error", err)
+	} else {
+		log.Info("memory system initialized", "path", memDBPath)
+	}
+	a.memorySystem = memSys
 
 	// Register existing skills as tools
 	builder := skills.NewDockerBuilder()
-	for _, info := range proceduralMem.ListSkills() {
-		manifest, err := skills.ParseManifest(filepath.Join(info.Path, "skill.json"))
-		if err != nil {
-			log.Warn("failed to parse skill manifest", "skill", info.Name, "error", err)
-			continue
+	if memSys != nil && memSys.Procedural != nil {
+		for _, info := range memSys.Procedural.ListSkills() {
+			manifest, err := skills.ParseManifest(filepath.Join(info.Path, "skill.json"))
+			if err != nil {
+				log.Warn("failed to parse skill manifest", "skill", info.Name, "error", err)
+				continue
+			}
+			skillTool := skills.NewSkillTool(manifest, info.Path, builder)
+			registry.Register(skillTool)
 		}
-		skillTool := skills.NewSkillTool(manifest, info.Path, builder)
-		registry.Register(skillTool)
 	}
 
 	// Initialize WarmPool (optional, for performance)
 	idleTimeout := 5 * time.Minute
-	if cfg.Skills.Docker.WarmPoolIdleTimeout != "" {
-		if parsed, err := time.ParseDuration(cfg.Skills.Docker.WarmPoolIdleTimeout); err == nil {
+	if a.config.Skills.Docker.WarmPoolIdleTimeout != "" {
+		if parsed, err := time.ParseDuration(a.config.Skills.Docker.WarmPoolIdleTimeout); err == nil {
 			idleTimeout = parsed
 		}
 	}
-	poolSize := cfg.Skills.Docker.WarmPoolThreshold
+	poolSize := a.config.Skills.Docker.WarmPoolThreshold
 	if poolSize <= 0 {
 		poolSize = 10
 	}
@@ -442,7 +485,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Configure per-tool security policies from config
 	policyOverrides := make(map[string]tools.ToolPolicy)
-	for toolName, policyCfg := range cfg.Security.ToolPolicies {
+	for toolName, policyCfg := range a.config.Security.ToolPolicies {
 		switch policyCfg.Policy {
 		case "always_allow":
 			policyOverrides[toolName] = tools.PolicyAlwaysAllow
@@ -457,7 +500,7 @@ func (a *App) startup(ctx context.Context) {
 	registry.SetPolicyOverrides(policyOverrides)
 
 	// Set default policy for tools not explicitly configured
-	switch cfg.Security.DefaultPolicy {
+	switch a.config.Security.DefaultPolicy {
 	case "always_allow":
 		registry.SetDefaultPolicy(tools.PolicyAlwaysAllow)
 	case "always_deny":
@@ -468,42 +511,11 @@ func (a *App) startup(ctx context.Context) {
 		registry.SetDefaultPolicy(tools.PolicyAuto)
 	}
 
-	// Initialize EpisodicMemory
-	var episodicMem *memory.EpisodicMemory
-	episodicDBPath := cfg.Memory.Episodic.Database
-	if episodicDBPath == "" {
-		episodicDBPath = filepath.Join(agentDir, "episodic.db")
-	}
-	if err := os.MkdirAll(filepath.Dir(episodicDBPath), 0755); err != nil {
-		log.Warn("failed to create episodic DB directory", "error", err)
-	}
-	episodicMem, err = memory.NewEpisodicMemory(episodicDBPath)
-	if err != nil {
-		log.Warn("failed to initialize episodic memory", "error", err)
-		episodicMem = nil
-	} else {
-		log.Info("episodic memory initialized", "path", episodicDBPath)
-	}
-	a.episodicMem = episodicMem
 
-	// Initialize ReflexionMemory
-	var reflexionMem *memory.ReflexionMemory
-	reflexionDBPath := filepath.Join(agentDir, "reflexion.db")
-	if err := os.MkdirAll(filepath.Dir(reflexionDBPath), 0755); err != nil {
-		log.Warn("failed to create reflexion DB directory", "error", err)
-	}
-	reflexionMem, err = memory.NewReflexionMemory(reflexionDBPath)
-	if err != nil {
-		log.Warn("failed to initialize reflexion memory", "error", err)
-		reflexionMem = nil
-	} else {
-		log.Info("reflexion memory initialized", "path", reflexionDBPath)
-	}
-	a.reflexionMem = reflexionMem
 
 	// Initialize Constitution
 	var constitution *core.Constitution
-	constitutionPath := cfg.Memory.Constitution.File
+	constitutionPath := a.config.Memory.Constitution.File
 	if constitutionPath == "" {
 		constitutionPath = filepath.Join(agentDir, "constitution.json")
 	}
@@ -517,45 +529,30 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.constitution = constitution
 
-	// Initialize SemanticMemory (if embedder config available)
-	var semanticMem *memory.SemanticMemory
-	if cfg.Memory.Semantic.EmbeddingProvider != "" {
-		// Get API key for embedder (use OpenAI provider or dedicated key)
-		var embedderAPIKey string
-		if openaiCfg, ok := cfg.LLM.Providers["openai"]; ok {
-			embedderAPIKey = openaiCfg.APIKey
-		}
-		// Check for dedicated embedding provider config
-		if cfg.Memory.Semantic.EmbeddingProvider == "openai" && embedderAPIKey == "" {
-			embedderAPIKey = os.Getenv("OPENAI_API_KEY")
-		}
-
-		if embedderAPIKey != "" {
-			model := cfg.Memory.Semantic.EmbeddingModel
-			if model == "" {
-				model = "text-embedding-3-small"
+	// Auto-detect ONNX Runtime library co-located with the executable
+	if os.Getenv("ONNXRUNTIME_LIB_PATH") == "" {
+		if exePath, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+				var libName string
+				switch runtime.GOOS {
+				case "darwin":
+					libName = "libonnxruntime.dylib"
+				case "windows":
+					libName = "onnxruntime.dll"
+				default:
+					libName = "libonnxruntime.so"
+				}
+				libPath := filepath.Join(filepath.Dir(resolved), libName)
+				if _, err := os.Stat(libPath); err == nil {
+					if err := os.Setenv("ONNXRUNTIME_LIB_PATH", libPath); err == nil {
+						log.Debug("auto-detected ONNX Runtime library", "path", libPath)
+					}
+				}
 			}
-			embedder := llm.NewOpenAIEmbedder(embedderAPIKey, model)
-
-			semanticDBPath := cfg.Memory.Semantic.Database
-			if semanticDBPath == "" {
-				semanticDBPath = filepath.Join(agentDir, "semantic.db")
-			}
-			if err := os.MkdirAll(filepath.Dir(semanticDBPath), 0755); err != nil {
-				log.Warn("failed to create semantic DB directory", "error", err)
-			}
-
-			semanticMem, err = memory.NewSemanticMemory(semanticDBPath, embedder)
-			if err != nil {
-				log.Warn("failed to initialize semantic memory", "error", err)
-			} else {
-				log.Info("semantic memory initialized", "path", semanticDBPath)
-			}
-		} else {
-			log.Info("semantic memory disabled: no API key for embedding provider")
 		}
 	}
-	a.semanticMem = semanticMem
+
+
 
 	// Create SkillCreatorTool with DockerBuilder adapter
 	var skillBuilder toolcore.SkillBuilder = &dockerBuilderAdapter{builder: builder}
@@ -564,16 +561,16 @@ func (a *App) startup(ctx context.Context) {
 
 	// Create ContextManagerTool with memory adapters
 	var semanticStore toolcore.SemanticStore
-	if semanticMem != nil {
-		semanticStore = &semanticStoreAdapter{mem: semanticMem}
+	if memSys != nil && memSys.Semantic != nil {
+		semanticStore = &semanticStoreAdapter{mem: memSys.Semantic}
 	}
 	var episodicStoreTool toolcore.EpisodicStore
-	if episodicMem != nil {
-		episodicStoreTool = &episodicToolAdapter{em: episodicMem}
+	if memSys != nil && memSys.Episodic != nil {
+		episodicStoreTool = &episodicToolAdapter{em: memSys.Episodic}
 	}
 	var reflexionStoreTool toolcore.ReflexionStore
-	if reflexionMem != nil {
-		reflexionStoreTool = &reflexionToolAdapter{rm: reflexionMem}
+	if memSys != nil && memSys.Reflexion != nil {
+		reflexionStoreTool = &reflexionToolAdapter{rm: memSys.Reflexion}
 	}
 	// CompactionSwitcher is nil for now (would need to wire into context factory)
 	contextMgrTool := toolcore.NewContextManagerTool(semanticStore, nil, episodicStoreTool, reflexionStoreTool)
@@ -587,7 +584,7 @@ func (a *App) startup(ctx context.Context) {
 	var reflector *core.Reflector
 	if llmRouter != nil {
 		// Router: classifies requests and determines execution strategy
-		router = core.NewRouter(llmRouter, cfg.Router.HistoryWindow)
+		router = core.NewRouter(llmRouter, a.config.Router.HistoryWindow)
 
 		// ACExtractor: extracts acceptance criteria from user requests
 		acExtractor = core.NewACExtractor(llmRouter)
@@ -617,11 +614,11 @@ func (a *App) startup(ctx context.Context) {
 		// Create domain-aware compaction strategy using the factory
 		strategy := memory.NewCompactionStrategy(compactionStrategy, memory.CompactionConfig{
 			SlidingWindow: struct{ KeepFirst, KeepLast int }{
-				KeepFirst: cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-				KeepLast:  cfg.Executor.Compaction.SlidingWindow.KeepLast,
+				KeepFirst: a.config.Executor.Compaction.SlidingWindow.KeepFirst,
+				KeepLast:  a.config.Executor.Compaction.SlidingWindow.KeepLast,
 			},
 			Summarization: struct{ BlockSize, KeepLast int }{
-				BlockSize: cfg.Executor.Compaction.Summarization.BlockSize,
+				BlockSize: a.config.Executor.Compaction.Summarization.BlockSize,
 				KeepLast:  5, // default
 			},
 			Hierarchical: struct{ DistantRatio, MiddleRatio, RecentRatio float64 }{
@@ -633,7 +630,7 @@ func (a *App) startup(ctx context.Context) {
 			TokenCounter: counter,
 		})
 
-		thresholds := cfg.Executor.Compaction.Thresholds
+		thresholds := a.config.Executor.Compaction.Thresholds
 
 		cw := memory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy)
 		if len(constitutionPrinciples) > 0 {
@@ -644,28 +641,26 @@ func (a *App) startup(ctx context.Context) {
 
 	// Orchestrator configuration
 	orchConfig := core.OrchestratorConfig{
-		MaxSteps:   cfg.Executor.MaxReactSteps,
+		MaxSteps:   a.config.Executor.MaxReactSteps,
 		LLMRole:    "executor",
-		KeepFirst:  cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:   cfg.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries: cfg.Executor.MaxRetries,
+		KeepFirst:  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:   a.config.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxRetries: a.config.Executor.MaxRetries,
 	}
 
 	// Initialize ToolJudge if enabled in config
-	if cfg.Security.Judge.Enabled != nil && *cfg.Security.Judge.Enabled && llmRouter != nil {
+	if a.config.Security.Judge.Enabled != nil && *a.config.Security.Judge.Enabled && llmRouter != nil {
 		var judgeProvider llm.LLMProvider
 		var judgeModel string
 
 		// Check if a specific model is configured for the judge
-		if cfg.Security.Judge.Model != "" {
-			judgeModel = cfg.Security.Judge.Model
+		if a.config.Security.Judge.Model != "" {
+			judgeModel = a.config.Security.Judge.Model
 			judgeProvider = llmRouter.GetDefaultProvider()
 		} else {
-			// Use the default provider's model
+			// Use the active provider's model
 			judgeProvider = llmRouter.GetDefaultProvider()
-			if defProv, ok := cfg.LLM.Providers[cfg.LLM.DefaultProvider]; ok {
-				judgeModel = defProv.Model
-			}
+			_, _, _, judgeModel = a.config.LLM.GetActiveProviderConfig()
 		}
 
 		if judgeProvider != nil && judgeModel != "" {
@@ -720,7 +715,7 @@ func (a *App) startup(ctx context.Context) {
 	// Create orchestrator factory
 	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
 		if llmRouter == nil || router == nil || acExtractor == nil || planner == nil || evaluator == nil {
-			return nil, fmt.Errorf("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
+			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
 		}
 		return core.NewOrchestrator(
 			router,      // Router
@@ -839,15 +834,15 @@ func (a *App) shutdown(ctx context.Context) {
 		a.warmPool.Stop()
 	}
 
-	if a.semanticMem != nil {
-		if err := a.semanticMem.Close(); err != nil {
-			slog.Error("failed to close semantic memory", "error", err)
+	if a.memorySystem != nil {
+		if err := a.memorySystem.Close(); err != nil {
+			slog.Error("failed to close memory system", "error", err)
 		}
 	}
 
-	if a.episodicMem != nil {
-		if err := a.episodicMem.Close(); err != nil {
-			slog.Error("failed to close episodic memory", "error", err)
+	if a.localEmbedder != nil {
+		if err := a.localEmbedder.Close(); err != nil {
+			slog.Error("failed to close local embedder", "error", err)
 		}
 	}
 
@@ -867,7 +862,7 @@ func (a *App) shutdown(ctx context.Context) {
 // CreateSession creates a new agent session.
 func (a *App) CreateSession() (*session.SessionInfo, error) {
 	if a.manager == nil {
-		return nil, fmt.Errorf("session manager not initialized - check startup logs for LLM router or configuration errors")
+		return nil, errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
 	info, err := a.manager.CreateSession()
 	if err != nil {
@@ -885,7 +880,7 @@ func (a *App) CreateSession() (*session.SessionInfo, error) {
 // DeleteSession removes a session.
 func (a *App) DeleteSession(id string) error {
 	if a.manager == nil {
-		return fmt.Errorf("session manager not initialized")
+		return errors.New("session manager not initialized")
 	}
 	// Only delete from manager if session exists in memory
 	if _, exists := a.manager.GetSession(id); exists {
@@ -909,7 +904,7 @@ func (a *App) ListSessions() ([]session.SessionInfo, error) {
 		return a.store.ListSessions()
 	}
 	if a.manager == nil {
-		return nil, fmt.Errorf("session manager not initialized")
+		return nil, errors.New("session manager not initialized")
 	}
 	return a.manager.ListSessions(), nil
 }
@@ -917,7 +912,7 @@ func (a *App) ListSessions() ([]session.SessionInfo, error) {
 // RenameSession changes session name.
 func (a *App) RenameSession(id, name string) error {
 	if a.manager == nil {
-		return fmt.Errorf("session manager not initialized")
+		return errors.New("session manager not initialized")
 	}
 	// Only rename in manager if session exists in memory
 	if _, exists := a.manager.GetSession(id); exists {
@@ -937,7 +932,7 @@ func (a *App) RenameSession(id, name string) error {
 // ArchiveSession archives/unarchives a session.
 func (a *App) ArchiveSession(id string) error {
 	if a.manager == nil {
-		return fmt.Errorf("session manager not initialized")
+		return errors.New("session manager not initialized")
 	}
 	// Only archive in manager if session exists in memory
 	if _, exists := a.manager.GetSession(id); exists {
@@ -960,7 +955,7 @@ func (a *App) ArchiveSession(id string) error {
 // SendMessage sends a user message to a session (async - results come via events).
 func (a *App) SendMessage(id, text string) error {
 	if a.manager == nil {
-		return fmt.Errorf("session manager not initialized - check startup logs for LLM router or configuration errors")
+		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
 	// Update session activity timestamp
 	if a.store != nil {
@@ -985,7 +980,7 @@ func (a *App) SendMessage(id, text string) error {
 	if a.store != nil && a.llmRouter != nil {
 		if info, err := a.store.LoadSession(id); err == nil && info != nil {
 			// Check if name matches default pattern (first 8 chars of UUID)
-			if info.Name == fmt.Sprintf("Session %s", id[:8]) {
+			if info.Name == "Session "+id[:8] {
 				go a.generateSessionTitle(id, text)
 			}
 		}
@@ -1003,7 +998,33 @@ func (a *App) generateSessionTitle(sessionID, userMessage string) {
 	// Create a background context (not tied to the request context)
 	ctx := context.Background()
 
-	// Call LLM to generate title
+	// Try LLM-based title generation
+	title := a.generateTitleViaLLM(ctx, userMessage)
+
+	// Fallback: use first few words of the user message
+	if title == "" {
+		title = fallbackTitle(userMessage)
+	}
+
+	if title == "" {
+		return
+	}
+
+	// Truncate if too long
+	if len(title) > 60 {
+		title = title[:57] + "..."
+	}
+
+	// Rename session (persists to DB and updates in-memory)
+	if err := a.RenameSession(sessionID, title); err != nil {
+		slog.Warn("failed to rename session with generated title", "session", sessionID, "error", err)
+	} else {
+		slog.Info("session auto-named", "session", sessionID, "title", title)
+	}
+}
+
+// generateTitleViaLLM calls the LLM to generate a concise session title.
+func (a *App) generateTitleViaLLM(ctx context.Context, userMessage string) string {
 	temp := 0.3
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
@@ -1016,32 +1037,40 @@ func (a *App) generateSessionTitle(sessionID, userMessage string) {
 
 	resp, err := a.llmRouter.Call(ctx, "assistant", req)
 	if err != nil {
-		// Log error but don't fail — title generation is best-effort
-		slog.Debug("failed to generate session title", "session", sessionID, "error", err)
-		return
+		slog.Warn("failed to generate session title via LLM, using fallback", "error", err)
+		return ""
+	}
+	if resp == nil {
+		slog.Warn("LLM returned nil response for session title, using fallback")
+		return ""
 	}
 
-	// Clean up the title
 	title := strings.TrimSpace(resp.Message.Content)
 	title = strings.Trim(title, "\"'")
-	if title == "" {
-		return
-	}
-	// Truncate if too long
-	if len(title) > 60 {
-		title = title[:57] + "..."
-	}
+	return title
+}
 
-	// Rename session (persists to DB and updates in-memory)
-	if err := a.RenameSession(sessionID, title); err != nil {
-		slog.Debug("failed to rename session with generated title", "session", sessionID, "error", err)
+// fallbackTitle creates a simple title from the first few words of a message.
+func fallbackTitle(message string) string {
+	words := strings.Fields(message)
+	if len(words) == 0 {
+		return ""
 	}
+	maxWords := 5
+	if len(words) < maxWords {
+		maxWords = len(words)
+	}
+	title := strings.Join(words[:maxWords], " ")
+	if len(words) > maxWords {
+		title += "..."
+	}
+	return title
 }
 
 // CancelTask cancels the running task in a session.
 func (a *App) CancelTask(id string) error {
 	if a.manager == nil {
-		return fmt.Errorf("session manager not initialized")
+		return errors.New("session manager not initialized")
 	}
 	return a.manager.CancelTask(id)
 }
@@ -1057,7 +1086,7 @@ func (a *App) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 // persistConfig saves the current in-memory config to disk.
 func (a *App) persistConfig() error {
 	if a.configPath == "" || a.config == nil {
-		return fmt.Errorf("config path or config not set")
+		return errors.New("config path or config not set")
 	}
 	return config.Save(a.config, a.configPath)
 }
@@ -1068,23 +1097,6 @@ func (a *App) GetConfig() map[string]interface{} {
 		return map[string]interface{}{"loaded": false}
 	}
 
-	// Sanitize providers - mask API keys
-	providers := make(map[string]interface{})
-	for name, p := range a.config.LLM.Providers {
-		masked := ""
-		if p.APIKey != "" {
-			masked = "***configured***"
-		}
-		providers[name] = map[string]interface{}{
-			"type":       p.Type,
-			"api_key":    masked,
-			"base_url":   p.BaseURL,
-			"project_id": p.ProjectID,
-			"location":   p.Location,
-			"model":      p.Model,
-		}
-	}
-
 	// Search - mask API key
 	searchKeyMasked := ""
 	if a.config.Search.APIKey != "" {
@@ -1092,15 +1104,35 @@ func (a *App) GetConfig() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"loaded":    true,
-		"log_level": a.config.LogLevel,
-		"theme":     a.config.Theme,
+		"loaded":              true,
+		"log_level":           a.config.LogLevel,
+		"theme":               a.config.Theme,
+		"config_migrated":     a.configMigrated,
+		"config_migration_msg": a.configMigrationMsg,
+		"config_errors":       a.configLoadErrors,
 		"llm": map[string]interface{}{
-			"default_provider": a.config.LLM.DefaultProvider,
-			"providers":        providers,
-			"defaults": map[string]interface{}{
-				"max_tokens":  a.config.LLM.Defaults.MaxTokens,
-				"temperature": a.config.LLM.Defaults.Temperature,
+			"active_provider": a.config.LLM.ActiveProvider,
+			"anthropic": map[string]interface{}{
+				"api_key": maskAPIKey(a.config.LLM.Anthropic.APIKey),
+				"model":   a.config.LLM.Anthropic.Model,
+			},
+			"gemini": map[string]interface{}{
+				"api_key": maskAPIKey(a.config.LLM.Gemini.APIKey),
+				"model":   a.config.LLM.Gemini.Model,
+			},
+			"lmstudio": map[string]interface{}{
+				"base_url": a.config.LLM.LMStudio.BaseURL,
+				"api_key":  maskAPIKey(a.config.LLM.LMStudio.APIKey),
+				"model":    a.config.LLM.LMStudio.Model,
+			},
+			"openai_compatible": map[string]interface{}{
+				"base_url": a.config.LLM.OpenAICompatible.BaseURL,
+				"api_key":  maskAPIKey(a.config.LLM.OpenAICompatible.APIKey),
+				"model":    a.config.LLM.OpenAICompatible.Model,
+			},
+			"chatgpt": map[string]interface{}{
+				"api_key": maskAPIKey(a.config.LLM.ChatGPT.APIKey),
+				"model":   a.config.LLM.ChatGPT.Model,
 			},
 		},
 		"memory": map[string]interface{}{
@@ -1108,16 +1140,111 @@ func (a *App) GetConfig() map[string]interface{} {
 				"retention_days":  a.config.Memory.Episodic.RetentionDays,
 				"retrieval_limit": a.config.Memory.Episodic.RetrievalLimit,
 			},
-			"semantic": map[string]interface{}{
-				"embedding_provider": a.config.Memory.Semantic.EmbeddingProvider,
-				"embedding_model":    a.config.Memory.Semantic.EmbeddingModel,
-			},
+			"semantic": map[string]interface{}{},
 		},
 		"search": map[string]interface{}{
 			"provider": a.config.Search.Provider,
 			"api_key":  searchKeyMasked,
 		},
 	}
+}
+
+// maskAPIKey returns a masked representation of an API key for display.
+func maskAPIKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	return "***configured***"
+}
+
+// ListProviderModels returns available model names for a given provider.
+// For Anthropic/Gemini: returns hardcoded list from model registry.
+// For ChatGPT/OpenAI Compatible/LM Studio: fetches from the provider's API.
+func (a *App) ListProviderModels(provider string) ([]string, error) {
+	if a.config == nil {
+		return nil, errors.New("config not initialized")
+	}
+
+	switch provider {
+	case "anthropic":
+		return llm.BuiltInModelNames("anthropic-api"), nil
+	case "gemini":
+		return llm.BuiltInModelNamesByPrefix("gemini-"), nil
+	case "chatgpt":
+		apiKey := a.config.LLM.ChatGPT.APIKey
+		if apiKey == "" {
+			return nil, errors.New("ChatGPT API key not configured")
+		}
+		return a.listOpenAIModels("", apiKey)
+	case "openai_compatible":
+		cfg := a.config.LLM.OpenAICompatible
+		if cfg.BaseURL == "" {
+			return nil, errors.New("OpenAI Compatible base URL not configured")
+		}
+		return a.listOpenAIModels(cfg.BaseURL, cfg.APIKey)
+	case "lmstudio":
+		cfg := a.config.LLM.LMStudio
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost:1234"
+		}
+		return a.listLMStudioModels(baseURL, cfg.APIKey)
+	default:
+		return nil, fmt.Errorf("unknown provider: %s", provider)
+	}
+}
+
+// listOpenAIModels fetches available models from an OpenAI-compatible API.
+func (a *App) listOpenAIModels(baseURL, apiKey string) ([]string, error) {
+	var client *openai.Client
+	if baseURL == "" {
+		client = openai.NewClient(apiKey)
+	} else {
+		cfg := openai.DefaultConfig(apiKey)
+		cfg.BaseURL = baseURL
+		client = openai.NewClientWithConfig(cfg)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	modelList, err := client.ListModels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list models: %w", err)
+	}
+
+	names := []string{}
+	for _, m := range modelList.Models {
+		names = append(names, m.ID)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// listLMStudioModels fetches available models from LM Studio API.
+func (a *App) listLMStudioModels(baseURL, apiKey string) ([]string, error) {
+	provider, err := llm.NewLMStudioProvider(llm.LMStudioProviderConfig{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LM Studio provider: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	models, err := provider.ListModels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list models: %w", err)
+	}
+
+	names := []string{}
+	for _, m := range models {
+		names = append(names, m.ID)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // GetMemoryStats returns current memory system statistics.
@@ -1129,25 +1256,24 @@ func (a *App) GetMemoryStats() map[string]interface{} {
 		"reflexion":  0,
 	}
 
-	if a.episodicMem != nil {
-		if count, err := a.episodicMem.Count(context.Background()); err == nil {
-			stats["episodic"] = count
+	if a.memorySystem != nil {
+		if a.memorySystem.Episodic != nil {
+			if count, err := a.memorySystem.Episodic.Count(context.Background()); err == nil {
+				stats["episodic"] = count
+			}
 		}
-	}
-
-	if a.semanticMem != nil {
-		if count, err := a.semanticMem.Count(context.Background()); err == nil {
-			stats["semantic"] = count
+		if a.memorySystem.Semantic != nil {
+			if count, err := a.memorySystem.Semantic.Count(context.Background()); err == nil {
+				stats["semantic"] = count
+			}
 		}
-	}
-
-	if a.proceduralMem != nil {
-		stats["procedural"] = len(a.proceduralMem.ListSkills())
-	}
-
-	if a.reflexionMem != nil {
-		if count, err := a.reflexionMem.Count(context.Background()); err == nil {
-			stats["reflexion"] = count
+		if a.memorySystem.Procedural != nil {
+			stats["procedural"] = len(a.memorySystem.Procedural.ListSkills())
+		}
+		if a.memorySystem.Reflexion != nil {
+			if count, err := a.memorySystem.Reflexion.Count(context.Background()); err == nil {
+				stats["reflexion"] = count
+			}
 		}
 	}
 
@@ -1160,8 +1286,8 @@ func (a *App) GetSessionMemoryStats(sessionID string) map[string]interface{} {
 		"episodic": 0,
 	}
 
-	if a.episodicMem != nil && sessionID != "" {
-		if count, err := a.episodicMem.CountBySession(context.Background(), sessionID); err == nil {
+	if a.memorySystem != nil && a.memorySystem.Episodic != nil && sessionID != "" {
+		if count, err := a.memorySystem.Episodic.CountBySession(context.Background(), sessionID); err == nil {
 			stats["episodic"] = count
 		}
 	}
@@ -1264,7 +1390,7 @@ func (a *App) GetSecuritySettings() SecuritySettingsResponse {
 // UpdateSecuritySettings updates security settings at runtime.
 func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	if a.config == nil {
-		return fmt.Errorf("config not initialized")
+		return errors.New("config not initialized")
 	}
 
 	// Update config
@@ -1317,43 +1443,80 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 
 // LLMSettingsRequest holds LLM settings from the frontend.
 type LLMSettingsRequest struct {
-	DefaultProvider string             `json:"default_provider"`
-	Model           string             `json:"model"`
-	Defaults        LLMDefaultsRequest `json:"defaults"`
+	ActiveProvider string `json:"active_provider"`
+	APIKey         string `json:"api_key"`
+	BaseURL        string `json:"base_url"`
+	Model          string `json:"model"`
 }
 
-// LLMDefaultsRequest holds LLM default parameters.
-type LLMDefaultsRequest struct {
-	MaxTokens   int     `json:"max_tokens"`
-	Temperature float64 `json:"temperature"`
-}
-
-// UpdateLLMSettings updates LLM role and default settings.
+// UpdateLLMSettings updates LLM active provider and model settings.
 func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 	if a.config == nil {
-		return fmt.Errorf("config not initialized")
+		return errors.New("config not initialized")
 	}
 
-	// Update default provider
-	if settings.DefaultProvider != "" {
-		if _, exists := a.config.LLM.Providers[settings.DefaultProvider]; !exists {
-			return fmt.Errorf("default_provider references non-existent provider %q", settings.DefaultProvider)
+	// Update active provider
+	if settings.ActiveProvider != "" {
+		// Validate the provider is one of the known providers
+		validProviders := map[string]bool{
+			"anthropic":         true,
+			"gemini":            true,
+			"lmstudio":          true,
+			"openai_compatible": true,
+			"chatgpt":           true,
 		}
-		a.config.LLM.DefaultProvider = settings.DefaultProvider
+		if !validProviders[settings.ActiveProvider] {
+			return fmt.Errorf("active_provider %q is not a valid provider", settings.ActiveProvider)
+		}
+		a.config.LLM.ActiveProvider = settings.ActiveProvider
 	}
 
-	// Update model on the default provider
-	if settings.Model != "" && a.config.LLM.DefaultProvider != "" {
-		prov := a.config.LLM.Providers[a.config.LLM.DefaultProvider]
-		prov.Model = settings.Model
-		a.config.LLM.Providers[a.config.LLM.DefaultProvider] = prov
+	// Update model on the active provider
+	if a.config.LLM.ActiveProvider != "" {
+		switch a.config.LLM.ActiveProvider {
+		case "anthropic":
+			if settings.Model != "" {
+				a.config.LLM.Anthropic.Model = settings.Model
+			}
+			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+				a.config.LLM.Anthropic.APIKey = settings.APIKey
+			}
+		case "gemini":
+			if settings.Model != "" {
+				a.config.LLM.Gemini.Model = settings.Model
+			}
+			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+				a.config.LLM.Gemini.APIKey = settings.APIKey
+			}
+		case "lmstudio":
+			if settings.Model != "" {
+				a.config.LLM.LMStudio.Model = settings.Model
+			}
+			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+				a.config.LLM.LMStudio.APIKey = settings.APIKey
+			}
+			if settings.BaseURL != "" {
+				a.config.LLM.LMStudio.BaseURL = settings.BaseURL
+			}
+		case "openai_compatible":
+			if settings.Model != "" {
+				a.config.LLM.OpenAICompatible.Model = settings.Model
+			}
+			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+				a.config.LLM.OpenAICompatible.APIKey = settings.APIKey
+			}
+			if settings.BaseURL != "" {
+				a.config.LLM.OpenAICompatible.BaseURL = settings.BaseURL
+			}
+		case "chatgpt":
+			if settings.Model != "" {
+				a.config.LLM.ChatGPT.Model = settings.Model
+			}
+			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+				a.config.LLM.ChatGPT.APIKey = settings.APIKey
+			}
+		}
 	}
-
-	// Update defaults
-	if settings.Defaults.MaxTokens > 0 {
-		a.config.LLM.Defaults.MaxTokens = settings.Defaults.MaxTokens
-	}
-	a.config.LLM.Defaults.Temperature = settings.Defaults.Temperature
 
 	if err := a.persistConfig(); err != nil {
 		slog.Warn("failed to persist LLM settings", "error", err)
@@ -1367,22 +1530,15 @@ type EpisodicSettingsRequest struct {
 	RetrievalLimit int `json:"retrieval_limit"`
 }
 
-// SemanticSettingsRequest holds semantic memory settings.
-type SemanticSettingsRequest struct {
-	EmbeddingProvider string `json:"embedding_provider"`
-	EmbeddingModel    string `json:"embedding_model"`
-}
-
 // MemorySettingsRequest holds memory settings from the frontend.
 type MemorySettingsRequest struct {
 	Episodic EpisodicSettingsRequest `json:"episodic"`
-	Semantic SemanticSettingsRequest `json:"semantic"`
 }
 
 // UpdateMemorySettings updates memory configuration settings.
 func (a *App) UpdateMemorySettings(settings MemorySettingsRequest) error {
 	if a.config == nil {
-		return fmt.Errorf("config not initialized")
+		return errors.New("config not initialized")
 	}
 
 	if settings.Episodic.RetentionDays > 0 {
@@ -1391,8 +1547,6 @@ func (a *App) UpdateMemorySettings(settings MemorySettingsRequest) error {
 	if settings.Episodic.RetrievalLimit > 0 {
 		a.config.Memory.Episodic.RetrievalLimit = settings.Episodic.RetrievalLimit
 	}
-	a.config.Memory.Semantic.EmbeddingProvider = settings.Semantic.EmbeddingProvider
-	a.config.Memory.Semantic.EmbeddingModel = settings.Semantic.EmbeddingModel
 
 	if err := a.persistConfig(); err != nil {
 		slog.Warn("failed to persist memory settings", "error", err)
@@ -1409,7 +1563,7 @@ type SearchSettingsRequest struct {
 // UpdateSearchSettings updates search configuration.
 func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 	if a.config == nil {
-		return fmt.Errorf("config not initialized")
+		return errors.New("config not initialized")
 	}
 
 	a.config.Search.Provider = settings.Provider
@@ -1429,7 +1583,7 @@ type dockerBuilderAdapter struct {
 	builder *skills.DockerBuilder
 }
 
-func (a *dockerBuilderAdapter) Build(ctx context.Context, skillDir string, name string, version string) (string, error) {
+func (a *dockerBuilderAdapter) Build(ctx context.Context, skillDir, name, version string) (string, error) {
 	manifest := &skills.SkillManifest{
 		Name:       name,
 		Version:    version,
@@ -1444,7 +1598,7 @@ type semanticStoreAdapter struct {
 	mem *memory.SemanticMemory
 }
 
-func (a *semanticStoreAdapter) Store(ctx context.Context, key string, content string, metadata map[string]string) error {
+func (a *semanticStoreAdapter) Store(ctx context.Context, key, content string, metadata map[string]string) error {
 	return a.mem.Store(ctx, key, content, metadata)
 }
 

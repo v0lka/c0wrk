@@ -13,7 +13,7 @@ func TestProceduralMemory_Scan(t *testing.T) {
 
 	// Create skill1
 	skill1Dir := filepath.Join(tempDir, "skill1")
-	if err := os.Mkdir(skill1Dir, 0755); err != nil {
+	if err := os.Mkdir(skill1Dir, 0o755); err != nil {
 		t.Fatalf("failed to create skill1 dir: %v", err)
 	}
 	skill1Manifest := `{
@@ -23,13 +23,13 @@ func TestProceduralMemory_Scan(t *testing.T) {
 		"language": "python",
 		"capabilities": ["network"]
 	}`
-	if err := os.WriteFile(filepath.Join(skill1Dir, "skill.json"), []byte(skill1Manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(skill1Dir, "skill.json"), []byte(skill1Manifest), 0o644); err != nil {
 		t.Fatalf("failed to write skill1 manifest: %v", err)
 	}
 
 	// Create skill2
 	skill2Dir := filepath.Join(tempDir, "skill2")
-	if err := os.Mkdir(skill2Dir, 0755); err != nil {
+	if err := os.Mkdir(skill2Dir, 0o755); err != nil {
 		t.Fatalf("failed to create skill2 dir: %v", err)
 	}
 	skill2Manifest := `{
@@ -39,7 +39,7 @@ func TestProceduralMemory_Scan(t *testing.T) {
 		"language": "python",
 		"capabilities": ["filesystem"]
 	}`
-	if err := os.WriteFile(filepath.Join(skill2Dir, "skill.json"), []byte(skill2Manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(skill2Dir, "skill.json"), []byte(skill2Manifest), 0o644); err != nil {
 		t.Fatalf("failed to write skill2 manifest: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestProceduralMemory_GetSkill(t *testing.T) {
 
 	// Create a skill
 	skillDir := filepath.Join(tempDir, "myskill")
-	if err := os.Mkdir(skillDir, 0755); err != nil {
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
 		t.Fatalf("failed to create skill dir: %v", err)
 	}
 	manifest := `{
@@ -125,7 +125,7 @@ func TestProceduralMemory_GetSkill(t *testing.T) {
 		"language": "python",
 		"capabilities": ["network", "filesystem"]
 	}`
-	if err := os.WriteFile(filepath.Join(skillDir, "skill.json"), []byte(manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
 	}
 
@@ -212,7 +212,7 @@ func TestProceduralMemory_ScanIgnoresBadManifests(t *testing.T) {
 
 	// Create good skill
 	goodDir := filepath.Join(tempDir, "good_skill")
-	if err := os.Mkdir(goodDir, 0755); err != nil {
+	if err := os.Mkdir(goodDir, 0o755); err != nil {
 		t.Fatalf("failed to create good_skill dir: %v", err)
 	}
 	goodManifest := `{
@@ -221,30 +221,30 @@ func TestProceduralMemory_ScanIgnoresBadManifests(t *testing.T) {
 		"version": "1.0.0",
 		"language": "python"
 	}`
-	if err := os.WriteFile(filepath.Join(goodDir, "skill.json"), []byte(goodManifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(goodDir, "skill.json"), []byte(goodManifest), 0o644); err != nil {
 		t.Fatalf("failed to write good manifest: %v", err)
 	}
 
 	// Create bad skill with invalid JSON
 	badDir := filepath.Join(tempDir, "bad_skill")
-	if err := os.Mkdir(badDir, 0755); err != nil {
+	if err := os.Mkdir(badDir, 0o755); err != nil {
 		t.Fatalf("failed to create bad_skill dir: %v", err)
 	}
 	badManifest := `{invalid json here`
-	if err := os.WriteFile(filepath.Join(badDir, "skill.json"), []byte(badManifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(badDir, "skill.json"), []byte(badManifest), 0o644); err != nil {
 		t.Fatalf("failed to write bad manifest: %v", err)
 	}
 
 	// Create skill with missing name
 	noNameDir := filepath.Join(tempDir, "noname_skill")
-	if err := os.Mkdir(noNameDir, 0755); err != nil {
+	if err := os.Mkdir(noNameDir, 0o755); err != nil {
 		t.Fatalf("failed to create noname_skill dir: %v", err)
 	}
 	noNameManifest := `{
 		"description": "No name skill",
 		"version": "1.0.0"
 	}`
-	if err := os.WriteFile(filepath.Join(noNameDir, "skill.json"), []byte(noNameManifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(noNameDir, "skill.json"), []byte(noNameManifest), 0o644); err != nil {
 		t.Fatalf("failed to write noname manifest: %v", err)
 	}
 

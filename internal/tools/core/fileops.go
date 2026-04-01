@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,7 +92,7 @@ func (t *FileOpsTool) DefaultPolicy() tools.ToolPolicy {
 // Judge evaluates whether a file operation is safe to execute.
 // Read-only actions are always allowed.
 // Write actions are allowed if the target is within the session workspace.
-func (t *FileOpsTool) Judge(ctx context.Context, input json.RawMessage) (bool, string) {
+func (t *FileOpsTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
 	var params fileOpsInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, "" // Defer to LLM Judge on parse error
@@ -156,7 +157,7 @@ func (t *FileOpsTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	case "search_content":
 		return t.searchContent(params.Path, params.Regex)
 	default:
-		return tools.ToolResult{Content: fmt.Sprintf("unknown action: %s", params.Action), IsError: true}, nil
+		return tools.ToolResult{Content: "unknown action: " + params.Action, IsError: true}, nil
 	}
 }
 
@@ -172,11 +173,11 @@ func (t *FileOpsTool) readFile(path string) (tools.ToolResult, error) {
 // writeFile writes content to a file, creating parent directories if needed.
 func (t *FileOpsTool) writeFile(path, content string) (tools.ToolResult, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to create directories: %v", err), IsError: true}, nil
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
 	}
 
@@ -203,7 +204,7 @@ func (t *FileOpsTool) editFile(path, oldString, newString string) (tools.ToolRes
 
 	newContent := strings.Replace(content, oldString, newString, 1)
 
-	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
 	}
 
@@ -241,7 +242,7 @@ func (t *FileOpsTool) searchFiles(basePath, pattern string) (tools.ToolResult, e
 
 	err := filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // Skip files we can't access
+			return nil //nolint:nilerr // continue walking on individual file errors
 		}
 
 		if info.IsDir() {
@@ -250,7 +251,7 @@ func (t *FileOpsTool) searchFiles(basePath, pattern string) (tools.ToolResult, e
 
 		matched, err := filepath.Match(pattern, filepath.Base(path))
 		if err != nil {
-			return nil // Invalid pattern, skip
+			return nil //nolint:nilerr // continue walking on individual file errors
 		}
 
 		if matched {
@@ -282,7 +283,7 @@ func (t *FileOpsTool) searchContent(basePath, regexPattern string) (tools.ToolRe
 
 	err = filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
-			return nil
+			return nil //nolint:nilerr // continue walking on individual file errors
 		}
 
 		if len(results) >= maxMatches {
@@ -291,7 +292,7 @@ func (t *FileOpsTool) searchContent(basePath, regexPattern string) (tools.ToolRe
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil // Skip files we can't read
+			return nil //nolint:nilerr // continue walking on individual file errors
 		}
 
 		lines := strings.Split(string(data), "\n")
@@ -307,7 +308,7 @@ func (t *FileOpsTool) searchContent(basePath, regexPattern string) (tools.ToolRe
 		return nil
 	})
 
-	if err != nil && err != filepath.SkipAll {
+	if err != nil && !errors.Is(err, filepath.SkipAll) {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to search content: %v", err), IsError: true}, nil
 	}
 

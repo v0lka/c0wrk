@@ -12,6 +12,7 @@ import { MemorySettings } from './MemorySettings'
 import { SearchSettings } from './SearchSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { Settings, Brain, Database, Search, Shield, Info } from 'lucide-react'
+import { ConfigWarningBanner } from './ConfigWarningBanner'
 
 interface SettingsModalProps {
   open: boolean
@@ -27,6 +28,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         </DialogHeader>
         
         <Tabs defaultValue="general" className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0">
+          <ConfigWarningBanner className="mb-2" />
           <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="general" className="gap-1">
               <Settings className="h-4 w-4" />

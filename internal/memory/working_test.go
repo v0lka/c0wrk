@@ -161,7 +161,7 @@ func TestSlidingWindowStrategyCompaction(t *testing.T) {
 	strategy := NewSlidingWindowStrategy(3, 5)
 
 	// Create 20 steps
-	var steps []core.Step
+	steps := make([]core.Step, 0, 20)
 	for i := 1; i <= 20; i++ {
 		steps = append(steps, makeStep(
 			fmt.Sprintf("Thought %d", i),
@@ -209,7 +209,7 @@ func TestSlidingWindowNoCompactionNeeded(t *testing.T) {
 	strategy := NewSlidingWindowStrategy(3, 5)
 
 	// Create 5 steps (less than keepFirst + keepLast = 8)
-	var steps []core.Step
+	steps := make([]core.Step, 0, 5)
 	for i := 1; i <= 5; i++ {
 		steps = append(steps, makeStep(
 			fmt.Sprintf("Thought %d", i),

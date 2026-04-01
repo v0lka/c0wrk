@@ -32,6 +32,7 @@ type ContextWindow struct {
 const safetyMarginPercent = 5 // 5% of context window
 
 // FillCheck is an alias for core.FillCheck for backward compatibility.
+//
 // Deprecated: Use core.FillCheck directly.
 type FillCheck = core.FillCheck
 
@@ -55,20 +56,20 @@ func (cw *ContextWindow) EffectiveMax() int {
 
 // FillPercent returns the current fill percentage of the context window.
 func (cw *ContextWindow) FillPercent() float64 {
-	max := cw.EffectiveMax()
-	if max <= 0 {
+	effectiveMax := cw.EffectiveMax()
+	if effectiveMax <= 0 {
 		return 100.0
 	}
-	return float64(cw.tracker.EstimateTotal()) / float64(max) * 100
+	return float64(cw.tracker.EstimateTotal()) / float64(effectiveMax) * 100
 }
 
 // CheckFill returns a FillCheck with the current fill status.
 func (cw *ContextWindow) CheckFill() FillCheck {
 	used := cw.tracker.EstimateTotal()
-	max := cw.EffectiveMax()
+	effectiveMax := cw.EffectiveMax()
 	percent := float64(0)
-	if max > 0 {
-		percent = float64(used) / float64(max) * 100
+	if effectiveMax > 0 {
+		percent = float64(used) / float64(effectiveMax) * 100
 	}
 
 	status := "ok"
@@ -83,7 +84,7 @@ func (cw *ContextWindow) CheckFill() FillCheck {
 		status = "compact"
 	}
 
-	return FillCheck{Percent: percent, Status: status, Used: used, Max: max}
+	return FillCheck{Percent: percent, Status: status, Used: used, Max: effectiveMax}
 }
 
 // CorrectTokenCount updates the tracker with the actual API input token count.
@@ -242,7 +243,7 @@ func (cw *ContextWindow) formatTaskAndCriteria() string {
 	var parts []string
 
 	if cw.taskDefinition != "" {
-		parts = append(parts, fmt.Sprintf("Task: %s", cw.taskDefinition))
+		parts = append(parts, "Task: "+cw.taskDefinition)
 	}
 
 	if len(cw.criteria) > 0 {
@@ -276,12 +277,14 @@ func (cw *ContextWindow) formatPlan() string {
 
 // formatReflections formats the reflections.
 func (cw *ContextWindow) formatReflections() string {
-	var parts []string
-	parts = append(parts, "Reflections:")
+	parts := make([]string, 1, 1+len(cw.reflections)*3)
+	parts[0] = "Reflections:"
 	for _, r := range cw.reflections {
-		parts = append(parts, fmt.Sprintf("- Analysis: %s", r.FailureAnalysis))
-		parts = append(parts, fmt.Sprintf("  Root Cause: %s", r.RootCause))
-		parts = append(parts, fmt.Sprintf("  Action Plan: %s", r.ActionPlan))
+		parts = append(parts,
+			"- Analysis: "+r.FailureAnalysis,
+			"  Root Cause: "+r.RootCause,
+			"  Action Plan: "+r.ActionPlan,
+		)
 	}
 
 	return strings.Join(parts, "\n")
@@ -289,8 +292,8 @@ func (cw *ContextWindow) formatReflections() string {
 
 // formatConstitution formats the constitution principles.
 func (cw *ContextWindow) formatConstitution() string {
-	var parts []string
-	parts = append(parts, "Constitution Principles:")
+	parts := make([]string, 1, 1+len(cw.constitution))
+	parts[0] = "Constitution Principles:"
 	for i, principle := range cw.constitution {
 		parts = append(parts, fmt.Sprintf("%d. %s", i+1, principle))
 	}

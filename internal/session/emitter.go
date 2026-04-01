@@ -63,7 +63,7 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []core.PlanStepEvent) 
 }
 
 // PlanStepStart emits a plan step start event.
-func (e *EventEmitter) PlanStepStart(stepID string, description string) {
+func (e *EventEmitter) PlanStepStart(stepID, description string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emit(Event{
@@ -119,7 +119,7 @@ func (e *EventEmitter) Thought(stepNum int, content string) {
 }
 
 // ToolCall emits a tool call event.
-func (e *EventEmitter) ToolCall(stepNum int, toolName string, argsPreview string) {
+func (e *EventEmitter) ToolCall(stepNum int, toolName, argsPreview string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emit(Event{
@@ -134,7 +134,7 @@ func (e *EventEmitter) ToolCall(stepNum int, toolName string, argsPreview string
 }
 
 // ToolResult emits a tool result event.
-func (e *EventEmitter) ToolResult(stepNum int, resultLen int, preview string) {
+func (e *EventEmitter) ToolResult(stepNum, resultLen int, preview string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emit(Event{

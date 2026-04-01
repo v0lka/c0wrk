@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -17,8 +18,8 @@ type Planner struct {
 }
 
 // NewPlanner creates a new Planner with the given LLM caller.
-func NewPlanner(llm LLMCaller) *Planner {
-	return &Planner{llm: llm}
+func NewPlanner(caller LLMCaller) *Planner {
+	return &Planner{llm: caller}
 }
 
 // Plan generates a DAG execution plan for the given task.
@@ -222,7 +223,7 @@ func (p *Planner) parsePlanResponse(content string) (*Plan, error) {
 	endIdx := strings.LastIndex(content, "}")
 
 	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
-		return nil, fmt.Errorf("no valid JSON object found in response")
+		return nil, errors.New("no valid JSON object found in response")
 	}
 
 	jsonContent := content[startIdx : endIdx+1]

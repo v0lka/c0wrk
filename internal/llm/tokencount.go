@@ -25,7 +25,7 @@ func NewSimpleTokenCounter() *SimpleTokenCounter {
 }
 
 func (c *SimpleTokenCounter) Count(text string) int {
-	if len(text) == 0 {
+	if text == "" {
 		return 0
 	}
 	return (len(text) + 3) / 4 // ceiling division
@@ -63,7 +63,7 @@ func NewTiktokenCounter(encoding string) (*TiktokenCounter, error) {
 }
 
 func (c *TiktokenCounter) Count(text string) int {
-	if len(text) == 0 {
+	if text == "" {
 		return 0
 	}
 	c.mu.RLock()
