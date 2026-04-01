@@ -219,3 +219,143 @@ func TestModelRegistry_EmptyOverrides(t *testing.T) {
 		t.Errorf("expected ContextWindow 128000, got %d", meta.ContextWindow)
 	}
 }
+
+func TestModelRegistry_RegisteredSource(t *testing.T) {
+	// Create registry with no overrides and no built-in match for test model
+	registry := NewModelRegistry(nil)
+	
+	// Register a source that returns known metadata for a test model
+	testModel := "test-source-model-v1"
+	expectedMeta := ModelMetadata{
+		ContextWindow: 65536,
+		OutputLimit:   2048,
+		TokenizerType: "test-tokenizer",
+	}
+	
+	registry.RegisterSource(func(model string) (ModelMetadata, bool) {
+		if model == testModel {
+			return expectedMeta, true
+		}
+		return ModelMetadata{}, false
+	})
+	
+	// Resolve should use the registered source
+	meta := registry.Resolve(testModel)
+	
+	if meta.ContextWindow != expectedMeta.ContextWindow {
+		t.Errorf("expected ContextWindow %d, got %d", expectedMeta.ContextWindow, meta.ContextWindow)
+	}
+	if meta.OutputLimit != expectedMeta.OutputLimit {
+		t.Errorf("expected OutputLimit %d, got %d", expectedMeta.OutputLimit, meta.OutputLimit)
+	}
+	if meta.TokenizerType != expectedMeta.TokenizerType {
+		t.Errorf("expected TokenizerType %q, got %q", expectedMeta.TokenizerType, meta.TokenizerType)
+	}
+}
+
+func TestModelRegistry_SourcePriority(t *testing.T) {
+	// Create registry with both a source and an override for the same model
+	testModel := "priority-test-model"
+	
+	// Source returns these values
+	sourceMeta := ModelMetadata{
+		ContextWindow: 50000,
+		OutputLimit:   2000,
+		TokenizerType: "source-tokenizer",
+	}
+	
+	// Override has different values (should win)
+	overrideMeta := ModelMetadata{
+		ContextWindow: 99999,
+		OutputLimit:   9999,
+		TokenizerType: "override-tokenizer",
+	}
+	
+	registry := NewModelRegistry(map[string]ModelMetadata{
+		testModel: overrideMeta,
+	})
+	
+	registry.RegisterSource(func(model string) (ModelMetadata, bool) {
+		if model == testModel {
+			return sourceMeta, true
+		}
+		return ModelMetadata{}, false
+	})
+	
+	// Override (tier 1) should take priority over source (tier 4)
+	meta := registry.Resolve(testModel)
+	
+	if meta.ContextWindow != overrideMeta.ContextWindow {
+		t.Errorf("expected override ContextWindow %d, got %d", overrideMeta.ContextWindow, meta.ContextWindow)
+	}
+	if meta.OutputLimit != overrideMeta.OutputLimit {
+		t.Errorf("expected override OutputLimit %d, got %d", overrideMeta.OutputLimit, meta.OutputLimit)
+	}
+	if meta.TokenizerType != overrideMeta.TokenizerType {
+		t.Errorf("expected override TokenizerType %q, got %q", overrideMeta.TokenizerType, meta.TokenizerType)
+	}
+}
+
+func TestModelRegistry_SourceFallback(t *testing.T) {
+	// Register a source that returns false for a model
+	registry := NewModelRegistry(nil)
+	
+	testModel := "fallback-test-model"
+	
+	registry.RegisterSource(func(model string) (ModelMetadata, bool) {
+		// Source doesn't know about this model
+		return ModelMetadata{}, false
+	})
+	
+	// Resolve should use fallback defaults
+	meta := registry.Resolve(testModel)
+	
+	// Fallback defaults: ContextWindow: 128000, OutputLimit: 4096, TokenizerType: "approximate"
+	if meta.ContextWindow != 128000 {
+		t.Errorf("expected fallback ContextWindow 128000, got %d", meta.ContextWindow)
+	}
+	if meta.OutputLimit != 4096 {
+		t.Errorf("expected fallback OutputLimit 4096, got %d", meta.OutputLimit)
+	}
+	if meta.TokenizerType != "approximate" {
+		t.Errorf("expected fallback TokenizerType %q, got %q", "approximate", meta.TokenizerType)
+	}
+}
+
+func TestModelRegistry_MultipleSources(t *testing.T) {
+	// Register two sources: first returns false, second returns metadata
+	registry := NewModelRegistry(nil)
+	
+	testModel := "multi-source-model"
+	expectedMeta := ModelMetadata{
+		ContextWindow: 32768,
+		OutputLimit:   1024,
+		TokenizerType: "second-source-tokenizer",
+	}
+	
+	// First source doesn't know the model
+	registry.RegisterSource(func(model string) (ModelMetadata, bool) {
+		return ModelMetadata{}, false
+	})
+	
+	// Second source knows the model
+	registry.RegisterSource(func(model string) (ModelMetadata, bool) {
+		if model == testModel {
+			return expectedMeta, true
+		}
+		return ModelMetadata{}, false
+	})
+	
+	// Resolve should use the second source's metadata
+	meta := registry.Resolve(testModel)
+	
+	if meta.ContextWindow != expectedMeta.ContextWindow {
+		t.Errorf("expected ContextWindow %d, got %d", expectedMeta.ContextWindow, meta.ContextWindow)
+	}
+	if meta.OutputLimit != expectedMeta.OutputLimit {
+		t.Errorf("expected OutputLimit %d, got %d", expectedMeta.OutputLimit, meta.OutputLimit)
+	}
+	if meta.TokenizerType != expectedMeta.TokenizerType {
+		t.Errorf("expected TokenizerType %q, got %q", expectedMeta.TokenizerType, meta.TokenizerType)
+	}
+}

@@ -6,17 +6,15 @@ import (
 	"testing"
 )
 
-// TestLoadMinimalConfig tests loading a minimal YAML config with one provider and one role.
+// TestLoadMinimalConfig tests loading a minimal YAML config with one provider and default_provider.
 func TestLoadMinimalConfig(t *testing.T) {
 	content := `
 llm:
+  default_provider: anthropic
   providers:
     anthropic:
       type: anthropic
       api_key: "test-key"
-  roles:
-    router:
-      provider: anthropic
       model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
@@ -41,17 +39,13 @@ llm:
 	if provider.APIKey != "test-key" {
 		t.Errorf("Expected api_key 'test-key', got %q", provider.APIKey)
 	}
+	if provider.Model != "claude-3-haiku" {
+		t.Errorf("Expected provider model 'claude-3-haiku', got %q", provider.Model)
+	}
 
-	// Verify role was loaded
-	role, ok := cfg.LLM.Roles["router"]
-	if !ok {
-		t.Fatal("Expected 'router' role to exist")
-	}
-	if role.Provider != "anthropic" {
-		t.Errorf("Expected role provider 'anthropic', got %q", role.Provider)
-	}
-	if role.Model != "claude-3-haiku" {
-		t.Errorf("Expected role model 'claude-3-haiku', got %q", role.Model)
+	// Verify default provider
+	if cfg.LLM.DefaultProvider != "anthropic" {
+		t.Errorf("Expected default_provider 'anthropic', got %q", cfg.LLM.DefaultProvider)
 	}
 }
 
@@ -63,13 +57,11 @@ func TestEnvVarSubstitution(t *testing.T) {
 
 	content := `
 llm:
+  default_provider: openai
   providers:
     openai:
       type: openai
       api_key: "${TEST_API_KEY}"
-  roles:
-    executor:
-      provider: openai
       model: gpt-4
 `
 	configPath := writeTestConfig(t, content)
@@ -92,20 +84,18 @@ llm:
 func TestNonExistentProviderError(t *testing.T) {
 	content := `
 llm:
+  default_provider: nonexistent
   providers:
     anthropic:
       type: anthropic
       api_key: "test-key"
-  roles:
-    router:
-      provider: nonexistent
-      model: some-model
+      model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
 
 	_, err := Load(configPath)
 	if err == nil {
-		t.Fatal("Expected error when role references non-existent provider, got nil")
+		t.Fatal("Expected error when default_provider references non-existent provider, got nil")
 	}
 
 	// Verify error message mentions the issue
@@ -119,13 +109,11 @@ llm:
 func TestDefaultsApplied(t *testing.T) {
 	content := `
 llm:
+  default_provider: anthropic
   providers:
     anthropic:
       type: anthropic
       api_key: "test-key"
-  roles:
-    router:
-      provider: anthropic
       model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
@@ -225,11 +213,8 @@ llm:
 func TestNoProviderError(t *testing.T) {
 	content := `
 llm:
+  default_provider: anthropic
   providers: {}
-  roles:
-    router:
-      provider: anthropic
-      model: claude-3-haiku
 `
 	configPath := writeTestConfig(t, content)
 

@@ -17,11 +17,16 @@ type ModelMetadata struct {
 	TokenizerType string // "tiktoken/o200k_base", "tiktoken/cl100k_base", "anthropic-api", "approximate", etc.
 }
 
-// ModelRegistry provides a 4-tier resolution system for model metadata.
+// ModelMetadataSource is a function that can resolve model metadata from an external source.
+// Returns metadata and true if found, or zero value and false if not found.
+type ModelMetadataSource func(model string) (ModelMetadata, bool)
+
+// ModelRegistry provides a 5-tier resolution system for model metadata.
 type ModelRegistry struct {
 	builtIn   map[string]ModelMetadata
 	overrides map[string]ModelMetadata
 	cache     map[string]ModelMetadata
+	sources   []ModelMetadataSource // external metadata sources (e.g., LM Studio)
 	mu        sync.RWMutex
 	httpClient *http.Client
 }
@@ -42,11 +47,12 @@ func NewModelRegistry(overrides map[string]ModelMetadata) *ModelRegistry {
 	return registry
 }
 
-// Resolve returns model metadata using 4-tier lookup:
+// Resolve returns model metadata using 5-tier lookup:
 // 1. User overrides (from config)
 // 2. Built-in registry (hardcoded table)
 // 3. HuggingFace API lookup (lazy, cached)
-// 4. Fallback defaults with warning log
+// 4. Registered sources (e.g., LM Studio provider)
+// 5. Fallback defaults with warning log
 func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 	// Priority 1: Check overrides (no lock needed for read-only map after construction)
 	if meta, ok := r.overrides[model]; ok {
@@ -75,7 +81,24 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 		return meta
 	}
 	
-	// Priority 4: Fallback to defaults
+	// Priority 4: Try registered sources
+	// Copy sources slice under read lock, then call sources without lock
+	// (sources may do HTTP calls, so we don't want to hold the lock)
+	r.mu.RLock()
+	sources := make([]ModelMetadataSource, len(r.sources))
+	copy(sources, r.sources)
+	r.mu.RUnlock()
+	
+	for _, src := range sources {
+		if m, ok := src(model); ok {
+			r.mu.Lock()
+			r.cache[model] = m
+			r.mu.Unlock()
+			return m
+		}
+	}
+	
+	// Priority 5: Fallback to defaults
 	slog.Warn("model not found in registry, using fallback defaults",
 		"model", model,
 		"error", err,
@@ -93,6 +116,14 @@ func (r *ModelRegistry) Invalidate(model string) {
 	r.mu.Lock()
 	delete(r.cache, model)
 	r.mu.Unlock()
+}
+
+// RegisterSource adds a metadata source to the registry.
+// Sources are called in order during resolution after HuggingFace lookup fails.
+func (r *ModelRegistry) RegisterSource(src ModelMetadataSource) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sources = append(r.sources, src)
 }
 
 // fetchFromHuggingFace queries HuggingFace API for model config.

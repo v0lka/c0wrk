@@ -9,10 +9,6 @@ interface Provider {
   type: string
   api_key: string
   base_url: string
-}
-
-interface RoleSetting {
-  provider: string
   model: string
 }
 
@@ -22,25 +18,9 @@ interface LLMDefaults {
 }
 
 interface LLMConfig {
+  default_provider: string
   providers: Record<string, Provider>
-  roles: Record<string, RoleSetting>
   defaults: LLMDefaults
-}
-
-const roleLabels: Record<string, string> = {
-  router: 'Router',
-  planner: 'Planner',
-  evaluator_judge: 'Evaluator Judge',
-  executor: 'Executor',
-  summarizer: 'Summarizer',
-}
-
-const roleDescriptions: Record<string, string> = {
-  router: 'Routes user queries to appropriate handlers',
-  planner: 'Creates execution plans for complex tasks',
-  evaluator_judge: 'Evaluates tool execution results',
-  executor: 'Executes planned tasks and actions',
-  summarizer: 'Summarizes conversation context',
 }
 
 export function LLMSettings() {
@@ -68,8 +48,10 @@ export function LLMSettings() {
 
   const saveSettings = useCallback(async (newConfig: LLMConfig) => {
     try {
+      const defaultProv = newConfig.providers[newConfig.default_provider]
       const request = new main.LLMSettingsRequest({
-        roles: newConfig.roles,
+        default_provider: newConfig.default_provider,
+        model: defaultProv?.model || '',
         defaults: newConfig.defaults,
       })
       await UpdateLLMSettings(request)
@@ -92,29 +74,24 @@ export function LLMSettings() {
     [saveSettings]
   )
 
-  const handleRoleProviderChange = (role: string, provider: string) => {
+  const handleDefaultProviderChange = (provider: string) => {
     if (!config) return
     const newConfig: LLMConfig = {
       ...config,
-      roles: {
-        ...config.roles,
-        [role]: {
-          ...config.roles[role],
-          provider,
-        },
-      },
+      default_provider: provider,
     }
     updateSettings(newConfig)
   }
 
-  const handleRoleModelChange = (role: string, model: string) => {
+  const handleModelChange = (model: string) => {
     if (!config) return
+    const currentProvider = config.default_provider
     const newConfig: LLMConfig = {
       ...config,
-      roles: {
-        ...config.roles,
-        [role]: {
-          ...config.roles[role],
+      providers: {
+        ...config.providers,
+        [currentProvider]: {
+          ...config.providers[currentProvider],
           model,
         },
       },
@@ -151,68 +128,48 @@ export function LLMSettings() {
   }
 
   const providerNames = Object.keys(config.providers)
-  const roleKeys = Object.keys(roleLabels)
+  const currentProvider = config.providers[config.default_provider]
 
   return (
     <div className="flex flex-col gap-6">
       <div className="text-sm text-muted-foreground">
-        Configure LLM providers and role assignments. Changes apply immediately.
+        Configure the LLM provider and model used for all agent tasks. Changes apply immediately.
       </div>
 
-      {/* Providers Section */}
-      <div className="flex flex-col gap-3">
-        <span className="text-sm font-medium">Configured Providers</span>
-        <div className="flex flex-wrap gap-2">
-          {providerNames.map((name) => (
-            <div
-              key={name}
-              className="flex items-center gap-2 px-3 py-1.5 bg-muted rounded-md"
-            >
-              <span className="text-sm font-medium">{name}</span>
-              <Badge variant="secondary" className="text-xs">
-                {config.providers[name].type}
-              </Badge>
-            </div>
-          ))}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Providers are configured in your config.yaml file
-        </p>
-      </div>
-
-      {/* Roles Section */}
+      {/* Provider & Model Section */}
       <div className="flex flex-col gap-4">
-        <span className="text-sm font-medium">Role Assignments</span>
+        <span className="text-sm font-medium">Provider & Model</span>
         <div className="flex flex-col gap-4">
-          {roleKeys.map((role) => (
-            <div key={role} className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">{roleLabels[role]}</span>
-                <span className="text-xs text-muted-foreground">
-                  {roleDescriptions[role]}
-                </span>
-              </div>
-              <div className="flex gap-3">
-                <select
-                  value={config.roles[role]?.provider || ''}
-                  onChange={(e) => handleRoleProviderChange(role, e.target.value)}
-                  className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring min-w-[140px]"
-                >
-                  {providerNames.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  placeholder="Model name (e.g., gpt-4o)"
-                  value={config.roles[role]?.model || ''}
-                  onChange={(e) => handleRoleModelChange(role, e.target.value)}
-                  className="h-9 text-sm flex-1"
-                />
-              </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground">Default Provider</label>
+            <div className="flex items-center gap-3">
+              <select
+                value={config.default_provider}
+                onChange={(e) => handleDefaultProviderChange(e.target.value)}
+                className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring min-w-[180px]"
+              >
+                {providerNames.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              {currentProvider && (
+                <Badge variant="secondary" className="text-xs">
+                  {currentProvider.type}
+                </Badge>
+              )}
             </div>
-          ))}
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground">Model</label>
+            <Input
+              placeholder="Model name (e.g., gpt-4o, claude-sonnet-4-20250514)"
+              value={currentProvider?.model || ''}
+              onChange={(e) => handleModelChange(e.target.value)}
+              className="h-9 text-sm"
+            />
+          </div>
         </div>
       </div>
 
@@ -253,9 +210,9 @@ export function LLMSettings() {
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
         <p>
-          Each role can use a different provider and model. Temperature controls
-          randomness (0 = deterministic, 2 = very random). Max tokens limits response
-          length.
+          A single model is used for all agent tasks (routing, planning, execution, evaluation).
+          Temperature controls randomness (0 = deterministic, 2 = very random). Max tokens limits
+          response length.
         </p>
       </div>
     </div>

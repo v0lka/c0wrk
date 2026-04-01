@@ -28,34 +28,22 @@ export namespace main {
 	        this.temperature = source["temperature"];
 	    }
 	}
-	export class RoleSettingRequest {
-	    provider: string;
-	    model: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new RoleSettingRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.provider = source["provider"];
-	        this.model = source["model"];
-	    }
-	}
 	export class LLMSettingsRequest {
-	    roles: Record<string, RoleSettingRequest>;
+	    default_provider: string;
+	    model: string;
 	    defaults: LLMDefaultsRequest;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new LLMSettingsRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.roles = this.convertValues(source["roles"], RoleSettingRequest, true);
+	        this.default_provider = source["default_provider"];
+	        this.model = source["model"];
 	        this.defaults = this.convertValues(source["defaults"], LLMDefaultsRequest);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;

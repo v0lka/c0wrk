@@ -317,15 +317,27 @@ func (a *App) startup(ctx context.Context) {
 		})
 	}
 
+	// Create ModelRegistry from config overrides (before router so providers can register sources)
+	overrides := make(map[string]llm.ModelMetadata)
+	for name, override := range cfg.LLM.Models {
+		overrides[name] = llm.ModelMetadata{
+			ContextWindow: override.ContextWindow,
+			OutputLimit:   override.OutputLimit,
+			TokenizerType: "approximate", // config overrides don't specify tokenizer
+		}
+	}
+	modelRegistry := llm.NewModelRegistry(overrides)
+
 	// Initialize LLM Router - CRITICAL: must succeed for the app to work
-	llmRouter, err := llm.NewLLMRouter(cfg.LLM)
+	// Pass registry so LM Studio providers can register their metadata sources
+	llmRouter, err := llm.NewLLMRouter(cfg.LLM, modelRegistry)
 	if err != nil {
 		emitStartupError("failed to initialize LLM router", err)
 		// Don't set llmRouter - it will remain nil and orchestrator creation will fail
 		// with a descriptive error when the user tries to create a session
 	}
-	if llmRouter != nil && len(cfg.LLM.Roles) == 0 {
-		emitStartupError("no LLM roles configured - check your config.yaml", fmt.Errorf("config has no roles defined under llm.roles"))
+	if llmRouter != nil && cfg.LLM.DefaultProvider == "" {
+		emitStartupError("no default LLM provider configured - check your config.yaml", fmt.Errorf("config has no default_provider defined under llm"))
 	}
 	a.llmRouter = llmRouter
 
@@ -567,17 +579,6 @@ func (a *App) startup(ctx context.Context) {
 	contextMgrTool := toolcore.NewContextManagerTool(semanticStore, nil, episodicStoreTool, reflexionStoreTool)
 	registry.Register(contextMgrTool)
 
-	// Create ModelRegistry from config overrides
-	overrides := make(map[string]llm.ModelMetadata)
-	for name, override := range cfg.LLM.Models {
-		overrides[name] = llm.ModelMetadata{
-			ContextWindow: override.ContextWindow,
-			OutputLimit:   override.OutputLimit,
-			TokenizerType: "approximate", // config overrides don't specify tokenizer
-		}
-	}
-	modelRegistry := llm.NewModelRegistry(overrides)
-
 	// Create Phase 2 components (only if LLM router is available)
 	var router *core.Router
 	var acExtractor *core.ACExtractor
@@ -657,25 +658,13 @@ func (a *App) startup(ctx context.Context) {
 
 		// Check if a specific model is configured for the judge
 		if cfg.Security.Judge.Model != "" {
-			// Use the configured model
 			judgeModel = cfg.Security.Judge.Model
 			judgeProvider = llmRouter.GetDefaultProvider()
 		} else {
-			// Use the default LLM provider and get a model from roles as fallback
+			// Use the default provider's model
 			judgeProvider = llmRouter.GetDefaultProvider()
-			// Try to get a model from the "router" role, otherwise use "executor" role
-			if roleCfg, ok := cfg.LLM.Roles["router"]; ok && roleCfg.Model != "" {
-				judgeModel = roleCfg.Model
-			} else if roleCfg, ok := cfg.LLM.Roles["executor"]; ok && roleCfg.Model != "" {
-				judgeModel = roleCfg.Model
-			} else {
-				// Fallback: use the first available role's model
-				for _, roleCfg := range cfg.LLM.Roles {
-					if roleCfg.Model != "" {
-						judgeModel = roleCfg.Model
-						break
-					}
-				}
+			if defProv, ok := cfg.LLM.Providers[cfg.LLM.DefaultProvider]; ok {
+				judgeModel = defProv.Model
 			}
 		}
 
@@ -684,7 +673,7 @@ func (a *App) startup(ctx context.Context) {
 			registry.SetJudge(judge)
 			log.Info("tool judge initialized", "model", judgeModel)
 		} else if judgeProvider != nil {
-			log.Warn("tool judge disabled: no model configured or available from roles")
+			log.Warn("tool judge disabled: no model configured")
 		}
 	}
 
@@ -1092,15 +1081,7 @@ func (a *App) GetConfig() map[string]interface{} {
 			"base_url":   p.BaseURL,
 			"project_id": p.ProjectID,
 			"location":   p.Location,
-		}
-	}
-
-	// Roles
-	roles := make(map[string]interface{})
-	for name, r := range a.config.LLM.Roles {
-		roles[name] = map[string]interface{}{
-			"provider": r.Provider,
-			"model":    r.Model,
+			"model":      p.Model,
 		}
 	}
 
@@ -1115,8 +1096,8 @@ func (a *App) GetConfig() map[string]interface{} {
 		"log_level": a.config.LogLevel,
 		"theme":     a.config.Theme,
 		"llm": map[string]interface{}{
-			"providers": providers,
-			"roles":     roles,
+			"default_provider": a.config.LLM.DefaultProvider,
+			"providers":        providers,
 			"defaults": map[string]interface{}{
 				"max_tokens":  a.config.LLM.Defaults.MaxTokens,
 				"temperature": a.config.LLM.Defaults.Temperature,
@@ -1336,14 +1317,9 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 
 // LLMSettingsRequest holds LLM settings from the frontend.
 type LLMSettingsRequest struct {
-	Roles    map[string]RoleSettingRequest `json:"roles"`
-	Defaults LLMDefaultsRequest           `json:"defaults"`
-}
-
-// RoleSettingRequest holds a role's provider and model.
-type RoleSettingRequest struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	DefaultProvider string             `json:"default_provider"`
+	Model           string             `json:"model"`
+	Defaults        LLMDefaultsRequest `json:"defaults"`
 }
 
 // LLMDefaultsRequest holds LLM default parameters.
@@ -1358,16 +1334,19 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 		return fmt.Errorf("config not initialized")
 	}
 
-	// Update roles
-	for name, role := range settings.Roles {
-		// Validate provider exists
-		if _, exists := a.config.LLM.Providers[role.Provider]; !exists {
-			return fmt.Errorf("role %q references non-existent provider %q", name, role.Provider)
+	// Update default provider
+	if settings.DefaultProvider != "" {
+		if _, exists := a.config.LLM.Providers[settings.DefaultProvider]; !exists {
+			return fmt.Errorf("default_provider references non-existent provider %q", settings.DefaultProvider)
 		}
-		a.config.LLM.Roles[name] = config.RoleConfig{
-			Provider: role.Provider,
-			Model:    role.Model,
-		}
+		a.config.LLM.DefaultProvider = settings.DefaultProvider
+	}
+
+	// Update model on the default provider
+	if settings.Model != "" && a.config.LLM.DefaultProvider != "" {
+		prov := a.config.LLM.Providers[a.config.LLM.DefaultProvider]
+		prov.Model = settings.Model
+		a.config.LLM.Providers[a.config.LLM.DefaultProvider] = prov
 	}
 
 	// Update defaults

@@ -35,15 +35,20 @@ func (m *mockProvider) StreamChatCompletion(ctx context.Context, req ChatRequest
 }
 
 // newTestRouter creates a router with mock providers for testing.
-func newTestRouter(providers map[string]*mockProvider, roles map[string]RoleConfig, defaults LLMDefaults) *LLMRouter {
+func newTestRouter(providers map[string]*mockProvider, defaultProviderName string, defaultModel string, defaults LLMDefaults) *LLMRouter {
 	providerMap := make(map[string]LLMProvider)
 	for name, p := range providers {
 		providerMap[name] = p
 	}
+	var defaultProvider LLMProvider
+	if p, ok := providerMap[defaultProviderName]; ok {
+		defaultProvider = p
+	}
 	return &LLMRouter{
-		providers: providerMap,
-		roles:     roles,
-		defaults:  defaults,
+		providers:       providerMap,
+		defaultProvider: defaultProvider,
+		defaultModel:    defaultModel,
+		defaults:        defaults,
 	}
 }
 
@@ -58,9 +63,7 @@ func TestRouter_Call_SetsModelAndDelegatesToProvider(t *testing.T) {
 
 	router := newTestRouter(
 		map[string]*mockProvider{"primary": mock},
-		map[string]RoleConfig{
-			"executor": {Provider: "primary", Model: "gpt-4"},
-		},
+		"primary", "gpt-4",
 		LLMDefaults{MaxTokens: 4096, Temperature: 0.7},
 	)
 
@@ -84,23 +87,6 @@ func TestRouter_Call_SetsModelAndDelegatesToProvider(t *testing.T) {
 	}
 }
 
-func TestRouter_Call_UnknownRoleReturnsError(t *testing.T) {
-	router := newTestRouter(
-		map[string]*mockProvider{},
-		map[string]RoleConfig{},
-		LLMDefaults{},
-	)
-
-	_, err := router.Call(context.Background(), "nonexistent", ChatRequest{})
-	if err == nil {
-		t.Fatal("expected error for unknown role")
-	}
-
-	if err.Error() != "unknown role: nonexistent" {
-		t.Errorf("unexpected error message: %v", err)
-	}
-}
-
 func TestRouter_Call_AppliesDefaults(t *testing.T) {
 	mock := &mockProvider{
 		name: "test-provider",
@@ -112,9 +98,7 @@ func TestRouter_Call_AppliesDefaults(t *testing.T) {
 
 	router := newTestRouter(
 		map[string]*mockProvider{"primary": mock},
-		map[string]RoleConfig{
-			"executor": {Provider: "primary", Model: "gpt-4"},
-		},
+		"primary", "gpt-4",
 		LLMDefaults{MaxTokens: 8192, Temperature: 0.5},
 	)
 
@@ -152,9 +136,7 @@ func TestRouter_Call_DoesNotOverrideExistingValues(t *testing.T) {
 
 	router := newTestRouter(
 		map[string]*mockProvider{"primary": mock},
-		map[string]RoleConfig{
-			"executor": {Provider: "primary", Model: "gpt-4"},
-		},
+		"primary", "gpt-4",
 		LLMDefaults{MaxTokens: 8192, Temperature: 0.5},
 	)
 
@@ -196,9 +178,7 @@ func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
 
 	router := newTestRouter(
 		map[string]*mockProvider{"primary": mock},
-		map[string]RoleConfig{
-			"executor": {Provider: "primary", Model: "claude-3"},
-		},
+		"primary", "claude-3",
 		LLMDefaults{MaxTokens: 4096, Temperature: 0.7},
 	)
 
@@ -228,18 +208,5 @@ func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
 
 	if chunks[0].Delta != "Hello" {
 		t.Errorf("expected first chunk 'Hello', got %q", chunks[0].Delta)
-	}
-}
-
-func TestRouter_Stream_UnknownRoleReturnsError(t *testing.T) {
-	router := newTestRouter(
-		map[string]*mockProvider{},
-		map[string]RoleConfig{},
-		LLMDefaults{},
-	)
-
-	_, err := router.Stream(context.Background(), "nonexistent", ChatRequest{})
-	if err == nil {
-		t.Fatal("expected error for unknown role")
 	}
 }

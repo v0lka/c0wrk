@@ -7,17 +7,12 @@ import (
 	"github.com/user/agent/internal/config"
 )
 
-// LLMRouter maps roles to providers and models.
+// LLMRouter routes LLM calls to a default provider.
 type LLMRouter struct {
-	providers map[string]LLMProvider // key = provider name from config
-	roles     map[string]RoleConfig  // key = role name
-	defaults  LLMDefaults
-}
-
-// RoleConfig maps a role to a provider and model.
-type RoleConfig struct {
-	Provider string // key in providers map
-	Model    string // model name for API
+	providers       map[string]LLMProvider
+	defaultProvider LLMProvider
+	defaultModel    string
+	defaults        LLMDefaults
 }
 
 // LLMDefaults holds default values for LLM calls.
@@ -27,7 +22,8 @@ type LLMDefaults struct {
 }
 
 // NewLLMRouter creates a new LLMRouter from the given configuration.
-func NewLLMRouter(cfg config.LLMConfig) (*LLMRouter, error) {
+// If registry is provided, LM Studio providers will register their metadata sources.
+func NewLLMRouter(cfg config.LLMConfig, registry *ModelRegistry) (*LLMRouter, error) {
 	providers := make(map[string]LLMProvider)
 
 	// Create providers from config
@@ -39,21 +35,21 @@ func NewLLMRouter(cfg config.LLMConfig) (*LLMRouter, error) {
 		providers[name] = provider
 	}
 
-	// Convert config roles to internal RoleConfig
-	roles := make(map[string]RoleConfig)
-	for name, rcfg := range cfg.Roles {
-		roles[name] = RoleConfig{
-			Provider: rcfg.Provider,
-			Model:    rcfg.Model,
+	// Register LM Studio providers as metadata sources
+	if registry != nil {
+		for _, p := range providers {
+			if lms, ok := p.(*LMStudioProvider); ok {
+				registry.RegisterSource(lms.MetadataSource())
+			}
 		}
 	}
 
-	// Validate that each role references an existing provider
-	for roleName, role := range roles {
-		if _, exists := providers[role.Provider]; !exists {
-			return nil, fmt.Errorf("role %q references non-existent provider %q", roleName, role.Provider)
-		}
+	// Resolve default provider
+	defaultProvider, ok := providers[cfg.DefaultProvider]
+	if !ok {
+		return nil, fmt.Errorf("default provider %q not found", cfg.DefaultProvider)
 	}
+	defaultModel := cfg.Providers[cfg.DefaultProvider].Model
 
 	// Convert defaults
 	defaults := LLMDefaults{
@@ -62,17 +58,25 @@ func NewLLMRouter(cfg config.LLMConfig) (*LLMRouter, error) {
 	}
 
 	return &LLMRouter{
-		providers: providers,
-		roles:     roles,
-		defaults:  defaults,
+		providers:       providers,
+		defaultProvider: defaultProvider,
+		defaultModel:    defaultModel,
+		defaults:        defaults,
 	}, nil
 }
 
 // createProvider creates an LLMProvider based on the provider type.
 func createProvider(name string, pcfg config.ProviderConfig) (LLMProvider, error) {
 	switch pcfg.Type {
-	case "openai", "deepseek", "grok", "openrouter", "ollama", "lmstudio":
+	case "openai", "deepseek", "grok", "openrouter", "ollama":
 		return NewOpenAIProvider(OpenAIProviderConfig{
+			Name:    name,
+			APIKey:  pcfg.APIKey,
+			BaseURL: pcfg.BaseURL,
+		})
+
+	case "lmstudio":
+		return NewLMStudioProvider(LMStudioProviderConfig{
 			Name:    name,
 			APIKey:  pcfg.APIKey,
 			BaseURL: pcfg.BaseURL,
@@ -95,23 +99,11 @@ func createProvider(name string, pcfg config.ProviderConfig) (LLMProvider, error
 	}
 }
 
-// Call sends a chat request to the provider associated with the given role.
+// Call sends a chat request to the default provider.
 func (r *LLMRouter) Call(ctx context.Context, role string, req ChatRequest) (*ChatResponse, error) {
-	// Find role config
-	roleConfig, ok := r.roles[role]
-	if !ok {
-		return nil, fmt.Errorf("unknown role: %s", role)
-	}
-
-	// Find provider
-	provider, ok := r.providers[roleConfig.Provider]
-	if !ok {
-		return nil, fmt.Errorf("provider %q not found for role %q", roleConfig.Provider, role)
-	}
-
 	// Set model if not specified
 	if req.Model == "" {
-		req.Model = roleConfig.Model
+		req.Model = r.defaultModel
 	}
 
 	// Apply defaults
@@ -123,7 +115,7 @@ func (r *LLMRouter) Call(ctx context.Context, role string, req ChatRequest) (*Ch
 		req.Temperature = &temp
 	}
 
-	return provider.ChatCompletion(ctx, req)
+	return r.defaultProvider.ChatCompletion(ctx, req)
 }
 
 // GetProvider returns a provider by name.
@@ -145,23 +137,11 @@ func (r *LLMRouter) GetDefaultProvider() LLMProvider {
 	return nil
 }
 
-// Stream sends a streaming chat request to the provider associated with the given role.
+// Stream sends a streaming chat request to the default provider.
 func (r *LLMRouter) Stream(ctx context.Context, role string, req ChatRequest) (<-chan ChatChunk, error) {
-	// Find role config
-	roleConfig, ok := r.roles[role]
-	if !ok {
-		return nil, fmt.Errorf("unknown role: %s", role)
-	}
-
-	// Find provider
-	provider, ok := r.providers[roleConfig.Provider]
-	if !ok {
-		return nil, fmt.Errorf("provider %q not found for role %q", roleConfig.Provider, role)
-	}
-
 	// Set model if not specified
 	if req.Model == "" {
-		req.Model = roleConfig.Model
+		req.Model = r.defaultModel
 	}
 
 	// Apply defaults
@@ -173,5 +153,5 @@ func (r *LLMRouter) Stream(ctx context.Context, role string, req ChatRequest) (<
 		req.Temperature = &temp
 	}
 
-	return provider.StreamChatCompletion(ctx, req)
+	return r.defaultProvider.StreamChatCompletion(ctx, req)
 }

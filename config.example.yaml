@@ -5,10 +5,12 @@ log_level: DEBUG
 theme: system
 
 llm:
+  default_provider: anthropic
   providers:
     anthropic:
       type: anthropic
       api_key: "${ANTHROPIC_API_KEY}"
+      model: claude-sonnet-4-20250514
       # base_url: ""        # Optional: custom API base URL
       # project_id: ""      # Optional: provider project ID
       # location: ""        # Optional: provider location/region
@@ -16,26 +18,12 @@ llm:
     # openai:
     #   type: openai
     #   api_key: "${OPENAI_API_KEY}"
-  roles:
-    # Router role for making routing decisions (mode selection)
-    router:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
-    # Planner role for generating execution plans
-    planner:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
-    # Evaluator role for judging acceptance criteria
-    evaluator_judge:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
-    executor:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
-    # Summarizer role for WebFetch content extraction
-    summarizer:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+    #   model: gpt-4o
+    # Optional: LM Studio provider (local inference)
+    # lmstudio:
+    #   type: lmstudio
+    #   base_url: "http://localhost:1234"  # Default LM Studio port
+    #   model: my-local-model
   defaults:
     max_tokens: 4096
     temperature: 0.0

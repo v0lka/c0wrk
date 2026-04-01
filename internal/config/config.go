@@ -28,10 +28,10 @@ type Config struct {
 
 // LLMConfig holds LLM provider and role configuration.
 type LLMConfig struct {
-	Providers map[string]ProviderConfig `yaml:"providers"`
-	Roles     map[string]RoleConfig     `yaml:"roles"`
-	Defaults  LLMDefaults               `yaml:"defaults"`
-	Models    map[string]ModelOverride  `yaml:"models"`
+	DefaultProvider string                    `yaml:"default_provider"`
+	Providers       map[string]ProviderConfig `yaml:"providers"`
+	Defaults        LLMDefaults               `yaml:"defaults"`
+	Models          map[string]ModelOverride  `yaml:"models"`
 }
 
 // ModelOverride allows overriding built-in model metadata.
@@ -47,12 +47,7 @@ type ProviderConfig struct {
 	BaseURL   string `yaml:"base_url"`
 	ProjectID string `yaml:"project_id"`
 	Location  string `yaml:"location"`
-}
-
-// RoleConfig maps an agent role to a specific provider and model.
-type RoleConfig struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
+	Model     string `yaml:"model"`
 }
 
 // LLMDefaults contains default parameters for LLM calls.
@@ -247,14 +242,16 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("at least one LLM provider must be defined")
 	}
 
-	// Check that all roles reference existing providers
-	for roleName, role := range cfg.LLM.Roles {
-		if role.Provider == "" {
-			return fmt.Errorf("role %q has no provider specified", roleName)
-		}
-		if _, exists := cfg.LLM.Providers[role.Provider]; !exists {
-			return fmt.Errorf("role %q references non-existent provider %q", roleName, role.Provider)
-		}
+	// Check that default provider references an existing provider
+	if cfg.LLM.DefaultProvider == "" {
+		return fmt.Errorf("llm.default_provider must be specified")
+	}
+	defaultProv, exists := cfg.LLM.Providers[cfg.LLM.DefaultProvider]
+	if !exists {
+		return fmt.Errorf("llm.default_provider references non-existent provider %q", cfg.LLM.DefaultProvider)
+	}
+	if defaultProv.Model == "" {
+		return fmt.Errorf("provider %q must have a model specified", cfg.LLM.DefaultProvider)
 	}
 
 	return nil

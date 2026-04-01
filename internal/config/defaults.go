@@ -132,4 +132,21 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Skills.Docker.DefaultTimeout == "" {
 		cfg.Skills.Docker.DefaultTimeout = "30s"
 	}
+
+	// Provider defaults: set default base URL for local providers
+	for name, prov := range cfg.LLM.Providers {
+		if prov.BaseURL == "" {
+			switch prov.Type {
+			case "lmstudio":
+				cfg.LLM.Providers[name] = ProviderConfig{
+					Type:      prov.Type,
+					APIKey:    prov.APIKey,
+					BaseURL:   "http://localhost:1234",
+					ProjectID: prov.ProjectID,
+					Location:  prov.Location,
+					Model:     prov.Model,
+				}
+			}
+		}
+	}
 }
