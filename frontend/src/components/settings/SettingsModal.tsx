@@ -13,6 +13,7 @@ import { SearchSettings } from './SearchSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { Settings, Brain, Database, Search, Shield, Info } from 'lucide-react'
 import { ConfigWarningBanner } from './ConfigWarningBanner'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 interface SettingsModalProps {
   open: boolean
@@ -20,15 +21,30 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
+  const [bannerRefreshKey, setBannerRefreshKey] = useState(0)
+  const prevOpenRef = useRef(open)
+
+  // Refresh banner when dialog opens
+  useEffect(() => {
+    if (open && !prevOpenRef.current) {
+      setBannerRefreshKey(k => k + 1)
+    }
+    prevOpenRef.current = open
+  }, [open])
+
+  const handleSettingsSaved = useCallback(() => {
+    setBannerRefreshKey(k => k + 1)
+  }, [])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden">
+      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden top-[40px] translate-y-0">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
         
         <Tabs defaultValue="general" className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0">
-          <ConfigWarningBanner className="mb-2" />
+          <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
           <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="general" className="gap-1">
               <Settings className="h-4 w-4" />
@@ -58,9 +74,6 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
           <TabsContent value="general" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-6">
-              <div className="text-sm text-muted-foreground">
-                General application settings.
-              </div>
               <ThemeToggle />
               <LogLevelSelector />
             </div>
@@ -68,36 +81,24 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
           <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-4">
-              <div className="text-sm text-muted-foreground">
-                Configure LLM providers, roles, and default parameters.
-              </div>
-              <LLMSettings />
+              <LLMSettings onSettingsSaved={handleSettingsSaved} />
             </div>
           </TabsContent>
 
           <TabsContent value="memory" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-4">
-              <div className="text-sm text-muted-foreground">
-                Configure memory system settings.
-              </div>
               <MemorySettings />
             </div>
           </TabsContent>
 
           <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-4">
-              <div className="text-sm text-muted-foreground">
-                Configure web search integration.
-              </div>
               <SearchSettings />
             </div>
           </TabsContent>
 
           <TabsContent value="security" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-4">
-              <div className="text-sm text-muted-foreground">
-                Configure security policies for tool execution.
-              </div>
               <SecuritySettings />
             </div>
           </TabsContent>
@@ -119,28 +120,28 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   An AI-powered coding assistant with multi-agent orchestration.
                 </p>
                 <p>
-                  Built with React, Wails, and modern AI technologies.
+                  Built with warmth, love, and AI.
                 </p>
               </div>
 
               <div className="pt-4 border-t border-border">
                 <div className="flex flex-col gap-2 text-sm">
                   <a 
-                    href="#" 
+                    href="#"
                     className="text-primary hover:underline"
                     onClick={(e) => e.preventDefault()}
                   >
                     Documentation
                   </a>
                   <a 
-                    href="#" 
+                    href="#"
                     className="text-primary hover:underline"
                     onClick={(e) => e.preventDefault()}
                   >
                     Report an Issue
                   </a>
                   <a 
-                    href="#" 
+                    href="#"
                     className="text-primary hover:underline"
                     onClick={(e) => e.preventDefault()}
                   >

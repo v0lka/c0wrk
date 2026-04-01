@@ -31,6 +31,9 @@ func Init(level string) (*SessionLogger, error) {
 		parsedLevel = slog.LevelInfo
 	}
 
+	// Store parse error for later logging (err will be shadowed by file operations)
+	parseErr := err
+
 	// Create log directory
 	if err := os.MkdirAll(baseLogDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
@@ -54,7 +57,7 @@ func Init(level string) (*SessionLogger, error) {
 	logger := slog.New(handler)
 
 	// Log warning if level was invalid
-	if err != nil {
+	if parseErr != nil {
 		logger.Warn("invalid log level specified, defaulting to INFO", "level", level)
 	}
 

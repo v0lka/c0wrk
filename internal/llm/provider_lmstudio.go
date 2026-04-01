@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -32,11 +34,10 @@ type LMStudioProvider struct {
 
 // LMStudioModel represents a model in LM Studio.
 type LMStudioModel struct {
-	ID           string `json:"id"`
+	ID           string `json:"key"`            // LM Studio uses "key" as the model identifier
 	Type         string `json:"type"`           // "llm", "vlm", "embeddings"
-	State        string `json:"state"`          // "loaded", "not_loaded"
+	DisplayName  string `json:"display_name"`
 	Architecture string `json:"architecture"`
-	Quantization string `json:"quantization"`
 	MaxContext   int    `json:"max_context_length"`
 }
 
@@ -73,40 +74,15 @@ func (p *LMStudioProvider) Name() string {
 // Internal types for LM Studio v1 API
 
 type lmStudioRequest struct {
-	Model          string               `json:"model"`
-	Input          []lmStudioInputMsg   `json:"input"`
-	SystemPrompt   string               `json:"system_prompt,omitempty"`
-	Temperature    *float64             `json:"temperature,omitempty"`
-	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
-	Stream         bool                 `json:"stream"`
-	Tools          []lmStudioTool       `json:"tools,omitempty"`
-	TopK           *int                 `json:"top_k,omitempty"`
-	MinP           *float64             `json:"min_p,omitempty"`
-	RepeatPenalty  *float64             `json:"repeat_penalty,omitempty"`
-}
-
-type lmStudioInputMsg struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	ToolCalls  []lmStudioToolCall `json:"tool_calls,omitempty"`
-}
-
-type lmStudioToolCall struct {
-	ID        string          `json:"id,omitempty"`
-	Tool      string          `json:"tool,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-}
-
-type lmStudioTool struct {
-	Type     string          `json:"type"`
-	Function lmStudioToolFunc `json:"function"`
-}
-
-type lmStudioToolFunc struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Model           string    `json:"model"`
+	Input           json.RawMessage `json:"input"`
+	SystemPrompt    string    `json:"system_prompt,omitempty"`
+	Temperature     *float64  `json:"temperature,omitempty"`
+	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
+	Stream          bool      `json:"stream"`
+	TopK            *int      `json:"top_k,omitempty"`
+	MinP            *float64  `json:"min_p,omitempty"`
+	RepeatPenalty   *float64  `json:"repeat_penalty,omitempty"`
 }
 
 type lmStudioResponse struct {
@@ -161,8 +137,92 @@ type lmStudioChatStart struct {
 	Model string `json:"model"`
 }
 
+// OpenAI-compatible types for /v1/chat/completions (used when tools are present)
+
+type lmsOpenAIRequest struct {
+	Model       string             `json:"model"`
+	Messages    []lmsOpenAIMessage `json:"messages"`
+	Tools       []lmsOpenAITool    `json:"tools,omitempty"`
+	Stream      bool               `json:"stream"`
+	Temperature *float64           `json:"temperature,omitempty"`
+	MaxTokens   int                `json:"max_tokens,omitempty"`
+}
+
+type lmsOpenAIMessage struct {
+	Role       string              `json:"role"`
+	Content    string              `json:"content"`
+	ToolCalls  []lmsOpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string              `json:"tool_call_id,omitempty"`
+}
+
+type lmsOpenAITool struct {
+	Type     string            `json:"type"`
+	Function lmsOpenAIFunction `json:"function"`
+}
+
+type lmsOpenAIFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type lmsOpenAIToolCall struct {
+	ID       string                `json:"id"`
+	Type     string                `json:"type"`
+	Function lmsOpenAIFunctionCall `json:"function"`
+}
+
+type lmsOpenAIFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type lmsOpenAIResponse struct {
+	Choices []lmsOpenAIChoice `json:"choices"`
+	Usage   lmsOpenAIUsage    `json:"usage"`
+}
+
+type lmsOpenAIChoice struct {
+	Message      lmsOpenAIMessage `json:"message"`
+	FinishReason string           `json:"finish_reason"`
+}
+
+type lmsOpenAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
+// Streaming types
+
+type lmsOpenAIStreamResponse struct {
+	Choices []lmsOpenAIStreamChoice `json:"choices"`
+}
+
+type lmsOpenAIStreamChoice struct {
+	Delta        lmsOpenAIStreamDelta `json:"delta"`
+	FinishReason *string              `json:"finish_reason"`
+}
+
+type lmsOpenAIStreamDelta struct {
+	Role      string                    `json:"role,omitempty"`
+	Content   string                    `json:"content,omitempty"`
+	ToolCalls []lmsOpenAIStreamToolCall `json:"tool_calls,omitempty"`
+}
+
+type lmsOpenAIStreamToolCall struct {
+	Index    *int                  `json:"index,omitempty"`
+	ID       string                `json:"id,omitempty"`
+	Type     string                `json:"type,omitempty"`
+	Function lmsOpenAIFunctionCall `json:"function,omitempty"`
+}
+
 // ChatCompletion sends a request and returns the full response.
 func (p *LMStudioProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	// Route to OpenAI-compatible endpoint when tools are present
+	if len(req.Tools) > 0 {
+		return p.chatCompletionOpenAI(ctx, req)
+	}
+
 	lmReq, err := p.buildRequest(req, false)
 	if err != nil {
 		return nil, fmt.Errorf("lmstudio: failed to build request: %w", err)
@@ -191,8 +251,40 @@ func (p *LMStudioProvider) ChatCompletion(ctx context.Context, req ChatRequest) 
 	return p.parseResponse(&lmResp)
 }
 
+// chatCompletionOpenAI sends a request using the OpenAI-compatible endpoint.
+func (p *LMStudioProvider) chatCompletionOpenAI(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	oaiReq := p.buildOpenAIRequest(req, false)
+
+	httpReq, err := p.newHTTPRequest(ctx, "POST", "/v1/chat/completions", oaiReq)
+	if err != nil {
+		return nil, fmt.Errorf("lmstudio: failed to create OpenAI-compat request: %w", err)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("lmstudio: OpenAI-compat request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, p.parseErrorResponse(resp)
+	}
+
+	var oaiResp lmsOpenAIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&oaiResp); err != nil {
+		return nil, fmt.Errorf("lmstudio: failed to decode OpenAI-compat response: %w", err)
+	}
+
+	return p.parseOpenAIResponse(&oaiResp)
+}
+
 // StreamChatCompletion sends a request and returns a channel of streaming chunks.
 func (p *LMStudioProvider) StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
+	// Route to OpenAI-compatible endpoint when tools are present
+	if len(req.Tools) > 0 {
+		return p.streamChatCompletionOpenAI(ctx, req)
+	}
+
 	lmReq, err := p.buildRequest(req, true)
 	if err != nil {
 		return nil, fmt.Errorf("lmstudio: failed to build request: %w", err)
@@ -220,6 +312,35 @@ func (p *LMStudioProvider) StreamChatCompletion(ctx context.Context, req ChatReq
 		defer func() { _ = resp.Body.Close() }()
 
 		p.processSSEStream(resp.Body, chunks)
+	}()
+
+	return chunks, nil
+}
+
+// streamChatCompletionOpenAI sends a streaming request using the OpenAI-compatible endpoint.
+func (p *LMStudioProvider) streamChatCompletionOpenAI(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
+	oaiReq := p.buildOpenAIRequest(req, true)
+
+	httpReq, err := p.newHTTPRequest(ctx, "POST", "/v1/chat/completions", oaiReq)
+	if err != nil {
+		return nil, fmt.Errorf("lmstudio: failed to create OpenAI-compat request: %w", err)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("lmstudio: OpenAI-compat request failed: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, p.parseErrorResponse(resp)
+	}
+
+	chunks := make(chan ChatChunk)
+	go func() {
+		defer close(chunks)
+		defer func() { _ = resp.Body.Close() }()
+		p.processOpenAISSEStream(resp.Body, chunks)
 	}()
 
 	return chunks, nil
@@ -353,9 +474,8 @@ func (p *LMStudioProvider) handleSSEEvent(eventType, dataStr string, chunks chan
 
 // buildRequest converts ChatRequest to LM Studio v1 request format.
 func (p *LMStudioProvider) buildRequest(req ChatRequest, stream bool) (*lmStudioRequest, error) {
-	// Extract system messages into system_prompt
 	var systemPrompt string
-	var input []lmStudioInputMsg
+	var parts []string
 
 	for _, msg := range req.Messages {
 		switch msg.Role {
@@ -364,58 +484,45 @@ func (p *LMStudioProvider) buildRequest(req ChatRequest, stream bool) (*lmStudio
 				systemPrompt += "\n"
 			}
 			systemPrompt += msg.Content
-		case "user", "assistant":
-			inputMsg := lmStudioInputMsg{
-				Role:    msg.Role,
-				Content: msg.Content,
+		case "user":
+			parts = append(parts, msg.Content)
+		case "assistant":
+			if msg.Content != "" {
+				parts = append(parts, "Assistant: "+msg.Content)
 			}
-
-			// Handle tool calls in assistant messages
-			if len(msg.ToolCalls) > 0 {
-				inputMsg.ToolCalls = make([]lmStudioToolCall, len(msg.ToolCalls))
-				for i, tc := range msg.ToolCalls {
-					inputMsg.ToolCalls[i] = lmStudioToolCall{
-						ID:        tc.ID,
-						Tool:      tc.Name,
-						Arguments: tc.Input,
-					}
-				}
+			// Tool calls in assistant messages are context we include
+			for _, tc := range msg.ToolCalls {
+				parts = append(parts, "Assistant called tool "+tc.Name)
 			}
-
-			input = append(input, inputMsg)
-
 		case "tool":
-			// Tool result messages
-			input = append(input, lmStudioInputMsg{
-				Role:       "tool",
-				Content:    msg.Content,
-				ToolCallID: msg.ToolCallID,
-			})
+			parts = append(parts, "Tool result: "+msg.Content)
 		}
+	}
+
+	// Build input as JSON
+	var inputJSON json.RawMessage
+	var err error
+	switch len(parts) {
+	case 1:
+		// Single message: send as plain string
+		inputJSON, err = json.Marshal(parts[0])
+	case 0:
+		inputJSON, err = json.Marshal("")
+	default:
+		// Multiple messages: join into single string
+		inputJSON, err = json.Marshal(strings.Join(parts, "\n\n"))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
 	lmReq := &lmStudioRequest{
 		Model:           req.Model,
-		Input:           input,
+		Input:           inputJSON,
 		SystemPrompt:    systemPrompt,
 		MaxOutputTokens: req.MaxTokens,
 		Stream:          stream,
 		Temperature:     req.Temperature,
-	}
-
-	// Convert tools
-	if len(req.Tools) > 0 {
-		lmReq.Tools = make([]lmStudioTool, len(req.Tools))
-		for i, tool := range req.Tools {
-			lmReq.Tools[i] = lmStudioTool{
-				Type: "function",
-				Function: lmStudioToolFunc{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  tool.InputSchema,
-				},
-			}
-		}
 	}
 
 	return lmReq, nil
@@ -462,6 +569,181 @@ func (p *LMStudioProvider) parseResponse(lmResp *lmStudioResponse) (*ChatRespons
 			OutputTokens: lmResp.Stats.TotalOutputTokens,
 		},
 	}, nil
+}
+
+// buildOpenAIRequest converts ChatRequest to OpenAI-compatible format for /v1/chat/completions.
+func (p *LMStudioProvider) buildOpenAIRequest(req ChatRequest, stream bool) *lmsOpenAIRequest {
+	messages := make([]lmsOpenAIMessage, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		oaiMsg := lmsOpenAIMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+		if msg.ToolCallID != "" {
+			oaiMsg.ToolCallID = msg.ToolCallID
+		}
+		if len(msg.ToolCalls) > 0 {
+			oaiMsg.ToolCalls = make([]lmsOpenAIToolCall, len(msg.ToolCalls))
+			for i, tc := range msg.ToolCalls {
+				oaiMsg.ToolCalls[i] = lmsOpenAIToolCall{
+					ID:   tc.ID,
+					Type: "function",
+					Function: lmsOpenAIFunctionCall{
+						Name:      tc.Name,
+						Arguments: string(tc.Input),
+					},
+				}
+			}
+		}
+		messages = append(messages, oaiMsg)
+	}
+
+	oaiReq := &lmsOpenAIRequest{
+		Model:       req.Model,
+		Messages:    messages,
+		Stream:      stream,
+		Temperature: req.Temperature,
+		MaxTokens:   req.MaxTokens,
+	}
+
+	if len(req.Tools) > 0 {
+		oaiReq.Tools = make([]lmsOpenAITool, len(req.Tools))
+		for i, tool := range req.Tools {
+			oaiReq.Tools[i] = lmsOpenAITool{
+				Type: "function",
+				Function: lmsOpenAIFunction{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.InputSchema,
+				},
+			}
+		}
+	}
+
+	return oaiReq
+}
+
+// parseOpenAIResponse converts OpenAI-compatible response to ChatResponse.
+func (p *LMStudioProvider) parseOpenAIResponse(resp *lmsOpenAIResponse) (*ChatResponse, error) {
+	if len(resp.Choices) == 0 {
+		return nil, errors.New("lmstudio: no choices in OpenAI-compat response")
+	}
+
+	choice := resp.Choices[0]
+	message := Message{
+		Role:    "assistant",
+		Content: choice.Message.Content,
+	}
+
+	if len(choice.Message.ToolCalls) > 0 {
+		message.ToolCalls = make([]ToolCall, len(choice.Message.ToolCalls))
+		for i, tc := range choice.Message.ToolCalls {
+			message.ToolCalls[i] = ToolCall{
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: json.RawMessage(tc.Function.Arguments),
+			}
+		}
+	}
+
+	return &ChatResponse{
+		Message:    message,
+		StopReason: p.mapOpenAIStopReason(choice.FinishReason),
+		Usage: TokenUsage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		},
+	}, nil
+}
+
+// mapOpenAIStopReason converts OpenAI's finish reason to our standard format.
+func (p *LMStudioProvider) mapOpenAIStopReason(reason string) string {
+	switch reason {
+	case "stop":
+		return "end_turn"
+	case "tool_calls":
+		return "tool_use"
+	case "length":
+		return "max_tokens"
+	default:
+		return reason
+	}
+}
+
+// processOpenAISSEStream reads SSE events from OpenAI-compatible endpoint and emits ChatChunks.
+func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- ChatChunk) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	toolCalls := make(map[int]*ToolCall)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			return
+		}
+
+		var streamResp lmsOpenAIStreamResponse
+		if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
+			continue
+		}
+
+		if len(streamResp.Choices) == 0 {
+			continue
+		}
+
+		choice := streamResp.Choices[0]
+		delta := choice.Delta
+
+		if delta.Content != "" {
+			chunks <- ChatChunk{Delta: delta.Content}
+		}
+
+		for _, tc := range delta.ToolCalls {
+			idx := 0
+			if tc.Index != nil {
+				idx = *tc.Index
+			}
+			if _, exists := toolCalls[idx]; !exists {
+				toolCalls[idx] = &ToolCall{
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+					Input: json.RawMessage(""),
+				}
+			}
+			if tc.Function.Arguments != "" {
+				existing := string(toolCalls[idx].Input)
+				toolCalls[idx].Input = json.RawMessage(existing + tc.Function.Arguments)
+			}
+			if tc.Function.Name != "" {
+				toolCalls[idx].Name = tc.Function.Name
+			}
+			if tc.ID != "" {
+				toolCalls[idx].ID = tc.ID
+			}
+		}
+
+		if choice.FinishReason != nil {
+			stopReason := p.mapOpenAIStopReason(*choice.FinishReason)
+			if stopReason == "tool_use" {
+				for i := 0; i < len(toolCalls); i++ {
+					if tc, ok := toolCalls[i]; ok {
+						chunks <- ChatChunk{ToolCall: tc}
+					}
+				}
+			}
+			chunks <- ChatChunk{StopReason: stopReason}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		chunks <- ChatChunk{StopReason: "error"}
+	}
 }
 
 // newHTTPRequest creates a new HTTP request with proper headers.
@@ -533,14 +815,26 @@ func (p *LMStudioProvider) ListModels(ctx context.Context) ([]LMStudioModel, err
 		return nil, p.parseErrorResponse(resp)
 	}
 
-	var result struct {
-		Data []LMStudioModel `json:"data"`
+	// Read raw body for debugging
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("lmstudio: failed to read response body: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	slog.Info("LM Studio ListModels raw response", "body", string(rawBody))
+
+	var result struct {
+		Models []LMStudioModel `json:"models"`
+	}
+	if err := json.Unmarshal(rawBody, &result); err != nil {
 		return nil, fmt.Errorf("lmstudio: failed to decode response: %w", err)
 	}
 
-	return result.Data, nil
+	slog.Info("LM Studio ListModels parsed", "count", len(result.Models))
+	for i, m := range result.Models {
+		slog.Info("LM Studio model", "index", i, "id", m.ID, "type", m.Type, "name", m.DisplayName)
+	}
+
+	return result.Models, nil
 }
 
 // LoadModel loads a model in LM Studio.

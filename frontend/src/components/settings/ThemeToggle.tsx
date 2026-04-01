@@ -49,7 +49,6 @@ export function ThemeToggle() {
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">Theme</span>
-        <span className="text-xs text-muted-foreground capitalize">{theme}</span>
       </div>
       <div className="flex gap-1 p-1 bg-muted rounded-lg">
         {themeOptions.map((option) => (

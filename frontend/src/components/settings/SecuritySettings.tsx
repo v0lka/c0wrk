@@ -142,10 +142,6 @@ export function SecuritySettings() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="text-sm text-muted-foreground">
-        Configure per-tool security policies. Changes apply immediately.
-      </div>
-
       {toolConfigs.map((tool) => {
         const currentPolicy = settings.tool_policies[tool.id]?.policy || 'auto'
         const blacklist = settings.tool_policies[tool.id]?.blacklist || []
@@ -225,7 +221,7 @@ export function SecuritySettings() {
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
         <p>
           <strong>Auto</strong> mode uses heuristics and LLM Judge to determine if confirmation is needed.
-          <strong>Always Allow</strong> disables all confirmations (use with caution).
+          <strong> Always Allow</strong> disables all confirmations (use with caution).
         </p>
       </div>
     </div>

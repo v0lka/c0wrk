@@ -64,8 +64,12 @@ func TestLMStudioChatCompletion(t *testing.T) {
 		if req.SystemPrompt != "You are helpful." {
 			t.Errorf("expected system_prompt 'You are helpful.', got %q", req.SystemPrompt)
 		}
-		if len(req.Input) != 1 || req.Input[0].Role != "user" || req.Input[0].Content != "Hello" {
-			t.Errorf("unexpected input messages: %+v", req.Input)
+		var inputStr string
+		if err := json.Unmarshal(req.Input, &inputStr); err != nil {
+			t.Errorf("failed to unmarshal input as string: %v", err)
+		}
+		if inputStr != "Hello" {
+			t.Errorf("expected input 'Hello', got %q", inputStr)
 		}
 
 		// Send response
@@ -358,23 +362,21 @@ func TestLMStudioListModels(t *testing.T) {
 		}
 
 		resp := struct {
-			Data []LMStudioModel `json:"data"`
+			Models []LMStudioModel `json:"models"`
 		}{
-			Data: []LMStudioModel{
+			Models: []LMStudioModel{
 				{
 					ID:           "llama-3.2-1b",
 					Type:         "llm",
-					State:        "loaded",
+					DisplayName:  "Llama 3.2 1B",
 					Architecture: "llama",
-					Quantization: "Q4_K_M",
 					MaxContext:   8192,
 				},
 				{
 					ID:           "mistral-7b",
 					Type:         "llm",
-					State:        "not_loaded",
+					DisplayName:  "Mistral 7B",
 					Architecture: "mistral",
-					Quantization: "Q5_K_M",
 					MaxContext:   32768,
 				},
 			},
@@ -410,14 +412,11 @@ func TestLMStudioListModels(t *testing.T) {
 	if models[0].Type != "llm" {
 		t.Errorf("expected type 'llm', got %q", models[0].Type)
 	}
-	if models[0].State != "loaded" {
-		t.Errorf("expected state 'loaded', got %q", models[0].State)
+	if models[0].DisplayName != "Llama 3.2 1B" {
+		t.Errorf("expected display name 'Llama 3.2 1B', got %q", models[0].DisplayName)
 	}
 	if models[0].Architecture != "llama" {
 		t.Errorf("expected architecture 'llama', got %q", models[0].Architecture)
-	}
-	if models[0].Quantization != "Q4_K_M" {
-		t.Errorf("expected quantization 'Q4_K_M', got %q", models[0].Quantization)
 	}
 	if models[0].MaxContext != 8192 {
 		t.Errorf("expected max_context 8192, got %d", models[0].MaxContext)
@@ -426,8 +425,8 @@ func TestLMStudioListModels(t *testing.T) {
 	if models[1].ID != "mistral-7b" {
 		t.Errorf("expected model ID 'mistral-7b', got %q", models[1].ID)
 	}
-	if models[1].State != "not_loaded" {
-		t.Errorf("expected state 'not_loaded', got %q", models[1].State)
+	if models[1].DisplayName != "Mistral 7B" {
+		t.Errorf("expected display name 'Mistral 7B', got %q", models[1].DisplayName)
 	}
 }
 
@@ -513,11 +512,16 @@ func TestLMStudioUnloadModel(t *testing.T) {
 	}
 }
 
-// TestLMStudioChatCompletionWithTools tests non-streaming response with tool calls.
+// TestLMStudioChatCompletionWithTools tests non-streaming response with tool calls via OpenAI-compatible endpoint.
 func TestLMStudioChatCompletionWithTools(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request has tools
-		var req lmStudioRequest
+		// Verify request goes to OpenAI-compatible endpoint when tools are present
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("expected path '/v1/chat/completions', got %q", r.URL.Path)
+		}
+
+		// Verify request has tools in OpenAI format
+		var req lmsOpenAIRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("failed to decode request body: %v", err)
 		}
@@ -529,21 +533,31 @@ func TestLMStudioChatCompletionWithTools(t *testing.T) {
 			t.Errorf("expected tool name 'get_weather', got %q", req.Tools[0].Function.Name)
 		}
 
-		// Send response with tool call
-		resp := lmStudioResponse{
-			Output: []lmStudioOutputItem{
+		// Send OpenAI-compatible response with tool call
+		resp := lmsOpenAIResponse{
+			Choices: []lmsOpenAIChoice{
 				{
-					Type:      "tool_call",
-					ID:        "call-456",
-					Tool:      "get_weather",
-					Arguments: json.RawMessage(`{"location":"Tokyo"}`),
+					Message: lmsOpenAIMessage{
+						Role:    "assistant",
+						Content: "",
+						ToolCalls: []lmsOpenAIToolCall{
+							{
+								ID:   "call-456",
+								Type: "function",
+								Function: lmsOpenAIFunctionCall{
+									Name:      "get_weather",
+									Arguments: `{"location":"Tokyo"}`,
+								},
+							},
+						},
+					},
+					FinishReason: "tool_calls",
 				},
 			},
-			Stats: lmStudioStats{
-				InputTokens:       20,
-				TotalOutputTokens: 10,
+			Usage: lmsOpenAIUsage{
+				PromptTokens:     20,
+				CompletionTokens: 10,
 			},
-			ResponseID: "resp-456",
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -805,34 +819,19 @@ func TestLMStudioRequestWithToolCallHistory(t *testing.T) {
 			t.Errorf("failed to decode request body: %v", err)
 		}
 
-		// Verify all 3 input messages: user, assistant with tool_calls, tool
-		if len(req.Input) != 3 {
-			t.Fatalf("expected 3 input messages, got %d", len(req.Input))
+		var inputStr string
+		if err := json.Unmarshal(req.Input, &inputStr); err != nil {
+			t.Errorf("failed to unmarshal input as string: %v", err)
 		}
-		// First message is user
-		if req.Input[0].Role != "user" {
-			t.Errorf("expected first message role 'user', got %q", req.Input[0].Role)
+		// Verify the concatenated input contains key parts
+		if !strings.Contains(inputStr, "What's the weather?") {
+			t.Errorf("expected input to contain user message, got %q", inputStr)
 		}
-		// Second message is assistant with tool calls
-		if req.Input[1].Role != "assistant" {
-			t.Errorf("expected second message role 'assistant', got %q", req.Input[1].Role)
+		if !strings.Contains(inputStr, "Assistant called tool get_weather") {
+			t.Errorf("expected input to contain tool call info, got %q", inputStr)
 		}
-		if len(req.Input[1].ToolCalls) != 1 {
-			t.Errorf("expected 1 tool call in assistant message, got %d", len(req.Input[1].ToolCalls))
-		}
-		if req.Input[1].ToolCalls[0].ID != "tc-123" {
-			t.Errorf("expected tool call ID 'tc-123', got %q", req.Input[1].ToolCalls[0].ID)
-		}
-		if req.Input[1].ToolCalls[0].Tool != "get_weather" {
-			t.Errorf("expected tool call tool 'get_weather', got %q", req.Input[1].ToolCalls[0].Tool)
-		}
-
-		// Third message is tool response
-		if req.Input[2].Role != "tool" {
-			t.Errorf("expected third message role 'tool', got %q", req.Input[2].Role)
-		}
-		if req.Input[2].ToolCallID != "tc-123" {
-			t.Errorf("expected tool_call_id 'tc-123', got %q", req.Input[2].ToolCallID)
+		if !strings.Contains(inputStr, "Tool result: Sunny, 72F") {
+			t.Errorf("expected input to contain tool result, got %q", inputStr)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -939,6 +938,225 @@ func TestLMStudioStreamChatCompletionWithContextCancellation(t *testing.T) {
 	}
 }
 
+// TestLMStudioChatCompletionWithoutToolsUsesNativeAPI verifies that requests without tools use the native /api/v1/chat endpoint.
+func TestLMStudioChatCompletionWithoutToolsUsesNativeAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request goes to native endpoint when no tools are present
+		if r.URL.Path != "/api/v1/chat" {
+			t.Errorf("expected path '/api/v1/chat', got %q", r.URL.Path)
+		}
+
+		// Verify request uses native LM Studio format (has input, system_prompt fields)
+		var req lmStudioRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		// Verify native format fields exist
+		if req.Model != "test-model" {
+			t.Errorf("expected model 'test-model', got %q", req.Model)
+		}
+		if req.SystemPrompt != "You are helpful." {
+			t.Errorf("expected system_prompt 'You are helpful.', got %q", req.SystemPrompt)
+		}
+		if req.Stream != false {
+			t.Errorf("expected stream=false, got %v", req.Stream)
+		}
+
+		// Verify input field exists (native format uses 'input', not 'messages')
+		var inputStr string
+		if err := json.Unmarshal(req.Input, &inputStr); err != nil {
+			t.Errorf("failed to unmarshal input as string: %v", err)
+		}
+		if inputStr != "Hello" {
+			t.Errorf("expected input 'Hello', got %q", inputStr)
+		}
+
+		// Verify request does NOT have 'messages' field (OpenAI format)
+		var rawReq map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&rawReq); err == nil {
+			if _, hasMessages := rawReq["messages"]; hasMessages {
+				t.Error("native request should not have 'messages' field")
+			}
+		}
+
+		// Send native LM Studio response
+		resp := lmStudioResponse{
+			Output: []lmStudioOutputItem{
+				{Type: "message", Content: "Hi from native API!"},
+			},
+			Stats: lmStudioStats{
+				InputTokens:       10,
+				TotalOutputTokens: 5,
+			},
+			ResponseID: "resp-native-123",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Errorf("failed to encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	p, err := NewLMStudioProvider(LMStudioProviderConfig{
+		Name:    "lmstudio",
+		BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewLMStudioProvider failed: %v", err)
+	}
+
+	ctx := context.Background()
+	resp, err := p.ChatCompletion(ctx, ChatRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "system", Content: "You are helpful."},
+			{Role: "user", Content: "Hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+
+	if resp.Message.Content != "Hi from native API!" {
+		t.Errorf("expected content 'Hi from native API!', got %q", resp.Message.Content)
+	}
+	if resp.StopReason != "end_turn" {
+		t.Errorf("expected stop_reason 'end_turn', got %q", resp.StopReason)
+	}
+	if resp.Usage.InputTokens != 10 {
+		t.Errorf("expected input tokens 10, got %d", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 5 {
+		t.Errorf("expected output tokens 5, got %d", resp.Usage.OutputTokens)
+	}
+}
+
+// TestLMStudioStreamChatCompletionWithToolsUsesOpenAI verifies that streaming requests with tools use OpenAI-compatible endpoint.
+func TestLMStudioStreamChatCompletionWithToolsUsesOpenAI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request goes to OpenAI-compatible endpoint when tools are present
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("expected path '/v1/chat/completions', got %q", r.URL.Path)
+		}
+
+		// Verify request uses OpenAI format
+		var req lmsOpenAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		// Verify OpenAI format fields
+		if req.Model != "test-model" {
+			t.Errorf("expected model 'test-model', got %q", req.Model)
+		}
+		if !req.Stream {
+			t.Errorf("expected stream=true, got %v", req.Stream)
+		}
+		if len(req.Messages) != 1 {
+			t.Errorf("expected 1 message, got %d", len(req.Messages))
+		}
+		if req.Messages[0].Role != "user" {
+			t.Errorf("expected message role 'user', got %q", req.Messages[0].Role)
+		}
+		if len(req.Tools) != 1 {
+			t.Errorf("expected 1 tool, got %d", len(req.Tools))
+		}
+		if req.Tools[0].Function.Name != "get_weather" {
+			t.Errorf("expected tool name 'get_weather', got %q", req.Tools[0].Function.Name)
+		}
+
+		// Set SSE headers
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		// Write OpenAI SSE format events
+		// First chunk: tool call start with ID and name
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-stream-123","type":"function","function":{"name":"get_weather"}}]},"finish_reason":null}]}`)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// Second chunk: tool call arguments (partial)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":"}}]},"finish_reason":null}]}`)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// Third chunk: tool call arguments (completion)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]},"finish_reason":null}]}`)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// Final chunk: finish with tool_calls reason
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// [DONE] terminator
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	p, err := NewLMStudioProvider(LMStudioProviderConfig{
+		Name:    "lmstudio",
+		BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewLMStudioProvider failed: %v", err)
+	}
+
+	ctx := context.Background()
+	chunks, err := p.StreamChatCompletion(ctx, ChatRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "user", Content: "What's the weather in Paris?"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "get_weather",
+				Description: "Get weather for a location",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"location":{"type":"string"}}}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamChatCompletion failed: %v", err)
+	}
+
+	var toolCall *ToolCall
+	var stopReason string
+	for chunk := range chunks {
+		if chunk.ToolCall != nil {
+			toolCall = chunk.ToolCall
+		}
+		if chunk.StopReason != "" {
+			stopReason = chunk.StopReason
+		}
+	}
+
+	if toolCall == nil {
+		t.Fatal("expected tool call, got nil")
+	}
+	if toolCall.ID != "call-stream-123" {
+		t.Errorf("expected tool call ID 'call-stream-123', got %q", toolCall.ID)
+	}
+	if toolCall.Name != "get_weather" {
+		t.Errorf("expected tool call name 'get_weather', got %q", toolCall.Name)
+	}
+
+	expectedInput := `{"location":"Paris"}`
+	if string(toolCall.Input) != expectedInput {
+		t.Errorf("expected tool call input %q, got %q", expectedInput, string(toolCall.Input))
+	}
+	if stopReason != "tool_use" {
+		t.Errorf("expected stop_reason 'tool_use', got %q", stopReason)
+	}
+}
+
 // TestLMStudioMetadataSource tests the MetadataSource method.
 func TestLMStudioMetadataSource(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -950,13 +1168,13 @@ func TestLMStudioMetadataSource(t *testing.T) {
 		}
 
 		resp := struct {
-			Data []LMStudioModel `json:"data"`
+			Models []LMStudioModel `json:"models"`
 		}{
-			Data: []LMStudioModel{
+			Models: []LMStudioModel{
 				{
 					ID:          "local-llama-model",
 					Type:        "llm",
-					State:       "loaded",
+					DisplayName: "Local Llama Model",
 					MaxContext:  32768,
 				},
 			},

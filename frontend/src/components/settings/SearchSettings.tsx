@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Info, Search, Key } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { GetConfig, UpdateSearchSettings } from '../../../wailsjs/go/main/App'
 
@@ -8,9 +8,15 @@ interface SearchConfig {
   api_key: string
 }
 
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  tavily: 'Tavily',
+}
+
+const PROVIDER_KEYS = ['tavily']
+
 export function SearchSettings() {
   const [config, setConfig] = useState<SearchConfig>({
-    provider: '',
+    provider: 'tavily',
     api_key: '',
   })
   const [isLoading, setIsLoading] = useState(true)
@@ -120,53 +126,51 @@ export function SearchSettings() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="text-sm text-muted-foreground">
-        Configure web search provider settings. Changes apply automatically.
+      {/* Provider */}
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-muted-foreground">Search Provider</label>
+        <div className="flex items-center gap-3">
+          <select
+            value={config.provider}
+            onChange={(e) => handleProviderChange(e.target.value)}
+            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none min-w-[180px]"
+          >
+            {PROVIDER_KEYS.map((key) => (
+              <option key={key} value={key}>
+                {PROVIDER_DISPLAY_NAMES[key]}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      {/* Provider */}
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <Search className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">Search Provider</span>
+      {/* Warning if API key not configured */}
+      {config.api_key !== '***configured***' && apiKeyInput.trim() === '' && (
+        <div className="flex items-start gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm">
+          <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
+          <p>Search provider API key is not configured. Web search will not function without it.</p>
         </div>
-        <Input
-          placeholder="e.g., tavily"
-          value={config.provider}
-          onChange={(e) => handleProviderChange(e.target.value)}
-          className="h-9 text-sm"
-        />
-        <p className="text-xs text-muted-foreground">
-          The search provider to use for web search functionality.
-        </p>
-      </div>
+      )}
 
       {/* API Key */}
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <Key className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">API Key</span>
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-muted-foreground">API Key</label>
+        <div className="flex items-center gap-3">
+          <Input
+            type={apiKeyInput.startsWith('${') ? 'text' : 'password'}
+            placeholder={getApiKeyPlaceholder()}
+            value={apiKeyInput}
+            onChange={(e) => handleApiKeyChange(e.target.value)}
+            onFocus={handleApiKeyFocus}
+            onBlur={handleApiKeyBlur}
+            className="h-9 text-sm flex-1"
+          />
         </div>
-        <Input
-          type="password"
-          placeholder={getApiKeyPlaceholder()}
-          value={apiKeyInput}
-          onChange={(e) => handleApiKeyChange(e.target.value)}
-          onFocus={handleApiKeyFocus}
-          onBlur={handleApiKeyBlur}
-          className="h-9 text-sm"
-        />
         <p className="text-xs text-muted-foreground">
           {config.api_key === '***configured***'
             ? 'API key is configured. Enter a new value to change it.'
             : 'Enter your API key for the search provider.'}
         </p>
-      </div>
-
-      {/* Info tip */}
-      <div className="flex items-start gap-2 text-xs text-muted-foreground">
-        <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-        <p>Requires a Tavily API key for web search functionality.</p>
       </div>
     </div>
   )

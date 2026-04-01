@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Info } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { GetConfig, UpdateLLMSettings, ListProviderModels } from '../../../wailsjs/go/main/App'
@@ -30,7 +29,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 
 const PROVIDER_KEYS = ['anthropic', 'gemini', 'lmstudio', 'openai_compatible', 'chatgpt']
 
-export function LLMSettings() {
+export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void }) {
   const [activeProvider, setActiveProvider] = useState<string>('')
   const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
   const [models, setModels] = useState<string[]>([])
@@ -39,7 +38,16 @@ export function LLMSettings() {
   const [isLoading, setIsLoading] = useState(true)
 
   const debounceRef = useRef<NodeJS.Timeout | null>(null)
-  const modelsDebounceRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Compute a stable key for the current provider + credentials
+  // This naturally deduplicates: model changes don't change the key, but provider/credential changes do
+  const credentialKey = useMemo(() => {
+    if (!activeProvider || !providerConfigs[activeProvider]) {
+      return ''
+    }
+    const config = providerConfigs[activeProvider]
+    return `${activeProvider}|${config.api_key}|${config.base_url}`
+  }, [activeProvider, providerConfigs])
 
   // Load config on mount
   const loadConfig = useCallback(async () => {
@@ -68,8 +76,15 @@ export function LLMSettings() {
   }, [loadConfig])
 
   // Fetch models when provider or credentials change
-  const fetchModels = useCallback(async (provider: string, config: ProviderConfig) => {
-    // Check if required fields are filled based on provider
+  useEffect(() => {
+    if (!activeProvider || !providerConfigs[activeProvider]) {
+      return
+    }
+
+    const config = providerConfigs[activeProvider]
+    const provider = activeProvider
+
+    // Check if required fields are filled
     const needsBaseUrl = provider === 'lmstudio' || provider === 'openai_compatible'
     const needsApiKey = provider !== 'lmstudio'
 
@@ -86,39 +101,34 @@ export function LLMSettings() {
       return
     }
 
+    let cancelled = false
     setModelsLoading(true)
     setModelsError(null)
 
-    try {
-      const modelList = await ListProviderModels(provider)
-      setModels(modelList || [])
-    } catch (err) {
-      setModelsError(err instanceof Error ? err.message : 'Failed to fetch models')
-      setModels([])
-    } finally {
-      setModelsLoading(false)
-    }
-  }, [])
+    ListProviderModels(provider)
+      .then((modelList) => {
+        if (!cancelled) {
+          setModels(modelList || [])
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setModelsError(err instanceof Error ? err.message : String(err))
+          setModels([])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setModelsLoading(false)
+        }
+      })
 
-  // Debounced model fetch
-  const debouncedFetchModels = useCallback(
-    (provider: string, config: ProviderConfig) => {
-      if (modelsDebounceRef.current) {
-        clearTimeout(modelsDebounceRef.current)
-      }
-      modelsDebounceRef.current = setTimeout(() => {
-        fetchModels(provider, config)
-      }, 300)
-    },
-    [fetchModels]
-  )
-
-  // Fetch models when provider or credentials change
-  useEffect(() => {
-    if (activeProvider && providerConfigs[activeProvider]) {
-      debouncedFetchModels(activeProvider, providerConfigs[activeProvider])
+    return () => {
+      cancelled = true
     }
-  }, [activeProvider, providerConfigs, debouncedFetchModels])
+    // credentialKey captures activeProvider + api_key + base_url
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [credentialKey])
 
   // Save settings
   const saveSettings = useCallback(
@@ -131,11 +141,12 @@ export function LLMSettings() {
           model: config.model,
         })
         await UpdateLLMSettings(request)
+        onSettingsSaved?.()
       } catch {
         // Handle error silently
       }
     },
-    []
+    [onSettingsSaved]
   )
 
   // Debounced save
@@ -221,9 +232,6 @@ export function LLMSettings() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="text-sm text-muted-foreground">
-        Configure the LLM provider and model used for all agent tasks. Changes apply immediately.
-      </div>
 
       {/* Provider Selection */}
       <div className="flex flex-col gap-2">
@@ -232,7 +240,7 @@ export function LLMSettings() {
           <select
             value={activeProvider}
             onChange={(e) => handleProviderChange(e.target.value)}
-            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring min-w-[180px]"
+            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none min-w-[180px]"
           >
             {PROVIDER_KEYS.map((key) => (
               <option key={key} value={key}>
@@ -240,9 +248,6 @@ export function LLMSettings() {
               </option>
             ))}
           </select>
-          <Badge variant="secondary" className="text-xs">
-            {PROVIDER_DISPLAY_NAMES[activeProvider] || activeProvider}
-          </Badge>
         </div>
       </div>
 
@@ -268,7 +273,10 @@ export function LLMSettings() {
               <label className="text-xs text-muted-foreground">API Key</label>
               <div className="flex items-center gap-3">
                 <Input
-                  type="password"
+                  type={(() => {
+                    const val = currentConfig.api_key === '***configured***' ? '' : currentConfig.api_key
+                    return val.startsWith('${') ? 'text' : 'password'
+                  })()}
                   placeholder="Enter API key"
                   value={currentConfig.api_key === '***configured***' ? '' : currentConfig.api_key}
                   onChange={(e) => updateProviderConfig(activeProvider, { api_key: e.target.value })}
@@ -287,19 +295,31 @@ export function LLMSettings() {
           <div className="flex flex-col gap-2">
             <label className="text-xs text-muted-foreground">Model</label>
             <div className="flex flex-col gap-2">
-              <Input
-                list={`models-${activeProvider}`}
-                placeholder={getModelInputPlaceholder()}
-                value={currentConfig.model}
-                onChange={(e) => updateProviderConfig(activeProvider, { model: e.target.value })}
-                disabled={isModelInputDisabled()}
-                className="h-9 text-sm"
-              />
-              <datalist id={`models-${activeProvider}`}>
-                {(models || []).map((model) => (
-                  <option key={model} value={model} />
-                ))}
-              </datalist>
+              {models.length > 0 && !modelsLoading ? (
+                // Non-editable select when models are successfully fetched
+                <select
+                  value={currentConfig.model}
+                  onChange={(e) => updateProviderConfig(activeProvider, { model: e.target.value })}
+                  disabled={isModelInputDisabled()}
+                  className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none"
+                >
+                  <option value="">Select a model...</option>
+                  {models.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                // Plain text input when no models available or fetch failed
+                <Input
+                  placeholder={getModelInputPlaceholder()}
+                  value={currentConfig.model}
+                  onChange={(e) => updateProviderConfig(activeProvider, { model: e.target.value })}
+                  disabled={isModelInputDisabled() || modelsLoading}
+                  className="h-9 text-sm"
+                />
+              )}
               {modelsLoading && (
                 <span className="text-xs text-muted-foreground">Loading models...</span>
               )}
@@ -310,14 +330,6 @@ export function LLMSettings() {
           </div>
         </div>
       )}
-
-      {/* Info note */}
-      <div className="flex items-start gap-2 text-xs text-muted-foreground">
-        <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-        <p>
-          Temperature is fixed at 0 (deterministic). Max tokens is calculated automatically based on model context window.
-        </p>
-      </div>
     </div>
   )
 }

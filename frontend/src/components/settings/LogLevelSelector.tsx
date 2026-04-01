@@ -47,7 +47,6 @@ export function LogLevelSelector() {
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">Log Level</span>
-        <span className="text-xs text-muted-foreground">{logLevel}</span>
       </div>
       <div className="flex gap-1 p-1 bg-muted rounded-lg">
         {logLevelOptions.map((option) => (

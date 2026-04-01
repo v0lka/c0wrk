@@ -146,8 +146,8 @@ func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
 		t.Errorf("expected model 'claude-3', got %q", mock.lastReq.Model)
 	}
 
-	// Collect chunks
-	var chunks []ChatChunk
+	// Collect chunks (preallocate with capacity from mock)
+	chunks := make([]ChatChunk, 0, len(mock.streamResponse))
 	for chunk := range ch {
 		chunks = append(chunks, chunk)
 	}

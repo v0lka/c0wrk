@@ -4,9 +4,10 @@ import { GetConfig } from '../../../wailsjs/go/main/App'
 
 interface ConfigWarningBannerProps {
   className?: string
+  refreshKey?: number // Used to trigger a refresh when changed
 }
 
-export function ConfigWarningBanner({ className = '' }: ConfigWarningBannerProps) {
+export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWarningBannerProps) {
   const [migrated, setMigrated] = useState(false)
   const [migrationMsg, setMigrationMsg] = useState('')
   const [errors, setErrors] = useState<string[]>([])
@@ -25,7 +26,7 @@ export function ConfigWarningBanner({ className = '' }: ConfigWarningBannerProps
       }
     }
     loadConfigState()
-  }, [])
+  }, [refreshKey])
 
   if (!loaded) {
     return null

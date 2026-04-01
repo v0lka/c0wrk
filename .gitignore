@@ -59,8 +59,8 @@ go.work.sum
 # Compiled agent binary (project-specific)
 /agent
 
-# Compiled desktop binary
-/bin/
+# Cache directory for downloaded libraries
+.cache/
 
 # Configuration files with sensitive data
 config.local.yaml

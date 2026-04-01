@@ -1098,10 +1098,7 @@ func (a *App) GetConfig() map[string]interface{} {
 	}
 
 	// Search - mask API key
-	searchKeyMasked := ""
-	if a.config.Search.APIKey != "" {
-		searchKeyMasked = "***configured***"
-	}
+	searchKeyMasked := maskAPIKey(a.config.Search.APIKey)
 
 	return map[string]interface{}{
 		"loaded":              true,
@@ -1153,6 +1150,9 @@ func (a *App) GetConfig() map[string]interface{} {
 func maskAPIKey(key string) string {
 	if key == "" {
 		return ""
+	}
+	if strings.HasPrefix(key, "${") && strings.HasSuffix(key, "}") {
+		return key
 	}
 	return "***configured***"
 }
@@ -1521,6 +1521,10 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 	if err := a.persistConfig(); err != nil {
 		slog.Warn("failed to persist LLM settings", "error", err)
 	}
+
+	// Clear any config load errors since settings are now valid
+	a.configLoadErrors = nil
+
 	return nil
 }
 
