@@ -7,14 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/user/agent/internal/session"
 	"github.com/user/agent/internal/tools"
 )
-
-// contextKey is the type for context keys used in this package.
-type contextKey string
-
-// sessionIDKey is the context key for session ID.
-const sessionIDKey contextKey = "session_id"
 
 var toolContextmgrDescription = `Manage persistent memory and context settings.
 
@@ -315,7 +310,7 @@ func (t *ContextManagerTool) episodicStore(ctx context.Context, params contextMa
 	}
 
 	// Extract session ID from context
-	sessionID, _ := ctx.Value(sessionIDKey).(string)
+	sessionID, _ := ctx.Value(session.SessionIDKey).(string)
 	if sessionID == "" {
 		return tools.ToolResult{Content: "session ID not found in context", IsError: true}, nil
 	}
@@ -341,7 +336,7 @@ func (t *ContextManagerTool) episodicSearch(ctx context.Context, params contextM
 	}
 
 	// Extract session ID from context
-	sessionID, _ := ctx.Value(sessionIDKey).(string)
+	sessionID, _ := ctx.Value(session.SessionIDKey).(string)
 	if sessionID == "" {
 		return tools.ToolResult{Content: "session ID not found in context", IsError: true}, nil
 	}

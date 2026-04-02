@@ -194,6 +194,16 @@ type SearchConfig struct {
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
+// ExpandEnvVars expands ${ENV_VAR} patterns in a string with their environment variable values.
+// This is a public function that can be used at runtime for values that bypass config file loading.
+func ExpandEnvVars(s string) string {
+	return envVarPattern.ReplaceAllStringFunc(s, func(match string) string {
+		// Extract the variable name from ${VAR_NAME}
+		varName := match[2 : len(match)-1]
+		return os.Getenv(varName)
+	})
+}
+
 // LoadResult contains the result of loading a configuration file.
 type LoadResult struct {
 	Config       *Config

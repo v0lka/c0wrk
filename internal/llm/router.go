@@ -49,7 +49,12 @@ func NewLLMRouter(cfg config.LLMConfig, registry *ModelRegistry) (*LLMRouter, er
 }
 
 // createProviderFromConfig creates an LLMProvider based on the provider type.
+// Environment variables in apiKey and baseURL are expanded before passing to providers.
 func createProviderFromConfig(provType, apiKey, baseURL string) (LLMProvider, error) {
+	// Expand environment variables in API key and base URL
+	apiKey = config.ExpandEnvVars(apiKey)
+	baseURL = config.ExpandEnvVars(baseURL)
+
 	switch provType {
 	case "openai":
 		return NewOpenAIProvider(OpenAIProviderConfig{

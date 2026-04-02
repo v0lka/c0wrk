@@ -59,13 +59,13 @@ type ContextManager interface {
 
 // Executor runs the ReAct loop: Thought → Action → Observation.
 type Executor struct {
-	llm                    LLMCaller
-	tools                  ToolExecutor
-	tokenCounter           llm.TokenCounter
-	maxSteps               int
-	lmRole                 string       // LLM role to use (default: "executor")
-	logger                 *slog.Logger // structured logger (nil-safe)
-	emitter                Emitter      // event emitter (uses noopEmitter if nil)
+	llm                     LLMCaller
+	tools                   ToolExecutor
+	tokenCounter            llm.TokenCounter
+	maxSteps                int
+	lmRole                  string       // LLM role to use (default: "executor")
+	logger                  *slog.Logger // structured logger (nil-safe)
+	emitter                 Emitter      // event emitter (uses noopEmitter if nil)
 	suppressAssistantEvents bool         // if true, don't emit AssistantChunk/AssistantDone
 }
 
@@ -81,13 +81,13 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		emitter = &noopEmitter{}
 	}
 	return &Executor{
-		llm:                    llmRouter,
-		tools:                  toolRegistry,
-		tokenCounter:           counter,
-		maxSteps:               maxSteps,
-		lmRole:                 lmRole,
-		logger:                 logger,
-		emitter:                emitter,
+		llm:                     llmRouter,
+		tools:                   toolRegistry,
+		tokenCounter:            counter,
+		maxSteps:                maxSteps,
+		lmRole:                  lmRole,
+		logger:                  logger,
+		emitter:                 emitter,
 		suppressAssistantEvents: suppressAssistantEvents,
 	}
 }
@@ -184,13 +184,13 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 
 			e.logInfo("executor_step", "step", stepNum, "thought", thought, "action", "implicit_finish", "observation_len", 0)
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-			
+
 			// Emit assistant response events (unless suppressed)
 			if !e.suppressAssistantEvents {
 				e.emitter.AssistantChunk(thought)
 				e.emitter.AssistantDone(thought, resp.Usage.InputTokens, resp.Usage.OutputTokens)
 			}
-			
+
 			return &ExecutorResult{
 				Output:   thought,
 				Steps:    allSteps,
@@ -266,7 +266,7 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 
 			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", 0)
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-		
+
 			return &ExecutorResult{
 				Output:   params.Answer,
 				Steps:    allSteps,
@@ -285,6 +285,10 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 		}
 
 		observation := result.Content
+		// Ensure non-empty observation for tool messages (OpenAI API requirement)
+		if observation == "" {
+			observation = "(no output)"
+		}
 
 		// Emit tool result
 		resultPreview := observation
@@ -348,6 +352,9 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 func (e *Executor) buildToolDefinitions(taskTools []tools.ToolDescriptor) []llm.ToolDefinition {
 	defs := make([]llm.ToolDefinition, 0, len(taskTools)+1)
 
+	// Track if finish tool is already present
+	hasFinish := false
+
 	// Add task tools
 	for _, t := range taskTools {
 		defs = append(defs, llm.ToolDefinition{
@@ -355,15 +362,20 @@ func (e *Executor) buildToolDefinitions(taskTools []tools.ToolDescriptor) []llm.
 			Description: t.Description,
 			InputSchema: t.InputSchema,
 		})
+		if t.Name == "finish" {
+			hasFinish = true
+		}
 	}
 
-	// Always add the finish tool
-	finishTool := NewFinishTool()
-	defs = append(defs, llm.ToolDefinition{
-		Name:        finishTool.Name(),
-		Description: finishTool.Description(),
-		InputSchema: finishTool.InputSchema(),
-	})
+	// Add the finish tool only if not already present
+	if !hasFinish {
+		finishTool := NewFinishTool()
+		defs = append(defs, llm.ToolDefinition{
+			Name:        finishTool.Name(),
+			Description: finishTool.Description(),
+			InputSchema: finishTool.InputSchema(),
+		})
+	}
 
 	return defs
 }

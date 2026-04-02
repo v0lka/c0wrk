@@ -207,9 +207,16 @@ func (p *OpenAIProvider) buildRequest(req ChatRequest) openai.ChatCompletionRequ
 
 // convertRequestMessage converts our Message to OpenAI's message format.
 func (p *OpenAIProvider) convertRequestMessage(msg Message) openai.ChatCompletionMessage {
+	// OpenAI API requires non-empty content for tool-role messages.
+	// This is a safety net to prevent 400 errors.
+	content := msg.Content
+	if msg.Role == "tool" && content == "" {
+		content = "(no output)"
+	}
+
 	openaiMsg := openai.ChatCompletionMessage{
 		Role:    msg.Role,
-		Content: msg.Content,
+		Content: content,
 	}
 
 	// Handle tool call ID for tool responses

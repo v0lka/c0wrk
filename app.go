@@ -398,8 +398,9 @@ func (a *App) startup(ctx context.Context) {
 	registry.Register(webFetchTool)
 
 	// WebSearch tool (requires Tavily API key)
-	if a.config.Search.APIKey != "" {
-		webSearchTool := toolcore.NewWebSearchTool(a.config.Search.APIKey)
+	searchAPIKey := config.ExpandEnvVars(a.config.Search.APIKey)
+	if searchAPIKey != "" {
+		webSearchTool := toolcore.NewWebSearchTool(searchAPIKey)
 		registry.Register(webSearchTool)
 	}
 
@@ -431,6 +432,44 @@ func (a *App) startup(ctx context.Context) {
 	memDBPath := a.config.Memory.Database
 	if memDBPath == "" {
 		memDBPath = filepath.Join(agentDir, "memory.db")
+	}
+
+	// Auto-detect ONNX Runtime library if not already set
+	// This must happen BEFORE initializing the local embedder
+	if os.Getenv("ONNXRUNTIME_LIB_PATH") == "" {
+		var libName string
+		switch runtime.GOOS {
+		case "darwin":
+			libName = "libonnxruntime.dylib"
+		case "windows":
+			libName = "onnxruntime.dll"
+		default:
+			libName = "libonnxruntime.so"
+		}
+
+		// Check 1: Look in .cache directory relative to executable
+		if exePath, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+				libPath := filepath.Join(filepath.Dir(resolved), ".cache", libName)
+				if _, err := os.Stat(libPath); err == nil {
+					if err := os.Setenv("ONNXRUNTIME_LIB_PATH", libPath); err == nil {
+						log.Debug("auto-detected ONNX Runtime library", "path", libPath)
+					}
+				}
+			}
+		}
+
+		// Check 2: Look in .cache directory relative to working directory
+		if os.Getenv("ONNXRUNTIME_LIB_PATH") == "" {
+			if wd, err := os.Getwd(); err == nil {
+				libPath := filepath.Join(wd, ".cache", libName)
+				if _, err := os.Stat(libPath); err == nil {
+					if err := os.Setenv("ONNXRUNTIME_LIB_PATH", libPath); err == nil {
+						log.Debug("auto-detected ONNX Runtime library", "path", libPath)
+					}
+				}
+			}
+		}
 	}
 
 	// Initialize local embedder for semantic memory
@@ -528,31 +567,6 @@ func (a *App) startup(ctx context.Context) {
 		log.Info("constitution loaded", "principles", len(constitution.Principles()), "path", constitutionPath, "session", constitution.SessionCount())
 	}
 	a.constitution = constitution
-
-	// Auto-detect ONNX Runtime library co-located with the executable
-	if os.Getenv("ONNXRUNTIME_LIB_PATH") == "" {
-		if exePath, err := os.Executable(); err == nil {
-			if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
-				var libName string
-				switch runtime.GOOS {
-				case "darwin":
-					libName = "libonnxruntime.dylib"
-				case "windows":
-					libName = "onnxruntime.dll"
-				default:
-					libName = "libonnxruntime.so"
-				}
-				libPath := filepath.Join(filepath.Dir(resolved), libName)
-				if _, err := os.Stat(libPath); err == nil {
-					if err := os.Setenv("ONNXRUNTIME_LIB_PATH", libPath); err == nil {
-						log.Debug("auto-detected ONNX Runtime library", "path", libPath)
-					}
-				}
-			}
-		}
-	}
-
-
 
 	// Create SkillCreatorTool with DockerBuilder adapter
 	var skillBuilder toolcore.SkillBuilder = &dockerBuilderAdapter{builder: builder}
@@ -1171,24 +1185,27 @@ func (a *App) ListProviderModels(provider string) ([]string, error) {
 	case "gemini":
 		return llm.BuiltInModelNamesByPrefix("gemini-"), nil
 	case "chatgpt":
-		apiKey := a.config.LLM.ChatGPT.APIKey
+		apiKey := config.ExpandEnvVars(a.config.LLM.ChatGPT.APIKey)
 		if apiKey == "" {
 			return nil, errors.New("ChatGPT API key not configured")
 		}
 		return a.listOpenAIModels("", apiKey)
 	case "openai_compatible":
 		cfg := a.config.LLM.OpenAICompatible
-		if cfg.BaseURL == "" {
+		baseURL := config.ExpandEnvVars(cfg.BaseURL)
+		apiKey := config.ExpandEnvVars(cfg.APIKey)
+		if baseURL == "" {
 			return nil, errors.New("OpenAI Compatible base URL not configured")
 		}
-		return a.listOpenAIModels(cfg.BaseURL, cfg.APIKey)
+		return a.listOpenAIModels(baseURL, apiKey)
 	case "lmstudio":
 		cfg := a.config.LLM.LMStudio
-		baseURL := cfg.BaseURL
+		baseURL := config.ExpandEnvVars(cfg.BaseURL)
 		if baseURL == "" {
 			baseURL = "http://localhost:1234"
 		}
-		return a.listLMStudioModels(baseURL, cfg.APIKey)
+		apiKey := config.ExpandEnvVars(cfg.APIKey)
+		return a.listLMStudioModels(baseURL, apiKey)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}

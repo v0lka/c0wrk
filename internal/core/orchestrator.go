@@ -305,8 +305,8 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
 		// Emit retry attempt (skip for first attempt)
 		if attempt > 0 {
-			o.emitter.Retry(attempt, o.maxRetries)
-			o.logInfo("retry", "attempt", attempt, "max_attempts", o.maxRetries)
+			o.emitter.Retry(attempt, o.maxRetries+1)
+			o.logInfo("retry", "attempt", attempt, "max_attempts", o.maxRetries+1)
 		}
 
 		// Create fresh context manager for each attempt
@@ -330,6 +330,18 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 		executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.config.LLMRole, o.logger, o.emitter, false)
 		result, err := executor.Run(ctx, taskDef, cw)
 		if err != nil {
+			// Check if this is a recoverable API error (e.g., 400-class errors)
+			if isRecoverableAPIError(err) {
+				// Log the error and report to user rather than crashing
+				o.logWarn("executor_api_error_recovered", "error", err, "attempt", attempt+1)
+				// Return a user-visible error message
+				return &HandleResult{
+					Output:          fmt.Sprintf("I encountered an API error: %s. Please try again.", err),
+					RoutingDecision: routing,
+					AttemptCount:    attempt + 1,
+					Reflections:     sessionReflections,
+				}, nil
+			}
 			return nil, fmt.Errorf("executor failed: %w", err)
 		}
 		lastResult = result
@@ -522,8 +534,8 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
 		// Emit retry attempt (skip for first attempt)
 		if attempt > 0 {
-			o.emitter.Retry(attempt, o.maxRetries)
-			o.logInfo("retry", "attempt", attempt, "max_attempts", o.maxRetries)
+			o.emitter.Retry(attempt, o.maxRetries+1)
+			o.logInfo("retry", "attempt", attempt, "max_attempts", o.maxRetries+1)
 		}
 
 		// Execute the current plan
@@ -802,6 +814,12 @@ func (o *Orchestrator) executeStepWithReflections(ctx context.Context, step Plan
 	executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.config.LLMRole, o.logger, o.emitter, true)
 	result, err := executor.Run(ctx, taskDef, cw)
 	if err != nil {
+		// Check if this is a recoverable API error
+		if isRecoverableAPIError(err) {
+			// Log and return a user-visible error message
+			o.logWarn("step_executor_api_error_recovered", "error", err, "step_id", step.ID)
+			return fmt.Sprintf("Step execution encountered an API error: %s", err), nil
+		}
 		return "", err
 	}
 
@@ -1030,4 +1048,18 @@ STEP EXECUTION SCOPE: You are executing a single step in a multi-step plan. Your
 // Kept for compatibility with Phase 1 code.
 func (o *Orchestrator) Run(ctx context.Context, userMessage string) (*HandleResult, error) {
 	return o.Handle(ctx, userMessage)
+}
+
+// isRecoverableAPIError checks if an error is a recoverable API error
+// that should not crash the session (e.g., 400-class errors from malformed requests).
+func isRecoverableAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Check for 400-class errors that indicate malformed requests
+	// These can often be recovered by the fixes in working.go, executor.go, and provider_openai.go
+	return strings.Contains(errStr, "status code: 400") ||
+		strings.Contains(errStr, "missing field `content`") ||
+		strings.Contains(errStr, "Failed to deserialize")
 }

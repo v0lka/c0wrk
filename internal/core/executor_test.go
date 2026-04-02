@@ -405,6 +405,65 @@ func TestExecutor_ToolDefinitionsIncludeFinish(t *testing.T) {
 	}
 }
 
+// TestExecutor_NoDuplicateFinishTool tests that finish tool is not duplicated
+// when it's already included in the task tools (e.g., from tool registry).
+func TestExecutor_NoDuplicateFinishTool(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "I know the answer",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "finish", Input: json.RawMessage(`{"answer":"Done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 50, OutputTokens: 30},
+			},
+		},
+	}
+
+	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
+	mockCW := &mockContextManager{}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+
+	// Task includes finish tool (as would happen when toolRegistry.List() includes it)
+	task := TaskDefinition{
+		Task: "Test",
+		Tools: []tools.ToolDescriptor{
+			{Name: "mytool", Description: "My tool"},
+			{Name: "finish", Description: "Finish tool"},
+		},
+	}
+
+	_, _ = executor.Run(context.Background(), task, mockCW)
+
+	// Check that finish tool appears exactly once (not duplicated)
+	if len(mockLLM.calls) < 1 {
+		t.Fatalf("expected at least 1 LLM call, got %d", len(mockLLM.calls))
+	}
+
+	req := mockLLM.calls[0]
+
+	finishCount := 0
+	for _, tool := range req.Tools {
+		if tool.Name == "finish" {
+			finishCount++
+		}
+	}
+
+	if finishCount != 1 {
+		t.Errorf("expected exactly 1 finish tool, got %d", finishCount)
+	}
+
+	// Total tools should be 2 (mytool + finish), not 3
+	if len(req.Tools) != 2 {
+		t.Errorf("expected 2 tools (mytool + finish), got %d: %v", len(req.Tools), req.Tools)
+	}
+}
+
 // === Nudge Mechanism Tests ===
 
 // TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1 tests that when LLM returns no tool calls

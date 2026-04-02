@@ -206,9 +206,15 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 
 		// Tool response message with observation
 		if step.Action.ID != "" {
+			// OpenAI API requires non-empty content for tool-role messages.
+			// Use placeholder if observation is empty to prevent 400 errors.
+			observation := step.Observation
+			if observation == "" {
+				observation = "(no output)"
+			}
 			toolMsg := llm.Message{
 				Role:       "tool",
-				Content:    step.Observation,
+				Content:    observation,
 				ToolCallID: step.Action.ID,
 			}
 			messages = append(messages, toolMsg)

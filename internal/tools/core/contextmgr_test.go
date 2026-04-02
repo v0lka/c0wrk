@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/user/agent/internal/session"
 	"github.com/user/agent/internal/tools"
 )
 
@@ -629,7 +630,7 @@ func TestContextManagerTool_EpisodicStore(t *testing.T) {
 	tool := NewContextManagerTool(nil, nil, episodicStore, nil)
 
 	// Create context with session ID
-	ctx := context.WithValue(context.Background(), sessionIDKey, "test-session-123")
+	ctx := context.WithValue(context.Background(), session.SessionIDKey, "test-session-123")
 
 	input := map[string]interface{}{
 		"action":  "episodic_store",
@@ -673,7 +674,7 @@ func TestContextManagerTool_EpisodicSearch(t *testing.T) {
 	tool := NewContextManagerTool(nil, nil, episodicStore, nil)
 
 	// Create context with session ID
-	ctx := context.WithValue(context.Background(), sessionIDKey, "test-session-123")
+	ctx := context.WithValue(context.Background(), session.SessionIDKey, "test-session-123")
 
 	input := map[string]interface{}{
 		"action": "episodic_search",
@@ -737,7 +738,7 @@ func TestContextManagerTool_EpisodicStoreNoSessionID(t *testing.T) {
 func TestContextManagerTool_EpisodicStoreNilStore(t *testing.T) {
 	tool := NewContextManagerTool(nil, nil, nil, nil)
 
-	ctx := context.WithValue(context.Background(), sessionIDKey, "test-session-123")
+	ctx := context.WithValue(context.Background(), session.SessionIDKey, "test-session-123")
 
 	input := map[string]interface{}{
 		"action":  "episodic_store",
@@ -952,7 +953,7 @@ func TestContextManagerTool_ReflexionStoreMissingParams(t *testing.T) {
 func TestContextManagerTool_EpisodicSearchNilStore(t *testing.T) {
 	tool := NewContextManagerTool(nil, nil, nil, nil)
 
-	ctx := context.WithValue(context.Background(), sessionIDKey, "test-session-123")
+	ctx := context.WithValue(context.Background(), session.SessionIDKey, "test-session-123")
 
 	input := map[string]interface{}{
 		"action": "episodic_search",

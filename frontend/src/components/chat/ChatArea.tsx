@@ -106,6 +106,16 @@ export function ChatArea() {
 
   const displayItems = useMemo(() => groupMessages(messages), [messages])
 
+  // Find the last user message for pinning at the top
+  const lastUserMessage = useMemo(() => {
+    for (let i = displayItems.length - 1; i >= 0; i--) {
+      if (displayItems[i].kind === 'user') {
+        return displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
+      }
+    }
+    return null
+  }, [displayItems])
+
   if (!activeSessionId) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -131,43 +141,55 @@ export function ChatArea() {
   }
 
   return (
-    <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
-      <div className="p-4 space-y-4 min-w-0">
-        {displayItems.map((item) => {
-          switch (item.kind) {
-            case 'user':
-              return <UserMessage key={item.message.id} content={item.message.content} timestamp={item.message.timestamp} />
-            case 'assistant':
-              return <AssistantMessage key={item.message.id} content={item.message.content} />
-            case 'thought':
-              return <ThoughtBlock key={item.id} id={item.id} stepNum={item.stepNum} content={item.content} />
-            case 'step_group':
-              return <StepGroup key={item.id} id={item.id} steps={item.steps} />
-            case 'tool_confirm':
-              return <ToolConfirmation key={item.message.id} metadata={item.message.metadata} />
-            case 'error':
-              return <ErrorBlock key={item.message.id} content={item.message.content} />
-            case 'plan':
-              return <PlanCard key={item.id} id={item.id} steps={item.steps} />
-            case 'eval':
-              return <EvalCard key={item.id} id={item.id} passed={item.passed} total={item.total} criteria={item.criteria} />
-            case 'reflection':
-              return <ReflectionCard key={item.id} id={item.id} summary={item.summary} insights={item.insights} attempt={item.attempt} maxAttempts={item.maxAttempts} />
-            case 'service':
-              return <ServiceMessage key={item.id} id={item.id} variant={item.variant} content={item.content} metadata={item.metadata} />
-            default:
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Pinned last user message */}
+      {lastUserMessage && (
+        <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
+          <UserMessage content={lastUserMessage.message.content} timestamp={lastUserMessage.message.timestamp} />
+        </div>
+      )}
+      <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
+        <div className="p-4 space-y-4 min-w-0">
+          {displayItems.map((item) => {
+            // Skip the last user message since it's pinned at the top
+            if (item.kind === 'user' && lastUserMessage && item.message.id === lastUserMessage.message.id) {
               return null
-          }
-        })}
+            }
+            switch (item.kind) {
+              case 'user':
+                return <UserMessage key={item.message.id} content={item.message.content} timestamp={item.message.timestamp} />
+              case 'assistant':
+                return <AssistantMessage key={item.message.id} content={item.message.content} />
+              case 'thought':
+                return <ThoughtBlock key={item.id} id={item.id} stepNum={item.stepNum} content={item.content} />
+              case 'step_group':
+                return <StepGroup key={item.id} id={item.id} steps={item.steps} />
+              case 'tool_confirm':
+                return <ToolConfirmation key={item.message.id} metadata={item.message.metadata} />
+              case 'error':
+                return <ErrorBlock key={item.message.id} content={item.message.content} />
+              case 'plan':
+                return <PlanCard key={item.id} id={item.id} steps={item.steps} />
+              case 'eval':
+                return <EvalCard key={item.id} id={item.id} passed={item.passed} total={item.total} criteria={item.criteria} />
+              case 'reflection':
+                return <ReflectionCard key={item.id} id={item.id} summary={item.summary} insights={item.insights} attempt={item.attempt} maxAttempts={item.maxAttempts} />
+              case 'service':
+                return <ServiceMessage key={item.id} id={item.id} variant={item.variant} content={item.content} metadata={item.metadata} />
+              default:
+                return null
+            }
+          })}
 
-        {/* Streaming text indicator */}
-        {streamingText && (
-          <AssistantMessage
-            content={streamingText}
-            isStreaming
-          />
-        )}
-      </div>
-    </ScrollArea>
+          {/* Streaming text indicator */}
+          {streamingText && (
+            <AssistantMessage
+              content={streamingText}
+              isStreaming
+            />
+          )}
+        </div>
+      </ScrollArea>
+    </div>
   )
 }

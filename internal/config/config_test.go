@@ -388,6 +388,70 @@ func writeTestConfig(t *testing.T, content string) string {
 	return configPath
 }
 
+// TestExpandEnvVars tests the ExpandEnvVars function directly.
+func TestExpandEnvVars(t *testing.T) {
+	tests := []struct {
+		name     string
+		envVars  map[string]string
+		input    string
+		expected string
+	}{
+		{
+			name:     "no env vars",
+			input:    "plain text without env vars",
+			expected: "plain text without env vars",
+		},
+		{
+			name:     "single env var",
+			envVars:  map[string]string{"API_KEY": "secret123"},
+			input:    "key: ${API_KEY}",
+			expected: "key: secret123",
+		},
+		{
+			name:     "multiple env vars",
+			envVars:  map[string]string{"USER": "alice", "HOST": "localhost"},
+			input:    "${USER}@${HOST}",
+			expected: "alice@localhost",
+		},
+		{
+			name:     "unset env var returns empty",
+			input:    "key: ${UNSET_VAR}",
+			expected: "key: ",
+		},
+		{
+			name:     "mixed text and env vars",
+			envVars:  map[string]string{"MODEL": "gpt-4"},
+			input:    "Using model: ${MODEL} for inference",
+			expected: "Using model: gpt-4 for inference",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "env var with underscore",
+			envVars:  map[string]string{"DEEPSEEK_API_KEY": "ds-key-123"},
+			input:    "${DEEPSEEK_API_KEY}",
+			expected: "ds-key-123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set environment variables
+			for k, v := range tt.envVars {
+				t.Setenv(k, v)
+			}
+
+			result := ExpandEnvVars(tt.input)
+			if result != tt.expected {
+				t.Errorf("ExpandEnvVars(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 // contains checks if substr is in s.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || substr == "" ||
