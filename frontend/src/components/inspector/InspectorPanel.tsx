@@ -25,8 +25,8 @@ export function InspectorPanel() {
         className="flex-1 flex flex-col min-h-0"
       >
         <TabsList variant="line" className="w-full justify-start px-4 py-2 border-b border-border rounded-none bg-transparent">
-          <TabsTrigger value="session" className="text-xs">Session</TabsTrigger>
-          <TabsTrigger value="global" className="text-xs">Global</TabsTrigger>
+          <TabsTrigger value="session" className="text-xs">Workspace</TabsTrigger>
+          <TabsTrigger value="global" className="text-xs">Memory</TabsTrigger>
         </TabsList>
 
         <ScrollArea className="flex-1" type="auto">

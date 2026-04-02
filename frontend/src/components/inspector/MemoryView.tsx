@@ -1,7 +1,8 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { BookOpen, Wrench, Lightbulb } from 'lucide-react'
+import { Brain, BookOpen, Wrench, Lightbulb } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { GetMemoryStats } from '../../../wailsjs/go/main/App'
+import { useSessionStore } from '@/stores/sessionStore'
+import { GetMemoryStats, GetSessionMemoryStats } from '../../../wailsjs/go/main/App'
 
 interface MemoryCardProps {
   title: string
@@ -31,8 +32,11 @@ function MemoryCard({ title, icon, count, description, colorClass }: MemoryCardP
 
 
 export function GlobalView() {
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  
   // Memory stats from backend
   const [memStats, setMemStats] = useState({ semantic: 0, procedural: 0, reflexion: 0 })
+  const [episodicCount, setEpisodicCount] = useState(0)
   
   useEffect(() => {
     const fetchStats = () => {
@@ -51,9 +55,32 @@ export function GlobalView() {
     const interval = setInterval(fetchStats, 10000) // refresh every 10s
     return () => clearInterval(interval)
   }, [])
+  
+  useEffect(() => {
+    if (!activeSessionId) return
+    
+    const fetchStats = () => {
+      GetSessionMemoryStats(activeSessionId)
+        .then((stats) => {
+          setEpisodicCount(stats.episodic ?? 0)
+        })
+        .catch((err) => console.warn('GetSessionMemoryStats failed:', err))
+    }
+    
+    fetchStats() // initial fetch
+    const interval = setInterval(fetchStats, 10000) // refresh every 10s
+    return () => clearInterval(interval)
+  }, [activeSessionId])
 
   return (
     <div className="space-y-3">
+      <MemoryCard
+        title="Episodic Memory"
+        icon={<Brain className="h-4 w-4" />}
+        count={episodicCount}
+        description="Past conversations and events"
+        colorClass="bg-blue-500/10 text-blue-500"
+      />
       <MemoryCard
         title="Semantic Memory"
         icon={<BookOpen className="h-4 w-4" />}
