@@ -1,4 +1,5 @@
 A plan execution partially completed but a step failed. Revise the remaining plan.
+All step descriptions must be in English regardless of the original task language.
 
 Original plan:
 ORIGINAL-PLAN

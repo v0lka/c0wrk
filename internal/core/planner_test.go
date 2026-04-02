@@ -446,3 +446,101 @@ func TestReplan_IncludesOriginalPlanAndFailureDetails(t *testing.T) {
 	}
 }
 
+func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
+	mockResponse := `{
+		"steps": [
+			{
+				"id": "step_1",
+				"description": "Research the codebase",
+				"depends_on": [],
+				"parallelizable": true,
+				"estimated_tools": ["web_search", "file_read"],
+				"relevant_ac": ["ac_1"],
+				"agent_profile": {
+					"role": "researcher",
+					"allowed_tools": ["web_search", "web_fetch", "bash_exec"]
+				}
+			}
+		]
+	}`
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: mockResponse,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	plan, err := planner.Plan(context.Background(), "Research task", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(plan.Steps))
+	}
+
+	step := plan.Steps[0]
+	if step.AgentProfile == nil {
+		t.Fatal("expected AgentProfile to be non-nil")
+	}
+
+	if step.AgentProfile.Role != "researcher" {
+		t.Errorf("expected role 'researcher', got %q", step.AgentProfile.Role)
+	}
+
+	if len(step.AgentProfile.AllowedTools) != 3 {
+		t.Errorf("expected 3 allowed tools, got %d", len(step.AgentProfile.AllowedTools))
+	}
+}
+
+func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
+	mockResponse := `{
+		"steps": [
+			{
+				"id": "step_1",
+				"description": "Do something",
+				"depends_on": [],
+				"parallelizable": true,
+				"estimated_tools": ["bash"],
+				"relevant_ac": ["ac_1"]
+			}
+		]
+	}`
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: mockResponse,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	plan, err := planner.Plan(context.Background(), "Simple task", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(plan.Steps))
+	}
+
+	step := plan.Steps[0]
+	if step.AgentProfile != nil {
+		t.Error("expected AgentProfile to be nil when not provided in JSON")
+	}
+}
+

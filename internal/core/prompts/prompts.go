@@ -25,10 +25,15 @@ var ReflectorSystem string
 //go:embed router_system.md
 var RouterSystem string
 
-// AC Extractor prompt
+// Raw AC Extractor prompt (Phase 1 — domain-agnostic)
 
-//go:embed ac_extractor_system.md
-var ACExtractorSystem string
+//go:embed raw_ac_extractor_system.md
+var RawACExtractorSystem string
+
+// AC Enricher prompt (Phase 2 — domain-specific)
+
+//go:embed ac_enricher_system.md
+var ACEnricherSystem string
 
 // Evaluator prompt
 

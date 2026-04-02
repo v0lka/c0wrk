@@ -48,6 +48,14 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.Compaction.Thresholds.EmergencyPercent = 98
 	}
 
+	// Tool result budget defaults
+	if cfg.Executor.ToolResultBudget.HardCapTokens == 0 {
+		cfg.Executor.ToolResultBudget.HardCapTokens = 8192
+	}
+	if cfg.Executor.ToolResultBudget.MaxFillFraction == 0 {
+		cfg.Executor.ToolResultBudget.MaxFillFraction = 0.3
+	}
+
 	// Models defaults (initialize empty map if nil)
 	if cfg.LLM.Models == nil {
 		cfg.LLM.Models = make(map[string]ModelOverride)

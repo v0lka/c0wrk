@@ -127,12 +127,20 @@ type RouterConfig struct {
 	HistoryWindow int `yaml:"history_window"`
 }
 
+// ToolResultBudgetConfig configures tool result size limits to prevent single tool outputs
+// from consuming too much of the context window.
+type ToolResultBudgetConfig struct {
+	HardCapTokens   int     `yaml:"hard_cap_tokens"`   // absolute max tokens per tool result (default: 8192)
+	MaxFillFraction float64 `yaml:"max_fill_fraction"` // max fraction of available context space (default: 0.3)
+}
+
 // ExecutorConfig holds executor settings.
 type ExecutorConfig struct {
-	MaxReactSteps      int              `yaml:"max_react_steps"`
-	MaxRetries         int              `yaml:"max_retries"`
-	OutputTokenReserve int              `yaml:"output_token_reserve"`
-	Compaction         CompactionConfig `yaml:"compaction"`
+	MaxReactSteps      int                    `yaml:"max_react_steps"`
+	MaxRetries         int                    `yaml:"max_retries"`
+	OutputTokenReserve int                    `yaml:"output_token_reserve"`
+	Compaction         CompactionConfig       `yaml:"compaction"`
+	ToolResultBudget   ToolResultBudgetConfig `yaml:"tool_result_budget"`
 }
 
 // CompactionConfig holds context compaction settings.

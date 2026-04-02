@@ -1,6 +1,7 @@
 package core
 
 import (
+	"sync"
 	"time"
 
 	"github.com/user/agent/internal/llm"
@@ -91,6 +92,16 @@ type AcceptanceCriterion struct {
 	StepHint    string `json:"step_hint"`  // optional hint for Planner
 }
 
+// RawCriterion — domain-agnostic criterion extracted before routing (Phase 1 of two-phase AC).
+type RawCriterion struct {
+	ID          string `json:"id"`          // "rc_1", "rc_2"
+	Description string `json:"description"` // What must be satisfied
+	Nature      string `json:"nature"`      // "objective" | "subjective"
+	Implicit    bool   `json:"implicit"`    // Inferred from context, not explicitly stated
+	Weight      string `json:"weight"`      // "must" | "should" | "nice_to_have"
+	StepHint    string `json:"step_hint"`   // Optional hint for planner
+}
+
 // Plan — DAG of execution steps (AD 4.3).
 type Plan struct {
 	Steps []PlanStep `json:"steps"`
@@ -98,12 +109,13 @@ type Plan struct {
 
 // PlanStep — single step in the plan (AD 4.3).
 type PlanStep struct {
-	ID             string   `json:"id"`              // "step_1", "step_2a", ...
-	Description    string   `json:"description"`
-	DependsOn      []string `json:"depends_on"`
-	Parallelizable bool     `json:"parallelizable"`
-	EstimatedTools []string `json:"estimated_tools"`
-	RelevantAC     []string `json:"relevant_ac"` // IDs of related AcceptanceCriteria
+	ID             string        `json:"id"`              // "step_1", "step_2a", ...
+	Description    string        `json:"description"`
+	DependsOn      []string      `json:"depends_on"`
+	Parallelizable bool          `json:"parallelizable"`
+	EstimatedTools []string      `json:"estimated_tools"`
+	RelevantAC     []string      `json:"relevant_ac"`     // IDs of related AcceptanceCriteria
+	AgentProfile   *AgentProfile `json:"agent_profile,omitempty"` // optional specialization
 }
 
 // CompletedStep — result of an executed plan step (AD 4.7).
@@ -183,6 +195,86 @@ type SubAgentResult struct {
 	StepID string `json:"step_id"`
 	Output string `json:"output"`
 	Error  error  `json:"-"`
+}
+
+// AgentProfile defines a specialized agent role for plan step execution.
+type AgentProfile struct {
+	Role         string   `json:"role"`                    // "researcher", "coder", "tester", "executor" (default)
+	LLMRole      string   `json:"llm_role,omitempty"`      // maps to LLMRouter config (default: OrchestratorConfig.LLMRole)
+	SystemPrompt string   `json:"system_prompt,omitempty"` // role-specific prompt override (optional)
+	AllowedTools []string `json:"allowed_tools,omitempty"` // subset of available tools (empty = all)
+	MaxSteps     int      `json:"max_steps,omitempty"`     // budget per agent (0 = use default)
+}
+
+// DefaultAgentProfile returns the default executor profile.
+func DefaultAgentProfile() AgentProfile {
+	return AgentProfile{Role: "executor"}
+}
+
+// Artifact represents a named output produced by an agent step.
+type Artifact struct {
+	Key        string    `json:"key"`
+	Content    string    `json:"content"`
+	ProducedBy string    `json:"produced_by"` // step ID that created it
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// SharedWorkspace provides inter-agent communication via named artifacts.
+// It is safe for concurrent use.
+type SharedWorkspace struct {
+	mu        sync.RWMutex
+	artifacts map[string]Artifact
+}
+
+// NewSharedWorkspace creates a new empty SharedWorkspace.
+func NewSharedWorkspace() *SharedWorkspace {
+	return &SharedWorkspace{
+		artifacts: make(map[string]Artifact),
+	}
+}
+
+// Store saves an artifact in the workspace.
+func (sw *SharedWorkspace) Store(key, content, producedBy string) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	sw.artifacts[key] = Artifact{
+		Key:        key,
+		Content:    content,
+		ProducedBy: producedBy,
+		CreatedAt:  time.Now(),
+	}
+}
+
+// Get retrieves an artifact by key.
+func (sw *SharedWorkspace) Get(key string) (Artifact, bool) {
+	sw.mu.RLock()
+	defer sw.mu.RUnlock()
+	a, ok := sw.artifacts[key]
+	return a, ok
+}
+
+// List returns all artifacts.
+func (sw *SharedWorkspace) List() []Artifact {
+	sw.mu.RLock()
+	defer sw.mu.RUnlock()
+	result := make([]Artifact, 0, len(sw.artifacts))
+	for _, a := range sw.artifacts {
+		result = append(result, a)
+	}
+	return result
+}
+
+// GetByProducer returns all artifacts produced by a specific step.
+func (sw *SharedWorkspace) GetByProducer(stepID string) []Artifact {
+	sw.mu.RLock()
+	defer sw.mu.RUnlock()
+	var result []Artifact
+	for _, a := range sw.artifacts {
+		if a.ProducedBy == stepID {
+			result = append(result, a)
+		}
+	}
+	return result
 }
 
 // HandleResult — result of Orchestrator.Handle (Phase 2).

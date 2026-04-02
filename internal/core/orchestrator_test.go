@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/llm"
 	"github.com/user/agent/internal/tools"
 )
@@ -54,23 +55,45 @@ func testContextFactory(systemPrompt string, modelMeta llm.ModelMetadata, compac
 // TestOrchestrator_DirectMode tests the direct mode path with AC extraction and evaluation.
 func TestOrchestrator_DirectMode(t *testing.T) {
 	// Setup mock LLM that returns direct mode routing, answer, AC extraction, and eval
+	var routerCallCount int
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
+				routerCallCount++
+				// Call 1: ExtractRaw (Phase 1) - no "Domain:" in message
+				// Call 2: Route - returns RoutingDecision
+				// Call 3: Extract (Phase 2) - has "Domain:" in message
+				hasDomain := false
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Domain:") {
-						// AC extraction response
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: `[{"id": "ac_1", "description": "Answer identifies correct capital", "check_type": "llm_judge"}]`,
-							},
-							StopReason: "end_turn",
-						}, nil
+						hasDomain = true
+						break
 					}
 				}
-				// Return direct mode routing
+				
+				if routerCallCount == 1 {
+					// ExtractRaw - returns RawCriterion array
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Answer identifies correct capital", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				}
+				
+				if hasDomain {
+					// Regular AC extraction (Phase 2)
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "ac_1", "description": "Answer identifies correct capital", "check_type": "llm_judge"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				}
+				
+				// Route call
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -123,6 +146,7 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "What is the capital of France?")
@@ -159,29 +183,36 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 	evalCallCount := 0
 	executorCallCount := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: `[{"id": "ac_1", "description": "Answer must be accurate", "check_type": "llm_judge"}]`,
-							},
-							StopReason: "end_turn",
-						}, nil
-					}
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Answer must be accurate", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "ac_1", "description": "Answer must be accurate", "check_type": "llm_judge"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "direct", "domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				// Return direct mode routing
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "direct", "domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "evaluator_judge" {
 				evalCallCount++
@@ -247,6 +278,7 @@ func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "What is 2+2?")
@@ -278,29 +310,36 @@ func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 	evalCallCount := 0
 	plannerCalled := false
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
-							},
-							StopReason: "end_turn",
-						}, nil
-					}
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				// Return react mode routing
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "planner" {
 				plannerCalled = true
@@ -375,6 +414,7 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Complex task")
@@ -407,34 +447,206 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 	}
 }
 
+// TestEscalation_ReactReflectionsPassedToPlanExecute verifies that reflections generated
+// during React mode are passed to Planner when escalating to plan_execute.
+func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
+	evalCallCount := 0
+	var capturedPlannerPrompt string
+	var tracker routerCallTracker
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if role == "router" {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				}
+			}
+			if role == "planner" {
+				// Capture the system prompt to verify reflections are included
+				for _, msg := range req.Messages {
+					if msg.Role == "system" {
+						capturedPlannerPrompt = msg.Content
+						break
+					}
+				}
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Complete task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			if role == "executor" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Task done",
+						ToolCalls: []llm.ToolCall{
+							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Task completed"}`)},
+						},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+			if role == "evaluator_judge" {
+				evalCallCount++
+				if evalCallCount == 1 {
+					// First eval (react mode) - fail
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: "NO - task not complete"},
+						StopReason: "end_turn",
+					}, nil
+				}
+				// Second eval (plan_execute mode) - pass
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: "YES - task complete"},
+					StopReason: "end_turn",
+				}, nil
+			}
+			if role == "reflector" {
+				// Return reflection with "escalate" action - include distinctive content to verify it's passed
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"summary": "React mode insufficient", "failed_criteria": ["ac_1"], "hypotheses": ["Task too complex"], "suggested_action": "escalate", "reasoning": "Need structured planning", "failure_analysis": "Too complex for react mode - this is distinctive", "root_cause": "Complexity exceeds react capabilities", "action_plan": "Use plan_execute with structured approach", "task_type": "code"}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: ""},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+	reflector := NewReflector(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		NewRouter(mockLLM, 5),
+		NewACExtractor(mockLLM),
+		NewPlanner(mockLLM),
+		NewEvaluator(registry, mockLLM),
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10, LLMRole: "executor", MaxRetries: 3},
+		testContextFactory,
+		reflector,
+		nil, // logger - nil for tests
+		nil, // emitter - nil for tests
+		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
+	)
+
+	result, err := orchestrator.Handle(context.Background(), "Complex task")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	// Verify escalation occurred
+	if !result.Escalated {
+		t.Error("expected result.Escalated to be true")
+	}
+
+	if result.OriginalMode != "react" {
+		t.Errorf("expected OriginalMode=react, got %s", result.OriginalMode)
+	}
+
+	// Verify reflections were passed to planner by checking the captured system prompt
+	if capturedPlannerPrompt == "" {
+		t.Fatal("planner was not called or system prompt not captured")
+	}
+
+	// The planner's system prompt should contain the reflection content if reflections were passed
+	if !strings.Contains(capturedPlannerPrompt, "Too complex for react mode - this is distinctive") {
+		t.Error("expected planner system prompt to contain reflection failure_analysis, but it was not found")
+		t.Logf("captured prompt (first 500 chars): %s", truncateString(capturedPlannerPrompt, 500))
+	}
+
+	if !strings.Contains(capturedPlannerPrompt, "Complexity exceeds react capabilities") {
+		t.Error("expected planner system prompt to contain reflection root_cause, but it was not found")
+	}
+
+	if !strings.Contains(capturedPlannerPrompt, "Use plan_execute with structured approach") {
+		t.Error("expected planner system prompt to contain reflection action_plan, but it was not found")
+	}
+
+	// Verify result has the expected reflections
+	if len(result.Reflections) == 0 {
+		t.Error("expected result to contain reflections from react attempt")
+	}
+}
+
+// truncateString truncates a string to maxLen characters.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // TestReactMode_EscalatesOnMaxRetries tests auto-escalation to plan_execute when max retries exhausted.
 func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 	executorCallCount := 0
 	plannerCalled := false
 	evalCallCount := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
-							},
-							StopReason: "end_turn",
-						}, nil
-					}
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				// Return react mode routing
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "planner" {
 				plannerCalled = true
@@ -509,6 +721,7 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Task that needs retries")
@@ -563,6 +776,7 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	// Test with no criteria
@@ -608,7 +822,15 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callIdx++
 			switch callIdx {
-			case 1: // Router
+			case 1: // ExtractRaw (Phase 1)
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `[{"id": "rc_1", "description": "Code compiles", "nature": "objective", "weight": "must"}]`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Router
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -616,7 +838,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 					},
 					StopReason: "end_turn",
 				}, nil
-			case 2: // AC Extractor
+			case 3: // AC Extractor (Phase 2)
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -624,7 +846,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 					},
 					StopReason: "end_turn",
 				}, nil
-			case 3: // Executor - finish immediately
+			case 4: // Executor - finish immediately
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -639,7 +861,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 					},
 					StopReason: "tool_use",
 				}, nil
-			case 4: // Evaluator (programmatic check runs via tools.Execute)
+			case 5: // Evaluator (programmatic check runs via tools.Execute)
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -683,6 +905,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Fix the code")
@@ -718,7 +941,15 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callIdx++
 			switch callIdx {
-			case 1: // Router
+			case 1: // ExtractRaw (Phase 1)
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `[{"id": "rc_1", "description": "Tests pass", "nature": "objective", "weight": "must"}]`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Router
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -726,7 +957,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 					},
 					StopReason: "end_turn",
 				}, nil
-			case 2: // AC Extractor
+			case 3: // AC Extractor (Phase 2)
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -734,7 +965,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 					},
 					StopReason: "end_turn",
 				}, nil
-			case 3: // Planner
+			case 4: // Planner
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role: "assistant",
@@ -745,7 +976,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 					},
 					StopReason: "end_turn",
 				}, nil
-			case 4: // Executor for step_1 - finish
+			case 5: // Executor for step_1 - finish
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -760,7 +991,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 					},
 					StopReason: "tool_use",
 				}, nil
-			case 5: // Executor for step_2 - finish
+			case 6: // Executor for step_2 - finish
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -811,6 +1042,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -901,6 +1133,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -942,28 +1175,33 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
-			callIdx := 0
+			var tracker routerCallTracker
 			mockLLM := &mockLLMCaller{
 				callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-					callIdx++
-					if callIdx == 1 { // Router
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: `{"mode": "` + mode + `", "domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-							},
-							StopReason: "end_turn",
-						}, nil
-					}
-					// AC Extractor - return empty criteria
-					if callIdx == 2 && (mode == "react" || mode == "plan_execute") {
-						return &llm.ChatResponse{
-							Message:    llm.Message{Role: "assistant", Content: `[]`},
-							StopReason: "end_turn",
-						}, nil
+					if role == "router" {
+						switch tracker.nextCall(req) {
+						case "extract_raw":
+							return &llm.ChatResponse{
+								Message:    llm.Message{Role: "assistant", Content: `[]`},
+								StopReason: "end_turn",
+							}, nil
+						case "enrich":
+							return &llm.ChatResponse{
+								Message:    llm.Message{Role: "assistant", Content: `[]`},
+								StopReason: "end_turn",
+							}, nil
+						default: // route
+							return &llm.ChatResponse{
+								Message: llm.Message{
+									Role:    "assistant",
+									Content: `{"mode": "` + mode + `", "domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+								},
+								StopReason: "end_turn",
+							}, nil
+						}
 					}
 					// Planner
-					if callIdx == 3 && mode == "plan_execute" {
+					if role == "planner" {
 						return &llm.ChatResponse{
 							Message: llm.Message{
 								Role:    "assistant",
@@ -1004,6 +1242,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				nil, // logger - nil for tests
 				nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+				config.ToolResultBudgetConfig{},
 			)
 
 			result, err := orchestrator.Handle(context.Background(), "test")
@@ -1060,6 +1299,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -1082,22 +1322,20 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 // TestReactMode_RetryOnFailedEval tests that reactor retries when evaluation fails.
 func TestReactMode_RetryOnFailedEval(t *testing.T) {
 	evalCallCount := 0
-	callIdx := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			callIdx++
-			// Router uses "router" role for routing decision
-			// AC extractor also uses "router" role but has different prompt
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Test passes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -1105,14 +1343,15 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "executor" {
 				return &llm.ChatResponse{
@@ -1176,6 +1415,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1204,18 +1444,20 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 // it auto-escalates to plan_execute. This test verifies behavior when planner is nil.
 func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 	evalCallCount := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Test passes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -1223,14 +1465,15 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "executor" {
 				return &llm.ChatResponse{
@@ -1289,6 +1532,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1324,18 +1568,20 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 // TestReactMode_ReflectorCalled tests that reflector is called on evaluation failure.
 func TestReactMode_ReflectorCalled(t *testing.T) {
 	reflectorCalled := false
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Test passes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -1343,14 +1589,15 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "executor" {
 				return &llm.ChatResponse{
@@ -1407,6 +1654,7 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1423,18 +1671,20 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 	replanCalled := false
 	evalCallCount := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Test passes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -1442,14 +1692,15 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "planner" {
 				// Check if this is a replan call (contains "Revise")
@@ -1526,6 +1777,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Build and test feature")
@@ -1561,30 +1813,30 @@ func containsHelper(s, substr string) bool {
 // its dependent steps are not executed.
 func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 	step2Executed := false
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
 					return &llm.ChatResponse{
 						Message:    llm.Message{Role: "assistant", Content: `[]`},
 						StopReason: "end_turn",
 					}, nil
+				case "enrich":
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: `[]`},
+						StopReason: "end_turn",
+					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "planner" {
 				return &llm.ChatResponse{
@@ -1662,6 +1914,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -1699,28 +1952,36 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		}
 	}
 
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: `[{"id": "ac_1", "description": "Task must be completed", "check_type": "llm_judge"}]`,
-							},
-							StopReason: "end_turn",
-						}, nil
-					}
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Task must be completed", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "ac_1", "description": "Task must be completed", "check_type": "llm_judge"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "react", "domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "react", "domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "executor" {
 				return &llm.ChatResponse{
@@ -1765,6 +2026,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	userMessage := "Please complete this important task"
@@ -1833,6 +2095,7 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	prompt := orchestrator.buildSystemPrompt(context.Background(), "", nil, false)
@@ -1969,6 +2232,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Do task with potential failure")
@@ -2000,28 +2264,32 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 	mockEm := &mockEmitter{}
 
-	callIdx := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			callIdx++
-			switch callIdx {
-			case 1: // Router
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
+			if role == "router" {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: `[]`},
+						StopReason: "end_turn",
 					}, nil
-			case 2: // AC Extractor
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `[]`, // No AC for simplicity
-					},
-					StopReason: "end_turn",
+				case "enrich":
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: `[]`},
+						StopReason: "end_turn",
 					}, nil
-			case 3: // Planner
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role: "assistant",
+							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				}
+			}
+			if role == "planner" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role: "assistant",
@@ -2031,43 +2299,19 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 						]}`,
 					},
 					StopReason: "end_turn",
-					}, nil
-			case 4: // Executor for step_1
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Step 1 done",
-						ToolCalls: []llm.ToolCall{
-							{
-								ID:    "call_1",
-								Name:  "finish",
-								Input: json.RawMessage(`{"answer": "Step 1 completed"}`),
-							},
-							},
-						},
-						StopReason: "tool_use",
-					}, nil
-			case 5: // Executor for step_2
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Step 2 done",
-						ToolCalls: []llm.ToolCall{
-							{
-								ID:    "call_2",
-								Name:  "finish",
-								Input: json.RawMessage(`{"answer": "Step 2 completed"}`),
-							},
-							},
-						},
-						StopReason: "tool_use",
-					}, nil
-			default:
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: ""},
-					StopReason: "end_turn",
-					}, nil
+				}, nil
 			}
+			// Executor - finish for each step
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Step done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "finish", Input: json.RawMessage(`{"answer": "Step completed"}`)},
+					},
+				},
+				StopReason: "tool_use",
+			}, nil
 		},
 	}
 
@@ -2093,6 +2337,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		nil, // logger - nil for tests
 		mockEm, // emitter - use mock to track events
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -2153,18 +2398,20 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 	var step2Attempt1Output string
 	var step2Attempt2Output string
 	evalCallCount := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				// Check if this is AC extraction (has "Domain:" in message)
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Step 1 completes", "nature": "objective", "weight": "must"}, {"id": "rc_2", "description": "Step 2 completes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -2172,14 +2419,15 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "planner" {
 				return &llm.ChatResponse{
@@ -2317,6 +2565,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -2364,17 +2613,20 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 	var step3Attempt1Output string
 	var step3Attempt2Output string
 	evalCallCount := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Step 1 completes", "nature": "objective", "weight": "must"}, {"id": "rc_2", "description": "Step 2 completes", "nature": "objective", "weight": "must"}, {"id": "rc_3", "description": "Step 3 completes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -2382,14 +2634,15 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "planner" {
 				return &llm.ChatResponse{
@@ -2558,6 +2811,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps with dependency")
@@ -2610,17 +2864,20 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 	var step2Attempt1Output string
 	var step2Attempt2Output string
 	evalCallCount := 0
+	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if role == "router" {
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -2628,14 +2885,15 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if role == "planner" {
 				return &llm.ChatResponse{
@@ -2769,6 +3027,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		nil, // logger - nil for tests
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
+		config.ToolResultBudgetConfig{},
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps without AC mapping")
@@ -3120,7 +3379,7 @@ func TestBuildStepTask(t *testing.T) {
 			o := &Orchestrator{} // buildStepTask doesn't need other fields
 			availableTools := []tools.ToolDescriptor{}
 
-			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools)
+			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools, nil)
 
 			// Check that wanted strings are present
 			for _, want := range tt.wantContains {
@@ -3299,6 +3558,169 @@ func TestBuildCriteriaToStepsMap(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOrchestrator_ResolveProfile_Default(t *testing.T) {
+	// Create orchestrator with default config
+	cfg := OrchestratorConfig{
+		LLMRole:  "executor",
+		MaxSteps: 30,
+	}
+	orch := &Orchestrator{config: cfg}
+
+	// Step without AgentProfile should return default profile
+	step := PlanStep{
+		ID:          "step_1",
+		Description: "Do something",
+	}
+
+	profile := orch.resolveProfile(step)
+
+	if profile.Role != "executor" {
+		t.Errorf("expected role 'executor', got %q", profile.Role)
+	}
+	if profile.LLMRole != "executor" {
+		t.Errorf("expected LLMRole 'executor', got %q", profile.LLMRole)
+	}
+	if profile.MaxSteps != 30 {
+		t.Errorf("expected MaxSteps 30, got %d", profile.MaxSteps)
+	}
+}
+
+func TestOrchestrator_ResolveProfile_Custom(t *testing.T) {
+	// Create orchestrator with default config
+	cfg := OrchestratorConfig{
+		LLMRole:  "executor",
+		MaxSteps: 30,
+	}
+	orch := &Orchestrator{config: cfg}
+
+	// Step with custom AgentProfile
+	step := PlanStep{
+		ID:          "step_1",
+		Description: "Research topic",
+		AgentProfile: &AgentProfile{
+			Role:         "researcher",
+			AllowedTools: []string{"web_search", "web_fetch"},
+			MaxSteps:     15,
+		},
+	}
+
+	profile := orch.resolveProfile(step)
+
+	if profile.Role != "researcher" {
+		t.Errorf("expected role 'researcher', got %q", profile.Role)
+	}
+	// LLMRole should be filled from config since not specified
+	if profile.LLMRole != "executor" {
+		t.Errorf("expected LLMRole 'executor' (from config), got %q", profile.LLMRole)
+	}
+	if profile.MaxSteps != 15 {
+		t.Errorf("expected MaxSteps 15, got %d", profile.MaxSteps)
+	}
+	if len(profile.AllowedTools) != 2 {
+		t.Errorf("expected 2 allowed tools, got %d", len(profile.AllowedTools))
+	}
+}
+
+func TestOrchestrator_ResolveProfile_CustomLLMRole(t *testing.T) {
+	// Create orchestrator with default config
+	cfg := OrchestratorConfig{
+		LLMRole:  "executor",
+		MaxSteps: 30,
+	}
+	orch := &Orchestrator{config: cfg}
+
+	// Step with custom LLMRole in AgentProfile
+	step := PlanStep{
+		ID:          "step_1",
+		Description: "Complex task",
+		AgentProfile: &AgentProfile{
+			Role:    "coder",
+			LLMRole: "planner", // Override LLMRole
+		},
+	}
+
+	profile := orch.resolveProfile(step)
+
+	if profile.LLMRole != "planner" {
+		t.Errorf("expected LLMRole 'planner', got %q", profile.LLMRole)
+	}
+}
+
+func TestOrchestrator_FilterToolsByProfile_AllTools(t *testing.T) {
+	orch := &Orchestrator{}
+
+	allTools := []tools.ToolDescriptor{
+		{Name: "bash_exec", Description: "Execute bash"},
+		{Name: "file_ops", Description: "File operations"},
+		{Name: "web_search", Description: "Search the web"},
+	}
+
+	// Empty AllowedTools should return all tools
+	profile := AgentProfile{Role: "executor"}
+	filtered := orch.filterToolsByProfile(allTools, profile)
+
+	if len(filtered) != 3 {
+		t.Errorf("expected 3 tools, got %d", len(filtered))
+	}
+}
+
+func TestOrchestrator_FilterToolsByProfile_Subset(t *testing.T) {
+	orch := &Orchestrator{}
+
+	allTools := []tools.ToolDescriptor{
+		{Name: "bash_exec", Description: "Execute bash"},
+		{Name: "file_ops", Description: "File operations"},
+		{Name: "web_search", Description: "Search the web"},
+		{Name: "web_fetch", Description: "Fetch URL"},
+	}
+
+	// AllowedTools should filter to subset
+	profile := AgentProfile{
+		Role:         "researcher",
+		AllowedTools: []string{"web_search", "web_fetch"},
+	}
+	filtered := orch.filterToolsByProfile(allTools, profile)
+
+	if len(filtered) != 2 {
+		t.Errorf("expected 2 tools, got %d", len(filtered))
+	}
+
+	// Verify the correct tools are included
+	foundWebSearch := false
+	foundWebFetch := false
+	for _, t := range filtered {
+		if t.Name == "web_search" {
+			foundWebSearch = true
+		}
+		if t.Name == "web_fetch" {
+			foundWebFetch = true
+		}
+	}
+	if !foundWebSearch || !foundWebFetch {
+		t.Error("expected web_search and web_fetch to be in filtered tools")
+	}
+}
+
+func TestOrchestrator_FilterToolsByProfile_NoMatch(t *testing.T) {
+	orch := &Orchestrator{}
+
+	allTools := []tools.ToolDescriptor{
+		{Name: "bash_exec", Description: "Execute bash"},
+		{Name: "file_ops", Description: "File operations"},
+	}
+
+	// AllowedTools with no matches should return empty slice
+	profile := AgentProfile{
+		Role:         "researcher",
+		AllowedTools: []string{"web_search", "web_fetch"},
+	}
+	filtered := orch.filterToolsByProfile(allTools, profile)
+
+	if len(filtered) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(filtered))
 	}
 }
 

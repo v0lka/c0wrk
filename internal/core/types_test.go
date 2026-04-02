@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -195,5 +196,171 @@ func TestReflection_JSONRoundTrip(t *testing.T) {
 	}
 	if decoded.TaskType != original.TaskType {
 		t.Errorf("TaskType mismatch: got %q, want %q", decoded.TaskType, original.TaskType)
+	}
+}
+
+func TestSharedWorkspace_StoreAndGet(t *testing.T) {
+	ws := NewSharedWorkspace()
+
+	// Store an artifact
+	ws.Store("test_key", "test content", "step_1")
+
+	// Get it back
+	artifact, ok := ws.Get("test_key")
+	if !ok {
+		t.Fatal("expected to find artifact, but got none")
+	}
+
+	if artifact.Key != "test_key" {
+		t.Errorf("Key mismatch: got %q, want %q", artifact.Key, "test_key")
+	}
+	if artifact.Content != "test content" {
+		t.Errorf("Content mismatch: got %q, want %q", artifact.Content, "test content")
+	}
+	if artifact.ProducedBy != "step_1" {
+		t.Errorf("ProducedBy mismatch: got %q, want %q", artifact.ProducedBy, "step_1")
+	}
+	if artifact.CreatedAt.IsZero() {
+		t.Error("CreatedAt should not be zero")
+	}
+}
+
+func TestSharedWorkspace_GetByProducer(t *testing.T) {
+	ws := NewSharedWorkspace()
+
+	// Store multiple artifacts from different producers
+	ws.Store("key1", "content1", "step_1")
+	ws.Store("key2", "content2", "step_1")
+	ws.Store("key3", "content3", "step_2")
+
+	// Get artifacts by producer
+	step1Artifacts := ws.GetByProducer("step_1")
+	if len(step1Artifacts) != 2 {
+		t.Errorf("expected 2 artifacts from step_1, got %d", len(step1Artifacts))
+	}
+
+	step2Artifacts := ws.GetByProducer("step_2")
+	if len(step2Artifacts) != 1 {
+		t.Errorf("expected 1 artifact from step_2, got %d", len(step2Artifacts))
+	}
+
+	// Non-existent producer
+	noArtifacts := ws.GetByProducer("step_999")
+	if len(noArtifacts) != 0 {
+		t.Errorf("expected 0 artifacts from non-existent producer, got %d", len(noArtifacts))
+	}
+}
+
+func TestSharedWorkspace_List(t *testing.T) {
+	ws := NewSharedWorkspace()
+
+	// Empty workspace
+	if len(ws.List()) != 0 {
+		t.Error("expected empty workspace to return empty list")
+	}
+
+	// Add artifacts
+	ws.Store("key1", "content1", "step_1")
+	ws.Store("key2", "content2", "step_1")
+
+	list := ws.List()
+	if len(list) != 2 {
+		t.Errorf("expected 2 artifacts, got %d", len(list))
+	}
+}
+
+func TestSharedWorkspace_ConcurrentAccess(t *testing.T) {
+	ws := NewSharedWorkspace()
+	done := make(chan bool)
+
+	// Concurrent writers
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			for j := 0; j < 100; j++ {
+				key := fmt.Sprintf("key_%d_%d", id, j)
+				ws.Store(key, "content", fmt.Sprintf("step_%d", id))
+			}
+			done <- true
+		}(i)
+	}
+
+	// Concurrent readers
+	for i := 0; i < 5; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				ws.List()
+				ws.GetByProducer("step_1")
+			}
+			done <- true
+		}()
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 15; i++ {
+		<-done
+	}
+
+	// Verify final state
+	list := ws.List()
+	if len(list) != 1000 {
+		t.Errorf("expected 1000 artifacts, got %d", len(list))
+	}
+}
+
+func TestDefaultAgentProfile(t *testing.T) {
+	profile := DefaultAgentProfile()
+	if profile.Role != "executor" {
+		t.Errorf("expected role 'executor', got %q", profile.Role)
+	}
+}
+
+func TestPlanStep_WithAgentProfile(t *testing.T) {
+	profile := &AgentProfile{
+		Role:         "researcher",
+		AllowedTools: []string{"web_search", "web_fetch"},
+	}
+
+	step := PlanStep{
+		ID:           "step_1",
+		Description:  "Research topic",
+		AgentProfile: profile,
+	}
+
+	data, err := json.Marshal(step)
+	if err != nil {
+		t.Fatalf("failed to marshal PlanStep: %v", err)
+	}
+
+	var decoded PlanStep
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal PlanStep: %v", err)
+	}
+
+	if decoded.AgentProfile == nil {
+		t.Fatal("expected AgentProfile to be non-nil")
+	}
+	if decoded.AgentProfile.Role != "researcher" {
+		t.Errorf("Role mismatch: got %q, want %q", decoded.AgentProfile.Role, "researcher")
+	}
+}
+
+func TestPlanStep_WithoutAgentProfile(t *testing.T) {
+	step := PlanStep{
+		ID:          "step_1",
+		Description: "Do something",
+	}
+
+	data, err := json.Marshal(step)
+	if err != nil {
+		t.Fatalf("failed to marshal PlanStep: %v", err)
+	}
+
+	var decoded PlanStep
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal PlanStep: %v", err)
+	}
+
+	if decoded.AgentProfile != nil {
+		t.Error("expected AgentProfile to be nil when not set")
 	}
 }

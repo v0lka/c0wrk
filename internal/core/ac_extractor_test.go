@@ -2,137 +2,12 @@ package core
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/user/agent/internal/llm"
 )
-
-// Tests use shared mock types from testhelpers_test.go:
-// - mockLLMCaller: implements LLMCaller (use responses and err fields)
-
-func TestACExtractor_ExtractCodeTaskAC(t *testing.T) {
-	mockResp := &llm.ChatResponse{
-		Message: llm.Message{
-			Role: "assistant",
-			Content: `[
-				{"id": "ac_1", "description": "Code compiles successfully", "check_type": "programmatic", "check_cmd": "go build ./...", "step_hint": "compile"},
-				{"id": "ac_2", "description": "All tests pass", "check_type": "programmatic", "check_cmd": "go test ./...", "step_hint": "test"}
-			]`,
-		},
-	}
-
-	mock := &mockLLMCaller{responses: []*llm.ChatResponse{mockResp}}
-	extractor := NewACExtractor(mock)
-
-	criteria, err := extractor.Extract(context.Background(), "Create a new function with tests", "code")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(criteria) != 2 {
-		t.Fatalf("expected 2 criteria, got %d", len(criteria))
-	}
-
-	// Verify first criterion
-	if criteria[0].ID != "ac_1" {
-		t.Errorf("expected ID 'ac_1', got %q", criteria[0].ID)
-	}
-	if criteria[0].CheckType != "programmatic" {
-		t.Errorf("expected CheckType 'programmatic', got %q", criteria[0].CheckType)
-	}
-	if criteria[0].CheckCmd != "go build ./..." {
-		t.Errorf("expected CheckCmd 'go build ./...', got %q", criteria[0].CheckCmd)
-	}
-
-	// Verify second criterion
-	if criteria[1].ID != "ac_2" {
-		t.Errorf("expected ID 'ac_2', got %q", criteria[1].ID)
-	}
-	if criteria[1].CheckCmd != "go test ./..." {
-		t.Errorf("expected CheckCmd 'go test ./...', got %q", criteria[1].CheckCmd)
-	}
-}
-
-func TestACExtractor_ExtractGeneralTaskAC(t *testing.T) {
-	mockResp := &llm.ChatResponse{
-		Message: llm.Message{
-			Role: "assistant",
-			Content: `[
-				{"id": "ac_1", "description": "Response is helpful and accurate", "check_type": "llm_judge", "check_cmd": "", "step_hint": "review"}
-			]`,
-		},
-	}
-
-	mock := &mockLLMCaller{responses: []*llm.ChatResponse{mockResp}}
-	extractor := NewACExtractor(mock)
-
-	criteria, err := extractor.Extract(context.Background(), "Explain how databases work", "general")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(criteria) != 1 {
-		t.Fatalf("expected 1 criterion, got %d", len(criteria))
-	}
-
-	if criteria[0].CheckType != "llm_judge" {
-		t.Errorf("expected CheckType 'llm_judge', got %q", criteria[0].CheckType)
-	}
-	if criteria[0].Description != "Response is helpful and accurate" {
-		t.Errorf("unexpected description: %q", criteria[0].Description)
-	}
-}
-
-func TestACExtractor_ExtractHandlesEmptyResponse(t *testing.T) {
-	mockResp := &llm.ChatResponse{
-		Message: llm.Message{
-			Role:    "assistant",
-			Content: `[]`,
-		},
-	}
-
-	mock := &mockLLMCaller{responses: []*llm.ChatResponse{mockResp}}
-	extractor := NewACExtractor(mock)
-
-	criteria, err := extractor.Extract(context.Background(), "Hello", "general")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(criteria) != 0 {
-		t.Fatalf("expected 0 criteria, got %d", len(criteria))
-	}
-}
-
-func TestACExtractor_ExtractHandlesJSONInCodeBlocks(t *testing.T) {
-	mockResp := &llm.ChatResponse{
-		Message: llm.Message{
-			Role: "assistant",
-			Content: "```json\n" + `[
-				{"id": "ac_1", "description": "Lint passes", "check_type": "programmatic", "check_cmd": "golangci-lint run", "step_hint": "lint"}
-			]` + "\n```",
-		},
-	}
-
-	mock := &mockLLMCaller{responses: []*llm.ChatResponse{mockResp}}
-	extractor := NewACExtractor(mock)
-
-	criteria, err := extractor.Extract(context.Background(), "Run lint on the code", "code")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(criteria) != 1 {
-		t.Fatalf("expected 1 criterion, got %d", len(criteria))
-	}
-
-	if criteria[0].ID != "ac_1" {
-		t.Errorf("expected ID 'ac_1', got %q", criteria[0].ID)
-	}
-	if criteria[0].CheckCmd != "golangci-lint run" {
-		t.Errorf("expected CheckCmd 'golangci-lint run', got %q", criteria[0].CheckCmd)
-	}
-}
 
 func TestParseACJSON_PlainJSON(t *testing.T) {
 	input := `[{"id": "ac_1", "description": "test", "check_type": "programmatic", "check_cmd": "go test", "step_hint": ""}]`
@@ -168,5 +43,189 @@ func TestParseACJSON_CodeBlockWithLanguage(t *testing.T) {
 
 	if len(criteria) != 1 {
 		t.Fatalf("expected 1 criterion, got %d", len(criteria))
+	}
+}
+
+// TestEnrich_EmptyRawCriteriaReturnsReactFallback tests that Enrich returns fallback
+// criteria for react mode when rawCriteria is empty.
+func TestEnrich_EmptyRawCriteriaReturnsReactFallback(t *testing.T) {
+	// Use a mock that would fail if called - proving early return works
+	mock := &mockLLMCaller{
+		err: errors.New("LLM should not be called"),
+	}
+
+	extractor := NewACExtractor(mock)
+	routing := &RoutingDecision{
+		Mode:   "react",
+		Domain: "code",
+	}
+
+	// Empty slice should trigger fallback
+	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing)
+	if err != nil {
+		t.Fatalf("Enrich returned error: %v", err)
+	}
+
+	// Should return 1 fallback criterion for react/code
+	if len(criteria) != 1 {
+		t.Fatalf("expected 1 fallback criterion, got %d", len(criteria))
+	}
+	if criteria[0].ID != "ac_fallback_1" {
+		t.Errorf("expected ID 'ac_fallback_1', got '%s'", criteria[0].ID)
+	}
+	if criteria[0].CheckType != "llm_judge" {
+		t.Errorf("expected CheckType 'llm_judge', got '%s'", criteria[0].CheckType)
+	}
+
+	// LLM should NOT have been called
+	if len(mock.calls) != 0 {
+		t.Error("LLM should not have been called for empty rawCriteria")
+	}
+}
+
+// TestEnrich_NilRawCriteriaReturnsResearchFallback tests that Enrich returns fallback
+// criteria including Markdown for research domain when rawCriteria is nil.
+func TestEnrich_NilRawCriteriaReturnsResearchFallback(t *testing.T) {
+	// Use a mock that would fail if called
+	mock := &mockLLMCaller{
+		err: errors.New("LLM should not be called"),
+	}
+
+	extractor := NewACExtractor(mock)
+	routing := &RoutingDecision{
+		Mode:   "react",
+		Domain: "research",
+	}
+
+	// nil should trigger fallback (len(nil) == 0)
+	criteria, err := extractor.Enrich(context.Background(), nil, routing)
+	if err != nil {
+		t.Fatalf("Enrich returned error: %v", err)
+	}
+
+	// Should return 2 fallback criteria for react/research (includes Markdown criterion)
+	if len(criteria) != 2 {
+		t.Fatalf("expected 2 fallback criteria for research domain, got %d", len(criteria))
+	}
+
+	// Verify first criterion
+	if criteria[0].ID != "ac_fallback_1" {
+		t.Errorf("expected first ID 'ac_fallback_1', got '%s'", criteria[0].ID)
+	}
+
+	// Verify second criterion (Markdown formatting)
+	if criteria[1].ID != "ac_fallback_2" {
+		t.Errorf("expected second ID 'ac_fallback_2', got '%s'", criteria[1].ID)
+	}
+	if !strings.Contains(criteria[1].Description, "Markdown") {
+		t.Errorf("expected second criterion to mention 'Markdown', got '%s'", criteria[1].Description)
+	}
+
+	// LLM should NOT have been called
+	if len(mock.calls) != 0 {
+		t.Error("LLM should not have been called for nil rawCriteria")
+	}
+}
+
+// TestEnrich_EmptyRawCriteriaReturnsEmptyForDirectMode tests that Enrich returns
+// empty criteria for direct mode when rawCriteria is empty.
+func TestEnrich_EmptyRawCriteriaReturnsEmptyForDirectMode(t *testing.T) {
+	// Use a mock that would fail if called
+	mock := &mockLLMCaller{
+		err: errors.New("LLM should not be called"),
+	}
+
+	extractor := NewACExtractor(mock)
+	routing := &RoutingDecision{
+		Mode:   "direct",
+		Domain: "general",
+	}
+
+	// Empty slice with direct mode should return empty
+	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing)
+	if err != nil {
+		t.Fatalf("Enrich returned error: %v", err)
+	}
+
+	// Should return empty slice for direct mode
+	if len(criteria) != 0 {
+		t.Fatalf("expected 0 criteria for direct mode, got %d", len(criteria))
+	}
+
+	// LLM should NOT have been called
+	if len(mock.calls) != 0 {
+		t.Error("LLM should not have been called for direct mode fallback")
+	}
+}
+
+// TestEnrich_NonEmptyRawCriteriaCallsLLM tests that Enrich calls the LLM when
+// rawCriteria has items (existing behavior preserved).
+func TestEnrich_NonEmptyRawCriteriaCallsLLM(t *testing.T) {
+	// Mock that returns enriched criteria
+	mock := &mockLLMCaller{
+		responses: []*llm.ChatResponse{{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: `[{"id":"ac_1","description":"enriched criterion","check_type":"llm_judge","check_cmd":"","step_hint":""}]`,
+			},
+		}},
+	}
+
+	extractor := NewACExtractor(mock)
+	routing := &RoutingDecision{
+		Mode:   "react",
+		Domain: "code",
+	}
+
+	rawCriteria := []RawCriterion{
+		{ID: "rc_1", Description: "raw criterion", Nature: "objective", Weight: "must"},
+	}
+
+	criteria, err := extractor.Enrich(context.Background(), rawCriteria, routing)
+	if err != nil {
+		t.Fatalf("Enrich returned error: %v", err)
+	}
+
+	// Should return enriched criteria from LLM
+	if len(criteria) != 1 {
+		t.Fatalf("expected 1 criterion, got %d", len(criteria))
+	}
+	if criteria[0].ID != "ac_1" {
+		t.Errorf("expected ID 'ac_1', got '%s'", criteria[0].ID)
+	}
+	if criteria[0].Description != "enriched criterion" {
+		t.Errorf("expected description 'enriched criterion', got '%s'", criteria[0].Description)
+	}
+
+	// LLM SHOULD have been called
+	if len(mock.calls) != 1 {
+		t.Errorf("expected 1 LLM call, got %d", len(mock.calls))
+	}
+}
+
+// TestEnrich_GeneralDomainAlsoGetsMarkdownCriterion tests that general domain
+// also gets the Markdown formatting fallback criterion like research.
+func TestEnrich_GeneralDomainAlsoGetsMarkdownCriterion(t *testing.T) {
+	mock := &mockLLMCaller{
+		err: errors.New("LLM should not be called"),
+	}
+
+	extractor := NewACExtractor(mock)
+	routing := &RoutingDecision{
+		Mode:   "plan_execute",
+		Domain: "general",
+	}
+
+	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing)
+	if err != nil {
+		t.Fatalf("Enrich returned error: %v", err)
+	}
+
+	// Should return 2 fallback criteria for general domain (includes Markdown criterion)
+	if len(criteria) != 2 {
+		t.Fatalf("expected 2 fallback criteria for general domain, got %d", len(criteria))
+	}
+	if criteria[1].ID != "ac_fallback_2" {
+		t.Errorf("expected second ID 'ac_fallback_2', got '%s'", criteria[1].ID)
 	}
 }

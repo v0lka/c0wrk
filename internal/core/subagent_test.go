@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/llm"
 	"github.com/user/agent/internal/tools"
 )
@@ -37,7 +38,7 @@ func TestRunSubAgent_Successful(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -74,7 +75,7 @@ func TestRunSubAgent_ContextCancellation(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -117,7 +118,7 @@ func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 			},
 		}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+		return NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 	}
 
 	agents := []SubAgentTask{
@@ -187,7 +188,7 @@ func TestRunSubAgentsParallel_EmptyInput(t *testing.T) {
 func TestNewSubAgent(t *testing.T) {
 	mockLLM := &mockLLMCaller{}
 	mockTools := &mockToolExecutor{}
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	subAgent := NewSubAgent("test_id", executor)
 
@@ -207,7 +208,7 @@ func TestRunSubAgentsParallel_WithContextCancellation(t *testing.T) {
 	createMockExecutor := func() *Executor {
 		mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{}}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+		return NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 	}
 
 	agents := []SubAgentTask{

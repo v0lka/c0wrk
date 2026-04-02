@@ -63,6 +63,15 @@ func (cw *ContextWindow) FillPercent() float64 {
 	return float64(cw.tracker.EstimateTotal()) / float64(effectiveMax) * 100
 }
 
+// AvailableTokens returns the number of tokens remaining in the context window.
+func (cw *ContextWindow) AvailableTokens() int {
+	available := cw.EffectiveMax() - cw.tracker.EstimateTotal()
+	if available < 0 {
+		return 0
+	}
+	return available
+}
+
 // CheckFill returns a FillCheck with the current fill status.
 func (cw *ContextWindow) CheckFill() FillCheck {
 	used := cw.tracker.EstimateTotal()
@@ -283,16 +292,19 @@ func (cw *ContextWindow) formatPlan() string {
 
 // formatReflections formats the reflections.
 func (cw *ContextWindow) formatReflections() string {
-	parts := make([]string, 1, 1+len(cw.reflections)*3)
-	parts[0] = "Reflections:"
-	for _, r := range cw.reflections {
+	parts := make([]string, 0, 2+len(cw.reflections)*7)
+	parts = append(parts, "## Previous Attempt Reflections",
+		"(READ these carefully and AVOID repeating the same mistakes)")
+	for i, r := range cw.reflections {
 		parts = append(parts,
+			fmt.Sprintf("\n### Reflection %d", i+1),
+			"- Summary: "+r.Summary,
+			"- Failed Criteria: "+strings.Join(r.FailedCriteria, ", "),
+			"- Root Cause: "+r.RootCause,
+			"- Action Plan: "+r.ActionPlan,
 			"- Analysis: "+r.FailureAnalysis,
-			"  Root Cause: "+r.RootCause,
-			"  Action Plan: "+r.ActionPlan,
 		)
 	}
-
 	return strings.Join(parts, "\n")
 }
 

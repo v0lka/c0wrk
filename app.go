@@ -746,6 +746,7 @@ func (a *App) startup(ctx context.Context) {
 			logger,            // Logger
 			emitter,           // Emitter
 			modelRegistry,     // ModelRegistry for resolving model metadata
+			a.config.Executor.ToolResultBudget,
 		), nil
 	}
 

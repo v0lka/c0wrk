@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/llm"
 	"github.com/user/agent/internal/tools"
 )
@@ -55,7 +58,7 @@ func TestExecutor_BasicReActFlow(t *testing.T) {
 		taskDefinition: "Find the answer",
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -116,7 +119,7 @@ func TestExecutor_DirectFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -193,7 +196,7 @@ func TestExecutor_MaxStepsReached(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 3, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 3, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Never-ending task",
@@ -247,7 +250,7 @@ func TestExecutor_ImplicitFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -313,7 +316,7 @@ func TestExecutor_CompactionTriggered(t *testing.T) {
 	}
 	mockCW := &mockContextManager{needsCompaction: true}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test compaction",
@@ -340,7 +343,7 @@ func TestExecutor_CompactionTriggered(t *testing.T) {
 
 func TestExecutor_DefaultRole(t *testing.T) {
 	// Test that empty lmRole defaults to "executor"
-	executor := NewExecutor(nil, nil, nil, 10, "", nil, nil, false)
+	executor := NewExecutor(nil, nil, nil, 10, "", nil, nil, false, config.ToolResultBudgetConfig{})
 	if executor.lmRole != "executor" {
 		t.Errorf("expected default lmRole 'executor', got '%s'", executor.lmRole)
 	}
@@ -365,7 +368,7 @@ func TestExecutor_ToolDefinitionsIncludeFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test",
@@ -427,7 +430,7 @@ func TestExecutor_NoDuplicateFinishTool(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	// Task includes finish tool (as would happen when toolRegistry.List() includes it)
 	task := TaskDefinition{
@@ -517,7 +520,7 @@ func TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -585,7 +588,7 @@ func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -671,7 +674,7 @@ func TestExecutor_NudgeMechanism_ProducesToolCallsOnRetry(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -729,7 +732,7 @@ func TestExecutor_NudgeMechanism_NoNudgeWithoutTools(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	// Task with NO tools
 	task := TaskDefinition{
@@ -796,7 +799,7 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find something",
@@ -823,6 +826,270 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 	// Should have 3 steps: tool call + nudge + implicit finish
 	if len(result.Steps) != 3 {
 		t.Errorf("expected 3 steps, got %d", len(result.Steps))
+	}
+}
+
+// === Reactive Compaction Tests ===
+
+// TestExecutor_ReactiveCompaction_RejectTriggersCompact tests that when CheckFill returns "reject",
+// the executor triggers reactive compaction and retries instead of erroring.
+func TestExecutor_ReactiveCompaction_RejectTriggersCompact(t *testing.T) {
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: use a regular tool (not finish) so we reach CheckFill
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Using a tool",
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+						},
+					},
+					StopReason: "tool_use",
+					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+				}, nil
+			}
+			// Second call (after compaction retry): finish
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Task completed",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"Success after compaction"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			}, nil
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: "tool result", IsError: false},
+		},
+	}
+
+	// Context manager that returns "reject" on first CheckFill, then "ok" after Compact
+	checkFillCallCount := 0
+	mockCW := &mockContextManager{
+		checkFillFn: func() FillCheck {
+			checkFillCallCount++
+			if checkFillCallCount == 1 {
+				return FillCheck{Percent: 105, Status: "reject", Used: 105000, Max: 100000}
+			}
+			return FillCheck{Percent: 50, Status: "ok", Used: 50000, Max: 100000}
+		},
+	}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+
+	task := TaskDefinition{
+		Task: "Test reactive compaction on reject",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify compaction was called
+	if !mockCW.compactCalled {
+		t.Error("expected Compact to be called for reactive compaction")
+	}
+
+	// Verify the task completed successfully after compaction
+	if !result.Finished {
+		t.Error("expected Finished to be true after reactive compaction and retry")
+	}
+
+	if result.Output != "Success after compaction" {
+		t.Errorf("expected output 'Success after compaction', got '%s'", result.Output)
+	}
+
+	// Verify CheckFill was called once (after step 1, which triggered reactive compaction)
+	// Note: CheckFill is not called after step 2 because the finish tool returns early
+	if checkFillCallCount != 1 {
+		t.Errorf("expected CheckFill to be called once, got %d", checkFillCallCount)
+	}
+}
+
+// TestExecutor_ReactiveCompaction_APIContextExceeded tests that when the API returns
+// a "context length exceeded" error, the executor compacts and retries.
+func TestExecutor_ReactiveCompaction_APIContextExceeded(t *testing.T) {
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: return context length exceeded error
+				return nil, errors.New("context length exceeded: maximum context length is 128000 tokens")
+			}
+			// Second call: succeed after compaction
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Task completed after compaction",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "finish", Input: json.RawMessage(`{"answer":"Success after API error recovery"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			}, nil
+		},
+	}
+
+	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
+	mockCW := &mockContextManager{}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+
+	task := TaskDefinition{
+		Task: "Test reactive compaction on API error",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify compaction was called
+	if !mockCW.compactCalled {
+		t.Error("expected Compact to be called for reactive compaction on API error")
+	}
+
+	// Verify LLM was called twice (first error, then success)
+	if callCount != 2 {
+		t.Errorf("expected 2 LLM calls (error + retry), got %d", callCount)
+	}
+
+	// Verify the task completed successfully
+	if !result.Finished {
+		t.Error("expected Finished to be true after reactive compaction and retry")
+	}
+
+	if result.Output != "Success after API error recovery" {
+		t.Errorf("expected output 'Success after API error recovery', got '%s'", result.Output)
+	}
+}
+
+// TestExecutor_ReactiveCompaction_DoubleRejectFails tests that when CheckFill returns
+// "reject" even after compaction, the executor returns an error.
+func TestExecutor_ReactiveCompaction_DoubleRejectFails(t *testing.T) {
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			// Always return a regular tool call (not finish) so we reach CheckFill
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Using a tool",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			}, nil
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: "tool result", IsError: false},
+		},
+	}
+
+	// Context manager that always returns "reject" even after Compact
+	mockCW := &mockContextManager{
+		checkFillFn: func() FillCheck {
+			return FillCheck{Percent: 105, Status: "reject", Used: 105000, Max: 100000}
+		},
+	}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+
+	task := TaskDefinition{
+		Task: "Test double reject failure",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	_, err := executor.Run(context.Background(), task, mockCW)
+	if err == nil {
+		t.Fatal("expected error when CheckFill returns reject even after compaction")
+	}
+
+	// Verify the error message indicates reactive compaction was attempted
+	if !strings.Contains(err.Error(), "after reactive compaction") {
+		t.Errorf("expected error message to contain 'after reactive compaction', got: %v", err)
+	}
+
+	// Verify compaction was called
+	if !mockCW.compactCalled {
+		t.Error("expected Compact to be called")
+	}
+
+	// Verify LLM was called twice (step 1 + step 2 before error on second CheckFill)
+	if callCount != 2 {
+		t.Errorf("expected 2 LLM calls, got %d", callCount)
+	}
+}
+
+// TestExecutor_ReactiveCompaction_NonContextErrorNotIntercepted tests that non-context
+// errors (e.g., connection refused) propagate without triggering compaction.
+func TestExecutor_ReactiveCompaction_NonContextErrorNotIntercepted(t *testing.T) {
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			// Always return a non-context error
+			return nil, errors.New("connection refused: unable to reach API endpoint")
+		},
+	}
+
+	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
+	mockCW := &mockContextManager{}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+
+	task := TaskDefinition{
+		Task: "Test non-context error propagation",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	_, err := executor.Run(context.Background(), task, mockCW)
+	if err == nil {
+		t.Fatal("expected error for non-context API error")
+	}
+
+	// Verify the error is the original connection error
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("expected error to contain 'connection refused', got: %v", err)
+	}
+
+	// Verify compaction was NOT called (error should propagate immediately)
+	if mockCW.compactCalled {
+		t.Error("expected Compact NOT to be called for non-context errors")
+	}
+
+	// Verify LLM was called only once (no retry)
+	if callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", callCount)
 	}
 }
 
@@ -880,7 +1147,7 @@ func TestExecutor_SuppressAssistantEvents_True(t *testing.T) {
 	mockEm := &mockEmitter{}
 
 	// Create executor with suppressAssistantEvents = true
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, mockEm, true)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, mockEm, true, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -924,7 +1191,7 @@ func TestExecutor_SuppressAssistantEvents_False(t *testing.T) {
 	mockEm := &mockEmitter{}
 
 	// Create executor with suppressAssistantEvents = false
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, mockEm, false)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, mockEm, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -954,3 +1221,531 @@ func TestExecutor_SuppressAssistantEvents_False(t *testing.T) {
 		t.Errorf("expected AssistantDone content 'Direct answer with events', got %q", mockEm.assistantDones[0].content)
 	}
 }
+
+// === Tool Result Budget Tests ===
+
+// mockContextManagerWithAvailableTokens is a mock that allows setting available tokens for budget tests.
+type mockContextManagerWithAvailableTokens struct {
+	mockContextManager
+	availableTokens int
+}
+
+func (m *mockContextManagerWithAvailableTokens) AvailableTokens() int {
+	return m.availableTokens
+}
+
+func TestExecutor_ToolResultBudget_HardCap(t *testing.T) {
+	// Setup: Large observation (e.g., 50000 chars = ~12500 tokens)
+	// Budget: HardCapTokens=2000, MaxFillFraction=0.3
+	// AvailableTokens: 100000 (large, so hard cap wins)
+	// Verify: observation is truncated to ~8000 chars (2000*4)
+	// Verify: truncation notice is appended
+
+	largeObservation := strings.Repeat("a", 50000)
+
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Using tool",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: largeObservation, IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManagerWithAvailableTokens{
+		availableTokens: 100000, // large, so hard cap wins
+	}
+
+	budget := config.ToolResultBudgetConfig{
+		HardCapTokens:   2000,
+		MaxFillFraction: 0.3,
+	}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+
+	task := TaskDefinition{
+		Task: "Test budget",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true")
+	}
+
+	// Verify the step observation was truncated
+	if len(mockCW.steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(mockCW.steps))
+	}
+
+	observation := mockCW.steps[0].Observation
+
+	// Should be truncated to ~8000 chars (2000*4) plus notice
+	if len(observation) > 9000 {
+		t.Errorf("expected observation to be truncated to ~8000 chars, got %d", len(observation))
+	}
+
+	// Should contain truncation notice
+	if !strings.Contains(observation, "[OUTPUT TRUNCATED:") {
+		t.Errorf("expected truncation notice in observation, got: %s", observation[:min(len(observation), 200)])
+	}
+}
+
+func TestExecutor_ToolResultBudget_AdaptiveCap(t *testing.T) {
+	// Setup: Large observation
+	// Budget: HardCapTokens=8192, MaxFillFraction=0.3
+	// AvailableTokens: 1000 (small, so adaptive cap = 300 tokens wins)
+	// But floor is 256, so cap = max(300, 256) = 300
+	// Verify: observation truncated to ~1200 chars (300*4)
+
+	largeObservation := strings.Repeat("b", 20000)
+
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Using tool",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: largeObservation, IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManagerWithAvailableTokens{
+		availableTokens: 1000, // small, so adaptive cap wins
+	}
+
+	budget := config.ToolResultBudgetConfig{
+		HardCapTokens:   8192,
+		MaxFillFraction: 0.3,
+	}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+
+	task := TaskDefinition{
+		Task: "Test budget",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true")
+	}
+
+	if len(mockCW.steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(mockCW.steps))
+	}
+
+	observation := mockCW.steps[0].Observation
+
+	// Should be truncated to ~1200 chars (300*4) plus notice
+	// Allow some tolerance for the notice
+	if len(observation) > 1500 {
+		t.Errorf("expected observation to be truncated to ~1200 chars, got %d", len(observation))
+	}
+
+	if !strings.Contains(observation, "[OUTPUT TRUNCATED:") {
+		t.Errorf("expected truncation notice in observation")
+	}
+}
+
+func TestExecutor_ToolResultBudget_SmallResultPassesThrough(t *testing.T) {
+	// Setup: Small observation (100 chars)
+	// Budget: HardCapTokens=8192
+	// Verify: observation unchanged
+
+	smallObservation := "small result"
+
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Using tool",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: smallObservation, IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManagerWithAvailableTokens{
+		availableTokens: 100000,
+	}
+
+	budget := config.ToolResultBudgetConfig{
+		HardCapTokens:   8192,
+		MaxFillFraction: 0.3,
+	}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+
+	task := TaskDefinition{
+		Task: "Test budget",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true")
+	}
+
+	if len(mockCW.steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(mockCW.steps))
+	}
+
+	observation := mockCW.steps[0].Observation
+
+	// Should be unchanged
+	if observation != smallObservation {
+		t.Errorf("expected observation unchanged, got: %s", observation)
+	}
+
+	// Should NOT contain truncation notice
+	if strings.Contains(observation, "[OUTPUT TRUNCATED:") {
+		t.Errorf("did not expect truncation notice for small result")
+	}
+}
+
+func TestExecutor_ToolResultBudget_FloorPreventsZeroCap(t *testing.T) {
+	// Setup: Large observation
+	// Budget: HardCapTokens=8192, MaxFillFraction=0.3
+	// AvailableTokens: 100 (very small, adaptive = 30 tokens)
+	// Verify: floor of 256 is used, not 30
+
+	largeObservation := strings.Repeat("c", 5000)
+
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Using tool",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: largeObservation, IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManagerWithAvailableTokens{
+		availableTokens: 100, // very small, would give 30 tokens without floor
+	}
+
+	budget := config.ToolResultBudgetConfig{
+		HardCapTokens:   8192,
+		MaxFillFraction: 0.3,
+	}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+
+	task := TaskDefinition{
+		Task: "Test budget",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true")
+	}
+
+	if len(mockCW.steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(mockCW.steps))
+	}
+
+	observation := mockCW.steps[0].Observation
+
+	// Should be truncated to ~1024 chars (256*4) plus notice
+	// Without floor, it would be ~120 chars (30*4)
+	if len(observation) < 1000 {
+		t.Errorf("expected floor of 256 tokens to be used, observation too short: %d chars", len(observation))
+	}
+
+	if !strings.Contains(observation, "[OUTPUT TRUNCATED:") {
+		t.Errorf("expected truncation notice in observation")
+	}
+}
+
+func TestExecutor_ToolResultBudget_TruncationNotice(t *testing.T) {
+	// Setup: observation that will be truncated
+	// Verify: notice contains "[OUTPUT TRUNCATED:" and token counts
+
+	largeObservation := strings.Repeat("d", 10000)
+
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Using tool",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: largeObservation, IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManagerWithAvailableTokens{
+		availableTokens: 100000,
+	}
+
+	budget := config.ToolResultBudgetConfig{
+		HardCapTokens:   1000,
+		MaxFillFraction: 0.3,
+	}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+
+	task := TaskDefinition{
+		Task: "Test budget",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true")
+	}
+
+	if len(mockCW.steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(mockCW.steps))
+	}
+
+	observation := mockCW.steps[0].Observation
+
+	// Verify truncation notice format
+	if !strings.Contains(observation, "[OUTPUT TRUNCATED:") {
+		t.Errorf("expected truncation notice to contain '[OUTPUT TRUNCATED:'")
+	}
+
+	if !strings.Contains(observation, "tokens") {
+		t.Errorf("expected truncation notice to mention 'tokens'")
+	}
+
+	if !strings.Contains(observation, "of") {
+		t.Errorf("expected truncation notice to contain 'of' for token counts")
+	}
+
+	// Should contain percentage
+	if !strings.Contains(observation, "%") {
+		t.Errorf("expected truncation notice to contain percentage")
+	}
+}
+
+func TestExecutor_ToolResultBudget_Disabled(t *testing.T) {
+	// Setup: Large observation
+	// Budget: zero value (disabled)
+	// Verify: observation returned unchanged
+
+	largeObservation := strings.Repeat("e", 50000)
+
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Using tool",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "sometool", Input: json.RawMessage(`{}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			},
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"sometool": {Content: largeObservation, IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManagerWithAvailableTokens{
+		availableTokens: 100000,
+	}
+
+	// Zero value budget = disabled
+	budget := config.ToolResultBudgetConfig{}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+
+	task := TaskDefinition{
+		Task: "Test budget",
+		Tools: []tools.ToolDescriptor{
+			{Name: "sometool", Description: "Some tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true")
+	}
+
+	if len(mockCW.steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(mockCW.steps))
+	}
+
+	observation := mockCW.steps[0].Observation
+
+	// Should be unchanged (full length)
+	if observation != largeObservation {
+		t.Errorf("expected observation unchanged (length %d), got length %d", len(largeObservation), len(observation))
+	}
+
+	// Should NOT contain truncation notice
+	if strings.Contains(observation, "[OUTPUT TRUNCATED:") {
+		t.Errorf("did not expect truncation notice when budget is disabled")
+	}
+}
+

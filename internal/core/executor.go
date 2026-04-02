@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/llm"
 	"github.com/user/agent/internal/tools"
 )
@@ -55,6 +56,8 @@ type ContextManager interface {
 	CorrectTokenCount(apiInputTokens int)
 	// FillPercent returns the current fill percentage.
 	FillPercent() float64
+	// AvailableTokens returns the number of tokens remaining in the context window.
+	AvailableTokens() int
 }
 
 // Executor runs the ReAct loop: Thought → Action → Observation.
@@ -67,12 +70,13 @@ type Executor struct {
 	logger                  *slog.Logger // structured logger (nil-safe)
 	emitter                 Emitter      // event emitter (uses noopEmitter if nil)
 	suppressAssistantEvents bool         // if true, don't emit AssistantChunk/AssistantDone
+	toolResultBudget        config.ToolResultBudgetConfig
 }
 
 // NewExecutor creates a new Executor.
 // logger and emitter are optional (nil-safe).
 // suppressAssistantEvents should be true for plan-step executors to avoid duplicate events.
-func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, lmRole string, logger *slog.Logger, emitter Emitter, suppressAssistantEvents bool) *Executor {
+func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, lmRole string, logger *slog.Logger, emitter Emitter, suppressAssistantEvents bool, toolResultBudget config.ToolResultBudgetConfig) *Executor {
 	if lmRole == "" {
 		lmRole = "executor"
 	}
@@ -89,6 +93,7 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		logger:                  logger,
 		emitter:                 emitter,
 		suppressAssistantEvents: suppressAssistantEvents,
+		toolResultBudget:        toolResultBudget,
 	}
 }
 
@@ -113,6 +118,46 @@ func (e *Executor) logWarn(msg string, args ...any) {
 	}
 }
 
+// applyToolResultBudget truncates a tool result if it exceeds the budget.
+// The budget is min(HardCapTokens, AvailableTokens * MaxFillFraction) with a 256-token floor.
+// When truncated, a notice is appended to inform the model.
+func (e *Executor) applyToolResultBudget(observation string, cw ContextManager) string {
+	if e.toolResultBudget.HardCapTokens <= 0 {
+		return observation
+	}
+
+	// Estimate observation tokens (rough: len/4)
+	observationTokens := len(observation) / 4
+
+	// Calculate adaptive cap
+	available := cw.AvailableTokens()
+	adaptiveCap := int(float64(available) * e.toolResultBudget.MaxFillFraction)
+	capTokens := e.toolResultBudget.HardCapTokens
+	if adaptiveCap < capTokens {
+		capTokens = adaptiveCap
+	}
+	// Minimum floor to avoid useless truncation
+	if capTokens < 256 {
+		capTokens = 256
+	}
+
+	if observationTokens <= capTokens {
+		return observation
+	}
+
+	// Truncate to cap (in chars, approx capTokens*4)
+	charLimit := capTokens * 4
+	if charLimit >= len(observation) {
+		return observation
+	}
+
+	truncated := observation[:charLimit]
+	return truncated + fmt.Sprintf(
+		"\n\n[OUTPUT TRUNCATED: showing ~%d of ~%d tokens (%.0f%%). Full output was too large for context window budget.]",
+		capTokens, observationTokens, float64(capTokens)/float64(observationTokens)*100,
+	)
+}
+
 // Run executes the ReAct loop for the given task.
 func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManager) (*ExecutorResult, error) {
 	// Build tool definitions from task.Tools
@@ -123,6 +168,7 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 
 	var allSteps []Step
 	nudgeAttempted := false
+	reactiveCompactAttempted := false
 
 	for stepNum := 1; stepNum <= e.maxSteps; stepNum++ {
 		// Emit step start
@@ -146,6 +192,12 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 		// Call LLM
 		resp, err := e.llm.Call(ctx, e.lmRole, req)
 		if err != nil {
+			if isContextExceededError(err) && !reactiveCompactAttempted {
+				reactiveCompactAttempted = true
+				cw.Compact()
+				e.logWarn("reactive_compaction_api_error", "step", stepNum, "error", err)
+				continue
+			}
 			return nil, err
 		}
 
@@ -290,6 +342,9 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 			observation = "(no output)"
 		}
 
+		// Apply tool result budget
+		observation = e.applyToolResultBudget(observation, cw)
+
 		// Emit tool result
 		resultPreview := observation
 		if len(resultPreview) > 2000 {
@@ -332,11 +387,22 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 		case "compact", "warning":
 			cw.Compact()
 			e.logDebug("compaction", "step", stepNum, "action", "context_compacted", "fill_percent", fill.Percent)
+			reactiveCompactAttempted = false
 		case "emergency":
 			cw.Compact()
 			e.logWarn("emergency_compaction", "step", stepNum, "fill_percent", fill.Percent)
+			reactiveCompactAttempted = false
 		case "reject":
-			return nil, fmt.Errorf("context window full (%.1f%% of %d tokens)", fill.Percent, fill.Max)
+			if !reactiveCompactAttempted {
+				reactiveCompactAttempted = true
+				cw.Compact()
+				e.logWarn("reactive_compaction_reject", "step", stepNum, "fill_percent", fill.Percent)
+				continue
+			}
+			return nil, fmt.Errorf("context window full after reactive compaction (%.1f%% of %d tokens)", fill.Percent, fill.Max)
+		default:
+			// Reset the flag on successful step completion so future steps can attempt reactive compaction
+			reactiveCompactAttempted = false
 		}
 	}
 

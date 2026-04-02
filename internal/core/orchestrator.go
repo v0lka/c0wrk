@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/core/prompts"
 	"github.com/user/agent/internal/llm"
 	"github.com/user/agent/internal/tools"
@@ -48,6 +49,7 @@ type Orchestrator struct {
 	conversationHistory []llm.Message // accumulated conversation for router context
 	logger              *slog.Logger  // structured logger (nil-safe)
 	emitter             Emitter       // event emitter (nil-safe, uses noopEmitter if nil)
+	toolResultBudget    config.ToolResultBudgetConfig
 }
 
 // NewOrchestrator creates a new Orchestrator with all Phase 2 components.
@@ -67,6 +69,7 @@ func NewOrchestrator(
 	logger *slog.Logger,            // optional, nil-safe
 	emitter Emitter,                // optional, uses noopEmitter if nil
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
+	toolResultBudget config.ToolResultBudgetConfig,
 ) *Orchestrator {
 	if cfg.LLMRole == "" {
 		cfg.LLMRole = "executor"
@@ -89,21 +92,22 @@ func NewOrchestrator(
 		emitter = &noopEmitter{}
 	}
 	return &Orchestrator{
-		router:         router,
-		acExtractor:    acExtractor,
-		planner:        planner,
-		evaluator:      evaluator,
-		reflector:      reflector,
-		llm:            llmCaller,
-		tools:          toolExec,
-		toolRegistry:   toolReg,
-		tokenCounter:   counter,
-		modelRegistry:  modelRegistry,
-		config:         cfg,
-		contextFactory: contextFactory,
-		maxRetries:     maxRetries,
-		logger:         logger,
-		emitter:        emitter,
+		router:           router,
+		acExtractor:      acExtractor,
+		planner:          planner,
+		evaluator:        evaluator,
+		reflector:        reflector,
+		llm:              llmCaller,
+		tools:            toolExec,
+		toolRegistry:     toolReg,
+		tokenCounter:     counter,
+		modelRegistry:    modelRegistry,
+		config:           cfg,
+		contextFactory:   contextFactory,
+		maxRetries:       maxRetries,
+		logger:           logger,
+		emitter:          emitter,
+		toolResultBudget: toolResultBudget,
 	}
 }
 
@@ -145,8 +149,16 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	// 1. Get available tools
 	availableTools := o.toolRegistry.List()
 
-	// 2. Route the request (with conversation history for context)
-	routing, err := o.router.Route(ctx, userMessage, availableTools, o.conversationHistory)
+	// 2. Extract raw acceptance criteria (Phase 1 — before routing)
+	rawCriteria, err := o.acExtractor.ExtractRaw(ctx, userMessage)
+	if err != nil {
+		// Non-fatal: proceed with empty criteria if extraction fails
+		o.logWarn("raw AC extraction failed, proceeding without criteria", "error", err)
+		rawCriteria = nil
+	}
+
+	// 3. Route the request (with raw criteria for informed routing)
+	routing, err := o.router.Route(ctx, userMessage, rawCriteria, availableTools, o.conversationHistory)
 	if err != nil {
 		return nil, fmt.Errorf("routing failed: %w", err)
 	}
@@ -155,35 +167,48 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	o.emitter.Routing(routing.Mode, routing.Domain, strconv.Itoa(routing.Complexity))
 	o.logInfo("routing_decision", "mode", routing.Mode, "domain", routing.Domain, "complexity", routing.Complexity)
 
-	// 3. Handle based on routing mode
+	// 4. Enrich acceptance criteria with domain context (Phase 2 — after routing)
+	var ac []AcceptanceCriterion
+	enrichedAC, enrichErr := o.acExtractor.Enrich(ctx, rawCriteria, routing)
+	if enrichErr != nil {
+		o.logWarn("AC enrichment failed, proceeding without criteria", "error", enrichErr)
+	} else {
+		ac = enrichedAC
+	}
+
+	// Emit AC extraction
+	o.emitter.ACExtracted(len(ac))
+	o.logInfo("ac_extracted", "count", len(ac))
+	o.logDebug("acceptance_criteria", "criteria", ac)
+
+	// 5. Handle based on routing mode
 	var result *HandleResult
 	switch routing.Mode {
 	case "direct":
-		result, err = o.handleDirect(ctx, userMessage, routing, availableTools)
+		result, err = o.handleDirect(ctx, userMessage, routing, availableTools, ac)
 	case "react":
-		result, err = o.handleReact(ctx, userMessage, routing, availableTools)
+		result, err = o.handleReact(ctx, userMessage, routing, availableTools, ac)
 	case "plan_execute":
-		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools)
+		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools, nil, ac)
 	case "needs_clarification":
 		result = &HandleResult{
 			Output:          "I need more information to help you. Could you please clarify your request?",
 			RoutingDecision: routing,
 		}
 	default:
-		result, err = o.handleReact(ctx, userMessage, routing, availableTools)
+		result, err = o.handleReact(ctx, userMessage, routing, availableTools, ac)
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	// 4. Accumulate conversation history for future routing context
+	// 6. Accumulate conversation history for future routing context
 	if result != nil {
 		o.conversationHistory = append(o.conversationHistory,
 			llm.Message{Role: "user", Content: userMessage},
 			llm.Message{Role: "assistant", Content: result.Output},
 		)
-		// Cap history to prevent unbounded growth
 		const maxHistoryMessages = 20
 		if len(o.conversationHistory) > maxHistoryMessages {
 			o.conversationHistory = o.conversationHistory[len(o.conversationHistory)-maxHistoryMessages:]
@@ -194,7 +219,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 }
 
 // handleDirect handles direct mode - single LLM call without tools.
-func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor) (*HandleResult, error) {
+func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, ac []AcceptanceCriterion) (*HandleResult, error) {
 	// Build messages: prepend conversation history before the current user message
 	messages := make([]llm.Message, 0, len(o.conversationHistory)+1)
 	messages = append(messages, o.conversationHistory...)
@@ -211,27 +236,18 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 
 	directOutput := resp.Message.Content
 
-	// Extract AC for lightweight evaluation
-	ac, acErr := o.acExtractor.Extract(ctx, userMessage, routing.Domain)
-	if acErr != nil || len(ac) == 0 {
-		// No AC available — return direct answer without evaluation
-		//nolint:nilerr // error is handled by embedding in result
+	// No AC available — return direct answer without evaluation
+	if len(ac) == 0 {
 		return &HandleResult{
 			Output:          directOutput,
 			RoutingDecision: routing,
 		}, nil
 	}
 
-	// Emit AC extraction
-	o.emitter.ACExtracted(len(ac))
-	o.logInfo("ac_extracted", "count", len(ac))
-	o.logDebug("acceptance_criteria", "criteria", ac)
-
 	// Lightweight evaluation against AC
 	evalResult, evalErr := o.evaluator.Evaluate(ctx, directOutput, ac)
 	if evalErr != nil {
-		// Evaluation error — return direct answer without evaluation
-		//nolint:nilerr // error is handled by embedding in result
+		//nolint:nilerr // error is handled by returning result without evaluation
 		return &HandleResult{
 			Output:          directOutput,
 			RoutingDecision: routing,
@@ -265,7 +281,7 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 		SuggestedTools:     routing.SuggestedTools,
 		Confidence:         routing.Confidence,
 	}
-	result, err := o.handleReact(ctx, userMessage, escalatedRouting, availableTools)
+	result, err := o.handleReact(ctx, userMessage, escalatedRouting, availableTools, ac)
 	if err != nil {
 		return nil, err
 	}
@@ -277,18 +293,7 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 }
 
 // handleReact handles react mode - ReAct loop with evaluation and retry.
-func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor) (*HandleResult, error) {
-	// 1. Extract acceptance criteria
-	ac, err := o.acExtractor.Extract(ctx, userMessage, routing.Domain)
-	if err != nil {
-		return nil, fmt.Errorf("AC extraction failed: %w", err)
-	}
-
-	// Emit AC extraction
-	o.emitter.ACExtracted(len(ac))
-	o.logInfo("ac_extracted", "count", len(ac))
-	o.logDebug("acceptance_criteria", "criteria", ac)
-
+func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, ac []AcceptanceCriterion) (*HandleResult, error) {
 	// 2. Create task definition
 	taskDef := TaskDefinition{
 		Task:     userMessage,
@@ -327,7 +332,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 		}
 
 		// Run executor (don't suppress assistant events for react mode)
-		executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.config.LLMRole, o.logger, o.emitter, false)
+		executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.config.LLMRole, o.logger, o.emitter, false, o.toolResultBudget)
 		result, err := executor.Run(ctx, taskDef, cw)
 		if err != nil {
 			// Check if this is a recoverable API error (e.g., 400-class errors)
@@ -405,7 +410,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 					sessionReflections = append(sessionReflections, *reflection)
 					o.emitter.Escalation("react", "plan_execute")
 					o.logInfo("escalation", "from", "react", "to", "plan_execute")
-					result, escErr := o.handlePlanExecute(ctx, userMessage, routing, availableTools)
+					result, escErr := o.handlePlanExecute(ctx, userMessage, routing, availableTools, sessionReflections, ac)
 					if escErr != nil {
 						return nil, escErr
 					}
@@ -442,7 +447,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 			SuggestedTools:     routing.SuggestedTools,
 			Confidence:         routing.Confidence,
 		}
-		result, escErr := o.handlePlanExecute(ctx, userMessage, escalatedRouting, availableTools)
+		result, escErr := o.handlePlanExecute(ctx, userMessage, escalatedRouting, availableTools, sessionReflections, ac)
 		if escErr != nil {
 			return nil, escErr
 		}
@@ -495,21 +500,56 @@ func (o *Orchestrator) formatFailedCriteria(evalResult *EvalResult) string {
 	return strings.Join(failedCriteria, ", ")
 }
 
+// resolveProfile returns the effective AgentProfile for a plan step,
+// filling in defaults from the Orchestrator config.
+func (o *Orchestrator) resolveProfile(step PlanStep) AgentProfile {
+	if step.AgentProfile != nil {
+		profile := *step.AgentProfile
+		if profile.LLMRole == "" {
+			profile.LLMRole = o.config.LLMRole
+		}
+		if profile.MaxSteps == 0 {
+			profile.MaxSteps = o.config.MaxSteps
+		}
+		return profile
+	}
+	return AgentProfile{
+		Role:     "executor",
+		LLMRole:  o.config.LLMRole,
+		MaxSteps: o.config.MaxSteps,
+	}
+}
+
+// filterToolsByProfile returns the subset of tools allowed by the profile.
+// If AllowedTools is empty, all tools are returned.
+func (o *Orchestrator) filterToolsByProfile(allTools []tools.ToolDescriptor, profile AgentProfile) []tools.ToolDescriptor {
+	if len(profile.AllowedTools) == 0 {
+		return allTools
+	}
+	allowed := make(map[string]bool, len(profile.AllowedTools))
+	for _, name := range profile.AllowedTools {
+		allowed[name] = true
+	}
+	var filtered []tools.ToolDescriptor
+	for _, t := range allTools {
+		if allowed[t.Name] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 // handlePlanExecute handles plan_execute mode - DAG planning and execution with retry.
-func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor) (*HandleResult, error) {
-	// 1. Extract acceptance criteria
-	ac, err := o.acExtractor.Extract(ctx, userMessage, routing.Domain)
-	if err != nil {
-		return nil, fmt.Errorf("AC extraction failed: %w", err)
+func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, escalatedReflections []Reflection, ac []AcceptanceCriterion) (*HandleResult, error) {
+	// Initialize session reflections from escalated reflections (if any)
+	var sessionReflections []Reflection
+	if len(escalatedReflections) > 0 {
+		sessionReflections = make([]Reflection, len(escalatedReflections))
+		copy(sessionReflections, escalatedReflections)
 	}
 
-	// Emit AC extraction
-	o.emitter.ACExtracted(len(ac))
-	o.logInfo("ac_extracted", "count", len(ac))
-	o.logDebug("acceptance_criteria", "criteria", ac)
-
 	// 2. Generate initial plan
-	plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, nil, nil)
+	plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, sessionReflections, nil)
 	if err != nil {
 		return nil, fmt.Errorf("planning failed: %w", err)
 	}
@@ -523,12 +563,14 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	o.logInfo("plan_generated", "step_count", len(plan.Steps))
 	o.logDebug("plan_steps", "steps", plan.Steps)
 
-	// Track reflections and state for retry loop
-	var sessionReflections []Reflection
+	// Track state for retry loop
 	var lastOutput string
 	var lastEvalResult *EvalResult
 	var currentPlan = plan
 	var preCompleted map[string]CompletedStep
+
+	// Create shared workspace for inter-agent communication
+	workspace := NewSharedWorkspace()
 
 	// 3. Retry loop
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
@@ -539,7 +581,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		}
 
 		// Execute the current plan
-		finalOutput, completedSteps, _ := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted)
+		finalOutput, completedSteps, _ := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted, workspace)
 		// Note: step execution errors are handled within executePlanWithSteps
 		lastOutput = finalOutput
 		prevCompletedSteps := completedSteps
@@ -667,7 +709,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 }
 
 // executePlanWithSteps executes a DAG plan and returns completed steps for replan.
-func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac []AcceptanceCriterion, routing *RoutingDecision, availableTools []tools.ToolDescriptor, sessionReflections []Reflection, preCompleted map[string]CompletedStep) (string, []CompletedStep, error) {
+func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac []AcceptanceCriterion, routing *RoutingDecision, availableTools []tools.ToolDescriptor, sessionReflections []Reflection, preCompleted map[string]CompletedStep, workspace *SharedWorkspace) (string, []CompletedStep, error) {
 	var completedSteps map[string]CompletedStep
 	var completedList []CompletedStep
 	if preCompleted != nil {
@@ -704,7 +746,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			o.emitter.PlanStepStart(step.ID, step.Description)
 			stepStartTime := time.Now()
 
-			result, err := o.executeStepWithReflections(ctx, step, stepIndex, *plan, completedSteps, routing, availableTools, sessionReflections, ac)
+			result, err := o.executeStepWithReflections(ctx, step, stepIndex, *plan, completedSteps, routing, availableTools, sessionReflections, ac, workspace)
 
 			// Emit plan step complete
 			o.emitter.PlanStepComplete(step.ID, err == nil, time.Since(stepStartTime))
@@ -736,12 +778,25 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 						break
 					}
 				}
-				taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, availableTools)
-				systemPrompt := o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
-				// Resolve model metadata for the executor role
+
+				// Resolve profile and filter tools
+				profile := o.resolveProfile(step)
+				stepTools := o.filterToolsByProfile(availableTools, profile)
+
+				taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, workspace)
+
+				// Use profile-specific system prompt if provided
+				var systemPrompt string
+				if profile.SystemPrompt != "" {
+					systemPrompt = profile.SystemPrompt
+				} else {
+					systemPrompt = o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
+				}
+
+				// Resolve model metadata for the profile's LLM role
 				var modelMeta llm.ModelMetadata
 				if o.modelRegistry != nil {
-					modelMeta = o.modelRegistry.Resolve(o.getModelForRole(o.config.LLMRole))
+					modelMeta = o.modelRegistry.Resolve(o.getModelForRole(profile.LLMRole))
 				}
 				cm := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
 
@@ -752,7 +807,11 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 					cm.SetReflections(sessionReflections)
 				}
 				// Suppress assistant events for plan-step executors
-				executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.config.LLMRole, o.logger, o.emitter, true)
+				maxSteps := profile.MaxSteps
+				if maxSteps == 0 {
+					maxSteps = o.config.MaxSteps
+				}
+				executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, profile.LLMRole, o.logger, o.emitter, true, o.toolResultBudget)
 
 				tasks = append(tasks, SubAgentTask{
 					StepID:   step.ID,
@@ -767,6 +826,11 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			for _, r := range results {
 				// Emit PlanStepComplete for each result
 				o.emitter.PlanStepComplete(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
+
+				// Store output in workspace
+				if workspace != nil && r.Error == nil {
+					workspace.Store(r.StepID+"/output", r.Output, r.StepID)
+				}
 
 				cs := CompletedStep(r)
 				completedSteps[r.StepID] = cs
@@ -793,13 +857,25 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 }
 
 // executeStepWithReflections executes a single plan step with reflections.
-func (o *Orchestrator) executeStepWithReflections(ctx context.Context, step PlanStep, stepIndex int, plan Plan, completedSteps map[string]CompletedStep, routing *RoutingDecision, availableTools []tools.ToolDescriptor, reflections []Reflection, ac []AcceptanceCriterion) (string, error) {
-	taskDef := o.buildStepTask(step, stepIndex, plan, ac, completedSteps, availableTools)
-	systemPrompt := o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
-	// Resolve model metadata for the executor role
+func (o *Orchestrator) executeStepWithReflections(ctx context.Context, step PlanStep, stepIndex int, plan Plan, completedSteps map[string]CompletedStep, routing *RoutingDecision, availableTools []tools.ToolDescriptor, reflections []Reflection, ac []AcceptanceCriterion, workspace *SharedWorkspace) (string, error) {
+	// Resolve profile and filter tools
+	profile := o.resolveProfile(step)
+	stepTools := o.filterToolsByProfile(availableTools, profile)
+
+	taskDef := o.buildStepTask(step, stepIndex, plan, ac, completedSteps, stepTools, workspace)
+
+	// Use profile-specific system prompt if provided
+	var systemPrompt string
+	if profile.SystemPrompt != "" {
+		systemPrompt = profile.SystemPrompt
+	} else {
+		systemPrompt = o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
+	}
+
+	// Resolve model metadata for the profile's LLM role
 	var modelMeta llm.ModelMetadata
 	if o.modelRegistry != nil {
-		modelMeta = o.modelRegistry.Resolve(o.getModelForRole(o.config.LLMRole))
+		modelMeta = o.modelRegistry.Resolve(o.getModelForRole(profile.LLMRole))
 	}
 	cw := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
 
@@ -811,7 +887,11 @@ func (o *Orchestrator) executeStepWithReflections(ctx context.Context, step Plan
 	}
 
 	// Suppress assistant events for plan-step executors
-	executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.config.LLMRole, o.logger, o.emitter, true)
+	maxSteps := profile.MaxSteps
+	if maxSteps == 0 {
+		maxSteps = o.config.MaxSteps
+	}
+	executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, profile.LLMRole, o.logger, o.emitter, true, o.toolResultBudget)
 	result, err := executor.Run(ctx, taskDef, cw)
 	if err != nil {
 		// Check if this is a recoverable API error
@@ -821,6 +901,11 @@ func (o *Orchestrator) executeStepWithReflections(ctx context.Context, step Plan
 			return fmt.Sprintf("Step execution encountered an API error: %s", err), nil
 		}
 		return "", err
+	}
+
+	// Store output in workspace
+	if workspace != nil {
+		workspace.Store(step.ID+"/output", result.Output, step.ID)
 	}
 
 	// Treat max steps exhaustion (no proper finish) as a step failure
@@ -913,7 +998,7 @@ func computeRetrySteps(plan *Plan, failedCriteriaIDs []string) map[string]bool {
 
 // buildStepTask creates a TaskDefinition for a plan step.
 // stepIndex is 0-based index of this step in the plan.
-func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor) TaskDefinition {
+func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, workspace *SharedWorkspace) TaskDefinition {
 	// Build task description with scoping context
 	var taskBuilder strings.Builder
 
@@ -950,6 +1035,21 @@ func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, al
 			if completed, ok := completedSteps[depID]; ok {
 				fmt.Fprintf(&taskBuilder, "\n- [%s]: %s", depID, completed.Output)
 			}
+		}
+	}
+
+	// Inject workspace artifacts from completed dependencies
+	if workspace != nil {
+		var artifactContext strings.Builder
+		for _, depID := range step.DependsOn {
+			artifacts := workspace.GetByProducer(depID)
+			for _, a := range artifacts {
+				fmt.Fprintf(&artifactContext, "\n\n--- Artifact from %s ---\n%s", a.ProducedBy, a.Content)
+			}
+		}
+		if artifactContext.Len() > 0 {
+			taskBuilder.WriteString("\n\nContext from previous steps:")
+			taskBuilder.WriteString(artifactContext.String())
 		}
 	}
 
@@ -1062,4 +1162,28 @@ func isRecoverableAPIError(err error) bool {
 	return strings.Contains(errStr, "status code: 400") ||
 		strings.Contains(errStr, "missing field `content`") ||
 		strings.Contains(errStr, "Failed to deserialize")
+}
+
+// isContextExceededError checks if an error indicates the context window was exceeded.
+// This can happen when our token estimation is inaccurate and the API rejects the request.
+func isContextExceededError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	patterns := []string{
+		"context length exceeded",
+		"maximum context length",
+		"context_length_exceeded",
+		"too many tokens",
+		"request too large",
+		"input is too long",
+		"prompt is too long",
+	}
+	for _, p := range patterns {
+		if strings.Contains(errStr, p) {
+			return true
+		}
+	}
+	return false
 }

@@ -30,15 +30,35 @@ func NewRouter(caller LLMCaller, historyWindow int) *Router {
 }
 
 // Route analyzes the user's request and determines the best execution strategy.
-func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message) (decision *RoutingDecision, err error) {
+func (r *Router) Route(ctx context.Context, userMessage string, rawCriteria []RawCriterion, availableTools []tools.ToolDescriptor, history []llm.Message) (decision *RoutingDecision, err error) {
 	// Build tool list for the prompt
 	var toolList strings.Builder
 	for _, t := range availableTools {
 		fmt.Fprintf(&toolList, "- %s: %s\n", t.Name, t.Description)
 	}
 
+	// Build raw criteria summary for the prompt
+	var criteriaList string
+	switch {
+	case len(rawCriteria) > 0:
+		var cb strings.Builder
+		for _, rc := range rawCriteria {
+			implicit := ""
+			if rc.Implicit {
+				implicit = " [implicit]"
+			}
+			fmt.Fprintf(&cb, "- %s: %s (nature: %s, weight: %s%s)\n", rc.ID, rc.Description, rc.Nature, rc.Weight, implicit)
+		}
+		criteriaList = cb.String()
+	case rawCriteria == nil:
+		criteriaList = "(extraction failed — complexity unknown, rely on tool-availability heuristic)"
+	default:
+		criteriaList = "(none — task appears trivial)"
+	}
+
 	// Build system prompt
 	systemPrompt := strings.ReplaceAll(prompts.RouterSystem, "AVAILABLE-TOOLS", toolList.String())
+	systemPrompt = strings.ReplaceAll(systemPrompt, "RAW-CRITERIA", criteriaList)
 
 	// Build messages for the request
 	messages := make([]llm.Message, 0, len(history)+2)

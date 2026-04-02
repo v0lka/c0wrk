@@ -1,6 +1,38 @@
 @import "tailwindcss";
 @import 'highlight.js/styles/github-dark.min.css';
 
+/* Line numbers for code blocks */
+.prose pre code {
+  counter-reset: line;
+  display: block;
+}
+
+.prose pre code > span {
+  display: block;
+  counter-increment: line;
+  position: relative;
+  padding-left: 3.5em;
+}
+
+.prose pre code > span::before {
+  content: counter(line);
+  position: absolute;
+  left: 0;
+  width: 2.5em;
+  text-align: right;
+  color: var(--color-muted-foreground);
+  opacity: 0.5;
+  font-size: 0.75em;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Mermaid diagrams */
+.mermaid-container svg {
+  max-width: 100%;
+  height: auto;
+}
+
 @theme {
   --color-background: oklch(1 0 0);
   --color-foreground: oklch(0.145 0 0);

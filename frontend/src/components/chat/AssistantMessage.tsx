@@ -1,7 +1,33 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkEmoji from 'remark-emoji'
+import remarkBreaks from 'remark-breaks'
 import rehypeHighlight from 'rehype-highlight'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+import rehypeExternalLinks from 'rehype-external-links'
+import rehypeSlug from 'rehype-slug'
+import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import { cn } from '@/lib/utils'
+import { MermaidBlock } from './MermaidBlock'
+
+// Custom sanitize schema that allows highlight.js classes, heading IDs, and link attributes
+const customSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    code: ['className'],
+    span: ['className'],
+    pre: ['className'],
+    div: ['className'],
+    h1: ['id'],
+    h2: ['id'],
+    h3: ['id'],
+    h4: ['id'],
+    h5: ['id'],
+    h6: ['id'],
+    a: ['href', 'target', 'rel', 'className'],
+  },
+}
 
 interface AssistantMessageProps {
   content: string
@@ -13,12 +39,19 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
     <div className="flex-1 min-w-0 overflow-hidden">
         <div className="prose prose-sm dark:prose-invert max-w-full break-words min-w-0">
           <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
+            remarkPlugins={[remarkGfm, remarkEmoji, remarkBreaks]}
+            rehypePlugins={[
+              rehypeSlug,
+              [rehypeAutolinkHeadings, { behavior: 'wrap' }],
+              rehypeHighlight,
+              [rehypeExternalLinks, { target: '_blank', rel: ['noopener', 'noreferrer'] }],
+              [rehypeSanitize, customSchema],
+            ]}
             components={{
               code({ className, children, ...props }) {
                 const match = /language-(\w+)/.exec(className || '')
                 const isInline = !match && !className
+                const codeContent = String(children).replace(/\n$/, '')
                 
                 if (isInline) {
                   return (
@@ -29,6 +62,11 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
                       {children}
                     </code>
                   )
+                }
+                
+                // Check for mermaid diagram
+                if (match?.[1] === 'mermaid') {
+                  return <MermaidBlock code={codeContent} />
                 }
                 
                 return (

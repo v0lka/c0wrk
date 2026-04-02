@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/user/agent/internal/llm"
@@ -132,6 +133,9 @@ type mockContextManager struct {
 
 	// optional custom BuildPrompt function
 	buildPromptFn func() []llm.Message
+
+	// optional custom CheckFill function
+	checkFillFn func() FillCheck
 }
 
 func (m *mockContextManager) BuildPrompt() []llm.Message {
@@ -175,6 +179,9 @@ func (m *mockContextManager) SetStrategy(s CompactionStrategy) {
 }
 
 func (m *mockContextManager) CheckFill() FillCheck {
+	if m.checkFillFn != nil {
+		return m.checkFillFn()
+	}
 	if m.needsCompaction {
 		return FillCheck{Percent: 85, Status: "compact", Used: 85000, Max: 100000}
 	}
@@ -184,6 +191,10 @@ func (m *mockContextManager) CheckFill() FillCheck {
 func (m *mockContextManager) CorrectTokenCount(apiInputTokens int) {}
 
 func (m *mockContextManager) FillPercent() float64 { return 0 }
+
+func (m *mockContextManager) AvailableTokens() int {
+	return 100000 // large default so existing tests aren't affected
+}
 
 // mockEmitter is a mock implementation of Emitter for testing.
 // It tracks all calls for assertion purposes.
@@ -229,3 +240,39 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 	}{content, inputTokens, outputTokens})
 }
 func (m *mockEmitter) ContextFill(_ float64, _, _ int, _ string)                           {}
+
+// routerCallTracker helps track the three-phase AC extraction flow in tests.
+// It distinguishes between:
+//   1. ExtractRaw (Phase 1) - first call, returns []RawCriterion
+//   2. Route - second call, returns RoutingDecision
+//   3. Enrich (Phase 2) - subsequent calls with "Domain:", returns []AcceptanceCriterion
+type routerCallTracker struct {
+	callCount int
+}
+
+// nextCall determines what type of router call this is based on call count and message content.
+// Returns one of: "extract_raw", "route", "enrich"
+func (t *routerCallTracker) nextCall(req llm.ChatRequest) string {
+	t.callCount++
+	
+	// First call is always ExtractRaw
+	if t.callCount == 1 {
+		return "extract_raw"
+	}
+	
+	// Check if this has "Domain:" in message (indicates Enrich)
+	hasDomain := false
+	for _, msg := range req.Messages {
+		if strings.Contains(msg.Content, "Domain:") {
+			hasDomain = true
+			break
+		}
+	}
+	
+	if hasDomain {
+		return "enrich"
+	}
+	
+	// Otherwise it's Route
+	return "route"
+}
