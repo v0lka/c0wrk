@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -170,7 +171,7 @@ func TestSlidingWindowStrategyCompaction(t *testing.T) {
 		))
 	}
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Expected: first 3 steps (6 messages) + summary (1 message) + last 5 steps (10 messages) = 17 messages
 	expectedMessages := 3*2 + 1 + 5*2 // 17
@@ -218,7 +219,7 @@ func TestSlidingWindowNoCompactionNeeded(t *testing.T) {
 		))
 	}
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// All steps should be preserved: 5 * 2 = 10 messages
 	if len(messages) != 10 {
@@ -331,7 +332,7 @@ func TestCompactClearsCompactedOnNewStep(t *testing.T) {
 	}
 
 	// Compact - this clears steps and stores compacted messages
-	cw.Compact()
+	cw.Compact(context.Background())
 	messagesAfterCompact := cw.BuildPrompt()
 
 	// Verify compacted messages exist (2 first + 1 summary + 2 last = 5 messages, each step = 2 messages)

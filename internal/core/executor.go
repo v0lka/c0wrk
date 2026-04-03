@@ -16,7 +16,7 @@ const executorNudge = "[System] You have tools available that can help answer th
 
 // LLMCaller is the interface Executor needs from the LLM layer.
 type LLMCaller interface {
-	Call(ctx context.Context, role string, req llm.ChatRequest) (resp *llm.ChatResponse, err error)
+	Call(ctx context.Context, req llm.ChatRequest) (resp *llm.ChatResponse, err error)
 }
 
 // ToolExecutor is the interface Executor needs from the tools layer.
@@ -27,7 +27,7 @@ type ToolExecutor interface {
 // CompactionStrategy defines an algorithm for compressing step history.
 // This is defined in core to avoid circular imports with memory package.
 type CompactionStrategy interface {
-	Compact(steps []Step, budgetTokens int) []llm.Message
+	Compact(ctx context.Context, steps []Step, budgetTokens int) []llm.Message
 }
 
 // FillCheck represents the result of a context window fill check.
@@ -43,7 +43,7 @@ type ContextManager interface {
 	BuildPrompt() []llm.Message
 	AddStep(step Step)
 	NeedsCompaction() bool
-	Compact()
+	Compact(ctx context.Context)
 	// SetTask sets the user's task and acceptance criteria into the context window.
 	SetTask(task string, criteria []AcceptanceCriterion)
 	// SetReflections sets reflections for the retry loop (Phase 3).
@@ -66,7 +66,6 @@ type Executor struct {
 	tools                   ToolExecutor
 	tokenCounter            llm.TokenCounter
 	maxSteps                int
-	lmRole                  string       // LLM role to use (default: "executor")
 	logger                  *slog.Logger // structured logger (nil-safe)
 	emitter                 Emitter      // event emitter (uses noopEmitter if nil)
 	suppressAssistantEvents bool         // if true, don't emit AssistantChunk/AssistantDone
@@ -76,10 +75,7 @@ type Executor struct {
 // NewExecutor creates a new Executor.
 // logger and emitter are optional (nil-safe).
 // suppressAssistantEvents should be true for plan-step executors to avoid duplicate events.
-func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, lmRole string, logger *slog.Logger, emitter Emitter, suppressAssistantEvents bool, toolResultBudget config.ToolResultBudgetConfig) *Executor {
-	if lmRole == "" {
-		lmRole = "executor"
-	}
+func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, logger *slog.Logger, emitter Emitter, suppressAssistantEvents bool, toolResultBudget config.ToolResultBudgetConfig) *Executor {
 	// Use noopEmitter if nil to avoid nil checks throughout the code
 	if emitter == nil {
 		emitter = &noopEmitter{}
@@ -89,7 +85,6 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		tools:                   toolRegistry,
 		tokenCounter:            counter,
 		maxSteps:                maxSteps,
-		lmRole:                  lmRole,
 		logger:                  logger,
 		emitter:                 emitter,
 		suppressAssistantEvents: suppressAssistantEvents,
@@ -190,11 +185,11 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 		}
 
 		// Call LLM
-		resp, err := e.llm.Call(ctx, e.lmRole, req)
+		resp, err := e.llm.Call(ctx, req)
 		if err != nil {
 			if isContextExceededError(err) && !reactiveCompactAttempted {
 				reactiveCompactAttempted = true
-				cw.Compact()
+				cw.Compact(ctx)
 				e.logWarn("reactive_compaction_api_error", "step", stepNum, "error", err)
 				continue
 			}
@@ -385,17 +380,17 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 
 		switch fill.Status {
 		case "compact", "warning":
-			cw.Compact()
+			cw.Compact(ctx)
 			e.logDebug("compaction", "step", stepNum, "action", "context_compacted", "fill_percent", fill.Percent)
 			reactiveCompactAttempted = false
 		case "emergency":
-			cw.Compact()
+			cw.Compact(ctx)
 			e.logWarn("emergency_compaction", "step", stepNum, "fill_percent", fill.Percent)
 			reactiveCompactAttempted = false
 		case "reject":
 			if !reactiveCompactAttempted {
 				reactiveCompactAttempted = true
-				cw.Compact()
+				cw.Compact(ctx)
 				e.logWarn("reactive_compaction_reject", "step", stepNum, "fill_percent", fill.Percent)
 				continue
 			}

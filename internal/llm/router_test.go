@@ -70,7 +70,7 @@ func TestRouter_Call_SetsModelAndDelegatesToProvider(t *testing.T) {
 		Messages: []Message{{Role: "user", Content: "Hi"}},
 	}
 
-	resp, err := router.Call(context.Background(), "executor", req)
+	resp, err := router.Call(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRouter_Call_DoesNotOverrideExistingModel(t *testing.T) {
 		Messages: []Message{{Role: "user", Content: "Test"}},
 	}
 
-	_, err := router.Call(context.Background(), "executor", req)
+	_, err := router.Call(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
 		Messages: []Message{{Role: "user", Content: "Stream test"}},
 	}
 
-	ch, err := router.Stream(context.Background(), "executor", req)
+	ch, err := router.Stream(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

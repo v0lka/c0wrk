@@ -12,26 +12,35 @@ import (
 // SummarizationStrategy groups the oldest steps into blocks and uses an LLM
 // to summarize each block into a compact summary message.
 type SummarizationStrategy struct {
-	blockSize  int // number of steps per summary block (default: 10)
-	keepLast   int // number of recent steps to preserve verbatim
-	summarizer func(ctx context.Context, text string) (string, error)
+	blockSize          int // number of steps per summary block (default: 10)
+	keepLast           int // number of recent steps to preserve verbatim
+	summarizer         func(ctx context.Context, text string) (string, error)
+	tokenCounter       llm.TokenCounter
+	maxSummarizeTokens int
 }
 
 // NewSummarizationStrategy creates a new SummarizationStrategy.
 // blockSize is the number of steps per summary block.
 // keepLast is the number of recent steps to preserve verbatim.
 // summarizer is the function to call for LLM summarization.
-func NewSummarizationStrategy(blockSize, keepLast int, summarizer func(ctx context.Context, text string) (string, error)) *SummarizationStrategy {
+// tokenCounter is optional; if provided, blocks are truncated to maxSummarizeTokens.
+// maxSummarizeTokens defaults to 16000 if zero.
+func NewSummarizationStrategy(blockSize, keepLast int, summarizer func(ctx context.Context, text string) (string, error), tokenCounter llm.TokenCounter, maxSummarizeTokens int) *SummarizationStrategy {
 	if blockSize <= 0 {
 		blockSize = 10
 	}
 	if keepLast <= 0 {
 		keepLast = 5
 	}
+	if maxSummarizeTokens <= 0 {
+		maxSummarizeTokens = 16000
+	}
 	return &SummarizationStrategy{
-		blockSize:  blockSize,
-		keepLast:   keepLast,
-		summarizer: summarizer,
+		blockSize:          blockSize,
+		keepLast:           keepLast,
+		summarizer:         summarizer,
+		tokenCounter:       tokenCounter,
+		maxSummarizeTokens: maxSummarizeTokens,
 	}
 }
 
@@ -39,7 +48,7 @@ func NewSummarizationStrategy(blockSize, keepLast int, summarizer func(ctx conte
 // summarizes each block via the LLM summarizer, returns compacted steps.
 // Recent steps (within keepLast) are preserved verbatim.
 // Summary blocks become single messages with Role="system" and Content=summarized text.
-func (s *SummarizationStrategy) Compact(steps []core.Step, budgetTokens int) []llm.Message {
+func (s *SummarizationStrategy) Compact(ctx context.Context, steps []core.Step, budgetTokens int) []llm.Message {
 	// If no compaction needed, convert all steps to messages
 	if len(steps) <= s.keepLast {
 		return s.stepsToMessages(steps)
@@ -63,11 +72,19 @@ func (s *SummarizationStrategy) Compact(steps []core.Step, budgetTokens int) []l
 		// Build text representation of the block
 		blockText := s.buildBlockText(block)
 
+		// Truncate to token budget before sending to LLM
+		if s.tokenCounter != nil && s.maxSummarizeTokens > 0 {
+			tokenCount := s.tokenCounter.Count(blockText)
+			if tokenCount > s.maxSummarizeTokens {
+				blockText = s.truncateToTokenBudget(blockText)
+			}
+		}
+
 		// Summarize the block
 		var summary string
 		if s.summarizer != nil {
 			var err error
-			summary, err = s.summarizer(context.Background(), blockText)
+			summary, err = s.summarizer(ctx, blockText)
 			if err != nil {
 				// Fallback to a simple indicator if summarization fails
 				summary = fmt.Sprintf("[Summary of steps %d-%d failed: %v]", i+1, end, err)
@@ -113,6 +130,17 @@ func (s *SummarizationStrategy) buildBlockText(steps []core.Step) string {
 		parts = append(parts, stepText)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// truncateToTokenBudget truncates text to fit within the token budget.
+// Uses a conservative character approximation (3 chars per token).
+func (s *SummarizationStrategy) truncateToTokenBudget(text string) string {
+	// Conservative estimate: ~3 chars per token to leave room for encoding variance
+	maxChars := s.maxSummarizeTokens * 3
+	if len(text) <= maxChars {
+		return text
+	}
+	return text[:maxChars] + "\n[... truncated for summarization ...]"
 }
 
 // stepsToMessages converts a slice of Steps to LLM messages.

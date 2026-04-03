@@ -23,7 +23,7 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 	}`
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
@@ -91,7 +91,7 @@ func TestPlan_IncludesToolsAndCriteria(t *testing.T) {
 	var capturedRequest llm.ChatRequest
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			capturedRequest = req
 			return &llm.ChatResponse{
 				Message: llm.Message{
@@ -154,7 +154,7 @@ func TestReplan_ReturnsUpdatedPlan(t *testing.T) {
 	}`
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
@@ -221,7 +221,7 @@ func TestPlan_WithReflections(t *testing.T) {
 	var capturedRequest llm.ChatRequest
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			capturedRequest = req
 			return &llm.ChatResponse{
 				Message: llm.Message{
@@ -279,7 +279,7 @@ func TestPlan_WithConstitution(t *testing.T) {
 	var capturedRequest llm.ChatRequest
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			capturedRequest = req
 			return &llm.ChatResponse{
 				Message: llm.Message{
@@ -320,7 +320,7 @@ func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
 	mockResponse := "```json\n{\"steps\": [{\"id\": \"step_1\", \"description\": \"Test\", \"depends_on\": [], \"parallelizable\": true, \"estimated_tools\": [], \"relevant_ac\": []}]}\n```"
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
@@ -346,35 +346,11 @@ func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
 	}
 }
 
-func TestPlan_UsesCorrectRole(t *testing.T) {
-	var capturedRole string
-
-	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			capturedRole = role
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"steps": []}`,
-				},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	planner := NewPlanner(mock)
-	_, _ = planner.Plan(context.Background(), "Test", nil, nil, nil, nil)
-
-	if capturedRole != "planner" {
-		t.Errorf("Expected LLM role 'planner', got '%s'", capturedRole)
-	}
-}
-
 func TestReplan_IncludesOriginalPlanAndFailureDetails(t *testing.T) {
 	var capturedRequest llm.ChatRequest
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			capturedRequest = req
 			return &llm.ChatResponse{
 				Message: llm.Message{
@@ -465,7 +441,7 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 	}`
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
@@ -516,7 +492,7 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 	}`
 
 	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",

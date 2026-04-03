@@ -9,7 +9,7 @@ import (
 
 // CompactionStrategy defines an algorithm for compressing step history.
 type CompactionStrategy interface {
-	Compact(steps []core.Step, budgetTokens int) []llm.Message
+	Compact(ctx context.Context, steps []core.Step, budgetTokens int) []llm.Message
 }
 
 // CompactionConfig holds configuration for compaction strategies.
@@ -36,10 +36,19 @@ type CompactionDeps struct {
 	// Summarize calls the LLM to summarize a block of text.
 	// Used by SummarizationStrategy and HierarchicalStrategy.
 	Summarize func(ctx context.Context, text string) (string, error)
+	// MaxSummarizeTokens is the maximum token count for text sent to summarization.
+	// Defaults to 16000 if zero.
+	MaxSummarizeTokens int
 }
 
 // NewCompactionStrategy creates a CompactionStrategy by name.
 func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDeps) CompactionStrategy {
+	// Default maxSummarizeTokens if not set
+	maxTokens := deps.MaxSummarizeTokens
+	if maxTokens <= 0 {
+		maxTokens = 16000
+	}
+
 	switch name {
 	case "sliding_window":
 		return NewSlidingWindowStrategy(cfg.SlidingWindow.KeepFirst, cfg.SlidingWindow.KeepLast)
@@ -52,7 +61,7 @@ func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDep
 		if keepLast <= 0 {
 			keepLast = 5
 		}
-		return NewSummarizationStrategy(blockSize, keepLast, deps.Summarize)
+		return NewSummarizationStrategy(blockSize, keepLast, deps.Summarize, deps.TokenCounter, maxTokens)
 	case "hierarchical":
 		distant := cfg.Hierarchical.DistantRatio
 		if distant <= 0 {
@@ -66,7 +75,7 @@ func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDep
 		if recent <= 0 {
 			recent = 0.3
 		}
-		return NewHierarchicalStrategy(distant, middle, recent, deps.Summarize)
+		return NewHierarchicalStrategy(distant, middle, recent, deps.Summarize, deps.TokenCounter, maxTokens)
 	default:
 		return NewSlidingWindowStrategy(cfg.SlidingWindow.KeepFirst, cfg.SlidingWindow.KeepLast)
 	}

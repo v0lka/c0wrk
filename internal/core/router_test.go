@@ -356,27 +356,6 @@ func TestRoute_UsesRouterRole(t *testing.T) {
 	// For now, this test verifies the call completes without error
 }
 
-func TestRoute_UsesRouterRoleVerified(t *testing.T) {
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"react","domain":"code","complexity":2}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-	_, err := router.Route(context.Background(), "test request", nil, nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	if mock.lastRole() != "router" {
-		t.Errorf("expected role 'router', got '%s'", mock.lastRole())
-	}
-}
-
 // TestRoute_ConfidenceField tests that the Confidence field is correctly parsed from routing response.
 func TestRoute_ConfidenceField(t *testing.T) {
 	// Mock returns a routing response with confidence field

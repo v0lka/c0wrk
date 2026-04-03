@@ -58,7 +58,7 @@ func TestExecutor_BasicReActFlow(t *testing.T) {
 		taskDefinition: "Find the answer",
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -119,7 +119,7 @@ func TestExecutor_DirectFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -196,7 +196,7 @@ func TestExecutor_MaxStepsReached(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 3, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 3, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Never-ending task",
@@ -250,7 +250,7 @@ func TestExecutor_ImplicitFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -316,7 +316,7 @@ func TestExecutor_CompactionTriggered(t *testing.T) {
 	}
 	mockCW := &mockContextManager{needsCompaction: true}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test compaction",
@@ -341,14 +341,6 @@ func TestExecutor_CompactionTriggered(t *testing.T) {
 	}
 }
 
-func TestExecutor_DefaultRole(t *testing.T) {
-	// Test that empty lmRole defaults to "executor"
-	executor := NewExecutor(nil, nil, nil, 10, "", nil, nil, false, config.ToolResultBudgetConfig{})
-	if executor.lmRole != "executor" {
-		t.Errorf("expected default lmRole 'executor', got '%s'", executor.lmRole)
-	}
-}
-
 func TestExecutor_ToolDefinitionsIncludeFinish(t *testing.T) {
 	// Test that tool definitions always include finish tool
 	// Note: The nudge mechanism may cause 2 calls when LLM returns no tool calls on step 1
@@ -368,7 +360,7 @@ func TestExecutor_ToolDefinitionsIncludeFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test",
@@ -430,7 +422,7 @@ func TestExecutor_NoDuplicateFinishTool(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	// Task includes finish tool (as would happen when toolRegistry.List() includes it)
 	task := TaskDefinition{
@@ -474,7 +466,7 @@ func TestExecutor_NoDuplicateFinishTool(t *testing.T) {
 func TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			if callCount == 1 {
 				// First call: return no tools (will trigger nudge)
@@ -520,7 +512,7 @@ func TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -574,7 +566,7 @@ func TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1(t *testing.T) {
 func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			// Both calls return no tool calls - second should accept implicit finish
 			return &llm.ChatResponse{
@@ -588,7 +580,7 @@ func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -628,7 +620,7 @@ func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 func TestExecutor_NudgeMechanism_ProducesToolCallsOnRetry(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			if callCount == 1 {
 				// First call: return no tools
@@ -674,7 +666,7 @@ func TestExecutor_NudgeMechanism_ProducesToolCallsOnRetry(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -719,7 +711,7 @@ func TestExecutor_NudgeMechanism_ProducesToolCallsOnRetry(t *testing.T) {
 func TestExecutor_NudgeMechanism_NoNudgeWithoutTools(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			return &llm.ChatResponse{
 				Message:    llm.Message{Role: "assistant", Content: "Direct answer"},
@@ -732,7 +724,7 @@ func TestExecutor_NudgeMechanism_NoNudgeWithoutTools(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	// Task with NO tools
 	task := TaskDefinition{
@@ -766,7 +758,7 @@ func TestExecutor_NudgeMechanism_NoNudgeWithoutTools(t *testing.T) {
 func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			if callCount == 1 {
 				// First call: use a tool
@@ -799,7 +791,7 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Find something",
@@ -836,7 +828,7 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 func TestExecutor_ReactiveCompaction_RejectTriggersCompact(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			if callCount == 1 {
 				// First call: use a regular tool (not finish) so we reach CheckFill
@@ -885,7 +877,7 @@ func TestExecutor_ReactiveCompaction_RejectTriggersCompact(t *testing.T) {
 		},
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test reactive compaction on reject",
@@ -925,7 +917,7 @@ func TestExecutor_ReactiveCompaction_RejectTriggersCompact(t *testing.T) {
 func TestExecutor_ReactiveCompaction_APIContextExceeded(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			if callCount == 1 {
 				// First call: return context length exceeded error
@@ -949,7 +941,7 @@ func TestExecutor_ReactiveCompaction_APIContextExceeded(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test reactive compaction on API error",
@@ -988,7 +980,7 @@ func TestExecutor_ReactiveCompaction_APIContextExceeded(t *testing.T) {
 func TestExecutor_ReactiveCompaction_DoubleRejectFails(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			// Always return a regular tool call (not finish) so we reach CheckFill
 			return &llm.ChatResponse{
@@ -1018,7 +1010,7 @@ func TestExecutor_ReactiveCompaction_DoubleRejectFails(t *testing.T) {
 		},
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test double reject failure",
@@ -1053,7 +1045,7 @@ func TestExecutor_ReactiveCompaction_DoubleRejectFails(t *testing.T) {
 func TestExecutor_ReactiveCompaction_NonContextErrorNotIntercepted(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			// Always return a non-context error
 			return nil, errors.New("connection refused: unable to reach API endpoint")
@@ -1063,7 +1055,7 @@ func TestExecutor_ReactiveCompaction_NonContextErrorNotIntercepted(t *testing.T)
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{
 		Task: "Test non-context error propagation",
@@ -1147,7 +1139,7 @@ func TestExecutor_SuppressAssistantEvents_True(t *testing.T) {
 	mockEm := &mockEmitter{}
 
 	// Create executor with suppressAssistantEvents = true
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, mockEm, true, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, mockEm, true, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -1191,7 +1183,7 @@ func TestExecutor_SuppressAssistantEvents_False(t *testing.T) {
 	mockEm := &mockEmitter{}
 
 	// Create executor with suppressAssistantEvents = false
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, mockEm, false, config.ToolResultBudgetConfig{})
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, mockEm, false, config.ToolResultBudgetConfig{})
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -1285,7 +1277,7 @@ func TestExecutor_ToolResultBudget_HardCap(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, budget)
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1372,7 +1364,7 @@ func TestExecutor_ToolResultBudget_AdaptiveCap(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, budget)
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1456,7 +1448,7 @@ func TestExecutor_ToolResultBudget_SmallResultPassesThrough(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, budget)
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1541,7 +1533,7 @@ func TestExecutor_ToolResultBudget_FloorPreventsZeroCap(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, budget)
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1624,7 +1616,7 @@ func TestExecutor_ToolResultBudget_TruncationNotice(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, budget)
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1714,7 +1706,7 @@ func TestExecutor_ToolResultBudget_Disabled(t *testing.T) {
 	// Zero value budget = disabled
 	budget := config.ToolResultBudgetConfig{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, "executor", nil, nil, false, budget)
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, budget)
 
 	task := TaskDefinition{
 		Task: "Test budget",

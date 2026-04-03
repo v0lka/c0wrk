@@ -84,7 +84,7 @@ func createProviderFromConfig(provType, apiKey, baseURL string) (LLMProvider, er
 }
 
 // Call sends a chat request to the active provider.
-func (r *LLMRouter) Call(ctx context.Context, role string, req ChatRequest) (*ChatResponse, error) {
+func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Set model if not specified
 	if req.Model == "" {
 		req.Model = r.activeModel
@@ -116,7 +116,7 @@ func (r *LLMRouter) GetDefaultProvider() LLMProvider {
 }
 
 // Stream sends a streaming chat request to the active provider.
-func (r *LLMRouter) Stream(ctx context.Context, role string, req ChatRequest) (<-chan ChatChunk, error) {
+func (r *LLMRouter) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
 	// Set model if not specified
 	if req.Model == "" {
 		req.Model = r.activeModel

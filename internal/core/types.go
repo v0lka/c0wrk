@@ -138,7 +138,6 @@ type ExecutorConfig struct {
 	MaxSteps           int
 	CompactionStrategy string                 // will be resolved to actual strategy by memory package
 	Tools              []tools.ToolDescriptor // import from internal/tools
-	LLMRole            string                 // "executor" → mapped to model via LLMRouter
 }
 
 // ExecutorResult — result of Executor.Run (AD 4.4).
@@ -199,8 +198,8 @@ type SubAgentResult struct {
 
 // AgentProfile defines a specialized agent role for plan step execution.
 type AgentProfile struct {
+	// TODO: implement role-based behavior (prompt customization, tool filtering, strategy selection)
 	Role         string   `json:"role"`                    // "researcher", "coder", "tester", "executor" (default)
-	LLMRole      string   `json:"llm_role,omitempty"`      // maps to LLMRouter config (default: OrchestratorConfig.LLMRole)
 	SystemPrompt string   `json:"system_prompt,omitempty"` // role-specific prompt override (optional)
 	AllowedTools []string `json:"allowed_tools,omitempty"` // subset of available tools (empty = all)
 	MaxSteps     int      `json:"max_steps,omitempty"`     // budget per agent (0 = use default)

@@ -18,7 +18,6 @@ import (
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps   int
-	LLMRole    string // default: "executor"
 	KeepFirst  int    // for sliding window compaction
 	KeepLast   int    // for sliding window compaction
 	MaxRetries int    // max retry attempts after failed evaluation (default: 3)
@@ -71,9 +70,6 @@ func NewOrchestrator(
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
 	toolResultBudget config.ToolResultBudgetConfig,
 ) *Orchestrator {
-	if cfg.LLMRole == "" {
-		cfg.LLMRole = "executor"
-	}
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
 	}
@@ -130,16 +126,6 @@ func (o *Orchestrator) logWarn(msg string, args ...any) {
 	if o.logger != nil {
 		o.logger.Warn(msg, args...)
 	}
-}
-
-// getModelForRole returns the model name for a given role from the LLM router.
-// Returns empty string if the role is not found or if LLM router doesn't have role info.
-func (o *Orchestrator) getModelForRole(role string) string {
-	// This is a workaround - we need to access the role config from LLM router
-	// Since we don't have direct access, we'll use a default approach
-	// The actual model resolution happens in the LLM router's Call method
-	// For now, return the role as a hint and let ModelRegistry use defaults
-	return role
 }
 
 // Handle executes the agent reasoning cycle for the given user message.
@@ -229,7 +215,7 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 		Messages: messages,
 	}
 
-	resp, err := o.llm.Call(ctx, o.config.LLMRole, req)
+	resp, err := o.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("direct LLM call failed: %w", err)
 	}
@@ -319,7 +305,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 		// Resolve model metadata for the executor role
 		var modelMeta llm.ModelMetadata
 		if o.modelRegistry != nil {
-			modelMeta = o.modelRegistry.Resolve(o.getModelForRole(o.config.LLMRole))
+			modelMeta = o.modelRegistry.Resolve("")
 		}
 		cw := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
 
@@ -332,7 +318,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 		}
 
 		// Run executor (don't suppress assistant events for react mode)
-		executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.config.LLMRole, o.logger, o.emitter, false, o.toolResultBudget)
+		executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.logger, o.emitter, false, o.toolResultBudget)
 		result, err := executor.Run(ctx, taskDef, cw)
 		if err != nil {
 			// Check if this is a recoverable API error (e.g., 400-class errors)
@@ -505,9 +491,6 @@ func (o *Orchestrator) formatFailedCriteria(evalResult *EvalResult) string {
 func (o *Orchestrator) resolveProfile(step PlanStep) AgentProfile {
 	if step.AgentProfile != nil {
 		profile := *step.AgentProfile
-		if profile.LLMRole == "" {
-			profile.LLMRole = o.config.LLMRole
-		}
 		if profile.MaxSteps == 0 {
 			profile.MaxSteps = o.config.MaxSteps
 		}
@@ -515,7 +498,6 @@ func (o *Orchestrator) resolveProfile(step PlanStep) AgentProfile {
 	}
 	return AgentProfile{
 		Role:     "executor",
-		LLMRole:  o.config.LLMRole,
 		MaxSteps: o.config.MaxSteps,
 	}
 }
@@ -729,10 +711,17 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			break // All done or stuck
 		}
 
-		if len(readySteps) == 1 {
-			// Run single step with Executor directly
-			step := readySteps[0]
+		// Run steps via SubAgents (works for both single and parallel execution)
+		tasks := make([]SubAgentTask, 0, len(readySteps))
 
+		// Emit PlanStepStart for all steps before launching
+		stepStartTimes := make(map[string]time.Time)
+		for _, step := range readySteps {
+			o.emitter.PlanStepStart(step.ID, step.Description)
+			stepStartTimes[step.ID] = time.Now()
+		}
+
+		for _, step := range readySteps {
 			// Find the step index in the plan
 			stepIndex := -1
 			for i, s := range plan.Steps {
@@ -742,100 +731,62 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 				}
 			}
 
-			// Emit plan step start
-			o.emitter.PlanStepStart(step.ID, step.Description)
-			stepStartTime := time.Now()
+			// Resolve profile and filter tools
+			profile := o.resolveProfile(step)
+			stepTools := o.filterToolsByProfile(availableTools, profile)
 
-			result, err := o.executeStepWithReflections(ctx, step, stepIndex, *plan, completedSteps, routing, availableTools, sessionReflections, ac, workspace)
+			taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, workspace)
 
-			// Emit plan step complete
-			o.emitter.PlanStepComplete(step.ID, err == nil, time.Since(stepStartTime))
-
-			cs := CompletedStep{
-				StepID: step.ID,
-				Output: result,
-				Error:  err,
+			// Use profile-specific system prompt if provided
+			var systemPrompt string
+			if profile.SystemPrompt != "" {
+				systemPrompt = profile.SystemPrompt
+			} else {
+				systemPrompt = o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
 			}
-			completedSteps[step.ID] = cs
+
+			// Resolve model metadata for the profile's LLM role
+			var modelMeta llm.ModelMetadata
+			if o.modelRegistry != nil {
+				modelMeta = o.modelRegistry.Resolve("")
+			}
+			cm := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
+
+			// Set the task and acceptance criteria into the context window
+			cm.SetTask(taskDef.Task, taskDef.Criteria)
+
+			if len(sessionReflections) > 0 {
+				cm.SetReflections(sessionReflections)
+			}
+			// Suppress assistant events for plan-step executors
+			maxSteps := profile.MaxSteps
+			if maxSteps == 0 {
+				maxSteps = o.config.MaxSteps
+			}
+			executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, o.logger, o.emitter, true, o.toolResultBudget)
+
+			tasks = append(tasks, SubAgentTask{
+				StepID:   step.ID,
+				Executor: executor,
+				CM:       cm,
+				Task:     taskDef,
+				Emitter:  o.emitter,
+			})
+		}
+
+		results := RunSubAgentsParallel(ctx, tasks)
+		for _, r := range results {
+			// Emit PlanStepComplete for each result
+			o.emitter.PlanStepComplete(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
+
+			// Store output in workspace
+			if workspace != nil && r.Error == nil {
+				workspace.Store(r.StepID+"/output", r.Output, r.StepID)
+			}
+
+			cs := CompletedStep(r)
+			completedSteps[r.StepID] = cs
 			completedList = append(completedList, cs)
-		} else {
-			// Run multiple steps in parallel via SubAgents
-			tasks := make([]SubAgentTask, 0, len(readySteps))
-
-			// Emit PlanStepStart for all steps before launching
-			stepStartTimes := make(map[string]time.Time)
-			for _, step := range readySteps {
-				o.emitter.PlanStepStart(step.ID, step.Description)
-				stepStartTimes[step.ID] = time.Now()
-			}
-
-			for _, step := range readySteps {
-				// Find the step index in the plan
-				stepIndex := -1
-				for i, s := range plan.Steps {
-					if s.ID == step.ID {
-						stepIndex = i
-						break
-					}
-				}
-
-				// Resolve profile and filter tools
-				profile := o.resolveProfile(step)
-				stepTools := o.filterToolsByProfile(availableTools, profile)
-
-				taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, workspace)
-
-				// Use profile-specific system prompt if provided
-				var systemPrompt string
-				if profile.SystemPrompt != "" {
-					systemPrompt = profile.SystemPrompt
-				} else {
-					systemPrompt = o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
-				}
-
-				// Resolve model metadata for the profile's LLM role
-				var modelMeta llm.ModelMetadata
-				if o.modelRegistry != nil {
-					modelMeta = o.modelRegistry.Resolve(o.getModelForRole(profile.LLMRole))
-				}
-				cm := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
-
-				// Set the task and acceptance criteria into the context window
-				cm.SetTask(taskDef.Task, taskDef.Criteria)
-
-				if len(sessionReflections) > 0 {
-					cm.SetReflections(sessionReflections)
-				}
-				// Suppress assistant events for plan-step executors
-				maxSteps := profile.MaxSteps
-				if maxSteps == 0 {
-					maxSteps = o.config.MaxSteps
-				}
-				executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, profile.LLMRole, o.logger, o.emitter, true, o.toolResultBudget)
-
-				tasks = append(tasks, SubAgentTask{
-					StepID:   step.ID,
-					Executor: executor,
-					CM:       cm,
-					Task:     taskDef,
-					Emitter:  o.emitter,
-				})
-			}
-
-			results := RunSubAgentsParallel(ctx, tasks)
-			for _, r := range results {
-				// Emit PlanStepComplete for each result
-				o.emitter.PlanStepComplete(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
-
-				// Store output in workspace
-				if workspace != nil && r.Error == nil {
-					workspace.Store(r.StepID+"/output", r.Output, r.StepID)
-				}
-
-				cs := CompletedStep(r)
-				completedSteps[r.StepID] = cs
-				completedList = append(completedList, cs)
-			}
 		}
 	}
 
@@ -854,66 +805,6 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 
 	// Aggregate all completed step outputs
 	return o.aggregateOutput(completedSteps, plan), completedList, aggErr
-}
-
-// executeStepWithReflections executes a single plan step with reflections.
-func (o *Orchestrator) executeStepWithReflections(ctx context.Context, step PlanStep, stepIndex int, plan Plan, completedSteps map[string]CompletedStep, routing *RoutingDecision, availableTools []tools.ToolDescriptor, reflections []Reflection, ac []AcceptanceCriterion, workspace *SharedWorkspace) (string, error) {
-	// Resolve profile and filter tools
-	profile := o.resolveProfile(step)
-	stepTools := o.filterToolsByProfile(availableTools, profile)
-
-	taskDef := o.buildStepTask(step, stepIndex, plan, ac, completedSteps, stepTools, workspace)
-
-	// Use profile-specific system prompt if provided
-	var systemPrompt string
-	if profile.SystemPrompt != "" {
-		systemPrompt = profile.SystemPrompt
-	} else {
-		systemPrompt = o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
-	}
-
-	// Resolve model metadata for the profile's LLM role
-	var modelMeta llm.ModelMetadata
-	if o.modelRegistry != nil {
-		modelMeta = o.modelRegistry.Resolve(o.getModelForRole(profile.LLMRole))
-	}
-	cw := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
-
-	// Set the task and acceptance criteria into the context window
-	cw.SetTask(taskDef.Task, taskDef.Criteria)
-
-	if len(reflections) > 0 {
-		cw.SetReflections(reflections)
-	}
-
-	// Suppress assistant events for plan-step executors
-	maxSteps := profile.MaxSteps
-	if maxSteps == 0 {
-		maxSteps = o.config.MaxSteps
-	}
-	executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, profile.LLMRole, o.logger, o.emitter, true, o.toolResultBudget)
-	result, err := executor.Run(ctx, taskDef, cw)
-	if err != nil {
-		// Check if this is a recoverable API error
-		if isRecoverableAPIError(err) {
-			// Log and return a user-visible error message
-			o.logWarn("step_executor_api_error_recovered", "error", err, "step_id", step.ID)
-			return fmt.Sprintf("Step execution encountered an API error: %s", err), nil
-		}
-		return "", err
-	}
-
-	// Store output in workspace
-	if workspace != nil {
-		workspace.Store(step.ID+"/output", result.Output, step.ID)
-	}
-
-	// Treat max steps exhaustion (no proper finish) as a step failure
-	if !result.Finished {
-		return result.Output, errors.New("step execution did not complete within max steps")
-	}
-
-	return result.Output, nil
 }
 
 // findReadySteps returns steps whose dependencies are all completed successfully.

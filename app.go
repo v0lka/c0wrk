@@ -32,6 +32,17 @@ import (
 	"github.com/user/agent/internal/tools/skills"
 )
 
+// compactionSummarizePrompt is the system prompt used when summarizing step blocks
+// for context window compaction. The LLM is asked to produce concise summaries
+// that preserve critical decision points and outcomes.
+const compactionSummarizePrompt = `Summarize the following agent execution steps concisely. Preserve:
+- Key decisions made
+- Important tool results and their outcomes  
+- Critical observations and findings
+- Final state or conclusion
+
+Be brief but complete. Output only the summary, no preamble.`
+
 // loadShellEnvironment loads environment variables from the user's shell profile.
 // This is necessary on macOS where apps launched from Finder/Dock don't inherit
 // shell environment variables (like those set in .zshrc/.bash_profile).
@@ -387,7 +398,7 @@ func (a *App) startup(ctx context.Context) {
 					{Role: "user", Content: content + "\n\n" + prompt},
 				},
 			}
-			resp, err := llmRouter.Call(ctx, "summarizer", req)
+			resp, err := llmRouter.Call(ctx, req)
 			if err != nil {
 				return "", err
 			}
@@ -642,6 +653,22 @@ func (a *App) startup(ctx context.Context) {
 			},
 		}, memory.CompactionDeps{
 			TokenCounter: counter,
+			Summarize: func(ctx context.Context, blockText string) (string, error) {
+				if llmRouter == nil {
+					return "", errors.New("compaction summarize: LLM router not available")
+				}
+				req := llm.ChatRequest{
+					Messages: []llm.Message{
+						{Role: "system", Content: compactionSummarizePrompt},
+						{Role: "user", Content: blockText},
+					},
+				}
+				resp, err := llmRouter.Call(ctx, req)
+				if err != nil {
+					return "", fmt.Errorf("compaction summarize: %w", err)
+				}
+				return resp.Message.Content, nil
+			},
 		})
 
 		thresholds := a.config.Executor.Compaction.Thresholds
@@ -656,7 +683,6 @@ func (a *App) startup(ctx context.Context) {
 	// Orchestrator configuration
 	orchConfig := core.OrchestratorConfig{
 		MaxSteps:   a.config.Executor.MaxReactSteps,
-		LLMRole:    "executor",
 		KeepFirst:  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
 		KeepLast:   a.config.Executor.Compaction.SlidingWindow.KeepLast,
 		MaxRetries: a.config.Executor.MaxRetries,
@@ -1050,7 +1076,7 @@ func (a *App) generateTitleViaLLM(ctx context.Context, userMessage string) strin
 		Temperature: &temp,
 	}
 
-	resp, err := a.llmRouter.Call(ctx, "assistant", req)
+	resp, err := a.llmRouter.Call(ctx, req)
 	if err != nil {
 		slog.Warn("failed to generate session title via LLM, using fallback", "error", err)
 		return ""

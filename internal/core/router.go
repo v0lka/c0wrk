@@ -82,8 +82,8 @@ func (r *Router) Route(ctx context.Context, userMessage string, rawCriteria []Ra
 		Messages: messages,
 	}
 
-	// Call LLM with role "router"
-	resp, err := r.llm.Call(ctx, "router", req)
+	// Call LLM
+	resp, err := r.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("router LLM call failed: %w", err)
 	}

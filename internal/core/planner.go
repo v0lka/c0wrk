@@ -42,7 +42,7 @@ func (p *Planner) Plan(
 		Messages: messages,
 	}
 
-	resp, err := p.llm.Call(ctx, "planner", req)
+	resp, err := p.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("planner LLM call failed: %w", err)
 	}
@@ -75,7 +75,7 @@ func (p *Planner) Replan(
 		Messages: messages,
 	}
 
-	resp, err := p.llm.Call(ctx, "planner", req)
+	resp, err := p.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("planner replan LLM call failed: %w", err)
 	}

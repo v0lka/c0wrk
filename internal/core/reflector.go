@@ -47,7 +47,7 @@ func (r *Reflector) Reflect(
 		Messages: messages,
 	}
 
-	resp, err := r.llm.Call(ctx, "reflector", req)
+	resp, err := r.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("reflector LLM call failed: %w", err)
 	}

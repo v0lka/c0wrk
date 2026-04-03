@@ -57,8 +57,8 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 	// Setup mock LLM that returns direct mode routing, answer, AC extraction, and eval
 	var routerCallCount int
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				routerCallCount++
 				// Call 1: ExtractRaw (Phase 1) - no "Domain:" in message
 				// Call 2: Route - returns RoutingDecision
@@ -102,7 +102,7 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				return &llm.ChatResponse{
 					Message:    llm.Message{Role: "assistant", Content: "YES - Paris is correct"},
 					StopReason: "end_turn",
@@ -137,9 +137,7 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 		registry,
 		counter,
 		OrchestratorConfig{
-			MaxSteps:    10,
-			
-			LLMRole:     "executor",
+			MaxSteps: 10,
 		},
 		testContextFactory,
 		nil, // reflector - nil for Phase 2 tests
@@ -185,8 +183,8 @@ func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 	executorCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -214,7 +212,7 @@ func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				if evalCallCount == 1 {
 					// First eval (direct mode) - fail
@@ -229,7 +227,7 @@ func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				executorCallCount++
 				if executorCallCount == 1 {
 					// Direct mode answer (will fail eval)
@@ -272,7 +270,7 @@ func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor"},
+		OrchestratorConfig{MaxSteps: 10},
 		testContextFactory,
 		nil, // No reflector needed
 		nil, // logger - nil for tests
@@ -312,8 +310,8 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 	plannerCalled := false
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -341,7 +339,7 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				plannerCalled = true
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -351,7 +349,7 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -363,7 +361,7 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				if evalCallCount == 1 {
 					// First eval (react mode) - fail
@@ -378,7 +376,7 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				// Suggest escalation to plan_execute
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -408,7 +406,7 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -454,8 +452,8 @@ func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
 	var capturedPlannerPrompt string
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -483,7 +481,7 @@ func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				// Capture the system prompt to verify reflections are included
 				for _, msg := range req.Messages {
 					if msg.Role == "system" {
@@ -499,7 +497,7 @@ func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -511,7 +509,7 @@ func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				if evalCallCount == 1 {
 					// First eval (react mode) - fail
@@ -526,7 +524,7 @@ func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				// Return reflection with "escalate" action - include distinctive content to verify it's passed
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -556,7 +554,7 @@ func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10, LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -619,8 +617,8 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -648,7 +646,7 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				plannerCalled = true
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -658,7 +656,7 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				executorCallCount++
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -671,7 +669,7 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				// Fail for first 2 evals (react mode attempts), pass for plan_execute
 				if evalCallCount <= 2 {
@@ -685,7 +683,7 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				// Always suggest retry (not escalate) - this tests auto-escalation after max retries
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -715,7 +713,7 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 1}, // Only 1 retry to keep test fast
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 1}, // Only 1 retry to keep test fast
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -770,7 +768,7 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor"},
+		OrchestratorConfig{MaxSteps: 10},
 		testContextFactory,
 		nil,
 		nil, // logger - nil for tests
@@ -819,7 +817,7 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 func TestOrchestrator_ReactMode(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callIdx++
 			switch callIdx {
 			case 1: // ExtractRaw (Phase 1)
@@ -896,9 +894,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		registry,
 		counter,
 		OrchestratorConfig{
-			MaxSteps:    10,
-			
-			LLMRole:     "executor",
+			MaxSteps: 10,
 		},
 		testContextFactory,
 		nil, // reflector - nil for Phase 2 tests
@@ -938,7 +934,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callIdx++
 			switch callIdx {
 			case 1: // ExtractRaw (Phase 1)
@@ -1033,9 +1029,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		registry,
 		counter,
 		OrchestratorConfig{
-			MaxSteps:    10,
-			
-			LLMRole:     "executor",
+			MaxSteps: 10,
 		},
 		testContextFactory,
 		nil, // reflector - nil for Phase 2 tests
@@ -1089,8 +1083,8 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 // TestOrchestrator_NeedsClarificationMode tests the needs_clarification mode.
 func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1124,9 +1118,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		registry,
 		counter,
 		OrchestratorConfig{
-			MaxSteps:    10,
-			
-			LLMRole:     "executor",
+			MaxSteps: 10,
 		},
 		testContextFactory,
 		nil, // reflector - nil for Phase 2 tests
@@ -1177,8 +1169,8 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			var tracker routerCallTracker
 			mockLLM := &mockLLMCaller{
-				callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-					if role == "router" {
+				callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+					if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 						switch tracker.nextCall(req) {
 						case "extract_raw":
 							return &llm.ChatResponse{
@@ -1201,7 +1193,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 						}
 					}
 					// Planner
-					if role == "planner" {
+					if detectCallType(req) == "planner" {
 						return &llm.ChatResponse{
 							Message: llm.Message{
 								Role:    "assistant",
@@ -1236,7 +1228,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				registry,
 				registry,
 				counter,
-				OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor"},
+				OrchestratorConfig{MaxSteps: 10},
 				testContextFactory,
 				nil, // reflector
 				nil, // logger - nil for tests
@@ -1264,8 +1256,8 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 // TestOrchestrator_RunBackwardsCompatibility tests that Run() is backwards compatible.
 func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1293,7 +1285,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor"},
+		OrchestratorConfig{MaxSteps: 10},
 		testContextFactory,
 		nil, // reflector
 		nil, // logger - nil for tests
@@ -1324,8 +1316,8 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -1353,7 +1345,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1365,7 +1357,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				if evalCallCount == 1 {
 					// First eval - fail
@@ -1380,7 +1372,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1409,7 +1401,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -1446,8 +1438,8 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -1475,7 +1467,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1487,7 +1479,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				// Always fail
 				return &llm.ChatResponse{
@@ -1495,7 +1487,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1526,7 +1518,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: maxRetries},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: maxRetries},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -1570,8 +1562,8 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 	reflectorCalled := false
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -1599,7 +1591,7 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1611,14 +1603,14 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				// Always fail
 				return &llm.ChatResponse{
 					Message:    llm.Message{Role: "assistant", Content: "NO - test did not pass"},
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				reflectorCalled = true
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -1648,7 +1640,7 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -1673,8 +1665,8 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -1702,7 +1694,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				// Check if this is a replan call (contains "Revise")
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Revise") || strings.Contains(msg.Content, "partially completed") {
@@ -1717,7 +1709,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1729,7 +1721,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				if evalCallCount == 1 {
 					return &llm.ChatResponse{
@@ -1742,7 +1734,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1771,7 +1763,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -1815,8 +1807,8 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 	step2Executed := false
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -1838,7 +1830,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role: "assistant",
@@ -1850,7 +1842,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				// Check which step is being executed by examining the task content
 				// Look for "→ Step N:" which indicates the CURRENT step being executed
 				for _, msg := range req.Messages {
@@ -1908,7 +1900,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		reg,
 		reg,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 0}, // No retries for this test
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 0}, // No retries for this test
 		testContextFactory,
 		nil, // No reflector
 		nil, // logger - nil for tests
@@ -1954,8 +1946,8 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -1983,7 +1975,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -1995,7 +1987,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				return &llm.ChatResponse{
 					Message:    llm.Message{Role: "assistant", Content: "YES - task complete"},
 					StopReason: "end_turn",
@@ -2020,7 +2012,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor"},
+		OrchestratorConfig{MaxSteps: 10},
 		trackedContextFactory,
 		nil, // No reflector
 		nil, // logger - nil for tests
@@ -2089,7 +2081,7 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor"},
+		OrchestratorConfig{MaxSteps: 10},
 		testContextFactory,
 		nil,
 		nil, // logger - nil for tests
@@ -2129,8 +2121,8 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 	attemptCount := 0
 
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				hasAC := false
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Domain:") {
@@ -2155,7 +2147,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				// Check if this is a replan call
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Revise") || strings.Contains(msg.Content, "partially completed") {
@@ -2170,7 +2162,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				attemptCount++
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -2183,7 +2175,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				// Fail first eval, pass second
 				if attemptCount <= 1 {
 					return &llm.ChatResponse{
@@ -2196,7 +2188,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				reflectorCalled = true
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -2226,7 +2218,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -2266,8 +2258,8 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -2289,7 +2281,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role: "assistant",
@@ -2328,9 +2320,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		registry,
 		counter,
 		OrchestratorConfig{
-			MaxSteps:    10,
-			
-			LLMRole:     "executor",
+			MaxSteps: 10,
 		},
 		testContextFactory,
 		nil, // reflector - nil for this test
@@ -2400,8 +2390,8 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -2429,7 +2419,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role: "assistant",
@@ -2441,7 +2431,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				// Track which step is being executed by examining task content
 				// Look for "→ Step N:" which indicates the CURRENT step being executed
 				stepID := ""
@@ -2498,7 +2488,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				// The evaluator is called once per criterion, so we need to track which criterion is being evaluated
 				// by examining the request content
 				evalCallCount++
@@ -2530,7 +2520,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -2559,7 +2549,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -2615,8 +2605,8 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -2644,7 +2634,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role: "assistant",
@@ -2657,7 +2647,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				// Track which step is being executed
 				// Look for "→ Step N:" which indicates the CURRENT step being executed
 				stepID := ""
@@ -2745,7 +2735,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				// The evaluator is called once per criterion, so we need to track which criterion is being evaluated
 				evalCallCount++
 				isAC2 := false
@@ -2776,7 +2766,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -2805,7 +2795,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -2866,8 +2856,8 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if role == "router" {
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
 				switch tracker.nextCall(req) {
 				case "extract_raw":
 					return &llm.ChatResponse{
@@ -2895,7 +2885,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 					}, nil
 				}
 			}
-			if role == "planner" {
+			if detectCallType(req) == "planner" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role: "assistant",
@@ -2907,7 +2897,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "executor" {
+			if detectCallType(req) == "executor" {
 				// Look for "→ Step N:" which indicates the CURRENT step being executed
 				stepNum := ""
 				for _, msg := range req.Messages {
@@ -2977,7 +2967,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 					StopReason: "tool_use",
 				}, nil
 			}
-			if role == "evaluator_judge" {
+			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
 				if evalCallCount == 1 {
 					// First eval - fails
@@ -2992,7 +2982,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 					StopReason: "end_turn",
 				}, nil
 			}
-			if role == "reflector" {
+			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -3021,7 +3011,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		registry,
 		registry,
 		counter,
-		OrchestratorConfig{MaxSteps: 10,  LLMRole: "executor", MaxRetries: 3},
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
 		testContextFactory,
 		reflector,
 		nil, // logger - nil for tests
@@ -3564,7 +3554,6 @@ func TestBuildCriteriaToStepsMap(t *testing.T) {
 func TestOrchestrator_ResolveProfile_Default(t *testing.T) {
 	// Create orchestrator with default config
 	cfg := OrchestratorConfig{
-		LLMRole:  "executor",
 		MaxSteps: 30,
 	}
 	orch := &Orchestrator{config: cfg}
@@ -3580,9 +3569,6 @@ func TestOrchestrator_ResolveProfile_Default(t *testing.T) {
 	if profile.Role != "executor" {
 		t.Errorf("expected role 'executor', got %q", profile.Role)
 	}
-	if profile.LLMRole != "executor" {
-		t.Errorf("expected LLMRole 'executor', got %q", profile.LLMRole)
-	}
 	if profile.MaxSteps != 30 {
 		t.Errorf("expected MaxSteps 30, got %d", profile.MaxSteps)
 	}
@@ -3591,7 +3577,6 @@ func TestOrchestrator_ResolveProfile_Default(t *testing.T) {
 func TestOrchestrator_ResolveProfile_Custom(t *testing.T) {
 	// Create orchestrator with default config
 	cfg := OrchestratorConfig{
-		LLMRole:  "executor",
 		MaxSteps: 30,
 	}
 	orch := &Orchestrator{config: cfg}
@@ -3612,40 +3597,11 @@ func TestOrchestrator_ResolveProfile_Custom(t *testing.T) {
 	if profile.Role != "researcher" {
 		t.Errorf("expected role 'researcher', got %q", profile.Role)
 	}
-	// LLMRole should be filled from config since not specified
-	if profile.LLMRole != "executor" {
-		t.Errorf("expected LLMRole 'executor' (from config), got %q", profile.LLMRole)
-	}
 	if profile.MaxSteps != 15 {
 		t.Errorf("expected MaxSteps 15, got %d", profile.MaxSteps)
 	}
 	if len(profile.AllowedTools) != 2 {
 		t.Errorf("expected 2 allowed tools, got %d", len(profile.AllowedTools))
-	}
-}
-
-func TestOrchestrator_ResolveProfile_CustomLLMRole(t *testing.T) {
-	// Create orchestrator with default config
-	cfg := OrchestratorConfig{
-		LLMRole:  "executor",
-		MaxSteps: 30,
-	}
-	orch := &Orchestrator{config: cfg}
-
-	// Step with custom LLMRole in AgentProfile
-	step := PlanStep{
-		ID:          "step_1",
-		Description: "Complex task",
-		AgentProfile: &AgentProfile{
-			Role:    "coder",
-			LLMRole: "planner", // Override LLMRole
-		},
-	}
-
-	profile := orch.resolveProfile(step)
-
-	if profile.LLMRole != "planner" {
-		t.Errorf("expected LLMRole 'planner', got %q", profile.LLMRole)
 	}
 }
 

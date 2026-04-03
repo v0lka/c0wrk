@@ -30,7 +30,7 @@ func (e *ACExtractor) ExtractRaw(ctx context.Context, userMessage string) ([]Raw
 		},
 	}
 
-	resp, err := e.llm.Call(ctx, "router", req)
+	resp, err := e.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("raw AC extraction LLM call failed: %w", err)
 	}
@@ -98,7 +98,7 @@ func (e *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, ro
 		},
 	}
 
-	resp, err := e.llm.Call(ctx, "router", req)
+	resp, err := e.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("AC enrichment LLM call failed: %w", err)
 	}

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/user/agent/internal/core"
@@ -23,7 +24,8 @@ func NewSlidingWindowStrategy(keepFirst, keepLast int) *SlidingWindowStrategy {
 
 // Compact implements CompactionStrategy. It keeps the first K and last N steps,
 // inserting a summary message in between for any omitted steps.
-func (s *SlidingWindowStrategy) Compact(steps []core.Step, budgetTokens int) []llm.Message {
+func (s *SlidingWindowStrategy) Compact(ctx context.Context, steps []core.Step, budgetTokens int) []llm.Message {
+	_ = ctx // unused, for interface compliance
 	// If no compaction needed, convert all steps to messages
 	if len(steps) <= s.keepFirst+s.keepLast {
 		return s.stepsToMessages(steps)

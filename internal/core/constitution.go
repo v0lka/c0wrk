@@ -118,7 +118,7 @@ func (c *Constitution) MetaReflect(ctx context.Context, reflections []StoredRefl
 		},
 	}
 
-	resp, err := llmCaller.Call(ctx, "reflector", req)
+	resp, err := llmCaller.Call(ctx, req)
 	if err != nil {
 		return fmt.Errorf("meta-reflection LLM call failed: %w", err)
 	}

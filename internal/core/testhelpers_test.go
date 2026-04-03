@@ -22,23 +22,21 @@ type mockLLMCaller struct {
 
 	// recorded calls for assertions
 	calls []llm.ChatRequest
-	roles []string
 
 	// optional custom call function (takes precedence over responses)
-	callFn func(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error)
+	callFn func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
 
 	// optional error to return
 	err error
 }
 
-func (m *mockLLMCaller) Call(ctx context.Context, role string, req llm.ChatRequest) (*llm.ChatResponse, error) {
+func (m *mockLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	// Record the call
 	m.calls = append(m.calls, req)
-	m.roles = append(m.roles, role)
 
 	// If callFn is set, use it
 	if m.callFn != nil {
-		return m.callFn(ctx, role, req)
+		return m.callFn(ctx, req)
 	}
 
 	// If error is set, return it
@@ -65,14 +63,6 @@ func (m *mockLLMCaller) lastCall() llm.ChatRequest {
 		return llm.ChatRequest{}
 	}
 	return m.calls[len(m.calls)-1]
-}
-
-// lastRole returns the last recorded role, or empty if none
-func (m *mockLLMCaller) lastRole() string {
-	if len(m.roles) == 0 {
-		return ""
-	}
-	return m.roles[len(m.roles)-1]
 }
 
 // mockToolExecutor is a unified mock implementation of ToolExecutor for testing.
@@ -161,7 +151,7 @@ func (m *mockContextManager) NeedsCompaction() bool {
 	return m.needsCompaction
 }
 
-func (m *mockContextManager) Compact() {
+func (m *mockContextManager) Compact(ctx context.Context) {
 	m.compactCalled = true
 }
 
@@ -275,4 +265,49 @@ func (t *routerCallTracker) nextCall(req llm.ChatRequest) string {
 	
 	// Otherwise it's Route
 	return "route"
+}
+
+// detectCallType inspects a request to determine what component is calling the LLM.
+// Returns one of: "extract_raw", "route", "enrich", "planner", "evaluator_judge", "reflector", "executor"
+func detectCallType(req llm.ChatRequest) string {
+	if len(req.Messages) == 0 {
+		return "executor"
+	}
+	
+	// Check system prompt content - order matters!
+	// Check for specific role phrases first before checking for general content
+	for _, msg := range req.Messages {
+		if msg.Role == "system" {
+			// Check specific role identifiers first (most specific to least specific)
+			if strings.Contains(msg.Content, "task planner") || strings.Contains(msg.Content, "Revise the remaining plan") {
+				return "planner"
+			}
+			if strings.Contains(msg.Content, "self-correction analyst") {
+				return "reflector"
+			}
+			if strings.Contains(msg.Content, "request classifier") {
+				return "route"
+			}
+			if strings.Contains(msg.Content, "requirements analyst") {
+				return "extract_raw"
+			}
+			if strings.Contains(msg.Content, "enricher") || strings.Contains(msg.Content, "Domain:") {
+				return "enrich"
+			}
+		}
+		if msg.Role == "user" {
+			// Evaluator judge calls have specific format
+			if strings.Contains(msg.Content, "Criterion:") && strings.Contains(msg.Content, "Result:") {
+				return "evaluator_judge"
+			}
+			if strings.Contains(msg.Content, "Domain:") {
+				return "enrich"
+			}
+			if strings.Contains(msg.Content, "Classify this request:") {
+				return "route"
+			}
+		}
+	}
+	
+	return "executor"
 }

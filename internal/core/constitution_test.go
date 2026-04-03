@@ -201,11 +201,6 @@ func TestConstitution_MetaReflect(t *testing.T) {
 			t.Errorf("Principle source = %q, want %q", p.Source, "meta_reflection")
 		}
 	}
-
-	// Verify LLM was called with reflector role
-	if mockLLM.lastRole() != "reflector" {
-		t.Errorf("LLM role = %q, want %q", mockLLM.lastRole(), "reflector")
-	}
 }
 
 func TestConstitution_MetaReflect_EmptyReflections(t *testing.T) {

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -240,7 +241,7 @@ func (cw *ContextWindow) NeedsCompaction() bool {
 }
 
 // Compact compresses the step history using the configured strategy.
-func (cw *ContextWindow) Compact() {
+func (cw *ContextWindow) Compact(ctx context.Context) {
 	if cw.strategy == nil || len(cw.steps) == 0 {
 		return
 	}
@@ -249,7 +250,7 @@ func (cw *ContextWindow) Compact() {
 	budgetTokens := cw.EffectiveMax()
 
 	// Compact steps using the strategy
-	cw.compactedMessages = cw.strategy.Compact(cw.steps, budgetTokens)
+	cw.compactedMessages = cw.strategy.Compact(ctx, cw.steps, budgetTokens)
 	cw.steps = nil
 }
 

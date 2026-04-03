@@ -254,32 +254,6 @@ func TestReflect_IncludesPreviousReflections(t *testing.T) {
 	}
 }
 
-func TestReflect_UsesCorrectRole(t *testing.T) {
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"summary": "test", "failed_criteria": [], "hypotheses": [], "suggested_action": "retry", "reasoning": "test", "failure_analysis": "test", "root_cause": "test", "action_plan": "test", "task_type": "code"}`,
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	_, err := reflector.Reflect(context.Background(), []Step{}, &EvalResult{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
-	}
-
-	// Verify the correct role was used
-	if mockLLM.lastRole() != "reflector" {
-		t.Errorf("LLM called with role %q, want %q", mockLLM.lastRole(), "reflector")
-	}
-}
-
 func TestReflect_SuggestsRetryOnPartialFailure(t *testing.T) {
 	// LLM response suggesting retry for partial failure
 	mockLLM := &mockLLMCaller{

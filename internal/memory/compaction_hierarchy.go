@@ -15,16 +15,20 @@ import (
 // - Middle: moderate summarization (smaller blocks)
 // - Recent: kept verbatim
 type HierarchicalStrategy struct {
-	distantRatio float64 // fraction of steps in distant zone (default: 0.4)
-	middleRatio  float64 // fraction in middle zone (default: 0.3)
-	recentRatio  float64 // fraction in recent zone (default: 0.3)
-	summarizer   func(ctx context.Context, text string) (string, error)
+	distantRatio       float64 // fraction of steps in distant zone (default: 0.4)
+	middleRatio        float64 // fraction in middle zone (default: 0.3)
+	recentRatio        float64 // fraction in recent zone (default: 0.3)
+	summarizer         func(ctx context.Context, text string) (string, error)
+	tokenCounter       llm.TokenCounter
+	maxSummarizeTokens int
 }
 
 // NewHierarchicalStrategy creates a new HierarchicalStrategy.
 // distant, middle, recent are the fractions of steps in each zone.
 // They will be normalized to sum to 1.0 if they don't already.
-func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ctx context.Context, text string) (string, error)) *HierarchicalStrategy {
+// tokenCounter is optional; if provided, blocks are truncated to maxSummarizeTokens.
+// maxSummarizeTokens defaults to 16000 if zero.
+func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ctx context.Context, text string) (string, error), tokenCounter llm.TokenCounter, maxSummarizeTokens int) *HierarchicalStrategy {
 	// Normalize ratios
 	total := distant + middle + recent
 	if total <= 0 {
@@ -38,11 +42,17 @@ func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ct
 		recent /= total
 	}
 
+	if maxSummarizeTokens <= 0 {
+		maxSummarizeTokens = 16000
+	}
+
 	return &HierarchicalStrategy{
-		distantRatio: distant,
-		middleRatio:  middle,
-		recentRatio:  recent,
-		summarizer:   summarizer,
+		distantRatio:       distant,
+		middleRatio:        middle,
+		recentRatio:        recent,
+		summarizer:         summarizer,
+		tokenCounter:       tokenCounter,
+		maxSummarizeTokens: maxSummarizeTokens,
 	}
 }
 
@@ -50,7 +60,7 @@ func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ct
 // - Distant (oldest): aggressive summarization (large blocks, ~15 steps per summary)
 // - Middle: moderate summarization (smaller blocks, ~5 steps per summary)
 // - Recent: kept verbatim
-func (h *HierarchicalStrategy) Compact(steps []core.Step, budgetTokens int) []llm.Message {
+func (h *HierarchicalStrategy) Compact(ctx context.Context, steps []core.Step, budgetTokens int) []llm.Message {
 	n := len(steps)
 
 	// For very small step counts, just return all as messages
@@ -83,11 +93,11 @@ func (h *HierarchicalStrategy) Compact(steps []core.Step, budgetTokens int) []ll
 
 	// Distant zone: aggressive summarization (large blocks of ~15 steps)
 	distantBlockSize := 15
-	messages = append(messages, h.summarizeZone(distantSteps, distantBlockSize, "distant")...)
+	messages = append(messages, h.summarizeZone(ctx, distantSteps, "distant", distantBlockSize)...)
 
 	// Middle zone: moderate summarization (smaller blocks of ~5 steps)
 	middleBlockSize := 5
-	messages = append(messages, h.summarizeZone(middleSteps, middleBlockSize, "middle")...)
+	messages = append(messages, h.summarizeZone(ctx, middleSteps, "middle", middleBlockSize)...)
 
 	// Recent zone: kept verbatim
 	messages = append(messages, h.stepsToMessages(recentSteps)...)
@@ -96,7 +106,7 @@ func (h *HierarchicalStrategy) Compact(steps []core.Step, budgetTokens int) []ll
 }
 
 // summarizeZone summarizes a zone of steps with the given block size.
-func (h *HierarchicalStrategy) summarizeZone(steps []core.Step, blockSize int, zoneName string) []llm.Message {
+func (h *HierarchicalStrategy) summarizeZone(ctx context.Context, steps []core.Step, zoneName string, blockSize int) []llm.Message {
 	if len(steps) == 0 {
 		return nil
 	}
@@ -113,11 +123,19 @@ func (h *HierarchicalStrategy) summarizeZone(steps []core.Step, blockSize int, z
 		// Build text representation of the block
 		blockText := h.buildBlockText(block, zoneName)
 
+		// Truncate to token budget before sending to LLM
+		if h.tokenCounter != nil && h.maxSummarizeTokens > 0 {
+			tokenCount := h.tokenCounter.Count(blockText)
+			if tokenCount > h.maxSummarizeTokens {
+				blockText = h.truncateToTokenBudget(blockText)
+			}
+		}
+
 		// Summarize the block
 		var summary string
 		if h.summarizer != nil {
 			var err error
-			summary, err = h.summarizer(context.Background(), blockText)
+			summary, err = h.summarizer(ctx, blockText)
 			if err != nil {
 				// Fallback to a simple indicator if summarization fails
 				summary = fmt.Sprintf("[%s zone: %d steps summarized (error: %v)]", zoneName, len(block), err)
@@ -166,6 +184,17 @@ func (h *HierarchicalStrategy) buildBlockText(steps []core.Step, zoneName string
 		parts = append(parts, stepText)
 	}
 	return strings.Join(parts, "")
+}
+
+// truncateToTokenBudget truncates text to fit within the token budget.
+// Uses a conservative character approximation (3 chars per token).
+func (h *HierarchicalStrategy) truncateToTokenBudget(text string) string {
+	// Conservative estimate: ~3 chars per token to leave room for encoding variance
+	maxChars := h.maxSummarizeTokens * 3
+	if len(text) <= maxChars {
+		return text
+	}
+	return text[:maxChars] + "\n[... truncated for summarization ...]"
 }
 
 // stepsToMessages converts a slice of Steps to LLM messages.

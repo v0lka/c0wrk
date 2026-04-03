@@ -44,9 +44,9 @@ func TestSummarizationStrategy_CompactsOldSteps(t *testing.T) {
 	// Create 20 steps, with blockSize=5 and keepLast=5
 	// Should result in: 3 summary blocks (15 steps / 5) + 5 recent steps (10 messages)
 	steps := createTestSteps(20)
-	strategy := NewSummarizationStrategy(5, 5, mockSummarizer)
+	strategy := NewSummarizationStrategy(5, 5, mockSummarizer, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Count summary messages
 	summaryCount := 0
@@ -77,9 +77,9 @@ func TestSummarizationStrategy_PreservesRecentSteps(t *testing.T) {
 	// Create 10 steps with keepLast=5
 	// Only the first 5 should be summarized, last 5 kept verbatim
 	steps := createTestSteps(10)
-	strategy := NewSummarizationStrategy(10, 5, mockSummarizer)
+	strategy := NewSummarizationStrategy(10, 5, mockSummarizer, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Verify the recent steps are preserved by checking for their content
 	found := make(map[string]bool)
@@ -107,9 +107,9 @@ func TestSummarizationStrategy_CallsSummarizer(t *testing.T) {
 	}
 
 	steps := createTestSteps(25)
-	strategy := NewSummarizationStrategy(5, 5, countingSummarizer)
+	strategy := NewSummarizationStrategy(5, 5, countingSummarizer, nil, 0)
 
-	strategy.Compact(steps, 10000)
+	strategy.Compact(context.Background(), steps, 10000)
 
 	// 20 steps to summarize, blockSize=5 -> 4 calls
 	expectedCalls := 4
@@ -121,9 +121,9 @@ func TestSummarizationStrategy_CallsSummarizer(t *testing.T) {
 func TestSummarizationStrategy_NoCompactionNeeded(t *testing.T) {
 	// When steps <= keepLast, no summarization should happen
 	steps := createTestSteps(5)
-	strategy := NewSummarizationStrategy(10, 5, mockSummarizer)
+	strategy := NewSummarizationStrategy(10, 5, mockSummarizer, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// All should be assistant/tool messages, no summaries
 	for _, msg := range messages {
@@ -136,9 +136,9 @@ func TestSummarizationStrategy_NoCompactionNeeded(t *testing.T) {
 func TestSummarizationStrategy_NilSummarizer(t *testing.T) {
 	// When summarizer is nil, should use placeholder
 	steps := createTestSteps(15)
-	strategy := NewSummarizationStrategy(5, 5, nil)
+	strategy := NewSummarizationStrategy(5, 5, nil, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Should have placeholder summaries
 	foundPlaceholder := false
@@ -159,9 +159,9 @@ func TestHierarchicalStrategy_ThreeZones(t *testing.T) {
 	// Create 30 steps with default ratios (0.4, 0.3, 0.3)
 	// Distant: 12 steps, Middle: 9 steps, Recent: 9 steps
 	steps := createTestSteps(30)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Count messages by type
 	distantSummaries := 0
@@ -200,9 +200,9 @@ func TestHierarchicalStrategy_PreservesRecentZone(t *testing.T) {
 	// Create 30 steps with default ratios
 	// Recent zone (last 30%) = 9 steps should be kept verbatim
 	steps := createTestSteps(30)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Find preserved thoughts (should be from the last 9 steps)
 	preservedThoughts := make(map[string]bool)
@@ -225,9 +225,9 @@ func TestHierarchicalStrategy_PreservesRecentZone(t *testing.T) {
 func TestHierarchicalStrategy_SmallStepCount(t *testing.T) {
 	// With 5 or fewer steps, should return all as messages without summarization
 	steps := createTestSteps(5)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// All should be assistant/tool messages, no summaries
 	for _, msg := range messages {
@@ -246,9 +246,9 @@ func TestHierarchicalStrategy_DifferentCompressionLevels(t *testing.T) {
 	// The distant zone uses larger blocks (15), middle uses smaller (5)
 	// Create enough steps to see multiple blocks in middle zone
 	steps := createTestSteps(50)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Verify we got summaries from both zones
 	hasDistant := false
@@ -276,9 +276,9 @@ func TestHierarchicalStrategy_DifferentCompressionLevels(t *testing.T) {
 func TestHierarchicalStrategy_NilSummarizer(t *testing.T) {
 	// When summarizer is nil, should use placeholder
 	steps := createTestSteps(15)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, nil)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, nil, nil, 0)
 
-	messages := strategy.Compact(steps, 10000)
+	messages := strategy.Compact(context.Background(), steps, 10000)
 
 	// Should have placeholder summaries
 	foundPlaceholder := false
@@ -348,5 +348,92 @@ func TestNewCompactionStrategy_DefaultValues(t *testing.T) {
 	strategy = NewCompactionStrategy("hierarchical", cfg, deps)
 	if strategy == nil {
 		t.Fatal("Expected non-nil strategy")
+	}
+}
+
+// --- Context Cancellation and Token Truncation Tests ---
+
+func TestSummarizationStrategy_RespectsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	summarizer := func(ctx context.Context, text string) (string, error) {
+		return "", ctx.Err()
+	}
+
+	steps := createTestSteps(15)
+	strategy := NewSummarizationStrategy(5, 5, summarizer, nil, 0)
+
+	messages := strategy.Compact(ctx, steps, 10000)
+
+	// Should have placeholder/error summaries instead of real summaries
+	foundErrorSummary := false
+	for _, msg := range messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "failed") {
+			foundErrorSummary = true
+			break
+		}
+	}
+	if !foundErrorSummary {
+		t.Error("Expected error summary when context is cancelled")
+	}
+}
+
+// mockTokenCounter is a simple token counter that returns a configurable count.
+type mockTokenCounter struct {
+	countPerChar int // tokens per character (for controlling size)
+}
+
+func (m *mockTokenCounter) Count(text string) int {
+	if m.countPerChar <= 0 {
+		return len(text) // 1 token per char by default
+	}
+	return len(text) * m.countPerChar
+}
+
+func (m *mockTokenCounter) CountMessages(msgs []llm.Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += m.Count(msg.Content)
+	}
+	return total
+}
+
+func TestSummarizationStrategy_TruncatesLargeBlocks(t *testing.T) {
+	// Track what text is passed to summarizer
+	var receivedText string
+	trackingSummarizer := func(_ context.Context, text string) (string, error) {
+		receivedText = text
+		return "SUMMARY: truncated", nil
+	}
+
+	// Create a mock token counter that returns a high count (10 tokens per char)
+	mockCounter := &mockTokenCounter{countPerChar: 10}
+
+	// Create steps with large observations
+	steps := make([]core.Step, 10)
+	for i := 0; i < 10; i++ {
+		steps[i] = core.Step{
+			Thought:     fmt.Sprintf("Thought %d", i+1),
+			Action:      llm.ToolCall{ID: fmt.Sprintf("action_%d", i+1), Name: fmt.Sprintf("tool_%d", i+1)},
+			Observation: strings.Repeat("x", 1000), // Large observation
+			TokensUsed:  100,
+		}
+	}
+
+	// Create strategy with maxSummarizeTokens = 100 (very low to trigger truncation)
+	strategy := NewSummarizationStrategy(5, 5, trackingSummarizer, mockCounter, 100)
+
+	strategy.Compact(context.Background(), steps, 10000)
+
+	// The text should be truncated (100 tokens * 3 chars/token = 300 chars max)
+	// Original text would be much larger due to large observations
+	if len(receivedText) > 400 { // Allow some buffer for truncation notice
+		t.Errorf("Expected truncated text (~300 chars), got %d chars", len(receivedText))
+	}
+
+	// Should contain truncation indicator
+	if !strings.Contains(receivedText, "truncated") {
+		t.Error("Expected truncation indicator in the text passed to summarizer")
 	}
 }

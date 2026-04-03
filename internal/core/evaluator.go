@@ -121,7 +121,7 @@ func (e *Evaluator) evaluateLLMJudge(ctx context.Context, criterion AcceptanceCr
 	}
 
 	// Call LLM
-	resp, err := e.llm.Call(ctx, "evaluator_judge", req)
+	resp, err := e.llm.Call(ctx, req)
 	if err != nil {
 		return EvalDetail{}, fmt.Errorf("LLM judge call failed: %w", err)
 	}
