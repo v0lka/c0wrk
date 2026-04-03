@@ -48,6 +48,7 @@ export interface StepData {
 }
 
 export interface PlanStepData {
+  id?: string
   description: string
   status: string // "pending" | "running" | "completed" | "failed"
 }

@@ -63,8 +63,8 @@ type ConfirmationResponse int
 
 const (
 	ConfirmAllowOnce   ConfirmationResponse = iota // Allow this single execution
-	ConfirmDeny                                     // Deny this execution
-	ConfirmDenyAndStop                              // Deny and cancel the entire task
+	ConfirmDeny                                    // Deny this execution
+	ConfirmDenyAndStop                             // Deny and cancel the entire task
 )
 
 // ConfirmFunc is called before executing a mutating tool.

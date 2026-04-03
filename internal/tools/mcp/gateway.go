@@ -65,7 +65,7 @@ func (g *MCPGateway) RegisterTools(registry *tools.ToolRegistry) error {
 	for _, server := range g.servers {
 		for _, toolInfo := range server.Tools() {
 			mcpTool := NewMCPTool(server, toolInfo)
-			registry.Register(mcpTool)
+			registry.RegisterWithSource(mcpTool, "mcp")
 		}
 	}
 

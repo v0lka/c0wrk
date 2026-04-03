@@ -3,10 +3,20 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"google.golang.org/genai"
 )
+
+// geminiStopReasonMap maps Gemini finish reasons to our standard format.
+var geminiStopReasonMap = map[string]string{
+	string(genai.FinishReasonStop):       "end_turn",
+	string(genai.FinishReasonMaxTokens):  "max_tokens",
+	string(genai.FinishReasonSafety):     "safety",
+	string(genai.FinishReasonRecitation): "recitation",
+	string(genai.FinishReasonOther):      "other",
+}
 
 // GeminiProviderConfig holds configuration for the Gemini provider.
 type GeminiProviderConfig struct {
@@ -59,7 +69,7 @@ func (p *GeminiProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 
 	result, err := p.client.Models.GenerateContent(ctx, req.Model, contents, config)
 	if err != nil {
-		return nil, fmt.Errorf("gemini GenerateContent error: %w", err)
+		return nil, p.wrapError(fmt.Errorf("gemini GenerateContent error: %w", err))
 	}
 
 	return p.convertResponse(result)
@@ -98,13 +108,15 @@ func (p *GeminiProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 // convertMessages converts our Message format to Gemini Content format.
 // Returns contents and system instruction separately.
 func (p *GeminiProvider) convertMessages(messages []Message) (contents []*genai.Content, systemInstruction *genai.Content) {
-	for _, msg := range messages {
+	systemPromptStr, filteredMsgs := ExtractSystemPrompt(messages)
+	if systemPromptStr != "" {
+		systemInstruction = &genai.Content{
+			Parts: []*genai.Part{{Text: systemPromptStr}},
+		}
+	}
+
+	for _, msg := range filteredMsgs {
 		switch msg.Role {
-		case "system":
-			// System messages become system instruction
-			systemInstruction = &genai.Content{
-				Parts: []*genai.Part{{Text: msg.Content}},
-			}
 		case "user":
 			contents = append(contents, &genai.Content{
 				Role:  "user",
@@ -211,7 +223,7 @@ func (p *GeminiProvider) convertResponse(result *genai.GenerateContentResponse) 
 		candidate := result.Candidates[0]
 
 		// Map finish reason
-		response.StopReason = p.mapFinishReason(candidate.FinishReason)
+		response.StopReason = MapStopReason(string(candidate.FinishReason), geminiStopReasonMap)
 
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
@@ -276,7 +288,7 @@ func (p *GeminiProvider) convertStreamResponse(result *genai.GenerateContentResp
 		// Check for finish reason
 		if candidate.FinishReason != "" {
 			chunks = append(chunks, ChatChunk{
-				StopReason: p.mapFinishReason(candidate.FinishReason),
+				StopReason: MapStopReason(string(candidate.FinishReason), geminiStopReasonMap),
 			})
 		}
 	}
@@ -284,23 +296,11 @@ func (p *GeminiProvider) convertStreamResponse(result *genai.GenerateContentResp
 	return chunks
 }
 
-// mapFinishReason maps Gemini finish reason to our format.
-func (p *GeminiProvider) mapFinishReason(reason genai.FinishReason) string {
-	switch reason {
-	case genai.FinishReasonStop:
-		return "end_turn"
-	case genai.FinishReasonMaxTokens:
-		return "max_tokens"
-	case genai.FinishReasonSafety:
-		return "safety"
-	case genai.FinishReasonRecitation:
-		return "recitation"
-	case genai.FinishReasonOther:
-		return "other"
-	default:
-		if reason != "" {
-			return string(reason)
-		}
-		return "end_turn"
+// wrapError maps Gemini SDK error types to *LLMError.
+func (p *GeminiProvider) wrapError(err error) error {
+	var apiErr genai.APIError
+	if errors.As(err, &apiErr) {
+		return WrapProviderError(p.name, apiErr.Code, err)
 	}
+	return WrapProviderError(p.name, 0, err)
 }

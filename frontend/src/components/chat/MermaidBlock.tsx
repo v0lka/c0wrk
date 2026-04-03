@@ -1,40 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
 import mermaid from 'mermaid'
 
-// Initialize mermaid once
-let initialized = false
-
-function initMermaid() {
-  if (!initialized) {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'dark',
-    })
-    initialized = true
-  }
-}
-
 interface MermaidBlockProps {
   code: string
 }
 
 export function MermaidBlock({ code }: MermaidBlockProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [svg, setSvg] = useState<string>('')
+  const initializedRef = useRef(false)
   const [error, setError] = useState<boolean>(false)
   const idRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 11)}`)
 
   useEffect(() => {
-    initMermaid()
+    // Initialize mermaid once using ref
+    if (!initializedRef.current) {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'dark',
+      })
+      initializedRef.current = true
+    }
 
     const renderDiagram = async () => {
+      if (!containerRef.current) return
       try {
-        const { svg: renderedSvg } = await mermaid.render(idRef.current, code.trim())
-        setSvg(renderedSvg)
+        const { svg } = await mermaid.render(idRef.current, code.trim())
+        // Use ref-based DOM manipulation instead of dangerouslySetInnerHTML
+        containerRef.current.innerHTML = svg
         setError(false)
       } catch {
         setError(true)
-        setSvg('')
+        if (containerRef.current) {
+          containerRef.current.innerHTML = ''
+        }
       }
     }
 
@@ -53,7 +51,6 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
     <div
       ref={containerRef}
       className="mermaid-container bg-muted rounded-lg p-4 overflow-x-auto"
-      dangerouslySetInnerHTML={{ __html: svg }}
     />
   )
 }

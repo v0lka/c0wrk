@@ -127,8 +127,8 @@ llm:
 	if cfg.Executor.MaxReactSteps != 30 {
 		t.Errorf("Expected default max_react_steps 30, got %d", cfg.Executor.MaxReactSteps)
 	}
-	if cfg.Executor.MaxRetries != 3 {
-		t.Errorf("Expected default max_retries 3, got %d", cfg.Executor.MaxRetries)
+	if cfg.Executor.MaxRetries != 1 {
+		t.Errorf("Expected default max_retries 1, got %d", cfg.Executor.MaxRetries)
 	}
 	if cfg.Executor.OutputTokenReserve != 4096 {
 		t.Errorf("Expected default output_token_reserve 4096, got %d", cfg.Executor.OutputTokenReserve)
@@ -269,12 +269,12 @@ llm:
 // TestGetActiveProviderConfig tests the GetActiveProviderConfig method for all providers.
 func TestGetActiveProviderConfig(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         LLMConfig
-		wantProvType   string
-		wantAPIKey     string
-		wantBaseURL    string
-		wantModel      string
+		name         string
+		config       LLMConfig
+		wantProvType string
+		wantAPIKey   string
+		wantBaseURL  string
+		wantModel    string
 	}{
 		{
 			name: "anthropic",
@@ -349,12 +349,12 @@ func TestGetActiveProviderConfig(t *testing.T) {
 			wantModel:    "gpt-4o",
 		},
 		{
-			name:           "unknown_provider",
-			config:         LLMConfig{ActiveProvider: "unknown"},
-			wantProvType:   "",
-			wantAPIKey:     "",
-			wantBaseURL:    "",
-			wantModel:      "",
+			name:         "unknown_provider",
+			config:       LLMConfig{ActiveProvider: "unknown"},
+			wantProvType: "",
+			wantAPIKey:   "",
+			wantBaseURL:  "",
+			wantModel:    "",
 		},
 	}
 

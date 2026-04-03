@@ -18,9 +18,9 @@ import (
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps   int
-	KeepFirst  int    // for sliding window compaction
-	KeepLast   int    // for sliding window compaction
-	MaxRetries int    // max retry attempts after failed evaluation (default: 3)
+	KeepFirst  int // for sliding window compaction
+	KeepLast   int // for sliding window compaction
+	MaxRetries int // max retry attempts after failed evaluation (default: 3)
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -44,7 +44,7 @@ type Orchestrator struct {
 	modelRegistry       *llm.ModelRegistry // NEW: for resolving model metadata
 	config              OrchestratorConfig
 	contextFactory      ContextManagerFactory
-	maxRetries          int            // max retry attempts (from config or default 3)
+	maxRetries          int           // max retry attempts (from config or default 3)
 	conversationHistory []llm.Message // accumulated conversation for router context
 	logger              *slog.Logger  // structured logger (nil-safe)
 	emitter             Emitter       // event emitter (nil-safe, uses noopEmitter if nil)
@@ -64,9 +64,9 @@ func NewOrchestrator(
 	counter llm.TokenCounter,
 	cfg OrchestratorConfig,
 	contextFactory ContextManagerFactory,
-	reflector *Reflector,           // optional, nil-safe
-	logger *slog.Logger,            // optional, nil-safe
-	emitter Emitter,                // optional, uses noopEmitter if nil
+	reflector *Reflector, // optional, nil-safe
+	logger *slog.Logger, // optional, nil-safe
+	emitter Emitter, // optional, uses noopEmitter if nil
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
 	toolResultBudget config.ToolResultBudgetConfig,
 ) *Orchestrator {
@@ -81,7 +81,7 @@ func NewOrchestrator(
 	}
 	maxRetries := cfg.MaxRetries
 	if maxRetries == 0 {
-		maxRetries = 3 // default per AD 4.6
+		maxRetries = 1 // default per AD 4.6
 	}
 	// Use noopEmitter if nil to avoid nil checks throughout the code
 	if emitter == nil {
@@ -136,6 +136,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	availableTools := o.toolRegistry.List()
 
 	// 2. Extract raw acceptance criteria (Phase 1 — before routing)
+	o.emitter.ServiceWithMeta("Extracting acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
 	rawCriteria, err := o.acExtractor.ExtractRaw(ctx, userMessage)
 	if err != nil {
 		// Non-fatal: proceed with empty criteria if extraction fails
@@ -162,8 +163,12 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 		ac = enrichedAC
 	}
 
-	// Emit AC extraction
-	o.emitter.ACExtracted(len(ac))
+	// Emit AC extraction with criteria details
+	acEvents := make([]EvalCriterionEvent, len(ac))
+	for i, c := range ac {
+		acEvents[i] = EvalCriterionEvent{Name: c.ID, Description: c.Description}
+	}
+	o.emitter.ACExtracted(len(ac), acEvents)
 	o.logInfo("ac_extracted", "count", len(ac))
 	o.logDebug("acceptance_criteria", "criteria", ac)
 
@@ -231,7 +236,8 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 	}
 
 	// Lightweight evaluation against AC
-	evalResult, evalErr := o.evaluator.Evaluate(ctx, directOutput, ac)
+	o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+	evalResult, evalErr := o.evaluator.Evaluate(ctx, directOutput, ac, nil)
 	if evalErr != nil {
 		//nolint:nilerr // error is handled by returning result without evaluation
 		return &HandleResult{
@@ -350,7 +356,8 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 			return handleResult, nil
 		}
 
-		evalResult, evalErr := o.evaluator.Evaluate(ctx, result.Output, ac)
+		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+		evalResult, evalErr := o.evaluator.Evaluate(ctx, result.Output, ac, result.Steps)
 		if evalErr != nil {
 			// Return result even if evaluation fails
 			//nolint:nilerr // error is handled by embedding in result
@@ -375,13 +382,14 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 		if attempt < o.maxRetries {
 			if o.reflector != nil {
 				// Generate reflection
+				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]interface{}{"phase": "orchestration"})
 				reflection, reflectErr := o.reflector.Reflect(ctx, result.Steps, evalResult, nil, sessionReflections)
 				if reflectErr != nil {
 					// Reflection failed — still continue retry without reflection guidance
 					o.logWarn("reflection failed in react, retrying without guidance", "error", reflectErr, "attempt", attempt+1)
 					continue
 				}
-		
+
 				// Check if reflector suggests abort
 				if reflection.SuggestedAction == "abort" {
 					sessionReflections = append(sessionReflections, *reflection)
@@ -390,7 +398,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 					handleResult.Output = result.Output + "\n\n[Evaluation: some criteria not met: " + failedCriteria + ". Reflector suggests abort.]"
 					return handleResult, nil
 				}
-		
+
 				// Check if reflector suggests escalate to plan_execute
 				if reflection.SuggestedAction == "escalate" {
 					sessionReflections = append(sessionReflections, *reflection)
@@ -531,6 +539,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	}
 
 	// 2. Generate initial plan
+	o.emitter.ServiceWithMeta("Creating execution plan...", map[string]interface{}{"phase": "orchestration"})
 	plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, sessionReflections, nil)
 	if err != nil {
 		return nil, fmt.Errorf("planning failed: %w", err)
@@ -539,7 +548,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	// Emit plan generation
 	planStepEvents := make([]PlanStepEvent, len(plan.Steps))
 	for i, s := range plan.Steps {
-		planStepEvents[i] = PlanStepEvent{Description: s.Description, Status: "pending"}
+		planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: "pending"}
 	}
 	o.emitter.PlanGenerated(len(plan.Steps), planStepEvents)
 	o.logInfo("plan_generated", "step_count", len(plan.Steps))
@@ -581,7 +590,8 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 			return handleResult, nil
 		}
 
-		evalResult, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac)
+		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+		evalResult, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, nil)
 		if evalErr != nil {
 			//nolint:nilerr // error is handled by embedding in result
 			return handleResult, nil
@@ -606,13 +616,14 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 			if o.reflector != nil {
 				// For plan_execute, we don't have a single trajectory - use empty steps
 				// The reflection will focus on the eval result and plan
+				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]interface{}{"phase": "orchestration"})
 				reflection, reflectErr := o.reflector.Reflect(ctx, nil, evalResult, currentPlan, sessionReflections)
 				if reflectErr != nil {
 					// Reflection failed — still continue retry without reflection guidance
 					o.logWarn("reflection failed in plan_execute, retrying without guidance", "error", reflectErr, "attempt", attempt+1)
 					continue
 				}
-		
+
 				// Check if reflector suggests abort
 				if reflection.SuggestedAction == "abort" {
 					sessionReflections = append(sessionReflections, *reflection)
@@ -626,9 +637,9 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 				o.emitter.Reflection(reflection.Summary, reflection.Hypotheses, attempt+1, o.maxRetries)
 				o.logInfo("reflection", "summary", reflection.Summary, "suggested_action", reflection.SuggestedAction)
 				o.logDebug("reflection_details", "hypotheses", reflection.Hypotheses, "reasoning", reflection.Reasoning, "failure_analysis", reflection.FailureAnalysis, "root_cause", reflection.RootCause, "action_plan", reflection.ActionPlan)
-				
+
 				sessionReflections = append(sessionReflections, *reflection)
-				
+
 				// Replan if suggested, otherwise retry with same plan
 				if reflection.SuggestedAction == "replan" {
 					// Find failed step (for replan context) - use first completed step as proxy
@@ -636,7 +647,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 					if len(completedSteps) > 0 {
 						failedStep = completedSteps[len(completedSteps)-1]
 					}
-		
+
 					newPlan, replanErr := o.planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, ac)
 					if replanErr != nil {
 						// Replan failed, continue with current plan
@@ -716,7 +727,8 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 
 		// Emit PlanStepStart for all steps before launching
 		stepStartTimes := make(map[string]time.Time)
-		for _, step := range readySteps {
+		for i, step := range readySteps {
+			o.emitter.ServiceWithMeta(fmt.Sprintf("Executing step %d/%d: %s", i+1, len(plan.Steps), step.Description), map[string]interface{}{"phase": "orchestration"})
 			o.emitter.PlanStepStart(step.ID, step.Description)
 			stepStartTimes[step.ID] = time.Now()
 		}
@@ -1042,14 +1054,19 @@ func (o *Orchestrator) Run(ctx context.Context, userMessage string) (*HandleResu
 }
 
 // isRecoverableAPIError checks if an error is a recoverable API error
-// that should not crash the session (e.g., 400-class errors from malformed requests).
+// that should not crash the session (e.g., 400-class errors from malformed requests,
+// or retryable LLM errors that exhausted Router-level retries).
 func isRecoverableAPIError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Retryable LLM errors (rate limit, 5xx, network) that exhausted Router-level retries
+	// should be handled gracefully rather than crashing the session.
+	if llm.IsRetryable(err) {
+		return true
+	}
 	errStr := err.Error()
-	// Check for 400-class errors that indicate malformed requests
-	// These can often be recovered by the fixes in working.go, executor.go, and provider_openai.go
+	// 400-class errors from malformed requests — can be recovered by provider/executor fixes
 	return strings.Contains(errStr, "status code: 400") ||
 		strings.Contains(errStr, "missing field `content`") ||
 		strings.Contains(errStr, "Failed to deserialize")

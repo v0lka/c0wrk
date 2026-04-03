@@ -375,18 +375,35 @@ func TestEventEmitterACExtracted(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.ACExtracted(4)
+	criteria := []core.EvalCriterionEvent{
+		{Name: "ac_1", Description: "First criterion"},
+		{Name: "ac_2", Description: "Second criterion"},
+		{Name: "ac_3", Description: "Third criterion"},
+		{Name: "ac_4", Description: "Fourth criterion"},
+	}
+	emitter.ACExtracted(4, criteria)
 
 	if received.Type != "ac_extracted" {
 		t.Errorf("expected type 'ac_extracted', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]int)
+	data, ok := received.Data.(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected map[string]int data, got %T", received.Data)
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
-	if data["count"] != 4 {
-		t.Errorf("expected count 4, got %d", data["count"])
+	count, ok := data["count"].(int)
+	if !ok || count != 4 {
+		t.Errorf("expected count 4, got %v", data["count"])
+	}
+	receivedCriteria, ok := data["criteria"].([]core.EvalCriterionEvent)
+	if !ok {
+		t.Fatalf("expected criteria slice, got %T", data["criteria"])
+	}
+	if len(receivedCriteria) != 4 {
+		t.Errorf("expected 4 criteria, got %d", len(receivedCriteria))
+	}
+	if receivedCriteria[0].Name != "ac_1" || receivedCriteria[0].Description != "First criterion" {
+		t.Errorf("first criterion mismatch: %+v", receivedCriteria[0])
 	}
 }
 
@@ -482,7 +499,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.Reflection("Something went wrong", []string{"Issue found"}, 1, 3)
 	emitter.Retry(2, 3)
 	emitter.Escalation("direct", "react")
-	emitter.ACExtracted(4)
+	emitter.ACExtracted(4, []core.EvalCriterionEvent{{Name: "ac_1", Description: "Test"}})
 	emitter.ContextFill(75.5, 75500, 100000, "compact")
 
 	mu.Lock()

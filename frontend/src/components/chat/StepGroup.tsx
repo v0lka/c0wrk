@@ -8,7 +8,6 @@ import {
 import type { StepItem } from '@/stores/chatStore'
 
 interface StepGroupProps {
-  id: string
   steps: StepItem[]
 }
 

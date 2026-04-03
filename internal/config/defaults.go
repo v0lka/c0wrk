@@ -17,7 +17,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.MaxReactSteps = 30
 	}
 	if cfg.Executor.MaxRetries == 0 {
-		cfg.Executor.MaxRetries = 3
+		cfg.Executor.MaxRetries = 1
 	}
 	if cfg.Executor.OutputTokenReserve == 0 {
 		cfg.Executor.OutputTokenReserve = 4096
@@ -59,6 +59,17 @@ func ApplyDefaults(cfg *Config) {
 	// Models defaults (initialize empty map if nil)
 	if cfg.LLM.Models == nil {
 		cfg.LLM.Models = make(map[string]ModelOverride)
+	}
+
+	// LLM retry defaults
+	if cfg.LLM.Retry.MaxRetries == 0 {
+		cfg.LLM.Retry.MaxRetries = 3
+	}
+	if cfg.LLM.Retry.InitialBackoff == "" {
+		cfg.LLM.Retry.InitialBackoff = "1s"
+	}
+	if cfg.LLM.Retry.MaxBackoff == "" {
+		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
 	// LMStudio default base URL

@@ -1,5 +1,11 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 @import 'highlight.js/styles/github-dark.min.css';
+
+/* Remove underline from heading anchor links */
+.prose :where(h1, h2, h3, h4, h5, h6) a {
+  text-decoration: none;
+}
 
 /* Line numbers for code blocks */
 .prose pre code {

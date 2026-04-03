@@ -1740,4 +1740,3 @@ func TestExecutor_ToolResultBudget_Disabled(t *testing.T) {
 		t.Errorf("did not expect truncation notice when budget is disabled")
 	}
 }
-

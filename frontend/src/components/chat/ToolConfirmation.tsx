@@ -76,6 +76,7 @@ export function ToolConfirmation({ metadata }: ToolConfirmationProps) {
               variant="default"
               onClick={() => handleResponse('allow_once')}
               className="text-xs"
+              aria-label="Allow this tool action once"
             >
               Allow Once
             </Button>
@@ -84,6 +85,7 @@ export function ToolConfirmation({ metadata }: ToolConfirmationProps) {
               variant="outline"
               onClick={() => handleResponse('deny')}
               className="text-xs"
+              aria-label="Deny this tool action"
             >
               Deny
             </Button>

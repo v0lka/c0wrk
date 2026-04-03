@@ -519,4 +519,3 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 		t.Error("expected AgentProfile to be nil when not provided in JSON")
 	}
 }
-

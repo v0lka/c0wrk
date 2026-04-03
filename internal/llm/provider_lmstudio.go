@@ -34,8 +34,8 @@ type LMStudioProvider struct {
 
 // LMStudioModel represents a model in LM Studio.
 type LMStudioModel struct {
-	ID           string `json:"key"`            // LM Studio uses "key" as the model identifier
-	Type         string `json:"type"`           // "llm", "vlm", "embeddings"
+	ID           string `json:"key"`  // LM Studio uses "key" as the model identifier
+	Type         string `json:"type"` // "llm", "vlm", "embeddings"
 	DisplayName  string `json:"display_name"`
 	Architecture string `json:"architecture"`
 	MaxContext   int    `json:"max_context_length"`
@@ -74,15 +74,15 @@ func (p *LMStudioProvider) Name() string {
 // Internal types for LM Studio v1 API
 
 type lmStudioRequest struct {
-	Model           string    `json:"model"`
+	Model           string          `json:"model"`
 	Input           json.RawMessage `json:"input"`
-	SystemPrompt    string    `json:"system_prompt,omitempty"`
-	Temperature     *float64  `json:"temperature,omitempty"`
-	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
-	Stream          bool      `json:"stream"`
-	TopK            *int      `json:"top_k,omitempty"`
-	MinP            *float64  `json:"min_p,omitempty"`
-	RepeatPenalty   *float64  `json:"repeat_penalty,omitempty"`
+	SystemPrompt    string          `json:"system_prompt,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+	Stream          bool            `json:"stream"`
+	TopK            *int            `json:"top_k,omitempty"`
+	MinP            *float64        `json:"min_p,omitempty"`
+	RepeatPenalty   *float64        `json:"repeat_penalty,omitempty"`
 }
 
 type lmStudioResponse struct {
@@ -100,9 +100,9 @@ type lmStudioOutputItem struct {
 }
 
 type lmStudioStats struct {
-	InputTokens            int     `json:"input_tokens"`
-	TotalOutputTokens      int     `json:"total_output_tokens"`
-	TokensPerSecond        float64 `json:"tokens_per_second"`
+	InputTokens             int     `json:"input_tokens"`
+	TotalOutputTokens       int     `json:"total_output_tokens"`
+	TokensPerSecond         float64 `json:"tokens_per_second"`
 	TimeToFirstTokenSeconds float64 `json:"time_to_first_token_seconds"`
 }
 
@@ -235,12 +235,12 @@ func (p *LMStudioProvider) ChatCompletion(ctx context.Context, req ChatRequest) 
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("lmstudio: request failed: %w", err)
+		return nil, p.wrapError(0, fmt.Errorf("lmstudio: request failed: %w", err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, p.parseErrorResponse(resp)
+		return nil, p.wrapError(resp.StatusCode, p.parseErrorResponse(resp))
 	}
 
 	var lmResp lmStudioResponse
@@ -262,12 +262,12 @@ func (p *LMStudioProvider) chatCompletionOpenAI(ctx context.Context, req ChatReq
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("lmstudio: OpenAI-compat request failed: %w", err)
+		return nil, p.wrapError(0, fmt.Errorf("lmstudio: OpenAI-compat request failed: %w", err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, p.parseErrorResponse(resp)
+		return nil, p.wrapError(resp.StatusCode, p.parseErrorResponse(resp))
 	}
 
 	var oaiResp lmsOpenAIResponse
@@ -297,12 +297,12 @@ func (p *LMStudioProvider) StreamChatCompletion(ctx context.Context, req ChatReq
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("lmstudio: request failed: %w", err)
+		return nil, p.wrapError(0, fmt.Errorf("lmstudio: request failed: %w", err))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
-		return nil, p.parseErrorResponse(resp)
+		return nil, p.wrapError(resp.StatusCode, p.parseErrorResponse(resp))
 	}
 
 	chunks := make(chan ChatChunk)
@@ -328,12 +328,12 @@ func (p *LMStudioProvider) streamChatCompletionOpenAI(ctx context.Context, req C
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("lmstudio: OpenAI-compat request failed: %w", err)
+		return nil, p.wrapError(0, fmt.Errorf("lmstudio: OpenAI-compat request failed: %w", err))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
-		return nil, p.parseErrorResponse(resp)
+		return nil, p.wrapError(resp.StatusCode, p.parseErrorResponse(resp))
 	}
 
 	chunks := make(chan ChatChunk)
@@ -364,17 +364,17 @@ func (p *LMStudioProvider) processSSEStream(body io.Reader, chunks chan<- ChatCh
 		// Parse SSE format: "event: <type>" or "data: <JSON>"
 		if strings.HasPrefix(line, "event: ") {
 			eventType := strings.TrimPrefix(line, "event: ")
-			
+
 			// Read the next line which should be "data: <JSON>"
 			if !scanner.Scan() {
 				break
 			}
 			dataLine := scanner.Text()
-			
+
 			if !strings.HasPrefix(dataLine, "data: ") {
 				continue
 			}
-			
+
 			dataStr := strings.TrimPrefix(dataLine, "data: ")
 			if dataStr == "" {
 				continue
@@ -417,8 +417,8 @@ func (p *LMStudioProvider) handleSSEEvent(eventType, dataStr string, chunks chan
 		var start lmStudioToolCallStart
 		if err := json.Unmarshal([]byte(dataStr), &start); err == nil {
 			*currentToolCall = &ToolCall{
-				ID:   start.ID,
-				Name: start.Name,
+				ID:    start.ID,
+				Name:  start.Name,
 				Input: json.RawMessage(""),
 			}
 		}
@@ -474,16 +474,11 @@ func (p *LMStudioProvider) handleSSEEvent(eventType, dataStr string, chunks chan
 
 // buildRequest converts ChatRequest to LM Studio v1 request format.
 func (p *LMStudioProvider) buildRequest(req ChatRequest, stream bool) (*lmStudioRequest, error) {
-	var systemPrompt string
+	systemPrompt, filteredMsgs := ExtractSystemPrompt(req.Messages)
 	var parts []string
 
-	for _, msg := range req.Messages {
+	for _, msg := range filteredMsgs {
 		switch msg.Role {
-		case "system":
-			if systemPrompt != "" {
-				systemPrompt += "\n"
-			}
-			systemPrompt += msg.Content
 		case "user":
 			parts = append(parts, msg.Content)
 		case "assistant":
@@ -648,7 +643,7 @@ func (p *LMStudioProvider) parseOpenAIResponse(resp *lmsOpenAIResponse) (*ChatRe
 
 	return &ChatResponse{
 		Message:    message,
-		StopReason: p.mapOpenAIStopReason(choice.FinishReason),
+		StopReason: MapStopReason(choice.FinishReason, openAIStopReasonMap),
 		Usage: TokenUsage{
 			InputTokens:  resp.Usage.PromptTokens,
 			OutputTokens: resp.Usage.CompletionTokens,
@@ -656,26 +651,12 @@ func (p *LMStudioProvider) parseOpenAIResponse(resp *lmsOpenAIResponse) (*ChatRe
 	}, nil
 }
 
-// mapOpenAIStopReason converts OpenAI's finish reason to our standard format.
-func (p *LMStudioProvider) mapOpenAIStopReason(reason string) string {
-	switch reason {
-	case "stop":
-		return "end_turn"
-	case "tool_calls":
-		return "tool_use"
-	case "length":
-		return "max_tokens"
-	default:
-		return reason
-	}
-}
-
 // processOpenAISSEStream reads SSE events from OpenAI-compatible endpoint and emits ChatChunks.
 func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- ChatChunk) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
-	toolCalls := make(map[int]*ToolCall)
+	acc := NewStreamToolCallAccumulator()
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -709,34 +690,12 @@ func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- 
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
-			if _, exists := toolCalls[idx]; !exists {
-				toolCalls[idx] = &ToolCall{
-					ID:    tc.ID,
-					Name:  tc.Function.Name,
-					Input: json.RawMessage(""),
-				}
-			}
-			if tc.Function.Arguments != "" {
-				existing := string(toolCalls[idx].Input)
-				toolCalls[idx].Input = json.RawMessage(existing + tc.Function.Arguments)
-			}
-			if tc.Function.Name != "" {
-				toolCalls[idx].Name = tc.Function.Name
-			}
-			if tc.ID != "" {
-				toolCalls[idx].ID = tc.ID
-			}
+			acc.HandleDelta(idx, tc.ID, tc.Function.Name, tc.Function.Arguments)
 		}
 
 		if choice.FinishReason != nil {
-			stopReason := p.mapOpenAIStopReason(*choice.FinishReason)
-			if stopReason == "tool_use" {
-				for i := 0; i < len(toolCalls); i++ {
-					if tc, ok := toolCalls[i]; ok {
-						chunks <- ChatChunk{ToolCall: tc}
-					}
-				}
-			}
+			stopReason := MapStopReason(*choice.FinishReason, openAIStopReasonMap)
+			acc.Emit(chunks)
 			chunks <- ChatChunk{StopReason: stopReason}
 		}
 	}
@@ -789,6 +748,11 @@ func (p *LMStudioProvider) parseErrorResponse(resp *http.Response) error {
 	}
 
 	return fmt.Errorf("lmstudio: HTTP %d: %s", resp.StatusCode, string(body))
+}
+
+// wrapError wraps an error with the given HTTP status code into *LLMError.
+func (p *LMStudioProvider) wrapError(statusCode int, err error) error {
+	return WrapProviderError(p.name, statusCode, err)
 }
 
 // logDebug logs a debug message if logger is available.

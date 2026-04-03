@@ -7,8 +7,6 @@ import {
 } from '@/components/ui/collapsible'
 
 interface ThoughtBlockProps {
-  id: string
-  stepNum: number
   content: string
 }
 

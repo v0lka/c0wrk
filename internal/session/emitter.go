@@ -214,9 +214,9 @@ func (e *EventEmitter) Reflection(summary string, insights []string, attempt, ma
 		SessionID: e.sessionID,
 		Type:      "reflection",
 		Data: map[string]interface{}{
-			"summary":     summary,
-			"insights":    insights,
-			"attempt":     attempt,
+			"summary":      summary,
+			"insights":     insights,
+			"attempt":      attempt,
 			"max_attempts": maxAttempts,
 		},
 	})
@@ -251,14 +251,15 @@ func (e *EventEmitter) Escalation(fromMode, toMode string) {
 }
 
 // ACExtracted emits an acceptance criteria extraction event.
-func (e *EventEmitter) ACExtracted(count int) {
+func (e *EventEmitter) ACExtracted(count int, criteria []core.EvalCriterionEvent) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emit(Event{
 		SessionID: e.sessionID,
 		Type:      "ac_extracted",
-		Data: map[string]int{
-			"count": count,
+		Data: map[string]interface{}{
+			"count":    count,
+			"criteria": criteria,
 		},
 	})
 }
@@ -304,5 +305,35 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 			"max_tokens":   maxTokens,
 			"status":       status,
 		},
+	})
+}
+
+// Service emits a general service message without metadata.
+func (e *EventEmitter) Service(content string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emit(Event{
+		SessionID: e.sessionID,
+		Type:      "service",
+		Data: map[string]interface{}{
+			"content": content,
+		},
+	})
+}
+
+// ServiceWithMeta emits a service message with metadata for frontend filtering.
+func (e *EventEmitter) ServiceWithMeta(content string, meta map[string]interface{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	data := map[string]interface{}{
+		"content": content,
+	}
+	for k, v := range meta {
+		data[k] = v
+	}
+	e.emit(Event{
+		SessionID: e.sessionID,
+		Type:      "service",
+		Data:      data,
 	})
 }

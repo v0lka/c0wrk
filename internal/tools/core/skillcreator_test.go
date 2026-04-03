@@ -381,13 +381,13 @@ func TestSkillCreatorTool_InvalidName(t *testing.T) {
 	tool := NewSkillCreatorTool(tmpDir, nil, nil)
 
 	invalidNames := []string{
-		"123skill",      // starts with number
-		"skill-name",    // contains hyphen
-		"skill.name",    // contains dot
-		"skill name",    // contains space
-		"skill@name",    // contains special char
-		"",              // empty
-		"_underscore",   // starts with underscore
+		"123skill",    // starts with number
+		"skill-name",  // contains hyphen
+		"skill.name",  // contains dot
+		"skill name",  // contains space
+		"skill@name",  // contains special char
+		"",            // empty
+		"_underscore", // starts with underscore
 	}
 
 	for _, name := range invalidNames {

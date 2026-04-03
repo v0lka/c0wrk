@@ -579,11 +579,11 @@ type mockEpisodicStore struct {
 	storedEntry      EpisodicEntry
 	storeEntryErr    error
 
-	retrieveCalled bool
+	retrieveCalled    bool
 	retrieveSessionID string
-	retrieveLimit  int
-	retrieveResults []EpisodicEntry
-	retrieveErr    error
+	retrieveLimit     int
+	retrieveResults   []EpisodicEntry
+	retrieveErr       error
 }
 
 func (m *mockEpisodicStore) StoreEntry(ctx context.Context, entry EpisodicEntry) error {
@@ -601,15 +601,15 @@ func (m *mockEpisodicStore) RetrieveEntries(ctx context.Context, sessionID strin
 
 // mockReflexionStore is a mock implementation of ReflexionStore.
 type mockReflexionStore struct {
-	storeCalled    bool
+	storeCalled      bool
 	storedReflection StoredReflexion
-	storeErr       error
+	storeErr         error
 
-	searchCalled bool
-	searchQuery  string
-	searchLimit  int
+	searchCalled  bool
+	searchQuery   string
+	searchLimit   int
 	searchResults []StoredReflexion
-	searchErr    error
+	searchErr     error
 }
 
 func (m *mockReflexionStore) Store(ctx context.Context, reflection StoredReflexion) error {
@@ -897,8 +897,8 @@ func TestContextManagerTool_ReflexionStoreMissingParams(t *testing.T) {
 	tool := NewContextManagerTool(nil, nil, nil, reflexionStore)
 
 	tests := []struct {
-		name   string
-		input  map[string]interface{}
+		name    string
+		input   map[string]interface{}
 		wantErr string
 	}{
 		{

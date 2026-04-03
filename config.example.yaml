@@ -35,6 +35,12 @@ llm:
   #     context_window: 32000
   #     output_limit: 4096
 
+  # Retry configuration for transient LLM API errors (network, rate-limit, 5xx)
+  # retry:
+  #   max_retries: 3         # max retry attempts (0 = disabled)
+  #   initial_backoff: "1s"  # initial backoff before first retry
+  #   max_backoff: "30s"     # maximum backoff cap
+
 executor:
   max_react_steps: 30
   max_retries: 3

@@ -22,6 +22,18 @@ Guidelines for SuggestedAction:
 - If repeated failures with same errors → suggest "abort"
 - If total failure with no progress → suggest "abort"
 - If the react loop used few tools or failed to address the core task → suggest "escalate"
+- Apply Single-Attempt Failure Classification (above) when no previous reflections are provided — it takes precedence over these general guidelines for the first failure.
+
+## Single-Attempt Failure Classification
+
+On the FIRST evaluation failure (no previous reflections), classify the failure type:
+
+- "structural": The task requires capabilities beyond simple tool chaining — multi-file coordination, complex dependency management, iterative refinement with state. Suggest "escalate".
+- "wrong_approach": The executor took a fundamentally wrong path (e.g., searched the wrong sources, misunderstood the task, used inappropriate tools). Suggest "escalate" — retrying the same framing rarely succeeds.
+- "recoverable": A specific, identifiable error occurred (tool invocation failure, API timeout, minor misunderstanding) that can be fixed with a targeted adjustment. Suggest "retry" with a concrete action plan.
+- "partial": Some criteria passed, others failed due to incomplete execution. Suggest "retry" focused on unfulfilled criteria.
+
+When in doubt between "retry" and "escalate", prefer "escalate" — experiments show that retrying a fundamentally wrong approach wastes execution budget without improving outcomes.
 
 ## Cross-Attempt Pattern Analysis
 

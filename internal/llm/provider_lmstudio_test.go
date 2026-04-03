@@ -172,8 +172,8 @@ func TestLMStudioStreamChatCompletion(t *testing.T) {
 
 	ctx := context.Background()
 	chunks, err := p.StreamChatCompletion(ctx, ChatRequest{
-		Model:    "test-model",
-		Messages: []Message{{Role: "user", Content: "Say hi"}},
+		Model:     "test-model",
+		Messages:  []Message{{Role: "user", Content: "Say hi"}},
 		MaxTokens: 100,
 	})
 	if err != nil {

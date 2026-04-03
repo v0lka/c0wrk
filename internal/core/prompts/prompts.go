@@ -35,10 +35,13 @@ var RawACExtractorSystem string
 //go:embed ac_enricher_system.md
 var ACEnricherSystem string
 
-// Evaluator prompt
+// Evaluator prompts
 
 //go:embed evaluator_judge.md
 var EvaluatorJudge string
+
+//go:embed evaluator_reconsider.md
+var EvaluatorReconsider string
 
 // Constitution prompt
 

@@ -514,7 +514,7 @@ func (a *App) startup(ctx context.Context) {
 				continue
 			}
 			skillTool := skills.NewSkillTool(manifest, info.Path, builder)
-			registry.Register(skillTool)
+			registry.RegisterWithSource(skillTool, "skill")
 		}
 	}
 
@@ -560,8 +560,6 @@ func (a *App) startup(ctx context.Context) {
 	default:
 		registry.SetDefaultPolicy(tools.PolicyAuto)
 	}
-
-
 
 	// Initialize Constitution
 	var constitution *core.Constitution
@@ -758,20 +756,20 @@ func (a *App) startup(ctx context.Context) {
 			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
 		}
 		return core.NewOrchestrator(
-			router,      // Router
-			acExtractor, // ACExtractor
-			planner,     // Planner
-			evaluator,   // Evaluator
-			llmRouter,   // LLMCaller
-			registry,    // ToolExecutor
-			registry,    // ToolRegistry
+			router,                      // Router
+			acExtractor,                 // ACExtractor
+			planner,                     // Planner
+			evaluator,                   // Evaluator
+			llmRouter,                   // LLMCaller
+			registry,                    // ToolExecutor
+			registry,                    // ToolRegistry
 			llm.NewSimpleTokenCounter(), // TokenCounter (for backward compatibility)
 			orchConfig,
 			contextFactory,
-			reflector,         // Reflector for retry-loop
-			logger,            // Logger
-			emitter,           // Emitter
-			modelRegistry,     // ModelRegistry for resolving model metadata
+			reflector,     // Reflector for retry-loop
+			logger,        // Logger
+			emitter,       // Emitter
+			modelRegistry, // ModelRegistry for resolving model metadata
 			a.config.Executor.ToolResultBudget,
 		), nil
 	}
@@ -1142,12 +1140,12 @@ func (a *App) GetConfig() map[string]interface{} {
 	searchKeyMasked := maskAPIKey(a.config.Search.APIKey)
 
 	return map[string]interface{}{
-		"loaded":              true,
-		"log_level":           a.config.LogLevel,
-		"theme":               a.config.Theme,
-		"config_migrated":     a.configMigrated,
+		"loaded":               true,
+		"log_level":            a.config.LogLevel,
+		"theme":                a.config.Theme,
+		"config_migrated":      a.configMigrated,
 		"config_migration_msg": a.configMigrationMsg,
-		"config_errors":       a.configLoadErrors,
+		"config_errors":        a.configLoadErrors,
 		"llm": map[string]interface{}{
 			"active_provider": a.config.LLM.ActiveProvider,
 			"anthropic": map[string]interface{}{
@@ -1403,7 +1401,7 @@ func (a *App) SetTheme(theme string) error {
 
 // SecuritySettingsResponse holds security settings for the frontend.
 type SecuritySettingsResponse struct {
-	DefaultPolicy string                       `json:"default_policy"`
+	DefaultPolicy string                        `json:"default_policy"`
 	ToolPolicies  map[string]ToolPolicyResponse `json:"tool_policies"`
 }
 

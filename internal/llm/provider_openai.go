@@ -54,7 +54,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 
 	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
 	if err != nil {
-		return nil, fmt.Errorf("openai chat completion: %w", err)
+		return nil, p.wrapError(fmt.Errorf("openai chat completion: %w", err))
 	}
 
 	if len(resp.Choices) == 0 {
@@ -63,7 +63,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 
 	choice := resp.Choices[0]
 	message := p.convertResponseMessage(choice.Message)
-	stopReason := p.mapStopReason(string(choice.FinishReason))
+	stopReason := MapStopReason(string(choice.FinishReason), openAIStopReasonMap)
 
 	return &ChatResponse{
 		Message:    message,
@@ -82,7 +82,7 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
 	if err != nil {
-		return nil, fmt.Errorf("openai stream: %w", err)
+		return nil, p.wrapError(fmt.Errorf("openai stream: %w", err))
 	}
 
 	chunks := make(chan ChatChunk)
@@ -92,7 +92,7 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 		defer func() { _ = stream.Close() }()
 
 		// Track tool call state across chunks
-		toolCalls := make(map[int]*ToolCall)
+		acc := NewStreamToolCallAccumulator()
 
 		for {
 			resp, err := stream.Recv()
@@ -123,46 +123,13 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 				if tc.Index != nil {
 					idx = *tc.Index
 				}
-
-				// Initialize tool call if new
-				if _, exists := toolCalls[idx]; !exists {
-					toolCalls[idx] = &ToolCall{
-						ID:    tc.ID,
-						Name:  tc.Function.Name,
-						Input: json.RawMessage(""),
-					}
-				}
-
-				// Accumulate function arguments
-				if tc.Function.Arguments != "" {
-					existing := string(toolCalls[idx].Input)
-					toolCalls[idx].Input = json.RawMessage(existing + tc.Function.Arguments)
-				}
-
-				// Update name if provided
-				if tc.Function.Name != "" {
-					toolCalls[idx].Name = tc.Function.Name
-				}
-
-				// Update ID if provided
-				if tc.ID != "" {
-					toolCalls[idx].ID = tc.ID
-				}
+				acc.HandleDelta(idx, tc.ID, tc.Function.Name, tc.Function.Arguments)
 			}
 
 			// Handle finish reason
 			if choice.FinishReason != "" {
-				stopReason := p.mapStopReason(string(choice.FinishReason))
-
-				// If tool_use, send accumulated tool calls
-				if stopReason == "tool_use" {
-					for i := 0; i < len(toolCalls); i++ {
-						if tc, ok := toolCalls[i]; ok {
-							chunks <- ChatChunk{ToolCall: tc}
-						}
-					}
-				}
-
+				stopReason := MapStopReason(string(choice.FinishReason), openAIStopReasonMap)
+				acc.Emit(chunks)
 				chunks <- ChatChunk{StopReason: stopReason}
 			}
 		}
@@ -263,16 +230,16 @@ func (p *OpenAIProvider) convertResponseMessage(msg openai.ChatCompletionMessage
 	return result
 }
 
-// mapStopReason converts OpenAI's finish reason to our standard format.
-func (p *OpenAIProvider) mapStopReason(reason string) string {
-	switch reason {
-	case "stop":
-		return "end_turn"
-	case "tool_calls":
-		return "tool_use"
-	case "length":
-		return "max_tokens"
-	default:
-		return reason
+// wrapError maps OpenAI SDK error types to *LLMError.
+func (p *OpenAIProvider) wrapError(err error) error {
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		return WrapProviderError(p.name, apiErr.HTTPStatusCode, err)
 	}
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		return WrapProviderError(p.name, reqErr.HTTPStatusCode, err)
+	}
+	// Fallback: check for net errors directly
+	return WrapProviderError(p.name, 0, err)
 }

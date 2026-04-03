@@ -18,9 +18,9 @@ type mockTool struct {
 	result      tools.ToolResult
 }
 
-func (m *mockTool) Name() string                 { return m.name }
-func (m *mockTool) Description() string          { return m.description }
-func (m *mockTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (m *mockTool) Name() string                    { return m.name }
+func (m *mockTool) Description() string             { return m.description }
+func (m *mockTool) InputSchema() json.RawMessage    { return json.RawMessage(`{"type":"object"}`) }
 func (m *mockTool) DefaultPolicy() tools.ToolPolicy { return tools.PolicyAlwaysAllow }
 func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return m.result, nil
@@ -70,7 +70,7 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 						break
 					}
 				}
-				
+
 				if routerCallCount == 1 {
 					// ExtractRaw - returns RawCriterion array
 					return &llm.ChatResponse{
@@ -81,7 +81,7 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 						StopReason: "end_turn",
 					}, nil
 				}
-				
+
 				if hasDomain {
 					// Regular AC extraction (Phase 2)
 					return &llm.ChatResponse{
@@ -92,7 +92,7 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 						StopReason: "end_turn",
 					}, nil
 				}
-				
+
 				// Route call
 				return &llm.ChatResponse{
 					Message: llm.Message{
@@ -1233,7 +1233,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				nil, // reflector
 				nil, // logger - nil for tests
 				nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
+				nil, // modelRegistry - nil for tests
 				config.ToolResultBudgetConfig{},
 			)
 
@@ -2274,7 +2274,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 				default: // route
 					return &llm.ChatResponse{
 						Message: llm.Message{
-							Role: "assistant",
+							Role:    "assistant",
 							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
@@ -2323,10 +2323,10 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 			MaxSteps: 10,
 		},
 		testContextFactory,
-		nil, // reflector - nil for this test
-		nil, // logger - nil for tests
+		nil,    // reflector - nil for this test
+		nil,    // logger - nil for tests
 		mockEm, // emitter - use mock to track events
-		nil, // modelRegistry - nil for tests
+		nil,    // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
 	)
 
@@ -3453,9 +3453,9 @@ func TestBuildSystemPrompt_StepExecution(t *testing.T) {
 // TestBuildCriteriaToStepsMap tests the buildCriteriaToStepsMap function directly.
 func TestBuildCriteriaToStepsMap(t *testing.T) {
 	tests := []struct {
-		name     string
-		steps    []PlanStep
-		wantMap  map[string][]string
+		name    string
+		steps   []PlanStep
+		wantMap map[string][]string
 	}{
 		{
 			name: "multiple steps map to same AC",
@@ -3679,4 +3679,3 @@ func TestOrchestrator_FilterToolsByProfile_NoMatch(t *testing.T) {
 		t.Errorf("expected 0 tools, got %d", len(filtered))
 	}
 }
-

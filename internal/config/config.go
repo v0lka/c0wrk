@@ -36,6 +36,7 @@ type LLMConfig struct {
 	OpenAICompatible OpenAICompatibleConfig   `yaml:"openai_compatible"`
 	ChatGPT          ChatGPTConfig            `yaml:"chatgpt"`
 	Models           map[string]ModelOverride `yaml:"models"`
+	Retry            LLMRetryConfig           `yaml:"retry"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
@@ -74,6 +75,13 @@ type ChatGPTConfig struct {
 type ModelOverride struct {
 	ContextWindow int `yaml:"context_window"`
 	OutputLimit   int `yaml:"output_limit"`
+}
+
+// LLMRetryConfig configures retry behavior for LLM API calls.
+type LLMRetryConfig struct {
+	MaxRetries     int    `yaml:"max_retries"`      // max retry attempts (0 = no retries)
+	InitialBackoff string `yaml:"initial_backoff"`   // initial backoff duration (e.g. "1s")
+	MaxBackoff     string `yaml:"max_backoff"`       // maximum backoff duration (e.g. "30s")
 }
 
 // MCPConfig holds MCP server configurations.

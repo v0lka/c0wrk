@@ -435,9 +435,9 @@ func TestContextTokenTracker_AddDelta(t *testing.T) {
 
 	t.Run("accumulates multiple deltas", func(t *testing.T) {
 		tracker.Reset()
-		tracker.AddDelta("hello")  // 5 chars = 2 tokens
-		tracker.AddDelta("world")  // 5 chars = 2 tokens
-		tracker.AddDelta("test")   // 4 chars = 1 token
+		tracker.AddDelta("hello") // 5 chars = 2 tokens
+		tracker.AddDelta("world") // 5 chars = 2 tokens
+		tracker.AddDelta("test")  // 4 chars = 1 token
 
 		got := tracker.EstimateTotal()
 		want := 5 // 2 + 2 + 1
@@ -730,4 +730,3 @@ func TestNewTokenCounter_FallbackBehavior(t *testing.T) {
 		}
 	})
 }
-

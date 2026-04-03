@@ -10,23 +10,11 @@ export interface ChatMessageUI {
   sessionId: string
   type: MessageType
   content: string
-  metadata?: Record<string, unknown> | unknown
+  metadata?: Record<string, unknown>
   timestamp: number
 }
 
-export type PlanStepDisplay = {
-  id: string
-  description: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
-  duration?: number
-}
 
-export type EvalCriterionDisplay = {
-  id: string
-  name: string
-  description: string
-  status: 'pass' | 'fail' | 'unclear'
-}
 
 export type StepItem = {
   toolCall: ChatMessageUI
@@ -44,16 +32,12 @@ export type DisplayItem =
   | { kind: 'step_group'; id: string; steps: StepItem[] }
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
-  | { kind: 'plan'; id: string; steps: PlanStepDisplay[] }
-  | { kind: 'eval'; id: string; passed: number; total: number; criteria: EvalCriterionDisplay[] }
-  | { kind: 'reflection'; id: string; summary: string; insights: string[]; attempt: number; maxAttempts: number }
-  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'escalation' | 'ac_extracted'; content: string; metadata?: Record<string, unknown> }
+  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'escalation'; content: string; metadata?: Record<string, unknown> }
 
 export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
   const items: DisplayItem[] = []
   let currentStepGroup: StepItem[] | null = null
   let stepGroupId = ''
-  let lastPlanItem: Extract<DisplayItem, { kind: 'plan' }> | null = null
 
   const flushStepGroup = () => {
     if (currentStepGroup && currentStepGroup.length > 0) {
@@ -77,7 +61,9 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
 
       case 'thought': {
         flushStepGroup()
-        const meta = msg.metadata as Record<string, unknown> | undefined
+        const meta = (typeof msg.metadata === 'object' && msg.metadata !== null)
+          ? msg.metadata as Record<string, unknown>
+          : undefined
         const stepNum = (meta?.step_num as number) ?? 0
         items.push({ kind: 'thought', id: msg.id, stepNum, content: msg.content })
         break
@@ -141,87 +127,28 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
         items.push({ kind: 'error', message: msg })
         break
 
-      case 'plan': {
-        flushStepGroup()
-        const meta = msg.metadata as Record<string, unknown> | undefined
-        const rawSteps = (meta?.steps as Array<{ description: string; status?: string }>) || []
-        const steps: PlanStepDisplay[] = rawSteps.map((s, i) => ({
-          id: String(i + 1),
-          description: s.description,
-          status: (s.status || 'pending') as PlanStepDisplay['status'],
-        }))
-        const planItem: Extract<DisplayItem, { kind: 'plan' }> = {
-          kind: 'plan',
-          id: msg.id,
-          steps,
-        }
-        lastPlanItem = planItem
-        items.push(planItem)
+      // Skip plan, eval, reflection, and ac_extracted events (handled in panelStore)
+      case 'plan':
+      case 'plan_step_start':
+      case 'plan_step_complete':
+      case 'eval':
+      case 'reflection':
+      case 'ac_extracted':
         break
-      }
-
-      case 'plan_step_start': {
-        const meta = msg.metadata as Record<string, unknown> | undefined
-        const stepId = meta?.step_id as string | undefined
-        if (lastPlanItem && stepId) {
-          const step = lastPlanItem.steps.find(s => s.id === stepId)
-          if (step) step.status = 'running'
-        }
-        break
-      }
-
-      case 'plan_step_complete': {
-        const meta = msg.metadata as Record<string, unknown> | undefined
-        const stepId = meta?.step_id as string | undefined
-        const success = meta?.success as boolean | undefined
-        const duration = meta?.duration as number | undefined
-        if (lastPlanItem && stepId) {
-          const step = lastPlanItem.steps.find(s => s.id === stepId)
-          if (step) {
-            step.status = success ? 'completed' : 'failed'
-            if (duration !== undefined) step.duration = duration
-          }
-        }
-        break
-      }
-
-      case 'eval': {
-        flushStepGroup()
-        const meta = msg.metadata as Record<string, unknown> | undefined
-        const passed = (meta?.passed as number) ?? 0
-        const total = (meta?.total as number) ?? 0
-        const rawCriteria = (meta?.criteria as Array<{ name: string; description?: string; passed: boolean }>) || []
-        const criteria: EvalCriterionDisplay[] = rawCriteria.map((c, i) => ({
-          id: String(i + 1),
-          name: c.name,
-          description: c.description || c.name,
-          status: c.passed ? 'pass' as const : 'fail' as const,
-        }))
-        items.push({ kind: 'eval', id: msg.id, passed, total, criteria })
-        break
-      }
-
-      case 'reflection': {
-        flushStepGroup()
-        const meta = msg.metadata as Record<string, unknown> | undefined
-        const summary = (meta?.summary as string) || msg.content
-        const insights = (meta?.insights as string[]) || []
-        const attempt = (meta?.attempt as number) ?? 1
-        const maxAttempts = (meta?.max_attempts as number) ?? 3
-        items.push({ kind: 'reflection', id: msg.id, summary, insights, attempt, maxAttempts })
-        break
-      }
 
       case 'routing':
       case 'retry':
-      case 'escalation':
-      case 'ac_extracted': {
+      case 'escalation': {
         flushStepGroup()
         const meta = msg.metadata as Record<string, unknown> | undefined
+        // Skip orchestration phase messages (handled in panelStore)
+        if (meta?.phase === 'orchestration') {
+          break
+        }
         items.push({
           kind: 'service',
           id: msg.id,
-          variant: msg.type as 'routing' | 'retry' | 'escalation' | 'ac_extracted',
+          variant: msg.type as 'routing' | 'retry' | 'escalation',
           content: msg.content,
           metadata: meta,
         })
@@ -254,6 +181,8 @@ interface ChatState {
   streamingText: string | null
   isThinking: boolean
   contextFill: ContextFillState | null
+  activityStatus: string | null
+  isTaskActive: boolean
   addMessage: (sessionId: string, msg: ChatMessageUI) => void
   updateMessage: (sessionId: string, id: string, updates: Partial<ChatMessageUI>) => void
   setMessages: (sessionId: string, msgs: ChatMessageUI[]) => void
@@ -262,6 +191,9 @@ interface ChatState {
   appendStreamToken: (token: string) => void
   setThinking: (thinking: boolean) => void
   setContextFill: (data: ContextFillState | null) => void
+  setActivityStatus: (status: string | null) => void
+  setTaskActive: (active: boolean) => void
+  clearSessionUIState: () => void
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -269,6 +201,8 @@ export const useChatStore = create<ChatState>((set) => ({
   streamingText: null,
   isThinking: false,
   contextFill: null,
+  activityStatus: null,
+  isTaskActive: false,
   addMessage: (sessionId, msg) => set((s) => ({
     messages: {
       ...s.messages,
@@ -296,4 +230,12 @@ export const useChatStore = create<ChatState>((set) => ({
   })),
   setThinking: (thinking) => set({ isThinking: thinking }),
   setContextFill: (data) => set({ contextFill: data }),
+  setActivityStatus: (status) => set({ activityStatus: status }),
+  setTaskActive: (active) => set({ isTaskActive: active }),
+  clearSessionUIState: () => set({
+    activityStatus: null,
+    streamingText: null,
+    isThinking: false,
+    contextFill: null,
+  }),
 }))

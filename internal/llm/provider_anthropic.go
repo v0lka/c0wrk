@@ -48,7 +48,7 @@ func (p *AnthropicProvider) ChatCompletion(ctx context.Context, req ChatRequest)
 
 	resp, err := p.client.CreateMessages(ctx, *anthropicReq)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic: API error: %w", err)
+		return nil, p.wrapError(fmt.Errorf("anthropic: API error: %w", err))
 	}
 
 	return p.parseResponse(resp)
@@ -113,7 +113,7 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		OnMessageDelta: func(data anthropic.MessagesEventMessageDeltaData) {
 			if data.Delta.StopReason != "" {
 				chunks <- ChatChunk{
-					StopReason: normalizeStopReason(string(data.Delta.StopReason)),
+					StopReason: string(data.Delta.StopReason),
 				}
 			}
 		},
@@ -141,18 +141,10 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 // buildRequest converts ChatRequest to anthropic.MessagesRequest.
 func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRequest, error) {
 	// Extract system prompt from messages
-	var systemPrompt string
+	systemPrompt, filteredMsgs := ExtractSystemPrompt(req.Messages)
 	var messages []anthropic.Message
 
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			if systemPrompt != "" {
-				systemPrompt += "\n"
-			}
-			systemPrompt += msg.Content
-			continue
-		}
-
+	for _, msg := range filteredMsgs {
 		anthropicMsg, err := p.convertMessage(msg)
 		if err != nil {
 			return nil, err
@@ -261,7 +253,7 @@ func (p *AnthropicProvider) parseResponse(resp anthropic.MessagesResponse) (*Cha
 
 	return &ChatResponse{
 		Message:    message,
-		StopReason: normalizeStopReason(string(resp.StopReason)),
+		StopReason: string(resp.StopReason),
 		Usage: TokenUsage{
 			InputTokens:  resp.Usage.InputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
@@ -269,9 +261,16 @@ func (p *AnthropicProvider) parseResponse(resp anthropic.MessagesResponse) (*Cha
 	}, nil
 }
 
-// normalizeStopReason converts Anthropic stop reasons to our standard format.
-func normalizeStopReason(reason string) string {
-	// Anthropic uses these values which match our format:
-	// "end_turn", "tool_use", "max_tokens"
-	return reason
+// wrapError maps Anthropic SDK error types to *LLMError.
+func (p *AnthropicProvider) wrapError(err error) error {
+	var apiErr *anthropic.APIError
+	if errors.As(err, &apiErr) {
+		retryable := apiErr.IsRateLimitErr() || apiErr.IsOverloadedErr() || apiErr.IsApiErr()
+		return NewLLMError(p.name, 0, retryable, err)
+	}
+	var reqErr *anthropic.RequestError
+	if errors.As(err, &reqErr) {
+		return WrapProviderError(p.name, reqErr.StatusCode, err)
+	}
+	return WrapProviderError(p.name, 0, err)
 }

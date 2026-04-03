@@ -16,6 +16,8 @@ export function ChatInput() {
   const addSession = useSessionStore(s => s.addSession)
   const setActiveSession = useSessionStore(s => s.setActiveSession)
   const isThinking = useChatStore(s => s.isThinking)
+  const isTaskActive = useChatStore(s => s.isTaskActive)
+  const setTaskActive = useChatStore(s => s.setTaskActive)
   const addMessage = useChatStore(s => s.addMessage)
   const { api } = useWails()
 
@@ -76,6 +78,9 @@ export function ChatInput() {
     // Move session to top of list
     touchSession(sessionId)
 
+    // Mark task as active
+    setTaskActive(true)
+
     try {
       await api.SendMessage(sessionId, messageText)
     } catch (error) {
@@ -89,10 +94,12 @@ export function ChatInput() {
         content: `Failed to send message: ${errorMessage}`,
         timestamp: Date.now(),
       })
+      // Re-enable input since no backend task was started
+      setTaskActive(false)
     } finally {
       setIsProcessing(false)
     }
-  }, [text, api, addMessage, addSession, setActiveSession, touchSession])
+  }, [text, api, addMessage, addSession, setActiveSession, touchSession, setTaskActive])
 
   const handleCancel = useCallback(async () => {
     if (!activeSessionId || !api) return
@@ -108,11 +115,11 @@ export function ChatInput() {
     // Enter to send, Shift+Enter for new line
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (!showCancel) {
+      if (!showCancel && !isTaskActive) {
         handleSend()
       }
     }
-  }, [handleSend, showCancel])
+  }, [handleSend, showCancel, isTaskActive])
 
   return (
     <div className="border-t border-border bg-card p-4">
@@ -125,7 +132,8 @@ export function ChatInput() {
             onKeyDown={handleKeyDown}
             placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
             rows={1}
-            className="w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+            disabled={isTaskActive}
+            className={`w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none${isTaskActive ? ' opacity-50 cursor-not-allowed' : ''}`}
             style={{ overflow: text.split('\n').length > MAX_LINES ? 'auto' : 'hidden' }}
           />
         </div>

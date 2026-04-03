@@ -4,16 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"math/rand"
+	"time"
 
 	"github.com/user/agent/internal/config"
 )
 
 // LLMRouter routes LLM calls to the active provider.
 type LLMRouter struct {
-	providers       map[string]LLMProvider
-	activeProvider  LLMProvider
-	activeModel     string
+	providers          map[string]LLMProvider
+	activeProvider     LLMProvider
+	activeModel        string
 	activeProviderName string
+	// Retry configuration
+	maxRetries     int
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
 }
 
 // NewLLMRouter creates a new LLMRouter from the given configuration.
@@ -38,6 +45,15 @@ func NewLLMRouter(cfg config.LLMConfig, registry *ModelRegistry) (*LLMRouter, er
 		}
 	}
 
+	initialBackoff, err := time.ParseDuration(cfg.Retry.InitialBackoff)
+	if err != nil {
+		initialBackoff = 1 * time.Second
+	}
+	maxBackoff, err := time.ParseDuration(cfg.Retry.MaxBackoff)
+	if err != nil {
+		maxBackoff = 30 * time.Second
+	}
+
 	return &LLMRouter{
 		providers: map[string]LLMProvider{
 			cfg.ActiveProvider: provider,
@@ -45,6 +61,9 @@ func NewLLMRouter(cfg config.LLMConfig, registry *ModelRegistry) (*LLMRouter, er
 		activeProvider:     provider,
 		activeModel:        model,
 		activeProviderName: cfg.ActiveProvider,
+		maxRetries:         cfg.Retry.MaxRetries,
+		initialBackoff:     initialBackoff,
+		maxBackoff:         maxBackoff,
 	}, nil
 }
 
@@ -83,6 +102,19 @@ func createProviderFromConfig(provType, apiKey, baseURL string) (LLMProvider, er
 	}
 }
 
+// retryBackoff sleeps for the given duration with +/- 20% jitter, respecting context cancellation.
+// Returns false if the context was cancelled during sleep.
+func retryBackoff(ctx context.Context, backoff time.Duration) bool {
+	// Add jitter: +/- 20%
+	jitter := time.Duration(float64(backoff) * (0.8 + 0.4*rand.Float64()))
+	select {
+	case <-time.After(jitter):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Call sends a chat request to the active provider.
 func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Set model if not specified
@@ -96,7 +128,39 @@ func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, e
 		req.Temperature = &temp
 	}
 
-	return r.activeProvider.ChatCompletion(ctx, req)
+	var lastErr error
+	backoff := r.initialBackoff
+
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		resp, err := r.activeProvider.ChatCompletion(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+
+		lastErr = err
+
+		// Don't retry if not retryable or this was the last attempt
+		if !IsRetryable(err) || attempt == r.maxRetries {
+			return nil, err
+		}
+
+		// Log retry attempt
+		log.Printf("[llm] retrying %s request (attempt %d/%d, backoff %s): %v",
+			r.activeProviderName, attempt+1, r.maxRetries, backoff, err)
+
+		// Sleep with jitter, respecting context cancellation
+		if !retryBackoff(ctx, backoff) {
+			return nil, lastErr
+		}
+
+		// Exponential backoff: double, capped at max
+		backoff *= 2
+		if backoff > r.maxBackoff {
+			backoff = r.maxBackoff
+		}
+	}
+
+	return nil, lastErr
 }
 
 // GetProvider returns a provider by name.
@@ -128,5 +192,33 @@ func (r *LLMRouter) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChu
 		req.Temperature = &temp
 	}
 
-	return r.activeProvider.StreamChatCompletion(ctx, req)
+	var lastErr error
+	backoff := r.initialBackoff
+
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		ch, err := r.activeProvider.StreamChatCompletion(ctx, req)
+		if err == nil {
+			return ch, nil
+		}
+
+		lastErr = err
+
+		if !IsRetryable(err) || attempt == r.maxRetries {
+			return nil, err
+		}
+
+		log.Printf("[llm] retrying %s stream (attempt %d/%d, backoff %s): %v",
+			r.activeProviderName, attempt+1, r.maxRetries, backoff, err)
+
+		if !retryBackoff(ctx, backoff) {
+			return nil, lastErr
+		}
+
+		backoff *= 2
+		if backoff > r.maxBackoff {
+			backoff = r.maxBackoff
+		}
+	}
+
+	return nil, lastErr
 }

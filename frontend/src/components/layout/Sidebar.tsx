@@ -173,9 +173,6 @@ export function Sidebar() {
       }
     } catch (err) {
       console.error('Failed to create session:', err)
-      // Show error to user - use alert since there's no toast component
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      alert(`Failed to create session: ${errorMessage}`)
     }
   }, [api, addSession, setActiveSession])
 

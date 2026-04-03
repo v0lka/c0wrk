@@ -27,7 +27,7 @@ type StoredReflectionData struct {
 type ConstitutionPrinciple struct {
 	ID           string `json:"id"`
 	Principle    string `json:"principle"`
-	Source       string `json:"source"`        // "meta_reflection" or "user_defined"
+	Source       string `json:"source"` // "meta_reflection" or "user_defined"
 	CreatedAt    string `json:"created_at"`
 	SessionCount int    `json:"session_count"` // how many sessions contributed
 }
@@ -343,5 +343,3 @@ func (c *Constitution) isDuplicate(principle string) bool {
 	}
 	return false
 }
-
-

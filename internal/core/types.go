@@ -10,6 +10,7 @@ import (
 
 // PlanStepEvent represents a single step in a plan for event emission.
 type PlanStepEvent struct {
+	ID          string `json:"id"`
 	Description string `json:"description"`
 	Status      string `json:"status"` // "pending", "running", "completed", "failed"
 }
@@ -39,10 +40,15 @@ type Emitter interface {
 	Reflection(summary string, insights []string, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
 	Escalation(fromMode, toMode string)
-	ACExtracted(count int)
+	ACExtracted(count int, criteria []EvalCriterionEvent)
 	AssistantChunk(content string)
 	AssistantDone(fullContent string, inputTokens, outputTokens int)
 	ContextFill(fillPercent float64, usedTokens, maxTokens int, status string)
+	// Service emits a general service message without metadata.
+	Service(content string)
+	// ServiceWithMeta emits a service message with metadata for frontend filtering.
+	// The meta map can contain arbitrary key-value pairs, e.g., {"phase": "orchestration"}.
+	ServiceWithMeta(content string, meta map[string]interface{})
 }
 
 // noopEmitter is a no-op implementation of Emitter.
@@ -52,25 +58,27 @@ type noopEmitter struct{}
 // ensure noopEmitter implements Emitter.
 var _ Emitter = (*noopEmitter)(nil)
 
-func (n *noopEmitter) Routing(_, _, _ string) {}
-func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent) {}
-func (n *noopEmitter) PlanStepStart(_, _ string)             {}
+func (n *noopEmitter) Routing(_, _, _ string)                             {}
+func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)             {}
+func (n *noopEmitter) PlanStepStart(_, _ string)                          {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
-func (n *noopEmitter) StepStart(_ int)        {}
-func (n *noopEmitter) Thought(_ int, _ string) {}
-func (n *noopEmitter) ToolCall(_ int, _, _ string) {}
-func (n *noopEmitter) ToolResult(_, _ int, _ string)           {}
-func (n *noopEmitter) StepComplete(_ int, _ time.Duration)     {}
-func (n *noopEmitter) SubAgentLaunch(_, _ string)              {}
+func (n *noopEmitter) StepStart(_ int)                                    {}
+func (n *noopEmitter) Thought(_ int, _ string)                            {}
+func (n *noopEmitter) ToolCall(_ int, _, _ string)                        {}
+func (n *noopEmitter) ToolResult(_, _ int, _ string)                      {}
+func (n *noopEmitter) StepComplete(_ int, _ time.Duration)                {}
+func (n *noopEmitter) SubAgentLaunch(_, _ string)                         {}
 func (n *noopEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
-func (n *noopEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent) {}
-func (n *noopEmitter) Reflection(_ string, _ []string, _, _ int) {}
-func (n *noopEmitter) Retry(_, _ int)                          {}
-func (n *noopEmitter) Escalation(_, _ string)                  {}
-func (n *noopEmitter) ACExtracted(_ int)                       {}
-func (n *noopEmitter) AssistantChunk(_ string)                {}
-func (n *noopEmitter) AssistantDone(_ string, _, _ int)       {}
-func (n *noopEmitter) ContextFill(_ float64, _, _ int, _ string) {}
+func (n *noopEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
+func (n *noopEmitter) Reflection(_ string, _ []string, _, _ int)          {}
+func (n *noopEmitter) Retry(_, _ int)                                     {}
+func (n *noopEmitter) Escalation(_, _ string)                             {}
+func (n *noopEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
+func (n *noopEmitter) AssistantChunk(_ string)                            {}
+func (n *noopEmitter) AssistantDone(_ string, _, _ int)                   {}
+func (n *noopEmitter) ContextFill(_ float64, _, _ int, _ string)          {}
+func (n *noopEmitter) Service(_ string)                                   {}
+func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]interface{}) {}
 
 // RoutingDecision — result of Router classification (AD 4.1).
 type RoutingDecision struct {
@@ -80,12 +88,12 @@ type RoutingDecision struct {
 	CompactionStrategy string   `json:"compaction_strategy"` // "sliding_window" | "summarization" | "hierarchical"
 	SuggestedTools     []string `json:"suggested_tools"`
 	NeedsClarification bool     `json:"needs_clarification"`
-	Confidence         float64  `json:"confidence"`          // 0.0-1.0, routing confidence
+	Confidence         float64  `json:"confidence"` // 0.0-1.0, routing confidence
 }
 
 // AcceptanceCriterion — criterion for evaluating task completion (AD 4.2).
 type AcceptanceCriterion struct {
-	ID          string `json:"id"`          // "ac_1", "ac_2", ...
+	ID          string `json:"id"` // "ac_1", "ac_2", ...
 	Description string `json:"description"`
 	CheckType   string `json:"check_type"` // "programmatic" | "llm_judge"
 	CheckCmd    string `json:"check_cmd"`  // for programmatic: "go test ./..."
@@ -109,12 +117,12 @@ type Plan struct {
 
 // PlanStep — single step in the plan (AD 4.3).
 type PlanStep struct {
-	ID             string        `json:"id"`              // "step_1", "step_2a", ...
+	ID             string        `json:"id"` // "step_1", "step_2a", ...
 	Description    string        `json:"description"`
 	DependsOn      []string      `json:"depends_on"`
 	Parallelizable bool          `json:"parallelizable"`
 	EstimatedTools []string      `json:"estimated_tools"`
-	RelevantAC     []string      `json:"relevant_ac"`     // IDs of related AcceptanceCriteria
+	RelevantAC     []string      `json:"relevant_ac"`             // IDs of related AcceptanceCriteria
 	AgentProfile   *AgentProfile `json:"agent_profile,omitempty"` // optional specialization
 }
 
@@ -164,8 +172,10 @@ type EvalResult struct {
 
 // EvalDetail — detail for a single AC evaluation (AD 4.5).
 type EvalDetail struct {
-	Criterion  AcceptanceCriterion `json:"criterion"`
-	Diagnostic string              `json:"diagnostic"`
+	Criterion          AcceptanceCriterion `json:"criterion"`
+	Diagnostic         string              `json:"diagnostic"`
+	Reconsidered       bool                `json:"reconsidered,omitempty"`
+	OriginalDiagnostic string              `json:"original_diagnostic,omitempty"`
 }
 
 // Reflection — result of Reflector analysis (AD 4.6).
@@ -284,8 +294,8 @@ type HandleResult struct {
 	Plan            *Plan            `json:"plan,omitempty"`
 	EvalResult      *EvalResult      `json:"eval_result,omitempty"`
 	// Retry-loop fields (Phase 3)
-	AttemptCount    int              `json:"attempt_count,omitempty"`    // Number of attempts made (1 = first try)
-	Reflections     []Reflection     `json:"reflections,omitempty"`     // Reflections from failed attempts
-	Escalated       bool             `json:"escalated,omitempty"`        // true if mode was escalated
-	OriginalMode    string           `json:"original_mode,omitempty"`    // original mode before escalation
+	AttemptCount int          `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
+	Reflections  []Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
+	Escalated    bool         `json:"escalated,omitempty"`     // true if mode was escalated
+	OriginalMode string       `json:"original_mode,omitempty"` // original mode before escalation
 }

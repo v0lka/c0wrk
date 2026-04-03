@@ -5,12 +5,13 @@ Each step should be atomic and executable by a single agent with access to tools
 Steps can depend on other steps (DependsOn) and can be parallelizable.
 Map relevant acceptance criteria to steps (RelevantAC).
 
-For complex tasks, assign specialized agent profiles to steps:
+For complex tasks, assign specialized agent profiles to steps.
+Prefer high-level tools over bash_exec — use bash_exec only when no built-in tool covers the operation:
 
-- "researcher": information gathering, code analysis, web search (tools: web_search, web_fetch, bash_exec)
-- "coder": code generation, file operations, implementation (tools: file_ops, bash_exec)
-- "tester": test execution, verification (tools: bash_exec)
-- "executor": general purpose (default if omitted, all tools available)
+- "researcher": information gathering, code analysis, web search (tools: web_search, web_fetch, context_manager; skills if available)
+- "coder": code generation, file operations, implementation (tools: file_read, file_write, file_edit; skills if available; bash_exec only for build/run commands)
+- "tester": test execution, verification (tools: bash_exec for running test commands)
+- "executor": general purpose (default if omitted, all tools available — follow tool priority tiers)
 
 Only include agent_profile when specialization adds value. Omit it for simple tasks.
 

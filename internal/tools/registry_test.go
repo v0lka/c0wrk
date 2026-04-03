@@ -233,8 +233,6 @@ func TestConfirmFunc_AllowOnce(t *testing.T) {
 	}
 }
 
-
-
 func TestConfirmFunc_Deny(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("mutating", "A mutating tool")
@@ -324,8 +322,6 @@ func TestConfirmFunc_NilFunc(t *testing.T) {
 		t.Error("expected IsError to be false")
 	}
 }
-
-
 
 func TestConfirmFunc_ConfirmFuncError(t *testing.T) {
 	registry := NewToolRegistry()
@@ -739,6 +735,82 @@ func TestPolicyAuto_WithoutToolJudgerUsesLLM(t *testing.T) {
 	}
 	if receivedReasoning != "Needs user review" {
 		t.Errorf("expected reasoning %q, got %q", "Needs user review", receivedReasoning)
+	}
+}
+
+func TestToolRegistry_RegisterWithSource(t *testing.T) {
+	registry := NewToolRegistry()
+
+	// Register a tool with source "mcp"
+	tool1 := newMockTool("mcp_tool", "An MCP tool")
+	registry.RegisterWithSource(tool1, "mcp")
+
+	// Register another tool with source "skill"
+	tool2 := newMockTool("skill_tool", "A skill tool")
+	registry.RegisterWithSource(tool2, "skill")
+
+	// List and verify sources
+	descriptors := registry.List()
+	if len(descriptors) != 2 {
+		t.Fatalf("expected 2 descriptors, got %d", len(descriptors))
+	}
+
+	// Build a map for easier lookup
+	descMap := make(map[string]ToolDescriptor)
+	for _, desc := range descriptors {
+		descMap[desc.Name] = desc
+	}
+
+	// Verify mcp_tool has source "mcp"
+	if desc, ok := descMap["mcp_tool"]; !ok {
+		t.Error("expected to find 'mcp_tool' in descriptors")
+	} else if desc.Source != "mcp" {
+		t.Errorf("expected 'mcp_tool' source 'mcp', got %q", desc.Source)
+	}
+
+	// Verify skill_tool has source "skill"
+	if desc, ok := descMap["skill_tool"]; !ok {
+		t.Error("expected to find 'skill_tool' in descriptors")
+	} else if desc.Source != "skill" {
+		t.Errorf("expected 'skill_tool' source 'skill', got %q", desc.Source)
+	}
+}
+
+func TestToolRegistry_UnregisterCleansUpSource(t *testing.T) {
+	registry := NewToolRegistry()
+
+	// Register a tool with source "mcp"
+	tool := newMockTool("mcp_tool", "An MCP tool")
+	registry.RegisterWithSource(tool, "mcp")
+
+	// Verify it's registered with correct source
+	descriptors := registry.List()
+	if len(descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(descriptors))
+	}
+	if descriptors[0].Source != "mcp" {
+		t.Errorf("expected source 'mcp', got %q", descriptors[0].Source)
+	}
+
+	// Unregister the tool
+	registry.Unregister("mcp_tool")
+
+	// Verify it's gone
+	_, ok := registry.Get("mcp_tool")
+	if ok {
+		t.Error("expected tool 'mcp_tool' to be unregistered")
+	}
+
+	// Re-register using regular Register (should default to "core")
+	tool2 := newMockTool("mcp_tool", "A core tool now")
+	registry.Register(tool2)
+
+	descriptors = registry.List()
+	if len(descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(descriptors))
+	}
+	if descriptors[0].Source != "core" {
+		t.Errorf("expected source 'core' after re-registering with Register(), got %q", descriptors[0].Source)
 	}
 }
 

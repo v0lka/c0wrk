@@ -37,6 +37,7 @@ export function GlobalView() {
   // Memory stats from backend
   const [memStats, setMemStats] = useState({ semantic: 0, procedural: 0, reflexion: 0 })
   const [episodicCount, setEpisodicCount] = useState(0)
+  const [fetchError, setFetchError] = useState<string | null>(null)
   
   useEffect(() => {
     const fetchStats = () => {
@@ -47,8 +48,12 @@ export function GlobalView() {
             procedural: stats.procedural ?? 0,
             reflexion: stats.reflexion ?? 0,
           })
+          setFetchError(null)
         })
-        .catch((err) => console.warn('GetMemoryStats failed:', err))
+        .catch((err) => {
+          console.error('GetMemoryStats failed:', err)
+          setFetchError('Failed to load memory stats')
+        })
     }
     
     fetchStats() // initial fetch
@@ -64,13 +69,25 @@ export function GlobalView() {
         .then((stats) => {
           setEpisodicCount(stats.episodic ?? 0)
         })
-        .catch((err) => console.warn('GetSessionMemoryStats failed:', err))
+        .catch((err) => {
+          console.error('GetSessionMemoryStats failed:', err)
+          // Don't override global error state for session-specific error
+        })
     }
     
     fetchStats() // initial fetch
     const interval = setInterval(fetchStats, 10000) // refresh every 10s
     return () => clearInterval(interval)
   }, [activeSessionId])
+
+  if (fetchError) {
+    return (
+      <div className="text-center py-8 text-muted-foreground text-sm">
+        <p className="text-destructive">{fetchError}</p>
+        <p className="text-xs mt-1">Stats will refresh automatically</p>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-3">

@@ -31,11 +31,8 @@ func NewRouter(caller LLMCaller, historyWindow int) *Router {
 
 // Route analyzes the user's request and determines the best execution strategy.
 func (r *Router) Route(ctx context.Context, userMessage string, rawCriteria []RawCriterion, availableTools []tools.ToolDescriptor, history []llm.Message) (decision *RoutingDecision, err error) {
-	// Build tool list for the prompt
-	var toolList strings.Builder
-	for _, t := range availableTools {
-		fmt.Fprintf(&toolList, "- %s: %s\n", t.Name, t.Description)
-	}
+	// Build tool list for the prompt (grouped by priority tier)
+	toolListStr := buildGroupedToolList(availableTools)
 
 	// Build raw criteria summary for the prompt
 	var criteriaList string
@@ -57,7 +54,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, rawCriteria []Ra
 	}
 
 	// Build system prompt
-	systemPrompt := strings.ReplaceAll(prompts.RouterSystem, "AVAILABLE-TOOLS", toolList.String())
+	systemPrompt := strings.ReplaceAll(prompts.RouterSystem, "AVAILABLE-TOOLS", toolListStr)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "RAW-CRITERIA", criteriaList)
 
 	// Build messages for the request

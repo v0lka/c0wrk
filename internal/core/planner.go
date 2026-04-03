@@ -95,12 +95,8 @@ func (p *Planner) buildPlanSystemPrompt(
 	reflections []Reflection,
 	constitution []string,
 ) string {
-	// Build available tools string
-	var toolsBuilder strings.Builder
-	for _, t := range availableTools {
-		fmt.Fprintf(&toolsBuilder, "- %s: %s\n", t.Name, t.Description)
-	}
-	availableToolsStr := toolsBuilder.String()
+	// Build available tools string (grouped by priority tier)
+	availableToolsStr := buildGroupedToolList(availableTools)
 
 	// Build acceptance criteria string
 	var criteriaBuilder strings.Builder

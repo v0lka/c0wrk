@@ -74,7 +74,8 @@ type Executor struct {
 
 // NewExecutor creates a new Executor.
 // logger and emitter are optional (nil-safe).
-// suppressAssistantEvents should be true for plan-step executors to avoid duplicate events.
+// suppressAssistantEvents disables AssistantChunk/AssistantDone events; set to true for plan-step
+// executors to avoid duplicate assistant messages when the orchestrator handles final output.
 func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, logger *slog.Logger, emitter Emitter, suppressAssistantEvents bool, toolResultBudget config.ToolResultBudgetConfig) *Executor {
 	// Use noopEmitter if nil to avoid nil checks throughout the code
 	if emitter == nil {

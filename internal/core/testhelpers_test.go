@@ -189,14 +189,21 @@ func (m *mockContextManager) AvailableTokens() int {
 // mockEmitter is a mock implementation of Emitter for testing.
 // It tracks all calls for assertion purposes.
 type mockEmitter struct {
-	assistantChunks   []string
-	assistantDones    []struct{ content string; inputTokens, outputTokens int }
+	assistantChunks []string
+	assistantDones  []struct {
+		content                   string
+		inputTokens, outputTokens int
+	}
 	planStepStarts    []struct{ stepID, description string }
-	planStepCompletes []struct{ stepID string; success bool; duration time.Duration }
+	planStepCompletes []struct {
+		stepID   string
+		success  bool
+		duration time.Duration
+	}
 }
 
-func (m *mockEmitter) Routing(_, _, _ string)                                              {}
-func (m *mockEmitter) PlanGenerated(_ int, _ []PlanStepEvent)                              {}
+func (m *mockEmitter) Routing(_, _, _ string)                 {}
+func (m *mockEmitter) PlanGenerated(_ int, _ []PlanStepEvent) {}
 func (m *mockEmitter) PlanStepStart(stepID, description string) {
 	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description string }{stepID, description})
 }
@@ -207,18 +214,18 @@ func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration tim
 		duration time.Duration
 	}{stepID, success, duration})
 }
-func (m *mockEmitter) StepStart(_ int)                                                     {}
-func (m *mockEmitter) Thought(_ int, _ string)                                             {}
-func (m *mockEmitter) ToolCall(_ int, _, _ string)                                         {}
-func (m *mockEmitter) ToolResult(_, _ int, _ string)                                       {}
-func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                                 {}
-func (m *mockEmitter) SubAgentLaunch(_, _ string)                                          {}
-func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration)                  {}
-func (m *mockEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)                         {}
-func (m *mockEmitter) Reflection(_ string, _ []string, _, _ int)                           {}
-func (m *mockEmitter) Retry(_, _ int)                                                      {}
-func (m *mockEmitter) Escalation(_, _ string)                                              {}
-func (m *mockEmitter) ACExtracted(_ int)                                                   {}
+func (m *mockEmitter) StepStart(_ int)                                    {}
+func (m *mockEmitter) Thought(_ int, _ string)                            {}
+func (m *mockEmitter) ToolCall(_ int, _, _ string)                        {}
+func (m *mockEmitter) ToolResult(_, _ int, _ string)                      {}
+func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
+func (m *mockEmitter) SubAgentLaunch(_, _ string)                         {}
+func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
+func (m *mockEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
+func (m *mockEmitter) Reflection(_ string, _ []string, _, _ int)          {}
+func (m *mockEmitter) Retry(_, _ int)                                     {}
+func (m *mockEmitter) Escalation(_, _ string)                             {}
+func (m *mockEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (m *mockEmitter) AssistantChunk(content string) {
 	m.assistantChunks = append(m.assistantChunks, content)
 }
@@ -229,13 +236,15 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 		outputTokens int
 	}{content, inputTokens, outputTokens})
 }
-func (m *mockEmitter) ContextFill(_ float64, _, _ int, _ string)                           {}
+func (m *mockEmitter) ContextFill(_ float64, _, _ int, _ string)          {}
+func (m *mockEmitter) Service(_ string)                                   {}
+func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]interface{}) {}
 
 // routerCallTracker helps track the three-phase AC extraction flow in tests.
 // It distinguishes between:
-//   1. ExtractRaw (Phase 1) - first call, returns []RawCriterion
-//   2. Route - second call, returns RoutingDecision
-//   3. Enrich (Phase 2) - subsequent calls with "Domain:", returns []AcceptanceCriterion
+//  1. ExtractRaw (Phase 1) - first call, returns []RawCriterion
+//  2. Route - second call, returns RoutingDecision
+//  3. Enrich (Phase 2) - subsequent calls with "Domain:", returns []AcceptanceCriterion
 type routerCallTracker struct {
 	callCount int
 }
@@ -244,12 +253,12 @@ type routerCallTracker struct {
 // Returns one of: "extract_raw", "route", "enrich"
 func (t *routerCallTracker) nextCall(req llm.ChatRequest) string {
 	t.callCount++
-	
+
 	// First call is always ExtractRaw
 	if t.callCount == 1 {
 		return "extract_raw"
 	}
-	
+
 	// Check if this has "Domain:" in message (indicates Enrich)
 	hasDomain := false
 	for _, msg := range req.Messages {
@@ -258,11 +267,11 @@ func (t *routerCallTracker) nextCall(req llm.ChatRequest) string {
 			break
 		}
 	}
-	
+
 	if hasDomain {
 		return "enrich"
 	}
-	
+
 	// Otherwise it's Route
 	return "route"
 }
@@ -273,7 +282,7 @@ func detectCallType(req llm.ChatRequest) string {
 	if len(req.Messages) == 0 {
 		return "executor"
 	}
-	
+
 	// Check system prompt content - order matters!
 	// Check for specific role phrases first before checking for general content
 	for _, msg := range req.Messages {
@@ -308,6 +317,6 @@ func detectCallType(req llm.ChatRequest) string {
 			}
 		}
 	}
-	
+
 	return "executor"
 }

@@ -12,8 +12,8 @@ type SkillManifest struct {
 	Name         string                 `json:"name"`
 	Description  string                 `json:"description"`
 	Version      string                 `json:"version"`
-	Language     string                 `json:"language"`     // "python", etc.
-	EntryPoint   string                 `json:"entry_point"`  // e.g., "main.py"
+	Language     string                 `json:"language"`    // "python", etc.
+	EntryPoint   string                 `json:"entry_point"` // e.g., "main.py"
 	InputSchema  map[string]interface{} `json:"input_schema"`
 	OutputSchema map[string]interface{} `json:"output_schema"`
 	Dependencies []string               `json:"dependencies"` // pip packages

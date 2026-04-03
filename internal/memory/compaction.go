@@ -31,7 +31,7 @@ type CompactionConfig struct {
 
 // CompactionDeps — external dependencies needed by some strategies.
 type CompactionDeps struct {
-	LLM          interface{} // will be *LLMRouter, use interface{} to avoid circular import for now
+	LLM          any // will be *LLMRouter, use interface{} to avoid circular import for now
 	TokenCounter llm.TokenCounter
 	// Summarize calls the LLM to summarize a block of text.
 	// Used by SummarizationStrategy and HierarchicalStrategy.

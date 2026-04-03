@@ -142,12 +142,12 @@ func TestEpisodicMemory_Count(t *testing.T) {
 	// Store a few entries
 	for i := 0; i < 3; i++ {
 		entry := EpisodicEntry{
-			SessionID:     "session-test",
-			UserMessage:   "Test message",
-			Summary:       "Test summary",
-			EvalPassCount: i,
+			SessionID:      "session-test",
+			UserMessage:    "Test message",
+			Summary:        "Test summary",
+			EvalPassCount:  i,
 			EvalTotalCount: 3,
-			Timestamp:     time.Now(),
+			Timestamp:      time.Now(),
 		}
 		if err := em.StoreEntry(ctx, entry); err != nil {
 			t.Fatalf("failed to store entry %d: %v", i, err)
@@ -476,8 +476,6 @@ func TestCountBySession(t *testing.T) {
 		t.Errorf("expected count 0 for unknown session, got %d", countUnknown)
 	}
 }
-
-
 
 func TestCleanup_IncludesEntries(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")

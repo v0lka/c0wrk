@@ -26,32 +26,12 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div
-          style={{
-            padding: 40,
-            color: 'white',
-            background: '#1a1a1a',
-            fontFamily: 'monospace',
-            minHeight: '100vh',
-          }}
-        >
-          <h1 style={{ marginBottom: 20 }}>Something went wrong</h1>
-          <pre
-            style={{
-              whiteSpace: 'pre-wrap',
-              color: '#ff6b6b',
-              marginBottom: 20,
-            }}
-          >
+        <div className="p-10 text-white bg-zinc-900 font-mono min-h-screen">
+          <h1 className="mb-5">Something went wrong</h1>
+          <pre className="whitespace-pre-wrap text-red-400 mb-5">
             {this.state.error?.message}
           </pre>
-          <pre
-            style={{
-              whiteSpace: 'pre-wrap',
-              color: '#888',
-              fontSize: 12,
-            }}
-          >
+          <pre className="whitespace-pre-wrap text-zinc-500 text-xs">
             {this.state.error?.stack}
           </pre>
         </div>

@@ -10,10 +10,10 @@ import (
 
 func TestParseLevel(t *testing.T) {
 	tests := []struct {
-		name        string
-		level       string
-		wantLevel   slog.Level
-		wantErr     bool
+		name      string
+		level     string
+		wantLevel slog.Level
+		wantErr   bool
 	}{
 		{
 			name:      "DEBUG uppercase",

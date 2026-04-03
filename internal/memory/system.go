@@ -20,7 +20,7 @@ type MemorySystem struct {
 
 // MemorySystemConfig holds configuration for creating a MemorySystem.
 type MemorySystemConfig struct {
-	DBPath    string   // single DB path for all persistent memory
+	DBPath    string // single DB path for all persistent memory
 	SkillsDir string
 	Embedder  Embedder // can be nil (semantic memory optional)
 }

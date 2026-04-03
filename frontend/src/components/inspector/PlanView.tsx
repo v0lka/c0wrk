@@ -26,32 +26,6 @@ function formatDuration(ms: number): string {
   }
 }
 
-// Placeholder data - will be populated by events
-// const placeholderSteps: PlanStep[] = [
-//   {
-//     id: '1',
-//     description: 'Analyze user request and extract intent',
-//     status: 'done',
-//     details: 'Identified task: Build inspector panel with tabs',
-//   },
-//   {
-//     id: '2',
-//     description: 'Create component structure and layout',
-//     status: 'running',
-//     details: 'Setting up InspectorPanel container with tabs',
-//   },
-//   {
-//     id: '3',
-//     description: 'Implement individual tab views',
-//     status: 'waiting',
-//   },
-//   {
-//     id: '4',
-//     description: 'Integrate with stores and events',
-//     status: 'waiting',
-//   },
-// ]
-
 function StatusIcon({ status }: { status: PlanStepView['status'] }) {
   switch (status) {
     case 'done':

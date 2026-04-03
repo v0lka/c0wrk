@@ -14,7 +14,7 @@ import (
 type SessionInfo struct {
 	ID                string `json:"id"`
 	Name              string `json:"name"`
-	CreatedAt         string `json:"created_at"` // RFC 3339 formatted timestamp
+	CreatedAt         string `json:"created_at"`     // RFC 3339 formatted timestamp
 	LastActiveAt      string `json:"last_active_at"` // RFC 3339 formatted timestamp
 	Archived          bool   `json:"archived"`
 	Active            bool   `json:"active"`
@@ -26,9 +26,9 @@ type SessionInfo struct {
 type ChatMessage struct {
 	ID        int64  `json:"id"`
 	SessionID string `json:"session_id"`
-	Role      string `json:"role"`     // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
+	Role      string `json:"role"` // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
 	Content   string `json:"content"`
-	Metadata  string `json:"metadata"` // JSON blob for extra data
+	Metadata  string `json:"metadata"`   // JSON blob for extra data
 	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
 }
 

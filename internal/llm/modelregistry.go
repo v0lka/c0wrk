@@ -27,11 +27,11 @@ type ModelMetadataSource func(model string) (ModelMetadata, bool)
 
 // ModelRegistry provides a 5-tier resolution system for model metadata.
 type ModelRegistry struct {
-	builtIn   map[string]ModelMetadata
-	overrides map[string]ModelMetadata
-	cache     map[string]ModelMetadata
-	sources   []ModelMetadataSource // external metadata sources (e.g., LM Studio)
-	mu        sync.RWMutex
+	builtIn    map[string]ModelMetadata
+	overrides  map[string]ModelMetadata
+	cache      map[string]ModelMetadata
+	sources    []ModelMetadataSource // external metadata sources (e.g., LM Studio)
+	mu         sync.RWMutex
 	httpClient *http.Client
 }
 
@@ -43,11 +43,11 @@ func NewModelRegistry(overrides map[string]ModelMetadata) *ModelRegistry {
 		cache:      make(map[string]ModelMetadata),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
-	
+
 	if registry.overrides == nil {
 		registry.overrides = make(map[string]ModelMetadata)
 	}
-	
+
 	return registry
 }
 
@@ -62,12 +62,12 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 	if meta, ok := r.overrides[model]; ok {
 		return meta
 	}
-	
+
 	// Priority 2: Check built-in registry (no lock needed for read-only map)
 	if meta, ok := r.builtIn[model]; ok {
 		return meta
 	}
-	
+
 	// Priority 3: Check cache (needs lock)
 	r.mu.RLock()
 	if meta, ok := r.cache[model]; ok {
@@ -75,7 +75,7 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 		return meta
 	}
 	r.mu.RUnlock()
-	
+
 	// Priority 3: Fetch from HuggingFace
 	meta, err := r.fetchFromHuggingFace(model)
 	if err == nil {
@@ -84,7 +84,7 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 		r.mu.Unlock()
 		return meta
 	}
-	
+
 	// Priority 4: Try registered sources
 	// Copy sources slice under read lock, then call sources without lock
 	// (sources may do HTTP calls, so we don't want to hold the lock)
@@ -92,7 +92,7 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 	sources := make([]ModelMetadataSource, len(r.sources))
 	copy(sources, r.sources)
 	r.mu.RUnlock()
-	
+
 	for _, src := range sources {
 		if m, ok := src(model); ok {
 			r.mu.Lock()
@@ -101,13 +101,13 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 			return m
 		}
 	}
-	
+
 	// Priority 5: Fallback to defaults
 	slog.Warn("model not found in registry, using fallback defaults",
 		"model", model,
 		"error", err,
 	)
-	
+
 	return ModelMetadata{
 		ContextWindow: 128000,
 		OutputLimit:   4096,
@@ -135,12 +135,12 @@ func (r *ModelRegistry) RegisterSource(src ModelMetadataSource) {
 // with redirect following. Parses JSON for max_position_embeddings.
 func (r *ModelRegistry) fetchFromHuggingFace(model string) (ModelMetadata, error) {
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/config.json", model)
-	
+
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return ModelMetadata{}, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	// Follow redirects automatically (http.Client default behavior)
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
@@ -149,29 +149,29 @@ func (r *ModelRegistry) fetchFromHuggingFace(model string) (ModelMetadata, error
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return ModelMetadata{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
-	
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ModelMetadata{}, fmt.Errorf("failed to read response body: %w", err)
 	}
-	
+
 	// Parse config.json for max_position_embeddings
 	var config struct {
 		MaxPositionEmbeddings int `json:"max_position_embeddings"`
 	}
-	
+
 	if err := json.Unmarshal(body, &config); err != nil {
 		return ModelMetadata{}, fmt.Errorf("failed to parse config.json: %w", err)
 	}
-	
+
 	if config.MaxPositionEmbeddings == 0 {
 		return ModelMetadata{}, errors.New("max_position_embeddings not found in config")
 	}
-	
+
 	return ModelMetadata{
 		ContextWindow: config.MaxPositionEmbeddings,
 		OutputLimit:   4096,
@@ -253,7 +253,7 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			OutputLimit:   16384,
 			TokenizerType: "tiktoken/o200k_base",
 		},
-		
+
 		// Anthropic models
 		"claude-opus-4.6": {
 			ContextWindow: 1000000,
@@ -300,7 +300,7 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			OutputLimit:   8192,
 			TokenizerType: "anthropic-api",
 		},
-		
+
 		// Google Gemini models
 		"gemini-3.1-pro": {
 			ContextWindow: 1048576,
@@ -337,7 +337,7 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
 		},
-		
+
 		// DeepSeek models
 		"deepseek-chat": {
 			ContextWindow: 128000,
@@ -349,7 +349,7 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
 		},
-		
+
 		// xAI Grok models
 		"grok-4.20": {
 			ContextWindow: 2000000,

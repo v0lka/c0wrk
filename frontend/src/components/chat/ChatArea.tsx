@@ -1,67 +1,23 @@
-import { useEffect, useLayoutEffect, useRef, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useChatStore, ChatMessageUI, MessageType, groupMessages } from '@/stores/chatStore'
+import { useChatStore, ChatMessageUI, groupMessages } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { usePanelStore } from '@/stores/panelStore'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
 import { StepGroup } from './StepGroup'
 import { ToolConfirmation } from './ToolConfirmation'
 import { ErrorBlock } from './ErrorBlock'
-import { PlanCard } from './PlanCard'
-import { EvalCard } from './EvalCard'
-import { ReflectionCard } from './ReflectionCard'
 import { ServiceMessage } from './ServiceMessage'
+import { ActivityIndicator } from './ActivityIndicator'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { MessageCircle } from 'lucide-react'
 import { GetSessionHistory } from '../../../wailsjs/go/main/App'
-import { session } from '../../../wailsjs/go/models'
+import { chatMessageToUI } from '@/lib/chatUtils'
 
 // Stable empty array to prevent infinite re-render loops in Zustand selectors
 const EMPTY_MESSAGES: ChatMessageUI[] = []
-
-// Role-to-type mapping
-const roleToType: Record<string, MessageType> = {
-  user: 'user',
-  assistant: 'assistant',
-  tool_call: 'tool_call',
-  tool_result: 'tool_result',
-  routing: 'routing',
-  eval: 'eval',
-  reflection: 'reflection',
-  plan: 'plan',
-  error: 'error',
-  thought: 'thought',
-  thinking: 'thinking',
-  step_done: 'step_done',
-  plan_step_start: 'plan_step_start',
-  plan_step_complete: 'plan_step_complete',
-  retry: 'retry',
-  escalation: 'escalation',
-  ac_extracted: 'ac_extracted',
-  subagent_launch: 'subagent_launch',
-  subagent_complete: 'subagent_complete',
-}
-
-// Convert ChatMessage to ChatMessageUI
-function chatMessageToUI(msg: session.ChatMessage): ChatMessageUI {
-  let metadata: Record<string, unknown> | undefined
-  if (msg.metadata) {
-    try {
-      metadata = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata
-    } catch {
-      metadata = undefined
-    }
-  }
-  return {
-    id: `history-${msg.id}`,
-    sessionId: msg.session_id,
-    type: roleToType[msg.role] || 'assistant',
-    content: msg.content,
-    metadata,
-    timestamp: msg.created_at ? new Date(msg.created_at).getTime() : 0,
-  }
-}
 
 export function ChatArea() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -71,6 +27,25 @@ export function ChatArea() {
   const streamingText = useChatStore(s => s.streamingText)
   const setMessages = useChatStore(s => s.setMessages)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [containerHeight, setContainerHeight] = useState(0)
+
+  // Track container height for pinned message max height calculation
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    // Feature detection for ResizeObserver
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height)
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const maxPinnedHeight = containerHeight / 5
 
   // Subscribe to session events
   useSessionEvents(activeSessionId)
@@ -79,15 +54,14 @@ export function ChatArea() {
   useEffect(() => {
     if (!activeSessionId) return
 
-    // Skip if messages already loaded for this session
-    const existing = useChatStore.getState().messages[activeSessionId]
-    if (existing && existing.length > 0) return
-
-    // Load history from backend
+    // Always fetch full history from backend for panel reconstruction.
+    // Backend persists plan/eval events that aren't kept in the frontend
+    // message cache, so we must use the complete history to rebuild panels.
     GetSessionHistory(activeSessionId).then((history) => {
       if (history && history.length > 0) {
         const uiMessages = history.map(chatMessageToUI)
         setMessages(activeSessionId, uiMessages)
+        usePanelStore.getState().rebuildFromEvents(uiMessages)
       }
     }).catch((err) => {
       console.error('Failed to load session history:', err)
@@ -141,11 +115,16 @@ export function ChatArea() {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="flex flex-col flex-1 min-h-0" ref={containerRef}>
       {/* Pinned last user message */}
       {lastUserMessage && (
         <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
-          <UserMessage content={lastUserMessage.message.content} timestamp={lastUserMessage.message.timestamp} />
+          <UserMessage
+            content={lastUserMessage.message.content}
+            timestamp={lastUserMessage.message.timestamp}
+            isPinned
+            maxHeight={maxPinnedHeight}
+          />
         </div>
       )}
       <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
@@ -161,19 +140,13 @@ export function ChatArea() {
               case 'assistant':
                 return <AssistantMessage key={item.message.id} content={item.message.content} />
               case 'thought':
-                return <ThoughtBlock key={item.id} id={item.id} stepNum={item.stepNum} content={item.content} />
+                return <ThoughtBlock key={item.id} content={item.content} />
               case 'step_group':
-                return <StepGroup key={item.id} id={item.id} steps={item.steps} />
+                return <StepGroup key={item.id} steps={item.steps} />
               case 'tool_confirm':
                 return <ToolConfirmation key={item.message.id} metadata={item.message.metadata} />
               case 'error':
                 return <ErrorBlock key={item.message.id} content={item.message.content} />
-              case 'plan':
-                return <PlanCard key={item.id} id={item.id} steps={item.steps} />
-              case 'eval':
-                return <EvalCard key={item.id} id={item.id} passed={item.passed} total={item.total} criteria={item.criteria} />
-              case 'reflection':
-                return <ReflectionCard key={item.id} id={item.id} summary={item.summary} insights={item.insights} attempt={item.attempt} maxAttempts={item.maxAttempts} />
               case 'service':
                 return <ServiceMessage key={item.id} id={item.id} variant={item.variant} content={item.content} metadata={item.metadata} />
               default:
@@ -188,6 +161,9 @@ export function ChatArea() {
               isStreaming
             />
           )}
+
+          {/* Activity indicator */}
+          <ActivityIndicator />
         </div>
       </ScrollArea>
     </div>

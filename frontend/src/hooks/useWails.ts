@@ -38,6 +38,6 @@ export function useWails() {
   return useMemo(() => ({
     api,
     runtime,
-    isReady: !!api,
+    isReady: !!api && !!runtime,
   }), [api, runtime])
 }

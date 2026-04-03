@@ -42,6 +42,7 @@ IMPORTANT:
 - You MAY split one raw criterion into multiple enriched criteria
 - You MAY add domain-specific criteria not present in raw input
 - Each enriched criterion must have a unique ID starting with "ac\_"
+- If any raw criterion uses user-centric framing ("The user must..."), rephrase it to describe what the executor must accomplish
 
 Respond ONLY with a JSON array:
 [{"id": "ac_1", "description": "...", "check_type": "programmatic|llm_judge", "check_cmd": "...", "step_hint": "..."}]
