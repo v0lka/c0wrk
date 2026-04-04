@@ -232,16 +232,23 @@ func TestLMStudioStreamChatCompletionWithReasoning(t *testing.T) {
 		t.Fatalf("StreamChatCompletion failed: %v", err)
 	}
 
-	var sb strings.Builder
+	var contentBuf strings.Builder
+	var reasoningBuf strings.Builder
 	for chunk := range chunks {
-		sb.WriteString(chunk.Delta)
+		contentBuf.WriteString(chunk.Delta)
+		reasoningBuf.WriteString(chunk.Reasoning)
 	}
-	content := sb.String()
+	content := contentBuf.String()
+	reasoning := reasoningBuf.String()
 
-	// Both reasoning and content deltas should be concatenated as Delta
-	expected := "Let me think... about this.The answer is 42."
-	if content != expected {
-		t.Errorf("expected content %q, got %q", expected, content)
+	// Reasoning deltas go to Reasoning field, content deltas go to Delta
+	expectedContent := "The answer is 42."
+	if content != expectedContent {
+		t.Errorf("expected content %q, got %q", expectedContent, content)
+	}
+	expectedReasoning := "Let me think... about this."
+	if reasoning != expectedReasoning {
+		t.Errorf("expected reasoning %q, got %q", expectedReasoning, reasoning)
 	}
 }
 
@@ -649,9 +656,13 @@ func TestLMStudioChatCompletionWithMixedOutput(t *testing.T) {
 		t.Fatalf("ChatCompletion failed: %v", err)
 	}
 
-	expectedContent := "Let me think about this...\nHere is my answer."
+	expectedContent := "Here is my answer."
 	if resp.Message.Content != expectedContent {
 		t.Errorf("expected content %q, got %q", expectedContent, resp.Message.Content)
+	}
+	expectedReasoning := "Let me think about this..."
+	if resp.Reasoning != expectedReasoning {
+		t.Errorf("expected reasoning %q, got %q", expectedReasoning, resp.Reasoning)
 	}
 }
 

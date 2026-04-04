@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -151,6 +152,7 @@ func TestExecutor_DirectFinish(t *testing.T) {
 
 func TestExecutor_MaxStepsReached(t *testing.T) {
 	// Test: LLM always returns a tool call (never finish). Set maxSteps=3.
+	// Each call uses distinct input to avoid triggering the circuit breaker.
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{
 			{
@@ -158,7 +160,7 @@ func TestExecutor_MaxStepsReached(t *testing.T) {
 					Role:    "assistant",
 					Content: "Step 1 thought",
 					ToolCalls: []llm.ToolCall{
-						{ID: "call_1", Name: "action", Input: json.RawMessage(`{}`)},
+						{ID: "call_1", Name: "action", Input: json.RawMessage(`{"n":1}`)},
 					},
 				},
 				StopReason: "tool_use",
@@ -169,7 +171,7 @@ func TestExecutor_MaxStepsReached(t *testing.T) {
 					Role:    "assistant",
 					Content: "Step 2 thought",
 					ToolCalls: []llm.ToolCall{
-						{ID: "call_2", Name: "action", Input: json.RawMessage(`{}`)},
+						{ID: "call_2", Name: "action", Input: json.RawMessage(`{"n":2}`)},
 					},
 				},
 				StopReason: "tool_use",
@@ -180,7 +182,7 @@ func TestExecutor_MaxStepsReached(t *testing.T) {
 					Role:    "assistant",
 					Content: "Step 3 thought",
 					ToolCalls: []llm.ToolCall{
-						{ID: "call_3", Name: "action", Input: json.RawMessage(`{}`)},
+						{ID: "call_3", Name: "action", Input: json.RawMessage(`{"n":3}`)},
 					},
 				},
 				StopReason: "tool_use",
@@ -1738,5 +1740,253 @@ func TestExecutor_ToolResultBudget_Disabled(t *testing.T) {
 	// Should NOT contain truncation notice
 	if strings.Contains(observation, "[OUTPUT TRUNCATED:") {
 		t.Errorf("did not expect truncation notice when budget is disabled")
+	}
+}
+
+// === Circuit Breaker Tests ===
+
+func TestExecutor_RepeatedToolCallCircuitBreaker(t *testing.T) {
+	// Test that the circuit breaker aborts when the LLM keeps calling the same tool with the same args.
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Let me try again",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "file_ops", Input: json.RawMessage(`{"action":"write_file","path":"/tmp/test.txt","content":"hello"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			}, nil
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		executeFn: func(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
+			return tools.ToolResult{Content: "Error: permission denied", IsError: true}, nil
+		},
+	}
+
+	mockCW := &mockContextManager{}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
+
+	task := TaskDefinition{
+		Task: "Write a file",
+		Tools: []tools.ToolDescriptor{
+			{Name: "file_ops", Description: "File operations"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if result.Finished {
+		t.Error("expected Finished to be false (circuit breaker abort)")
+	}
+
+	if !strings.Contains(result.Output, "Aborted") {
+		t.Errorf("expected output to contain 'Aborted', got '%s'", result.Output)
+	}
+
+	if !strings.Contains(result.Output, "file_ops") {
+		t.Errorf("expected output to contain 'file_ops', got '%s'", result.Output)
+	}
+
+	if len(result.Steps) >= 10 {
+		t.Errorf("expected circuit breaker to kick in early (less than 10 steps), got %d", len(result.Steps))
+	}
+
+	// Exactly 3 steps: 2 normal executions + 1 nudge step (nudge at repeat 3, abort at repeat 4 returns before adding step)
+	if len(result.Steps) != 3 {
+		t.Errorf("expected exactly 3 steps (2 normal + 1 nudge), got %d", len(result.Steps))
+	}
+}
+
+func TestExecutor_RepeatedToolCallResets(t *testing.T) {
+	// Test that the circuit breaker counter resets when the tool call changes.
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			switch callCount {
+			case 1, 2:
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Searching",
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+						},
+					},
+					StopReason: "tool_use",
+					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+				}, nil
+			case 3:
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Reading file",
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Name: "file_ops", Input: json.RawMessage(`{"action":"read"}`)},
+						},
+					},
+					StopReason: "tool_use",
+					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+				}, nil
+			case 4, 5:
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Searching again",
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+						},
+					},
+					StopReason: "tool_use",
+					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+				}, nil
+			default:
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Finishing",
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+						},
+					},
+					StopReason: "tool_use",
+					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+				}, nil
+			}
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"search":   {Content: "search result", IsError: false},
+			"file_ops": {Content: "file content", IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManager{}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, config.ToolResultBudgetConfig{})
+
+	task := TaskDefinition{
+		Task: "Mixed tool calls",
+		Tools: []tools.ToolDescriptor{
+			{Name: "search", Description: "Search tool"},
+			{Name: "file_ops", Description: "File operations"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true (no circuit breaker abort)")
+	}
+
+	if result.Output != "done" {
+		t.Errorf("expected output 'done', got '%s'", result.Output)
+	}
+}
+
+// === Plan Context Logging Tests ===
+
+func TestExecutor_PlanContextInLogs(t *testing.T) {
+	// Test that SetPlanContext causes log lines to include plan step info.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Searching",
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+						},
+					},
+					StopReason: "tool_use",
+					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+				}, nil
+			}
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"ok"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+			}, nil
+		},
+	}
+
+	mockTools := &mockToolExecutor{
+		results: map[string]tools.ToolResult{
+			"search": {Content: "search result", IsError: false},
+		},
+	}
+
+	mockCW := &mockContextManager{}
+
+	executor := NewExecutor(mockLLM, mockTools, nil, 10, logger, nil, false, config.ToolResultBudgetConfig{})
+	executor.SetPlanContext("step_3", 3, 10)
+
+	task := TaskDefinition{
+		Task: "Test plan context logging",
+		Tools: []tools.ToolDescriptor{
+			{Name: "search", Description: "Search tool"},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), task, mockCW)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished to be true")
+	}
+
+	logOutput := buf.String()
+
+	if !strings.Contains(logOutput, "plan_step") {
+		t.Errorf("expected log output to contain 'plan_step', got:\n%s", logOutput)
+	}
+
+	if !strings.Contains(logOutput, "step_3") {
+		t.Errorf("expected log output to contain 'step_3', got:\n%s", logOutput)
+	}
+
+	if !strings.Contains(logOutput, "3/10") {
+		t.Errorf("expected log output to contain '3/10', got:\n%s", logOutput)
 	}
 }

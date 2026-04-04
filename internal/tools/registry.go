@@ -180,7 +180,11 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool Tool, name st
 	case ConfirmAllowOnce:
 		return tool.Execute(ctx, input)
 	case ConfirmDeny:
-		return ToolResult{Content: "Tool execution denied by user", IsError: true}, nil
+		msg := "Tool execution denied by user."
+		if reasoning != "" {
+			msg += " LLM Judge reasoning for flagging this call: " + reasoning
+		}
+		return ToolResult{Content: msg, IsError: true}, nil
 	case ConfirmDenyAndStop:
 		return ToolResult{}, context.Canceled
 	default:

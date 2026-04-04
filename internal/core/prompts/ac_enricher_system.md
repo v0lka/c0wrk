@@ -30,6 +30,12 @@ For "mixed" domain:
 
 - Apply code rules for code-related criteria, research/general rules for others
 
+Workspace confinement:
+
+- When a Workspace path is provided and the domain is "code" or "mixed", add an implicit criterion: all created or modified artifacts must reside within the provided workspace directory, unless the task explicitly requires external artifact creation
+- CheckType: "llm_judge"
+- Mark this criterion as implicit
+
 Granularity adaptation by mode:
 
 - "plan_execute": Split broad criteria into fine-grained, step-mappable criteria

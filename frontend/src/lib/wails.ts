@@ -30,17 +30,21 @@ export interface ToolCallData {
   step: number
   tool: string
   args: string
+  plan_step_id?: string
 }
 
 export interface ToolResultData {
   step: number
   result_len: number
-  result_preview?: string
+  result: string
+  result_preview?: string // legacy backward compat
+  plan_step_id?: string
 }
 
 export interface ThoughtData {
   step_num: number
   content: string
+  reasoning?: string
 }
 
 export interface StepData {
@@ -97,6 +101,7 @@ export interface SubAgentData {
   description?: string
   success?: boolean
   duration?: number
+  plan_step_id?: string
 }
 
 export interface AssistantDoneData {
@@ -135,4 +140,17 @@ export interface ContextFillData {
   used_tokens: number
   max_tokens: number
   status: string // "ok" | "compact" | "warning" | "emergency" | "reject"
+}
+
+export interface AskUserOption {
+  label: string
+  value: string
+}
+
+export interface AskUserData {
+  request_id: string
+  question: string
+  options: AskUserOption[]
+  multi_select: boolean
+  recommended?: string[]
 }

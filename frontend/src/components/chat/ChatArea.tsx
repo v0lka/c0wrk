@@ -1,13 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useChatStore, ChatMessageUI, groupMessages } from '@/stores/chatStore'
+import { useChatStore, ChatMessageUI, DisplayItem, groupMessages } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePanelStore } from '@/stores/panelStore'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
-import { StepGroup } from './StepGroup'
+import { ToolBlock } from './ToolBlock'
+import { PlanStepBlock } from './PlanStepBlock'
 import { ToolConfirmation } from './ToolConfirmation'
+import { AskUserPanel } from './AskUserPanel'
 import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
 import { ActivityIndicator } from './ActivityIndicator'
@@ -90,6 +92,36 @@ export function ChatArea() {
     return null
   }, [displayItems])
 
+  // Recursive render function for DisplayItems (supports PlanStepBlock children)
+  const renderDisplayItem = (item: DisplayItem, _index: number): React.ReactNode => {
+    // Skip the last user message since it's pinned at the top
+    if (item.kind === 'user' && lastUserMessage && item.message.id === lastUserMessage.message.id) {
+      return null
+    }
+    switch (item.kind) {
+      case 'user':
+        return <UserMessage key={item.message.id} content={item.message.content} timestamp={item.message.timestamp} />
+      case 'assistant':
+        return <AssistantMessage key={item.message.id} content={item.message.content} />
+      case 'thought':
+        return <ThoughtBlock key={item.id} content={item.content} reasoning={item.reasoning} />
+      case 'tool':
+        return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} result={item.result} resultLen={item.resultLen} status={item.status} />
+      case 'plan_step':
+        return <PlanStepBlock key={item.id} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} children={item.children} renderItem={renderDisplayItem} />
+      case 'tool_confirm':
+        return <ToolConfirmation key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
+      case 'ask_user':
+        return <AskUserPanel key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
+      case 'error':
+        return <ErrorBlock key={item.message.id} content={item.message.content} />
+      case 'service':
+        return <ServiceMessage key={item.id} id={item.id} variant={item.variant} content={item.content} metadata={item.metadata} />
+      default:
+        return null
+    }
+  }
+
   if (!activeSessionId) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -129,30 +161,7 @@ export function ChatArea() {
       )}
       <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
         <div className="p-4 space-y-4 min-w-0">
-          {displayItems.map((item) => {
-            // Skip the last user message since it's pinned at the top
-            if (item.kind === 'user' && lastUserMessage && item.message.id === lastUserMessage.message.id) {
-              return null
-            }
-            switch (item.kind) {
-              case 'user':
-                return <UserMessage key={item.message.id} content={item.message.content} timestamp={item.message.timestamp} />
-              case 'assistant':
-                return <AssistantMessage key={item.message.id} content={item.message.content} />
-              case 'thought':
-                return <ThoughtBlock key={item.id} content={item.content} />
-              case 'step_group':
-                return <StepGroup key={item.id} steps={item.steps} />
-              case 'tool_confirm':
-                return <ToolConfirmation key={item.message.id} metadata={item.message.metadata} />
-              case 'error':
-                return <ErrorBlock key={item.message.id} content={item.message.content} />
-              case 'service':
-                return <ServiceMessage key={item.id} id={item.id} variant={item.variant} content={item.content} metadata={item.metadata} />
-              default:
-                return null
-            }
-          })}
+          {displayItems.map((item, idx) => renderDisplayItem(item, idx))}
 
           {/* Streaming text indicator */}
           {streamingText && (

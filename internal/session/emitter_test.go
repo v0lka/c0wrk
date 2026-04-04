@@ -84,9 +84,9 @@ func TestEventEmitterStepStart(t *testing.T) {
 		t.Errorf("expected type 'step_start', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]int)
+	data, ok := received.Data.(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected map[string]int data, got %T", received.Data)
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
 	if data["step_num"] != 1 {
 		t.Errorf("expected step_num 1, got %d", data["step_num"])
@@ -101,7 +101,7 @@ func TestEventEmitterThought(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.Thought(1, "I need to analyze this problem")
+	emitter.Thought(1, "I need to analyze this problem", "deep reasoning here")
 
 	if received.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", received.SessionID)
@@ -119,6 +119,9 @@ func TestEventEmitterThought(t *testing.T) {
 	}
 	if data["content"] != "I need to analyze this problem" {
 		t.Errorf("expected content 'I need to analyze this problem', got %v", data["content"])
+	}
+	if data["reasoning"] != "deep reasoning here" {
+		t.Errorf("expected reasoning 'deep reasoning here', got %v", data["reasoning"])
 	}
 }
 
@@ -175,8 +178,8 @@ func TestEventEmitterToolResult(t *testing.T) {
 	if data["result_len"] != 1024 {
 		t.Errorf("expected result_len 1024, got %v", data["result_len"])
 	}
-	if data["result_preview"] != "preview content" {
-		t.Errorf("expected result_preview 'preview content', got %v", data["result_preview"])
+	if data["result"] != "preview content" {
+		t.Errorf("expected result 'preview content', got %v", data["result"])
 	}
 }
 
@@ -489,7 +492,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.Routing("react", "code", "3")
 	emitter.PlanGenerated(5, []core.PlanStepEvent{{Description: "Step 1", Status: "pending"}})
 	emitter.StepStart(1)
-	emitter.Thought(1, "I need to think about this")
+	emitter.Thought(1, "I need to think about this", "")
 	emitter.ToolCall(1, "bash", "ls")
 	emitter.ToolResult(1, 100, "")
 	emitter.StepComplete(1, time.Second)

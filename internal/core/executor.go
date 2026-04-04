@@ -14,6 +14,19 @@ import (
 
 const executorNudge = "[System] You have tools available that can help answer this request. Before finishing, try using relevant tools to discover the answer. Do NOT say you cannot determine something without first attempting to use your tools."
 
+const (
+	// repeatNudgeThreshold is the number of consecutive identical tool calls
+	// before injecting a system message to try a different approach.
+	repeatNudgeThreshold = 3
+	// repeatAbortThreshold is the number of consecutive identical tool calls
+	// before aborting the executor loop.
+	repeatAbortThreshold = 4
+
+	repeatNudgeMessage = "[System] You have called the same tool with the same arguments " +
+		"multiple times in a row and it keeps failing. Try a different approach: " +
+		"use different arguments, a different tool, or call finish if the task cannot be completed."
+)
+
 // LLMCaller is the interface Executor needs from the LLM layer.
 type LLMCaller interface {
 	Call(ctx context.Context, req llm.ChatRequest) (resp *llm.ChatResponse, err error)
@@ -70,6 +83,15 @@ type Executor struct {
 	emitter                 Emitter      // event emitter (uses noopEmitter if nil)
 	suppressAssistantEvents bool         // if true, don't emit AssistantChunk/AssistantDone
 	toolResultBudget        config.ToolResultBudgetConfig
+
+	// Circuit breaker: detect repeated identical tool calls
+	consecutiveRepeatCount int
+	lastToolKey            string // "name:" + string(input) for dedup
+
+	// Plan-step context for structured logging
+	planStepID    string // e.g. "step_3" (empty if not plan mode)
+	planStepIndex int    // 1-based position in plan (0 if not plan mode)
+	planStepTotal int    // total steps in plan (0 if not plan mode)
 }
 
 // NewExecutor creates a new Executor.
@@ -91,6 +113,14 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		suppressAssistantEvents: suppressAssistantEvents,
 		toolResultBudget:        toolResultBudget,
 	}
+}
+
+// SetPlanContext sets plan-step metadata for structured logging.
+// Call this before Run() when the executor is handling a plan step.
+func (e *Executor) SetPlanContext(stepID string, index, total int) {
+	e.planStepID = stepID
+	e.planStepIndex = index
+	e.planStepTotal = total
 }
 
 // logInfo logs an INFO level message if logger is not nil.
@@ -203,7 +233,7 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 
 		// Emit thought event
 		if thought != "" {
-			e.emitter.Thought(stepNum, thought)
+			e.emitter.Thought(stepNum, thought, resp.Reasoning)
 		}
 
 		// Check for implicit finish (no tool calls with end_turn)
@@ -287,13 +317,46 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 		action := resp.Message.ToolCalls[0]
 
 		// Emit tool call
-		argsPreview := string(action.Input)
-		if len(argsPreview) > 80 {
-			argsPreview = argsPreview[:77] + "..."
+		e.emitter.ToolCall(stepNum, action.Name, string(action.Input))
+		if e.planStepID != "" {
+			e.logInfo("step_start", "step", stepNum, "tool", action.Name, "plan_step", e.planStepID, "plan_pos", fmt.Sprintf("%d/%d", e.planStepIndex, e.planStepTotal))
+		} else {
+			e.logInfo("step_start", "step", stepNum, "tool", action.Name)
 		}
-		e.emitter.ToolCall(stepNum, action.Name, argsPreview)
-		e.logInfo("step_start", "step", stepNum, "tool", action.Name)
 		e.logDebug("tool_call_args", "step", stepNum, "tool", action.Name, "args", string(action.Input))
+
+		// --- Circuit breaker: detect repeated identical tool calls ---
+		toolKey := action.Name + ":" + string(action.Input)
+		if toolKey == e.lastToolKey {
+			e.consecutiveRepeatCount++
+		} else {
+			e.consecutiveRepeatCount = 1
+			e.lastToolKey = toolKey
+		}
+
+		if e.consecutiveRepeatCount >= repeatAbortThreshold {
+			e.logWarn("repeated_tool_call_abort", "step", stepNum, "tool", action.Name, "repeat_count", e.consecutiveRepeatCount)
+			return &ExecutorResult{
+				Output:   fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount),
+				Steps:    allSteps,
+				Finished: false,
+			}, nil
+		}
+
+		if e.consecutiveRepeatCount >= repeatNudgeThreshold {
+			e.logWarn("repeated_tool_call_nudge", "step", stepNum, "tool", action.Name, "repeat_count", e.consecutiveRepeatCount)
+			step := Step{
+				Thought:     thought,
+				Action:      action,
+				Observation: repeatNudgeMessage,
+				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			}
+			allSteps = append(allSteps, step)
+			cw.AddStep(step)
+			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
+			continue
+		}
+		// --- End circuit breaker ---
 
 		// Check for finish tool
 		if action.Name == "finish" {
@@ -313,6 +376,7 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 			allSteps = append(allSteps, step)
 
 			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", 0)
+			e.emitter.ToolResult(stepNum, len(params.Answer), params.Answer)
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
 
 			return &ExecutorResult{
@@ -342,11 +406,7 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 		observation = e.applyToolResultBudget(observation, cw)
 
 		// Emit tool result
-		resultPreview := observation
-		if len(resultPreview) > 2000 {
-			resultPreview = resultPreview[:2000] + "..."
-		}
-		e.emitter.ToolResult(stepNum, len(observation), resultPreview)
+		e.emitter.ToolResult(stepNum, len(observation), observation)
 		observationPreview := observation
 		if len(observationPreview) > 500 {
 			observationPreview = observationPreview[:500] + "..."
@@ -365,7 +425,11 @@ func (e *Executor) Run(ctx context.Context, task TaskDefinition, cw ContextManag
 		// Add step to context window
 		cw.AddStep(step)
 
-		e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", len(observation))
+		if e.planStepID != "" {
+			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", len(observation), "plan_step", e.planStepID, "plan_pos", fmt.Sprintf("%d/%d", e.planStepIndex, e.planStepTotal))
+		} else {
+			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", len(observation))
+		}
 		e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
 
 		// Correct token count with actual API usage

@@ -29,6 +29,7 @@ type ChatRequest struct {
 // ChatResponse — LLM response.
 type ChatResponse struct {
 	Message    Message    `json:"message"`
+	Reasoning  string     `json:"reasoning"`   // Extended thinking/reasoning (if model supports)
 	Usage      TokenUsage `json:"usage"`
 	StopReason string     `json:"stop_reason"` // "end_turn" | "tool_use" | "max_tokens"
 }
@@ -36,6 +37,7 @@ type ChatResponse struct {
 // ChatChunk — streaming response fragment.
 type ChatChunk struct {
 	Delta      string    `json:"delta"`
+	Reasoning  string    `json:"reasoning,omitempty"`    // Reasoning delta
 	ToolCall   *ToolCall `json:"tool_call,omitempty"`
 	StopReason string    `json:"stop_reason,omitempty"`
 }

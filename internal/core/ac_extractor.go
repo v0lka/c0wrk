@@ -8,6 +8,7 @@ import (
 
 	"github.com/user/agent/internal/core/prompts"
 	"github.com/user/agent/internal/llm"
+	"github.com/user/agent/internal/tools"
 )
 
 // ACExtractor extracts acceptance criteria from user requests.
@@ -86,10 +87,16 @@ func (e *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, ro
 		return nil, fmt.Errorf("failed to marshal raw criteria: %w", err)
 	}
 
-	userPrompt := fmt.Sprintf("Domain: %s\nMode: %s\nComplexity: %d\nSuggested tools: %s\n\nRaw criteria:\n%s",
-		routing.Domain, routing.Mode, routing.Complexity,
-		strings.Join(routing.SuggestedTools, ", "),
-		string(rawJSON))
+	contextLines := []string{
+		"Domain: " + routing.Domain,
+		"Mode: " + routing.Mode,
+		fmt.Sprintf("Complexity: %d", routing.Complexity),
+		"Suggested tools: " + strings.Join(routing.SuggestedTools, ", "),
+	}
+	if ws := tools.WorkspacePathFrom(ctx); ws != "" {
+		contextLines = append(contextLines, "Workspace: "+ws)
+	}
+	userPrompt := fmt.Sprintf("%s\n\nRaw criteria:\n%s", strings.Join(contextLines, "\n"), string(rawJSON))
 
 	req := llm.ChatRequest{
 		Messages: []llm.Message{

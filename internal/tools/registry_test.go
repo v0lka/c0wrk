@@ -252,8 +252,8 @@ func TestConfirmFunc_Deny(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected IsError to be true")
 	}
-	if result.Content != "Tool execution denied by user" {
-		t.Errorf("expected content 'Tool execution denied by user', got %q", result.Content)
+	if result.Content != "Tool execution denied by user." {
+		t.Errorf("expected content 'Tool execution denied by user.', got %q", result.Content)
 	}
 }
 

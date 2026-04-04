@@ -3679,3 +3679,31 @@ func TestOrchestrator_FilterToolsByProfile_NoMatch(t *testing.T) {
 		t.Errorf("expected 0 tools, got %d", len(filtered))
 	}
 }
+
+// TestBuildSystemPrompt_WorkspaceContext verifies that WORKSPACE-CONTEXT placeholder
+// is properly substituted when workspace path is present or absent in context.
+func TestBuildSystemPrompt_WorkspaceContext(t *testing.T) {
+	o := &Orchestrator{}
+
+	// Without workspace path in context — placeholder should be replaced with empty string
+	promptNoWS := o.buildSystemPrompt(context.Background(), "task", nil, false)
+	if strings.Contains(promptNoWS, "WORKSPACE-CONTEXT") {
+		t.Error("prompt should not contain raw WORKSPACE-CONTEXT placeholder when no workspace path is set")
+	}
+	if strings.Contains(promptNoWS, "Your session workspace is:") {
+		t.Error("prompt should not contain workspace section when no workspace path is set")
+	}
+
+	// With workspace path in context — placeholder should be replaced with workspace info
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	promptWithWS := o.buildSystemPrompt(ctx, "task", nil, false)
+	if strings.Contains(promptWithWS, "WORKSPACE-CONTEXT") {
+		t.Error("prompt should not contain raw WORKSPACE-CONTEXT placeholder when workspace path is set")
+	}
+	if !strings.Contains(promptWithWS, "/test/workspace") {
+		t.Error("prompt should contain the workspace path '/test/workspace'")
+	}
+	if !strings.Contains(promptWithWS, "Your session workspace is:") {
+		t.Error("prompt should contain 'Your session workspace is:' header")
+	}
+}

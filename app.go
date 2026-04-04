@@ -143,6 +143,7 @@ type App struct {
 	configLoadErrors   []string
 
 	pendingConfirmations sync.Map
+	pendingAskUser       sync.Map
 }
 
 // NewApp creates a new App instance.
@@ -599,6 +600,53 @@ func (a *App) startup(ctx context.Context) {
 	contextMgrTool := toolcore.NewContextManagerTool(semanticStore, nil, episodicStoreTool, reflexionStoreTool)
 	registry.Register(contextMgrTool)
 
+	// Glob tool (doublestar pattern matching)
+	globTool := toolcore.NewGlobTool()
+	registry.Register(globTool)
+
+	// Ripgrep tool (content search)
+	ripgrepTool := toolcore.NewRipgrepTool()
+	registry.Register(ripgrepTool)
+
+	// Ask User tool (interactive question panel)
+	askUserTool := toolcore.NewAskUserTool(func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
+		if a.ctx == nil {
+			return tools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
+		}
+
+		sessionID := session.SessionIDFromContext(ctx)
+		if sessionID == "" {
+			return tools.AskUserResponse{}, errors.New("ask_user not available: no session context")
+		}
+
+		requestID := uuid.New().String()
+		ch := make(chan tools.AskUserResponse, 1)
+		a.pendingAskUser.Store(requestID, ch)
+
+		payload := map[string]interface{}{
+			"request_id":   requestID,
+			"question":     req.Question,
+			"options":      req.Options,
+			"multi_select": req.MultiSelect,
+			"recommended":  req.Recommended,
+		}
+
+		eventName := fmt.Sprintf("session:%s:ask_user", sessionID)
+		wailsRuntime.EventsEmit(a.ctx, eventName, payload)
+
+		select {
+		case resp := <-ch:
+			return resp, nil
+		case <-ctx.Done():
+			a.pendingAskUser.Delete(requestID)
+			return tools.AskUserResponse{}, ctx.Err()
+		case <-a.ctx.Done():
+			a.pendingAskUser.Delete(requestID)
+			return tools.AskUserResponse{}, a.ctx.Err()
+		}
+	})
+	registry.Register(askUserTool)
+
 	// Create Phase 2 components (only if LLM router is available)
 	var router *core.Router
 	var acExtractor *core.ACExtractor
@@ -854,6 +902,67 @@ func (a *App) startup(ctx context.Context) {
 		}
 
 		a.pendingConfirmations.Delete(requestID)
+	})
+
+	// Listen for ask_user responses from frontend
+	wailsRuntime.EventsOn(a.ctx, "ask_user_response", func(data ...interface{}) {
+		if len(data) == 0 {
+			log.Warn("ask_user response missing payload")
+			return
+		}
+
+		payload, ok := data[0].(map[string]interface{})
+		if !ok {
+			log.Warn("ask_user response has unexpected type", "data", data)
+			return
+		}
+
+		requestIDVal, ok := payload["request_id"]
+		if !ok {
+			log.Warn("ask_user response missing request_id")
+			return
+		}
+		requestID, ok := requestIDVal.(string)
+		if !ok {
+			log.Warn("ask_user request_id is not string")
+			return
+		}
+
+		// Build response
+		var resp tools.AskUserResponse
+
+		// Parse selected options
+		if selectedVal, ok := payload["selected"]; ok {
+			if selectedArr, ok := selectedVal.([]interface{}); ok {
+				for _, v := range selectedArr {
+					if s, ok := v.(string); ok {
+						resp.Selected = append(resp.Selected, s)
+					}
+				}
+			}
+		}
+
+		// Parse custom text
+		if customVal, ok := payload["custom_text"]; ok {
+			if s, ok := customVal.(string); ok {
+				resp.CustomText = s
+			}
+		}
+
+		chVal, ok := a.pendingAskUser.Load(requestID)
+		if !ok {
+			log.Warn("no pending ask_user for request_id", "request_id", requestID)
+			return
+		}
+		ch, ok := chVal.(chan tools.AskUserResponse)
+		if !ok {
+			log.Warn("pending ask_user channel has wrong type", "request_id", requestID)
+			a.pendingAskUser.Delete(requestID)
+			return
+		}
+
+		ch <- resp
+		a.pendingAskUser.Delete(requestID)
 	})
 }
 

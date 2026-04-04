@@ -14,6 +14,7 @@ REFLECTION
 Acceptance criteria:
 ACCEPTANCE-CRITERIA
 
+WORKSPACE-PATH
 Create an updated plan. Do NOT redo completed steps unless the reflection indicates they were wrong.
 Respond with a JSON Plan object:
 {"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "relevant_ac": ["ac_1"]}]}

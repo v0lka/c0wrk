@@ -86,6 +86,11 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 				chunks <- ChatChunk{
 					Delta: data.Delta.GetText(),
 				}
+			case anthropic.MessagesContentTypeThinkingDelta:
+				// Extended thinking delta — route to Reasoning field
+				chunks <- ChatChunk{
+					Reasoning: data.Delta.GetText(),
+				}
 			case anthropic.MessagesContentTypeToolUse, anthropic.MessagesContentTypeInputJsonDelta:
 				// Accumulate tool input JSON
 				if data.Delta.PartialJson != nil {
@@ -231,6 +236,8 @@ func (p *AnthropicProvider) parseResponse(resp anthropic.MessagesResponse) (*Cha
 		Role: "assistant",
 	}
 
+	var reasoning string
+
 	// Process content blocks
 	for _, block := range resp.Content {
 		switch block.Type {
@@ -239,6 +246,15 @@ func (p *AnthropicProvider) parseResponse(resp anthropic.MessagesResponse) (*Cha
 				message.Content += "\n"
 			}
 			message.Content += block.GetText()
+
+		case anthropic.MessagesContentTypeThinking:
+			// Extended thinking content block
+			if block.MessageContentThinking != nil {
+				if reasoning != "" {
+					reasoning += "\n"
+				}
+				reasoning += block.Thinking
+			}
 
 		case anthropic.MessagesContentTypeToolUse:
 			if block.MessageContentToolUse != nil {
@@ -253,6 +269,7 @@ func (p *AnthropicProvider) parseResponse(resp anthropic.MessagesResponse) (*Cha
 
 	return &ChatResponse{
 		Message:    message,
+		Reasoning:  reasoning,
 		StopReason: string(resp.StopReason),
 		Usage: TokenUsage{
 			InputTokens:  resp.Usage.InputTokens,

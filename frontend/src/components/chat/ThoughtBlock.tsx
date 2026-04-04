@@ -8,43 +8,37 @@ import {
 
 interface ThoughtBlockProps {
   content: string
+  reasoning?: string
 }
 
-export function ThoughtBlock({ content }: ThoughtBlockProps) {
+export function ThoughtBlock({ content, reasoning }: ThoughtBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [showFull, setShowFull] = useState(false)
 
   const MAX_CHARS = 500
-  const isLong = content.length > MAX_CHARS
-  const displayContent = (!showFull && isLong) ? content.slice(0, MAX_CHARS) + '...' : content
-  const isEmpty = !content || content.trim() === ''
+  const hasReasoning = !!reasoning && reasoning.trim() !== ''
+  const isLong = hasReasoning && reasoning.length > MAX_CHARS
+  const displayReasoning = hasReasoning
+    ? (!showFull && isLong) ? reasoning.slice(0, MAX_CHARS) + '...' : reasoning
+    : ''
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors group">
-        {isOpen ? (
-          <ChevronDown className="h-3.5 w-3.5" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5" />
-        )}
-        <BrainCircuit className="h-3.5 w-3.5" />
-        <span className="text-sm">Thought</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-2 pl-3 border-l-2 border-muted min-w-0">
-          {isEmpty ? (
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <span className="text-sm">Thinking</span>
-              <span className="flex gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" />
-              </span>
-            </div>
-          ) : (
-            <>
+    <div>
+      {hasReasoning && (
+        <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+          <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors group">
+            {isOpen ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+            <BrainCircuit className="h-3.5 w-3.5" />
+            <span className="text-sm">Thought</span>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-2 pl-3 border-l-2 border-muted min-w-0">
               <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                {displayContent}
+                {displayReasoning}
               </p>
               {isLong && (
                 <button
@@ -57,10 +51,15 @@ export function ThoughtBlock({ content }: ThoughtBlockProps) {
                   {showFull ? 'Show less' : 'Show more'}
                 </button>
               )}
-            </>
-          )}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+      {content && content.trim() !== '' && (
+        <p className="text-muted-foreground text-sm whitespace-pre-wrap">
+          {content}
+        </p>
+      )}
+    </div>
   )
 }

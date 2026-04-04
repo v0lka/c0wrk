@@ -83,6 +83,8 @@ Your FINAL answer (when calling the "finish" tool) MUST be in the SAME language 
 - If the user writes in English, your finish answer must be in English.
 - If the user writes in mixed languages, use the dominant language of their message.
 
+WORKSPACE-CONTEXT
+
 STEP-SCOPE
 
 ACCEPTANCE-CRITERIA

@@ -228,7 +228,12 @@ func (p *GeminiProvider) convertResponse(result *genai.GenerateContentResponse) 
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
 				if part.Text != "" {
-					response.Message.Content += part.Text
+					if part.Thought {
+						// Thought part — route to Reasoning
+						response.Reasoning += part.Text
+					} else {
+						response.Message.Content += part.Text
+					}
 				}
 				if part.FunctionCall != nil {
 					argsJSON, _ := json.Marshal(part.FunctionCall.Args)
@@ -268,7 +273,11 @@ func (p *GeminiProvider) convertStreamResponse(result *genai.GenerateContentResp
 		if candidate.Content != nil {
 			for _, part := range candidate.Content.Parts {
 				if part.Text != "" {
-					chunks = append(chunks, ChatChunk{Delta: part.Text})
+					if part.Thought {
+						chunks = append(chunks, ChatChunk{Reasoning: part.Text})
+					} else {
+						chunks = append(chunks, ChatChunk{Delta: part.Text})
+					}
 				}
 				if part.FunctionCall != nil {
 					argsJSON, _ := json.Marshal(part.FunctionCall.Args)

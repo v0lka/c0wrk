@@ -4,7 +4,7 @@ import { useInspectorStore } from '@/stores/inspectorStore'
 import { usePanelStore } from '@/stores/panelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
-import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData } from '@/lib/wails'
+import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData } from '@/lib/wails'
 
 export function useSessionEvents(sessionId: string | null) {
   const { runtime } = useWails()
@@ -84,7 +84,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'thought',
         content: thought.content,
-        metadata: { step_num: thought.step_num },
+        metadata: { step_num: thought.step_num, reasoning: thought.reasoning },
         timestamp: Date.now(),
       })
     })
@@ -92,39 +92,88 @@ export function useSessionEvents(sessionId: string | null) {
     on('tool_call', (data: unknown) => {
       const toolCall = data as ToolCallData
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Running tool: ${toolCall.tool}...`)
+      const toolMsgId = toolCall.plan_step_id
+        ? `tool-${toolCall.plan_step_id}-${toolCall.step}`
+        : `tool-${toolCall.step}`
       addMessage(sessionId, {
-        id: `tool-${toolCall.step}`,
+        id: toolMsgId,
         sessionId,
         type: 'tool_call',
         content: `${toolCall.tool}(${toolCall.args})`,
-        metadata: toolCall as unknown as Record<string, unknown>,
+        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, plan_step_id: toolCall.plan_step_id },
         timestamp: Date.now(),
       })
     })
 
     on('tool_result', (data: unknown) => {
       const toolResult = data as ToolResultData
-      updateMessage(sessionId, `tool-${toolResult.step}`, {
+      const toolMsgId = toolResult.plan_step_id
+        ? `tool-${toolResult.plan_step_id}-${toolResult.step}`
+        : `tool-${toolResult.step}`
+      updateMessage(sessionId, toolMsgId, {
         metadata: {
-          ...toolResult,
+          step: toolResult.step,
           completed: true,
+          result: toolResult.result ?? toolResult.result_preview,
           result_preview: toolResult.result_preview,
           result_len: toolResult.result_len,
+          plan_step_id: toolResult.plan_step_id,
         },
       })
     })
 
     on('tool_confirm', (data: unknown) => {
       const toolConfirm = data as ToolConfirmData
+      const msgs = useChatStore.getState().messages[sessionId] || []
+
+      // Link to the last tool_call for this tool
+      let toolMsgId: string | undefined
+      let toolPlanStepId: string | undefined
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]
+        if (m.type === 'tool_call' && m.metadata?.tool === toolConfirm.tool) {
+          toolMsgId = m.id
+          toolPlanStepId = m.metadata?.plan_step_id as string | undefined
+          updateMessage(sessionId, m.id, {
+            metadata: { ...m.metadata, awaiting_confirmation: true },
+          })
+          break
+        }
+      }
+
       addMessage(sessionId, {
         id: `tool-confirm-${toolConfirm.confirm_id}`,
         sessionId,
         type: 'tool_confirm',
         content: `Confirm: ${toolConfirm.tool}`,
-        metadata: toolConfirm as unknown as Record<string, unknown>,
+        metadata: {
+          ...toolConfirm,
+          tool_msg_id: toolMsgId,
+          plan_step_id: toolPlanStepId,
+        } as unknown as Record<string, unknown>,
         timestamp: Date.now(),
       })
-      if (isActiveSession()) setThinking(false) // Pause thinking indicator while waiting for user input
+
+      if (isActiveSession()) {
+        setThinking(false)
+        useChatStore.getState().setActivityStatus('Awaiting confirmation...')
+      }
+    })
+
+    on('ask_user', (data: unknown) => {
+      const askData = data as AskUserData
+      addMessage(sessionId, {
+        id: `ask-user-${askData.request_id}`,
+        sessionId,
+        type: 'ask_user',
+        content: askData.question,
+        metadata: askData as unknown as Record<string, unknown>,
+        timestamp: Date.now(),
+      })
+      if (isActiveSession()) {
+        setThinking(false)
+        useChatStore.getState().setActivityStatus('Waiting for your answer...')
+      }
     })
 
     on('step_complete', (data: unknown) => {
@@ -156,18 +205,36 @@ export function useSessionEvents(sessionId: string | null) {
     on('plan_generated', (data: unknown) => {
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Executing plan...')
       const plan = data as PlanData
-      // Route to panelStore instead of chatStore
+      // Route to panelStore
       if (plan.steps) {
         panelStore.addPlanGroup(plan.steps)
       }
+      // Also add to chat messages so groupMessages can build stepIndexMap
+      addMessage(sessionId, {
+        id: `plan-${Date.now()}`,
+        sessionId,
+        type: 'plan',
+        content: '',
+        metadata: { steps: plan.steps },
+        timestamp: Date.now(),
+      })
     })
 
     on('plan_step_start', (data: unknown) => {
       const stepData = data as PlanStepStartData
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Executing: ${stepData.description || 'step'}...`)
       inspectorStore.updateStepById(stepData.step_id, 'running')
-      // Route to panelStore instead of chatStore
+      // Route to panelStore
       panelStore.updatePlanItemStatus(stepData.step_id, 'running')
+      // Add to chat messages for plan step containers
+      addMessage(sessionId, {
+        id: `plan-step-start-${stepData.step_id}-${Date.now()}`,
+        sessionId,
+        type: 'plan_step_start',
+        content: stepData.description || '',
+        metadata: { step_id: stepData.step_id, description: stepData.description },
+        timestamp: Date.now(),
+      })
     })
 
     on('plan_step_complete', (data: unknown) => {
@@ -177,12 +244,21 @@ export function useSessionEvents(sessionId: string | null) {
         stepData.success ? 'completed' : 'failed',
         stepData.duration
       )
-      // Route to panelStore instead of chatStore
+      // Route to panelStore
       panelStore.updatePlanItemStatus(
         stepData.step_id,
         stepData.success ? 'completed' : 'failed',
         stepData.duration
       )
+      // Add to chat messages for plan step lifecycle
+      addMessage(sessionId, {
+        id: `plan-step-complete-${stepData.step_id}-${Date.now()}`,
+        sessionId,
+        type: 'plan_step_complete',
+        content: '',
+        metadata: { step_id: stepData.step_id, success: stepData.success, duration: stepData.duration },
+        timestamp: Date.now(),
+      })
     })
 
     on('assistant_chunk', (data: unknown) => {
@@ -290,6 +366,14 @@ export function useSessionEvents(sessionId: string | null) {
       })
     })
 
+    on('service', (data: unknown) => {
+      if (!isActiveSession()) return
+      const service = data as { content: string }
+      if (service.content) {
+        useChatStore.getState().setActivityStatus(service.content)
+      }
+    })
+
     on('ac_extracted', (data: unknown) => {
       // Display extracted acceptance criteria as pending eval items
       const acData = data as { count?: number; criteria?: Array<{ name: string; description: string }> }
@@ -305,19 +389,19 @@ export function useSessionEvents(sessionId: string | null) {
 
     on('subagent_launch', (data: unknown) => {
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Launching sub-agent...')
-      const sa = data as { step_id: string; description: string }
+      const sa = data as { step_id: string; description: string; plan_step_id?: string }
       addMessage(sessionId, {
         id: `subagent-${sa.step_id}-launch`,
         sessionId,
         type: 'tool_call',
         content: `SubAgent: ${sa.description}`,
-        metadata: { tool: 'subagent', args: sa.description, step: sa.step_id },
+        metadata: { tool: 'subagent', args: sa.description, step: sa.step_id, plan_step_id: sa.plan_step_id },
         timestamp: Date.now(),
       })
     })
 
     on('subagent_complete', (data: unknown) => {
-      const sa = data as { step_id: string; success: boolean; duration: number }
+      const sa = data as { step_id: string; success: boolean; duration: number; plan_step_id?: string }
       updateMessage(sessionId, `subagent-${sa.step_id}-launch`, {
         metadata: {
           tool: 'subagent',
@@ -325,6 +409,7 @@ export function useSessionEvents(sessionId: string | null) {
           error: sa.success ? undefined : 'SubAgent failed',
           result_preview: sa.success ? `Completed in ${sa.duration}ms` : `Failed after ${sa.duration}ms`,
           result_len: 0,
+          plan_step_id: sa.plan_step_id,
         },
       })
     })

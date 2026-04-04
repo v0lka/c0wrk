@@ -31,7 +31,7 @@ func (p *Planner) Plan(
 	reflections []Reflection,
 	constitution []string,
 ) (*Plan, error) {
-	systemPrompt := p.buildPlanSystemPrompt(availableTools, criteria, reflections, constitution)
+	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, criteria, reflections, constitution)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -64,7 +64,7 @@ func (p *Planner) Replan(
 	reflection *Reflection,
 	criteria []AcceptanceCriterion,
 ) (*Plan, error) {
-	systemPrompt := p.buildReplanSystemPrompt(originalPlan, completedSteps, failedStep, reflection, criteria)
+	systemPrompt := p.buildReplanSystemPrompt(ctx, originalPlan, completedSteps, failedStep, reflection, criteria)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -90,6 +90,7 @@ func (p *Planner) Replan(
 
 // buildPlanSystemPrompt constructs the system prompt for initial planning.
 func (p *Planner) buildPlanSystemPrompt(
+	ctx context.Context,
 	availableTools []tools.ToolDescriptor,
 	criteria []AcceptanceCriterion,
 	reflections []Reflection,
@@ -134,12 +135,14 @@ func (p *Planner) buildPlanSystemPrompt(
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 	result = strings.ReplaceAll(result, "REFLECTIONS", reflectionsStr)
 	result = strings.ReplaceAll(result, "CONSTITUTION", constitutionStr)
+	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
 
 	return result
 }
 
 // buildReplanSystemPrompt constructs the system prompt for replanning after failure.
 func (p *Planner) buildReplanSystemPrompt(
+	ctx context.Context,
 	originalPlan *Plan,
 	completedSteps []CompletedStep,
 	failedStep CompletedStep,
@@ -190,8 +193,18 @@ func (p *Planner) buildReplanSystemPrompt(
 	result = strings.ReplaceAll(result, "FAILED-STEP", failedStepStr)
 	result = strings.ReplaceAll(result, "REFLECTION", reflectionStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
+	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
 
 	return result
+}
+
+// formatWorkspacePath returns the workspace instruction block if a workspace path is set.
+func formatWorkspacePath(ctx context.Context) string {
+	wp := tools.WorkspacePathFrom(ctx)
+	if wp == "" {
+		return ""
+	}
+	return fmt.Sprintf("Session workspace: %s\nWhen steps produce file artifacts, they must be created inside this workspace unless the task explicitly specifies an external location.", wp)
 }
 
 // parsePlanResponse extracts a Plan from the LLM response content.

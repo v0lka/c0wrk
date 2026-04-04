@@ -71,6 +71,30 @@ const (
 // If nil, all tools execute without confirmation (CLI mode).
 type ConfirmFunc func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error)
 
+// AskUserOption represents a single answer option for the ask_user tool.
+type AskUserOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// AskUserRequest describes a question to ask the user via the UI.
+type AskUserRequest struct {
+	Question    string          `json:"question"`
+	Options     []AskUserOption `json:"options"`
+	MultiSelect bool            `json:"multi_select"`
+	Recommended []string        `json:"recommended,omitempty"`
+}
+
+// AskUserResponse represents the user's answer.
+type AskUserResponse struct {
+	Selected   []string `json:"selected"`
+	CustomText string   `json:"custom_text,omitempty"`
+}
+
+// AskUserFunc is called when the ask_user tool needs to display a question to the user.
+// If nil, ask_user is not available (CLI mode).
+type AskUserFunc func(ctx context.Context, req AskUserRequest) (AskUserResponse, error)
+
 // workspacePathKey is the context key for the session workspace path.
 type workspacePathKey struct{}
 

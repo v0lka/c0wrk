@@ -145,6 +145,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	}
 
 	// 3. Route the request (with raw criteria for informed routing)
+	o.emitter.ServiceWithMeta("Routing request...", map[string]interface{}{"phase": "orchestration"})
 	routing, err := o.router.Route(ctx, userMessage, rawCriteria, availableTools, o.conversationHistory)
 	if err != nil {
 		return nil, fmt.Errorf("routing failed: %w", err)
@@ -155,6 +156,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	o.logInfo("routing_decision", "mode", routing.Mode, "domain", routing.Domain, "complexity", routing.Complexity)
 
 	// 4. Enrich acceptance criteria with domain context (Phase 2 — after routing)
+	o.emitter.ServiceWithMeta("Enriching acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
 	var ac []AcceptanceCriterion
 	enrichedAC, enrichErr := o.acExtractor.Enrich(ctx, rawCriteria, routing)
 	if enrichErr != nil {
@@ -770,19 +772,23 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			if len(sessionReflections) > 0 {
 				cm.SetReflections(sessionReflections)
 			}
+			// Scope emitter to plan step for event association
+			scopedEmitter := scopeEmitterToStep(o.emitter, step.ID)
+
 			// Suppress assistant events for plan-step executors
 			maxSteps := profile.MaxSteps
 			if maxSteps == 0 {
 				maxSteps = o.config.MaxSteps
 			}
-			executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, o.logger, o.emitter, true, o.toolResultBudget)
+			executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, o.logger, scopedEmitter, true, o.toolResultBudget)
+			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 
 			tasks = append(tasks, SubAgentTask{
 				StepID:   step.ID,
 				Executor: executor,
 				CM:       cm,
 				Task:     taskDef,
-				Emitter:  o.emitter,
+				Emitter:  scopedEmitter,
 			})
 		}
 
@@ -1014,6 +1020,12 @@ func (o *Orchestrator) aggregateOutput(completedSteps map[string]CompletedStep, 
 // buildSystemPrompt creates the system prompt for executors.
 // If isStepExecution is true, adds scoping instructions for single-step execution.
 func (o *Orchestrator) buildSystemPrompt(ctx context.Context, userMessage string, criteria []AcceptanceCriterion, isStepExecution bool) string {
+	// Build workspace context string
+	var workspaceCtxStr string
+	if wsPath := tools.WorkspacePathFrom(ctx); wsPath != "" {
+		workspaceCtxStr = "## Workspace\nYour session workspace is: " + wsPath + "\nAll artifacts you create (files, directories, temporary files) MUST be placed strictly inside this workspace directory, unless the task explicitly requires creating artifacts at a specific external location."
+	}
+
 	// Build step scope string
 	var stepScopeStr string
 	if isStepExecution {
@@ -1041,6 +1053,7 @@ STEP EXECUTION SCOPE: You are executing a single step in a multi-step plan. Your
 
 	// Apply template substitutions
 	result := prompts.OrchestratorSystem
+	result = strings.ReplaceAll(result, "WORKSPACE-CONTEXT", workspaceCtxStr)
 	result = strings.ReplaceAll(result, "STEP-SCOPE", stepScopeStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 

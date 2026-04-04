@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/user/agent/internal/llm"
+	"github.com/user/agent/internal/tools"
 )
 
 func TestParseACJSON_PlainJSON(t *testing.T) {
@@ -227,5 +228,52 @@ func TestEnrich_GeneralDomainAlsoGetsMarkdownCriterion(t *testing.T) {
 	}
 	if criteria[1].ID != "ac_fallback_2" {
 		t.Errorf("expected second ID 'ac_fallback_2', got '%s'", criteria[1].ID)
+	}
+}
+
+// TestEnrich_WorkspacePathIncludedInContext verifies that when workspace path is
+// set in context, the enricher user message includes a "Workspace:" line.
+func TestEnrich_WorkspacePathIncludedInContext(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `[{"id":"ac_1","description":"enriched","check_type":"llm_judge","check_cmd":"","step_hint":""}]`,
+				},
+			}, nil
+		},
+	}
+
+	extractor := NewACExtractor(mock)
+	routing := &RoutingDecision{Mode: "react", Domain: "code"}
+	rawCriteria := []RawCriterion{
+		{ID: "rc_1", Description: "raw criterion", Nature: "objective", Weight: "must"},
+	}
+
+	// With workspace path
+	ctx := tools.WithWorkspacePath(context.Background(), "/ws/path")
+	_, err := extractor.Enrich(ctx, rawCriteria, routing)
+	if err != nil {
+		t.Fatalf("Enrich returned error: %v", err)
+	}
+
+	userMsg := capturedRequest.Messages[1].Content
+	if !strings.Contains(userMsg, "Workspace: /ws/path") {
+		t.Errorf("expected user message to contain 'Workspace: /ws/path', got:\n%s", userMsg)
+	}
+
+	// Without workspace path
+	_, err = extractor.Enrich(context.Background(), rawCriteria, routing)
+	if err != nil {
+		t.Fatalf("Enrich returned error: %v", err)
+	}
+
+	userMsgNoWS := capturedRequest.Messages[1].Content
+	if strings.Contains(userMsgNoWS, "Workspace:") {
+		t.Errorf("expected user message to NOT contain 'Workspace:' when no workspace path, got:\n%s", userMsgNoWS)
 	}
 }

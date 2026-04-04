@@ -80,6 +80,7 @@ export function ChatInput() {
 
     // Mark task as active
     setTaskActive(true)
+    useChatStore.getState().setActivityStatus('Processing...')
 
     try {
       await api.SendMessage(sessionId, messageText)

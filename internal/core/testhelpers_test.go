@@ -215,7 +215,7 @@ func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration tim
 	}{stepID, success, duration})
 }
 func (m *mockEmitter) StepStart(_ int)                                    {}
-func (m *mockEmitter) Thought(_ int, _ string)                            {}
+func (m *mockEmitter) Thought(_ int, _, _ string)                           {}
 func (m *mockEmitter) ToolCall(_ int, _, _ string)                        {}
 func (m *mockEmitter) ToolResult(_, _ int, _ string)                      {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}

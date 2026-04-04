@@ -30,7 +30,7 @@ type Emitter interface {
 	PlanStepStart(stepID string, description string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration)
 	StepStart(stepNum int)
-	Thought(stepNum int, content string)
+	Thought(stepNum int, content string, reasoning string)
 	ToolCall(stepNum int, toolName string, argsPreview string)
 	ToolResult(stepNum int, resultLen int, preview string)
 	StepComplete(stepNum int, duration time.Duration)
@@ -51,6 +51,21 @@ type Emitter interface {
 	ServiceWithMeta(content string, meta map[string]interface{})
 }
 
+// PlanStepScopable is an optional interface that Emitter implementations
+// can implement to support scoping events to a plan step.
+type PlanStepScopable interface {
+	WithPlanStepID(id string) Emitter
+}
+
+// scopeEmitterToStep returns a scoped emitter if the emitter supports it,
+// otherwise returns the original emitter unchanged.
+func scopeEmitterToStep(emitter Emitter, stepID string) Emitter {
+	if s, ok := emitter.(PlanStepScopable); ok {
+		return s.WithPlanStepID(stepID)
+	}
+	return emitter
+}
+
 // noopEmitter is a no-op implementation of Emitter.
 // Used as a default when nil emitter is provided.
 type noopEmitter struct{}
@@ -63,7 +78,7 @@ func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)             {}
 func (n *noopEmitter) PlanStepStart(_, _ string)                          {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
 func (n *noopEmitter) StepStart(_ int)                                    {}
-func (n *noopEmitter) Thought(_ int, _ string)                            {}
+func (n *noopEmitter) Thought(_ int, _, _ string)                           {}
 func (n *noopEmitter) ToolCall(_ int, _, _ string)                        {}
 func (n *noopEmitter) ToolResult(_, _ int, _ string)                      {}
 func (n *noopEmitter) StepComplete(_ int, _ time.Duration)                {}

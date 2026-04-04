@@ -519,3 +519,90 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 		t.Error("expected AgentProfile to be nil when not provided in JSON")
 	}
 }
+
+// TestPlan_WorkspacePathSubstitution verifies that the WORKSPACE-PATH placeholder
+// is properly substituted when workspace path is present or absent in context.
+func TestPlan_WorkspacePathSubstitution(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	// With workspace path
+	ctx := tools.WithWorkspacePath(context.Background(), "/my/project")
+	_, err := planner.Plan(ctx, "Build project", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	systemPrompt := capturedRequest.Messages[0].Content
+	if strings.Contains(systemPrompt, "WORKSPACE-PATH") {
+		t.Error("system prompt should not contain raw WORKSPACE-PATH placeholder")
+	}
+	if !strings.Contains(systemPrompt, "/my/project") {
+		t.Error("system prompt should contain the workspace path '/my/project'")
+	}
+	if !strings.Contains(systemPrompt, "Session workspace:") {
+		t.Error("system prompt should contain 'Session workspace:' header")
+	}
+
+	// Without workspace path
+	_, err = planner.Plan(context.Background(), "Build project", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	systemPromptNoWS := capturedRequest.Messages[0].Content
+	if strings.Contains(systemPromptNoWS, "WORKSPACE-PATH") {
+		t.Error("system prompt should not contain raw WORKSPACE-PATH placeholder when no workspace path")
+	}
+	if strings.Contains(systemPromptNoWS, "Session workspace:") {
+		t.Error("system prompt should not contain 'Session workspace:' when no workspace path is set")
+	}
+}
+
+// TestReplan_WorkspacePathSubstitution verifies that the WORKSPACE-PATH placeholder
+// is properly substituted in replan system prompts.
+func TestReplan_WorkspacePathSubstitution(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": []}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+	originalPlan := &Plan{Steps: []PlanStep{{ID: "step_1", Description: "First step"}}}
+	failedStep := CompletedStep{StepID: "step_1", Output: "Failed"}
+
+	ctx := tools.WithWorkspacePath(context.Background(), "/replan/workspace")
+	_, _ = planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil)
+
+	systemPrompt := capturedRequest.Messages[0].Content
+	if strings.Contains(systemPrompt, "WORKSPACE-PATH") {
+		t.Error("replan system prompt should not contain raw WORKSPACE-PATH placeholder")
+	}
+	if !strings.Contains(systemPrompt, "/replan/workspace") {
+		t.Error("replan system prompt should contain the workspace path '/replan/workspace'")
+	}
+}

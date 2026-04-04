@@ -407,10 +407,10 @@ func (p *LMStudioProvider) handleSSEEvent(eventType, dataStr string, chunks chan
 		}
 
 	case "reasoning.delta":
-		// Reasoning is visible content, emit as regular delta
+		// Reasoning tokens — route to Reasoning field, not content
 		var delta lmStudioContentDelta
 		if err := json.Unmarshal([]byte(dataStr), &delta); err == nil && delta.Content != "" {
-			chunks <- ChatChunk{Delta: delta.Content}
+			chunks <- ChatChunk{Reasoning: delta.Content}
 		}
 
 	case "tool_call.start":
@@ -530,15 +530,22 @@ func (p *LMStudioProvider) parseResponse(lmResp *lmStudioResponse) (*ChatRespons
 	}
 
 	var hasToolCalls bool
+	var reasoning string
 
 	// Process output items
 	for _, item := range lmResp.Output {
 		switch item.Type {
-		case "message", "reasoning":
+		case "message":
 			if message.Content != "" {
 				message.Content += "\n"
 			}
 			message.Content += item.Content
+
+		case "reasoning":
+			if reasoning != "" {
+				reasoning += "\n"
+			}
+			reasoning += item.Content
 
 		case "tool_call":
 			hasToolCalls = true
@@ -558,6 +565,7 @@ func (p *LMStudioProvider) parseResponse(lmResp *lmStudioResponse) (*ChatRespons
 
 	return &ChatResponse{
 		Message:    message,
+		Reasoning:  reasoning,
 		StopReason: stopReason,
 		Usage: TokenUsage{
 			InputTokens:  lmResp.Stats.InputTokens,

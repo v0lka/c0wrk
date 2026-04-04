@@ -65,8 +65,12 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 	message := p.convertResponseMessage(choice.Message)
 	stopReason := MapStopReason(string(choice.FinishReason), openAIStopReasonMap)
 
+	// Extract reasoning content (supported by o1/o3 and DeepSeek-reasoner models)
+	reasoning := choice.Message.ReasoningContent
+
 	return &ChatResponse{
 		Message:    message,
+		Reasoning:  reasoning,
 		StopReason: stopReason,
 		Usage: TokenUsage{
 			InputTokens:  resp.Usage.PromptTokens,
@@ -115,6 +119,11 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 			// Handle content delta
 			if delta.Content != "" {
 				chunks <- ChatChunk{Delta: delta.Content}
+			}
+
+			// Handle reasoning content delta (o1/o3, DeepSeek-reasoner)
+			if delta.ReasoningContent != "" {
+				chunks <- ChatChunk{Reasoning: delta.ReasoningContent}
 			}
 
 			// Handle tool calls delta
