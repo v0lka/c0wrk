@@ -16,34 +16,16 @@ import (
 const toolGlobDescription = "Find files and directories matching glob patterns. Supports ** for recursive matching (e.g. **/*.go, src/**/*.ts)."
 
 // GlobTool finds files and directories matching doublestar glob patterns.
-type GlobTool struct{}
+type GlobTool struct {
+	*tools.BaseTool
+}
 
 // NewGlobTool creates a new GlobTool instance.
 func NewGlobTool() *GlobTool {
-	return &GlobTool{}
-}
-
-// globInput represents the input parameters for glob search.
-type globInput struct {
-	Pattern    string `json:"pattern"`
-	Path       string `json:"path"`
-	Type       string `json:"type"`
-	MaxResults int    `json:"max_results"`
-}
-
-// Name returns the tool name.
-func (t *GlobTool) Name() string {
-	return "glob"
-}
-
-// Description returns the tool description.
-func (t *GlobTool) Description() string {
-	return toolGlobDescription
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *GlobTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
+	return &GlobTool{BaseTool: &tools.BaseTool{
+		ToolName:        "glob",
+		ToolDescription: toolGlobDescription,
+		Schema: json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"pattern": {
@@ -65,12 +47,17 @@ func (t *GlobTool) InputSchema() json.RawMessage {
 			}
 		},
 		"required": ["pattern", "path"]
-	}`)
+	}`),
+		Policy: tools.PolicyAlwaysAllow,
+	}}
 }
 
-// DefaultPolicy returns PolicyAlwaysAllow because glob is a read-only operation.
-func (t *GlobTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAlwaysAllow
+// globInput represents the input parameters for glob search.
+type globInput struct {
+	Pattern    string `json:"pattern"`
+	Path       string `json:"path"`
+	Type       string `json:"type"`
+	MaxResults int    `json:"max_results"`
 }
 
 // errMaxResults is a sentinel error used to stop walking when max results is reached.
@@ -80,7 +67,7 @@ var errMaxResults = errors.New("max results reached")
 func (t *GlobTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params globInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("failed to parse input: %v", err), IsError: true}, nil
+		return tools.ParseInputError(err)
 	}
 
 	// Apply defaults

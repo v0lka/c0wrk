@@ -20,9 +20,9 @@ type MemorySystem struct {
 
 // MemorySystemConfig holds configuration for creating a MemorySystem.
 type MemorySystemConfig struct {
-	DBPath    string // single DB path for all persistent memory
-	SkillsDir string
-	Embedder  Embedder // can be nil (semantic memory optional)
+	DBPath   string // single DB path for all persistent memory
+	ToolsDir string
+	Embedder Embedder // can be nil (semantic memory optional)
 }
 
 // NewMemorySystem creates and initializes all memory subsystems.
@@ -73,9 +73,9 @@ func NewMemorySystem(cfg MemorySystemConfig) (*MemorySystem, error) {
 		}
 	}
 
-	// Create ProceduralMemory if SkillsDir is provided, runs Scan()
-	if cfg.SkillsDir != "" {
-		pm := NewProceduralMemory(cfg.SkillsDir)
+	// Create ProceduralMemory if ToolsDir is provided, runs Scan()
+	if cfg.ToolsDir != "" {
+		pm := NewProceduralMemory(cfg.ToolsDir)
 		if err := pm.Scan(); err != nil {
 			log.Printf("warning: failed to scan procedural memory: %v", err)
 		}

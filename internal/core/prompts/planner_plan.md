@@ -8,8 +8,8 @@ Map relevant acceptance criteria to steps (RelevantAC).
 For complex tasks, assign specialized agent profiles to steps.
 Prefer high-level tools over bash_exec — use bash_exec only when no built-in tool covers the operation:
 
-- "researcher": information gathering, code analysis, web search (tools: web_search, web_fetch, context_manager; skills if available)
-- "coder": code generation, file operations, implementation (tools: file_read, file_write, file_edit; skills if available; bash_exec only for build/run commands)
+- "researcher": information gathering, code analysis, web search (tools: web_search, web_fetch, context_manager; external tools if available)
+- "coder": code generation, file operations, implementation (tools: file_read, file_write, file_edit; external tools if available; bash_exec only for build/run commands)
 - "tester": test execution, verification (tools: bash_exec for running test commands)
 - "executor": general purpose (default if omitted, all tools available — follow tool priority tiers)
 

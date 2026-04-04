@@ -127,8 +127,8 @@ llm:
 	if cfg.Executor.MaxReactSteps != 30 {
 		t.Errorf("Expected default max_react_steps 30, got %d", cfg.Executor.MaxReactSteps)
 	}
-	if cfg.Executor.MaxRetries != 1 {
-		t.Errorf("Expected default max_retries 1, got %d", cfg.Executor.MaxRetries)
+	if cfg.Executor.MaxRetries != 2 {
+		t.Errorf("Expected default max_retries 2, got %d", cfg.Executor.MaxRetries)
 	}
 	if cfg.Executor.OutputTokenReserve != 4096 {
 		t.Errorf("Expected default output_token_reserve 4096, got %d", cfg.Executor.OutputTokenReserve)
@@ -184,23 +184,6 @@ llm:
 		t.Error("Expected default file_ops policy")
 	} else if fileOpsPolicy.Policy != "auto" {
 		t.Errorf("Expected file_ops policy 'auto', got %q", fileOpsPolicy.Policy)
-	}
-
-	// Check Docker/Skills defaults
-	if cfg.Skills.Docker.WarmPoolThreshold != 5 {
-		t.Errorf("Expected default warm_pool_threshold 5, got %d", cfg.Skills.Docker.WarmPoolThreshold)
-	}
-	if cfg.Skills.Docker.WarmPoolIdleTimeout != "60s" {
-		t.Errorf("Expected default warm_pool_idle_timeout '60s', got %q", cfg.Skills.Docker.WarmPoolIdleTimeout)
-	}
-	if cfg.Skills.Docker.DefaultMemory != "256m" {
-		t.Errorf("Expected default default_memory '256m', got %q", cfg.Skills.Docker.DefaultMemory)
-	}
-	if cfg.Skills.Docker.DefaultCPU != "0.5" {
-		t.Errorf("Expected default default_cpu '0.5', got %q", cfg.Skills.Docker.DefaultCPU)
-	}
-	if cfg.Skills.Docker.DefaultTimeout != "30s" {
-		t.Errorf("Expected default default_timeout '30s', got %q", cfg.Skills.Docker.DefaultTimeout)
 	}
 
 	// Check LMStudio default base URL
@@ -465,4 +448,70 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestSave_RoundTrip(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	cfg.LLM.ActiveProvider = "anthropic"
+	cfg.LLM.Anthropic.APIKey = "test-key-123"
+	cfg.LLM.Anthropic.Model = "claude-3-5-sonnet"
+
+	// Write to temp file
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("saved file does not exist: %v", err)
+	}
+
+	// Load it back
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if loaded.LLM.ActiveProvider != "anthropic" {
+		t.Errorf("ActiveProvider = %q, want 'anthropic'", loaded.LLM.ActiveProvider)
+	}
+	if loaded.LLM.Anthropic.APIKey != "test-key-123" {
+		t.Errorf("APIKey = %q, want 'test-key-123'", loaded.LLM.Anthropic.APIKey)
+	}
+}
+
+func TestSave_AtomicWrite(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	cfg.LLM.ActiveProvider = "anthropic"
+	cfg.LLM.Anthropic.APIKey = "key"
+	cfg.LLM.Anthropic.Model = "model"
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	// Save should not leave temp file behind
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	tmpPath := path + ".tmp"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Error("temp file should not exist after successful save")
+	}
+}
+
+func TestSave_InvalidPath(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	cfg.LLM.ActiveProvider = "anthropic"
+
+	err := Save(cfg, "/nonexistent/deeply/nested/dir/config.yaml")
+	if err == nil {
+		t.Error("expected error for invalid path")
+	}
 }

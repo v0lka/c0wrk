@@ -196,7 +196,7 @@ func TestReplan_ReturnsUpdatedPlan(t *testing.T) {
 		{ID: "ac_3", Description: "Tests created"},
 	}
 
-	plan, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, criteria)
+	plan, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, criteria, nil)
 	if err != nil {
 		t.Fatalf("Replan() returned error: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestReplan_IncludesOriginalPlanAndFailureDetails(t *testing.T) {
 		ActionPlan:      "Test action plan",
 	}
 
-	_, _ = planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, nil)
+	_, _ = planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, nil, nil)
 
 	systemPrompt := capturedRequest.Messages[0].Content
 
@@ -596,7 +596,7 @@ func TestReplan_WorkspacePathSubstitution(t *testing.T) {
 	failedStep := CompletedStep{StepID: "step_1", Output: "Failed"}
 
 	ctx := tools.WithWorkspacePath(context.Background(), "/replan/workspace")
-	_, _ = planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil)
+	_, _ = planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil, nil)
 
 	systemPrompt := capturedRequest.Messages[0].Content
 	if strings.Contains(systemPrompt, "WORKSPACE-PATH") {
@@ -604,5 +604,133 @@ func TestReplan_WorkspacePathSubstitution(t *testing.T) {
 	}
 	if !strings.Contains(systemPrompt, "/replan/workspace") {
 		t.Error("replan system prompt should contain the workspace path '/replan/workspace'")
+	}
+}
+
+func TestParsePlanResponse_EdgeCases(t *testing.T) {
+	planner := &Planner{}
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{
+			name:  "valid JSON with steps",
+			input: `{"steps":[{"id":"step_1","description":"do thing"}]}`,
+		},
+		{
+			name:  "JSON in markdown code block",
+			input: "```json\n{\"steps\":[{\"id\":\"step_1\",\"description\":\"do thing\"}]}\n```",
+		},
+		{
+			name:  "JSON in plain code block",
+			input: "```\n{\"steps\":[{\"id\":\"step_1\",\"description\":\"do thing\"}]}\n```",
+		},
+		{
+			name:    "no JSON in response",
+			input:   "here is some text with no json",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+		{
+			name:    "invalid JSON",
+			input:   `{invalid json}`,
+			wantErr: true,
+		},
+		{
+			name:  "JSON with surrounding text",
+			input: `Here is the plan: {"steps":[{"id":"step_1","description":"test"}]} end`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := planner.parsePlanResponse(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if plan == nil {
+				t.Fatal("expected non-nil plan")
+			}
+		})
+	}
+}
+
+func TestReplanWithSessionReflections(t *testing.T) {
+	// Capture what prompt the LLM receives
+	var capturedMessages []llm.Message
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedMessages = req.Messages
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Content: `{"steps": [{"id": "step_1", "description": "Retry with fix", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash_exec"], "relevant_ac": ["ac_1"]}]}`,
+				},
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mockLLM)
+
+	originalPlan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "Do something"},
+		},
+	}
+	completedSteps := []CompletedStep{
+		{StepID: "step_1", Output: "partial result"},
+	}
+	failedStep := CompletedStep{StepID: "step_1", Output: "partial result"}
+	reflection := &Reflection{
+		Summary:   "Step failed due to timeout",
+		RootCause: "API rate limiting",
+	}
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "Must complete"},
+	}
+	sessionReflections := []Reflection{
+		{
+			Summary:         "First attempt failed",
+			RootCause:       "Wrong API endpoint",
+			ActionPlan:      "Use correct endpoint",
+			SuggestedAction: "retry",
+		},
+		{
+			Summary:         "Second attempt also failed",
+			RootCause:       "API rate limited",
+			ActionPlan:      "Add retry logic",
+			SuggestedAction: "replan",
+		},
+	}
+
+	_, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, criteria, sessionReflections)
+	if err != nil {
+		t.Fatalf("Replan failed: %v", err)
+	}
+
+	// Verify the system prompt contains session reflections
+	if len(capturedMessages) == 0 {
+		t.Fatal("no messages captured")
+	}
+	systemPrompt := capturedMessages[0].Content
+	if !strings.Contains(systemPrompt, "Previous session reflections") {
+		t.Error("system prompt should contain 'Previous session reflections'")
+	}
+	if !strings.Contains(systemPrompt, "Wrong API endpoint") {
+		t.Error("system prompt should contain first reflection's root cause")
+	}
+	if !strings.Contains(systemPrompt, "API rate limited") {
+		t.Error("system prompt should contain second reflection's root cause")
 	}
 }

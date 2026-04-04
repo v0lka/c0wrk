@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -555,5 +557,186 @@ func TestSession_GetOrchestrator(t *testing.T) {
 	orch := session.GetOrchestrator()
 	if orch != nil {
 		t.Error("Expected nil orchestrator from mock factory")
+	}
+}
+
+// TestContextWithSessionID verifies session ID round-trips through context.
+func TestContextWithSessionID(t *testing.T) {
+	ctx := context.Background()
+
+	// Empty context returns empty string
+	if id := SessionIDFromContext(ctx); id != "" {
+		t.Errorf("expected empty string from background context, got %q", id)
+	}
+
+	// Set and retrieve
+	ctx = ContextWithSessionID(ctx, "sess-abc")
+	if id := SessionIDFromContext(ctx); id != "sess-abc" {
+		t.Errorf("expected 'sess-abc', got %q", id)
+	}
+
+	// Overwrite with new value
+	ctx = ContextWithSessionID(ctx, "sess-xyz")
+	if id := SessionIDFromContext(ctx); id != "sess-xyz" {
+		t.Errorf("expected 'sess-xyz', got %q", id)
+	}
+}
+
+// TestParseSlogLevel verifies all log level strings.
+func TestParseSlogLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  slog.Level
+	}{
+		{"DEBUG", slog.LevelDebug},
+		{"debug", slog.LevelDebug},
+		{"WARN", slog.LevelWarn},
+		{"warn", slog.LevelWarn},
+		{"ERROR", slog.LevelError},
+		{"error", slog.LevelError},
+		{"INFO", slog.LevelInfo},
+		{"info", slog.LevelInfo},
+		{"unknown", slog.LevelInfo},  // default
+		{"", slog.LevelInfo},          // empty -> default
+	}
+
+	for _, tc := range tests {
+		got := parseSlogLevel(tc.input)
+		if got != tc.want {
+			t.Errorf("parseSlogLevel(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestManager_SetLogLevel verifies log level can be set.
+func TestManager_SetLogLevel(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	if manager.logLevel != "DEBUG" {
+		t.Errorf("default logLevel should be DEBUG, got %q", manager.logLevel)
+	}
+
+	manager.SetLogLevel("ERROR")
+
+	if manager.logLevel != "ERROR" {
+		t.Errorf("expected logLevel ERROR, got %q", manager.logLevel)
+	}
+}
+
+// TestManager_Shutdown verifies Shutdown cancels active tasks and cleans up.
+func TestManager_Shutdown(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	// Create several sessions
+	for i := 0; i < 3; i++ {
+		_, err := manager.CreateSession()
+		if err != nil {
+			t.Fatalf("CreateSession failed: %v", err)
+		}
+	}
+
+	if len(manager.ListSessions()) != 3 {
+		t.Fatalf("expected 3 sessions before shutdown")
+	}
+
+	// Set one session as active with a cancel func to verify it gets called
+	sessions := manager.ListSessions()
+	sess, _ := manager.GetSession(sessions[0].ID)
+	cancelled := false
+	sess.mu.Lock()
+	sess.active = true
+	sess.cancel = func() { cancelled = true }
+	sess.mu.Unlock()
+
+	manager.Shutdown()
+
+	if len(manager.ListSessions()) != 0 {
+		t.Errorf("expected 0 sessions after shutdown, got %d", len(manager.ListSessions()))
+	}
+
+	if !cancelled {
+		t.Error("expected active session cancel to be called during shutdown")
+	}
+}
+
+// TestManager_DeleteSession_WithActiveTask verifies deleting a session with active task cancels it.
+func TestManager_DeleteSession_WithActiveTask(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	info, _ := manager.CreateSession()
+	session, _ := manager.GetSession(info.ID)
+
+	// Simulate an active task
+	cancelled := false
+	session.mu.Lock()
+	session.active = true
+	session.cancel = func() { cancelled = true }
+	session.mu.Unlock()
+
+	err := manager.DeleteSession(info.ID)
+	if err != nil {
+		t.Fatalf("DeleteSession failed: %v", err)
+	}
+
+	if !cancelled {
+		t.Error("expected cancel to be called when deleting session with active task")
+	}
+
+	_, exists := manager.GetSession(info.ID)
+	if exists {
+		t.Error("session should not exist after deletion")
+	}
+}
+
+// TestManager_CancelTask_WithActiveTask verifies cancelling an active task.
+func TestManager_CancelTask_WithActiveTask(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	info, _ := manager.CreateSession()
+	session, _ := manager.GetSession(info.ID)
+
+	// Simulate an active task
+	cancelled := false
+	session.mu.Lock()
+	session.active = true
+	session.cancel = func() { cancelled = true }
+	session.mu.Unlock()
+
+	err := manager.CancelTask(info.ID)
+	if err != nil {
+		t.Fatalf("CancelTask failed: %v", err)
+	}
+
+	if !cancelled {
+		t.Error("expected cancel func to be called")
+	}
+}
+
+// TestManager_CreateSession_FactoryError verifies error handling when factory fails.
+func TestManager_CreateSession_FactoryError(t *testing.T) {
+	logDir := t.TempDir()
+	workspacesDir := t.TempDir()
+
+	eventChan := make(chan Event, 100)
+	emitFunc := func(e Event) {
+		select {
+		case eventChan <- e:
+		default:
+		}
+	}
+
+	// Factory that always fails
+	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
+		return nil, errors.New("factory error")
+	}
+
+	manager := NewManager(factory, emitFunc, logDir, workspacesDir)
+
+	_, err := manager.CreateSession()
+	if err == nil {
+		t.Fatal("expected error from CreateSession when factory fails")
+	}
+	if !strings.Contains(err.Error(), "failed to create orchestrator") {
+		t.Errorf("expected 'failed to create orchestrator' in error, got: %v", err)
 	}
 }

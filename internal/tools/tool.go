@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 // ToolPolicy defines the security policy for a tool.
@@ -19,7 +20,7 @@ const (
 	PolicyAuto
 )
 
-// Tool — unified interface for all tools (Core, MCP, Skills).
+// Tool — unified interface for all tools (Core, MCP, External).
 type Tool interface {
 	Name() string
 	Description() string
@@ -48,7 +49,7 @@ type ToolDescriptor struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
-	Source      string          `json:"source"` // "core" | "mcp" | "skill"
+	Source      string          `json:"source"` // "core" | "mcp" | "external"
 }
 
 // ConfirmationRequest describes a tool execution that needs user confirmation.
@@ -107,6 +108,68 @@ func WithWorkspacePath(ctx context.Context, path string) context.Context {
 // Returns an empty string if not found.
 func WorkspacePathFrom(ctx context.Context) string {
 	if v, ok := ctx.Value(workspacePathKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ParseToolPolicy converts a policy string to a ToolPolicy constant.
+func ParseToolPolicy(s string) ToolPolicy {
+	switch s {
+	case "always_allow":
+		return PolicyAlwaysAllow
+	case "always_deny":
+		return PolicyAlwaysDeny
+	case "user_confirm":
+		return PolicyUserConfirm
+	default:
+		return PolicyAuto
+	}
+}
+
+// ErrorResult creates a ToolResult with IsError=true.
+func ErrorResult(format string, args ...interface{}) ToolResult {
+	return ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+}
+
+// ParseInputError returns a standard parse-error ToolResult.
+func ParseInputError(err error) (ToolResult, error) {
+	return ErrorResult("failed to parse input: %v", err), nil
+}
+
+// BaseTool provides default implementations of Name, Description, InputSchema,
+// and DefaultPolicy so concrete tools only need to implement Execute.
+type BaseTool struct {
+	ToolName        string
+	ToolDescription string
+	Schema          json.RawMessage
+	Policy          ToolPolicy
+}
+
+// Name returns the tool name.
+func (b *BaseTool) Name() string { return b.ToolName }
+
+// Description returns the tool description.
+func (b *BaseTool) Description() string { return b.ToolDescription }
+
+// InputSchema returns the tool's JSON input schema.
+func (b *BaseTool) InputSchema() json.RawMessage { return b.Schema }
+
+// DefaultPolicy returns the tool's default security policy.
+func (b *BaseTool) DefaultPolicy() ToolPolicy { return b.Policy }
+
+// taskContextKey is the context key for passing task context through Go's context.Context.
+type taskContextKey struct{}
+
+// WithTaskContext returns a new context with the task description attached.
+func WithTaskContext(ctx context.Context, desc string) context.Context {
+	return context.WithValue(ctx, taskContextKey{}, desc)
+}
+
+// TaskContextFrom extracts the task description from the context.
+// Returns an empty string if not found.
+func TaskContextFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(taskContextKey{}).(string); ok {
 		return v
 	}
 	return ""

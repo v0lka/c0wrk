@@ -437,3 +437,268 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// --- Workspace pre-check tests ---
+
+func TestJudge_WorkspacePreCheck_AllowsInternalPaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
+	input := json.RawMessage(`{"path":"/tmp/test-workspace/src/main.go"}`)
+
+	verdict, reason, err := judge.Judge(ctx, "file_write", input, "write file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+	if reason != "all paths are within the session workspace" {
+		t.Errorf("unexpected reason: %q", reason)
+	}
+	if mockProvider.callCount != 0 {
+		t.Errorf("expected 0 LLM calls (short-circuited), got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_WorkspacePreCheck_DeniesExternalPaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: External path"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
+	input := json.RawMessage(`{"path":"/etc/passwd"}`)
+
+	verdict, _, err := judge.Judge(ctx, "file_read", input, "read file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictConfirm {
+		t.Errorf("expected VerdictConfirm (fell through to LLM), got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_WorkspacePreCheck_MixedPaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Mixed paths"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
+	input := json.RawMessage(`{"src":"/tmp/test-workspace/file.go","dest":"/etc/somefile"}`)
+
+	verdict, _, err := judge.Judge(ctx, "file_copy", input, "copy file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictConfirm {
+		t.Errorf("expected VerdictConfirm (fell through to LLM), got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_WorkspacePreCheck_NoWorkspace(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := context.Background() // no workspace path
+	input := json.RawMessage(`{"path":"/tmp/test-workspace/file.go"}`)
+
+	verdict, _, err := judge.Judge(ctx, "file_write", input, "write file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow from LLM, got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call (no workspace shortcut), got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_WorkspacePreCheck_NoPaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
+	input := json.RawMessage(`{"query":"SELECT * FROM users"}`)
+
+	verdict, _, err := judge.Judge(ctx, "sql", input, "run query")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow from LLM, got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call (no paths found), got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_WorkspacePreCheck_BashCommand(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
+	input := json.RawMessage(`{"command":"cat /tmp/test-workspace/src/main.go | grep func"}`)
+
+	verdict, reason, err := judge.Judge(ctx, "bash", input, "search functions")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+	if reason != "all paths are within the session workspace" {
+		t.Errorf("unexpected reason: %q", reason)
+	}
+	if mockProvider.callCount != 0 {
+		t.Errorf("expected 0 LLM calls (short-circuited), got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_WorkspacePreCheck_RelativePaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
+	input := json.RawMessage(`{"path":"src/main.go"}`)
+
+	verdict, _, err := judge.Judge(ctx, "file_write", input, "write file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Relative paths don't start with /, so no absolute paths found → falls through to LLM
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow from LLM, got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call (relative path not matched), got %d", mockProvider.callCount)
+	}
+}
+
+func TestAllPathsInWorkspace(t *testing.T) {
+	tests := []struct {
+		name      string
+		workspace string
+		input     string
+		want      bool
+	}{
+		{
+			name:      "single path inside workspace",
+			workspace: "/home/user/project",
+			input:     `{"file":"/home/user/project/main.go"}`,
+			want:      true,
+		},
+		{
+			name:      "workspace path itself",
+			workspace: "/home/user/project",
+			input:     `{"path":"/home/user/project"}`,
+			want:      true,
+		},
+		{
+			name:      "path outside workspace",
+			workspace: "/home/user/project",
+			input:     `{"file":"/etc/passwd"}`,
+			want:      false,
+		},
+		{
+			name:      "mixed paths",
+			workspace: "/home/user/project",
+			input:     `{"src":"/home/user/project/a.go","dst":"/tmp/b.go"}`,
+			want:      false,
+		},
+		{
+			name:      "no paths in input",
+			workspace: "/home/user/project",
+			input:     `{"query":"hello world"}`,
+			want:      false,
+		},
+		{
+			name:      "empty workspace",
+			workspace: "",
+			input:     `{"file":"/home/user/project/main.go"}`,
+			want:      false,
+		},
+		{
+			name:      "nested JSON with paths",
+			workspace: "/workspace",
+			input:     `{"args":{"file":"/workspace/src/app.go"}}`,
+			want:      true,
+		},
+		{
+			name:      "array of paths inside workspace",
+			workspace: "/workspace",
+			input:     `{"files":["/workspace/a.go","/workspace/b.go"]}`,
+			want:      true,
+		},
+		{
+			name:      "path traversal attempt",
+			workspace: "/home/user/project",
+			input:     `{"file":"/home/user/project/../../../etc/passwd"}`,
+			want:      false,
+		},
+		{
+			name:      "bash command with workspace path",
+			workspace: "/workspace",
+			input:     `{"command":"rm -rf /workspace/tmp/cache"}`,
+			want:      true,
+		},
+		{
+			name:      "bash command with external path",
+			workspace: "/workspace",
+			input:     `{"command":"cat /etc/hosts"}`,
+			want:      false,
+		},
+		{
+			name:      "invalid JSON",
+			workspace: "/workspace",
+			input:     `not json`,
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tt.workspace != "" {
+				ctx = WithWorkspacePath(ctx, tt.workspace)
+			}
+			got := allPathsInWorkspace(ctx, json.RawMessage(tt.input))
+			if got != tt.want {
+				t.Errorf("allPathsInWorkspace() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

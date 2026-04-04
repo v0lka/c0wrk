@@ -42,19 +42,14 @@ export function useSessionEvents(sessionId: string | null) {
     on('routing', (data: unknown) => {
       const routing = data as RoutingData
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Analyzing request...')
-      // Skip orchestration-phase routing and mode selection messages from chat
-      // Mode selection (direct/react/plan_execute) is part of orchestration, not shown in chat
-      const isOrchestrationMode = ['direct', 'react', 'plan_execute'].includes(routing.mode)
-      if (!isOrchestrationMode) {
-        addMessage(sessionId, {
-          id: `routing-${Date.now()}`,
-          sessionId,
-          type: 'routing',
-          content: `Mode: ${routing.mode} | Domain: ${routing.domain} | Complexity: ${routing.complexity}`,
-          metadata: { mode: routing.mode, domain: routing.domain, complexity: routing.complexity },
-          timestamp: Date.now(),
-        })
-      }
+      addMessage(sessionId, {
+        id: `routing-${Date.now()}`,
+        sessionId,
+        type: 'routing',
+        content: `Mode: ${routing.mode} | Domain: ${routing.domain} | Complexity: ${routing.complexity}`,
+        metadata: { mode: routing.mode, domain: routing.domain, complexity: routing.complexity },
+        timestamp: Date.now(),
+      })
       inspectorStore.updateStats({ routingMode: routing.mode, routingDomain: routing.domain, routingComplexity: routing.complexity })
     })
 
@@ -384,6 +379,18 @@ export function useSessionEvents(sessionId: string | null) {
           description: c.description,
         }))
         panelStore.addEvalGroup(pendingCriteria)
+
+        // Also add to chat timeline
+        if (isActiveSession()) {
+          addMessage(sessionId, {
+            id: `ac-extracted-${Date.now()}`,
+            sessionId,
+            type: 'ac_extracted',
+            content: `${acData.criteria.length} acceptance criteria extracted`,
+            metadata: { count: acData.criteria.length, criteria: acData.criteria },
+            timestamp: Date.now(),
+          })
+        }
       }
     })
 

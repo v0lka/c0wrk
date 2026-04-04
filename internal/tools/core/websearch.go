@@ -17,6 +17,7 @@ const toolWebsearchDescription = "Search the web using Tavily API"
 
 // WebSearchTool searches the web using Tavily API.
 type WebSearchTool struct {
+	*tools.BaseTool
 	apiKey  string
 	baseURL string
 	client  *http.Client
@@ -24,7 +25,27 @@ type WebSearchTool struct {
 
 // NewWebSearchTool creates a new WebSearchTool with the given API key.
 func NewWebSearchTool(apiKey string) *WebSearchTool {
+	schema := `{
+		"type": "object",
+		"properties": {
+			"query": {
+				"type": "string",
+				"description": "Search query"
+			},
+			"max_results": {
+				"type": "integer",
+				"description": "Maximum results to return (default: 5)"
+			}
+		},
+		"required": ["query"]
+	}`
 	return &WebSearchTool{
+		BaseTool: &tools.BaseTool{
+			ToolName:        "web_search",
+			ToolDescription: toolWebsearchDescription,
+			Schema:          json.RawMessage(schema),
+			Policy:          tools.PolicyAlwaysAllow,
+		},
 		apiKey:  apiKey,
 		baseURL: "https://api.tavily.com/search",
 		client: &http.Client{
@@ -59,45 +80,11 @@ type tavilyResult struct {
 	Content string `json:"content"`
 }
 
-// Name returns the tool name.
-func (t *WebSearchTool) Name() string {
-	return "web_search"
-}
-
-// Description returns the tool description.
-func (t *WebSearchTool) Description() string {
-	return toolWebsearchDescription
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *WebSearchTool) InputSchema() json.RawMessage {
-	schema := `{
-		"type": "object",
-		"properties": {
-			"query": {
-				"type": "string",
-				"description": "Search query"
-			},
-			"max_results": {
-				"type": "integer",
-				"description": "Maximum results to return (default: 5)"
-			}
-		},
-		"required": ["query"]
-	}`
-	return json.RawMessage(schema)
-}
-
-// DefaultPolicy returns PolicyAlwaysAllow because web search only reads external content.
-func (t *WebSearchTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAlwaysAllow
-}
-
 // Execute performs a web search and returns the results.
 func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params webSearchInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("failed to parse input: %v", err), IsError: true}, nil
+		return tools.ParseInputError(err)
 	}
 
 	// Validate query parameter

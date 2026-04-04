@@ -10,10 +10,10 @@ Always explain your reasoning before taking action.
 
 When choosing which tool to use, follow this priority order to maximize token efficiency and avoid reinventing existing tooling:
 
-1. **Skills** (TIER 1): Pre-built, domain-specific tools. Already created and optimized — always prefer these when one matches your task.
+1. **External tools** (TIER 1): User-created, domain-specific tools. Already created and optimized — always prefer these when one matches your task.
 2. **Built-in tools** (TIER 2): Purpose-built high-level tools (file operations, web search, web fetch, context manager, etc.). Use these for standard operations.
 3. **MCP tools** (TIER 3): External integrations via Model Context Protocol. Use when built-in tools don't cover the need.
-4. **Fallback tools** (TIER 4): `bash_exec` for one-off, task-specific operations that no higher-tier tool can handle. Use `skill_creator` only if a capability is reusable enough to justify creating a new skill.
+4. **Fallback tools** (TIER 4): `bash_exec` for one-off, task-specific operations that no higher-tier tool can handle. Use `tool_creator` only if a capability is reusable enough to justify creating a new tool.
 
 IMPORTANT: Do NOT default to bash when a higher-level tool exists for the same operation. For example, use file operation tools instead of bash cat/echo/sed, use web_search instead of bash curl, etc.
 

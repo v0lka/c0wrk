@@ -17,7 +17,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.MaxReactSteps = 30
 	}
 	if cfg.Executor.MaxRetries == 0 {
-		cfg.Executor.MaxRetries = 1
+		cfg.Executor.MaxRetries = 2
 	}
 	if cfg.Executor.OutputTokenReserve == 0 {
 		cfg.Executor.OutputTokenReserve = 4096
@@ -131,22 +131,5 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Security.ToolPolicies["web_fetch"] = ToolPolicyConfig{
 			Policy: "always_allow",
 		}
-	}
-
-	// Docker/Skills defaults
-	if cfg.Skills.Docker.WarmPoolThreshold == 0 {
-		cfg.Skills.Docker.WarmPoolThreshold = 5
-	}
-	if cfg.Skills.Docker.WarmPoolIdleTimeout == "" {
-		cfg.Skills.Docker.WarmPoolIdleTimeout = "60s"
-	}
-	if cfg.Skills.Docker.DefaultMemory == "" {
-		cfg.Skills.Docker.DefaultMemory = "256m"
-	}
-	if cfg.Skills.Docker.DefaultCPU == "" {
-		cfg.Skills.Docker.DefaultCPU = "0.5"
-	}
-	if cfg.Skills.Docker.DefaultTimeout == "" {
-		cfg.Skills.Docker.DefaultTimeout = "30s"
 	}
 }

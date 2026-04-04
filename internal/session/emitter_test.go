@@ -542,3 +542,252 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	}
 	mu.Unlock()
 }
+
+// TestEventEmitterWithPlanStepID verifies WithPlanStepID returns a scoped emitter
+// that injects plan_step_id into map[string]interface{} event data.
+func TestEventEmitterWithPlanStepID(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	base := NewEventEmitter("test-session", emit)
+	scoped := base.WithPlanStepID("step-42")
+
+	// Use the scoped emitter (type-assert to *EventEmitter for method access)
+	scopedEmitter, ok := scoped.(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithPlanStepID")
+	}
+
+	// PlanGenerated emits map[string]interface{} so plan_step_id should be injected
+	scopedEmitter.PlanGenerated(2, []core.PlanStepEvent{
+		{Description: "Do stuff", Status: "pending"},
+	})
+
+	if received.SessionID != "test-session" {
+		t.Errorf("expected session_id 'test-session', got %q", received.SessionID)
+	}
+
+	data, ok := received.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["plan_step_id"] != "step-42" {
+		t.Errorf("expected plan_step_id 'step-42', got %v", data["plan_step_id"])
+	}
+}
+
+// TestEventEmitterWithPlanStepID_NonMapData verifies that when Data is not
+// map[string]interface{}, plan_step_id injection is skipped without error.
+func TestEventEmitterWithPlanStepID_NonMapData(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	base := NewEventEmitter("test-session", emit)
+	scoped := base.WithPlanStepID("step-99")
+
+	// Routing emits map[string]string — not map[string]interface{}
+	scopedEmitter, ok := scoped.(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithPlanStepID")
+	}
+	scopedEmitter.Routing("direct", "general", "1")
+
+	data, ok := received.Data.(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string data, got %T", received.Data)
+	}
+	// plan_step_id should NOT be present in map[string]string
+	if _, exists := data["plan_step_id"]; exists {
+		t.Error("plan_step_id should not be injected into map[string]string data")
+	}
+}
+
+// TestEventEmitterPlanStepStart verifies PlanStepStart emits correct event.
+func TestEventEmitterPlanStepStart(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanStepStart("step-1", "Install dependencies")
+
+	if received.SessionID != "test-session" {
+		t.Errorf("expected session_id 'test-session', got %q", received.SessionID)
+	}
+	if received.Type != "plan_step_start" {
+		t.Errorf("expected type 'plan_step_start', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string data, got %T", received.Data)
+	}
+	if data["step_id"] != "step-1" {
+		t.Errorf("expected step_id 'step-1', got %q", data["step_id"])
+	}
+	if data["description"] != "Install dependencies" {
+		t.Errorf("expected description 'Install dependencies', got %q", data["description"])
+	}
+}
+
+// TestEventEmitterPlanStepComplete verifies PlanStepComplete emits correct event.
+func TestEventEmitterPlanStepComplete(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	duration := 2500 * time.Millisecond
+	emitter.PlanStepComplete("step-1", true, duration)
+
+	if received.Type != "plan_step_complete" {
+		t.Errorf("expected type 'plan_step_complete', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["step_id"] != "step-1" {
+		t.Errorf("expected step_id 'step-1', got %v", data["step_id"])
+	}
+	if data["success"] != true {
+		t.Errorf("expected success true, got %v", data["success"])
+	}
+	if data["duration"] != int64(2500) {
+		t.Errorf("expected duration 2500, got %v", data["duration"])
+	}
+}
+
+// TestEventEmitterAssistantChunk verifies AssistantChunk emits correct event.
+func TestEventEmitterAssistantChunk(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.AssistantChunk("Hello, how can")
+
+	if received.Type != "assistant_chunk" {
+		t.Errorf("expected type 'assistant_chunk', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["content"] != "Hello, how can" {
+		t.Errorf("expected content 'Hello, how can', got %v", data["content"])
+	}
+}
+
+// TestEventEmitterAssistantDone verifies AssistantDone emits correct event.
+func TestEventEmitterAssistantDone(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.AssistantDone("Full response content", 150, 200)
+
+	if received.Type != "assistant_done" {
+		t.Errorf("expected type 'assistant_done', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["content"] != "Full response content" {
+		t.Errorf("expected content 'Full response content', got %v", data["content"])
+	}
+	if data["input_tokens"] != 150 {
+		t.Errorf("expected input_tokens 150, got %v", data["input_tokens"])
+	}
+	if data["output_tokens"] != 200 {
+		t.Errorf("expected output_tokens 200, got %v", data["output_tokens"])
+	}
+}
+
+// TestEventEmitterService verifies Service emits correct event.
+func TestEventEmitterService(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.Service("Context compaction triggered")
+
+	if received.Type != "service" {
+		t.Errorf("expected type 'service', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["content"] != "Context compaction triggered" {
+		t.Errorf("expected content 'Context compaction triggered', got %v", data["content"])
+	}
+}
+
+// TestEventEmitterServiceWithMeta verifies ServiceWithMeta emits correct event with metadata.
+func TestEventEmitterServiceWithMeta(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	meta := map[string]interface{}{
+		"compaction_type": "sliding",
+		"tokens_freed":    5000,
+	}
+	emitter.ServiceWithMeta("Compaction complete", meta)
+
+	if received.Type != "service" {
+		t.Errorf("expected type 'service', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["content"] != "Compaction complete" {
+		t.Errorf("expected content 'Compaction complete', got %v", data["content"])
+	}
+	if data["compaction_type"] != "sliding" {
+		t.Errorf("expected compaction_type 'sliding', got %v", data["compaction_type"])
+	}
+	if data["tokens_freed"] != 5000 {
+		t.Errorf("expected tokens_freed 5000, got %v", data["tokens_freed"])
+	}
+}
+
+// TestEventEmitterServiceWithMeta_NilMeta verifies ServiceWithMeta works with nil metadata.
+func TestEventEmitterServiceWithMeta_NilMeta(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.ServiceWithMeta("Simple service msg", nil)
+
+	data, ok := received.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["content"] != "Simple service msg" {
+		t.Errorf("expected content 'Simple service msg', got %v", data["content"])
+	}
+}

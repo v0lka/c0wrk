@@ -482,7 +482,7 @@ func TestContextManagerTool_InvalidJSON(t *testing.T) {
 		t.Error("Execute() should return error for invalid JSON")
 	}
 
-	if !strings.Contains(result.Content, "invalid input") {
+	if !strings.Contains(result.Content, "failed to parse input") {
 		t.Errorf("Result should indicate invalid input, got: %s", result.Content)
 	}
 }

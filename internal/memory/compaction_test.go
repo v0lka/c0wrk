@@ -437,3 +437,36 @@ func TestSummarizationStrategy_TruncatesLargeBlocks(t *testing.T) {
 		t.Error("Expected truncation indicator in the text passed to summarizer")
 	}
 }
+
+func TestHierarchicalStrategy_TruncateToTokenBudget(t *testing.T) {
+	// Create strategy with small token budget
+	strategy := &HierarchicalStrategy{
+		maxSummarizeTokens: 10, // 10 tokens * 3 chars = 30 chars max
+	}
+
+	tests := []struct {
+		name         string
+		input        string
+		shouldTrunc  bool
+	}{
+		{"short text within budget", "hello", false},
+		{"exact budget", strings.Repeat("x", 30), false},
+		{"over budget", strings.Repeat("x", 100), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := strategy.truncateToTokenBudget(tt.input)
+			if tt.shouldTrunc {
+				if !strings.Contains(result, "truncated") {
+					t.Error("expected truncation marker")
+				}
+				if len(result) > 30+50 { // 30 chars + marker
+					t.Errorf("truncated result too long: %d chars", len(result))
+				}
+			} else if result != tt.input {
+				t.Errorf("expected unchanged text, got different")
+			}
+		})
+	}
+}

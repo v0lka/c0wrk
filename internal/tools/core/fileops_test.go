@@ -567,7 +567,7 @@ func TestFileOpsTool_InvalidJSON(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected IsError=true for invalid JSON")
 	}
-	if !strings.Contains(result.Content, "invalid input") {
-		t.Errorf("expected 'invalid input' error message, got: %s", result.Content)
+	if !strings.Contains(result.Content, "failed to parse input") {
+		t.Errorf("expected 'failed to parse input' error message, got: %s", result.Content)
 	}
 }

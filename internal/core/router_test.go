@@ -539,3 +539,25 @@ func TestRoute_NonEmptyRawCriteriaFormatsCriteriaList(t *testing.T) {
 		t.Errorf("expected 'task appears trivial' to appear once (docs only), got %d occurrences", trivialCount)
 	}
 }
+
+func TestNewRouter_DefaultHistoryWindow(t *testing.T) {
+	mock := &mockLLMCaller{}
+
+	// Zero history window should default to 10
+	router := NewRouter(mock, 0)
+	if router.historyWindow != 10 {
+		t.Errorf("expected historyWindow=10 for 0 input, got %d", router.historyWindow)
+	}
+
+	// Negative history window should default to 10
+	router = NewRouter(mock, -5)
+	if router.historyWindow != 10 {
+		t.Errorf("expected historyWindow=10 for -5 input, got %d", router.historyWindow)
+	}
+
+	// Positive should be used as-is
+	router = NewRouter(mock, 20)
+	if router.historyWindow != 20 {
+		t.Errorf("expected historyWindow=20, got %d", router.historyWindow)
+	}
+}

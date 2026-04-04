@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -3705,5 +3706,199 @@ func TestBuildSystemPrompt_WorkspaceContext(t *testing.T) {
 	}
 	if !strings.Contains(promptWithWS, "Your session workspace is:") {
 		t.Error("prompt should contain 'Your session workspace is:' header")
+	}
+}
+
+func TestIsRecoverableAPIError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"nil error", nil, false},
+		{"generic error", errors.New("something went wrong"), false},
+		{"400 status code", errors.New("status code: 400 bad request"), true},
+		{"missing field content", errors.New("missing field `content`"), true},
+		{"failed to deserialize", errors.New("Failed to deserialize response"), true},
+		{"retryable LLM error", llm.NewLLMError("test", 429, true, errors.New("rate limited")), true},
+		{"non-retryable LLM error", llm.NewLLMError("test", 401, false, errors.New("unauthorized")), false},
+		{"404 error", errors.New("status code: 404"), false},
+		{"500 generic", errors.New("internal server error"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRecoverableAPIError(tt.err)
+			if got != tt.expected {
+				t.Errorf("isRecoverableAPIError() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFinishTool_DefaultPolicy(t *testing.T) {
+	ft := NewFinishTool()
+	if ft.DefaultPolicy() != tools.PolicyAlwaysAllow {
+		t.Errorf("expected PolicyAlwaysAllow, got %v", ft.DefaultPolicy())
+	}
+}
+
+func TestFinishTool_Execute(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantContent string
+		wantError   bool
+	}{
+		{"valid input", `{"answer":"done!"}`, "done!", false},
+		{"empty answer", `{"answer":""}`, "", false},
+		{"invalid json", `{invalid}`, "", true},
+		{"missing answer field", `{"other":"val"}`, "", false},
+	}
+
+	ft := NewFinishTool()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ft.Execute(context.Background(), json.RawMessage(tt.input))
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if result.IsError != tt.wantError {
+				t.Errorf("IsError = %v, want %v (content: %s)", result.IsError, tt.wantError, result.Content)
+			}
+			if !tt.wantError && result.Content != tt.wantContent {
+				t.Errorf("Content = %q, want %q", result.Content, tt.wantContent)
+			}
+		})
+	}
+}
+
+func TestIsContextExceededError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"nil error", nil, false},
+		{"generic error", errors.New("something else"), false},
+		{"context length exceeded", errors.New("context length exceeded for this model"), true},
+		{"maximum context length", errors.New("maximum context length is 128000"), true},
+		{"context_length_exceeded", errors.New("error: context_length_exceeded"), true},
+		{"too many tokens", errors.New("too many tokens in request"), true},
+		{"request too large", errors.New("request too large"), true},
+		{"input is too long", errors.New("input is too long"), true},
+		{"prompt is too long", errors.New("prompt is too long for the model"), true},
+		{"case insensitive", errors.New("CONTEXT LENGTH EXCEEDED"), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isContextExceededError(tt.err)
+			if got != tt.expected {
+				t.Errorf("isContextExceededError() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildPlanExecutionSteps(t *testing.T) {
+	plan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "Fetch data from API"},
+			{ID: "step_2", Description: "Filter results"},
+			{ID: "step_3", Description: "Generate report"},
+		},
+	}
+
+	completedSteps := []CompletedStep{
+		{StepID: "step_1", Output: "Fetched 100 records"},
+		{StepID: "step_2", Output: "Filtered to 25 records"},
+		{StepID: "step_3", Output: "", Error: errors.New("timeout generating report")},
+	}
+
+	steps := buildPlanExecutionSteps(completedSteps, plan)
+
+	if len(steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(steps))
+	}
+
+	// Step 1: successful
+	if !strings.Contains(steps[0].Thought, "step_1") {
+		t.Errorf("step 0 thought should reference step_1, got: %s", steps[0].Thought)
+	}
+	if !strings.Contains(steps[0].Thought, "Fetch data from API") {
+		t.Errorf("step 0 thought should contain description, got: %s", steps[0].Thought)
+	}
+	if steps[0].Observation != "Fetched 100 records" {
+		t.Errorf("step 0 observation = %q, want %q", steps[0].Observation, "Fetched 100 records")
+	}
+
+	// Step 2: successful
+	if steps[1].Observation != "Filtered to 25 records" {
+		t.Errorf("step 1 observation = %q, want %q", steps[1].Observation, "Filtered to 25 records")
+	}
+
+	// Step 3: failed
+	if !strings.Contains(steps[2].Observation, "STEP FAILED") {
+		t.Errorf("step 2 observation should contain STEP FAILED, got: %s", steps[2].Observation)
+	}
+	if !strings.Contains(steps[2].Observation, "timeout generating report") {
+		t.Errorf("step 2 observation should contain error message, got: %s", steps[2].Observation)
+	}
+}
+
+func TestBuildPlanExecutionSteps_Empty(t *testing.T) {
+	plan := &Plan{Steps: []PlanStep{}}
+	steps := buildPlanExecutionSteps(nil, plan)
+	if len(steps) != 0 {
+		t.Fatalf("expected 0 steps for nil input, got %d", len(steps))
+	}
+}
+
+func TestValidateACMapping(t *testing.T) {
+	plan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", RelevantAC: []string{"ac_1", "ac_2"}},
+			{ID: "step_2", RelevantAC: []string{"ac_3"}},
+		},
+	}
+
+	ac := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "criterion 1"},
+		{ID: "ac_2", Description: "criterion 2"},
+		{ID: "ac_3", Description: "criterion 3"},
+		{ID: "ac_4", Description: "criterion 4"},
+		{ID: "ac_5", Description: "criterion 5"},
+	}
+
+	unmapped := validateACMapping(plan, ac)
+
+	if len(unmapped) != 2 {
+		t.Fatalf("expected 2 unmapped, got %d: %v", len(unmapped), unmapped)
+	}
+
+	// Check that ac_4 and ac_5 are in the unmapped list
+	unmappedSet := make(map[string]bool)
+	for _, id := range unmapped {
+		unmappedSet[id] = true
+	}
+	if !unmappedSet["ac_4"] || !unmappedSet["ac_5"] {
+		t.Errorf("expected ac_4 and ac_5 to be unmapped, got: %v", unmapped)
+	}
+}
+
+func TestValidateACMapping_AllMapped(t *testing.T) {
+	plan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", RelevantAC: []string{"ac_1"}},
+		},
+	}
+	ac := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "criterion 1"},
+	}
+
+	unmapped := validateACMapping(plan, ac)
+	if len(unmapped) != 0 {
+		t.Fatalf("expected no unmapped, got: %v", unmapped)
 	}
 }

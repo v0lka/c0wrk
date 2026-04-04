@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/user/agent/internal/config"
 )
 
 // mockProvider implements LLMProvider for testing.
@@ -240,6 +242,329 @@ func TestRouter_Stream_RetriesOnRetryableError(t *testing.T) {
 	}
 	if mock.callCount != 2 {
 		t.Errorf("expected 2 calls, got %d", mock.callCount)
+	}
+}
+
+func TestRouter_GetProvider(t *testing.T) {
+	mock := &mockProvider{name: "test"}
+	router := newTestRouter(
+		map[string]*mockProvider{"primary": mock, "secondary": {name: "secondary"}},
+		"primary", "model",
+	)
+
+	// Existing provider
+	p := router.GetProvider("primary")
+	if p == nil {
+		t.Fatal("expected non-nil provider for 'primary'")
+	}
+	if p.Name() != "test" {
+		t.Errorf("expected name 'test', got %q", p.Name())
+	}
+
+	// Second provider
+	p2 := router.GetProvider("secondary")
+	if p2 == nil {
+		t.Fatal("expected non-nil provider for 'secondary'")
+	}
+
+	// Non-existent provider
+	p3 := router.GetProvider("nonexistent")
+	if p3 != nil {
+		t.Error("expected nil for nonexistent provider")
+	}
+}
+
+func TestRouter_GetDefaultProvider(t *testing.T) {
+	mock := &mockProvider{name: "default-prov"}
+	router := newTestRouter(
+		map[string]*mockProvider{"primary": mock},
+		"primary", "model",
+	)
+
+	p := router.GetDefaultProvider()
+	if p == nil {
+		t.Fatal("expected non-nil default provider")
+	}
+	if p.Name() != "default-prov" {
+		t.Errorf("expected name 'default-prov', got %q", p.Name())
+	}
+}
+
+func TestRouter_Stream_NoRetryOnNonRetryableError(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		err:  NewLLMError("test", 401, false, errors.New("unauthorized")),
+	}
+	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
+
+	_, err := router.Stream(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "Hi"}}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if mock.callCount != 1 {
+		t.Errorf("expected 1 call (no retry), got %d", mock.callCount)
+	}
+}
+
+func TestRouter_Stream_ExhaustsRetries(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		err:  NewLLMError("test", 503, true, errors.New("service unavailable")),
+	}
+	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
+
+	_, err := router.Stream(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "Hi"}}})
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if mock.callCount != 4 {
+		t.Errorf("expected 4 calls (1 initial + 3 retries), got %d", mock.callCount)
+	}
+}
+
+func TestRouter_Stream_RespectsContextCancellation(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		err:  NewLLMError("test", 429, true, errors.New("rate limited")),
+	}
+	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := router.Stream(ctx, ChatRequest{Messages: []Message{{Role: "user", Content: "Hi"}}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if mock.callCount > 2 {
+		t.Errorf("expected at most 2 calls with cancelled context, got %d", mock.callCount)
+	}
+}
+
+func TestRouter_Call_SetsDefaultTemperature(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		response: &ChatResponse{
+			Message:    Message{Role: "assistant", Content: "OK"},
+			StopReason: "end_turn",
+		},
+	}
+	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
+
+	_, err := router.Call(context.Background(), ChatRequest{
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.lastReq.Temperature == nil {
+		t.Fatal("expected temperature to be set")
+	}
+	if *mock.lastReq.Temperature != 0.0 {
+		t.Errorf("expected temperature 0.0, got %f", *mock.lastReq.Temperature)
+	}
+}
+
+func TestRouter_Call_PreservesExistingTemperature(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		response: &ChatResponse{
+			Message:    Message{Role: "assistant", Content: "OK"},
+			StopReason: "end_turn",
+		},
+	}
+	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
+
+	temp := 0.7
+	_, err := router.Call(context.Background(), ChatRequest{
+		Messages:    []Message{{Role: "user", Content: "Hi"}},
+		Temperature: &temp,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if *mock.lastReq.Temperature != 0.7 {
+		t.Errorf("expected temperature 0.7, got %f", *mock.lastReq.Temperature)
+	}
+}
+
+func TestNewLLMRouter(t *testing.T) {
+	// Test with lmstudio provider (doesn't require external services)
+	t.Run("lmstudio provider", func(t *testing.T) {
+		cfg := config.LLMConfig{
+			ActiveProvider: "lmstudio",
+			LMStudio: config.LMStudioConfig{
+				BaseURL: "http://localhost:9999",
+				Model:   "test-model",
+			},
+			Retry: config.LLMRetryConfig{
+				MaxRetries:     2,
+				InitialBackoff: "100ms",
+				MaxBackoff:     "1s",
+			},
+		}
+
+		router, err := NewLLMRouter(cfg, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if router == nil {
+			t.Fatal("expected non-nil router")
+		}
+		if router.activeModel != "test-model" {
+			t.Errorf("expected activeModel 'test-model', got %q", router.activeModel)
+		}
+		if router.maxRetries != 2 {
+			t.Errorf("expected maxRetries 2, got %d", router.maxRetries)
+		}
+		if router.initialBackoff != 100*time.Millisecond {
+			t.Errorf("expected initialBackoff 100ms, got %v", router.initialBackoff)
+		}
+		if router.maxBackoff != 1*time.Second {
+			t.Errorf("expected maxBackoff 1s, got %v", router.maxBackoff)
+		}
+	})
+
+	// Test with lmstudio provider and model registry
+	t.Run("lmstudio with registry", func(t *testing.T) {
+		cfg := config.LLMConfig{
+			ActiveProvider: "lmstudio",
+			LMStudio: config.LMStudioConfig{
+				BaseURL: "http://localhost:9999",
+				Model:   "test-model",
+			},
+			Retry: config.LLMRetryConfig{
+				MaxRetries:     1,
+				InitialBackoff: "50ms",
+				MaxBackoff:     "500ms",
+			},
+		}
+
+		registry := NewModelRegistry(nil)
+		router, err := NewLLMRouter(cfg, registry)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if router == nil {
+			t.Fatal("expected non-nil router")
+		}
+		// LM Studio provider should have been registered as metadata source
+		if len(registry.sources) == 0 {
+			t.Error("expected metadata source to be registered")
+		}
+	})
+
+	// Test with no active provider
+	t.Run("no active provider", func(t *testing.T) {
+		cfg := config.LLMConfig{}
+		_, err := NewLLMRouter(cfg, nil)
+		if err == nil {
+			t.Fatal("expected error for no active provider")
+		}
+	})
+
+	// Test with invalid backoff durations (should use defaults)
+	t.Run("invalid backoff durations", func(t *testing.T) {
+		cfg := config.LLMConfig{
+			ActiveProvider: "lmstudio",
+			LMStudio: config.LMStudioConfig{
+				BaseURL: "http://localhost:9999",
+				Model:   "test-model",
+			},
+			Retry: config.LLMRetryConfig{
+				InitialBackoff: "invalid",
+				MaxBackoff:     "also-invalid",
+			},
+		}
+
+		router, err := NewLLMRouter(cfg, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Should use defaults
+		if router.initialBackoff != 1*time.Second {
+			t.Errorf("expected default initialBackoff 1s, got %v", router.initialBackoff)
+		}
+		if router.maxBackoff != 30*time.Second {
+			t.Errorf("expected default maxBackoff 30s, got %v", router.maxBackoff)
+		}
+	})
+
+	// Test with anthropic provider (no key = error)
+	t.Run("anthropic without key fails", func(t *testing.T) {
+		cfg := config.LLMConfig{
+			ActiveProvider: "anthropic",
+			Anthropic: config.AnthropicConfig{
+				APIKey: "",
+				Model:  "claude-3-sonnet",
+			},
+		}
+
+		_, err := NewLLMRouter(cfg, nil)
+		if err == nil {
+			t.Fatal("expected error for anthropic without API key")
+		}
+	})
+}
+
+func TestCreateProviderFromConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		provType  string
+		apiKey    string
+		baseURL   string
+		wantErr   bool
+		wantName  string
+	}{
+		{
+			name:     "lmstudio provider",
+			provType: "lmstudio",
+			apiKey:   "test-key",
+			baseURL:  "http://localhost:1234",
+			wantErr:  false,
+		},
+		{
+			name:     "openai provider",
+			provType: "openai",
+			apiKey:   "test-key",
+			baseURL:  "https://api.openai.com/v1",
+			wantErr:  false,
+		},
+		{
+			name:     "anthropic provider",
+			provType: "anthropic",
+			apiKey:   "test-key",
+			wantErr:  false,
+		},
+		{
+			name:     "anthropic provider without key",
+			provType: "anthropic",
+			apiKey:   "",
+			wantErr:  true,
+		},
+		{
+			name:     "unknown provider",
+			provType: "unknown",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := createProviderFromConfig(tt.provType, tt.apiKey, tt.baseURL)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p == nil {
+				t.Fatal("expected non-nil provider")
+			}
+		})
 	}
 }
 

@@ -77,6 +77,7 @@ type StoredReflexion struct {
 // ContextManagerTool provides context management operations:
 // semantic memory store/search and compaction strategy switching.
 type ContextManagerTool struct {
+	*tools.BaseTool
 	semanticStore      SemanticStore      // optional, nil-safe
 	compactionSwitcher CompactionSwitcher // optional, nil-safe
 	episodic           EpisodicStore      // optional, nil-safe
@@ -86,43 +87,6 @@ type ContextManagerTool struct {
 // NewContextManagerTool creates a new ContextManagerTool instance.
 // All dependencies are optional and nil-safe.
 func NewContextManagerTool(semantic SemanticStore, compaction CompactionSwitcher, episodic EpisodicStore, reflexion ReflexionStore) *ContextManagerTool {
-	return &ContextManagerTool{
-		semanticStore:      semantic,
-		compactionSwitcher: compaction,
-		episodic:           episodic,
-		reflexion:          reflexion,
-	}
-}
-
-// contextManagerInput represents the input structure for context manager operations.
-type contextManagerInput struct {
-	Action   string            `json:"action"`
-	Key      string            `json:"key"`
-	Content  string            `json:"content"`
-	Metadata map[string]string `json:"metadata"`
-	Query    string            `json:"query"`
-	TopK     int               `json:"top_k"`
-	Strategy string            `json:"strategy"`
-	// For reflexion_store
-	Summary         string   `json:"summary"`
-	Hypotheses      []string `json:"hypotheses"`
-	SuggestedAction string   `json:"suggested_action"`
-	// For episodic_search / reflexion_search
-	Limit int `json:"limit"`
-}
-
-// Name returns the tool name.
-func (t *ContextManagerTool) Name() string {
-	return "context_manager"
-}
-
-// Description returns the tool description.
-func (t *ContextManagerTool) Description() string {
-	return strings.TrimSpace(toolContextmgrDescription)
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *ContextManagerTool) InputSchema() json.RawMessage {
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -177,19 +141,42 @@ func (t *ContextManagerTool) InputSchema() json.RawMessage {
 		},
 		"required": ["action"]
 	}`
-	return json.RawMessage(schema)
+	return &ContextManagerTool{
+		BaseTool: &tools.BaseTool{
+			ToolName:        "context_manager",
+			ToolDescription: strings.TrimSpace(toolContextmgrDescription),
+			Schema:          json.RawMessage(schema),
+			Policy:          tools.PolicyAlwaysAllow,
+		},
+		semanticStore:      semantic,
+		compactionSwitcher: compaction,
+		episodic:           episodic,
+		reflexion:          reflexion,
+	}
 }
 
-// DefaultPolicy returns PolicyAlwaysAllow because context manager is a service tool.
-func (t *ContextManagerTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAlwaysAllow
+// contextManagerInput represents the input structure for context manager operations.
+type contextManagerInput struct {
+	Action   string            `json:"action"`
+	Key      string            `json:"key"`
+	Content  string            `json:"content"`
+	Metadata map[string]string `json:"metadata"`
+	Query    string            `json:"query"`
+	TopK     int               `json:"top_k"`
+	Strategy string            `json:"strategy"`
+	// For reflexion_store
+	Summary         string   `json:"summary"`
+	Hypotheses      []string `json:"hypotheses"`
+	SuggestedAction string   `json:"suggested_action"`
+	// For episodic_search / reflexion_search
+	Limit int `json:"limit"`
 }
 
 // Execute performs the requested context management operation.
 func (t *ContextManagerTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params contextManagerInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("invalid input: %v", err), IsError: true}, nil
+		return tools.ParseInputError(err)
 	}
 
 	switch params.Action {

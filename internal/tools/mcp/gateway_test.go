@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -287,6 +288,219 @@ type mockError struct {
 
 func (e *mockError) Error() string {
 	return e.msg
+}
+
+func TestMCPGateway_GetServer(t *testing.T) {
+	gateway := NewMCPGateway()
+
+	// GetServer on empty gateway should return nil
+	if s := gateway.GetServer("nonexistent"); s != nil {
+		t.Error("expected nil for nonexistent server")
+	}
+
+	// Add a server and retrieve it
+	server := NewMCPServer("my-server")
+	gateway.servers["my-server"] = server
+
+	got := gateway.GetServer("my-server")
+	if got == nil {
+		t.Fatal("expected non-nil server")
+	}
+	if got.Name() != "my-server" {
+		t.Errorf("expected name 'my-server', got %q", got.Name())
+	}
+
+	// Different name should still return nil
+	if s := gateway.GetServer("other"); s != nil {
+		t.Error("expected nil for non-matching server name")
+	}
+}
+
+func TestMCPGateway_ServerNames_Multiple(t *testing.T) {
+	gateway := NewMCPGateway()
+
+	gateway.servers["alpha"] = NewMCPServer("alpha")
+	gateway.servers["beta"] = NewMCPServer("beta")
+	gateway.servers["gamma"] = NewMCPServer("gamma")
+
+	names := gateway.ServerNames()
+	if len(names) != 3 {
+		t.Fatalf("expected 3 server names, got %d", len(names))
+	}
+
+	// Verify all names are present (order may vary due to map iteration)
+	nameSet := make(map[string]bool)
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	for _, expected := range []string{"alpha", "beta", "gamma"} {
+		if !nameSet[expected] {
+			t.Errorf("expected server name %q to be present", expected)
+		}
+	}
+}
+
+func TestMCPGateway_ToolCount_Multiple(t *testing.T) {
+	gateway := NewMCPGateway()
+
+	server1 := NewMCPServer("s1")
+	server1.tools = []MCPToolInfo{
+		{Name: "tool1"},
+		{Name: "tool2"},
+	}
+
+	server2 := NewMCPServer("s2")
+	server2.tools = []MCPToolInfo{
+		{Name: "tool3"},
+	}
+
+	gateway.servers["s1"] = server1
+	gateway.servers["s2"] = server2
+
+	if count := gateway.ToolCount(); count != 3 {
+		t.Errorf("expected ToolCount()=3, got %d", count)
+	}
+}
+
+func TestMCPGateway_ToolCount_Empty(t *testing.T) {
+	gateway := NewMCPGateway()
+	if count := gateway.ToolCount(); count != 0 {
+		t.Errorf("expected ToolCount()=0, got %d", count)
+	}
+}
+
+func TestMCPGateway_Stop_EmptyGateway(t *testing.T) {
+	gateway := NewMCPGateway()
+	err := gateway.Stop()
+	if err != nil {
+		t.Errorf("Stop on empty gateway should return nil, got: %v", err)
+	}
+}
+
+func TestMCPGateway_Stop_ClearsServers(t *testing.T) {
+	gateway := NewMCPGateway()
+	gateway.servers["s1"] = NewMCPServer("s1")
+	gateway.servers["s2"] = NewMCPServer("s2")
+
+	err := gateway.Stop()
+	if err != nil {
+		t.Errorf("Stop error: %v", err)
+	}
+
+	if len(gateway.servers) != 0 {
+		t.Errorf("servers should be empty after Stop, got %d", len(gateway.servers))
+	}
+}
+
+func TestMCPGateway_RegisterTools_Empty(t *testing.T) {
+	gateway := NewMCPGateway()
+	registry := tools.NewToolRegistry()
+
+	err := gateway.RegisterTools(registry)
+	if err != nil {
+		t.Errorf("RegisterTools on empty gateway should not error: %v", err)
+	}
+
+	if len(registry.List()) != 0 {
+		t.Error("registry should be empty when gateway has no servers")
+	}
+}
+
+func TestMCPGateway_RegisterTools_MultipleServers(t *testing.T) {
+	gateway := NewMCPGateway()
+
+	server1 := NewMCPServer("s1")
+	server1.tools = []MCPToolInfo{
+		{Name: "s1_tool1", Description: "tool from s1", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	server2 := NewMCPServer("s2")
+	server2.tools = []MCPToolInfo{
+		{Name: "s2_tool1", Description: "tool from s2", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "s2_tool2", Description: "another tool from s2", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	gateway.servers["s1"] = server1
+	gateway.servers["s2"] = server2
+
+	registry := tools.NewToolRegistry()
+	err := gateway.RegisterTools(registry)
+	if err != nil {
+		t.Fatalf("RegisterTools failed: %v", err)
+	}
+
+	allTools := registry.List()
+	if len(allTools) != 3 {
+		t.Errorf("expected 3 registered tools, got %d", len(allTools))
+	}
+}
+
+func TestMCPGateway_Start_EmptyConfigs(t *testing.T) {
+	gateway := NewMCPGateway()
+
+	// Starting with empty configs should succeed with no errors
+	err := gateway.Start(context.Background(), map[string]config.MCPServerConfig{})
+	if err != nil {
+		t.Errorf("Start with empty configs should not error: %v", err)
+	}
+}
+
+func TestMCPGateway_Start_InvalidCommand(t *testing.T) {
+	gateway := NewMCPGateway()
+
+	configs := map[string]config.MCPServerConfig{
+		"bad-server": {
+			Command: "/nonexistent/command/that/does/not/exist",
+			Args:    []string{},
+		},
+	}
+
+	err := gateway.Start(context.Background(), configs)
+	if err == nil {
+		t.Fatal("expected error for invalid command")
+	}
+
+	// Should be an MCPStartError
+	var startErr *MCPStartError
+	ok := errors.As(err, &startErr)
+	if !ok {
+		t.Fatalf("expected *MCPStartError, got %T", err)
+	}
+	if len(startErr.Errors) != 1 {
+		t.Errorf("expected 1 error, got %d", len(startErr.Errors))
+	}
+
+	// No servers should be added on failure
+	if len(gateway.ServerNames()) != 0 {
+		t.Error("no servers should be added when connection fails")
+	}
+}
+
+func TestMCPGateway_Start_MultipleInvalidCommands(t *testing.T) {
+	gateway := NewMCPGateway()
+
+	configs := map[string]config.MCPServerConfig{
+		"bad1": {
+			Command: "/nonexistent/cmd1",
+		},
+		"bad2": {
+			Command: "/nonexistent/cmd2",
+		},
+	}
+
+	err := gateway.Start(context.Background(), configs)
+	if err == nil {
+		t.Fatal("expected error for invalid commands")
+	}
+
+	var startErr *MCPStartError
+	ok := errors.As(err, &startErr)
+	if !ok {
+		t.Fatalf("expected *MCPStartError, got %T", err)
+	}
+	if len(startErr.Errors) != 2 {
+		t.Errorf("expected 2 errors, got %d", len(startErr.Errors))
+	}
 }
 
 // Integration tests that require actual MCP servers.

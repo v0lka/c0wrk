@@ -364,3 +364,114 @@ func TestPlanStep_WithoutAgentProfile(t *testing.T) {
 		t.Error("expected AgentProfile to be nil when not set")
 	}
 }
+
+func TestScopeEmitterToStep_WithPlanStepScopable(t *testing.T) {
+	base := &scopableMockEmitter{}
+	scoped := scopeEmitterToStep(base, "step_42")
+
+	if scoped == base {
+		t.Error("expected a new scoped emitter, got the same one")
+	}
+
+	sm, ok := scoped.(*scopableMockEmitter)
+	if !ok {
+		t.Fatal("expected scoped emitter to be *scopableMockEmitter")
+	}
+	if sm.scopedStepID != "step_42" {
+		t.Errorf("expected scopedStepID='step_42', got %q", sm.scopedStepID)
+	}
+}
+
+func TestScopeEmitterToStep_WithoutPlanStepScopable(t *testing.T) {
+	base := &noopEmitter{}
+	scoped := scopeEmitterToStep(base, "step_1")
+	if scoped != base {
+		t.Error("expected same emitter when PlanStepScopable is not implemented")
+	}
+}
+
+func TestNoopEmitter_AllMethodsAreNoop(t *testing.T) {
+	e := &noopEmitter{}
+	// Call all methods - none should panic
+	e.Routing("direct", "code", "low")
+	e.PlanGenerated(3, []PlanStepEvent{{ID: "s1", Description: "d", Status: "pending"}})
+	e.PlanStepStart("s1", "desc")
+	e.PlanStepComplete("s1", true, time.Second)
+	e.StepStart(1)
+	e.Thought(1, "content", "reasoning")
+	e.ToolCall(1, "tool", "args")
+	e.ToolResult(1, 100, "preview")
+	e.StepComplete(1, time.Second)
+	e.SubAgentLaunch("s1", "desc")
+	e.SubAgentComplete("s1", true, time.Second)
+	e.Evaluation(2, 3, nil)
+	e.Reflection("summary", []string{"insight"}, 1, 3)
+	e.Retry(1, 3)
+	e.Escalation("direct", "plan_execute")
+	e.ACExtracted(2, nil)
+	e.AssistantChunk("chunk")
+	e.AssistantDone("full", 100, 50)
+	e.ContextFill(0.5, 50000, 100000, "ok")
+	e.Service("msg")
+	e.ServiceWithMeta("msg", map[string]interface{}{"key": "val"})
+}
+
+// scopableMockEmitter implements both Emitter and PlanStepScopable for testing.
+type scopableMockEmitter struct {
+	noopEmitter
+	scopedStepID string
+}
+
+func (s *scopableMockEmitter) WithPlanStepID(id string) Emitter {
+	return &scopableMockEmitter{scopedStepID: id}
+}
+
+func TestSharedWorkspace_Get_NotFound(t *testing.T) {
+	ws := NewSharedWorkspace()
+	_, ok := ws.Get("nonexistent")
+	if ok {
+		t.Error("expected ok=false for nonexistent key")
+	}
+}
+
+func TestSharedWorkspace_Store_Overwrite(t *testing.T) {
+	ws := NewSharedWorkspace()
+	ws.Store("key1", "content1", "step_1")
+	ws.Store("key1", "content2", "step_2")
+
+	a, ok := ws.Get("key1")
+	if !ok {
+		t.Fatal("expected to find artifact")
+	}
+	if a.Content != "content2" {
+		t.Errorf("expected overwritten content 'content2', got %q", a.Content)
+	}
+	if a.ProducedBy != "step_2" {
+		t.Errorf("expected producer 'step_2', got %q", a.ProducedBy)
+	}
+}
+
+func TestSharedWorkspace_Clear(t *testing.T) {
+	ws := NewSharedWorkspace()
+	ws.Store("key1", "content1", "step_1")
+	ws.Store("key2", "content2", "step_2")
+
+	// Verify artifacts exist
+	if len(ws.List()) != 2 {
+		t.Fatalf("expected 2 artifacts before clear, got %d", len(ws.List()))
+	}
+
+	// Clear
+	ws.Clear()
+
+	// Verify empty
+	if len(ws.List()) != 0 {
+		t.Fatalf("expected 0 artifacts after clear, got %d", len(ws.List()))
+	}
+
+	// Verify we can still store after clear
+	ws.Store("key3", "content3", "step_3")
+	if len(ws.List()) != 1 {
+		t.Fatalf("expected 1 artifact after re-store, got %d", len(ws.List()))
+	}
+}

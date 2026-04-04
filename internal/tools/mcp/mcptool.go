@@ -10,6 +10,9 @@ import (
 	"github.com/user/agent/internal/tools"
 )
 
+// Compile-time check that MCPTool implements tools.ToolJudger.
+var _ tools.ToolJudger = (*MCPTool)(nil)
+
 // MCPTool wraps an MCP server tool as a Tool interface implementation.
 type MCPTool struct {
 	server      *MCPServer
@@ -54,10 +57,7 @@ func (t *MCPTool) Execute(ctx context.Context, input json.RawMessage) (tools.Too
 	var arguments map[string]interface{}
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &arguments); err != nil {
-			return tools.ToolResult{
-				Content: fmt.Sprintf("failed to parse input arguments: %v", err),
-				IsError: true,
-			}, nil
+			return tools.ParseInputError(err)
 		}
 	}
 
@@ -131,4 +131,10 @@ func extractTextFromContent(content mcp.Content) string {
 // ServerName returns the name of the MCP server this tool belongs to.
 func (t *MCPTool) ServerName() string {
 	return t.server.Name()
+}
+
+// Judge implements tools.ToolJudger for MCP tools.
+// MCP tools are remote and opaque, so we always defer to the LLM Judge.
+func (t *MCPTool) Judge(_ context.Context, _ json.RawMessage) (allowed bool, reason string) {
+	return false, "" // defer to LLM Judge
 }

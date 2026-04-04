@@ -745,9 +745,9 @@ func TestToolRegistry_RegisterWithSource(t *testing.T) {
 	tool1 := newMockTool("mcp_tool", "An MCP tool")
 	registry.RegisterWithSource(tool1, "mcp")
 
-	// Register another tool with source "skill"
-	tool2 := newMockTool("skill_tool", "A skill tool")
-	registry.RegisterWithSource(tool2, "skill")
+	// Register another tool with source "external"
+	tool2 := newMockTool("external_tool", "An external tool")
+	registry.RegisterWithSource(tool2, "external")
 
 	// List and verify sources
 	descriptors := registry.List()
@@ -768,11 +768,11 @@ func TestToolRegistry_RegisterWithSource(t *testing.T) {
 		t.Errorf("expected 'mcp_tool' source 'mcp', got %q", desc.Source)
 	}
 
-	// Verify skill_tool has source "skill"
-	if desc, ok := descMap["skill_tool"]; !ok {
-		t.Error("expected to find 'skill_tool' in descriptors")
-	} else if desc.Source != "skill" {
-		t.Errorf("expected 'skill_tool' source 'skill', got %q", desc.Source)
+	// Verify external_tool has source "external"
+	if desc, ok := descMap["external_tool"]; !ok {
+		t.Error("expected to find 'external_tool' in descriptors")
+	} else if desc.Source != "external" {
+		t.Errorf("expected 'external_tool' source 'external', got %q", desc.Source)
 	}
 }
 
@@ -844,5 +844,271 @@ func TestPolicyOverrideFromConfig(t *testing.T) {
 	}
 	if confirmCalled {
 		t.Error("expected confirmFunc NOT to be called when policy is overridden to PolicyAlwaysAllow")
+	}
+}
+
+func TestWithWorkspacePath_AndWorkspacePathFrom(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected string
+	}{
+		{"non-empty path", "/home/user/project", "/home/user/project"},
+		{"empty path", "", ""},
+		{"path with spaces", "/home/user/my project", "/home/user/my project"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			ctx = WithWorkspacePath(ctx, tt.path)
+			got := WorkspacePathFrom(ctx)
+			if got != tt.expected {
+				t.Errorf("WorkspacePathFrom() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestWorkspacePathFrom_EmptyContext(t *testing.T) {
+	ctx := context.Background()
+	got := WorkspacePathFrom(ctx)
+	if got != "" {
+		t.Errorf("WorkspacePathFrom() on empty context = %q, want empty", got)
+	}
+}
+
+func TestSetDefaultPolicy(t *testing.T) {
+	reg := NewToolRegistry()
+	tool := newMockReadOnlyTool("test_tool", "desc")
+	reg.Register(tool)
+
+	// Before setting default policy, tool's own default is used
+	result, err := reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected no error with default policy")
+	}
+
+	// Set global default to AlwaysDeny
+	reg.SetDefaultPolicy(PolicyAlwaysDeny)
+	result, err = reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when global default is AlwaysDeny")
+	}
+	if !strings.Contains(result.Content, "blocked by security policy") {
+		t.Errorf("expected blocked message, got: %s", result.Content)
+	}
+}
+
+// TestPolicyUniformity_AllToolFamilies verifies that the PolicyAuto execution
+// pipeline works identically for all three tool families (core, external, MCP).
+// Each family implements both Tool and ToolJudger, returning false/"" to defer
+// to the LLM Judge. Two scenarios are tested per family:
+//   - Scenario A: No judge, no confirmFunc → tool executes directly (CLI fallback)
+//   - Scenario B: No judge, with confirmFunc → confirmFunc is called with
+//     "no judge available" reasoning
+func TestPolicyUniformity_AllToolFamilies(t *testing.T) {
+	families := []string{"core", "external", "mcp"}
+
+	// Build one mock tool per family. Each implements Tool + ToolJudger and
+	// defers to the LLM Judge (Judge returns false, "").
+	makeFamilyTool := func(family string) *mockJudgerTool {
+		return &mockJudgerTool{
+			mockTool: mockTool{
+				name:          family + "_uniform_tool",
+				description:   "PolicyAuto tool from " + family + " family",
+				inputSchema:   json.RawMessage(`{"type":"object"}`),
+				defaultPolicy: PolicyAuto,
+			},
+			judgeAllow:     false,
+			judgeReasoning: "", // defer to LLM Judge
+		}
+	}
+
+	t.Run("ScenarioA_NoJudge_NoConfirmFunc_DirectExecute", func(t *testing.T) {
+		// With no judge and no confirmFunc (CLI mode), executeAuto should
+		// fall through to confirmAndExecute which sees nil confirmFunc and
+		// executes the tool directly.
+		results := make([]ToolResult, 0, len(families))
+		for _, family := range families {
+			tool := makeFamilyTool(family)
+
+			registry := NewToolRegistry()
+			registry.RegisterWithSource(tool, family)
+			// No judge set, no confirmFunc set
+
+			ctx := context.Background()
+			input := json.RawMessage(`{"action":"test"}`)
+
+			result, err := registry.Execute(ctx, tool.Name(), input)
+			if err != nil {
+				t.Fatalf("[%s] unexpected error: %v", family, err)
+			}
+			if result.IsError {
+				t.Errorf("[%s] expected IsError=false", family)
+			}
+			if result.Content != `{"action":"test"}` {
+				t.Errorf("[%s] expected content %q, got %q", family, `{"action":"test"}`, result.Content)
+			}
+			results = append(results, result)
+		}
+
+		// Key assertion: all three families produce identical results.
+		for i := 1; i < len(results); i++ {
+			if results[i].Content != results[0].Content || results[i].IsError != results[0].IsError {
+				t.Errorf("result mismatch between %s and %s: %+v vs %+v",
+					families[0], families[i], results[0], results[i])
+			}
+		}
+	})
+
+	t.Run("ScenarioB_NoJudge_WithConfirmFunc_CallsConfirm", func(t *testing.T) {
+		// With no judge but a confirmFunc set, executeAuto should fall
+		// through and call confirmFunc with "no judge available" reasoning.
+		type callRecord struct {
+			family         string
+			toolName       string
+			judgeReasoning string
+		}
+		results := make([]ToolResult, 0, len(families))
+		var calls []callRecord
+
+		for _, family := range families {
+			tool := makeFamilyTool(family)
+
+			registry := NewToolRegistry()
+			registry.RegisterWithSource(tool, family)
+			// No judge set
+
+			fam := family // capture
+			registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+				calls = append(calls, callRecord{
+					family:         fam,
+					toolName:       req.ToolName,
+					judgeReasoning: req.JudgeReasoning,
+				})
+				return ConfirmAllowOnce, nil
+			})
+
+			ctx := context.Background()
+			input := json.RawMessage(`{"action":"test"}`)
+
+			result, err := registry.Execute(ctx, tool.Name(), input)
+			if err != nil {
+				t.Fatalf("[%s] unexpected error: %v", family, err)
+			}
+			if result.IsError {
+				t.Errorf("[%s] expected IsError=false", family)
+			}
+			if result.Content != `{"action":"test"}` {
+				t.Errorf("[%s] expected content %q, got %q", family, `{"action":"test"}`, result.Content)
+			}
+			results = append(results, result)
+		}
+
+		// Verify confirmFunc was called for each family with the same reasoning.
+		if len(calls) != len(families) {
+			t.Fatalf("expected %d confirmFunc calls, got %d", len(families), len(calls))
+		}
+		for i, c := range calls {
+			if c.toolName != families[i]+"_uniform_tool" {
+				t.Errorf("[%s] expected toolName %q, got %q", c.family, families[i]+"_uniform_tool", c.toolName)
+			}
+			if !strings.Contains(c.judgeReasoning, "no judge available") {
+				t.Errorf("[%s] expected reasoning to contain 'no judge available', got %q", c.family, c.judgeReasoning)
+			}
+		}
+
+		// Key assertion: all three families produce identical results.
+		for i := 1; i < len(results); i++ {
+			if results[i].Content != results[0].Content || results[i].IsError != results[0].IsError {
+				t.Errorf("result mismatch between %s and %s: %+v vs %+v",
+					families[0], families[i], results[0], results[i])
+			}
+		}
+	})
+
+	t.Run("ScenarioC_WithLLMJudge_AllowSkipsConfirm", func(t *testing.T) {
+		// With an LLM Judge that returns VerdictAllow, all three families
+		// should bypass confirmFunc and execute directly.
+		results := make([]ToolResult, 0, len(families))
+
+		for _, family := range families {
+			tool := makeFamilyTool(family)
+
+			registry := NewToolRegistry()
+			registry.RegisterWithSource(tool, family)
+
+			mockProvider := &mockLLMProvider{
+				response: &llm.ChatResponse{
+					Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
+				},
+			}
+			judge := NewToolJudge(mockProvider, "test-model")
+			registry.SetJudge(judge)
+
+			confirmCalled := false
+			registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+				confirmCalled = true
+				return ConfirmAllowOnce, nil
+			})
+
+			ctx := context.Background()
+			input := json.RawMessage(`{"action":"test"}`)
+
+			result, err := registry.Execute(ctx, tool.Name(), input)
+			if err != nil {
+				t.Fatalf("[%s] unexpected error: %v", family, err)
+			}
+			if result.IsError {
+				t.Errorf("[%s] expected IsError=false", family)
+			}
+			if result.Content != `{"action":"test"}` {
+				t.Errorf("[%s] expected content %q, got %q", family, `{"action":"test"}`, result.Content)
+			}
+			if confirmCalled {
+				t.Errorf("[%s] expected confirmFunc NOT to be called when LLM Judge allows", family)
+			}
+			if mockProvider.callCount != 1 {
+				t.Errorf("[%s] expected LLM Judge to be called once, got %d", family, mockProvider.callCount)
+			}
+			results = append(results, result)
+		}
+
+		// Key assertion: all three families produce identical results.
+		for i := 1; i < len(results); i++ {
+			if results[i].Content != results[0].Content || results[i].IsError != results[0].IsError {
+				t.Errorf("result mismatch between %s and %s: %+v vs %+v",
+					families[0], families[i], results[0], results[i])
+			}
+		}
+	})
+}
+
+func TestSetDefaultPolicy_OverriddenByPerTool(t *testing.T) {
+	reg := NewToolRegistry()
+	tool := newMockReadOnlyTool("test_tool", "desc")
+	reg.Register(tool)
+
+	// Set global default to deny
+	reg.SetDefaultPolicy(PolicyAlwaysDeny)
+
+	// But per-tool override to allow
+	reg.SetPolicyOverrides(map[string]ToolPolicy{
+		"test_tool": PolicyAlwaysAllow,
+	})
+
+	result, err := reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("per-tool override should take precedence over global default")
 	}
 }

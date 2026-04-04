@@ -68,14 +68,8 @@ security:
     web_fetch:
       policy: "always_allow"
 
-skills:
+external_tools:
   directory: ""
-  docker:
-    warm_pool_threshold: 5
-    warm_pool_idle_timeout: "5m"
-    default_memory: "256m"
-    default_cpu: "0.5"
-    default_timeout: "30s"
 
 memory:
   database: ""

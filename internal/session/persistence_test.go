@@ -753,3 +753,180 @@ func TestListSessionsWithTokens(t *testing.T) {
 		t.Errorf("session 1 output tokens: got %d, want %d", listed[1].TotalOutputTokens, 500)
 	}
 }
+
+// TestUpdateSessionActivity verifies last_active_at timestamp is updated.
+func TestUpdateSessionActivity(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	session := SessionInfo{
+		ID:        "activity-test",
+		Name:      "Activity Test",
+		CreatedAt: "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	// Load before update
+	before, err := store.LoadSession(session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	originalLastActive := before.LastActiveAt
+
+	// Wait a tiny bit so timestamps differ
+	time.Sleep(10 * time.Millisecond)
+
+	// Update activity
+	if err := store.UpdateSessionActivity(session.ID); err != nil {
+		t.Fatalf("failed to update session activity: %v", err)
+	}
+
+	// Load after update
+	after, err := store.LoadSession(session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session after update: %v", err)
+	}
+	if after.LastActiveAt == originalLastActive {
+		t.Error("last_active_at should have changed after UpdateSessionActivity")
+	}
+}
+
+// TestSaveSessionWithLastActiveAt verifies LastActiveAt is stored and retrieved.
+func TestSaveSessionWithLastActiveAt(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	session := SessionInfo{
+		ID:           "last-active-test",
+		Name:         "Last Active Test",
+		CreatedAt:    "2024-01-15T10:00:00Z",
+		LastActiveAt: "2024-06-01T15:30:00Z",
+	}
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded.LastActiveAt != "2024-06-01T15:30:00Z" {
+		t.Errorf("expected last_active_at '2024-06-01T15:30:00Z', got %q", loaded.LastActiveAt)
+	}
+}
+
+// TestSaveSessionLastActiveAtFallback verifies LastActiveAt falls back to CreatedAt when empty.
+func TestSaveSessionLastActiveAtFallback(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	session := SessionInfo{
+		ID:           "fallback-test",
+		Name:         "Fallback Test",
+		CreatedAt:    "2024-01-15T10:00:00Z",
+		LastActiveAt: "", // empty
+	}
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	// Should fall back to created_at
+	if loaded.LastActiveAt != "2024-01-15T10:00:00Z" {
+		t.Errorf("expected last_active_at to fall back to created_at, got %q", loaded.LastActiveAt)
+	}
+}
+
+// TestNewSQLiteSessionStore_InMemory verifies :memory: database works.
+func TestNewSQLiteSessionStore_InMemory(t *testing.T) {
+	store, err := NewSQLiteSessionStore(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create in-memory store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Basic operation on in-memory store
+	session := SessionInfo{
+		ID:        "mem-test",
+		Name:      "Memory Test",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("failed to save: %v", err)
+	}
+
+	loaded, err := store.LoadSession("mem-test")
+	if err != nil {
+		t.Fatalf("failed to load: %v", err)
+	}
+	if loaded == nil || loaded.ID != "mem-test" {
+		t.Error("expected to load session from in-memory store")
+	}
+}
+
+// TestNewSQLiteSessionStore_InvalidPath verifies error on invalid path.
+func TestNewSQLiteSessionStore_InvalidPath(t *testing.T) {
+	// Use a path that can't be opened
+	_, err := NewSQLiteSessionStore("/nonexistent/path/to/dir/test.db")
+	if err == nil {
+		t.Error("expected error for invalid database path")
+	}
+}
+
+// TestListSessionsOrderedByActivity verifies sessions ordered by last_active_at DESC.
+func TestListSessionsOrderedByActivity(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Create sessions with different last_active_at
+	sessions := []SessionInfo{
+		{
+			ID:           "old",
+			Name:         "Old Session",
+			CreatedAt:    "2024-01-01T10:00:00Z",
+			LastActiveAt: "2024-01-01T10:00:00Z",
+		},
+		{
+			ID:           "newest",
+			Name:         "Newest Activity",
+			CreatedAt:    "2024-01-01T09:00:00Z",
+			LastActiveAt: "2024-06-15T20:00:00Z",
+		},
+		{
+			ID:           "mid",
+			Name:         "Mid Session",
+			CreatedAt:    "2024-03-01T10:00:00Z",
+			LastActiveAt: "2024-03-01T10:00:00Z",
+		},
+	}
+
+	for _, s := range sessions {
+		if err := store.SaveSession(s); err != nil {
+			t.Fatalf("failed to save session: %v", err)
+		}
+	}
+
+	listed, err := store.ListSessions()
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("expected 3 sessions, got %d", len(listed))
+	}
+
+	// Should be ordered by last_active_at DESC: newest, mid, old
+	if listed[0].ID != "newest" {
+		t.Errorf("first session should be 'newest', got %q", listed[0].ID)
+	}
+	if listed[1].ID != "mid" {
+		t.Errorf("second session should be 'mid', got %q", listed[1].ID)
+	}
+	if listed[2].ID != "old" {
+		t.Errorf("third session should be 'old', got %q", listed[2].ID)
+	}
+}

@@ -81,7 +81,7 @@ func NewOrchestrator(
 	}
 	maxRetries := cfg.MaxRetries
 	if maxRetries == 0 {
-		maxRetries = 1 // default per AD 4.6
+		maxRetries = 2 // default: 3 total attempts per mode
 	}
 	// Use noopEmitter if nil to avoid nil checks throughout the code
 	if emitter == nil {
@@ -556,6 +556,11 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	o.logInfo("plan_generated", "step_count", len(plan.Steps))
 	o.logDebug("plan_steps", "steps", plan.Steps)
 
+	// Validate AC-to-step mapping
+	if unmappedAC := validateACMapping(plan, ac); len(unmappedAC) > 0 {
+		o.logWarn("unmapped acceptance criteria detected", "unmapped_ac", unmappedAC, "hint", "these criteria are not assigned to any plan step's RelevantAC")
+	}
+
 	// Track state for retry loop
 	var lastOutput string
 	var lastEvalResult *EvalResult
@@ -593,7 +598,8 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		}
 
 		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
-		evalResult, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, nil)
+		syntheticSteps := buildPlanExecutionSteps(completedSteps, currentPlan)
+		evalResult, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, syntheticSteps)
 		if evalErr != nil {
 			//nolint:nilerr // error is handled by embedding in result
 			return handleResult, nil
@@ -616,10 +622,9 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		// Failure - check if we should retry (eval failure)
 		if attempt < o.maxRetries {
 			if o.reflector != nil {
-				// For plan_execute, we don't have a single trajectory - use empty steps
-				// The reflection will focus on the eval result and plan
+				// For plan_execute, provide synthetic execution trajectory from completed steps
 				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]interface{}{"phase": "orchestration"})
-				reflection, reflectErr := o.reflector.Reflect(ctx, nil, evalResult, currentPlan, sessionReflections)
+				reflection, reflectErr := o.reflector.Reflect(ctx, syntheticSteps, evalResult, currentPlan, sessionReflections)
 				if reflectErr != nil {
 					// Reflection failed — still continue retry without reflection guidance
 					o.logWarn("reflection failed in plan_execute, retrying without guidance", "error", reflectErr, "attempt", attempt+1)
@@ -650,13 +655,18 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 						failedStep = completedSteps[len(completedSteps)-1]
 					}
 
-					newPlan, replanErr := o.planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, ac)
+					newPlan, replanErr := o.planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, ac, sessionReflections)
 					if replanErr != nil {
 						// Replan failed, continue with current plan
 						continue
 					}
 					currentPlan = newPlan
 					preCompleted = nil
+					workspace.Clear()
+					// Validate AC mapping in new plan
+					if unmappedAC := validateACMapping(currentPlan, ac); len(unmappedAC) > 0 {
+						o.logWarn("unmapped acceptance criteria in replanned plan", "unmapped_ac", unmappedAC)
+					}
 				} else {
 					// Step-level retry: only re-execute steps responsible for failed criteria
 					var failedIDs []string
@@ -905,6 +915,52 @@ func computeRetrySteps(plan *Plan, failedCriteriaIDs []string) map[string]bool {
 	return retrySet
 }
 
+// buildPlanExecutionSteps converts completed plan steps into a synthetic execution
+// trajectory ([]Step) so that the Reflector and Evaluator can see what actually
+// happened during Plan&Execute execution. Each CompletedStep maps to a Step with
+// the step description as Thought and the step output (or error) as Observation.
+func buildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []Step {
+	// Build a map from step ID to plan step description
+	stepDescriptions := make(map[string]string)
+	for _, ps := range plan.Steps {
+		stepDescriptions[ps.ID] = ps.Description
+	}
+
+	steps := make([]Step, 0, len(completedList))
+	for _, cs := range completedList {
+		desc := stepDescriptions[cs.StepID]
+		step := Step{
+			Thought: fmt.Sprintf("Executing plan step %s: %s", cs.StepID, desc),
+		}
+		if cs.Error != nil {
+			step.Observation = fmt.Sprintf("STEP FAILED: %s\nOutput: %s", cs.Error.Error(), cs.Output)
+		} else {
+			step.Observation = cs.Output
+		}
+		steps = append(steps, step)
+	}
+	return steps
+}
+
+// validateACMapping checks that every acceptance criterion is covered by at least
+// one plan step's RelevantAC field. Returns the list of unmapped AC IDs.
+func validateACMapping(plan *Plan, ac []AcceptanceCriterion) []string {
+	covered := make(map[string]bool)
+	for _, step := range plan.Steps {
+		for _, acID := range step.RelevantAC {
+			covered[acID] = true
+		}
+	}
+
+	var unmapped []string
+	for _, criterion := range ac {
+		if !covered[criterion.ID] {
+			unmapped = append(unmapped, criterion.ID)
+		}
+	}
+	return unmapped
+}
+
 // buildStepTask creates a TaskDefinition for a plan step.
 // stepIndex is 0-based index of this step in the plan.
 func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, workspace *SharedWorkspace) TaskDefinition {
@@ -974,6 +1030,69 @@ func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, al
 		for _, acID := range step.RelevantAC {
 			if ac, ok := acMap[acID]; ok {
 				stepCriteria = append(stepCriteria, ac)
+			}
+		}
+	}
+
+	// For the last terminal step in plan order, append any unmapped AC so the
+	// final executor has a chance to address uncovered criteria.
+	// "Terminal" = no other step depends on this one.
+	isTerminal := true
+	for _, s := range plan.Steps {
+		for _, dep := range s.DependsOn {
+			if dep == step.ID {
+				isTerminal = false
+				break
+			}
+		}
+		if !isTerminal {
+			break
+		}
+	}
+
+	// Check if this is the LAST terminal step in plan order
+	isLastTerminal := false
+	if isTerminal {
+		isLastTerminal = true
+		// Check if any later step in the plan is also terminal
+		for i := stepIndex + 1; i < len(plan.Steps); i++ {
+			laterStep := plan.Steps[i]
+			laterIsTerminal := true
+			for _, s := range plan.Steps {
+				for _, dep := range s.DependsOn {
+					if dep == laterStep.ID {
+						laterIsTerminal = false
+						break
+					}
+				}
+				if !laterIsTerminal {
+					break
+				}
+			}
+			if laterIsTerminal {
+				isLastTerminal = false
+				break
+			}
+		}
+	}
+
+	if isLastTerminal && len(allAC) > 0 {
+		unmapped := validateACMapping(&plan, allAC)
+		// Only inject when some (but not all) ACs are unmapped. If every AC is
+		// unmapped the plan has no AC mapping at all, so blanket injection is
+		// not useful.
+		if len(unmapped) > 0 && len(unmapped) < len(allAC) {
+			fmt.Fprintf(&taskBuilder, "\n\nIMPORTANT: The following acceptance criteria are not explicitly assigned to any plan step. As the final step, ensure these are also addressed if possible:\n")
+			acMap := make(map[string]AcceptanceCriterion)
+			for _, ac := range allAC {
+				acMap[ac.ID] = ac
+			}
+			for _, id := range unmapped {
+				if ac, ok := acMap[id]; ok {
+					fmt.Fprintf(&taskBuilder, "- %s: %s\n", ac.ID, ac.Description)
+					// Also add them to step criteria so evaluator checks them
+					stepCriteria = append(stepCriteria, ac)
+				}
 			}
 		}
 	}

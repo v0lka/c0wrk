@@ -10,7 +10,7 @@ interface AskUserPanelProps {
   metadata?: unknown
 }
 
-export function AskUserPanel({ metadata }: AskUserPanelProps) {
+export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
   const { runtime } = useWails()
   const [resolved, setResolved] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -68,6 +68,12 @@ export function AskUserPanel({ metadata }: AskUserPanelProps) {
     })
 
     useChatStore.getState().setActivityStatus(null)
+
+    // Mark this question as resolved so groupMessages stops extracting it
+    const askMsgId = `ask-user-${requestId}`
+    useChatStore.getState().updateMessage(sessionId, askMsgId, {
+      metadata: { resolved: true },
+    })
   }
 
   // Resolved state

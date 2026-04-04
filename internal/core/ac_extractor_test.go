@@ -277,3 +277,71 @@ func TestEnrich_WorkspacePathIncludedInContext(t *testing.T) {
 		t.Errorf("expected user message to NOT contain 'Workspace:' when no workspace path, got:\n%s", userMsgNoWS)
 	}
 }
+
+func TestParseRawACJSON(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		wantCount int
+		wantErr   bool
+	}{
+		{
+			name:      "empty string",
+			content:   "",
+			wantCount: 0,
+		},
+		{
+			name:      "empty array",
+			content:   "[]",
+			wantCount: 0,
+		},
+		{
+			name:      "valid JSON array",
+			content:   `[{"id":"rc_1","description":"tests pass","nature":"objective","implicit":false,"weight":"must"}]`,
+			wantCount: 1,
+		},
+		{
+			name:      "markdown code block",
+			content:   "```json\n[{\"id\":\"rc_1\",\"description\":\"test\",\"nature\":\"objective\",\"implicit\":false,\"weight\":\"must\"}]\n```",
+			wantCount: 1,
+		},
+		{
+			name:      "code block without array bracket",
+			content:   "```\nsome text\n```",
+			wantErr:   true,
+		},
+		{
+			name:    "invalid JSON",
+			content: `{not valid json}`,
+			wantErr: true,
+		},
+		{
+			name:      "whitespace-padded content",
+			content:   "  \n  []  \n  ",
+			wantCount: 0,
+		},
+		{
+			name:      "multiple criteria",
+			content:   `[{"id":"rc_1","description":"a"},{"id":"rc_2","description":"b"}]`,
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseRawACJSON(tt.content)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(result) != tt.wantCount {
+				t.Errorf("got %d criteria, want %d", len(result), tt.wantCount)
+			}
+		})
+	}
+}

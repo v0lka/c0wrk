@@ -28,8 +28,8 @@ import (
 	"github.com/user/agent/internal/session"
 	"github.com/user/agent/internal/tools"
 	toolcore "github.com/user/agent/internal/tools/core"
+	"github.com/user/agent/internal/tools/external"
 	"github.com/user/agent/internal/tools/mcp"
-	"github.com/user/agent/internal/tools/skills"
 )
 
 // compactionSummarizePrompt is the system prompt used when summarizing step blocks
@@ -132,7 +132,6 @@ type App struct {
 	memorySystem  *memory.MemorySystem
 	localEmbedder *llm.LocalEmbedder
 	constitution  *core.Constitution
-	warmPool      *skills.WarmPool
 
 	sessionLogger *logger.SessionLogger
 	logLevel      string
@@ -432,12 +431,12 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Initialize MemorySystem (consolidated memory subsystem)
-	skillsDir := a.config.Skills.Directory
-	if skillsDir == "" {
-		skillsDir = filepath.Join(agentDir, "skills")
+	toolsDir := a.config.ExternalTools.Directory
+	if toolsDir == "" {
+		toolsDir = filepath.Join(agentDir, "tools")
 	}
-	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
-		log.Warn("failed to create skills directory", "error", err)
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		log.Warn("failed to create tools directory", "error", err)
 	}
 
 	// Get DB path from config or use default
@@ -494,9 +493,9 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	memSys, err := memory.NewMemorySystem(memory.MemorySystemConfig{
-		DBPath:    memDBPath,
-		SkillsDir: skillsDir,
-		Embedder:  embedder,
+		DBPath:   memDBPath,
+		ToolsDir: toolsDir,
+		Embedder: embedder,
 	})
 	if err != nil {
 		log.Warn("failed to initialize memory system", "error", err)
@@ -505,61 +504,33 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.memorySystem = memSys
 
-	// Register existing skills as tools
-	builder := skills.NewDockerBuilder()
+	// Register existing external tools
 	if memSys != nil && memSys.Procedural != nil {
-		for _, info := range memSys.Procedural.ListSkills() {
-			manifest, err := skills.ParseManifest(filepath.Join(info.Path, "skill.json"))
+		for _, info := range memSys.Procedural.ListTools() {
+			manifest, err := external.ParseManifest(filepath.Join(info.Path, "tool.json"))
 			if err != nil {
-				log.Warn("failed to parse skill manifest", "skill", info.Name, "error", err)
+				log.Warn("failed to parse tool manifest", "tool", info.Name, "error", err)
 				continue
 			}
-			skillTool := skills.NewSkillTool(manifest, info.Path, builder)
-			registry.RegisterWithSource(skillTool, "skill")
+			extTool := external.NewExternalTool(manifest, info.Path)
+			registry.RegisterWithSource(extTool, "external")
 		}
 	}
 
-	// Initialize WarmPool (optional, for performance)
-	idleTimeout := 5 * time.Minute
-	if a.config.Skills.Docker.WarmPoolIdleTimeout != "" {
-		if parsed, err := time.ParseDuration(a.config.Skills.Docker.WarmPoolIdleTimeout); err == nil {
-			idleTimeout = parsed
-		}
-	}
-	poolSize := a.config.Skills.Docker.WarmPoolThreshold
-	if poolSize <= 0 {
-		poolSize = 10
-	}
-	warmPool := skills.NewWarmPool(builder, poolSize, idleTimeout)
-	warmPool.Start()
-	a.warmPool = warmPool
+	// Register ToolCreatorTool for dynamic tool creation
+	toolCreator := toolcore.NewToolCreatorTool(toolsDir, registry)
+	registry.Register(toolCreator)
 
 	// Configure per-tool security policies from config
 	policyOverrides := make(map[string]tools.ToolPolicy)
 	for toolName, policyCfg := range a.config.Security.ToolPolicies {
-		switch policyCfg.Policy {
-		case "always_allow":
-			policyOverrides[toolName] = tools.PolicyAlwaysAllow
-		case "always_deny":
-			policyOverrides[toolName] = tools.PolicyAlwaysDeny
-		case "user_confirm":
-			policyOverrides[toolName] = tools.PolicyUserConfirm
-		case "auto":
-			policyOverrides[toolName] = tools.PolicyAuto
-		}
+		policyOverrides[toolName] = tools.ParseToolPolicy(policyCfg.Policy)
 	}
 	registry.SetPolicyOverrides(policyOverrides)
 
 	// Set default policy for tools not explicitly configured
-	switch a.config.Security.DefaultPolicy {
-	case "always_allow":
-		registry.SetDefaultPolicy(tools.PolicyAlwaysAllow)
-	case "always_deny":
-		registry.SetDefaultPolicy(tools.PolicyAlwaysDeny)
-	case "user_confirm":
-		registry.SetDefaultPolicy(tools.PolicyUserConfirm)
-	default:
-		registry.SetDefaultPolicy(tools.PolicyAuto)
+	if a.config.Security.DefaultPolicy != "" {
+		registry.SetDefaultPolicy(tools.ParseToolPolicy(a.config.Security.DefaultPolicy))
 	}
 
 	// Initialize Constitution
@@ -577,11 +548,6 @@ func (a *App) startup(ctx context.Context) {
 		log.Info("constitution loaded", "principles", len(constitution.Principles()), "path", constitutionPath, "session", constitution.SessionCount())
 	}
 	a.constitution = constitution
-
-	// Create SkillCreatorTool with DockerBuilder adapter
-	var skillBuilder toolcore.SkillBuilder = &dockerBuilderAdapter{builder: builder}
-	skillCreator := toolcore.NewSkillCreatorTool(skillsDir, registry, skillBuilder)
-	registry.Register(skillCreator)
 
 	// Create ContextManagerTool with memory adapters
 	var semanticStore toolcore.SemanticStore
@@ -976,10 +942,6 @@ func (a *App) shutdown(ctx context.Context) {
 		if err := a.store.Close(); err != nil {
 			slog.Error("failed to close session store", "error", err)
 		}
-	}
-
-	if a.warmPool != nil {
-		a.warmPool.Stop()
 	}
 
 	if a.memorySystem != nil {
@@ -1419,7 +1381,7 @@ func (a *App) GetMemoryStats() map[string]interface{} {
 			}
 		}
 		if a.memorySystem.Procedural != nil {
-			stats["procedural"] = len(a.memorySystem.Procedural.ListSkills())
+			stats["procedural"] = len(a.memorySystem.Procedural.ListTools())
 		}
 		if a.memorySystem.Reflexion != nil {
 			if count, err := a.memorySystem.Reflexion.Count(context.Background()); err == nil {
@@ -1560,28 +1522,12 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	if a.toolRegistry != nil {
 		policyOverrides := make(map[string]tools.ToolPolicy)
 		for toolName, policyCfg := range settings.ToolPolicies {
-			switch policyCfg.Policy {
-			case "always_allow":
-				policyOverrides[toolName] = tools.PolicyAlwaysAllow
-			case "always_deny":
-				policyOverrides[toolName] = tools.PolicyAlwaysDeny
-			case "user_confirm":
-				policyOverrides[toolName] = tools.PolicyUserConfirm
-			case "auto":
-				policyOverrides[toolName] = tools.PolicyAuto
-			}
+			policyOverrides[toolName] = tools.ParseToolPolicy(policyCfg.Policy)
 		}
 		a.toolRegistry.SetPolicyOverrides(policyOverrides)
 
-		switch settings.DefaultPolicy {
-		case "always_allow":
-			a.toolRegistry.SetDefaultPolicy(tools.PolicyAlwaysAllow)
-		case "always_deny":
-			a.toolRegistry.SetDefaultPolicy(tools.PolicyAlwaysDeny)
-		case "user_confirm":
-			a.toolRegistry.SetDefaultPolicy(tools.PolicyUserConfirm)
-		default:
-			a.toolRegistry.SetDefaultPolicy(tools.PolicyAuto)
+		if settings.DefaultPolicy != "" {
+			a.toolRegistry.SetDefaultPolicy(tools.ParseToolPolicy(settings.DefaultPolicy))
 		}
 	}
 
@@ -1731,21 +1677,6 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 		slog.Warn("failed to persist search settings", "error", err)
 	}
 	return nil
-}
-
-// dockerBuilderAdapter adapts skills.DockerBuilder to toolcore.SkillBuilder interface.
-type dockerBuilderAdapter struct {
-	builder *skills.DockerBuilder
-}
-
-func (a *dockerBuilderAdapter) Build(ctx context.Context, skillDir, name, version string) (string, error) {
-	manifest := &skills.SkillManifest{
-		Name:       name,
-		Version:    version,
-		EntryPoint: "main.py",
-		Language:   "python",
-	}
-	return a.builder.Build(ctx, skillDir, manifest)
 }
 
 // semanticStoreAdapter adapts memory.SemanticMemory to toolcore.SemanticStore interface.

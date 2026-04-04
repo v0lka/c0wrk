@@ -24,12 +24,21 @@ export type DisplayItem =
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
-  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'escalation'; content: string; metadata?: Record<string, unknown> }
-  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; children: DisplayItem[] }
+  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'escalation' | 'ac_extracted'; content: string; metadata?: Record<string, unknown> }
+  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'action_placeholder'; id: string; label: string }
+  | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
 
-export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
+export interface GroupedMessages {
+  items: DisplayItem[]
+  pendingActions: DisplayItem[]
+}
+
+export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const items: DisplayItem[] = []
+  const pendingActions: DisplayItem[] = []
   const openSteps = new Map<string, DisplayItem & { kind: 'plan_step' }>()
+  const stepIdCounts = new Map<string, number>()
   const stepIndexMap = new Map<string, { num: number; title: string }>()
   const toolItemsByStep = new Map<string, DisplayItem & { kind: 'tool' }>()
   const makeToolKey = (planStepId: string | undefined, step: number | string): string =>
@@ -62,6 +71,8 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
     if (msg.type === 'plan_step_start') {
       const stepId = (meta?.step_id as string) || ''
       const info = stepIndexMap.get(stepId) || { num: 0, title: (meta?.description as string) || stepId }
+      const count = (stepIdCounts.get(stepId) ?? 0) + 1
+      stepIdCounts.set(stepId, count)
       const stepItem: DisplayItem & { kind: 'plan_step' } = {
         kind: 'plan_step',
         id: msg.id,
@@ -70,6 +81,7 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
         title: info.title,
         status: 'running',
         children: [],
+        ...(count > 1 ? { isRetry: true } : {}),
       }
       openSteps.set(stepId, stepItem)
       items.push(stepItem)
@@ -88,7 +100,7 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
     }
 
     // Skip orchestration events handled elsewhere
-    if (['eval', 'reflection', 'ac_extracted'].includes(msg.type)) continue
+    if (['eval', 'reflection'].includes(msg.type)) continue
 
     const planStepId = meta?.plan_step_id as string | undefined
 
@@ -112,6 +124,8 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
         break
 
       case 'tool_call': {
+        // Skip subagent tool calls – activity is already visible in plan step history
+        if ((meta?.tool as string) === 'subagent') break
         const isAwaiting = meta?.awaiting_confirmation === true
         const hasResult = meta?.completed === true
         const toolItem: DisplayItem & { kind: 'tool' } = {
@@ -143,13 +157,27 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
         break
       }
 
-      case 'tool_confirm':
-        pushItem({ kind: 'tool_confirm', message: msg }, planStepId)
+      case 'tool_confirm': {
+        const resolved = meta?.resolved === true
+        if (resolved) {
+          pushItem({ kind: 'tool_confirm', message: msg }, planStepId)
+        } else {
+          pendingActions.push({ kind: 'tool_confirm', message: msg })
+          pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting confirmation...' }, planStepId)
+        }
         break
+      }
 
-      case 'ask_user':
-        pushItem({ kind: 'ask_user', message: msg }, planStepId)
+      case 'ask_user': {
+        const resolved = meta?.resolved === true
+        if (resolved) {
+          pushItem({ kind: 'ask_user', message: msg }, planStepId)
+        } else {
+          pendingActions.push({ kind: 'ask_user', message: msg })
+          pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting your answer...' }, planStepId)
+        }
         break
+      }
 
       case 'error':
         pushItem({ kind: 'error', message: msg }, planStepId)
@@ -158,15 +186,24 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
       case 'routing':
       case 'retry':
       case 'escalation': {
-        if (meta?.phase !== 'orchestration') {
-          pushItem({
-            kind: 'service',
-            id: msg.id,
-            variant: msg.type as 'routing' | 'retry' | 'escalation',
-            content: msg.content,
-            metadata: meta,
-          }, planStepId)
-        }
+        pushItem({
+          kind: 'service',
+          id: msg.id,
+          variant: msg.type as 'routing' | 'retry' | 'escalation',
+          content: msg.content,
+          metadata: meta,
+        }, planStepId)
+        break
+      }
+
+      case 'ac_extracted': {
+        pushItem({
+          kind: 'service',
+          id: msg.id,
+          variant: 'ac_extracted',
+          content: msg.content,
+          metadata: meta,
+        }, planStepId)
         break
       }
 
@@ -182,7 +219,31 @@ export function groupMessages(messages: ChatMessageUI[]): DisplayItem[] {
     }
   }
 
-  return items
+  // Post-process: collapse consecutive orchestrator-level thoughts into thought_groups
+  const collapsed: DisplayItem[] = []
+  let i = 0
+  while (i < items.length) {
+    if (items[i].kind === 'thought') {
+      const thoughts: Array<{ content: string; reasoning?: string }> = []
+      const firstId = (items[i] as DisplayItem & { kind: 'thought' }).id
+      while (i < items.length && items[i].kind === 'thought') {
+        const t = items[i] as DisplayItem & { kind: 'thought' }
+        thoughts.push({ content: t.content, reasoning: t.reasoning })
+        i++
+      }
+      if (thoughts.length === 1) {
+        // Single thought — keep as-is (go back one)
+        collapsed.push(items[i - 1])
+      } else {
+        collapsed.push({ kind: 'thought_group', id: `tg-${firstId}`, thoughts })
+      }
+    } else {
+      collapsed.push(items[i])
+      i++
+    }
+  }
+
+  return { items: collapsed, pendingActions }
 }
 
 export interface ContextFillState {
@@ -208,6 +269,8 @@ interface ChatState {
   setThinking: (thinking: boolean) => void
   setContextFill: (data: ContextFillState | null) => void
   setActivityStatus: (status: string | null) => void
+  pendingActions: DisplayItem[]
+  setPendingActions: (actions: DisplayItem[]) => void
   setTaskActive: (active: boolean) => void
   clearSessionUIState: () => void
 }
@@ -254,6 +317,8 @@ export const useChatStore = create<ChatState>((set) => ({
   setThinking: (thinking) => set({ isThinking: thinking }),
   setContextFill: (data) => set({ contextFill: data }),
   setActivityStatus: (status) => set({ activityStatus: status }),
+  pendingActions: [],
+  setPendingActions: (actions) => set({ pendingActions: actions }),
   setTaskActive: (active) => set({ isTaskActive: active }),
   clearSessionUIState: () => set({
     activityStatus: null,

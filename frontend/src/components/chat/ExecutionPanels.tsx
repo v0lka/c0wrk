@@ -20,6 +20,7 @@ import {
   type PlanGroup,
   type EvalGroup,
 } from '@/stores/panelStore'
+import { useScrollStore } from '@/stores/scrollStore'
 
 // Status icon for plan items
 function PlanStatusIcon({ status }: { status: PlanItem['status'] }) {
@@ -80,9 +81,10 @@ function PanelHeader({ isOpen, onToggle, icon, title, completed, total }: PanelH
 // Plan panel content
 interface PlanContentProps {
   groups: PlanGroup[]
+  onStepClick?: (stepId: string) => void
 }
 
-function PlanContent({ groups }: PlanContentProps) {
+function PlanContent({ groups, onStepClick }: PlanContentProps) {
   return (
     <div className="max-h-48 overflow-y-auto px-3 pb-2">
       {groups.map((group, groupIdx) => (
@@ -90,10 +92,14 @@ function PlanContent({ groups }: PlanContentProps) {
           {groupIdx > 0 && <div className="border-t border-zinc-800 my-2" />}
           <div className="space-y-1">
             {group.items.map((item) => (
-              <div key={`${group.id}-${item.id}`} className="flex items-center gap-2 py-0.5">
+              <button
+                key={`${group.id}-${item.id}`}
+                onClick={() => onStepClick?.(item.id)}
+                className="flex items-center gap-2 py-0.5 px-1 -mx-1 w-full text-left rounded hover:bg-zinc-800/50 transition-colors cursor-pointer"
+              >
                 <PlanStatusIcon status={item.status} />
                 <span className="text-xs text-zinc-400 truncate">{item.title}</span>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -135,6 +141,8 @@ export function ExecutionPanels() {
   const evalCompleted = useEvalCompleted()
   const evalTotal = useEvalTotal()
 
+  const scrollToStep = useScrollStore(s => s.scrollToStep)
+
   const [planOpen, setPlanOpen] = useState(false)
   const [evalOpen, setEvalOpen] = useState(false)
 
@@ -159,7 +167,7 @@ export function ExecutionPanels() {
             completed={planCompleted}
             total={planTotal}
           />
-          {planOpen && <PlanContent groups={planGroups} />}
+          {planOpen && <PlanContent groups={planGroups} onStepClick={scrollToStep ?? undefined} />}
         </div>
       )}
 

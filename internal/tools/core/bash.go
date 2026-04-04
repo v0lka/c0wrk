@@ -15,6 +15,7 @@ const toolBashDescription = "Execute bash commands in a shell"
 
 // BashExecTool executes bash commands in a shell.
 type BashExecTool struct {
+	*tools.BaseTool
 	blacklist []string
 	compiled  []*regexp.Regexp
 }
@@ -30,6 +31,12 @@ func NewBashExecTool(blacklist []string) *BashExecTool {
 		compiled = append(compiled, re)
 	}
 	return &BashExecTool{
+		BaseTool: &tools.BaseTool{
+			ToolName:        "bash_exec",
+			ToolDescription: toolBashDescription,
+			Schema:          json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "timeout": {"type": "string", "description": "Timeout duration (default: 120s)"}, "working_directory": {"type": "string", "description": "Working directory for command execution"}}, "required": ["command"]}`),
+			Policy:          tools.PolicyUserConfirm,
+		},
 		blacklist: blacklist,
 		compiled:  compiled,
 	}
@@ -40,26 +47,6 @@ type bashInput struct {
 	Command          string `json:"command"`
 	Timeout          string `json:"timeout"`
 	WorkingDirectory string `json:"working_directory"`
-}
-
-// Name returns the tool name.
-func (t *BashExecTool) Name() string {
-	return "bash_exec"
-}
-
-// Description returns the tool description.
-func (t *BashExecTool) Description() string {
-	return toolBashDescription
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *BashExecTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "timeout": {"type": "string", "description": "Timeout duration (default: 120s)"}, "working_directory": {"type": "string", "description": "Working directory for command execution"}}, "required": ["command"]}`)
-}
-
-// DefaultPolicy returns PolicyUserConfirm because bash execution can mutate system state.
-func (t *BashExecTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyUserConfirm
 }
 
 // Judge evaluates whether a bash command is safe to execute.
@@ -83,7 +70,7 @@ func (t *BashExecTool) Judge(ctx context.Context, input json.RawMessage) (allowe
 func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params bashInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("failed to parse input: %v", err), IsError: true}, nil
+		return tools.ParseInputError(err)
 	}
 
 	// Parse timeout (default 120s)

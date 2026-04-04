@@ -2,9 +2,13 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/liushuangls/go-anthropic/v2"
 )
 
 // TestAnthropicProvider_ImplementsInterface verifies that AnthropicProvider implements LLMProvider.
@@ -122,4 +126,298 @@ func TestAnthropicProvider_IntegrationStream(t *testing.T) {
 	if !gotStopReason {
 		t.Error("expected stop reason in stream")
 	}
+}
+
+func TestAnthropicProvider_BuildRequest(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	temp := 0.5
+	req := ChatRequest{
+		Model:       "claude-3-sonnet",
+		MaxTokens:   2048,
+		Temperature: &temp,
+		Messages: []Message{
+			{Role: "system", Content: "You are helpful."},
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi there!"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "search",
+				Description: "Search codebase",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	}
+
+	anthropicReq, err := p.buildRequest(req)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+
+	if anthropicReq.System != "You are helpful." {
+		t.Errorf("expected system prompt 'You are helpful.', got %q", anthropicReq.System)
+	}
+	if anthropicReq.MaxTokens != 2048 {
+		t.Errorf("expected MaxTokens 2048, got %d", anthropicReq.MaxTokens)
+	}
+	if anthropicReq.Temperature == nil || *anthropicReq.Temperature != 0.5 {
+		t.Errorf("expected temperature 0.5, got %v", anthropicReq.Temperature)
+	}
+	// 2 non-system messages
+	if len(anthropicReq.Messages) != 2 {
+		t.Errorf("expected 2 messages (no system), got %d", len(anthropicReq.Messages))
+	}
+	if len(anthropicReq.Tools) != 1 {
+		t.Errorf("expected 1 tool, got %d", len(anthropicReq.Tools))
+	}
+}
+
+func TestAnthropicProvider_BuildRequest_NoSystemNoToolsNoTemp(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	req := ChatRequest{
+		Model:     "claude-3-sonnet",
+		MaxTokens: 1024,
+		Messages: []Message{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+
+	anthropicReq, err := p.buildRequest(req)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+
+	if anthropicReq.System != "" {
+		t.Errorf("expected empty system prompt, got %q", anthropicReq.System)
+	}
+	if anthropicReq.Temperature != nil {
+		t.Errorf("expected nil temperature, got %v", anthropicReq.Temperature)
+	}
+	if len(anthropicReq.Tools) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(anthropicReq.Tools))
+	}
+}
+
+func TestAnthropicProvider_ConvertMessage(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	tests := []struct {
+		name     string
+		msg      Message
+		wantRole anthropic.ChatRole
+		wantErr  bool
+	}{
+		{
+			name:     "user message",
+			msg:      Message{Role: "user", Content: "Hello"},
+			wantRole: anthropic.RoleUser,
+		},
+		{
+			name:     "assistant message",
+			msg:      Message{Role: "assistant", Content: "Hi!"},
+			wantRole: anthropic.RoleAssistant,
+		},
+		{
+			name:     "tool message",
+			msg:      Message{Role: "tool", Content: "result", ToolCallID: "tc-1"},
+			wantRole: anthropic.RoleUser,
+		},
+		{
+			name:    "unsupported role",
+			msg:     Message{Role: "unknown", Content: "test"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := p.convertMessage(tt.msg)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Role != tt.wantRole {
+				t.Errorf("role = %q, want %q", result.Role, tt.wantRole)
+			}
+		})
+	}
+}
+
+func TestAnthropicProvider_ConvertMessage_AssistantWithToolCalls(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	msg := Message{
+		Role:    "assistant",
+		Content: "I'll search.",
+		ToolCalls: []ToolCall{
+			{ID: "tc-1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+		},
+	}
+
+	result, err := p.convertMessage(msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have text + tool_use content blocks
+	if len(result.Content) != 2 {
+		t.Errorf("expected 2 content blocks, got %d", len(result.Content))
+	}
+}
+
+func TestAnthropicProvider_ConvertMessage_AssistantEmptyContent(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	msg := Message{
+		Role:    "assistant",
+		Content: "",
+		ToolCalls: []ToolCall{
+			{ID: "tc-1", Name: "search", Input: json.RawMessage(`{}`)},
+		},
+	}
+
+	result, err := p.convertMessage(msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should only have tool_use (no empty text block)
+	if len(result.Content) != 1 {
+		t.Errorf("expected 1 content block (tool_use only), got %d", len(result.Content))
+	}
+}
+
+func TestAnthropicProvider_ParseResponse(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	t.Run("text response", func(t *testing.T) {
+		resp := anthropic.MessagesResponse{
+			Content: []anthropic.MessageContent{
+				{Type: anthropic.MessagesContentTypeText, Text: stringPtr("Hello!")},
+			},
+			StopReason: "end_turn",
+			Usage: anthropic.MessagesUsage{
+				InputTokens:  10,
+				OutputTokens: 5,
+			},
+		}
+
+		result, err := p.parseResponse(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Message.Content != "Hello!" {
+			t.Errorf("content = %q, want 'Hello!'", result.Message.Content)
+		}
+		if result.Message.Role != "assistant" {
+			t.Errorf("role = %q, want 'assistant'", result.Message.Role)
+		}
+		if result.StopReason != "end_turn" {
+			t.Errorf("stop reason = %q, want 'end_turn'", result.StopReason)
+		}
+		if result.Usage.InputTokens != 10 {
+			t.Errorf("input tokens = %d, want 10", result.Usage.InputTokens)
+		}
+	})
+
+	t.Run("tool use response", func(t *testing.T) {
+		resp := anthropic.MessagesResponse{
+			Content: []anthropic.MessageContent{
+				{
+					Type: anthropic.MessagesContentTypeToolUse,
+					MessageContentToolUse: &anthropic.MessageContentToolUse{
+						ID:    "call-123",
+						Name:  "get_weather",
+						Input: json.RawMessage(`{"city":"NYC"}`),
+					},
+				},
+			},
+			StopReason: "tool_use",
+		}
+
+		result, err := p.parseResponse(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.Message.ToolCalls) != 1 {
+			t.Fatalf("expected 1 tool call, got %d", len(result.Message.ToolCalls))
+		}
+		tc := result.Message.ToolCalls[0]
+		if tc.ID != "call-123" {
+			t.Errorf("tool call ID = %q, want 'call-123'", tc.ID)
+		}
+		if tc.Name != "get_weather" {
+			t.Errorf("tool call Name = %q, want 'get_weather'", tc.Name)
+		}
+	})
+
+	t.Run("mixed text blocks", func(t *testing.T) {
+		resp := anthropic.MessagesResponse{
+			Content: []anthropic.MessageContent{
+				{Type: anthropic.MessagesContentTypeText, Text: stringPtr("Part 1")},
+				{Type: anthropic.MessagesContentTypeText, Text: stringPtr("Part 2")},
+			},
+			StopReason: "end_turn",
+		}
+
+		result, err := p.parseResponse(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Part 1\nPart 2"
+		if result.Message.Content != expected {
+			t.Errorf("content = %q, want %q", result.Message.Content, expected)
+		}
+	})
+
+	t.Run("thinking response", func(t *testing.T) {
+		resp := anthropic.MessagesResponse{
+			Content: []anthropic.MessageContent{
+				{
+					Type: anthropic.MessagesContentTypeThinking,
+					MessageContentThinking: &anthropic.MessageContentThinking{
+						Thinking: "Let me think...",
+					},
+				},
+				{Type: anthropic.MessagesContentTypeText, Text: stringPtr("Answer")},
+			},
+			StopReason: "end_turn",
+		}
+
+		result, err := p.parseResponse(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Reasoning != "Let me think..." {
+			t.Errorf("reasoning = %q, want 'Let me think...'", result.Reasoning)
+		}
+		if result.Message.Content != "Answer" {
+			t.Errorf("content = %q, want 'Answer'", result.Message.Content)
+		}
+	})
+}
+
+func TestAnthropicProvider_WrapError(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	t.Run("plain error", func(t *testing.T) {
+		result := p.wrapError(errors.New("connection failed"))
+		var llmErr *LLMError
+		if !errors.As(result, &llmErr) {
+			t.Fatal("expected *LLMError")
+		}
+		if llmErr.StatusCode != 0 {
+			t.Errorf("expected status 0, got %d", llmErr.StatusCode)
+		}
+	})
+}
+
+// stringPtr is a helper to create *string from string for anthropic MessageContent.
+func stringPtr(s string) *string {
+	return &s
 }

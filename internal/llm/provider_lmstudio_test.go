@@ -1232,3 +1232,414 @@ func TestLMStudioMetadataSource(t *testing.T) {
 		t.Error("expected found=false for non-existent model")
 	}
 }
+
+// TestLMStudioSetLogger tests the SetLogger method.
+func TestLMStudioSetLogger(t *testing.T) {
+	p, err := NewLMStudioProvider(LMStudioProviderConfig{
+		Name:    "lmstudio",
+		BaseURL: "http://localhost:1234",
+	})
+	if err != nil {
+		t.Fatalf("NewLMStudioProvider failed: %v", err)
+	}
+
+	// Initially nil
+	if p.logger != nil {
+		t.Error("expected nil logger initially")
+	}
+
+	// Setting nil should not panic
+	p.SetLogger(nil)
+	if p.logger != nil {
+		t.Error("expected nil logger after SetLogger(nil)")
+	}
+}
+
+// TestLMStudioLogDebug tests the logDebug method doesn't panic with nil logger.
+func TestLMStudioLogDebug(t *testing.T) {
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{
+		Name:    "lmstudio",
+		BaseURL: "http://localhost:1234",
+	})
+
+	// Should not panic with nil logger
+	p.logDebug("test message", "key", "value")
+}
+
+// TestLMStudioChatCompletionWithMultipleMessages tests building request with multiple message types.
+func TestLMStudioChatCompletionWithMultipleMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req lmStudioRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		// Verify messages are concatenated
+		var inputStr string
+		if err := json.Unmarshal(req.Input, &inputStr); err != nil {
+			t.Errorf("failed to unmarshal input as string: %v", err)
+		}
+		if !strings.Contains(inputStr, "first") || !strings.Contains(inputStr, "second") {
+			t.Errorf("expected both messages in input, got %q", inputStr)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"output":[{"type":"message","content":"ok"}],"stats":{}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+
+	_, err := p.ChatCompletion(context.Background(), ChatRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "user", Content: "first"},
+			{Role: "user", Content: "second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+}
+
+// TestLMStudioChatCompletionEmptyMessages tests building request with no non-system messages.
+func TestLMStudioChatCompletionEmptyMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req lmStudioRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		// Empty messages should result in empty string input
+		var inputStr string
+		if err := json.Unmarshal(req.Input, &inputStr); err != nil {
+			t.Errorf("failed to unmarshal input: %v", err)
+		}
+		if inputStr != "" {
+			t.Errorf("expected empty input, got %q", inputStr)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"output":[{"type":"message","content":"ok"}],"stats":{}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+
+	_, err := p.ChatCompletion(context.Background(), ChatRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "system", Content: "system prompt only"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion failed: %v", err)
+	}
+}
+
+// TestLMStudioMetadataSourceZeroContext tests MetadataSource returns false for zero max context.
+func TestLMStudioMetadataSourceZeroContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := struct {
+			Models []LMStudioModel `json:"models"`
+		}{
+			Models: []LMStudioModel{
+				{ID: "zero-ctx-model", MaxContext: 0},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+	source := p.MetadataSource()
+
+	_, found := source("zero-ctx-model")
+	if found {
+		t.Error("expected found=false for model with zero max context")
+	}
+}
+
+// TestLMStudioLoadModelError tests LoadModel with server error.
+func TestLMStudioLoadModelError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":"model not found"}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+	err := p.LoadModel(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// TestLMStudioUnloadModelError tests UnloadModel with server error.
+func TestLMStudioUnloadModelError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":"model not loaded"}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+	err := p.UnloadModel(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// TestLMStudioListModelsError tests ListModels with server error.
+func TestLMStudioListModelsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":"service unavailable"}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+	_, err := p.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// TestLMStudioStreamChatCompletionHTTPError tests streaming with HTTP error status.
+func TestLMStudioStreamChatCompletionHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":"bad gateway"}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+	_, err := p.StreamChatCompletion(context.Background(), ChatRequest{
+		Model:    "test-model",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// TestLMStudioStreamChatCompletionWithToolsHTTPError tests streaming with tools and HTTP error.
+func TestLMStudioStreamChatCompletionWithToolsHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":"bad gateway"}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+	_, err := p.StreamChatCompletion(context.Background(), ChatRequest{
+		Model:    "test-model",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+		Tools:    []ToolDefinition{{Name: "test", Description: "test", InputSchema: json.RawMessage(`{}`)}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// TestLMStudioChatCompletionOpenAIError tests OpenAI-compatible endpoint error.
+func TestLMStudioChatCompletionOpenAIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":"bad request"}}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+	_, err := p.ChatCompletion(context.Background(), ChatRequest{
+		Model:    "test-model",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+		Tools:    []ToolDefinition{{Name: "test", Description: "test", InputSchema: json.RawMessage(`{}`)}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// TestLMStudioParseOpenAIResponseNoChoices tests parseOpenAIResponse with empty choices.
+func TestLMStudioParseOpenAIResponseNoChoices(t *testing.T) {
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio"})
+	resp := &lmsOpenAIResponse{}
+	_, err := p.parseOpenAIResponse(resp)
+	if err == nil {
+		t.Fatal("expected error for no choices")
+	}
+}
+
+// TestLMStudioParseResponseMultipleOutputItems tests parseResponse with multiple output types.
+func TestLMStudioParseResponseMultipleOutputItems(t *testing.T) {
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio"})
+
+	lmResp := &lmStudioResponse{
+		Output: []lmStudioOutputItem{
+			{Type: "message", Content: "Part 1"},
+			{Type: "message", Content: "Part 2"},
+			{Type: "reasoning", Content: "Think 1"},
+			{Type: "reasoning", Content: "Think 2"},
+			{Type: "tool_call", ID: "tc-1", Tool: "fn", Arguments: json.RawMessage(`{}`)},
+		},
+		Stats: lmStudioStats{InputTokens: 10, TotalOutputTokens: 20},
+	}
+
+	resp, err := p.parseResponse(lmResp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Message.Content != "Part 1\nPart 2" {
+		t.Errorf("content = %q, want 'Part 1\nPart 2'", resp.Message.Content)
+	}
+	if resp.Reasoning != "Think 1\nThink 2" {
+		t.Errorf("reasoning = %q, want 'Think 1\nThink 2'", resp.Reasoning)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(resp.Message.ToolCalls))
+	}
+	if resp.StopReason != "tool_use" {
+		t.Errorf("stop reason = %q, want 'tool_use'", resp.StopReason)
+	}
+}
+
+// TestLMStudioBuildOpenAIRequest tests building OpenAI-compatible requests.
+func TestLMStudioBuildOpenAIRequest(t *testing.T) {
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio"})
+
+	temp := 0.5
+	req := ChatRequest{
+		Model:       "test-model",
+		MaxTokens:   2048,
+		Temperature: &temp,
+		Messages: []Message{
+			{Role: "user", Content: "Hello"},
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{
+					{ID: "tc-1", Name: "fn", Input: json.RawMessage(`{"k":"v"}`)},
+				},
+			},
+			{Role: "tool", Content: "result", ToolCallID: "tc-1"},
+		},
+		Tools: []ToolDefinition{
+			{Name: "fn", Description: "A function", InputSchema: json.RawMessage(`{}`)},
+		},
+	}
+
+	oaiReq := p.buildOpenAIRequest(req, false)
+
+	if oaiReq.Model != "test-model" {
+		t.Errorf("model = %q, want 'test-model'", oaiReq.Model)
+	}
+	if oaiReq.Stream {
+		t.Error("expected stream=false")
+	}
+	if oaiReq.MaxTokens != 2048 {
+		t.Errorf("max_tokens = %d, want 2048", oaiReq.MaxTokens)
+	}
+	if *oaiReq.Temperature != 0.5 {
+		t.Errorf("temperature = %f, want 0.5", *oaiReq.Temperature)
+	}
+	if len(oaiReq.Messages) != 3 {
+		t.Errorf("expected 3 messages, got %d", len(oaiReq.Messages))
+	}
+	if len(oaiReq.Tools) != 1 {
+		t.Errorf("expected 1 tool, got %d", len(oaiReq.Tools))
+	}
+	// Verify tool call in assistant message
+	if len(oaiReq.Messages[1].ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call in assistant message, got %d", len(oaiReq.Messages[1].ToolCalls))
+	}
+	// Verify tool response has tool_call_id
+	if oaiReq.Messages[2].ToolCallID != "tc-1" {
+		t.Errorf("tool_call_id = %q, want 'tc-1'", oaiReq.Messages[2].ToolCallID)
+	}
+}
+
+// TestLMStudioStreamModelLoadEvents tests that model load/prompt processing events are handled.
+func TestLMStudioStreamModelLoadEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		writeSSE(w, "model_load.start", `{"model":"test","progress":0}`)
+		writeSSE(w, "model_load.progress", `{"model":"test","progress":0.5}`)
+		writeSSE(w, "model_load.complete", `{"model":"test","progress":1}`)
+		writeSSE(w, "prompt_processing.start", `{"progress":0}`)
+		writeSSE(w, "prompt_processing.progress", `{"progress":0.5}`)
+		writeSSE(w, "prompt_processing.complete", `{"progress":1}`)
+		writeSSE(w, "chat.start", `{"model":"test"}`)
+		writeSSE(w, "content.delta", `{"content":"OK"}`)
+		writeSSE(w, "chat.end", `{}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+
+	chunks, err := p.StreamChatCompletion(context.Background(), ChatRequest{
+		Model:    "test",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var content strings.Builder
+	var stopReason string
+	for chunk := range chunks {
+		content.WriteString(chunk.Delta)
+		if chunk.StopReason != "" {
+			stopReason = chunk.StopReason
+		}
+	}
+
+	if content.String() != "OK" {
+		t.Errorf("content = %q, want 'OK'", content.String())
+	}
+	if stopReason != "end_turn" {
+		t.Errorf("stop reason = %q, want 'end_turn'", stopReason)
+	}
+}
+
+// TestLMStudioStreamToolCallFailure tests tool_call.failure event.
+func TestLMStudioStreamToolCallFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+
+		writeSSE(w, "chat.start", `{"model":"test"}`)
+		writeSSE(w, "tool_call.start", `{"id":"tc-1","name":"fn"}`)
+		writeSSE(w, "tool_call.arguments", `{"arguments":"{\"key\":\"val\"}"}`)
+		writeSSE(w, "tool_call.failure", `{}`)
+		writeSSE(w, "chat.end", `{}`)
+	}))
+	defer server.Close()
+
+	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
+
+	chunks, err := p.StreamChatCompletion(context.Background(), ChatRequest{
+		Model:    "test",
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var toolCall *ToolCall
+	for chunk := range chunks {
+		if chunk.ToolCall != nil {
+			toolCall = chunk.ToolCall
+		}
+	}
+
+	if toolCall == nil {
+		t.Fatal("expected tool call emitted on failure")
+	}
+	if toolCall.ID != "tc-1" {
+		t.Errorf("tool call ID = %q, want 'tc-1'", toolCall.ID)
+	}
+}

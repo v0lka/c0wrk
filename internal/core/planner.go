@@ -63,8 +63,9 @@ func (p *Planner) Replan(
 	failedStep CompletedStep,
 	reflection *Reflection,
 	criteria []AcceptanceCriterion,
+	sessionReflections []Reflection,
 ) (*Plan, error) {
-	systemPrompt := p.buildReplanSystemPrompt(ctx, originalPlan, completedSteps, failedStep, reflection, criteria)
+	systemPrompt := p.buildReplanSystemPrompt(ctx, originalPlan, completedSteps, failedStep, reflection, criteria, sessionReflections)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -148,6 +149,7 @@ func (p *Planner) buildReplanSystemPrompt(
 	failedStep CompletedStep,
 	reflection *Reflection,
 	criteria []AcceptanceCriterion,
+	sessionReflections []Reflection,
 ) string {
 	// Build original plan string
 	planJSON, _ := json.MarshalIndent(originalPlan, "", "  ")
@@ -179,6 +181,18 @@ func (p *Planner) buildReplanSystemPrompt(
 `, reflection.FailureAnalysis, reflection.RootCause, reflection.ActionPlan)
 	}
 
+	// Build previous session reflections string (cross-attempt pattern visibility)
+	var prevReflectionsStr string
+	if len(sessionReflections) > 0 {
+		var prb strings.Builder
+		prb.WriteString("Previous session reflections (showing cross-attempt failure patterns):\n")
+		for i, r := range sessionReflections {
+			fmt.Fprintf(&prb, "%d. Summary: %s | Root cause: %s | Action plan: %s | Suggested: %s\n",
+				i+1, r.Summary, r.RootCause, r.ActionPlan, r.SuggestedAction)
+		}
+		prevReflectionsStr = prb.String()
+	}
+
 	// Build acceptance criteria string
 	var criteriaBuilder strings.Builder
 	for _, ac := range criteria {
@@ -191,6 +205,7 @@ func (p *Planner) buildReplanSystemPrompt(
 	result = strings.ReplaceAll(result, "ORIGINAL-PLAN", originalPlanStr)
 	result = strings.ReplaceAll(result, "COMPLETED-STEPS", completedStepsStr)
 	result = strings.ReplaceAll(result, "FAILED-STEP", failedStepStr)
+	result = strings.ReplaceAll(result, "PREVIOUS-REFLECTIONS", prevReflectionsStr)
 	result = strings.ReplaceAll(result, "REFLECTION", reflectionStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))

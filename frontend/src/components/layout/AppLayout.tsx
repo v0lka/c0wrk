@@ -5,6 +5,7 @@ import { InspectorPanel } from '@/components/inspector/InspectorPanel'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { ExecutionPanels } from '@/components/chat/ExecutionPanels'
+import { PendingActionsBar } from '@/components/chat/PendingActionsBar'
 
 const SIDEBAR_DEFAULT = 260
 const SIDEBAR_MIN = 180
@@ -113,6 +114,7 @@ export function AppLayout() {
         <main className="flex-1 flex min-h-0 min-w-0">
           <div className="flex-1 flex flex-col min-w-0 min-h-0">
             <ChatArea />
+            <PendingActionsBar />
             <ExecutionPanels />
             <ChatInput />
           </div>

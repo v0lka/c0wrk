@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +14,9 @@ import (
 	"github.com/user/agent/internal/llm"
 	"github.com/user/agent/internal/tools/prompts"
 )
+
+// pathRegex matches absolute path-like substrings in command strings.
+var pathRegex = regexp.MustCompile(`/[a-zA-Z0-9/_.\-~]+`)
 
 // JudgeVerdict represents the safety assessment of a tool call.
 type JudgeVerdict int
@@ -46,23 +51,6 @@ func NewToolJudge(provider llm.LLMProvider, model string) *ToolJudge {
 	}
 }
 
-// taskContextKey is the context key for passing task context through Go's context.Context.
-type taskContextKey struct{}
-
-// WithTaskContext returns a new context with the task description attached.
-func WithTaskContext(ctx context.Context, desc string) context.Context {
-	return context.WithValue(ctx, taskContextKey{}, desc)
-}
-
-// TaskContextFrom extracts the task description from the context.
-// Returns an empty string if not found.
-func TaskContextFrom(ctx context.Context) string {
-	if v, ok := ctx.Value(taskContextKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
-
 // judgeCacheKey generates a cache key from tool name and input.
 func judgeCacheKey(toolName string, input json.RawMessage) string {
 	h := sha256.Sum256(input)
@@ -77,6 +65,11 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	// Use context-based task context as fallback
 	if taskContext == "" {
 		taskContext = TaskContextFrom(ctx)
+	}
+
+	// Short-circuit for workspace-internal operations
+	if allPathsInWorkspace(ctx, input) {
+		return VerdictAllow, "all paths are within the session workspace", nil
 	}
 
 	// Compute cache key
@@ -132,6 +125,71 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	j.mu.Unlock()
 
 	return verdict, reasoning, nil
+}
+
+// isPathInWorkspace checks if the given absolute path is within the workspace directory.
+func isPathInWorkspace(absPath, workspacePath string) bool {
+	workspaceAbs := filepath.Clean(workspacePath)
+	if !strings.HasSuffix(workspaceAbs, string(filepath.Separator)) {
+		workspaceAbs += string(filepath.Separator)
+	}
+	absPathClean := filepath.Clean(absPath)
+	return strings.HasPrefix(absPathClean+string(filepath.Separator), workspaceAbs) || absPathClean == filepath.Clean(workspacePath)
+}
+
+// extractJSONStrings recursively extracts all string values from a JSON structure.
+func extractJSONStrings(data interface{}) []string {
+	var results []string
+	switch v := data.(type) {
+	case string:
+		results = append(results, v)
+	case map[string]interface{}:
+		for _, val := range v {
+			results = append(results, extractJSONStrings(val)...)
+		}
+	case []interface{}:
+		for _, val := range v {
+			results = append(results, extractJSONStrings(val)...)
+		}
+	}
+	return results
+}
+
+// extractPaths extracts absolute path-like substrings from a string value.
+func extractPaths(s string) []string {
+	return pathRegex.FindAllString(s, -1)
+}
+
+// allPathsInWorkspace returns true if the JSON input contains at least one absolute
+// path and every such path is within the workspace directory.
+func allPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
+	workspacePath := WorkspacePathFrom(ctx)
+	if workspacePath == "" {
+		return false
+	}
+
+	var parsed interface{}
+	if err := json.Unmarshal(input, &parsed); err != nil {
+		return false
+	}
+
+	strValues := extractJSONStrings(parsed)
+	var allPaths []string
+	for _, s := range strValues {
+		allPaths = append(allPaths, extractPaths(s)...)
+	}
+
+	if len(allPaths) == 0 {
+		return false
+	}
+
+	for _, p := range allPaths {
+		cleaned := filepath.Clean(p)
+		if !isPathInWorkspace(cleaned, workspacePath) {
+			return false
+		}
+	}
+	return true
 }
 
 // ResetCache clears all cached verdicts.

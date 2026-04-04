@@ -1,6 +1,9 @@
 package llm
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 )
@@ -319,6 +322,212 @@ func TestModelRegistry_SourceFallback(t *testing.T) {
 	}
 	if meta.TokenizerType != "approximate" {
 		t.Errorf("expected fallback TokenizerType %q, got %q", "approximate", meta.TokenizerType)
+	}
+}
+
+func TestBuiltInModelNames_AllModels(t *testing.T) {
+	names := BuiltInModelNames("")
+	if len(names) == 0 {
+		t.Fatal("expected non-empty model names list")
+	}
+	// Should be sorted
+	for i := 1; i < len(names); i++ {
+		if names[i] < names[i-1] {
+			t.Errorf("names not sorted: %q comes after %q", names[i], names[i-1])
+		}
+	}
+}
+
+func TestBuiltInModelNames_ByTokenizer(t *testing.T) {
+	tests := []struct {
+		tokenizer string
+		wantMin   int
+	}{
+		{"tiktoken/o200k_base", 5},
+		{"anthropic-api", 3},
+		{"approximate", 5},
+		{"nonexistent", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.tokenizer, func(t *testing.T) {
+			names := BuiltInModelNames(tt.tokenizer)
+			if len(names) < tt.wantMin {
+				t.Errorf("expected at least %d models for tokenizer %q, got %d", tt.wantMin, tt.tokenizer, len(names))
+			}
+			// Verify all returned models actually have the correct tokenizer
+			registry := makeBuiltInRegistry()
+			for _, name := range names {
+				if meta, ok := registry[name]; ok {
+					if meta.TokenizerType != tt.tokenizer {
+						t.Errorf("model %q has tokenizer %q, expected %q", name, meta.TokenizerType, tt.tokenizer)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestBuiltInModelNamesByPrefix(t *testing.T) {
+	tests := []struct {
+		prefix  string
+		wantMin int
+	}{
+		{"gpt-", 3},
+		{"claude-", 3},
+		{"gemini-", 3},
+		{"grok-", 2},
+		{"deepseek-", 2},
+		{"nonexistent-", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			names := BuiltInModelNamesByPrefix(tt.prefix)
+			if len(names) < tt.wantMin {
+				t.Errorf("expected at least %d models with prefix %q, got %d", tt.wantMin, tt.prefix, len(names))
+			}
+			// Verify sorted
+			for i := 1; i < len(names); i++ {
+				if names[i] < names[i-1] {
+					t.Errorf("names not sorted: %q comes after %q", names[i], names[i-1])
+				}
+			}
+		})
+	}
+}
+
+func TestModelRegistry_FetchFromHuggingFace(t *testing.T) {
+	// Test successful fetch
+	t.Run("success", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"max_position_embeddings": 8192}`))
+		}))
+		defer server.Close()
+
+		registry := NewModelRegistry(nil)
+		registry.httpClient = server.Client()
+		// Override the URL by adjusting the httpClient transport
+		registry.httpClient = &http.Client{
+			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
+		}
+
+		meta, err := registry.fetchFromHuggingFace("test-model")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if meta.ContextWindow != 8192 {
+			t.Errorf("expected ContextWindow 8192, got %d", meta.ContextWindow)
+		}
+		if meta.OutputLimit != 4096 {
+			t.Errorf("expected OutputLimit 4096, got %d", meta.OutputLimit)
+		}
+		if meta.TokenizerType != "approximate" {
+			t.Errorf("expected TokenizerType 'approximate', got %q", meta.TokenizerType)
+		}
+	})
+
+	// Test HTTP error
+	t.Run("http_error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		registry := NewModelRegistry(nil)
+		registry.httpClient = &http.Client{
+			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
+		}
+
+		_, err := registry.fetchFromHuggingFace("test-model")
+		if err == nil {
+			t.Error("expected error for 404 response")
+		}
+	})
+
+	// Test invalid JSON
+	t.Run("invalid_json", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`not json`))
+		}))
+		defer server.Close()
+
+		registry := NewModelRegistry(nil)
+		registry.httpClient = &http.Client{
+			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
+		}
+
+		_, err := registry.fetchFromHuggingFace("test-model")
+		if err == nil {
+			t.Error("expected error for invalid JSON")
+		}
+	})
+
+	// Test zero max_position_embeddings
+	t.Run("zero_embeddings", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"max_position_embeddings": 0}`))
+		}))
+		defer server.Close()
+
+		registry := NewModelRegistry(nil)
+		registry.httpClient = &http.Client{
+			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
+		}
+
+		_, err := registry.fetchFromHuggingFace("test-model")
+		if err == nil {
+			t.Error("expected error for zero max_position_embeddings")
+		}
+	})
+}
+
+// rewriteTransport rewrites the request URL to the test server.
+type rewriteTransport struct {
+	base      http.RoundTripper
+	serverURL string
+}
+
+func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.URL.Scheme = "http"
+	// Parse the server URL to extract host
+	parsed, _ := url.Parse(t.serverURL)
+	req.URL.Host = parsed.Host
+	return t.base.RoundTrip(req)
+}
+
+func TestModelRegistry_CacheAfterFetchFromHuggingFace(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"max_position_embeddings": 4096}`))
+	}))
+	defer server.Close()
+
+	registry := NewModelRegistry(nil)
+	registry.httpClient = &http.Client{
+		Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
+	}
+
+	// First resolve should fetch from HuggingFace
+	meta := registry.Resolve("hf-test-model")
+	if meta.ContextWindow != 4096 {
+		t.Errorf("expected ContextWindow 4096, got %d", meta.ContextWindow)
+	}
+
+	// Second resolve should use cache (no additional HTTP call)
+	meta2 := registry.Resolve("hf-test-model")
+	if meta2.ContextWindow != 4096 {
+		t.Errorf("expected cached ContextWindow 4096, got %d", meta2.ContextWindow)
+	}
+
+	if callCount != 1 {
+		t.Errorf("expected 1 HTTP call (cached on second), got %d", callCount)
 	}
 }
 

@@ -109,7 +109,7 @@ export function GlobalView() {
         title="Procedural Memory"
         icon={<Wrench className="h-4 w-4" />}
         count={memStats.procedural}
-        description="Skills and available tools"
+        description="External tools and procedures"
         colorClass="bg-orange-500/10 text-orange-500"
       />
       <MemoryCard

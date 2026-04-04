@@ -23,13 +23,34 @@ type LLMSummarizer func(ctx context.Context, content string, prompt string) (str
 
 // WebFetchTool fetches web pages and converts HTML to markdown.
 type WebFetchTool struct {
+	*tools.BaseTool
 	summarizer LLMSummarizer
 	client     *http.Client
 }
 
 // NewWebFetchTool creates a new WebFetchTool with an optional summarizer.
 func NewWebFetchTool(summarizer LLMSummarizer) *WebFetchTool {
+	schema := `{
+		"type": "object",
+		"properties": {
+			"url": {
+				"type": "string",
+				"description": "URL to fetch"
+			},
+			"prompt": {
+				"type": "string",
+				"description": "Optional extraction prompt to filter/summarize the content"
+			}
+		},
+		"required": ["url"]
+	}`
 	return &WebFetchTool{
+		BaseTool: &tools.BaseTool{
+			ToolName:        "web_fetch",
+			ToolDescription: toolWebfetchDescription,
+			Schema:          json.RawMessage(schema),
+			Policy:          tools.PolicyAlwaysAllow,
+		},
 		summarizer: summarizer,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -49,45 +70,11 @@ type webFetchInput struct {
 	Prompt string `json:"prompt"`
 }
 
-// Name returns the tool name.
-func (t *WebFetchTool) Name() string {
-	return "web_fetch"
-}
-
-// Description returns the tool description.
-func (t *WebFetchTool) Description() string {
-	return toolWebfetchDescription
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *WebFetchTool) InputSchema() json.RawMessage {
-	schema := `{
-		"type": "object",
-		"properties": {
-			"url": {
-				"type": "string",
-				"description": "URL to fetch"
-			},
-			"prompt": {
-				"type": "string",
-				"description": "Optional extraction prompt to filter/summarize the content"
-			}
-		},
-		"required": ["url"]
-	}`
-	return json.RawMessage(schema)
-}
-
-// DefaultPolicy returns PolicyAlwaysAllow because web fetch only reads external content.
-func (t *WebFetchTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAlwaysAllow
-}
-
 // Execute fetches the URL and returns markdown content.
 func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params webFetchInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("failed to parse input: %v", err), IsError: true}, nil
+		return tools.ParseInputError(err)
 	}
 
 	// Validate URL

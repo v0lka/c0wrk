@@ -3,6 +3,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChatStore, ChatMessageUI, DisplayItem, groupMessages } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePanelStore } from '@/stores/panelStore'
+import { useScrollStore } from '@/stores/scrollStore'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
@@ -13,6 +14,8 @@ import { AskUserPanel } from './AskUserPanel'
 import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
 import { ActivityIndicator } from './ActivityIndicator'
+import { ActionPlaceholder } from './ActionPlaceholder'
+import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { MessageCircle } from 'lucide-react'
 import { GetSessionHistory } from '../../../wailsjs/go/main/App'
@@ -28,9 +31,19 @@ export function ChatArea() {
   )
   const streamingText = useChatStore(s => s.streamingText)
   const setMessages = useChatStore(s => s.setMessages)
+  const setPendingActions = useChatStore(s => s.setPendingActions)
+  const setScrollToStep = useScrollStore(s => s.setScrollToStep)
   const scrollRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerHeight, setContainerHeight] = useState(0)
+  const isAtBottomRef = useRef(true)
+  const [hasNewActivity, setHasNewActivity] = useState(false)
+  const viewportRef = useRef<HTMLElement | null>(null)
+  const prevScrollState = useRef<{ scrollTop: number; scrollHeight: number; clientHeight: number }>({
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+  })
 
   // Track container height for pinned message max height calculation
   useEffect(() => {
@@ -70,17 +83,92 @@ export function ChatArea() {
     })
   }, [activeSessionId, setMessages])
 
-  // Auto-scroll to bottom on new messages or streaming text
-  useLayoutEffect(() => {
-    if (scrollRef.current) {
-      const viewport = scrollRef.current.querySelector('[data-slot="scroll-area-viewport"]')
-      if (viewport) {
-        viewport.scrollTop = viewport.scrollHeight
+  // Cache viewport element
+  useEffect(() => {
+    if (!scrollRef.current) return
+    const vp = scrollRef.current.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement | null
+    viewportRef.current = vp
+    if (vp) {
+      prevScrollState.current = {
+        scrollTop: vp.scrollTop,
+        scrollHeight: vp.scrollHeight,
+        clientHeight: vp.clientHeight,
       }
+    }
+  })
+
+  // Track scroll position for "new activity" pill dismissal
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    const handleScroll = () => {
+      const atBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 50
+      isAtBottomRef.current = atBottom
+      prevScrollState.current = {
+        scrollTop: viewport.scrollTop,
+        scrollHeight: viewport.scrollHeight,
+        clientHeight: viewport.clientHeight,
+      }
+      if (atBottom) setHasNewActivity(false)
+    }
+
+    viewport.addEventListener('scroll', handleScroll, { passive: true })
+    return () => viewport.removeEventListener('scroll', handleScroll)
+  })
+
+  // Auto-scroll only when user was at bottom before new content arrived
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    // Read current measurements synchronously (before paint)
+    const currentScrollHeight = viewport.scrollHeight
+    const currentClientHeight = viewport.clientHeight
+
+    // Determine if user was at bottom using PREVIOUS state (before new content was added)
+    const prev = prevScrollState.current
+    const wasAtBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 50
+
+    if (wasAtBottom) {
+      // User was at bottom → scroll to new bottom (direct assignment in useLayoutEffect, before paint)
+      viewport.scrollTop = currentScrollHeight
+      isAtBottomRef.current = true
+    } else {
+      // User had scrolled up → don't move, show "new activity" indicator
+      setHasNewActivity(true)
+    }
+
+    // Update prev state with current measurements
+    prevScrollState.current = {
+      scrollTop: viewport.scrollTop,
+      scrollHeight: currentScrollHeight,
+      clientHeight: currentClientHeight,
     }
   }, [messages, streamingText])
 
-  const displayItems = useMemo(() => groupMessages(messages), [messages])
+  const { items: displayItems, pendingActions } = useMemo(() => groupMessages(messages), [messages])
+
+  // Sync pendingActions to the store so PendingActionsBar can read them
+  useEffect(() => {
+    setPendingActions(pendingActions)
+  }, [pendingActions, setPendingActions])
+
+  // Register scroll-to-step callback
+  useEffect(() => {
+    const scrollToStepFn = (stepId: string) => {
+      const viewport = viewportRef.current
+      if (!viewport) return
+      const elements = viewport.querySelectorAll(`[data-step-id="${stepId}"]`)
+      const target = elements[elements.length - 1] // last match (for retries)
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        isAtBottomRef.current = false
+      }
+    }
+    setScrollToStep(scrollToStepFn)
+    return () => setScrollToStep(null)
+  }, [setScrollToStep])
 
   // Find the last user message for pinning at the top
   const lastUserMessage = useMemo(() => {
@@ -93,7 +181,7 @@ export function ChatArea() {
   }, [displayItems])
 
   // Recursive render function for DisplayItems (supports PlanStepBlock children)
-  const renderDisplayItem = (item: DisplayItem, _index: number): React.ReactNode => {
+  const renderDisplayItem = (item: DisplayItem): React.ReactNode => {
     // Skip the last user message since it's pinned at the top
     if (item.kind === 'user' && lastUserMessage && item.message.id === lastUserMessage.message.id) {
       return null
@@ -108,7 +196,7 @@ export function ChatArea() {
       case 'tool':
         return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} result={item.result} resultLen={item.resultLen} status={item.status} />
       case 'plan_step':
-        return <PlanStepBlock key={item.id} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} children={item.children} renderItem={renderDisplayItem} />
+        return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} isRetry={item.isRetry} children={item.children} renderItem={renderDisplayItem} />
       case 'tool_confirm':
         return <ToolConfirmation key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
       case 'ask_user':
@@ -117,6 +205,10 @@ export function ChatArea() {
         return <ErrorBlock key={item.message.id} content={item.message.content} />
       case 'service':
         return <ServiceMessage key={item.id} id={item.id} variant={item.variant} content={item.content} metadata={item.metadata} />
+      case 'action_placeholder':
+        return <ActionPlaceholder key={item.id} label={item.label} />
+      case 'thought_group':
+        return <ThoughtGroupBlock key={item.id} thoughts={item.thoughts} />
       default:
         return null
     }
@@ -161,7 +253,7 @@ export function ChatArea() {
       )}
       <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
         <div className="p-4 space-y-4 min-w-0">
-          {displayItems.map((item, idx) => renderDisplayItem(item, idx))}
+          {displayItems.map((item) => renderDisplayItem(item))}
 
           {/* Streaming text indicator */}
           {streamingText && (
@@ -174,6 +266,22 @@ export function ChatArea() {
           {/* Activity indicator */}
           <ActivityIndicator />
         </div>
+        {hasNewActivity && !isAtBottomRef.current && (
+          <button
+            onClick={() => {
+              const viewport = viewportRef.current
+              if (viewport) {
+                viewport.scrollTop = viewport.scrollHeight
+                isAtBottomRef.current = true
+                setHasNewActivity(false)
+              }
+            }}
+            className="sticky bottom-2 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full bg-blue-500 text-white text-xs shadow-lg hover:bg-blue-600 active:bg-blue-700 transition-colors flex items-center gap-1.5"
+          >
+            <span>↓</span>
+            <span>New activity</span>
+          </button>
+        )}
       </ScrollArea>
     </div>
   )

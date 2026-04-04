@@ -11,43 +11,19 @@ import (
 	"github.com/user/agent/internal/tools"
 )
 
-// mockSkillBuilder is a mock implementation of SkillBuilder for testing.
-type mockSkillBuilder struct {
-	buildCalled   bool
-	buildSkillDir string
-	buildName     string
-	buildVersion  string
-	buildError    error
-	buildImageTag string
-}
+func TestToolCreatorTool_Descriptor(t *testing.T) {
+	tool := NewToolCreatorTool("/tmp/tools", nil)
 
-func (m *mockSkillBuilder) Build(ctx context.Context, skillDir, name, version string) (string, error) {
-	m.buildCalled = true
-	m.buildSkillDir = skillDir
-	m.buildName = name
-	m.buildVersion = version
-	if m.buildError != nil {
-		return "", m.buildError
-	}
-	if m.buildImageTag != "" {
-		return m.buildImageTag, nil
-	}
-	return "agent-skill-" + name + ":" + version, nil
-}
-
-func TestSkillCreatorTool_Descriptor(t *testing.T) {
-	tool := NewSkillCreatorTool("/tmp/skills", nil, nil)
-
-	if tool.Name() != "skill_creator" {
-		t.Errorf("Name() = %q, want %q", tool.Name(), "skill_creator")
+	if tool.Name() != "tool_creator" {
+		t.Errorf("Name() = %q, want %q", tool.Name(), "tool_creator")
 	}
 
 	if tool.Description() == "" {
 		t.Error("Description() should not be empty")
 	}
 
-	if !strings.Contains(tool.Description(), "Python skill") {
-		t.Errorf("Description() = %q, should contain 'Python skill'", tool.Description())
+	if !strings.Contains(tool.Description(), "external tool") {
+		t.Errorf("Description() = %q, should contain 'external tool'", tool.Description())
 	}
 
 	schema := tool.InputSchema()
@@ -74,6 +50,11 @@ func TestSkillCreatorTool_Descriptor(t *testing.T) {
 		if _, exists := props[prop]; !exists {
 			t.Errorf("InputSchema() should have property %q", prop)
 		}
+	}
+
+	// Verify language field exists
+	if _, exists := props["language"]; !exists {
+		t.Error("InputSchema() should have property 'language'")
 	}
 
 	required, ok := schemaMap["required"].([]interface{})
@@ -104,17 +85,15 @@ func TestSkillCreatorTool_Descriptor(t *testing.T) {
 	}
 }
 
-func TestSkillCreatorTool_CreateSkill(t *testing.T) {
+func TestToolCreatorTool_CreateTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	registry := tools.NewToolRegistry()
-	tool := NewSkillCreatorTool(tmpDir, registry, nil)
+	tool := NewToolCreatorTool(tmpDir, registry)
 
 	input := map[string]interface{}{
-		"name":         "test_skill",
-		"description":  "A test skill",
-		"code":         "import json\nprint(json.dumps({'result': 'ok'}))",
-		"dependencies": []string{"requests"},
-		"capabilities": []string{"network"},
+		"name":        "test_tool",
+		"description": "A test tool",
+		"code":        "import json\nprint(json.dumps({'result': 'ok'}))",
 	}
 	inputJSON, _ := json.Marshal(input)
 
@@ -126,32 +105,40 @@ func TestSkillCreatorTool_CreateSkill(t *testing.T) {
 		t.Fatalf("Execute() returned error: %s", result.Content)
 	}
 
-	// Verify skill directory was created
-	skillDir := filepath.Join(tmpDir, "test_skill")
-	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
-		t.Error("Skill directory was not created")
+	// Verify tool directory was created
+	toolDir := filepath.Join(tmpDir, "test_tool")
+	if _, err := os.Stat(toolDir); os.IsNotExist(err) {
+		t.Error("Tool directory was not created")
 	}
 
-	// Verify files were created
-	files := []string{"skill.json", "main.py", "requirements.txt"}
+	// Verify tool.json and main.py were created
+	files := []string{"tool.json", "main.py"}
 	for _, file := range files {
-		path := filepath.Join(skillDir, file)
+		path := filepath.Join(toolDir, file)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Errorf("File %s was not created", file)
 		}
 	}
+
+	// Verify no requirements.txt was created
+	reqPath := filepath.Join(toolDir, "requirements.txt")
+	if _, err := os.Stat(reqPath); !os.IsNotExist(err) {
+		t.Error("requirements.txt should not be created")
+	}
 }
 
-func TestSkillCreatorTool_ManifestContent(t *testing.T) {
+func TestToolCreatorTool_CreateBashTool(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
+	bashCode := `#!/bin/bash
+echo "Hello from bash"
+`
 	input := map[string]interface{}{
-		"name":         "manifest_test",
-		"description":  "Testing manifest content",
-		"code":         "print('hello')",
-		"dependencies": []string{"requests", "numpy"},
-		"capabilities": []string{"network", "filesystem"},
+		"name":        "bash_tool",
+		"description": "A bash tool",
+		"code":        bashCode,
+		"language":    "bash",
 	}
 	inputJSON, _ := json.Marshal(input)
 
@@ -163,16 +150,67 @@ func TestSkillCreatorTool_ManifestContent(t *testing.T) {
 		t.Fatalf("Execute() returned error: %s", result.Content)
 	}
 
-	// Read and verify skill.json
-	manifestPath := filepath.Join(tmpDir, "manifest_test", "skill.json")
-	manifestData, err := os.ReadFile(manifestPath)
+	// Verify main.sh was written
+	toolDir := filepath.Join(tmpDir, "bash_tool")
+	mainShPath := filepath.Join(toolDir, "main.sh")
+	mainShData, err := os.ReadFile(mainShPath)
 	if err != nil {
-		t.Fatalf("Failed to read skill.json: %v", err)
+		t.Fatalf("Failed to read main.sh: %v", err)
 	}
 
-	var manifest skillManifest
+	if string(mainShData) != bashCode {
+		t.Errorf("main.sh content mismatch\ngot:\n%s\nwant:\n%s", string(mainShData), bashCode)
+	}
+
+	// Verify tool.json has correct language and entry_point
+	manifestPath := filepath.Join(toolDir, "tool.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("Failed to read tool.json: %v", err)
+	}
+
+	var manifest toolCreatorManifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		t.Fatalf("Failed to parse skill.json: %v", err)
+		t.Fatalf("Failed to parse tool.json: %v", err)
+	}
+
+	if manifest.Language != "bash" {
+		t.Errorf("Manifest language = %q, want %q", manifest.Language, "bash")
+	}
+	if manifest.EntryPoint != "main.sh" {
+		t.Errorf("Manifest entry_point = %q, want %q", manifest.EntryPoint, "main.sh")
+	}
+}
+
+func TestToolCreatorTool_ManifestContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	tool := NewToolCreatorTool(tmpDir, nil)
+
+	input := map[string]interface{}{
+		"name":        "manifest_test",
+		"description": "Testing manifest content",
+		"code":        "print('hello')",
+	}
+	inputJSON, _ := json.Marshal(input)
+
+	result, err := tool.Execute(context.Background(), inputJSON)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Execute() returned error: %s", result.Content)
+	}
+
+	// Read and verify tool.json
+	manifestPath := filepath.Join(tmpDir, "manifest_test", "tool.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("Failed to read tool.json: %v", err)
+	}
+
+	var manifest toolCreatorManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatalf("Failed to parse tool.json: %v", err)
 	}
 
 	if manifest.Name != "manifest_test" {
@@ -190,17 +228,17 @@ func TestSkillCreatorTool_ManifestContent(t *testing.T) {
 	if manifest.EntryPoint != "main.py" {
 		t.Errorf("Manifest entry_point = %q, want %q", manifest.EntryPoint, "main.py")
 	}
-	if len(manifest.Dependencies) != 2 {
-		t.Errorf("Manifest dependencies count = %d, want %d", len(manifest.Dependencies), 2)
+	if manifest.CreatedBy != "agent" {
+		t.Errorf("Manifest created_by = %q, want %q", manifest.CreatedBy, "agent")
 	}
-	if len(manifest.Capabilities) != 2 {
-		t.Errorf("Manifest capabilities count = %d, want %d", len(manifest.Capabilities), 2)
+	if manifest.CreatedAt == "" {
+		t.Error("Manifest created_at should not be empty")
 	}
 }
 
-func TestSkillCreatorTool_MainPyContent(t *testing.T) {
+func TestToolCreatorTool_MainPyContent(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
 	pythonCode := `import json
 import sys
@@ -240,73 +278,9 @@ if __name__ == "__main__":
 	}
 }
 
-func TestSkillCreatorTool_RequirementsTxt(t *testing.T) {
+func TestToolCreatorTool_AuditLog(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
-
-	input := map[string]interface{}{
-		"name":         "requirements_test",
-		"description":  "Testing requirements.txt",
-		"code":         "print('hello')",
-		"dependencies": []string{"requests", "numpy", "pandas"},
-	}
-	inputJSON, _ := json.Marshal(input)
-
-	result, err := tool.Execute(context.Background(), inputJSON)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("Execute() returned error: %s", result.Content)
-	}
-
-	// Read and verify requirements.txt
-	requirementsPath := filepath.Join(tmpDir, "requirements_test", "requirements.txt")
-	requirementsData, err := os.ReadFile(requirementsPath)
-	if err != nil {
-		t.Fatalf("Failed to read requirements.txt: %v", err)
-	}
-
-	expected := "requests\nnumpy\npandas\n"
-	if string(requirementsData) != expected {
-		t.Errorf("requirements.txt content = %q, want %q", string(requirementsData), expected)
-	}
-}
-
-func TestSkillCreatorTool_RequirementsTxtEmpty(t *testing.T) {
-	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
-
-	input := map[string]interface{}{
-		"name":        "requirements_empty_test",
-		"description": "Testing empty requirements.txt",
-		"code":        "print('hello')",
-	}
-	inputJSON, _ := json.Marshal(input)
-
-	result, err := tool.Execute(context.Background(), inputJSON)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("Execute() returned error: %s", result.Content)
-	}
-
-	// Read and verify requirements.txt is empty
-	requirementsPath := filepath.Join(tmpDir, "requirements_empty_test", "requirements.txt")
-	requirementsData, err := os.ReadFile(requirementsPath)
-	if err != nil {
-		t.Fatalf("Failed to read requirements.txt: %v", err)
-	}
-
-	if len(requirementsData) != 0 {
-		t.Errorf("requirements.txt content = %q, want empty", string(requirementsData))
-	}
-}
-
-func TestSkillCreatorTool_AuditLog(t *testing.T) {
-	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
 	input := map[string]interface{}{
 		"name":        "audit_test",
@@ -332,25 +306,25 @@ func TestSkillCreatorTool_AuditLog(t *testing.T) {
 
 	content := string(auditLogData)
 	if !strings.Contains(content, "audit_test") {
-		t.Errorf("Audit log should contain skill name 'audit_test'")
+		t.Errorf("Audit log should contain tool name 'audit_test'")
 	}
 	if !strings.Contains(content, "created") {
 		t.Errorf("Audit log should contain action 'created'")
 	}
 }
 
-func TestSkillCreatorTool_DuplicateName(t *testing.T) {
+func TestToolCreatorTool_DuplicateName(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
 	input := map[string]interface{}{
 		"name":        "duplicate_test",
-		"description": "First skill",
+		"description": "First tool",
 		"code":        "print('first')",
 	}
 	inputJSON, _ := json.Marshal(input)
 
-	// Create first skill
+	// Create first tool
 	result, err := tool.Execute(context.Background(), inputJSON)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -360,7 +334,7 @@ func TestSkillCreatorTool_DuplicateName(t *testing.T) {
 	}
 
 	// Try to create duplicate
-	input["description"] = "Second skill"
+	input["description"] = "Second tool"
 	input["code"] = "print('second')"
 	inputJSON, _ = json.Marshal(input)
 
@@ -369,31 +343,31 @@ func TestSkillCreatorTool_DuplicateName(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if !result.IsError {
-		t.Error("Execute() should return error for duplicate skill name")
+		t.Error("Execute() should return error for duplicate tool name")
 	}
 	if !strings.Contains(result.Content, "already exists") {
 		t.Errorf("Error message should mention 'already exists', got: %s", result.Content)
 	}
 }
 
-func TestSkillCreatorTool_InvalidName(t *testing.T) {
+func TestToolCreatorTool_InvalidName(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
 	invalidNames := []string{
-		"123skill",    // starts with number
-		"skill-name",  // contains hyphen
-		"skill.name",  // contains dot
-		"skill name",  // contains space
-		"skill@name",  // contains special char
-		"",            // empty
+		"123tool",    // starts with number
+		"tool-name",  // contains hyphen
+		"tool.name",  // contains dot
+		"tool name",  // contains space
+		"tool@name",  // contains special char
+		"",           // empty
 		"_underscore", // starts with underscore
 	}
 
 	for _, name := range invalidNames {
 		input := map[string]interface{}{
 			"name":        name,
-			"description": "Test skill",
+			"description": "Test tool",
 			"code":        "print('hello')",
 		}
 		inputJSON, _ := json.Marshal(input)
@@ -408,16 +382,16 @@ func TestSkillCreatorTool_InvalidName(t *testing.T) {
 	}
 }
 
-func TestSkillCreatorTool_ValidNames(t *testing.T) {
+func TestToolCreatorTool_ValidNames(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
 	validNames := []string{
-		"skill",
-		"skill_name",
-		"skillName",
-		"Skill123",
-		"my_test_skill",
+		"mytool",
+		"tool_name",
+		"toolName",
+		"Tool123",
+		"my_test_tool",
 		"a",
 		"A1",
 	}
@@ -425,7 +399,7 @@ func TestSkillCreatorTool_ValidNames(t *testing.T) {
 	for _, name := range validNames {
 		input := map[string]interface{}{
 			"name":        name,
-			"description": "Test skill",
+			"description": "Test tool",
 			"code":        "print('hello')",
 		}
 		inputJSON, _ := json.Marshal(input)
@@ -440,9 +414,9 @@ func TestSkillCreatorTool_ValidNames(t *testing.T) {
 	}
 }
 
-func TestSkillCreatorTool_MissingParams(t *testing.T) {
+func TestToolCreatorTool_MissingParams(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
 	tests := []struct {
 		name        string
@@ -498,100 +472,16 @@ func TestSkillCreatorTool_MissingParams(t *testing.T) {
 	}
 }
 
-func TestSkillCreatorTool_WithMockBuilder(t *testing.T) {
-	tmpDir := t.TempDir()
-	mockBuilder := &mockSkillBuilder{
-		buildImageTag: "agent-skill-mock_skill:1.0.0",
-	}
-	tool := NewSkillCreatorTool(tmpDir, nil, mockBuilder)
-
-	input := map[string]interface{}{
-		"name":        "mock_skill",
-		"description": "Testing with mock builder",
-		"code":        "print('hello')",
-	}
-	inputJSON, _ := json.Marshal(input)
-
-	result, err := tool.Execute(context.Background(), inputJSON)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("Execute() returned error: %s", result.Content)
-	}
-
-	// Verify builder was called
-	if !mockBuilder.buildCalled {
-		t.Error("Builder.Build() was not called")
-	}
-
-	expectedDir := filepath.Join(tmpDir, "mock_skill")
-	if mockBuilder.buildSkillDir != expectedDir {
-		t.Errorf("Builder received skillDir = %q, want %q", mockBuilder.buildSkillDir, expectedDir)
-	}
-	if mockBuilder.buildName != "mock_skill" {
-		t.Errorf("Builder received name = %q, want %q", mockBuilder.buildName, "mock_skill")
-	}
-	if mockBuilder.buildVersion != "1.0.0" {
-		t.Errorf("Builder received version = %q, want %q", mockBuilder.buildVersion, "1.0.0")
-	}
-
-	// Verify result contains image tag
-	if !strings.Contains(result.Content, "agent-skill-mock_skill:1.0.0") {
-		t.Errorf("Result should contain image tag, got: %s", result.Content)
-	}
-}
-
-func TestSkillCreatorTool_BuilderError(t *testing.T) {
-	tmpDir := t.TempDir()
-	mockBuilder := &mockSkillBuilder{
-		buildError: os.ErrNotExist, // Simulate build error
-	}
-	tool := NewSkillCreatorTool(tmpDir, nil, mockBuilder)
-
-	input := map[string]interface{}{
-		"name":        "builder_error_test",
-		"description": "Testing builder error",
-		"code":        "print('hello')",
-	}
-	inputJSON, _ := json.Marshal(input)
-
-	result, err := tool.Execute(context.Background(), inputJSON)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	// Should succeed even if builder fails (files are created)
-	if result.IsError {
-		t.Fatalf("Execute() should not return error even if builder fails: %s", result.Content)
-	}
-
-	// Verify warning is included
-	if !strings.Contains(result.Content, "Warning") && !strings.Contains(result.Content, "failed") {
-		t.Errorf("Result should contain warning about build failure, got: %s", result.Content)
-	}
-
-	// Verify files were still created
-	skillDir := filepath.Join(tmpDir, "builder_error_test")
-	files := []string{"skill.json", "main.py", "requirements.txt"}
-	for _, file := range files {
-		path := filepath.Join(skillDir, file)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			t.Errorf("File %s should still be created even if builder fails", file)
-		}
-	}
-}
-
-func TestSkillCreatorTool_DefaultPolicy(t *testing.T) {
-	tool := NewSkillCreatorTool("/tmp/skills", nil, nil)
+func TestToolCreatorTool_DefaultPolicy(t *testing.T) {
+	tool := NewToolCreatorTool("/tmp/tools", nil)
 	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
 		t.Errorf("expected DefaultPolicy() to return PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
 	}
 }
 
-func TestSkillCreatorTool_InvalidJSON(t *testing.T) {
+func TestToolCreatorTool_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewSkillCreatorTool(tmpDir, nil, nil)
+	tool := NewToolCreatorTool(tmpDir, nil)
 
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{invalid json}`))
 	if err != nil {

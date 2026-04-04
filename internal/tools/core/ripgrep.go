@@ -14,37 +14,16 @@ import (
 const toolRipgrepDescription = "Search file contents using regex patterns with gitignore support, context lines, and concurrent processing."
 
 // RipgrepTool searches file contents using regex patterns via goripgrep.
-type RipgrepTool struct{}
+type RipgrepTool struct {
+	*tools.BaseTool
+}
 
 // NewRipgrepTool creates a new RipgrepTool instance.
 func NewRipgrepTool() *RipgrepTool {
-	return &RipgrepTool{}
-}
-
-// ripgrepInput represents the input parameters for ripgrep search.
-type ripgrepInput struct {
-	Pattern       string `json:"pattern"`
-	Path          string `json:"path"`
-	FilePattern   string `json:"file_pattern"`
-	IgnoreCase    bool   `json:"ignore_case"`
-	ContextLines  int    `json:"context_lines"`
-	MaxResults    int    `json:"max_results"`
-	IncludeHidden bool   `json:"include_hidden"`
-}
-
-// Name returns the tool name.
-func (t *RipgrepTool) Name() string {
-	return "ripgrep"
-}
-
-// Description returns the tool description.
-func (t *RipgrepTool) Description() string {
-	return toolRipgrepDescription
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *RipgrepTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
+	return &RipgrepTool{BaseTool: &tools.BaseTool{
+		ToolName:        "ripgrep",
+		ToolDescription: toolRipgrepDescription,
+		Schema: json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"pattern": {
@@ -77,19 +56,27 @@ func (t *RipgrepTool) InputSchema() json.RawMessage {
 			}
 		},
 		"required": ["pattern", "path"]
-	}`)
+	}`),
+		Policy: tools.PolicyAlwaysAllow,
+	}}
 }
 
-// DefaultPolicy returns PolicyAlwaysAllow because ripgrep is a read-only operation.
-func (t *RipgrepTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAlwaysAllow
+// ripgrepInput represents the input parameters for ripgrep search.
+type ripgrepInput struct {
+	Pattern       string `json:"pattern"`
+	Path          string `json:"path"`
+	FilePattern   string `json:"file_pattern"`
+	IgnoreCase    bool   `json:"ignore_case"`
+	ContextLines  int    `json:"context_lines"`
+	MaxResults    int    `json:"max_results"`
+	IncludeHidden bool   `json:"include_hidden"`
 }
 
 // Execute performs the ripgrep search and returns formatted results.
 func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params ripgrepInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("failed to parse input: %v", err), IsError: true}, nil
+		return tools.ParseInputError(err)
 	}
 
 	// Apply defaults
@@ -97,11 +84,14 @@ func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.T
 		params.MaxResults = 200
 	}
 
-	// Build goripgrep options
+	// Build goripgrep options.
+	// NOTE: We intentionally omit WithMaxResults here and truncate results
+	// ourselves after the call. The library's MaxResults triggers an early
+	// break in performSearch that returns before workers finish, causing a
+	// data race on SearchStats fields.
 	opts := []goripgrep.Option{
 		goripgrep.WithRecursive(true),
 		goripgrep.WithGitignore(true),
-		goripgrep.WithMaxResults(params.MaxResults),
 		goripgrep.WithTimeout(60 * time.Second),
 	}
 
@@ -118,6 +108,11 @@ func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.T
 		opts = append(opts, goripgrep.WithHidden())
 	}
 
+	// WithWorkers(1) avoids an upstream data race in goripgrep's
+	// SearchStats fields (BytesScanned, FilesScanned) that are updated
+	// by concurrent workers without synchronisation.
+	opts = append(opts, goripgrep.WithWorkers(1))
+
 	results, err := goripgrep.Find(params.Pattern, params.Path, opts...)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("search error: %v", err), IsError: true}, nil
@@ -127,9 +122,16 @@ func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.T
 		return tools.ToolResult{Content: "no matches found"}, nil
 	}
 
+	// Truncate to MaxResults on our side (see comment above about why
+	// we avoid the library's WithMaxResults).
+	matches := results.Matches
+	if len(matches) > params.MaxResults {
+		matches = matches[:params.MaxResults]
+	}
+
 	// Format results
 	var sb strings.Builder
-	for _, m := range results.Matches {
+	for _, m := range matches {
 		if m.Column > 0 {
 			fmt.Fprintf(&sb, "%s:%d:%d: %s\n", m.File, m.Line, m.Column, m.Content)
 		} else {
@@ -145,7 +147,7 @@ func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.T
 	// Append stats
 	stats := results.Stats
 	fmt.Fprintf(&sb, "\nFound %d matches in %d files (scanned %d bytes in %dms)",
-		len(results.Matches),
+		len(matches),
 		len(results.Files()),
 		stats.BytesScanned,
 		stats.Duration.Milliseconds(),

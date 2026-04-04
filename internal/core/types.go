@@ -301,6 +301,13 @@ func (sw *SharedWorkspace) GetByProducer(stepID string) []Artifact {
 	return result
 }
 
+// Clear removes all artifacts from the workspace.
+func (sw *SharedWorkspace) Clear() {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	sw.artifacts = make(map[string]Artifact)
+}
+
 // HandleResult — result of Orchestrator.Handle (Phase 2).
 // Provides rich output for CLI display including routing, plan, and evaluation info.
 type HandleResult struct {

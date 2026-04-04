@@ -12,30 +12,30 @@ func TestNewMemorySystem_AllComponents(t *testing.T) {
 	// Create temp directory for test files
 	tmpDir := t.TempDir()
 
-	// Create skills directory with a test skill
-	skillsDir := filepath.Join(tmpDir, "skills")
-	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+	// Create tools directory with a test tool
+	toolsDir := filepath.Join(tmpDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Create a test skill directory with skill.json
-	testSkillDir := filepath.Join(skillsDir, "test_skill")
-	if err := os.MkdirAll(testSkillDir, 0o755); err != nil {
+	// Create a test tool directory with tool.json
+	testToolDir := filepath.Join(toolsDir, "test_tool")
+	if err := os.MkdirAll(testToolDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	skillJSON := `{
-		"name": "test_skill",
-		"description": "A test skill",
+	toolJSON := `{
+		"name": "test_tool",
+		"description": "A test tool",
 		"version": "1.0.0"
 	}`
-	if err := os.WriteFile(filepath.Join(testSkillDir, "skill.json"), []byte(skillJSON), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(testToolDir, "tool.json"), []byte(toolJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := MemorySystemConfig{
-		DBPath:    filepath.Join(tmpDir, "memory.db"),
-		SkillsDir: skillsDir,
-		Embedder:  newMockEmbedder(),
+		DBPath:   filepath.Join(tmpDir, "memory.db"),
+		ToolsDir: toolsDir,
+		Embedder: newMockEmbedder(),
 	}
 
 	ms, err := NewMemorySystem(cfg)
@@ -58,13 +58,13 @@ func TestNewMemorySystem_AllComponents(t *testing.T) {
 		t.Error("Reflexion memory should not be nil")
 	}
 
-	// Verify procedural memory scanned the skill
-	skills := ms.Procedural.ListSkills()
-	if len(skills) != 1 {
-		t.Errorf("Expected 1 skill, got %d", len(skills))
+	// Verify procedural memory scanned the tool
+	tools := ms.Procedural.ListTools()
+	if len(tools) != 1 {
+		t.Errorf("Expected 1 tool, got %d", len(tools))
 	}
-	if len(skills) > 0 && skills[0].Name != "test_skill" {
-		t.Errorf("Expected skill name 'test_skill', got '%s'", skills[0].Name)
+	if len(tools) > 0 && tools[0].Name != "test_tool" {
+		t.Errorf("Expected tool name 'test_tool', got '%s'", tools[0].Name)
 	}
 }
 
@@ -85,7 +85,7 @@ func TestNewMemorySystem_Partial(t *testing.T) {
 
 	// Verify episodic and reflexion are initialized (they only need DBPath)
 	// Semantic should be nil (needs Embedder)
-	// Procedural should be nil (needs SkillsDir)
+	// Procedural should be nil (needs ToolsDir)
 	if ms.Episodic == nil {
 		t.Error("Episodic memory should not be nil")
 	}
@@ -182,9 +182,9 @@ func TestNewMemorySystem_ProceduralNonExistentDir(t *testing.T) {
 	// Create temp directory for test files
 	tmpDir := t.TempDir()
 
-	// Provide a non-existent skills directory
+	// Provide a non-existent tools directory
 	cfg := MemorySystemConfig{
-		SkillsDir: filepath.Join(tmpDir, "nonexistent_skills"),
+		ToolsDir: filepath.Join(tmpDir, "nonexistent_tools"),
 	}
 
 	ms, err := NewMemorySystem(cfg)
@@ -193,12 +193,12 @@ func TestNewMemorySystem_ProceduralNonExistentDir(t *testing.T) {
 	}
 	defer func() { _ = ms.Close() }()
 
-	// Procedural should still be created, just with no skills
+	// Procedural should still be created, just with no tools
 	if ms.Procedural == nil {
 		t.Error("Procedural memory should not be nil")
 	}
-	skills := ms.Procedural.ListSkills()
-	if len(skills) != 0 {
-		t.Errorf("Expected 0 skills, got %d", len(skills))
+	tools := ms.Procedural.ListTools()
+	if len(tools) != 0 {
+		t.Errorf("Expected 0 tools, got %d", len(tools))
 	}
 }

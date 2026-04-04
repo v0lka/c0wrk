@@ -387,3 +387,42 @@ func TestConstitution_PrinciplesCopy(t *testing.T) {
 		t.Error("Principles() should return a copy, not the internal slice")
 	}
 }
+
+func TestConstitution_Save(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "constitution.json")
+
+	c, err := NewConstitution(filePath)
+	if err != nil {
+		t.Fatalf("NewConstitution failed: %v", err)
+	}
+
+	// Add a principle
+	if err := c.AddPrinciple("Always write tests"); err != nil {
+		t.Fatalf("AddPrinciple failed: %v", err)
+	}
+
+	// Save
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Verify file was created
+	if _, err := os.Stat(filePath); err != nil {
+		t.Fatalf("constitution file should exist: %v", err)
+	}
+
+	// Load into a new instance
+	c2, err := NewConstitution(filePath)
+	if err != nil {
+		t.Fatalf("NewConstitution (reload) failed: %v", err)
+	}
+
+	principles := c2.Principles()
+	if len(principles) != 1 {
+		t.Fatalf("expected 1 principle, got %d", len(principles))
+	}
+	if principles[0].Principle != "Always write tests" {
+		t.Errorf("expected 'Always write tests', got %q", principles[0].Principle)
+	}
+}

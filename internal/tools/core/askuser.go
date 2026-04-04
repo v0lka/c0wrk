@@ -13,35 +13,17 @@ const toolAskUserDescription = "Ask the user a question and present answer optio
 
 // AskUserTool asks the user a question and returns their answer.
 type AskUserTool struct {
+	*tools.BaseTool
 	askFunc tools.AskUserFunc
 }
 
 // NewAskUserTool creates a new AskUserTool with the given callback function.
 func NewAskUserTool(fn tools.AskUserFunc) *AskUserTool {
-	return &AskUserTool{askFunc: fn}
-}
-
-// askUserInput represents the input parameters for the ask_user tool.
-type askUserInput struct {
-	Question    string              `json:"question"`
-	Options     []tools.AskUserOption `json:"options"`
-	MultiSelect bool                `json:"multi_select"`
-	Recommended []string            `json:"recommended"`
-}
-
-// Name returns the tool name.
-func (t *AskUserTool) Name() string {
-	return "ask_user"
-}
-
-// Description returns the tool description.
-func (t *AskUserTool) Description() string {
-	return toolAskUserDescription
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *AskUserTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
+	return &AskUserTool{
+		BaseTool: &tools.BaseTool{
+			ToolName:        "ask_user",
+			ToolDescription: toolAskUserDescription,
+			Schema: json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"question": {
@@ -71,22 +53,26 @@ func (t *AskUserTool) InputSchema() json.RawMessage {
 			}
 		},
 		"required": ["question", "options"]
-	}`)
+	}`),
+			Policy: tools.PolicyAlwaysAllow,
+		},
+		askFunc: fn,
+	}
 }
 
-// DefaultPolicy returns PolicyAlwaysAllow because ask_user only displays a question.
-func (t *AskUserTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAlwaysAllow
+// askUserInput represents the input parameters for the ask_user tool.
+type askUserInput struct {
+	Question    string              `json:"question"`
+	Options     []tools.AskUserOption `json:"options"`
+	MultiSelect bool                `json:"multi_select"`
+	Recommended []string            `json:"recommended"`
 }
 
 // Execute asks the user a question and returns the response.
 func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params askUserInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{
-			Content: fmt.Sprintf("failed to parse input: %v", err),
-			IsError: true,
-		}, nil
+		return tools.ParseInputError(err)
 	}
 
 	if strings.TrimSpace(params.Question) == "" {

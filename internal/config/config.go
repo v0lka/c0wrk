@@ -10,21 +10,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultAgentDir is the default directory for agent files (data, skills, config).
+// DefaultAgentDir is the default directory for agent files (data, tools, config).
 const DefaultAgentDir = ".c0wrk"
 
 // Config is the top-level configuration structure.
 type Config struct {
-	LogLevel string         `yaml:"log_level"`
-	Theme    string         `yaml:"theme"`
-	LLM      LLMConfig      `yaml:"llm"`
-	MCP      MCPConfig      `yaml:"mcp"`
-	Skills   SkillsConfig   `yaml:"skills"`
-	Memory   MemoryConfig   `yaml:"memory"`
-	Router   RouterConfig   `yaml:"router"`
-	Executor ExecutorConfig `yaml:"executor"`
-	Security SecurityConfig `yaml:"security"`
-	Search   SearchConfig   `yaml:"search"`
+	LogLevel      string              `yaml:"log_level"`
+	Theme         string              `yaml:"theme"`
+	LLM           LLMConfig           `yaml:"llm"`
+	MCP           MCPConfig           `yaml:"mcp"`
+	ExternalTools ExternalToolsConfig `yaml:"external_tools"`
+	Memory        MemoryConfig        `yaml:"memory"`
+	Router        RouterConfig        `yaml:"router"`
+	Executor      ExecutorConfig      `yaml:"executor"`
+	Security      SecurityConfig      `yaml:"security"`
+	Search        SearchConfig        `yaml:"search"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
@@ -79,9 +79,9 @@ type ModelOverride struct {
 
 // LLMRetryConfig configures retry behavior for LLM API calls.
 type LLMRetryConfig struct {
-	MaxRetries     int    `yaml:"max_retries"`      // max retry attempts (0 = no retries)
-	InitialBackoff string `yaml:"initial_backoff"`   // initial backoff duration (e.g. "1s")
-	MaxBackoff     string `yaml:"max_backoff"`       // maximum backoff duration (e.g. "30s")
+	MaxRetries     int    `yaml:"max_retries"`     // max retry attempts (0 = no retries)
+	InitialBackoff string `yaml:"initial_backoff"` // initial backoff duration (e.g. "1s")
+	MaxBackoff     string `yaml:"max_backoff"`     // maximum backoff duration (e.g. "30s")
 }
 
 // MCPConfig holds MCP server configurations.
@@ -96,19 +96,9 @@ type MCPServerConfig struct {
 	Env     map[string]string `yaml:"env"`
 }
 
-// SkillsConfig configures the skills system.
-type SkillsConfig struct {
-	Directory string       `yaml:"directory"`
-	Docker    DockerConfig `yaml:"docker"`
-}
-
-// DockerConfig holds Docker-related settings for skill execution.
-type DockerConfig struct {
-	WarmPoolThreshold   int    `yaml:"warm_pool_threshold"`
-	WarmPoolIdleTimeout string `yaml:"warm_pool_idle_timeout"`
-	DefaultMemory       string `yaml:"default_memory"`
-	DefaultCPU          string `yaml:"default_cpu"`
-	DefaultTimeout      string `yaml:"default_timeout"`
+// ExternalToolsConfig configures external (user-created) tools.
+type ExternalToolsConfig struct {
+	Directory string `yaml:"directory"`
 }
 
 // MemoryConfig holds memory system configuration.

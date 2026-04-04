@@ -16,25 +16,12 @@ import (
 const toolFileopsDescription = "File system operations: read, write, edit, list, search"
 
 // FileOpsTool provides file system operations: read, write, edit, list, search.
-type FileOpsTool struct{}
+type FileOpsTool struct {
+	*tools.BaseTool
+}
 
 // NewFileOpsTool creates a new FileOpsTool instance.
 func NewFileOpsTool() *FileOpsTool {
-	return &FileOpsTool{}
-}
-
-// Name returns the tool name.
-func (t *FileOpsTool) Name() string {
-	return "file_ops"
-}
-
-// Description returns the tool description.
-func (t *FileOpsTool) Description() string {
-	return toolFileopsDescription
-}
-
-// InputSchema returns the JSON schema for the tool input.
-func (t *FileOpsTool) InputSchema() json.RawMessage {
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -70,7 +57,12 @@ func (t *FileOpsTool) InputSchema() json.RawMessage {
 		},
 		"required": ["action", "path"]
 	}`
-	return json.RawMessage(schema)
+	return &FileOpsTool{BaseTool: &tools.BaseTool{
+		ToolName:        "file_ops",
+		ToolDescription: toolFileopsDescription,
+		Schema:          json.RawMessage(schema),
+		Policy:          tools.PolicyAuto,
+	}}
 }
 
 // fileOpsInput represents the input structure for file operations.
@@ -82,11 +74,6 @@ type fileOpsInput struct {
 	NewString string `json:"new_string"`
 	Pattern   string `json:"pattern"`
 	Regex     string `json:"regex"`
-}
-
-// DefaultPolicy returns PolicyAuto to enable tool-specific heuristics.
-func (t *FileOpsTool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAuto
 }
 
 // Judge evaluates whether a file operation is safe to execute.
@@ -140,7 +127,7 @@ func (t *FileOpsTool) Judge(ctx context.Context, input json.RawMessage) (allowed
 func (t *FileOpsTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params fileOpsInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("invalid input: %v", err), IsError: true}, nil
+		return tools.ParseInputError(err)
 	}
 
 	switch params.Action {
