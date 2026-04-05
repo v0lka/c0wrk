@@ -13,10 +13,17 @@ export function ModelSelector() {
       setModelName('Not configured')
       return
     }
-    promise.then((config: Record<string, unknown>) => {
-      // Try to extract model name from config
-      const llm = config?.llm as Record<string, unknown> | undefined
-      const model = llm?.model as string || llm?.default_model as string || 'Not configured'
+    promise.then((config) => {
+      // Extract active model from typed config
+      const llm = config?.llm
+      const activeProvider = llm?.active_provider
+      let model = 'Not configured'
+      if (activeProvider && llm) {
+        const providerConfig = llm[activeProvider as keyof typeof llm]
+        if (providerConfig && typeof providerConfig === 'object' && 'model' in providerConfig) {
+          model = (providerConfig as { model: string }).model || 'Not configured'
+        }
+      }
       setModelName(model)
     }).catch(() => {
       setModelName('Not configured')

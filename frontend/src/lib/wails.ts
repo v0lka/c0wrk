@@ -30,6 +30,7 @@ export interface ToolCallData {
   step: number
   tool: string
   args: string
+  parsed_args?: Record<string, unknown>  // pre-parsed by backend
   plan_step_id?: string
 }
 
@@ -60,6 +61,10 @@ export interface PlanStepData {
 export interface PlanData {
   step_count: number
   steps?: PlanStepData[]
+  progress?: number           // 0.0–1.0, computed by backend
+  current_step_index?: number // -1 if none active
+  completed_count?: number
+  total_count?: number
 }
 
 export interface EvalCriterionData {
@@ -108,6 +113,11 @@ export interface AssistantDoneData {
   content: string
   input_tokens: number
   output_tokens: number
+}
+
+export interface AssistantChunkData {
+  content: string
+  accumulated_content?: string  // full accumulated text, computed by backend
 }
 
 export interface TaskCompleteData {

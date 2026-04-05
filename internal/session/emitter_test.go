@@ -606,7 +606,7 @@ func TestEventEmitterWithPlanStepID_NonMapData(t *testing.T) {
 	}
 }
 
-// TestEventEmitterPlanStepStart verifies PlanStepStart emits correct event.
+// TestEventEmitterPlanStepStart verifies PlanStepStart emits correct event with progress.
 func TestEventEmitterPlanStepStart(t *testing.T) {
 	var received Event
 	emit := func(e Event) {
@@ -623,19 +623,26 @@ func TestEventEmitterPlanStepStart(t *testing.T) {
 		t.Errorf("expected type 'plan_step_start', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]string)
+	data, ok := received.Data.(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected map[string]string data, got %T", received.Data)
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
 	if data["step_id"] != "step-1" {
-		t.Errorf("expected step_id 'step-1', got %q", data["step_id"])
+		t.Errorf("expected step_id 'step-1', got %v", data["step_id"])
 	}
 	if data["description"] != "Install dependencies" {
-		t.Errorf("expected description 'Install dependencies', got %q", data["description"])
+		t.Errorf("expected description 'Install dependencies', got %v", data["description"])
+	}
+	// Progress fields should be present
+	if data["completed_count"] != 0 {
+		t.Errorf("expected completed_count 0, got %v", data["completed_count"])
+	}
+	if data["current_step_index"] != 0 {
+		t.Errorf("expected current_step_index 0, got %v", data["current_step_index"])
 	}
 }
 
-// TestEventEmitterPlanStepComplete verifies PlanStepComplete emits correct event.
+// TestEventEmitterPlanStepComplete verifies PlanStepComplete emits correct event with progress.
 func TestEventEmitterPlanStepComplete(t *testing.T) {
 	var received Event
 	emit := func(e Event) {
@@ -662,6 +669,13 @@ func TestEventEmitterPlanStepComplete(t *testing.T) {
 	}
 	if data["duration"] != int64(2500) {
 		t.Errorf("expected duration 2500, got %v", data["duration"])
+	}
+	// Progress fields should be present
+	if data["completed_count"] != 1 {
+		t.Errorf("expected completed_count 1, got %v", data["completed_count"])
+	}
+	if data["current_step_index"] != -1 {
+		t.Errorf("expected current_step_index -1, got %v", data["current_step_index"])
 	}
 }
 

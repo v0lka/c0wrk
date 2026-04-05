@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 import type { SessionInfo } from '@/lib/wails'
 
-// Helper to sort sessions by last_active_at descending (most recent first)
+// Helper to sort sessions by last_active_at descending (most recent first).
+// Used only for local mutations (addSession, updateSession, touchSession).
+// setSessions receives pre-sorted data from the backend and skips sorting.
 function sortSessionsByActivity(sessions: SessionInfo[]): SessionInfo[] {
   return [...sessions].sort((a, b) => {
     const aTime = new Date(a.last_active_at || a.created_at).getTime()
@@ -24,7 +26,7 @@ interface SessionState {
 export const useSessionStore = create<SessionState>((set) => ({
   sessions: [],
   activeSessionId: null,
-  setSessions: (sessions) => set({ sessions: sortSessionsByActivity(sessions) }),
+  setSessions: (sessions) => set({ sessions }),  // backend returns pre-sorted
   addSession: (session) => set((s) => {
     const updated = [session, ...s.sessions]
     return { sessions: sortSessionsByActivity(updated) }

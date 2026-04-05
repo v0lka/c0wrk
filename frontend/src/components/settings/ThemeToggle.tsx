@@ -25,8 +25,8 @@ export function ThemeToggle() {
 
   useEffect(() => {
     GetConfig()
-      .then((config: Record<string, unknown>) => {
-        const savedTheme = config?.theme as string
+      .then((config) => {
+        const savedTheme = config?.theme
         if (savedTheme && ['light', 'dark', 'system'].includes(savedTheme)) {
           setThemeStore(savedTheme as Theme)
         }

@@ -35,9 +35,14 @@ export function ChatArea() {
   const setScrollToStep = useScrollStore(s => s.setScrollToStep)
   const scrollRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const [containerHeight, setContainerHeight] = useState(0)
+  const [containerHeight, setContainerHeight] = useState(() =>
+    typeof window !== 'undefined' ? window.innerHeight : 600
+  )
   const isAtBottomRef = useRef(true)
   const [hasNewActivity, setHasNewActivity] = useState(false)
+
+  // Derived flag: true when the container div with containerRef is in the DOM
+  const showContainer = !!activeSessionId && (messages.length > 0 || !!streamingText)
   const viewportRef = useRef<HTMLElement | null>(null)
   const prevScrollState = useRef<{ scrollTop: number; scrollHeight: number; clientHeight: number }>({
     scrollTop: 0,
@@ -46,19 +51,41 @@ export function ChatArea() {
   })
 
   // Track container height for pinned message max height calculation
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = containerRef.current
     if (!el) return
-    // Feature detection for ResizeObserver
-    if (typeof ResizeObserver === 'undefined') return
+
+    // Immediate measurement attempt
+    const h = el.getBoundingClientRect().height
+    if (h > 0) {
+      setContainerHeight(h)
+    }
+
+    // Fallback: measure after next frame in case layout isn't ready yet
+    const rafId = requestAnimationFrame(() => {
+      if (el) {
+        const height = el.getBoundingClientRect().height
+        if (height > 0) setContainerHeight(height)
+      }
+    })
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => cancelAnimationFrame(rafId)
+    }
+
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) {
-        setContainerHeight(entry.contentRect.height)
+        if (entry.contentRect.height > 0) {
+          setContainerHeight(entry.contentRect.height)
+        }
       }
     })
     ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
+    return () => {
+      cancelAnimationFrame(rafId)
+      ro.disconnect()
+    }
+  }, [showContainer])
 
   const maxPinnedHeight = containerHeight / 5
 
@@ -194,7 +221,7 @@ export function ChatArea() {
       case 'thought':
         return <ThoughtBlock key={item.id} content={item.content} reasoning={item.reasoning} />
       case 'tool':
-        return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} result={item.result} resultLen={item.resultLen} status={item.status} />
+        return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} parsedArgs={item.parsedArgs} result={item.result} resultLen={item.resultLen} status={item.status} />
       case 'plan_step':
         return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} isRetry={item.isRetry} children={item.children} renderItem={renderDisplayItem} />
       case 'tool_confirm':

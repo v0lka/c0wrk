@@ -7,31 +7,6 @@
   text-decoration: none;
 }
 
-/* Line numbers for code blocks */
-.prose pre code {
-  counter-reset: line;
-  display: block;
-}
-
-.prose pre code > span {
-  display: block;
-  counter-increment: line;
-  position: relative;
-  padding-left: 3.5em;
-}
-
-.prose pre code > span::before {
-  content: counter(line);
-  position: absolute;
-  left: 0;
-  width: 2.5em;
-  text-align: right;
-  color: var(--color-muted-foreground);
-  opacity: 0.5;
-  font-size: 0.75em;
-  user-select: none;
-  pointer-events: none;
-}
 
 /* Mermaid diagrams */
 .mermaid-container svg {

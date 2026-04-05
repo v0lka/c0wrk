@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Loader2 } from 'lucide-react'
 import { GetConfig, UpdateLLMSettings, ListProviderModels } from '../../../wailsjs/go/main/App'
 import { main } from '../../../wailsjs/go/models'
 
@@ -8,15 +10,6 @@ interface ProviderConfig {
   api_key: string
   base_url: string
   model: string
-}
-
-interface LLMConfig {
-  active_provider: string
-  anthropic: ProviderConfig
-  gemini: ProviderConfig
-  lmstudio: ProviderConfig
-  openai_compatible: ProviderConfig
-  chatgpt: ProviderConfig
 }
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
@@ -36,8 +29,10 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [apiKeyDirty, setApiKeyDirty] = useState(true)
 
   const debounceRef = useRef<NodeJS.Timeout | null>(null)
+  const fetchIdRef = useRef(0)
 
   // Compute a stable key for the current provider + credentials
   // This naturally deduplicates: model changes don't change the key, but provider/credential changes do
@@ -53,15 +48,15 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
   const loadConfig = useCallback(async () => {
     try {
       const result = await GetConfig()
-      const llmConfig = result?.llm as LLMConfig | undefined
+      const llmConfig = result?.llm
       if (llmConfig) {
         setActiveProvider(llmConfig.active_provider)
         setProviderConfigs({
-          anthropic: llmConfig.anthropic,
-          gemini: llmConfig.gemini,
+          anthropic: { api_key: llmConfig.anthropic.api_key, model: llmConfig.anthropic.model, base_url: '' },
+          gemini: { api_key: llmConfig.gemini.api_key, model: llmConfig.gemini.model, base_url: '' },
           lmstudio: llmConfig.lmstudio,
           openai_compatible: llmConfig.openai_compatible,
-          chatgpt: llmConfig.chatgpt,
+          chatgpt: { api_key: llmConfig.chatgpt.api_key, model: llmConfig.chatgpt.model, base_url: '' },
         })
       }
     } catch {
@@ -75,60 +70,48 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
     loadConfig()
   }, [loadConfig])
 
-  // Fetch models when provider or credentials change
+  // Reset state when provider or credentials change
   useEffect(() => {
-    if (!activeProvider || !providerConfigs[activeProvider]) {
-      return
-    }
+    fetchIdRef.current += 1
+    setModels([])
+    setModelsError(null)
+    setApiKeyDirty(true)
+    // credentialKey captures activeProvider + api_key + base_url
+     
+  }, [credentialKey])
 
+  // Determine if required credentials are filled in for the active provider
+  const hasRequiredCredentials = useMemo(() => {
+    if (!activeProvider || !providerConfigs[activeProvider]) return false
     const config = providerConfigs[activeProvider]
-    const provider = activeProvider
+    const needsBaseUrl = activeProvider === 'lmstudio' || activeProvider === 'openai_compatible'
+    const needsApiKey = activeProvider !== 'lmstudio'
+    if (needsBaseUrl && !config.base_url) return false
+    if (needsApiKey && !config.api_key) return false
+    return true
+  }, [activeProvider, providerConfigs])
 
-    // Check if required fields are filled
-    const needsBaseUrl = provider === 'lmstudio' || provider === 'openai_compatible'
-    const needsApiKey = provider !== 'lmstudio'
-
-    if (needsBaseUrl && !config.base_url) {
-      setModels([])
-      return
-    }
-    if (needsApiKey && !config.api_key && config.api_key !== '***configured***') {
-      setModels([])
-      return
-    }
-    if (provider === 'openai_compatible' && (!config.base_url || (!config.api_key && config.api_key !== '***configured***'))) {
-      setModels([])
-      return
-    }
-
-    let cancelled = false
+  // Handle Apply button click — fetch models
+  const handleApply = useCallback(async () => {
+    if (!activeProvider) return
+    const myFetchId = fetchIdRef.current
     setModelsLoading(true)
     setModelsError(null)
-
-    ListProviderModels(provider)
-      .then((modelList) => {
-        if (!cancelled) {
-          setModels(modelList || [])
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setModelsError(err instanceof Error ? err.message : String(err))
-          setModels([])
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setModelsLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
+    try {
+      const modelList = await ListProviderModels(activeProvider)
+      if (myFetchId !== fetchIdRef.current) return
+      setModels(modelList || [])
+      setApiKeyDirty(false)
+    } catch (err) {
+      if (myFetchId !== fetchIdRef.current) return
+      setModelsError(err instanceof Error ? err.message : String(err))
+      setModels([])
+    } finally {
+      if (myFetchId === fetchIdRef.current) {
+        setModelsLoading(false)
+      }
     }
-    // credentialKey captures activeProvider + api_key + base_url
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [credentialKey])
+  }, [activeProvider])
 
   // Save settings
   const saveSettings = useCallback(
@@ -258,12 +241,19 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
           {(activeProvider === 'lmstudio' || activeProvider === 'openai_compatible') && (
             <div className="flex flex-col gap-2">
               <label className="text-xs text-muted-foreground">Base URL</label>
-              <Input
-                placeholder="http://localhost:1234"
-                value={currentConfig.base_url}
-                onChange={(e) => updateProviderConfig(activeProvider, { base_url: e.target.value })}
-                className="h-9 text-sm"
-              />
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="http://localhost:1234"
+                  value={currentConfig.base_url}
+                  onChange={(e) => updateProviderConfig(activeProvider, { base_url: e.target.value })}
+                  className="h-9 text-sm flex-1"
+                />
+                {activeProvider === 'lmstudio' && apiKeyDirty && hasRequiredCredentials && (
+                  <Button size="sm" onClick={handleApply} disabled={modelsLoading}>
+                    {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply'}
+                  </Button>
+                )}
+              </div>
             </div>
           )}
 
@@ -271,7 +261,7 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
           {activeProvider !== 'lmstudio' && (
             <div className="flex flex-col gap-2">
               <label className="text-xs text-muted-foreground">API Key</label>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 <Input
                   type={(() => {
                     const val = currentConfig.api_key === '***configured***' ? '' : currentConfig.api_key
@@ -286,6 +276,11 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
                   <Badge variant="outline" className="text-xs">
                     Configured
                   </Badge>
+                )}
+                {apiKeyDirty && hasRequiredCredentials && (
+                  <Button size="sm" onClick={handleApply} disabled={modelsLoading}>
+                    {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply'}
+                  </Button>
                 )}
               </div>
             </div>

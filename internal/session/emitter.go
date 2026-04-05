@@ -2,6 +2,8 @@
 package session
 
 import (
+	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,14 @@ type EventEmitter struct {
 	emit       func(Event)
 	mu         sync.Mutex
 	planStepID string // if set, injected into event Data for plan-step scoping
+
+	// Plan progress tracking (guarded by mu)
+	planTotalSteps    int
+	planCompletedSet  map[string]bool // set of completed step IDs
+	planCurrentStepID string          // currently running step ID
+
+	// Streaming content accumulation (guarded by mu)
+	streamAccumulated strings.Builder
 }
 
 // NewEventEmitter creates a new EventEmitter for a session.
@@ -71,47 +81,84 @@ func (e *EventEmitter) Routing(mode, domain, complexity string) {
 	})
 }
 
-// PlanGenerated emits a plan generation event.
+// PlanGenerated emits a plan generation event with initial progress info.
 func (e *EventEmitter) PlanGenerated(stepCount int, steps []core.PlanStepEvent) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Initialize plan progress tracking
+	e.planTotalSteps = stepCount
+	e.planCompletedSet = make(map[string]bool, stepCount)
+	e.planCurrentStepID = ""
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_generated",
 		Data: map[string]interface{}{
-			"step_count": stepCount,
-			"steps":      steps,
+			"step_count":         stepCount,
+			"steps":              steps,
+			"progress":           0.0,
+			"current_step_index": -1,
+			"completed_count":    0,
+			"total_count":        stepCount,
 		},
 	})
 }
 
-// PlanStepStart emits a plan step start event.
+// PlanStepStart emits a plan step start event with progress info.
 func (e *EventEmitter) PlanStepStart(stepID, description string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.planCurrentStepID = stepID
+	completedCount := len(e.planCompletedSet)
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_start",
-		Data: map[string]string{
-			"step_id":     stepID,
-			"description": description,
+		Data: map[string]interface{}{
+			"step_id":            stepID,
+			"description":        description,
+			"progress":           e.computeProgress(completedCount),
+			"current_step_index": completedCount, // 0-based index of current step
+			"completed_count":    completedCount,
+			"total_count":        e.planTotalSteps,
 		},
 	})
 }
 
-// PlanStepComplete emits a plan step completion event.
+// PlanStepComplete emits a plan step completion event with updated progress.
 func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if success {
+		if e.planCompletedSet == nil {
+			e.planCompletedSet = make(map[string]bool)
+		}
+		e.planCompletedSet[stepID] = true
+	}
+	if e.planCurrentStepID == stepID {
+		e.planCurrentStepID = ""
+	}
+	completedCount := len(e.planCompletedSet)
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_complete",
 		Data: map[string]interface{}{
-			"step_id":  stepID,
-			"success":  success,
-			"duration": duration.Milliseconds(),
+			"step_id":            stepID,
+			"success":            success,
+			"duration":           duration.Milliseconds(),
+			"progress":           e.computeProgress(completedCount),
+			"current_step_index": -1,
+			"completed_count":    completedCount,
+			"total_count":        e.planTotalSteps,
 		},
 	})
+}
+
+// computeProgress returns plan progress as a float64 in [0.0, 1.0].
+// Must be called with e.mu held.
+func (e *EventEmitter) computeProgress(completedCount int) float64 {
+	if e.planTotalSteps <= 0 {
+		return 0.0
+	}
+	return float64(completedCount) / float64(e.planTotalSteps)
 }
 
 // StepStart emits a step start event.
@@ -143,17 +190,27 @@ func (e *EventEmitter) Thought(stepNum int, content, reasoning string) {
 }
 
 // ToolCall emits a tool call event.
+// If argsPreview is valid JSON, a pre-parsed map is included as "parsed_args"
+// so the frontend doesn't need to JSON.parse() at render time.
 func (e *EventEmitter) ToolCall(stepNum int, toolName, argsPreview string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	data := map[string]interface{}{
+		"step": stepNum,
+		"tool": toolName,
+		"args": argsPreview,
+	}
+	// Pre-parse JSON arguments for the frontend
+	if trimmed := strings.TrimSpace(argsPreview); trimmed != "" && trimmed[0] == '{' {
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(argsPreview), &parsed); err == nil {
+			data["parsed_args"] = parsed
+		}
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "tool_call",
-		Data: map[string]interface{}{
-			"step": stepNum,
-			"tool": toolName,
-			"args": argsPreview,
-		},
+		Data:      data,
 	})
 }
 
@@ -289,22 +346,28 @@ func (e *EventEmitter) ACExtracted(count int, criteria []core.EvalCriterionEvent
 }
 
 // AssistantChunk emits an assistant response chunk for streaming.
+// It accumulates all chunks and emits both the delta and the full accumulated
+// content so the frontend can simply SET the content instead of appending.
 func (e *EventEmitter) AssistantChunk(content string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.streamAccumulated.WriteString(content)
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "assistant_chunk",
 		Data: map[string]interface{}{
-			"content": content,
+			"content":     content,
+			"accumulated": e.streamAccumulated.String(),
 		},
 	})
 }
 
-// AssistantDone emits an assistant response completion event.
+// AssistantDone emits an assistant response completion event and resets the accumulator.
 func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputTokens int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// Reset the accumulator for the next streaming session
+	e.streamAccumulated.Reset()
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "assistant_done",

@@ -296,14 +296,14 @@ func TestManager_RenameSession(t *testing.T) {
 		if event.Type != "session_renamed" {
 			t.Errorf("Expected session_renamed event, got %s", event.Type)
 		}
-		data, ok := event.Data.(map[string]string)
+		data, ok := event.Data.(SessionRenamedData)
 		switch {
 		case !ok:
-			t.Error("Event data is not map[string]string")
-		case data["old_name"] != oldName:
-			t.Errorf("Event old_name mismatch: got %s, want %s", data["old_name"], oldName)
-		case data["new_name"] != newName:
-			t.Errorf("Event new_name mismatch: got %s, want %s", data["new_name"], newName)
+			t.Errorf("Event data is not SessionRenamedData, got %T", event.Data)
+		case data.OldName != oldName:
+			t.Errorf("Event old_name mismatch: got %s, want %s", data.OldName, oldName)
+		case data.NewName != newName:
+			t.Errorf("Event new_name mismatch: got %s, want %s", data.NewName, newName)
 		}
 	case <-time.After(time.Second):
 		t.Error("Timeout waiting for session_renamed event")

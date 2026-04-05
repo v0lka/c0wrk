@@ -329,38 +329,48 @@ func TestContextManagerTool_SwitchCompactionInvalidStrategy(t *testing.T) {
 func TestContextManagerTool_NilSemanticStore(t *testing.T) {
 	tool := NewContextManagerTool(nil, nil, nil, nil)
 
-	tests := []struct {
-		name   string
-		action string
-	}{
-		{"memory_store", "memory_store"},
-		{"memory_search", "memory_search"},
-	}
+	t.Run("memory_store", func(t *testing.T) {
+		input := map[string]interface{}{
+			"action":  "memory_store",
+			"key":     "test",
+			"content": "test",
+		}
+		inputJSON, _ := json.Marshal(input)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			input := map[string]interface{}{
-				"action":  tt.action,
-				"key":     "test",
-				"content": "test",
-				"query":   "test",
-			}
-			inputJSON, _ := json.Marshal(input)
+		result, err := tool.Execute(context.Background(), inputJSON)
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
 
-			result, err := tool.Execute(context.Background(), inputJSON)
-			if err != nil {
-				t.Fatalf("Execute() error = %v", err)
-			}
+		if !result.IsError {
+			t.Error("Execute() should return error when semantic store is nil")
+		}
 
-			if !result.IsError {
-				t.Error("Execute() should return error when semantic store is nil")
-			}
+		if !strings.Contains(result.Content, "semantic memory is not configured") {
+			t.Errorf("Result should indicate semantic memory unavailable, got: %s", result.Content)
+		}
+	})
 
-			if !strings.Contains(result.Content, "semantic memory is not available") {
-				t.Errorf("Result should indicate semantic memory unavailable, got: %s", result.Content)
-			}
-		})
-	}
+	t.Run("memory_search", func(t *testing.T) {
+		input := map[string]interface{}{
+			"action": "memory_search",
+			"query":  "test",
+		}
+		inputJSON, _ := json.Marshal(input)
+
+		result, err := tool.Execute(context.Background(), inputJSON)
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+
+		if result.IsError {
+			t.Error("Execute() should not return error for search when semantic store is nil")
+		}
+
+		if !strings.Contains(result.Content, "no results found") {
+			t.Errorf("Result should indicate no results found, got: %s", result.Content)
+		}
+	})
 }
 
 func TestContextManagerTool_NilCompactionSwitcher(t *testing.T) {
@@ -381,7 +391,7 @@ func TestContextManagerTool_NilCompactionSwitcher(t *testing.T) {
 		t.Error("Execute() should return error when compaction switcher is nil")
 	}
 
-	if !strings.Contains(result.Content, "compaction switcher is not available") {
+	if !strings.Contains(result.Content, "compaction switcher is not configured") {
 		t.Errorf("Result should indicate compaction switcher unavailable, got: %s", result.Content)
 	}
 }
@@ -755,7 +765,7 @@ func TestContextManagerTool_EpisodicStoreNilStore(t *testing.T) {
 		t.Error("Execute() should return error when episodic store is nil")
 	}
 
-	if !strings.Contains(result.Content, "episodic memory is not available") {
+	if !strings.Contains(result.Content, "episodic memory is not configured") {
 		t.Errorf("Result should indicate episodic memory unavailable, got: %s", result.Content)
 	}
 }
@@ -864,7 +874,7 @@ func TestContextManagerTool_ReflexionStoreNilStore(t *testing.T) {
 		t.Error("Execute() should return error when reflexion store is nil")
 	}
 
-	if !strings.Contains(result.Content, "reflexion memory is not available") {
+	if !strings.Contains(result.Content, "reflexion memory is not configured") {
 		t.Errorf("Result should indicate reflexion memory unavailable, got: %s", result.Content)
 	}
 }
@@ -883,12 +893,12 @@ func TestContextManagerTool_ReflexionSearchNilStore(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	if !result.IsError {
-		t.Error("Execute() should return error when reflexion store is nil")
+	if result.IsError {
+		t.Error("Execute() should not return error for reflexion search when store is nil")
 	}
 
-	if !strings.Contains(result.Content, "reflexion memory is not available") {
-		t.Errorf("Result should indicate reflexion memory unavailable, got: %s", result.Content)
+	if !strings.Contains(result.Content, "no reflections found") {
+		t.Errorf("Result should indicate no reflections found, got: %s", result.Content)
 	}
 }
 
@@ -965,11 +975,11 @@ func TestContextManagerTool_EpisodicSearchNilStore(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	if !result.IsError {
-		t.Error("Execute() should return error when episodic store is nil")
+	if result.IsError {
+		t.Error("Execute() should not return error for episodic search when store is nil")
 	}
 
-	if !strings.Contains(result.Content, "episodic memory is not available") {
-		t.Errorf("Result should indicate episodic memory unavailable, got: %s", result.Content)
+	if !strings.Contains(result.Content, "no episodic entries found") {
+		t.Errorf("Result should indicate no episodic entries found, got: %s", result.Content)
 	}
 }

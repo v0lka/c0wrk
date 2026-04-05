@@ -3,6 +3,7 @@
 
 import { useMemo } from 'react'
 import type { SessionInfo, ChatMessage } from '@/lib/wails'
+import type { main } from '../../wailsjs/go/models'
 
 declare global {
   interface Window {
@@ -17,7 +18,7 @@ declare global {
           SendMessage(id: string, text: string): Promise<void>
           CancelTask(id: string): Promise<void>
           GetSessionHistory(id: string): Promise<ChatMessage[]>
-          GetConfig(): Promise<Record<string, unknown>>
+          GetConfig(): Promise<main.ConfigResponse>
           Greet(name: string): Promise<string>
           GetSecuritySettings?: () => Promise<Record<string, unknown>>
           UpdateSecuritySettings?: (settings: Record<string, unknown>) => Promise<void>

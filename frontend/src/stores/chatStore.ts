@@ -20,7 +20,7 @@ export type DisplayItem =
   | { kind: 'user'; message: ChatMessageUI }
   | { kind: 'assistant'; message: ChatMessageUI }
   | { kind: 'thought'; id: string; stepNum: number; content: string; reasoning?: string }
-  | { kind: 'tool'; id: string; toolName: string; args: string; result?: string; resultLen?: number; status: 'running' | 'success' | 'error' | 'awaiting_confirmation' }
+  | { kind: 'tool'; id: string; toolName: string; args: string; parsedArgs?: Record<string, unknown>; result?: string; resultLen?: number; status: 'running' | 'success' | 'error' | 'awaiting_confirmation' }
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
@@ -133,6 +133,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           id: msg.id,
           toolName: (meta?.tool as string) || 'Tool',
           args: (meta?.args as string) || '',
+          parsedArgs: meta?.parsed_args as Record<string, unknown> | undefined,
           result: hasResult ? ((meta?.result as string) ?? (meta?.result_preview as string)) : undefined,
           resultLen: hasResult ? (meta?.result_len as number) : undefined,
           status: hasResult ? 'success' : (isAwaiting ? 'awaiting_confirmation' : 'running'),
@@ -271,6 +272,7 @@ interface ChatState {
   setActivityStatus: (status: string | null) => void
   pendingActions: DisplayItem[]
   setPendingActions: (actions: DisplayItem[]) => void
+  resolveAction: (sessionId: string, messageId: string, metadataUpdates?: Record<string, unknown>) => void
   setTaskActive: (active: boolean) => void
   clearSessionUIState: () => void
 }
@@ -319,6 +321,31 @@ export const useChatStore = create<ChatState>((set) => ({
   setActivityStatus: (status) => set({ activityStatus: status }),
   pendingActions: [],
   setPendingActions: (actions) => set({ pendingActions: actions }),
+  resolveAction: (sessionId, messageId, metadataUpdates) => set((s) => {
+    // 1. Update the message metadata (mark resolved)
+    const msgs = s.messages[sessionId]
+    let newMessages = s.messages
+    if (msgs) {
+      const idx = msgs.findIndex(m => m.id === messageId)
+      if (idx !== -1) {
+        const updated = [...msgs]
+        const existing = updated[idx]
+        updated[idx] = {
+          ...existing,
+          metadata: { ...existing.metadata, resolved: true, ...metadataUpdates },
+        }
+        newMessages = { ...s.messages, [sessionId]: updated }
+      }
+    }
+    // 2. Remove from pendingActions immediately
+    const newPending = s.pendingActions.filter(a => {
+      if ('message' in a && (a as { message: ChatMessageUI }).message.id === messageId) {
+        return false
+      }
+      return true
+    })
+    return { messages: newMessages, pendingActions: newPending }
+  }),
   setTaskActive: (active) => set({ isTaskActive: active }),
   clearSessionUIState: () => set({
     activityStatus: null,

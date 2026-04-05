@@ -4,6 +4,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -28,7 +29,7 @@ type ChatMessage struct {
 	SessionID string `json:"session_id"`
 	Role      string `json:"role"` // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
 	Content   string `json:"content"`
-	Metadata  string `json:"metadata"`   // JSON blob for extra data
+	Metadata  json.RawMessage `json:"metadata"`   // JSON blob for extra data
 	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
 }
 
@@ -264,7 +265,7 @@ func (s *SQLiteSessionStore) SaveMessage(msg ChatMessage) error {
 	_, err := s.db.ExecContext(context.Background(), `
 		INSERT INTO session_messages (session_id, role, content, metadata, created_at)
 		VALUES (?, ?, ?, ?, ?)`,
-		msg.SessionID, msg.Role, msg.Content, msg.Metadata, msg.CreatedAt,
+		msg.SessionID, msg.Role, msg.Content, string(msg.Metadata), msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save message: %w", err)
@@ -289,8 +290,14 @@ func (s *SQLiteSessionStore) LoadMessages(sessionID string) ([]ChatMessage, erro
 	var messages []ChatMessage
 	for rows.Next() {
 		var msg ChatMessage
-		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &msg.Metadata, &msg.CreatedAt); err != nil {
+		var metadataStr string
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &metadataStr, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		if metadataStr != "" {
+			msg.Metadata = json.RawMessage(metadataStr)
+		} else {
+			msg.Metadata = json.RawMessage("{}")
 		}
 		messages = append(messages, msg)
 	}

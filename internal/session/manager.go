@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -129,10 +130,10 @@ func (m *Manager) CreateSession() (*SessionInfo, error) {
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "session_created",
-		Data: map[string]interface{}{
-			"id":         id,
-			"name":       session.Name,
-			"created_at": session.CreatedAt,
+		Data: SessionCreatedData{
+			ID:        id,
+			Name:      session.Name,
+			CreatedAt: session.CreatedAt,
 		},
 	})
 
@@ -216,8 +217,8 @@ func (m *Manager) DeleteSession(id string) error {
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "session_deleted",
-		Data: map[string]string{
-			"id": id,
+		Data: SessionDeletedData{
+			ID: id,
 		},
 	})
 
@@ -232,7 +233,7 @@ func (m *Manager) GetSession(id string) (*Session, bool) {
 	return session, exists
 }
 
-// ListSessions returns metadata for all sessions.
+// ListSessions returns metadata for all sessions, sorted by LastActiveAt descending.
 func (m *Manager) ListSessions() []SessionInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -250,6 +251,12 @@ func (m *Manager) ListSessions() []SessionInfo {
 		})
 		s.mu.Unlock()
 	}
+
+	// Sort by LastActiveAt descending (most recent first)
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].LastActiveAt > sessions[j].LastActiveAt
+	})
+
 	return sessions
 }
 
@@ -272,10 +279,10 @@ func (m *Manager) RenameSession(id, name string) error {
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "session_renamed",
-		Data: map[string]string{
-			"id":       id,
-			"old_name": oldName,
-			"new_name": name,
+		Data: SessionRenamedData{
+			ID:      id,
+			OldName: oldName,
+			NewName: name,
 		},
 	})
 
@@ -305,9 +312,9 @@ func (m *Manager) ArchiveSession(id string) error {
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      eventType,
-		Data: map[string]interface{}{
-			"id":       id,
-			"archived": archived,
+		Data: SessionArchivedData{
+			ID:       id,
+			Archived: archived,
 		},
 	})
 
@@ -344,9 +351,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "message_received",
-		Data: map[string]string{
-			"session_id": id,
-			"text":       text,
+		Data: MessageReceivedData{
+			SessionID: id,
+			Text:      text,
 		},
 	})
 
@@ -368,8 +375,8 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				m.emitFunc(Event{
 					SessionID: id,
 					Type:      "task_cancelled",
-					Data: map[string]string{
-						"session_id": id,
+					Data: TaskCancelledData{
+						SessionID: id,
 					},
 				})
 				return
@@ -379,9 +386,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 			m.emitFunc(Event{
 				SessionID: id,
 				Type:      "error",
-				Data: map[string]string{
-					"session_id": id,
-					"error":      err.Error(),
+				Data: ErrorData{
+					SessionID: id,
+					Error:     err.Error(),
 				},
 			})
 			return
@@ -391,16 +398,16 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 		m.emitFunc(Event{
 			SessionID: id,
 			Type:      "task_complete",
-			Data: map[string]interface{}{
-				"session_id":       id,
-				"output":           result.Output,
-				"routing_decision": result.RoutingDecision,
-				"plan":             result.Plan,
-				"eval_result":      result.EvalResult,
-				"attempt_count":    result.AttemptCount,
-				"reflections":      result.Reflections,
-				"escalated":        result.Escalated,
-				"original_mode":    result.OriginalMode,
+			Data: TaskCompleteData{
+				SessionID:       id,
+				Output:          result.Output,
+				RoutingDecision: result.RoutingDecision,
+				Plan:            result.Plan,
+				EvalResult:      result.EvalResult,
+				AttemptCount:    result.AttemptCount,
+				Reflections:     result.Reflections,
+				Escalated:       result.Escalated,
+				OriginalMode:    result.OriginalMode,
 			},
 		})
 	}()

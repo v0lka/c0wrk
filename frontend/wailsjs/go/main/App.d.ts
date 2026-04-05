@@ -11,19 +11,19 @@ export function CreateSession():Promise<session.SessionInfo>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
-export function GetConfig():Promise<Record<string, any>>;
+export function GetConfig():Promise<main.ConfigResponse>;
 
 export function GetLogLevel():Promise<string>;
 
-export function GetMemoryStats():Promise<Record<string, any>>;
+export function GetMemoryStats():Promise<main.MemoryStatsResponse>;
 
 export function GetSecuritySettings():Promise<main.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
 
-export function GetSessionMemoryStats(arg1:string):Promise<Record<string, any>>;
+export function GetSessionMemoryStats(arg1:string):Promise<main.SessionMemoryStatsResponse>;
 
-export function GetSessionTokens(arg1:string):Promise<Record<string, any>>;
+export function GetSessionTokens(arg1:string):Promise<main.SessionTokensResponse>;
 
 export function ListProviderModels(arg1:string):Promise<Array<string>>;
 

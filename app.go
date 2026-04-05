@@ -267,24 +267,36 @@ func (a *App) startup(ctx context.Context) {
 			role = "error"
 		case "assistant_done":
 			role = "assistant"
-			// Extract content from data if available
-			if m, ok := evt.Data.(map[string]interface{}); ok {
-				if c, ok := m["content"].(string); ok {
+			// Extract content from typed struct or map (emitter uses map[string]interface{})
+			switch d := evt.Data.(type) {
+			case session.AssistantDoneEventData:
+				content = d.Content
+			case map[string]interface{}:
+				if c, ok := d["content"].(string); ok {
 					content = c
 				}
 			}
 		case "task_complete":
 			// Only persist if there's output content
-			if m, ok := evt.Data.(map[string]interface{}); ok {
-				if output, ok := m["output"].(string); ok && output != "" {
+			switch d := evt.Data.(type) {
+			case session.TaskCompleteData:
+				if d.Output != "" {
+					role = "assistant"
+					content = d.Output
+				}
+			case map[string]interface{}:
+				if output, ok := d["output"].(string); ok && output != "" {
 					role = "assistant"
 					content = output
 				}
 			}
 		case "thought":
 			role = "thought"
-			if m, ok := evt.Data.(map[string]interface{}); ok {
-				if c, ok := m["content"].(string); ok {
+			switch d := evt.Data.(type) {
+			case session.ThoughtEventData:
+				content = d.Content
+			case map[string]interface{}:
+				if c, ok := d["content"].(string); ok {
 					content = c
 				}
 			}
@@ -315,16 +327,20 @@ func (a *App) startup(ctx context.Context) {
 		}
 
 		// Serialize event data as metadata JSON
-		metadata := "{}"
+		var metadata json.RawMessage
 		if evt.Data != nil {
 			if b, err := json.Marshal(evt.Data); err == nil {
-				metadata = string(b)
+				metadata = b
+			} else {
+				metadata = json.RawMessage("{}")
 			}
+		} else {
+			metadata = json.RawMessage("{}")
 		}
 
 		// For non-assistant roles, use metadata as content if content is empty
 		if content == "" {
-			content = metadata
+			content = string(metadata)
 		}
 
 		if err := a.store.SaveMessage(session.ChatMessage{
@@ -589,12 +605,12 @@ func (a *App) startup(ctx context.Context) {
 		ch := make(chan tools.AskUserResponse, 1)
 		a.pendingAskUser.Store(requestID, ch)
 
-		payload := map[string]interface{}{
-			"request_id":   requestID,
-			"question":     req.Question,
-			"options":      req.Options,
-			"multi_select": req.MultiSelect,
-			"recommended":  req.Recommended,
+		payload := session.AskUserPayload{
+			RequestID:   requestID,
+			Question:    req.Question,
+			Options:     req.Options,
+			MultiSelect: req.MultiSelect,
+			Recommended: req.Recommended,
 		}
 
 		eventName := fmt.Sprintf("session:%s:ask_user", sessionID)
@@ -694,10 +710,11 @@ func (a *App) startup(ctx context.Context) {
 
 	// Orchestrator configuration
 	orchConfig := core.OrchestratorConfig{
-		MaxSteps:   a.config.Executor.MaxReactSteps,
-		KeepFirst:  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:   a.config.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries: a.config.Executor.MaxRetries,
+		MaxSteps:                   a.config.Executor.MaxReactSteps,
+		KeepFirst:                  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:                   a.config.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxRetries:                 a.config.Executor.MaxRetries,
+		ConstitutionUpdateInterval: a.config.Memory.Constitution.UpdateIntervalSessions,
 	}
 
 	// Initialize ToolJudge if enabled in config
@@ -743,11 +760,11 @@ func (a *App) startup(ctx context.Context) {
 		a.pendingConfirmations.Store(requestID, ch)
 
 		// Payload field names must match frontend ToolConfirmation.tsx expectations
-		payload := map[string]interface{}{
-			"confirm_id": requestID,
-			"tool":       req.ToolName,
-			"args":       string(req.Input),
-			"reasoning":  req.JudgeReasoning,
+		payload := session.ToolConfirmPayload{
+			ConfirmID: requestID,
+			Tool:      req.ToolName,
+			Args:      string(req.Input),
+			Reasoning: req.JudgeReasoning,
 		}
 
 		// Emit session-scoped event: session:{sessionId}:tool_confirm
@@ -765,6 +782,10 @@ func (a *App) startup(ctx context.Context) {
 	})
 
 	// Create orchestrator factory
+	var reflexionMemAdapter core.ReflexionMemoryStore
+	if memSys != nil && memSys.Reflexion != nil {
+		reflexionMemAdapter = &reflexionMemoryStoreAdapter{rm: memSys.Reflexion}
+	}
 	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
 		if llmRouter == nil || router == nil || acExtractor == nil || planner == nil || evaluator == nil {
 			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
@@ -785,6 +806,8 @@ func (a *App) startup(ctx context.Context) {
 			emitter,       // Emitter
 			modelRegistry, // ModelRegistry for resolving model metadata
 			a.config.Executor.ToolResultBudget,
+			a.constitution,      // Constitution for planner injection
+			reflexionMemAdapter, // ReflexionMemoryStore for meta-reflection
 		), nil
 	}
 
@@ -1201,57 +1224,126 @@ func (a *App) persistConfig() error {
 	return config.Save(a.config, a.configPath)
 }
 
+// ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
+type ConfigResponse struct {
+	Loaded             bool              `json:"loaded"`
+	LogLevel           string            `json:"log_level"`
+	Theme              string            `json:"theme"`
+	ConfigMigrated     bool              `json:"config_migrated"`
+	ConfigMigrationMsg string            `json:"config_migration_msg"`
+	ConfigErrors       []string          `json:"config_errors"`
+	LLM                ConfigLLMResponse `json:"llm"`
+	Memory             ConfigMemResponse `json:"memory"`
+	Search             ConfigSearchResp  `json:"search"`
+}
+
+// ConfigLLMResponse holds sanitised LLM provider info.
+type ConfigLLMResponse struct {
+	ActiveProvider   string                 `json:"active_provider"`
+	Anthropic        ConfigProviderKeyModel `json:"anthropic"`
+	Gemini           ConfigProviderKeyModel `json:"gemini"`
+	LMStudio         ConfigProviderFull     `json:"lmstudio"`
+	OpenAICompatible ConfigProviderFull     `json:"openai_compatible"`
+	ChatGPT          ConfigProviderKeyModel `json:"chatgpt"`
+}
+
+// ConfigProviderKeyModel is a provider with api_key + model.
+type ConfigProviderKeyModel struct {
+	APIKey string `json:"api_key"`
+	Model  string `json:"model"`
+}
+
+// ConfigProviderFull is a provider with base_url + api_key + model.
+type ConfigProviderFull struct {
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+	Model   string `json:"model"`
+}
+
+// ConfigMemResponse holds memory section of config response.
+type ConfigMemResponse struct {
+	Episodic ConfigEpisodicResp `json:"episodic"`
+	Semantic struct{}           `json:"semantic"`
+}
+
+// ConfigEpisodicResp holds episodic memory config values.
+type ConfigEpisodicResp struct {
+	RetentionDays  int `json:"retention_days"`
+	RetrievalLimit int `json:"retrieval_limit"`
+}
+
+// ConfigSearchResp holds search config values.
+type ConfigSearchResp struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"api_key"`
+}
+
+// MemoryStatsResponse holds memory system statistics.
+type MemoryStatsResponse struct {
+	Episodic   int `json:"episodic"`
+	Semantic   int `json:"semantic"`
+	Procedural int `json:"procedural"`
+	Reflexion  int `json:"reflexion"`
+}
+
+// SessionMemoryStatsResponse holds per-session memory statistics.
+type SessionMemoryStatsResponse struct {
+	Episodic int `json:"episodic"`
+}
+
+// SessionTokensResponse holds token usage for a session.
+type SessionTokensResponse struct {
+	TotalInputTokens  int `json:"total_input_tokens"`
+	TotalOutputTokens int `json:"total_output_tokens"`
+}
+
 // GetConfig returns the current configuration (sanitized, no raw API keys).
-func (a *App) GetConfig() map[string]interface{} {
+func (a *App) GetConfig() ConfigResponse {
 	if a.config == nil {
-		return map[string]interface{}{"loaded": false}
+		return ConfigResponse{Loaded: false}
 	}
 
-	// Search - mask API key
-	searchKeyMasked := maskAPIKey(a.config.Search.APIKey)
-
-	return map[string]interface{}{
-		"loaded":               true,
-		"log_level":            a.config.LogLevel,
-		"theme":                a.config.Theme,
-		"config_migrated":      a.configMigrated,
-		"config_migration_msg": a.configMigrationMsg,
-		"config_errors":        a.configLoadErrors,
-		"llm": map[string]interface{}{
-			"active_provider": a.config.LLM.ActiveProvider,
-			"anthropic": map[string]interface{}{
-				"api_key": maskAPIKey(a.config.LLM.Anthropic.APIKey),
-				"model":   a.config.LLM.Anthropic.Model,
+	return ConfigResponse{
+		Loaded:             true,
+		LogLevel:           a.config.LogLevel,
+		Theme:              a.config.Theme,
+		ConfigMigrated:     a.configMigrated,
+		ConfigMigrationMsg: a.configMigrationMsg,
+		ConfigErrors:       a.configLoadErrors,
+		LLM: ConfigLLMResponse{
+			ActiveProvider: a.config.LLM.ActiveProvider,
+			Anthropic: ConfigProviderKeyModel{
+				APIKey: maskAPIKey(a.config.LLM.Anthropic.APIKey),
+				Model:  a.config.LLM.Anthropic.Model,
 			},
-			"gemini": map[string]interface{}{
-				"api_key": maskAPIKey(a.config.LLM.Gemini.APIKey),
-				"model":   a.config.LLM.Gemini.Model,
+			Gemini: ConfigProviderKeyModel{
+				APIKey: maskAPIKey(a.config.LLM.Gemini.APIKey),
+				Model:  a.config.LLM.Gemini.Model,
 			},
-			"lmstudio": map[string]interface{}{
-				"base_url": a.config.LLM.LMStudio.BaseURL,
-				"api_key":  maskAPIKey(a.config.LLM.LMStudio.APIKey),
-				"model":    a.config.LLM.LMStudio.Model,
+			LMStudio: ConfigProviderFull{
+				BaseURL: a.config.LLM.LMStudio.BaseURL,
+				APIKey:  maskAPIKey(a.config.LLM.LMStudio.APIKey),
+				Model:   a.config.LLM.LMStudio.Model,
 			},
-			"openai_compatible": map[string]interface{}{
-				"base_url": a.config.LLM.OpenAICompatible.BaseURL,
-				"api_key":  maskAPIKey(a.config.LLM.OpenAICompatible.APIKey),
-				"model":    a.config.LLM.OpenAICompatible.Model,
+			OpenAICompatible: ConfigProviderFull{
+				BaseURL: a.config.LLM.OpenAICompatible.BaseURL,
+				APIKey:  maskAPIKey(a.config.LLM.OpenAICompatible.APIKey),
+				Model:   a.config.LLM.OpenAICompatible.Model,
 			},
-			"chatgpt": map[string]interface{}{
-				"api_key": maskAPIKey(a.config.LLM.ChatGPT.APIKey),
-				"model":   a.config.LLM.ChatGPT.Model,
+			ChatGPT: ConfigProviderKeyModel{
+				APIKey: maskAPIKey(a.config.LLM.ChatGPT.APIKey),
+				Model:  a.config.LLM.ChatGPT.Model,
 			},
 		},
-		"memory": map[string]interface{}{
-			"episodic": map[string]interface{}{
-				"retention_days":  a.config.Memory.Episodic.RetentionDays,
-				"retrieval_limit": a.config.Memory.Episodic.RetrievalLimit,
+		Memory: ConfigMemResponse{
+			Episodic: ConfigEpisodicResp{
+				RetentionDays:  a.config.Memory.Episodic.RetentionDays,
+				RetrievalLimit: a.config.Memory.Episodic.RetrievalLimit,
 			},
-			"semantic": map[string]interface{}{},
 		},
-		"search": map[string]interface{}{
-			"provider": a.config.Search.Provider,
-			"api_key":  searchKeyMasked,
+		Search: ConfigSearchResp{
+			Provider: a.config.Search.Provider,
+			APIKey:   maskAPIKey(a.config.Search.APIKey),
 		},
 	}
 }
@@ -1361,31 +1453,26 @@ func (a *App) listLMStudioModels(baseURL, apiKey string) ([]string, error) {
 }
 
 // GetMemoryStats returns current memory system statistics.
-func (a *App) GetMemoryStats() map[string]interface{} {
-	stats := map[string]interface{}{
-		"episodic":   0,
-		"semantic":   0,
-		"procedural": 0,
-		"reflexion":  0,
-	}
+func (a *App) GetMemoryStats() MemoryStatsResponse {
+	var stats MemoryStatsResponse
 
 	if a.memorySystem != nil {
 		if a.memorySystem.Episodic != nil {
 			if count, err := a.memorySystem.Episodic.Count(context.Background()); err == nil {
-				stats["episodic"] = count
+				stats.Episodic = count
 			}
 		}
 		if a.memorySystem.Semantic != nil {
 			if count, err := a.memorySystem.Semantic.Count(context.Background()); err == nil {
-				stats["semantic"] = count
+				stats.Semantic = count
 			}
 		}
 		if a.memorySystem.Procedural != nil {
-			stats["procedural"] = len(a.memorySystem.Procedural.ListTools())
+			stats.Procedural = len(a.memorySystem.Procedural.ListTools())
 		}
 		if a.memorySystem.Reflexion != nil {
 			if count, err := a.memorySystem.Reflexion.Count(context.Background()); err == nil {
-				stats["reflexion"] = count
+				stats.Reflexion = count
 			}
 		}
 	}
@@ -1394,14 +1481,12 @@ func (a *App) GetMemoryStats() map[string]interface{} {
 }
 
 // GetSessionMemoryStats returns memory statistics scoped to a specific session.
-func (a *App) GetSessionMemoryStats(sessionID string) map[string]interface{} {
-	stats := map[string]interface{}{
-		"episodic": 0,
-	}
+func (a *App) GetSessionMemoryStats(sessionID string) SessionMemoryStatsResponse {
+	var stats SessionMemoryStatsResponse
 
 	if a.memorySystem != nil && a.memorySystem.Episodic != nil && sessionID != "" {
 		if count, err := a.memorySystem.Episodic.CountBySession(context.Background(), sessionID); err == nil {
-			stats["episodic"] = count
+			stats.Episodic = count
 		}
 	}
 
@@ -1417,11 +1502,8 @@ func (a *App) UpdateSessionTokens(sessionID string, inputTokens, outputTokens in
 }
 
 // GetSessionTokens returns persisted token counts for a session.
-func (a *App) GetSessionTokens(sessionID string) map[string]interface{} {
-	result := map[string]interface{}{
-		"total_input_tokens":  0,
-		"total_output_tokens": 0,
-	}
+func (a *App) GetSessionTokens(sessionID string) SessionTokensResponse {
+	var result SessionTokensResponse
 	if a.store == nil || sessionID == "" {
 		return result
 	}
@@ -1429,8 +1511,8 @@ func (a *App) GetSessionTokens(sessionID string) map[string]interface{} {
 	if err != nil || info == nil {
 		return result
 	}
-	result["total_input_tokens"] = info.TotalInputTokens
-	result["total_output_tokens"] = info.TotalOutputTokens
+	result.TotalInputTokens = info.TotalInputTokens
+	result.TotalOutputTokens = info.TotalOutputTokens
 	return result
 }
 
@@ -1771,6 +1853,38 @@ func (a *reflexionToolAdapter) Search(ctx context.Context, query string, limit i
 			Hypotheses:      r.Hypotheses,
 			SuggestedAction: r.SuggestedAction,
 			Timestamp:       r.Timestamp,
+		}
+	}
+	return adapted, nil
+}
+
+// reflexionMemoryStoreAdapter adapts memory.ReflexionMemory to core.ReflexionMemoryStore interface.
+type reflexionMemoryStoreAdapter struct {
+	rm *memory.ReflexionMemory
+}
+
+func (a *reflexionMemoryStoreAdapter) Store(ctx context.Context, reflection core.StoredReflexion) error {
+	memReflection := memory.StoredReflexion{
+		TaskDescription: reflection.TaskDescription,
+		Summary:         reflection.Summary,
+		Hypotheses:      reflection.Hypotheses,
+		SuggestedAction: reflection.SuggestedAction,
+	}
+	return a.rm.Store(ctx, memReflection)
+}
+
+func (a *reflexionMemoryStoreAdapter) Search(ctx context.Context, query string, limit int) ([]core.StoredReflexion, error) {
+	results, err := a.rm.Search(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	adapted := make([]core.StoredReflexion, len(results))
+	for i, r := range results {
+		adapted[i] = core.StoredReflexion{
+			TaskDescription: r.TaskDescription,
+			Summary:         r.Summary,
+			Hypotheses:      r.Hypotheses,
+			SuggestedAction: r.SuggestedAction,
 		}
 	}
 	return adapted, nil

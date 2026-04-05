@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -292,21 +293,21 @@ func TestSaveAndLoadMessages(t *testing.T) {
 			SessionID: session.ID,
 			Role:      "user",
 			Content:   "First message",
-			Metadata:  `{"key":"value1"}`,
+			Metadata:  json.RawMessage(`{"key":"value1"}`),
 			CreatedAt: "2024-01-15T10:00:00Z",
 		},
 		{
 			SessionID: session.ID,
 			Role:      "assistant",
 			Content:   "Second message",
-			Metadata:  `{"key":"value2"}`,
+			Metadata:  json.RawMessage(`{"key":"value2"}`),
 			CreatedAt: "2024-01-15T10:01:00Z",
 		},
 		{
 			SessionID: session.ID,
 			Role:      "tool_call",
 			Content:   "Third message",
-			Metadata:  `{"tool":"search"}`,
+			Metadata:  json.RawMessage(`{"tool":"search"}`),
 			CreatedAt: "2024-01-15T10:02:00Z",
 		},
 	}
@@ -333,8 +334,8 @@ func TestSaveAndLoadMessages(t *testing.T) {
 	if loaded[0].Content != "First message" {
 		t.Errorf("first message content: got %q, want %q", loaded[0].Content, "First message")
 	}
-	if loaded[0].Metadata != `{"key":"value1"}` {
-		t.Errorf("first message metadata: got %q, want %q", loaded[0].Metadata, `{"key":"value1"}`)
+	if string(loaded[0].Metadata) != `{"key":"value1"}` {
+		t.Errorf("first message metadata: got %q, want %q", string(loaded[0].Metadata), `{"key":"value1"}`)
 	}
 
 	if loaded[1].Role != "assistant" {

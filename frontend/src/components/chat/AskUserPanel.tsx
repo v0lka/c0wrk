@@ -69,11 +69,9 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
 
     useChatStore.getState().setActivityStatus(null)
 
-    // Mark this question as resolved so groupMessages stops extracting it
+    // Atomically mark resolved in messages AND remove from pendingActions
     const askMsgId = `ask-user-${requestId}`
-    useChatStore.getState().updateMessage(sessionId, askMsgId, {
-      metadata: { resolved: true },
-    })
+    useChatStore.getState().resolveAction(sessionId, askMsgId)
   }
 
   // Resolved state

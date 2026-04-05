@@ -42,10 +42,8 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
       }
     }
 
-    // Mark this confirmation as resolved so groupMessages stops extracting it
-    useChatStore.getState().updateMessage(sessionId, `tool-confirm-${confirmId}`, {
-      metadata: { resolved: true },
-    })
+    // Atomically mark resolved in messages AND remove from pendingActions
+    useChatStore.getState().resolveAction(sessionId, `tool-confirm-${confirmId}`)
 
     // Update activity status
     if (isConfirm) {

@@ -24,7 +24,7 @@ export function MemorySettings() {
     const loadConfig = async () => {
       try {
         const result = await GetConfig()
-        const memoryConfig = result?.memory as MemoryConfig | undefined
+        const memoryConfig = result?.memory
         if (memoryConfig) {
           setConfig({
             episodic: {

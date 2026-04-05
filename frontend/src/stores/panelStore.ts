@@ -19,6 +19,10 @@ export interface EvalItem {
 export interface PlanGroup {
   id: number
   items: PlanItem[]
+  // Backend-computed progress fields (when available)
+  progress?: number          // 0.0–1.0
+  completedCount?: number
+  totalCount?: number
 }
 
 export interface EvalGroup {
@@ -31,7 +35,7 @@ interface PanelState {
   evalGroups: EvalGroup[]  // newest first
   
   // Actions
-  addPlanGroup: (steps: Array<{ description: string; status?: string }>) => void
+  addPlanGroup: (steps: Array<{ description: string; status?: string }>, progress?: { progress?: number; completed_count?: number; total_count?: number }) => void
   updatePlanItemStatus: (stepId: string, status: PlanItem['status'], duration?: number) => void
   addEvalGroup: (criteria: Array<{ name: string; description?: string; passed?: boolean }>) => void
   updateEvalGroupStatuses: (criteria: Array<{ name: string; description?: string; passed?: boolean }>) => void
@@ -48,7 +52,7 @@ export const usePanelStore = create<PanelState>((set) => ({
   planGroups: [],
   evalGroups: [],
 
-  addPlanGroup: (steps) => {
+  addPlanGroup: (steps, progress) => {
     const newGroup: PlanGroup = {
       id: ++planGroupCounter,
       items: steps.map((s, i) => ({
@@ -56,6 +60,9 @@ export const usePanelStore = create<PanelState>((set) => ({
         title: s.description,
         status: (s.status as PlanItem['status']) || 'pending',
       })),
+      progress: progress?.progress,
+      completedCount: progress?.completed_count,
+      totalCount: progress?.total_count,
     }
     set((state) => ({
       planGroups: [newGroup, ...state.planGroups],
@@ -268,6 +275,11 @@ export const usePanelStore = create<PanelState>((set) => ({
 export function usePlanCompleted(): number {
   return usePanelStore(
     useShallow((state) => {
+      // Use backend-provided count from latest group if available
+      if (state.planGroups.length > 0 && state.planGroups[0].completedCount !== undefined) {
+        return state.planGroups[0].completedCount
+      }
+      // Fallback: compute from items
       let count = 0
       for (const group of state.planGroups) {
         for (const item of group.items) {
@@ -284,6 +296,11 @@ export function usePlanCompleted(): number {
 export function usePlanTotal(): number {
   return usePanelStore(
     useShallow((state) => {
+      // Use backend-provided count from latest group if available
+      if (state.planGroups.length > 0 && state.planGroups[0].totalCount !== undefined) {
+        return state.planGroups[0].totalCount
+      }
+      // Fallback: compute from items
       let count = 0
       for (const group of state.planGroups) {
         count += group.items.length

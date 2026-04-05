@@ -28,7 +28,7 @@ export function SearchSettings() {
     const loadConfig = async () => {
       try {
         const result = await GetConfig()
-        const searchConfig = result.search as SearchConfig
+        const searchConfig = result?.search
         if (searchConfig) {
           setConfig(searchConfig)
           // Initialize input with masked value if key exists

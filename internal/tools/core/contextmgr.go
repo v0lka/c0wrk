@@ -202,7 +202,7 @@ func (t *ContextManagerTool) Execute(ctx context.Context, input json.RawMessage)
 // memoryStore stores content in semantic memory.
 func (t *ContextManagerTool) memoryStore(ctx context.Context, params contextManagerInput) (tools.ToolResult, error) {
 	if t.semanticStore == nil {
-		return tools.ToolResult{Content: "semantic memory is not available", IsError: true}, nil
+		return tools.ToolResult{Content: "semantic memory is not configured", IsError: true}, nil
 	}
 
 	if params.Key == "" {
@@ -223,7 +223,7 @@ func (t *ContextManagerTool) memoryStore(ctx context.Context, params contextMana
 // memorySearch searches semantic memory.
 func (t *ContextManagerTool) memorySearch(ctx context.Context, params contextManagerInput) (tools.ToolResult, error) {
 	if t.semanticStore == nil {
-		return tools.ToolResult{Content: "semantic memory is not available", IsError: true}, nil
+		return tools.ToolResult{Content: "no results found", IsError: false}, nil
 	}
 
 	if params.Query == "" {
@@ -259,7 +259,7 @@ func (t *ContextManagerTool) memorySearch(ctx context.Context, params contextMan
 // switchCompaction switches the compaction strategy.
 func (t *ContextManagerTool) switchCompaction(params contextManagerInput) (tools.ToolResult, error) {
 	if t.compactionSwitcher == nil {
-		return tools.ToolResult{Content: "compaction switcher is not available", IsError: true}, nil
+		return tools.ToolResult{Content: "compaction switcher is not configured", IsError: true}, nil
 	}
 
 	if params.Strategy == "" {
@@ -289,7 +289,7 @@ func (t *ContextManagerTool) switchCompaction(params contextManagerInput) (tools
 // episodicStore stores an entry in episodic memory.
 func (t *ContextManagerTool) episodicStore(ctx context.Context, params contextManagerInput) (tools.ToolResult, error) {
 	if t.episodic == nil {
-		return tools.ToolResult{Content: "episodic memory is not available", IsError: true}, nil
+		return tools.ToolResult{Content: "episodic memory is not configured", IsError: true}, nil
 	}
 
 	if params.Content == "" {
@@ -319,7 +319,7 @@ func (t *ContextManagerTool) episodicStore(ctx context.Context, params contextMa
 // episodicSearch retrieves entries from episodic memory.
 func (t *ContextManagerTool) episodicSearch(ctx context.Context, params contextManagerInput) (tools.ToolResult, error) {
 	if t.episodic == nil {
-		return tools.ToolResult{Content: "episodic memory is not available", IsError: true}, nil
+		return tools.ToolResult{Content: "no episodic entries found", IsError: false}, nil
 	}
 
 	// Extract session ID from context
@@ -354,7 +354,7 @@ func (t *ContextManagerTool) episodicSearch(ctx context.Context, params contextM
 // reflexionStore stores a reflection in reflexion memory.
 func (t *ContextManagerTool) reflexionStore(ctx context.Context, params contextManagerInput) (tools.ToolResult, error) {
 	if t.reflexion == nil {
-		return tools.ToolResult{Content: "reflexion memory is not available", IsError: true}, nil
+		return tools.ToolResult{Content: "reflexion memory is not configured", IsError: true}, nil
 	}
 
 	if params.Summary == "" {
@@ -386,7 +386,7 @@ func (t *ContextManagerTool) reflexionStore(ctx context.Context, params contextM
 // reflexionSearch searches reflections in reflexion memory.
 func (t *ContextManagerTool) reflexionSearch(ctx context.Context, params contextManagerInput) (tools.ToolResult, error) {
 	if t.reflexion == nil {
-		return tools.ToolResult{Content: "reflexion memory is not available", IsError: true}, nil
+		return tools.ToolResult{Content: "no reflections found", IsError: false}, nil
 	}
 
 	if params.Query == "" {

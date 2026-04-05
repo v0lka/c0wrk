@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react'
+import { useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
 
 interface UserMessageProps {
   content: string
@@ -18,7 +18,7 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
   const [expanded, setExpanded] = useState(false)
 
   // Measure the natural height of the content
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isPinned || !contentRef.current) return
     // Feature detection for ResizeObserver
     if (typeof ResizeObserver === 'undefined') return
@@ -39,8 +39,10 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
   const isOverflowing = isPinned && maxHeight !== undefined && maxHeight > 0 && naturalHeight > maxHeight
 
   const handleClick = useCallback(() => {
-    if (isOverflowing || expanded) {
+    if (isOverflowing) {
       setExpanded(prev => !prev)
+    } else if (expanded) {
+      setExpanded(false)
     }
   }, [isOverflowing, expanded])
 
@@ -98,10 +100,7 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
       {/* Gradient fade overlay when clipped */}
       {shouldClip && (
         <div
-          className="absolute bottom-0 left-0 right-0 h-16 pointer-events-none"
-          style={{
-            background: 'linear-gradient(to bottom, transparent, hsl(var(--background) / 0.95))'
-          }}
+          className="absolute bottom-0 left-0 right-0 h-16 pointer-events-none bg-gradient-to-b from-transparent to-background"
         />
       )}
     </div>

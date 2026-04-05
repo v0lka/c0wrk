@@ -4,7 +4,7 @@ import { useInspectorStore } from '@/stores/inspectorStore'
 import { usePanelStore } from '@/stores/panelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
-import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData } from '@/lib/wails'
+import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData } from '@/lib/wails'
 
 export function useSessionEvents(sessionId: string | null) {
   const { runtime } = useWails()
@@ -95,7 +95,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'tool_call',
         content: `${toolCall.tool}(${toolCall.args})`,
-        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, plan_step_id: toolCall.plan_step_id },
+        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id },
         timestamp: Date.now(),
       })
     })
@@ -202,7 +202,11 @@ export function useSessionEvents(sessionId: string | null) {
       const plan = data as PlanData
       // Route to panelStore
       if (plan.steps) {
-        panelStore.addPlanGroup(plan.steps)
+        panelStore.addPlanGroup(plan.steps, {
+          progress: plan.progress,
+          completed_count: plan.completed_count,
+          total_count: plan.total_count,
+        })
       }
       // Also add to chat messages so groupMessages can build stepIndexMap
       addMessage(sessionId, {
@@ -210,7 +214,13 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'plan',
         content: '',
-        metadata: { steps: plan.steps },
+        metadata: {
+          steps: plan.steps,
+          progress: plan.progress,
+          current_step_index: plan.current_step_index,
+          completed_count: plan.completed_count,
+          total_count: plan.total_count,
+        },
         timestamp: Date.now(),
       })
     })
@@ -259,8 +269,12 @@ export function useSessionEvents(sessionId: string | null) {
     on('assistant_chunk', (data: unknown) => {
       if (!isActiveSession()) return
       useChatStore.getState().setActivityStatus('Generating response...')
-      const chunk = data as { content: string }
-      if (chunk.content) {
+      const chunk = data as AssistantChunkData
+      if (chunk.accumulated_content !== undefined) {
+        // Use backend-accumulated content (direct set, no delta accumulation needed)
+        setStreaming(chunk.accumulated_content)
+      } else if (chunk.content) {
+        // Fallback for older backend: append delta
         appendStreamToken(chunk.content)
       }
     })
