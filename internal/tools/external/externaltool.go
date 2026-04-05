@@ -1,3 +1,4 @@
+// Package external provides external tool integration via manifest-based discovery and execution.
 package external
 
 import (

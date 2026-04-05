@@ -52,7 +52,7 @@ func TestMCPServer_CallTool_NilClient(t *testing.T) {
 func TestMCPServer_CallTool_NilClientWithArgs(t *testing.T) {
 	s := NewMCPServer("my-server")
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"path": "/tmp",
 	}
 

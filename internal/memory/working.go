@@ -1,3 +1,4 @@
+// Package memory provides working memory management, compaction strategies, and procedural memory for agent sessions.
 package memory
 
 import (
@@ -117,7 +118,7 @@ func (cw *ContextWindow) AddStep(step core.Step) {
 	// Clear compacted messages since we have new steps
 	cw.compactedMessages = nil
 	// Estimate tokens for this step and add to tracker delta
-	stepText := step.Thought + step.Action.Name + string(step.Action.Input) + step.Observation
+	stepText := fmt.Sprintf("%s %s %s %s", step.Thought, step.Action.Name, string(step.Action.Input), step.Observation)
 	cw.tracker.AddDelta(stepText)
 }
 
@@ -260,5 +261,3 @@ func (cw *ContextWindow) formatPlan() string {
 
 	return strings.Join(parts, "\n")
 }
-
-

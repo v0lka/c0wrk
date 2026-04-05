@@ -2,7 +2,7 @@ package memory
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -92,19 +92,19 @@ func (pm *ProceduralMemory) Scan() error {
 		// Read and parse manifest
 		data, err := os.ReadFile(manifestPath)
 		if err != nil {
-			log.Printf("failed to read tool manifest %s: %v", manifestPath, err)
+			slog.Warn("failed to read tool manifest", "path", manifestPath, "error", err)
 			continue
 		}
 
 		var manifest toolManifest
 		if err := json.Unmarshal(data, &manifest); err != nil {
-			log.Printf("failed to parse tool manifest %s: %v", manifestPath, err)
+			slog.Warn("failed to parse tool manifest", "path", manifestPath, "error", err)
 			continue
 		}
 
 		// Skip if no name
 		if manifest.Name == "" {
-			log.Printf("tool manifest %s has no name, skipping", manifestPath)
+			slog.Warn("tool manifest has no name, skipping", "path", manifestPath)
 			continue
 		}
 

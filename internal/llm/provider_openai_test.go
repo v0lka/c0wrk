@@ -314,7 +314,7 @@ func TestOpenAIProvider_ConvertResponseMessage(t *testing.T) {
 			t.Errorf("tool call Name = %q, want 'get_weather'", tc.Name)
 		}
 		if string(tc.Input) != `{"city":"NYC"}` {
-			t.Errorf("tool call Input = %q, want '{\"city\":\"NYC\"}'" , string(tc.Input))
+			t.Errorf("tool call Input = %q, want '{\"city\":\"NYC\"}'", string(tc.Input))
 		}
 	})
 }

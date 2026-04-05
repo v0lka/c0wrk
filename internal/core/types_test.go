@@ -413,7 +413,7 @@ func TestNoopEmitter_AllMethodsAreNoop(t *testing.T) {
 	e.AssistantDone("full", 100, 50)
 	e.ContextFill(0.5, 50000, 100000, "ok")
 	e.Service("msg")
-	e.ServiceWithMeta("msg", map[string]interface{}{"key": "val"})
+	e.ServiceWithMeta("msg", map[string]any{"key": "val"})
 }
 
 // scopableMockEmitter implements both Emitter and PlanStepScopable for testing.

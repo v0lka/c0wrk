@@ -68,11 +68,11 @@ func TestMapStopReason(t *testing.T) {
 
 func TestExtractSystemPrompt(t *testing.T) {
 	tests := []struct {
-		name           string
-		messages       []Message
-		wantPrompt     string
-		wantFiltered   int
-		wantFirstRole  string
+		name          string
+		messages      []Message
+		wantPrompt    string
+		wantFiltered  int
+		wantFirstRole string
 	}{
 		{
 			name: "no system messages",
@@ -279,7 +279,7 @@ func TestStreamToolCallAccumulator_JSONInput(t *testing.T) {
 	acc := NewStreamToolCallAccumulator()
 	acc.HandleDelta(0, "call-1", "search", `{"query":"test","limit":10}`)
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(acc.toolCalls[0].Input, &parsed); err != nil {
 		t.Fatalf("failed to unmarshal accumulated input: %v", err)
 	}

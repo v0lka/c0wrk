@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"time"
 
@@ -106,7 +106,9 @@ func createProviderFromConfig(provType, apiKey, baseURL string) (LLMProvider, er
 // Returns false if the context was cancelled during sleep.
 func retryBackoff(ctx context.Context, backoff time.Duration) bool {
 	// Add jitter: +/- 20%
-	jitter := time.Duration(float64(backoff) * (0.8 + 0.4*rand.Float64()))
+	jitterFactor := 0.8 + 0.4*rand.Float64() // random factor between 0.8 and 1.2
+	jitteredBackoff := float64(backoff) * jitterFactor
+	jitter := time.Duration(jitteredBackoff)
 	select {
 	case <-time.After(jitter):
 		return true
@@ -145,8 +147,12 @@ func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, e
 		}
 
 		// Log retry attempt
-		log.Printf("[llm] retrying %s request (attempt %d/%d, backoff %s): %v",
-			r.activeProviderName, attempt+1, r.maxRetries, backoff, err)
+		slog.Warn("retrying LLM request",
+			"provider", r.activeProviderName,
+			"attempt", attempt+1,
+			"max_retries", r.maxRetries,
+			"backoff", backoff.String(),
+			"error", err)
 
 		// Sleep with jitter, respecting context cancellation
 		if !retryBackoff(ctx, backoff) {
@@ -207,8 +213,12 @@ func (r *LLMRouter) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChu
 			return nil, err
 		}
 
-		log.Printf("[llm] retrying %s stream (attempt %d/%d, backoff %s): %v",
-			r.activeProviderName, attempt+1, r.maxRetries, backoff, err)
+		slog.Warn("retrying LLM stream",
+			"provider", r.activeProviderName,
+			"attempt", attempt+1,
+			"max_retries", r.maxRetries,
+			"backoff", backoff.String(),
+			"error", err)
 
 		if !retryBackoff(ctx, backoff) {
 			return nil, lastErr

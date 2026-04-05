@@ -27,7 +27,7 @@ func TestWebFetchTool_Descriptor(t *testing.T) {
 
 	// Verify schema is valid JSON
 	schema := tool.InputSchema()
-	var schemaMap map[string]interface{}
+	var schemaMap map[string]any
 	if err := json.Unmarshal(schema, &schemaMap); err != nil {
 		t.Errorf("expected valid JSON schema, got error: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestWebFetchTool_Descriptor(t *testing.T) {
 		t.Error("expected schema type to be 'object'")
 	}
 
-	props, ok := schemaMap["properties"].(map[string]interface{})
+	props, ok := schemaMap["properties"].(map[string]any)
 	if !ok {
 		t.Error("expected schema to have properties")
 	}
@@ -50,7 +50,7 @@ func TestWebFetchTool_Descriptor(t *testing.T) {
 		t.Error("expected schema to have 'prompt' property")
 	}
 
-	required, ok := schemaMap["required"].([]interface{})
+	required, ok := schemaMap["required"].([]any)
 	if !ok {
 		t.Error("expected schema to have required array")
 	}

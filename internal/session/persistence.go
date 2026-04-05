@@ -25,12 +25,12 @@ type SessionInfo struct {
 
 // ChatMessage represents a stored chat message.
 type ChatMessage struct {
-	ID        int64  `json:"id"`
-	SessionID string `json:"session_id"`
-	Role      string `json:"role"` // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
-	Content   string `json:"content"`
+	ID        int64           `json:"id"`
+	SessionID string          `json:"session_id"`
+	Role      string          `json:"role"` // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
+	Content   string          `json:"content"`
 	Metadata  json.RawMessage `json:"metadata"`   // JSON blob for extra data
-	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
+	CreatedAt string          `json:"created_at"` // RFC 3339 formatted timestamp
 }
 
 // SessionStore provides persistent storage for sessions and messages.

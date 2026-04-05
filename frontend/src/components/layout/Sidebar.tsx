@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Plus, Settings, MoreVertical, Archive, Trash2, Edit3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
@@ -13,6 +13,8 @@ import {
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSessionAPI } from '@/hooks/useSession'
 import { SettingsModal } from '@/components/settings/SettingsModal'
+import { cn } from '@/lib/utils'
+import { logger } from '@/lib/logger'
 import type { SessionInfo } from '@/lib/wails'
 
 function formatRelativeTime(dateStr: string): string {
@@ -61,14 +63,10 @@ function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelet
 
   return (
     <div
-      className={`
-        group flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer
-        transition-colors duration-150
-        ${isActive 
-          ? 'bg-accent text-accent-foreground' 
-          : 'hover:bg-accent/50 text-foreground'
-        }
-      `}
+      className={cn(
+        'group flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors duration-150',
+        isActive ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50 text-foreground'
+      )}
       onClick={onSelect}
     >
       <div className="flex-1 min-w-0">
@@ -157,12 +155,11 @@ export function Sidebar() {
           }
         }
       } catch (err) {
-        console.error('Failed to load sessions:', err)
+        logger.error('Failed to load sessions:', err)
       }
     }
     loadSessions()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [api, setSessions, setActiveSession, activeSessionId])
 
   const handleCreateSession = useCallback(async () => {
     try {
@@ -172,7 +169,7 @@ export function Sidebar() {
         setActiveSession(session.id)
       }
     } catch (err) {
-      console.error('Failed to create session:', err)
+      logger.error('Failed to create session:', err)
     }
   }, [api, addSession, setActiveSession])
 
@@ -181,7 +178,7 @@ export function Sidebar() {
       await api.renameSession(id, name)
       updateSession(id, { name })
     } catch (err) {
-      console.error('Failed to rename session:', err)
+      logger.error('Failed to rename session:', err)
     }
   }, [api, updateSession])
 
@@ -190,7 +187,7 @@ export function Sidebar() {
       await api.archiveSession(id)
       updateSession(id, { archived: !currentArchived })
     } catch (err) {
-      console.error('Failed to archive session:', err)
+      logger.error('Failed to archive session:', err)
     }
   }, [api, updateSession])
 
@@ -199,13 +196,15 @@ export function Sidebar() {
       await api.deleteSession(id)
       removeSession(id)
     } catch (err) {
-      console.error('Failed to delete session:', err)
+      logger.error('Failed to delete session:', err)
     }
   }, [api, removeSession])
 
   // Separate active and archived sessions
-  const activeSessions = sessions.filter(s => !s.archived)
-  const archivedSessions = sessions.filter(s => s.archived)
+  const [activeSessions, archivedSessions] = useMemo(() => [
+    sessions.filter(s => !s.archived),
+    sessions.filter(s => s.archived)
+  ], [sessions])
 
   return (
     <div className="h-full flex flex-col bg-card">

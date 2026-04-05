@@ -61,7 +61,7 @@ func TestEventEmitterPlanGenerated(t *testing.T) {
 		t.Errorf("expected type 'plan_generated', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -84,7 +84,7 @@ func TestEventEmitterStepStart(t *testing.T) {
 		t.Errorf("expected type 'step_start', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -110,7 +110,7 @@ func TestEventEmitterThought(t *testing.T) {
 		t.Errorf("expected type 'thought', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -139,7 +139,7 @@ func TestEventEmitterToolCall(t *testing.T) {
 		t.Errorf("expected type 'tool_call', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -168,7 +168,7 @@ func TestEventEmitterToolResult(t *testing.T) {
 		t.Errorf("expected type 'tool_result', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -198,7 +198,7 @@ func TestEventEmitterStepComplete(t *testing.T) {
 		t.Errorf("expected type 'step_complete', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -252,7 +252,7 @@ func TestEventEmitterSubAgentComplete(t *testing.T) {
 		t.Errorf("expected type 'subagent_complete', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -283,7 +283,7 @@ func TestEventEmitterEvaluation(t *testing.T) {
 		t.Errorf("expected type 'evaluation', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -309,7 +309,7 @@ func TestEventEmitterReflection(t *testing.T) {
 		t.Errorf("expected type 'reflection', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -390,7 +390,7 @@ func TestEventEmitterACExtracted(t *testing.T) {
 		t.Errorf("expected type 'ac_extracted', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -427,7 +427,7 @@ func TestEventEmitterContextFill(t *testing.T) {
 		t.Errorf("expected type 'context_fill', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -544,7 +544,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 }
 
 // TestEventEmitterWithPlanStepID verifies WithPlanStepID returns a scoped emitter
-// that injects plan_step_id into map[string]interface{} event data.
+// that injects plan_step_id into map[string]any event data.
 func TestEventEmitterWithPlanStepID(t *testing.T) {
 	var received Event
 	emit := func(e Event) {
@@ -560,7 +560,7 @@ func TestEventEmitterWithPlanStepID(t *testing.T) {
 		t.Fatal("expected *EventEmitter from WithPlanStepID")
 	}
 
-	// PlanGenerated emits map[string]interface{} so plan_step_id should be injected
+	// PlanGenerated emits map[string]any so plan_step_id should be injected
 	scopedEmitter.PlanGenerated(2, []core.PlanStepEvent{
 		{Description: "Do stuff", Status: "pending"},
 	})
@@ -569,7 +569,7 @@ func TestEventEmitterWithPlanStepID(t *testing.T) {
 		t.Errorf("expected session_id 'test-session', got %q", received.SessionID)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -579,7 +579,7 @@ func TestEventEmitterWithPlanStepID(t *testing.T) {
 }
 
 // TestEventEmitterWithPlanStepID_NonMapData verifies that when Data is not
-// map[string]interface{}, plan_step_id injection is skipped without error.
+// map[string]any, plan_step_id injection is skipped without error.
 func TestEventEmitterWithPlanStepID_NonMapData(t *testing.T) {
 	var received Event
 	emit := func(e Event) {
@@ -589,7 +589,7 @@ func TestEventEmitterWithPlanStepID_NonMapData(t *testing.T) {
 	base := NewEventEmitter("test-session", emit)
 	scoped := base.WithPlanStepID("step-99")
 
-	// Routing emits map[string]string — not map[string]interface{}
+	// Routing emits map[string]string — not map[string]any
 	scopedEmitter, ok := scoped.(*EventEmitter)
 	if !ok {
 		t.Fatal("expected *EventEmitter from WithPlanStepID")
@@ -623,7 +623,7 @@ func TestEventEmitterPlanStepStart(t *testing.T) {
 		t.Errorf("expected type 'plan_step_start', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -657,7 +657,7 @@ func TestEventEmitterPlanStepComplete(t *testing.T) {
 		t.Errorf("expected type 'plan_step_complete', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -693,7 +693,7 @@ func TestEventEmitterAssistantChunk(t *testing.T) {
 		t.Errorf("expected type 'assistant_chunk', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -716,7 +716,7 @@ func TestEventEmitterAssistantDone(t *testing.T) {
 		t.Errorf("expected type 'assistant_done', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -745,7 +745,7 @@ func TestEventEmitterService(t *testing.T) {
 		t.Errorf("expected type 'service', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -762,7 +762,7 @@ func TestEventEmitterServiceWithMeta(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	meta := map[string]interface{}{
+	meta := map[string]any{
 		"compaction_type": "sliding",
 		"tokens_freed":    5000,
 	}
@@ -772,7 +772,7 @@ func TestEventEmitterServiceWithMeta(t *testing.T) {
 		t.Errorf("expected type 'service', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}
@@ -797,7 +797,7 @@ func TestEventEmitterServiceWithMeta_NilMeta(t *testing.T) {
 	emitter := NewEventEmitter("test-session", emit)
 	emitter.ServiceWithMeta("Simple service msg", nil)
 
-	data, ok := received.Data.(map[string]interface{})
+	data, ok := received.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
 	}

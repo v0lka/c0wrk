@@ -24,7 +24,7 @@ func setupRipgrepTestDir(t *testing.T) string {
 	}
 
 	files := map[string]string{
-		filepath.Join(base, "hello.go"): "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello World\")\n}\n",
+		filepath.Join(base, "hello.go"):    "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello World\")\n}\n",
 		filepath.Join(base, "readme.txt"):  "This is a README file.\nIt contains some information.\nHello from readme.\n",
 		filepath.Join(subDir, "utils.go"):  "package src\n\n// Helper function\nfunc helper() string {\n\treturn \"hello\"\n}\n",
 		filepath.Join(subDir, "data.json"): `{"key": "value", "hello": "world"}` + "\n",

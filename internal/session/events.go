@@ -44,8 +44,8 @@ type MessageReceivedData struct {
 
 // TaskCompleteData is the payload for "task_complete" events.
 type TaskCompleteData struct {
-	SessionID       string               `json:"session_id"`
-	Output          string               `json:"output"`
+	SessionID       string                `json:"session_id"`
+	Output          string                `json:"output"`
 	RoutingDecision *core.RoutingDecision `json:"routing_decision"`
 	Plan            *core.Plan            `json:"plan,omitempty"`
 	EvalResult      *core.EvalResult      `json:"eval_result,omitempty"`
@@ -80,11 +80,11 @@ type ToolConfirmPayload struct {
 
 // AskUserPayload is sent to the frontend when the agent asks the user a question.
 type AskUserPayload struct {
-	RequestID   string              `json:"request_id"`
-	Question    string              `json:"question"`
+	RequestID   string                `json:"request_id"`
+	Question    string                `json:"question"`
 	Options     []tools.AskUserOption `json:"options"`
-	MultiSelect bool                `json:"multi_select"`
-	Recommended []string            `json:"recommended,omitempty"`
+	MultiSelect bool                  `json:"multi_select"`
+	Recommended []string              `json:"recommended,omitempty"`
 }
 
 // --- Emitter event data types (typed Data field payloads) ---
@@ -110,7 +110,7 @@ type AssistantDoneEventData struct {
 // --- ChatMessage metadata helpers ---
 
 // MetadataFrom marshals any value into a json.RawMessage suitable for ChatMessage.Metadata.
-func MetadataFrom(v interface{}) json.RawMessage {
+func MetadataFrom(v any) json.RawMessage {
 	if v == nil {
 		return json.RawMessage("{}")
 	}

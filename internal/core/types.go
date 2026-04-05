@@ -1,3 +1,4 @@
+// Package core implements the orchestration engine including routing, planning, evaluation, reflection, and execution of LLM agent workflows.
 package core
 
 import (
@@ -48,7 +49,7 @@ type Emitter interface {
 	Service(content string)
 	// ServiceWithMeta emits a service message with metadata for frontend filtering.
 	// The meta map can contain arbitrary key-value pairs, e.g., {"phase": "orchestration"}.
-	ServiceWithMeta(content string, meta map[string]interface{})
+	ServiceWithMeta(content string, meta map[string]any)
 }
 
 // PlanStepScopable is an optional interface that Emitter implementations
@@ -78,7 +79,7 @@ func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)             {}
 func (n *noopEmitter) PlanStepStart(_, _ string)                          {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
 func (n *noopEmitter) StepStart(_ int)                                    {}
-func (n *noopEmitter) Thought(_ int, _, _ string)                           {}
+func (n *noopEmitter) Thought(_ int, _, _ string)                         {}
 func (n *noopEmitter) ToolCall(_ int, _, _ string)                        {}
 func (n *noopEmitter) ToolResult(_, _ int, _ string)                      {}
 func (n *noopEmitter) StepComplete(_ int, _ time.Duration)                {}
@@ -93,7 +94,7 @@ func (n *noopEmitter) AssistantChunk(_ string)                            {}
 func (n *noopEmitter) AssistantDone(_ string, _, _ int)                   {}
 func (n *noopEmitter) ContextFill(_ float64, _, _ int, _ string)          {}
 func (n *noopEmitter) Service(_ string)                                   {}
-func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]interface{}) {}
+func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
 
 // RoutingDecision — result of Router classification (AD 4.1).
 type RoutingDecision struct {

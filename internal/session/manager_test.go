@@ -596,8 +596,8 @@ func TestParseSlogLevel(t *testing.T) {
 		{"error", slog.LevelError},
 		{"INFO", slog.LevelInfo},
 		{"info", slog.LevelInfo},
-		{"unknown", slog.LevelInfo},  // default
-		{"", slog.LevelInfo},          // empty -> default
+		{"unknown", slog.LevelInfo}, // default
+		{"", slog.LevelInfo},        // empty -> default
 	}
 
 	for _, tc := range tests {

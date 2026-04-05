@@ -6,6 +6,95 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
 import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData } from '@/lib/wails'
 
+// --- Type guards for event data validation ---
+function isRoutingData(data: unknown): data is RoutingData {
+  return typeof data === 'object' && data !== null && 'mode' in data && 'domain' in data && 'complexity' in data
+}
+
+function isStepData(data: unknown): data is { step_num: number } {
+  return typeof data === 'object' && data !== null && 'step_num' in data
+}
+
+function isThoughtData(data: unknown): data is ThoughtData {
+  return typeof data === 'object' && data !== null && 'content' in data && 'step_num' in data
+}
+
+function isToolCallData(data: unknown): data is ToolCallData {
+  return typeof data === 'object' && data !== null && 'tool' in data && 'step' in data
+}
+
+function isToolResultData(data: unknown): data is ToolResultData {
+  return typeof data === 'object' && data !== null && 'step' in data && 'result_len' in data
+}
+
+function isToolConfirmData(data: unknown): data is ToolConfirmData {
+  return typeof data === 'object' && data !== null && 'confirm_id' in data && 'tool' in data
+}
+
+function isAskUserData(data: unknown): data is AskUserData {
+  return typeof data === 'object' && data !== null && 'request_id' in data && 'question' in data
+}
+
+function isEvalData(data: unknown): data is EvalData {
+  return typeof data === 'object' && data !== null && 'passed' in data && 'total' in data
+}
+
+function isPlanData(data: unknown): data is PlanData {
+  return typeof data === 'object' && data !== null && 'step_count' in data
+}
+
+function isPlanStepStartData(data: unknown): data is PlanStepStartData {
+  return typeof data === 'object' && data !== null && 'step_id' in data
+}
+
+function isPlanStepCompleteData(data: unknown): data is PlanStepCompleteData {
+  return typeof data === 'object' && data !== null && 'step_id' in data && 'success' in data
+}
+
+function isAssistantChunkData(data: unknown): data is AssistantChunkData {
+  return typeof data === 'object' && data !== null && ('content' in data || 'accumulated_content' in data)
+}
+
+function isErrorData(data: unknown): data is { error: string } {
+  return typeof data === 'object' && data !== null && 'error' in data
+}
+
+function isTaskCompleteData(data: unknown): data is { output?: string; attempt_count?: number; routing_decision?: { mode?: string } } {
+  return typeof data === 'object' && data !== null
+}
+
+function isRetryData(data: unknown): data is { attempt: number; max_attempts: number } {
+  return typeof data === 'object' && data !== null && 'attempt' in data && 'max_attempts' in data
+}
+
+function isEscalationData(data: unknown): data is { from_mode: string; to_mode: string } {
+  return typeof data === 'object' && data !== null && 'from_mode' in data && 'to_mode' in data
+}
+
+function isServiceData(data: unknown): data is { content: string } {
+  return typeof data === 'object' && data !== null && 'content' in data
+}
+
+function isACExtractedData(data: unknown): data is { count?: number; criteria?: Array<{ name: string; description: string }> } {
+  return typeof data === 'object' && data !== null
+}
+
+function isSubAgentLaunchData(data: unknown): data is { step_id: string; description: string; plan_step_id?: string } {
+  return typeof data === 'object' && data !== null && 'step_id' in data
+}
+
+function isSubAgentCompleteData(data: unknown): data is { step_id: string; success: boolean; duration: number; plan_step_id?: string } {
+  return typeof data === 'object' && data !== null && 'step_id' in data && 'success' in data
+}
+
+function isContextFillData(data: unknown): data is ContextFillData {
+  return typeof data === 'object' && data !== null && 'fill_percent' in data && 'status' in data
+}
+
+function isSessionRenamedData(data: unknown): data is { new_name: string } {
+  return typeof data === 'object' && data !== null && 'new_name' in data
+}
+
 export function useSessionEvents(sessionId: string | null) {
   const { runtime } = useWails()
   const addMessage = useChatStore(s => s.addMessage)
@@ -40,7 +129,8 @@ export function useSessionEvents(sessionId: string | null) {
     }
 
     on('routing', (data: unknown) => {
-      const routing = data as RoutingData
+      if (!isRoutingData(data)) return
+      const routing = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Analyzing request...')
       addMessage(sessionId, {
         id: `routing-${Date.now()}`,
@@ -54,11 +144,12 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('step_start', (data: unknown) => {
+      if (!isStepData(data)) return
       if (isActiveSession()) {
         setThinking(true)
         useChatStore.getState().setActivityStatus('Thinking...')
       }
-      const step = data as { step_num: number }
+      const step = data
       if (step.step_num > 0) {
         inspectorStore.updateStepStatus(step.step_num - 1, 'running')
       }
@@ -72,8 +163,9 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('thought', (data: unknown) => {
+      if (!isThoughtData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Reasoning...')
-      const thought = data as ThoughtData
+      const thought = data
       addMessage(sessionId, {
         id: `thought-${thought.step_num}-${Date.now()}`,
         sessionId,
@@ -85,7 +177,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('tool_call', (data: unknown) => {
-      const toolCall = data as ToolCallData
+      if (!isToolCallData(data)) return
+      const toolCall = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Running tool: ${toolCall.tool}...`)
       const toolMsgId = toolCall.plan_step_id
         ? `tool-${toolCall.plan_step_id}-${toolCall.step}`
@@ -101,7 +194,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('tool_result', (data: unknown) => {
-      const toolResult = data as ToolResultData
+      if (!isToolResultData(data)) return
+      const toolResult = data
       const toolMsgId = toolResult.plan_step_id
         ? `tool-${toolResult.plan_step_id}-${toolResult.step}`
         : `tool-${toolResult.step}`
@@ -118,7 +212,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('tool_confirm', (data: unknown) => {
-      const toolConfirm = data as ToolConfirmData
+      if (!isToolConfirmData(data)) return
+      const toolConfirm = data
       const msgs = useChatStore.getState().messages[sessionId] || []
 
       // Link to the last tool_call for this tool
@@ -156,7 +251,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('ask_user', (data: unknown) => {
-      const askData = data as AskUserData
+      if (!isAskUserData(data)) return
+      const askData = data
       addMessage(sessionId, {
         id: `ask-user-${askData.request_id}`,
         sessionId,
@@ -172,8 +268,9 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('step_complete', (data: unknown) => {
+      if (!isStepData(data)) return
       if (isActiveSession()) setThinking(false)
-      const step = data as { step_num: number }
+      const step = data
       if (step.step_num > 0) {
         inspectorStore.updateStepStatus(step.step_num - 1, 'completed')
       }
@@ -183,8 +280,9 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('evaluation', (data: unknown) => {
+      if (!isEvalData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Evaluating results...')
-      const evalData = data as EvalData
+      const evalData = data
       // Route to panelStore - update existing group instead of creating new
       if (evalData.criteria) {
         panelStore.updateEvalGroupStatuses(evalData.criteria)
@@ -196,8 +294,9 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('plan_generated', (data: unknown) => {
+      if (!isPlanData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Executing plan...')
-      const plan = data as PlanData
+      const plan = data
       // Route to panelStore
       if (plan.steps) {
         panelStore.addPlanGroup(plan.steps, {
@@ -224,7 +323,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('plan_step_start', (data: unknown) => {
-      const stepData = data as PlanStepStartData
+      if (!isPlanStepStartData(data)) return
+      const stepData = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Executing: ${stepData.description || 'step'}...`)
       inspectorStore.updateStepById(stepData.step_id, 'running')
       // Route to panelStore
@@ -241,7 +341,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('plan_step_complete', (data: unknown) => {
-      const stepData = data as PlanStepCompleteData
+      if (!isPlanStepCompleteData(data)) return
+      const stepData = data
       inspectorStore.updateStepById(
         stepData.step_id,
         stepData.success ? 'completed' : 'failed',
@@ -265,9 +366,10 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('assistant_chunk', (data: unknown) => {
+      if (!isAssistantChunkData(data)) return
       if (!isActiveSession()) return
       useChatStore.getState().setActivityStatus('Generating response...')
-      const chunk = data as AssistantChunkData
+      const chunk = data
       if (chunk.accumulated_content !== undefined) {
         // Use backend-accumulated content (direct set, no delta accumulation needed)
         setStreaming(chunk.accumulated_content)
@@ -292,7 +394,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('error', (data: unknown) => {
-      const error = data as { error: string }
+      if (!isErrorData(data)) return
+      const error = data
       addMessage(sessionId, {
         id: `error-${Date.now()}`,
         sessionId,
@@ -310,13 +413,14 @@ export function useSessionEvents(sessionId: string | null) {
 
     // Task lifecycle events
     on('task_complete', (data: unknown) => {
+      if (!isTaskCompleteData(data)) return
       if (isActiveSession()) {
         setThinking(false)
         setStreaming(null)
         useChatStore.getState().setActivityStatus(null)
         useChatStore.getState().setTaskActive(false)
       }
-      const taskData = data as { output?: string; attempt_count?: number; routing_decision?: { mode?: string } }
+      const taskData = data
       // Add completion message
       if (taskData.output) {
         addMessage(sessionId, {
@@ -346,7 +450,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('retry', (data: unknown) => {
-      const retry = data as { attempt: number; max_attempts: number }
+      if (!isRetryData(data)) return
+      const retry = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Retrying (attempt ${retry.attempt}/${retry.max_attempts})...`)
       panelStore.resetEvalStatuses()  // Reset criteria to pending on retry
       addMessage(sessionId, {
@@ -361,7 +466,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('escalation', (data: unknown) => {
-      const escalation = data as { from_mode: string; to_mode: string }
+      if (!isEscalationData(data)) return
+      const escalation = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Escalating to ${escalation.to_mode}...`)
       addMessage(sessionId, {
         id: `escalation-${Date.now()}`,
@@ -374,16 +480,18 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('service', (data: unknown) => {
+      if (!isServiceData(data)) return
       if (!isActiveSession()) return
-      const service = data as { content: string }
+      const service = data
       if (service.content) {
         useChatStore.getState().setActivityStatus(service.content)
       }
     })
 
     on('ac_extracted', (data: unknown) => {
+      if (!isACExtractedData(data)) return
       // Display extracted acceptance criteria as pending eval items
-      const acData = data as { count?: number; criteria?: Array<{ name: string; description: string }> }
+      const acData = data
       if (acData.criteria && acData.criteria.length > 0) {
         // Map to eval format with pending status (passed: undefined means pending)
         const pendingCriteria = acData.criteria.map(c => ({
@@ -407,8 +515,9 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('subagent_launch', (data: unknown) => {
+      if (!isSubAgentLaunchData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Launching sub-agent...')
-      const sa = data as { step_id: string; description: string; plan_step_id?: string }
+      const sa = data
       addMessage(sessionId, {
         id: `subagent-${sa.step_id}-launch`,
         sessionId,
@@ -420,7 +529,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('subagent_complete', (data: unknown) => {
-      const sa = data as { step_id: string; success: boolean; duration: number; plan_step_id?: string }
+      if (!isSubAgentCompleteData(data)) return
+      const sa = data
       updateMessage(sessionId, `subagent-${sa.step_id}-launch`, {
         metadata: {
           tool: 'subagent',
@@ -434,8 +544,9 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('context_fill', (data: unknown) => {
+      if (!isContextFillData(data)) return
       if (!isActiveSession()) return
-      const fillData = data as ContextFillData
+      const fillData = data
       setContextFill({
         fillPercent: fillData.fill_percent,
         usedTokens: fillData.used_tokens,
@@ -445,7 +556,8 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('session_renamed', (data: unknown) => {
-      const renameData = data as { new_name: string }
+      if (!isSessionRenamedData(data)) return
+      const renameData = data
       updateSession(sessionId, { name: renameData.new_name })
     })
 

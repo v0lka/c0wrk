@@ -94,7 +94,7 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
   // Handle Apply button click — fetch models
   const handleApply = useCallback(async () => {
     if (!activeProvider) return
-    const myFetchId = fetchIdRef.current
+    const myFetchId = ++fetchIdRef.current
     setModelsLoading(true)
     setModelsError(null)
     try {

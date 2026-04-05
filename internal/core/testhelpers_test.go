@@ -208,7 +208,7 @@ func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration tim
 	}{stepID, success, duration})
 }
 func (m *mockEmitter) StepStart(_ int)                                    {}
-func (m *mockEmitter) Thought(_ int, _, _ string)                           {}
+func (m *mockEmitter) Thought(_ int, _, _ string)                         {}
 func (m *mockEmitter) ToolCall(_ int, _, _ string)                        {}
 func (m *mockEmitter) ToolResult(_, _ int, _ string)                      {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
@@ -229,9 +229,9 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 		outputTokens int
 	}{content, inputTokens, outputTokens})
 }
-func (m *mockEmitter) ContextFill(_ float64, _, _ int, _ string)          {}
-func (m *mockEmitter) Service(_ string)                                   {}
-func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]interface{}) {}
+func (m *mockEmitter) ContextFill(_ float64, _, _ int, _ string)  {}
+func (m *mockEmitter) Service(_ string)                           {}
+func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any) {}
 
 // routerCallTracker helps track the three-phase AC extraction flow in tests.
 // It distinguishes between:

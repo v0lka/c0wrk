@@ -445,9 +445,9 @@ func TestHierarchicalStrategy_TruncateToTokenBudget(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		input        string
-		shouldTrunc  bool
+		name        string
+		input       string
+		shouldTrunc bool
 	}{
 		{"short text within budget", "hello", false},
 		{"exact budget", strings.Repeat("x", 30), false},

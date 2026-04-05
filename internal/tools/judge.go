@@ -138,16 +138,16 @@ func isPathInWorkspace(absPath, workspacePath string) bool {
 }
 
 // extractJSONStrings recursively extracts all string values from a JSON structure.
-func extractJSONStrings(data interface{}) []string {
+func extractJSONStrings(data any) []string {
 	var results []string
 	switch v := data.(type) {
 	case string:
 		results = append(results, v)
-	case map[string]interface{}:
+	case map[string]any:
 		for _, val := range v {
 			results = append(results, extractJSONStrings(val)...)
 		}
-	case []interface{}:
+	case []any:
 		for _, val := range v {
 			results = append(results, extractJSONStrings(val)...)
 		}
@@ -168,7 +168,7 @@ func allPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
 		return false
 	}
 
-	var parsed interface{}
+	var parsed any
 	if err := json.Unmarshal(input, &parsed); err != nil {
 		return false
 	}

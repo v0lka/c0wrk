@@ -509,12 +509,12 @@ func TestNewLLMRouter(t *testing.T) {
 
 func TestCreateProviderFromConfig(t *testing.T) {
 	tests := []struct {
-		name      string
-		provType  string
-		apiKey    string
-		baseURL   string
-		wantErr   bool
-		wantName  string
+		name     string
+		provType string
+		apiKey   string
+		baseURL  string
+		wantErr  bool
+		wantName string
 	}{
 		{
 			name:     "lmstudio provider",

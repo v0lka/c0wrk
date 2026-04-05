@@ -1,3 +1,4 @@
+// Package prompts provides embedded prompt templates used by LLM agents.
 package prompts
 
 import _ "embed"

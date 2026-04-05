@@ -306,9 +306,9 @@ func TestParseRawACJSON(t *testing.T) {
 			wantCount: 1,
 		},
 		{
-			name:      "code block without array bracket",
-			content:   "```\nsome text\n```",
-			wantErr:   true,
+			name:    "code block without array bracket",
+			content: "```\nsome text\n```",
+			wantErr: true,
 		},
 		{
 			name:    "invalid JSON",

@@ -30,17 +30,17 @@ func TestExternalTool_Description(t *testing.T) {
 
 func TestExternalTool_InputSchema(t *testing.T) {
 	m := &ToolManifest{
-		InputSchema: map[string]interface{}{
+		InputSchema: map[string]any{
 			"type": "object",
-			"properties": map[string]interface{}{
-				"query": map[string]interface{}{"type": "string"},
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
 			},
 		},
 	}
 	et := NewExternalTool(m, "/tmp")
 	schema := et.InputSchema()
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(schema, &parsed); err != nil {
 		t.Fatalf("failed to parse InputSchema: %v", err)
 	}
@@ -97,7 +97,7 @@ print(json.dumps({"echo": data}))
 		t.Fatalf("Execute() returned error result: %s", result.Content)
 	}
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil {
 		t.Fatalf("failed to parse output: %v", err)
 	}

@@ -31,7 +31,7 @@ func TestToolCreatorTool_Descriptor(t *testing.T) {
 		t.Error("InputSchema() should not be empty")
 	}
 
-	var schemaMap map[string]interface{}
+	var schemaMap map[string]any
 	if err := json.Unmarshal(schema, &schemaMap); err != nil {
 		t.Fatalf("InputSchema() is not valid JSON: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestToolCreatorTool_Descriptor(t *testing.T) {
 		t.Errorf("InputSchema() type = %q, want %q", schemaMap["type"], "object")
 	}
 
-	props, ok := schemaMap["properties"].(map[string]interface{})
+	props, ok := schemaMap["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("InputSchema() should have properties")
 	}
@@ -57,7 +57,7 @@ func TestToolCreatorTool_Descriptor(t *testing.T) {
 		t.Error("InputSchema() should have property 'language'")
 	}
 
-	required, ok := schemaMap["required"].([]interface{})
+	required, ok := schemaMap["required"].([]any)
 	if !ok {
 		t.Fatal("InputSchema() should have required field")
 	}
@@ -90,7 +90,7 @@ func TestToolCreatorTool_CreateTool(t *testing.T) {
 	registry := tools.NewToolRegistry()
 	tool := NewToolCreatorTool(tmpDir, registry)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"name":        "test_tool",
 		"description": "A test tool",
 		"code":        "import json\nprint(json.dumps({'result': 'ok'}))",
@@ -134,7 +134,7 @@ func TestToolCreatorTool_CreateBashTool(t *testing.T) {
 	bashCode := `#!/bin/bash
 echo "Hello from bash"
 `
-	input := map[string]interface{}{
+	input := map[string]any{
 		"name":        "bash_tool",
 		"description": "A bash tool",
 		"code":        bashCode,
@@ -186,7 +186,7 @@ func TestToolCreatorTool_ManifestContent(t *testing.T) {
 	tmpDir := t.TempDir()
 	tool := NewToolCreatorTool(tmpDir, nil)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"name":        "manifest_test",
 		"description": "Testing manifest content",
 		"code":        "print('hello')",
@@ -251,7 +251,7 @@ def main():
 if __name__ == "__main__":
     main()
 `
-	input := map[string]interface{}{
+	input := map[string]any{
 		"name":        "mainpy_test",
 		"description": "Testing main.py content",
 		"code":        pythonCode,
@@ -282,7 +282,7 @@ func TestToolCreatorTool_AuditLog(t *testing.T) {
 	tmpDir := t.TempDir()
 	tool := NewToolCreatorTool(tmpDir, nil)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"name":        "audit_test",
 		"description": "Testing audit log",
 		"code":        "print('hello')",
@@ -317,7 +317,7 @@ func TestToolCreatorTool_DuplicateName(t *testing.T) {
 	tmpDir := t.TempDir()
 	tool := NewToolCreatorTool(tmpDir, nil)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"name":        "duplicate_test",
 		"description": "First tool",
 		"code":        "print('first')",
@@ -355,17 +355,17 @@ func TestToolCreatorTool_InvalidName(t *testing.T) {
 	tool := NewToolCreatorTool(tmpDir, nil)
 
 	invalidNames := []string{
-		"123tool",    // starts with number
-		"tool-name",  // contains hyphen
-		"tool.name",  // contains dot
-		"tool name",  // contains space
-		"tool@name",  // contains special char
-		"",           // empty
+		"123tool",     // starts with number
+		"tool-name",   // contains hyphen
+		"tool.name",   // contains dot
+		"tool name",   // contains space
+		"tool@name",   // contains special char
+		"",            // empty
 		"_underscore", // starts with underscore
 	}
 
 	for _, name := range invalidNames {
-		input := map[string]interface{}{
+		input := map[string]any{
 			"name":        name,
 			"description": "Test tool",
 			"code":        "print('hello')",
@@ -397,7 +397,7 @@ func TestToolCreatorTool_ValidNames(t *testing.T) {
 	}
 
 	for _, name := range validNames {
-		input := map[string]interface{}{
+		input := map[string]any{
 			"name":        name,
 			"description": "Test tool",
 			"code":        "print('hello')",
@@ -420,37 +420,37 @@ func TestToolCreatorTool_MissingParams(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		input       map[string]interface{}
+		input       map[string]any
 		wantContain string
 	}{
 		{
 			name:        "missing name",
-			input:       map[string]interface{}{"description": "test", "code": "print('hello')"},
+			input:       map[string]any{"description": "test", "code": "print('hello')"},
 			wantContain: "name",
 		},
 		{
 			name:        "missing description",
-			input:       map[string]interface{}{"name": "test", "code": "print('hello')"},
+			input:       map[string]any{"name": "test", "code": "print('hello')"},
 			wantContain: "description",
 		},
 		{
 			name:        "missing code",
-			input:       map[string]interface{}{"name": "test", "description": "test"},
+			input:       map[string]any{"name": "test", "description": "test"},
 			wantContain: "code",
 		},
 		{
 			name:        "empty name",
-			input:       map[string]interface{}{"name": "", "description": "test", "code": "print('hello')"},
+			input:       map[string]any{"name": "", "description": "test", "code": "print('hello')"},
 			wantContain: "name",
 		},
 		{
 			name:        "empty description",
-			input:       map[string]interface{}{"name": "test_empty_desc", "description": "", "code": "print('hello')"},
+			input:       map[string]any{"name": "test_empty_desc", "description": "", "code": "print('hello')"},
 			wantContain: "description",
 		},
 		{
 			name:        "empty code",
-			input:       map[string]interface{}{"name": "test_empty_code", "description": "test", "code": ""},
+			input:       map[string]any{"name": "test_empty_code", "description": "test", "code": ""},
 			wantContain: "code",
 		},
 	}

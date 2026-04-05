@@ -1,3 +1,4 @@
+// Package mcp provides Model Context Protocol server integration and tool proxying.
 package mcp
 
 import (

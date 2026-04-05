@@ -138,7 +138,7 @@ func (s *MCPServer) Tools() []MCPToolInfo {
 }
 
 // CallTool invokes a tool on the MCP server and returns the result.
-func (s *MCPServer) CallTool(ctx context.Context, name string, arguments map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *MCPServer) CallTool(ctx context.Context, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
 	s.mu.RLock()
 	client := s.client
 	s.mu.RUnlock()

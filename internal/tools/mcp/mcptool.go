@@ -54,7 +54,7 @@ func (t *MCPTool) DefaultPolicy() tools.ToolPolicy {
 // Execute calls the MCP server's tools/call endpoint with the provided input.
 func (t *MCPTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	// Parse input JSON into a map for the MCP call
-	var arguments map[string]interface{}
+	var arguments map[string]any
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &arguments); err != nil {
 			return tools.ParseInputError(err)

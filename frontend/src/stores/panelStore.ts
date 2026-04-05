@@ -196,8 +196,12 @@ export const usePanelStore = create<PanelState>((set) => ({
           const stepId = meta?.step_id as string | undefined
           if (planGroups.length > 0 && stepId) {
             const latestGroup = planGroups[planGroups.length - 1]
-            const step = latestGroup.items.find((s) => s.id === stepId)
-            if (step) step.status = 'running'
+            planGroups[planGroups.length - 1] = {
+              ...latestGroup,
+              items: latestGroup.items.map((s) =>
+                s.id === stepId ? { ...s, status: 'running' as const } : s
+              ),
+            }
           }
           break
         }
@@ -209,10 +213,17 @@ export const usePanelStore = create<PanelState>((set) => ({
           const duration = meta?.duration as number | undefined
           if (planGroups.length > 0 && stepId) {
             const latestGroup = planGroups[planGroups.length - 1]
-            const step = latestGroup.items.find((s) => s.id === stepId)
-            if (step) {
-              step.status = success ? 'completed' : 'failed'
-              if (duration !== undefined) step.duration = duration
+            planGroups[planGroups.length - 1] = {
+              ...latestGroup,
+              items: latestGroup.items.map((s) =>
+                s.id === stepId
+                  ? {
+                      ...s,
+                      status: (success ? 'completed' : 'failed') as PlanItem['status'],
+                      ...(duration !== undefined ? { duration } : {}),
+                    }
+                  : s
+              ),
             }
           }
           break
@@ -230,17 +241,20 @@ export const usePanelStore = create<PanelState>((set) => ({
               rawCriteria.every((c) => latestNames.has(c.name)) &&
               latestGroup.items.every((i) => incomingNames.has(i.name))
             if (isMatch) {
-              // Update existing group's statuses
-              latestGroup.items = latestGroup.items.map((item) => {
-                const match = rawCriteria.find((c) => c.name === item.name)
-                if (match) {
-                  return {
-                    ...item,
-                    status: match.passed ? 'pass' as const : 'fail' as const,
+              // Update existing group's statuses immutably
+              evalGroups[evalGroups.length - 1] = {
+                ...latestGroup,
+                items: latestGroup.items.map((item) => {
+                  const match = rawCriteria.find((c) => c.name === item.name)
+                  if (match) {
+                    return {
+                      ...item,
+                      status: match.passed ? 'pass' as const : 'fail' as const,
+                    }
                   }
-                }
-                return item
-              })
+                  return item
+                }),
+              }
               break
             }
           }

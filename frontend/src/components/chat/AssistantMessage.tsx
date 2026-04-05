@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react'
+import { Component, useState, useMemo } from 'react'
+import type { ReactNode, ErrorInfo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
@@ -41,6 +42,35 @@ interface AssistantMessageProps {
   isStreaming?: boolean
 }
 
+class MarkdownErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Markdown render error:', error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="text-sm text-muted-foreground italic px-4 py-3">
+          Failed to render message content
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 export function AssistantMessage({ content, isStreaming }: AssistantMessageProps) {
   const [showRaw, setShowRaw] = useState(false)
 
@@ -62,6 +92,7 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
               onClick={() => setShowRaw(!showRaw)}
               className="absolute right-2 top-2 z-10 flex items-center justify-center w-6 h-6 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-muted"
               title={showRaw ? 'View rendered' : 'View source'}
+              aria-label={showRaw ? 'View rendered content' : 'View raw source'}
             >
               {showRaw ? (
                 <Eye className="h-3 w-3 text-muted-foreground" />
@@ -80,6 +111,7 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
             </pre>
           ) : (
             <div className="prose prose-sm dark:prose-invert max-w-full break-words min-w-0 bg-zinc-100 dark:bg-zinc-800 rounded-lg px-4 py-3">
+              <MarkdownErrorBoundary>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkEmoji, remarkBreaks]}
                 rehypePlugins={[
@@ -139,6 +171,7 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
               >
                 {content}
               </ReactMarkdown>
+              </MarkdownErrorBoundary>
             </div>
           )}
         </div>

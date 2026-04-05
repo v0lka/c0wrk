@@ -25,13 +25,13 @@ func TestWebSearchTool_Descriptor(t *testing.T) {
 
 	// Verify schema is valid JSON
 	schema := tool.InputSchema()
-	var schemaMap map[string]interface{}
+	var schemaMap map[string]any
 	if err := json.Unmarshal(schema, &schemaMap); err != nil {
 		t.Fatalf("InputSchema() is not valid JSON: %v", err)
 	}
 
 	// Check that query is required
-	props, ok := schemaMap["properties"].(map[string]interface{})
+	props, ok := schemaMap["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("schema missing properties")
 	}
@@ -42,7 +42,7 @@ func TestWebSearchTool_Descriptor(t *testing.T) {
 		t.Error("schema missing max_results property")
 	}
 
-	required, ok := schemaMap["required"].([]interface{})
+	required, ok := schemaMap["required"].([]any)
 	if !ok {
 		t.Fatal("schema missing required array")
 	}

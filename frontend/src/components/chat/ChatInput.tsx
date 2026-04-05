@@ -5,6 +5,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useWails } from '@/hooks/useWails'
 import { Play, Square } from 'lucide-react'
 
+/** Maximum visible lines before the textarea scrolls, balancing input visibility with chat area space. */
 const MAX_LINES = 6
 
 export function ChatInput() {

@@ -161,7 +161,7 @@ func TestConvertMCPResult_EmptyContent(t *testing.T) {
 }
 
 func TestConvertMCPResult_StructuredContent(t *testing.T) {
-	structured := map[string]interface{}{
+	structured := map[string]any{
 		"key":   "value",
 		"count": float64(42),
 	}
@@ -187,7 +187,7 @@ func TestConvertMCPResult_StructuredContent_IgnoredWhenTextPresent(t *testing.T)
 		Content: []mcp.Content{
 			mcp.NewTextContent("text result"),
 		},
-		StructuredContent: map[string]interface{}{"key": "should-be-ignored"},
+		StructuredContent: map[string]any{"key": "should-be-ignored"},
 		IsError:           false,
 	})
 	// Text content should take precedence

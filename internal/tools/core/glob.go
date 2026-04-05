@@ -101,7 +101,7 @@ func (t *GlobTool) Execute(_ context.Context, input json.RawMessage) (tools.Tool
 			if !d.IsDir() {
 				return nil
 			}
-		// "all": no filtering
+			// "all": no filtering
 		}
 
 		results = append(results, p)

@@ -32,7 +32,7 @@ func TestFileOpsTool_InputSchema(t *testing.T) {
 		t.Error("expected non-empty schema")
 	}
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(schema, &parsed); err != nil {
 		t.Errorf("schema is not valid JSON: %v", err)
 	}

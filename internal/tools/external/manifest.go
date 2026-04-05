@@ -9,15 +9,15 @@ import (
 
 // ToolManifest describes an external tool's metadata and configuration.
 type ToolManifest struct {
-	Name          string                 `json:"name"`
-	Description   string                 `json:"description"`
-	Version       string                 `json:"version"`
-	Language      string                 `json:"language"` // "python" or "bash"
-	EntryPoint    string                 `json:"entry_point"`
-	InputSchema   map[string]interface{} `json:"input_schema"`
-	DefaultPolicy string                 `json:"default_policy,omitempty"` // "always_allow", "auto", etc.
-	CreatedAt     string                 `json:"created_at,omitempty"`
-	CreatedBy     string                 `json:"created_by,omitempty"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Version       string         `json:"version"`
+	Language      string         `json:"language"` // "python" or "bash"
+	EntryPoint    string         `json:"entry_point"`
+	InputSchema   map[string]any `json:"input_schema"`
+	DefaultPolicy string         `json:"default_policy,omitempty"` // "always_allow", "auto", etc.
+	CreatedAt     string         `json:"created_at,omitempty"`
+	CreatedBy     string         `json:"created_by,omitempty"`
 }
 
 // ParseManifest reads and parses a tool.json file at the given path.

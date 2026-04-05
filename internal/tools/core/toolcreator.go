@@ -1,3 +1,4 @@
+// Package core provides built-in tool implementations including bash, file operations, search, and web fetching.
 package core
 
 import (
@@ -70,14 +71,14 @@ type toolCreatorInput struct {
 
 // toolCreatorManifest represents the tool.json manifest file.
 type toolCreatorManifest struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Version     string                 `json:"version"`
-	Language    string                 `json:"language"`
-	EntryPoint  string                 `json:"entry_point"`
-	InputSchema map[string]interface{} `json:"input_schema"`
-	CreatedAt   string                 `json:"created_at"`
-	CreatedBy   string                 `json:"created_by"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Version     string         `json:"version"`
+	Language    string         `json:"language"`
+	EntryPoint  string         `json:"entry_point"`
+	InputSchema map[string]any `json:"input_schema"`
+	CreatedAt   string         `json:"created_at"`
+	CreatedBy   string         `json:"created_by"`
 }
 
 // Execute creates a new tool with the given parameters.
@@ -168,9 +169,9 @@ func (t *ToolCreatorTool) Execute(ctx context.Context, input json.RawMessage) (t
 		Version:     "1.0.0",
 		Language:    params.Language,
 		EntryPoint:  entryPoint,
-		InputSchema: map[string]interface{}{
+		InputSchema: map[string]any{
 			"type":       "object",
-			"properties": map[string]interface{}{},
+			"properties": map[string]any{},
 		},
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		CreatedBy: "agent",

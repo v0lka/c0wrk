@@ -1,3 +1,4 @@
+// Package tools provides the tool abstraction, registry, and security policies for agent tool execution.
 package tools
 
 import (
@@ -128,7 +129,7 @@ func ParseToolPolicy(s string) ToolPolicy {
 }
 
 // ErrorResult creates a ToolResult with IsError=true.
-func ErrorResult(format string, args ...interface{}) ToolResult {
+func ErrorResult(format string, args ...any) ToolResult {
 	return ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
 }
 

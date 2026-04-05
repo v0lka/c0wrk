@@ -22,16 +22,20 @@ function useResizeHandle(
   const startWidth = useRef(0)
   const moveHandlerRef = useRef<((ev: globalThis.MouseEvent) => void) | null>(null)
   const upHandlerRef = useRef<(() => void) | null>(null)
+  const mountedRef = useRef(true)
 
   // Cleanup effect for unmount during active drag
   useEffect(() => {
+    mountedRef.current = true
     return () => {
+      mountedRef.current = false
       if (moveHandlerRef.current) {
         document.removeEventListener('mousemove', moveHandlerRef.current)
       }
       if (upHandlerRef.current) {
         document.removeEventListener('mouseup', upHandlerRef.current)
       }
+      dragging.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
@@ -60,8 +64,10 @@ function useResizeHandle(
         document.removeEventListener('mouseup', onMouseUp)
         document.body.style.cursor = ''
         document.body.style.userSelect = ''
-        moveHandlerRef.current = null
-        upHandlerRef.current = null
+        if (mountedRef.current) {
+          moveHandlerRef.current = null
+          upHandlerRef.current = null
+        }
       }
 
       // Store references for cleanup

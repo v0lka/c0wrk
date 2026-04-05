@@ -24,7 +24,7 @@ func TestMessageWithToolCallsSerialization(t *testing.T) {
 	}
 
 	// Verify fields are present in JSON
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("failed to unmarshal to map: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestMessageWithToolCallsSerialization(t *testing.T) {
 	if result["content"] != "I'll help you with that." {
 		t.Errorf("expected content 'I'll help you with that.', got %v", result["content"])
 	}
-	toolCalls, ok := result["tool_calls"].([]interface{})
+	toolCalls, ok := result["tool_calls"].([]any)
 	if !ok || len(toolCalls) != 1 {
 		t.Errorf("expected tool_calls array with 1 element, got %v", result["tool_calls"])
 	}

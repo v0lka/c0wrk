@@ -2,6 +2,8 @@ package main
 
 import (
 	"embed"
+	"log/slog"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -25,7 +27,7 @@ func main() {
 		},
 		OnStartup:  app.startup,
 		OnShutdown: app.shutdown,
-		Bind: []interface{}{
+		Bind: []any{
 			app,
 		},
 		Debug: options.Debug{
@@ -33,6 +35,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		panic(err)
+		slog.Error("failed to start Wails application", "error", err)
+		os.Exit(1)
 	}
 }

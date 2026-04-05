@@ -80,7 +80,7 @@ func TestNewMCPTool(t *testing.T) {
 		t.Error("InputSchema should not be nil")
 	}
 
-	var schemaMap map[string]interface{}
+	var schemaMap map[string]any
 	if err := json.Unmarshal(schema, &schemaMap); err != nil {
 		t.Errorf("failed to unmarshal schema: %v", err)
 	}

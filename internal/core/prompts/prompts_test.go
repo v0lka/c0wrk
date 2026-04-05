@@ -63,15 +63,15 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 
 func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 	prompts := map[string]string{
-		"PlannerPlan":                PlannerPlan,
-		"PlannerReplan":              PlannerReplan,
-		"OrchestratorSystem":         OrchestratorSystem,
-		"ReflectorSystem":            ReflectorSystem,
-		"RouterSystem":               RouterSystem,
-		"RawACExtractorSystem":       RawACExtractorSystem,
-		"ACEnricherSystem":           ACEnricherSystem,
-		"EvaluatorJudge":             EvaluatorJudge,
-		"EvaluatorReconsider":        EvaluatorReconsider,
+		"PlannerPlan":          PlannerPlan,
+		"PlannerReplan":        PlannerReplan,
+		"OrchestratorSystem":   OrchestratorSystem,
+		"ReflectorSystem":      ReflectorSystem,
+		"RouterSystem":         RouterSystem,
+		"RawACExtractorSystem": RawACExtractorSystem,
+		"ACEnricherSystem":     ACEnricherSystem,
+		"EvaluatorJudge":       EvaluatorJudge,
+		"EvaluatorReconsider":  EvaluatorReconsider,
 	}
 
 	seen := make(map[string]string) // content -> name

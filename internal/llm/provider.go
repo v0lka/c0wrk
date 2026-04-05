@@ -1,3 +1,4 @@
+// Package llm provides LLM provider abstractions, model registry, and routing for multi-provider inference.
 package llm
 
 import "context"

@@ -1,3 +1,4 @@
+// Package core provides the orchestration engine that routes, plans, executes, evaluates, and reflects on agent tasks.
 package core
 
 import (
@@ -136,7 +137,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	availableTools := o.toolRegistry.List()
 
 	// 2. Extract raw acceptance criteria (Phase 1 — before routing)
-	o.emitter.ServiceWithMeta("Extracting acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+	o.emitter.ServiceWithMeta("Extracting acceptance criteria...", map[string]any{"phase": "orchestration"})
 	rawCriteria, err := o.acExtractor.ExtractRaw(ctx, userMessage)
 	if err != nil {
 		// Non-fatal: proceed with empty criteria if extraction fails
@@ -145,7 +146,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	}
 
 	// 3. Route the request (with raw criteria for informed routing)
-	o.emitter.ServiceWithMeta("Routing request...", map[string]interface{}{"phase": "orchestration"})
+	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "orchestration"})
 	routing, err := o.router.Route(ctx, userMessage, rawCriteria, availableTools, o.conversationHistory)
 	if err != nil {
 		return nil, fmt.Errorf("routing failed: %w", err)
@@ -156,7 +157,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	o.logInfo("routing_decision", "mode", routing.Mode, "domain", routing.Domain, "complexity", routing.Complexity)
 
 	// 4. Enrich acceptance criteria with domain context (Phase 2 — after routing)
-	o.emitter.ServiceWithMeta("Enriching acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+	o.emitter.ServiceWithMeta("Enriching acceptance criteria...", map[string]any{"phase": "orchestration"})
 	var ac []AcceptanceCriterion
 	enrichedAC, enrichErr := o.acExtractor.Enrich(ctx, rawCriteria, routing)
 	if enrichErr != nil {
@@ -238,7 +239,7 @@ func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, rou
 	}
 
 	// Lightweight evaluation against AC
-	o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+	o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
 	evalResult, evalErr := o.evaluator.Evaluate(ctx, directOutput, ac, nil)
 	if evalErr != nil {
 		//nolint:nilerr // error is handled by returning result without evaluation
@@ -353,7 +354,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 			return handleResult, nil
 		}
 
-		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
 		evalResult, evalErr := o.evaluator.Evaluate(ctx, result.Output, ac, result.Steps)
 		if evalErr != nil {
 			// Return result even if evaluation fails
@@ -379,7 +380,7 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 		if attempt < o.maxRetries {
 			if o.reflector != nil {
 				// Generate reflection
-				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]interface{}{"phase": "orchestration"})
+				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]any{"phase": "orchestration"})
 				reflection, reflectErr := o.reflector.Reflect(ctx, result.Steps, evalResult, nil, sessionReflections)
 				if reflectErr != nil {
 					// Reflection failed — still continue retry without reflection guidance
@@ -536,7 +537,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	}
 
 	// 2. Generate initial plan
-	o.emitter.ServiceWithMeta("Creating execution plan...", map[string]interface{}{"phase": "orchestration"})
+	o.emitter.ServiceWithMeta("Creating execution plan...", map[string]any{"phase": "orchestration"})
 	plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, sessionReflections)
 	if err != nil {
 		return nil, fmt.Errorf("planning failed: %w", err)
@@ -592,7 +593,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 			return handleResult, nil
 		}
 
-		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]interface{}{"phase": "orchestration"})
+		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
 		syntheticSteps := buildPlanExecutionSteps(completedSteps, currentPlan)
 		evalResult, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, syntheticSteps)
 		if evalErr != nil {
@@ -618,7 +619,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		if attempt < o.maxRetries {
 			if o.reflector != nil {
 				// For plan_execute, provide synthetic execution trajectory from completed steps
-				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]interface{}{"phase": "orchestration"})
+				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]any{"phase": "orchestration"})
 				reflection, reflectErr := o.reflector.Reflect(ctx, syntheticSteps, evalResult, currentPlan, sessionReflections)
 				if reflectErr != nil {
 					// Reflection failed — still continue retry without reflection guidance
@@ -735,7 +736,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 		// Emit PlanStepStart for all steps before launching
 		stepStartTimes := make(map[string]time.Time)
 		for i, step := range readySteps {
-			o.emitter.ServiceWithMeta(fmt.Sprintf("Executing step %d/%d: %s", i+1, len(plan.Steps), step.Description), map[string]interface{}{"phase": "orchestration"})
+			o.emitter.ServiceWithMeta(fmt.Sprintf("Executing step %d/%d: %s", i+1, len(plan.Steps), step.Description), map[string]any{"phase": "orchestration"})
 			o.emitter.PlanStepStart(step.ID, step.Description)
 			stepStartTimes[step.ID] = time.Now()
 		}

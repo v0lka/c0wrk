@@ -1,3 +1,4 @@
+// Package prompts provides embedded prompt templates used by tool subsystems.
 package prompts
 
 import _ "embed"

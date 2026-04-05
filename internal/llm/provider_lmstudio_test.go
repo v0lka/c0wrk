@@ -984,7 +984,7 @@ func TestLMStudioChatCompletionWithoutToolsUsesNativeAPI(t *testing.T) {
 		}
 
 		// Verify request does NOT have 'messages' field (OpenAI format)
-		var rawReq map[string]interface{}
+		var rawReq map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&rawReq); err == nil {
 			if _, hasMessages := rawReq["messages"]; hasMessages {
 				t.Error("native request should not have 'messages' field")

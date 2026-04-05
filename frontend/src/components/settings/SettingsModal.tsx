@@ -115,27 +115,24 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
               <div className="pt-4 border-t border-border">
                 <div className="flex flex-col gap-2 text-sm">
-                  <a 
-                    href="#"
-                    className="text-primary hover:underline"
-                    onClick={(e) => e.preventDefault()}
+                  <button 
+                    type="button"
+                    className="text-primary hover:underline bg-transparent border-none cursor-pointer p-0 text-left text-sm"
                   >
                     Documentation
-                  </a>
-                  <a 
-                    href="#"
-                    className="text-primary hover:underline"
-                    onClick={(e) => e.preventDefault()}
+                  </button>
+                  <button 
+                    type="button"
+                    className="text-primary hover:underline bg-transparent border-none cursor-pointer p-0 text-left text-sm"
                   >
                     Report an Issue
-                  </a>
-                  <a 
-                    href="#"
-                    className="text-primary hover:underline"
-                    onClick={(e) => e.preventDefault()}
+                  </button>
+                  <button 
+                    type="button"
+                    className="text-primary hover:underline bg-transparent border-none cursor-pointer p-0 text-left text-sm"
                   >
                     GitHub Repository
-                  </a>
+                  </button>
                 </div>
               </div>
             </div>

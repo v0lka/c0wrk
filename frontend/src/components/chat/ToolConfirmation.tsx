@@ -13,7 +13,9 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
   const { runtime } = useWails()
   const [resolved, setResolved] = useState<'confirmed' | 'denied' | null>(null)
 
-  const meta = metadata as Record<string, unknown> | undefined
+  const meta = (typeof metadata === 'object' && metadata !== null)
+    ? (metadata as Record<string, unknown>)
+    : undefined
   const tool = meta?.tool as string | undefined
   const args = meta?.args as string | undefined
   const confirmId = meta?.confirm_id as string | undefined

@@ -12,9 +12,9 @@ import (
 
 // Event represents a structured event emitted during agent execution.
 type Event struct {
-	SessionID string      `json:"session_id"`
-	Type      string      `json:"type"`
-	Data      interface{} `json:"data"`
+	SessionID string `json:"session_id"`
+	Type      string `json:"type"`
+	Data      any    `json:"data"`
 }
 
 // EventEmitter implements core.Emitter and routes events to a callback function.
@@ -58,8 +58,8 @@ var _ core.PlanStepScopable = (*EventEmitter)(nil)
 // emitEvent is a helper that emits an event, injecting plan_step_id if set.
 func (e *EventEmitter) emitEvent(evt Event) {
 	if e.planStepID != "" {
-		// Inject plan_step_id into Data if it's a map[string]interface{}
-		if data, ok := evt.Data.(map[string]interface{}); ok {
+		// Inject plan_step_id into Data if it's a map[string]any
+		if data, ok := evt.Data.(map[string]any); ok {
 			data["plan_step_id"] = e.planStepID
 		}
 	}
@@ -92,7 +92,7 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []core.PlanStepEvent) 
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_generated",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"step_count":         stepCount,
 			"steps":              steps,
 			"progress":           0.0,
@@ -112,7 +112,7 @@ func (e *EventEmitter) PlanStepStart(stepID, description string) {
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_start",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"step_id":            stepID,
 			"description":        description,
 			"progress":           e.computeProgress(completedCount),
@@ -140,7 +140,7 @@ func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration ti
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_complete",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"step_id":            stepID,
 			"success":            success,
 			"duration":           duration.Milliseconds(),
@@ -168,7 +168,7 @@ func (e *EventEmitter) StepStart(stepNum int) {
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "step_start",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"step_num": stepNum,
 		},
 	})
@@ -181,7 +181,7 @@ func (e *EventEmitter) Thought(stepNum int, content, reasoning string) {
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "thought",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"step_num":  stepNum,
 			"content":   content,
 			"reasoning": reasoning,
@@ -195,14 +195,14 @@ func (e *EventEmitter) Thought(stepNum int, content, reasoning string) {
 func (e *EventEmitter) ToolCall(stepNum int, toolName, argsPreview string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	data := map[string]interface{}{
+	data := map[string]any{
 		"step": stepNum,
 		"tool": toolName,
 		"args": argsPreview,
 	}
 	// Pre-parse JSON arguments for the frontend
 	if trimmed := strings.TrimSpace(argsPreview); trimmed != "" && trimmed[0] == '{' {
-		var parsed map[string]interface{}
+		var parsed map[string]any
 		if err := json.Unmarshal([]byte(argsPreview), &parsed); err == nil {
 			data["parsed_args"] = parsed
 		}
@@ -221,10 +221,10 @@ func (e *EventEmitter) ToolResult(stepNum, resultLen int, preview string) {
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "tool_result",
-		Data: map[string]interface{}{
-			"step":           stepNum,
-			"result_len":     resultLen,
-			"result": preview,
+		Data: map[string]any{
+			"step":       stepNum,
+			"result_len": resultLen,
+			"result":     preview,
 		},
 	})
 }
@@ -236,7 +236,7 @@ func (e *EventEmitter) StepComplete(stepNum int, duration time.Duration) {
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "step_complete",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"step_num": stepNum,
 			"duration": duration.Milliseconds(),
 		},
@@ -264,7 +264,7 @@ func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration ti
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "subagent_complete",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"step_id":  stepID,
 			"success":  success,
 			"duration": duration.Milliseconds(),
@@ -279,7 +279,7 @@ func (e *EventEmitter) Evaluation(passed, total int, criteria []core.EvalCriteri
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "evaluation",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"passed":   passed,
 			"total":    total,
 			"criteria": criteria,
@@ -294,7 +294,7 @@ func (e *EventEmitter) Reflection(summary string, insights []string, attempt, ma
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "reflection",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"summary":      summary,
 			"insights":     insights,
 			"attempt":      attempt,
@@ -338,7 +338,7 @@ func (e *EventEmitter) ACExtracted(count int, criteria []core.EvalCriterionEvent
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "ac_extracted",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"count":    count,
 			"criteria": criteria,
 		},
@@ -355,7 +355,7 @@ func (e *EventEmitter) AssistantChunk(content string) {
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "assistant_chunk",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"content":     content,
 			"accumulated": e.streamAccumulated.String(),
 		},
@@ -371,7 +371,7 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "assistant_done",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"content":       fullContent,
 			"input_tokens":  inputTokens,
 			"output_tokens": outputTokens,
@@ -386,7 +386,7 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "context_fill",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"fill_percent": fillPercent,
 			"used_tokens":  usedTokens,
 			"max_tokens":   maxTokens,
@@ -402,17 +402,17 @@ func (e *EventEmitter) Service(content string) {
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "service",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"content": content,
 		},
 	})
 }
 
 // ServiceWithMeta emits a service message with metadata for frontend filtering.
-func (e *EventEmitter) ServiceWithMeta(content string, meta map[string]interface{}) {
+func (e *EventEmitter) ServiceWithMeta(content string, meta map[string]any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	data := map[string]interface{}{
+	data := map[string]any{
 		"content": content,
 	}
 	for k, v := range meta {

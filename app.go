@@ -218,7 +218,9 @@ func (a *App) startup(ctx context.Context) {
 	if a.logLevel != "" && a.logLevel != "INFO" {
 		if newLogger, err := logger.Init(a.logLevel); err == nil {
 			if a.sessionLogger != nil {
-				_ = a.sessionLogger.Close()
+				if err := a.sessionLogger.Close(); err != nil {
+					slog.Error("failed to close session logger", "error", err)
+				}
 			}
 			a.sessionLogger = newLogger
 			log = newLogger.Logger()
@@ -267,7 +269,7 @@ func (a *App) startup(ctx context.Context) {
 			switch d := evt.Data.(type) {
 			case session.AssistantDoneEventData:
 				content = d.Content
-			case map[string]interface{}:
+			case map[string]any:
 				if c, ok := d["content"].(string); ok {
 					content = c
 				}
@@ -280,7 +282,7 @@ func (a *App) startup(ctx context.Context) {
 					role = "assistant"
 					content = d.Output
 				}
-			case map[string]interface{}:
+			case map[string]any:
 				if output, ok := d["output"].(string); ok && output != "" {
 					role = "assistant"
 					content = output
@@ -291,7 +293,7 @@ func (a *App) startup(ctx context.Context) {
 			switch d := evt.Data.(type) {
 			case session.ThoughtEventData:
 				content = d.Content
-			case map[string]interface{}:
+			case map[string]any:
 				if c, ok := d["content"].(string); ok {
 					content = c
 				}
@@ -339,6 +341,7 @@ func (a *App) startup(ctx context.Context) {
 			content = string(metadata)
 		}
 
+		// Best-effort persistence: log and continue to avoid disrupting the user session.
 		if err := a.store.SaveMessage(session.ChatMessage{
 			SessionID: evt.SessionID,
 			Role:      role,
@@ -600,10 +603,10 @@ func (a *App) startup(ctx context.Context) {
 
 	// Orchestrator configuration
 	orchConfig := core.OrchestratorConfig{
-		MaxSteps:                   a.config.Executor.MaxReactSteps,
-		KeepFirst:                  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:                   a.config.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries:                 a.config.Executor.MaxRetries,
+		MaxSteps:   a.config.Executor.MaxReactSteps,
+		KeepFirst:  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:   a.config.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxRetries: a.config.Executor.MaxRetries,
 	}
 
 	// Initialize ToolJudge if enabled in config
@@ -699,13 +702,13 @@ func (a *App) startup(ctx context.Context) {
 	a.manager = session.NewManager(factory, emitFunc, logDir, workspacesDir)
 
 	// Listen for confirmation responses from frontend
-	wailsRuntime.EventsOn(a.ctx, "tool_confirm_response", func(data ...interface{}) {
+	wailsRuntime.EventsOn(a.ctx, "tool_confirm_response", func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("tool confirmation response missing payload")
 			return
 		}
 
-		payload, ok := data[0].(map[string]interface{})
+		payload, ok := data[0].(map[string]any)
 		if !ok {
 			log.Warn("tool confirmation response has unexpected type", "data", data)
 			return
@@ -777,13 +780,13 @@ func (a *App) startup(ctx context.Context) {
 	})
 
 	// Listen for ask_user responses from frontend
-	wailsRuntime.EventsOn(a.ctx, "ask_user_response", func(data ...interface{}) {
+	wailsRuntime.EventsOn(a.ctx, "ask_user_response", func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("ask_user response missing payload")
 			return
 		}
 
-		payload, ok := data[0].(map[string]interface{})
+		payload, ok := data[0].(map[string]any)
 		if !ok {
 			log.Warn("ask_user response has unexpected type", "data", data)
 			return
@@ -805,7 +808,7 @@ func (a *App) startup(ctx context.Context) {
 
 		// Parse selected options
 		if selectedVal, ok := payload["selected"]; ok {
-			if selectedArr, ok := selectedVal.([]interface{}); ok {
+			if selectedArr, ok := selectedVal.([]any); ok {
 				for _, v := range selectedArr {
 					if s, ok := v.(string); ok {
 						resp.Selected = append(resp.Selected, s)
@@ -873,6 +876,7 @@ func (a *App) CreateSession() (*session.SessionInfo, error) {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 	// Persist to SQLite
+	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.SaveSession(*info); err != nil {
 			slog.Error("failed to save session to store", "error", err)
@@ -893,6 +897,7 @@ func (a *App) DeleteSession(id string) error {
 		}
 	}
 	// Always delete from store (handles store-only sessions from previous runs)
+	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.DeleteSession(id); err != nil {
 			slog.Error("failed to delete session from store", "error", err)
@@ -925,6 +930,7 @@ func (a *App) RenameSession(id, name string) error {
 		}
 	}
 	// Always rename in store (handles store-only sessions from previous runs)
+	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.RenameSession(id, name); err != nil {
 			slog.Error("failed to rename session in store", "error", err)
@@ -945,6 +951,7 @@ func (a *App) ArchiveSession(id string) error {
 		}
 	}
 	// Toggle archive in store
+	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		info, err := a.store.LoadSession(id)
 		if err == nil && info != nil {
@@ -962,12 +969,14 @@ func (a *App) SendMessage(id, text string) error {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
 	// Update session activity timestamp
+	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.UpdateSessionActivity(id); err != nil {
 			slog.Error("failed to update session activity", "error", err)
 		}
 	}
 	// Save user message to store
+	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.SaveMessage(session.ChatMessage{
 			SessionID: id,

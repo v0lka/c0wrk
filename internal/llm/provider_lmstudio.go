@@ -714,7 +714,7 @@ func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- 
 }
 
 // newHTTPRequest creates a new HTTP request with proper headers.
-func (p *LMStudioProvider) newHTTPRequest(ctx context.Context, method, path string, body interface{}) (*http.Request, error) {
+func (p *LMStudioProvider) newHTTPRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	var reqBody io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -764,7 +764,7 @@ func (p *LMStudioProvider) wrapError(statusCode int, err error) error {
 }
 
 // logDebug logs a debug message if logger is available.
-func (p *LMStudioProvider) logDebug(msg string, args ...interface{}) {
+func (p *LMStudioProvider) logDebug(msg string, args ...any) {
 	if p.logger != nil && p.logger.Logger() != nil {
 		p.logger.Logger().Debug(msg, args...)
 	}

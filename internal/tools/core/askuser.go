@@ -62,10 +62,10 @@ func NewAskUserTool(fn tools.AskUserFunc) *AskUserTool {
 
 // askUserInput represents the input parameters for the ask_user tool.
 type askUserInput struct {
-	Question    string              `json:"question"`
+	Question    string                `json:"question"`
 	Options     []tools.AskUserOption `json:"options"`
-	MultiSelect bool                `json:"multi_select"`
-	Recommended []string            `json:"recommended"`
+	MultiSelect bool                  `json:"multi_select"`
+	Recommended []string              `json:"recommended"`
 }
 
 // Execute asks the user a question and returns the response.

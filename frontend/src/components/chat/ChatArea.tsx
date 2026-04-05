@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChatStore, ChatMessageUI, DisplayItem, groupMessages } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -20,11 +20,12 @@ import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { MessageCircle } from 'lucide-react'
 import { GetSessionHistory } from '../../../wailsjs/go/main/App'
 import { chatMessageToUI } from '@/lib/chatUtils'
+import { logger } from '@/lib/logger'
 
 // Stable empty array to prevent infinite re-render loops in Zustand selectors
 const EMPTY_MESSAGES: ChatMessageUI[] = []
 
-export function ChatArea() {
+export function ChatArea(): React.ReactNode {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const messages = useChatStore(s =>
     activeSessionId ? (s.messages[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
@@ -40,6 +41,7 @@ export function ChatArea() {
   )
   const isAtBottomRef = useRef(true)
   const [hasNewActivity, setHasNewActivity] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
 
   // Derived flag: true when the container div with containerRef is in the DOM
   const showContainer = !!activeSessionId && (messages.length > 0 || !!streamingText)
@@ -100,13 +102,15 @@ export function ChatArea() {
     // Backend persists plan/eval events that aren't kept in the frontend
     // message cache, so we must use the complete history to rebuild panels.
     GetSessionHistory(activeSessionId).then((history) => {
+      setHistoryError(null)
       if (history && history.length > 0) {
         const uiMessages = history.map(chatMessageToUI)
         setMessages(activeSessionId, uiMessages)
         usePanelStore.getState().rebuildFromEvents(uiMessages)
       }
     }).catch((err) => {
-      console.error('Failed to load session history:', err)
+      logger.error('Failed to load session history:', err)
+      setHistoryError('Failed to load session history')
     })
   }, [activeSessionId, setMessages])
 
@@ -267,6 +271,12 @@ export function ChatArea() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0" ref={containerRef}>
+      {/* History load error */}
+      {historyError && (
+        <div className="px-4 py-2 text-sm text-destructive bg-destructive/10 border-b border-destructive/20">
+          {historyError}
+        </div>
+      )}
       {/* Pinned last user message */}
       {lastUserMessage && (
         <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
