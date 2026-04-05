@@ -29,9 +29,8 @@ func (p *Planner) Plan(
 	criteria []AcceptanceCriterion,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
-	constitution []string,
 ) (*Plan, error) {
-	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, criteria, reflections, constitution)
+	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, criteria, reflections)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -95,7 +94,6 @@ func (p *Planner) buildPlanSystemPrompt(
 	availableTools []tools.ToolDescriptor,
 	criteria []AcceptanceCriterion,
 	reflections []Reflection,
-	constitution []string,
 ) string {
 	// Build available tools string (grouped by priority tier)
 	availableToolsStr := buildGroupedToolList(availableTools)
@@ -119,23 +117,11 @@ func (p *Planner) buildPlanSystemPrompt(
 		reflectionsStr = rb.String()
 	}
 
-	// Build constitution string
-	var constitutionStr string
-	if len(constitution) > 0 {
-		var cb strings.Builder
-		cb.WriteString("Constitution principles (follow them):\n")
-		for _, principle := range constitution {
-			fmt.Fprintf(&cb, "- %s\n", principle)
-		}
-		constitutionStr = cb.String()
-	}
-
 	// Apply template substitutions
 	result := prompts.PlannerPlan
 	result = strings.ReplaceAll(result, "AVAILABLE-TOOLS", availableToolsStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 	result = strings.ReplaceAll(result, "REFLECTIONS", reflectionsStr)
-	result = strings.ReplaceAll(result, "CONSTITUTION", constitutionStr)
 	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
 
 	return result

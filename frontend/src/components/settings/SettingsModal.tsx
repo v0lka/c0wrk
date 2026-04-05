@@ -8,10 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ThemeToggle } from './ThemeToggle'
 import { LogLevelSelector } from './LogLevelSelector'
 import { LLMSettings } from './LLMSettings'
-import { MemorySettings } from './MemorySettings'
 import { SearchSettings } from './SearchSettings'
 import { SecuritySettings } from './SecuritySettings'
-import { Settings, Brain, Database, Search, Shield, Info } from 'lucide-react'
+import { Settings, Brain, Search, Shield, Info } from 'lucide-react'
 import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { useState, useEffect, useRef, useCallback } from 'react'
 
@@ -45,7 +44,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         
         <Tabs defaultValue="general" className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0">
           <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
-          <TabsList className="grid w-full grid-cols-6">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="general" className="gap-1">
               <Settings className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">General</span>
@@ -53,10 +52,6 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             <TabsTrigger value="llm" className="gap-1">
               <Brain className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">LLM</span>
-            </TabsTrigger>
-            <TabsTrigger value="memory" className="gap-1">
-              <Database className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Memory</span>
             </TabsTrigger>
             <TabsTrigger value="search" className="gap-1">
               <Search className="h-4 w-4" />
@@ -82,12 +77,6 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
           <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-4">
               <LLMSettings onSettingsSaved={handleSettingsSaved} />
-            </div>
-          </TabsContent>
-
-          <TabsContent value="memory" className="mt-4 overflow-y-auto min-h-0">
-            <div className="space-y-4">
-              <MemorySettings />
             </div>
           </TabsContent>
 

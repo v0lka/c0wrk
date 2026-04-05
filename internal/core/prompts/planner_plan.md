@@ -23,6 +23,5 @@ ACCEPTANCE-CRITERIA
 
 WORKSPACE-PATH
 REFLECTIONS
-CONSTITUTION
 Respond ONLY with a JSON object:
 {"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "relevant_ac": ["ac_1"], "agent_profile": {"role": "researcher", "allowed_tools": ["web_search", "web_fetch"]}}]}

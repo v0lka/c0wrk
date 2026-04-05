@@ -129,10 +129,6 @@ type App struct {
 	toolRegistry *tools.ToolRegistry
 	mcpGateway   *mcp.MCPGateway
 
-	memorySystem  *memory.MemorySystem
-	localEmbedder *llm.LocalEmbedder
-	constitution  *core.Constitution
-
 	sessionLogger *logger.SessionLogger
 	logLevel      string
 
@@ -446,7 +442,7 @@ func (a *App) startup(ctx context.Context) {
 		a.mcpGateway = gateway
 	}
 
-	// Initialize MemorySystem (consolidated memory subsystem)
+	// Initialize external tools directory
 	toolsDir := a.config.ExternalTools.Directory
 	if toolsDir == "" {
 		toolsDir = filepath.Join(agentDir, "tools")
@@ -455,82 +451,19 @@ func (a *App) startup(ctx context.Context) {
 		log.Warn("failed to create tools directory", "error", err)
 	}
 
-	// Get DB path from config or use default
-	memDBPath := a.config.Memory.Database
-	if memDBPath == "" {
-		memDBPath = filepath.Join(agentDir, "memory.db")
+	// Register existing external tools from tools directory
+	procMem := memory.NewProceduralMemory(toolsDir)
+	if err := procMem.Scan(); err != nil {
+		log.Warn("failed to scan tools directory", "error", err)
 	}
-
-	// Auto-detect ONNX Runtime library if not already set
-	// This must happen BEFORE initializing the local embedder
-	if os.Getenv("ONNXRUNTIME_LIB_PATH") == "" {
-		var libName string
-		switch runtime.GOOS {
-		case "darwin":
-			libName = "libonnxruntime.dylib"
-		case "windows":
-			libName = "onnxruntime.dll"
-		default:
-			libName = "libonnxruntime.so"
+	for _, info := range procMem.ListTools() {
+		manifest, err := external.ParseManifest(filepath.Join(info.Path, "tool.json"))
+		if err != nil {
+			log.Warn("failed to parse tool manifest", "tool", info.Name, "error", err)
+			continue
 		}
-
-		// Check 1: Look in .cache directory relative to executable
-		if exePath, err := os.Executable(); err == nil {
-			if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
-				libPath := filepath.Join(filepath.Dir(resolved), ".cache", libName)
-				if _, err := os.Stat(libPath); err == nil {
-					if err := os.Setenv("ONNXRUNTIME_LIB_PATH", libPath); err == nil {
-						log.Debug("auto-detected ONNX Runtime library", "path", libPath)
-					}
-				}
-			}
-		}
-
-		// Check 2: Look in .cache directory relative to working directory
-		if os.Getenv("ONNXRUNTIME_LIB_PATH") == "" {
-			if wd, err := os.Getwd(); err == nil {
-				libPath := filepath.Join(wd, ".cache", libName)
-				if _, err := os.Stat(libPath); err == nil {
-					if err := os.Setenv("ONNXRUNTIME_LIB_PATH", libPath); err == nil {
-						log.Debug("auto-detected ONNX Runtime library", "path", libPath)
-					}
-				}
-			}
-		}
-	}
-
-	// Initialize local embedder for semantic memory
-	var embedder memory.Embedder
-	if emb, err := llm.NewLocalEmbedder(); err != nil {
-		log.Warn("local embedder unavailable, semantic memory disabled", "error", err)
-	} else {
-		a.localEmbedder = emb
-		embedder = emb
-	}
-
-	memSys, err := memory.NewMemorySystem(memory.MemorySystemConfig{
-		DBPath:   memDBPath,
-		ToolsDir: toolsDir,
-		Embedder: embedder,
-	})
-	if err != nil {
-		log.Warn("failed to initialize memory system", "error", err)
-	} else {
-		log.Info("memory system initialized", "path", memDBPath)
-	}
-	a.memorySystem = memSys
-
-	// Register existing external tools
-	if memSys != nil && memSys.Procedural != nil {
-		for _, info := range memSys.Procedural.ListTools() {
-			manifest, err := external.ParseManifest(filepath.Join(info.Path, "tool.json"))
-			if err != nil {
-				log.Warn("failed to parse tool manifest", "tool", info.Name, "error", err)
-				continue
-			}
-			extTool := external.NewExternalTool(manifest, info.Path)
-			registry.RegisterWithSource(extTool, "external")
-		}
+		extTool := external.NewExternalTool(manifest, info.Path)
+		registry.RegisterWithSource(extTool, "external")
 	}
 
 	// Register ToolCreatorTool for dynamic tool creation
@@ -548,39 +481,6 @@ func (a *App) startup(ctx context.Context) {
 	if a.config.Security.DefaultPolicy != "" {
 		registry.SetDefaultPolicy(tools.ParseToolPolicy(a.config.Security.DefaultPolicy))
 	}
-
-	// Initialize Constitution
-	var constitution *core.Constitution
-	constitutionPath := a.config.Memory.Constitution.File
-	if constitutionPath == "" {
-		constitutionPath = filepath.Join(agentDir, "constitution.json")
-	}
-	constitution, err = core.NewConstitution(constitutionPath)
-	if err != nil {
-		log.Warn("failed to initialize constitution", "error", err)
-		constitution = nil
-	} else {
-		constitution.IncrementSession()
-		log.Info("constitution loaded", "principles", len(constitution.Principles()), "path", constitutionPath, "session", constitution.SessionCount())
-	}
-	a.constitution = constitution
-
-	// Create ContextManagerTool with memory adapters
-	var semanticStore toolcore.SemanticStore
-	if memSys != nil && memSys.Semantic != nil {
-		semanticStore = &semanticStoreAdapter{mem: memSys.Semantic}
-	}
-	var episodicStoreTool toolcore.EpisodicStore
-	if memSys != nil && memSys.Episodic != nil {
-		episodicStoreTool = &episodicToolAdapter{em: memSys.Episodic}
-	}
-	var reflexionStoreTool toolcore.ReflexionStore
-	if memSys != nil && memSys.Reflexion != nil {
-		reflexionStoreTool = &reflexionToolAdapter{rm: memSys.Reflexion}
-	}
-	// CompactionSwitcher is nil for now (would need to wire into context factory)
-	contextMgrTool := toolcore.NewContextManagerTool(semanticStore, nil, episodicStoreTool, reflexionStoreTool)
-	registry.Register(contextMgrTool)
 
 	// Glob tool (doublestar pattern matching)
 	globTool := toolcore.NewGlobTool()
@@ -652,13 +552,6 @@ func (a *App) startup(ctx context.Context) {
 		reflector = core.NewReflector(llmRouter)
 	}
 
-	// Capture constitution principles for injection into context windows
-	var constitutionPrinciples []string
-	if constitution != nil {
-		for _, p := range constitution.Principles() {
-			constitutionPrinciples = append(constitutionPrinciples, p.Principle)
-		}
-	}
 	contextFactory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) core.ContextManager {
 		// Create model-specific token counter
 		counter := llm.NewTokenCounter(modelMeta.TokenizerType)
@@ -702,9 +595,6 @@ func (a *App) startup(ctx context.Context) {
 		thresholds := a.config.Executor.Compaction.Thresholds
 
 		cw := memory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy)
-		if len(constitutionPrinciples) > 0 {
-			cw.SetConstitution(constitutionPrinciples)
-		}
 		return cw
 	}
 
@@ -714,7 +604,6 @@ func (a *App) startup(ctx context.Context) {
 		KeepFirst:                  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
 		KeepLast:                   a.config.Executor.Compaction.SlidingWindow.KeepLast,
 		MaxRetries:                 a.config.Executor.MaxRetries,
-		ConstitutionUpdateInterval: a.config.Memory.Constitution.UpdateIntervalSessions,
 	}
 
 	// Initialize ToolJudge if enabled in config
@@ -782,10 +671,6 @@ func (a *App) startup(ctx context.Context) {
 	})
 
 	// Create orchestrator factory
-	var reflexionMemAdapter core.ReflexionMemoryStore
-	if memSys != nil && memSys.Reflexion != nil {
-		reflexionMemAdapter = &reflexionMemoryStoreAdapter{rm: memSys.Reflexion}
-	}
 	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
 		if llmRouter == nil || router == nil || acExtractor == nil || planner == nil || evaluator == nil {
 			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
@@ -806,8 +691,6 @@ func (a *App) startup(ctx context.Context) {
 			emitter,       // Emitter
 			modelRegistry, // ModelRegistry for resolving model metadata
 			a.config.Executor.ToolResultBudget,
-			a.constitution,      // Constitution for planner injection
-			reflexionMemAdapter, // ReflexionMemoryStore for meta-reflection
 		), nil
 	}
 
@@ -964,18 +847,6 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.store != nil {
 		if err := a.store.Close(); err != nil {
 			slog.Error("failed to close session store", "error", err)
-		}
-	}
-
-	if a.memorySystem != nil {
-		if err := a.memorySystem.Close(); err != nil {
-			slog.Error("failed to close memory system", "error", err)
-		}
-	}
-
-	if a.localEmbedder != nil {
-		if err := a.localEmbedder.Close(); err != nil {
-			slog.Error("failed to close local embedder", "error", err)
 		}
 	}
 
@@ -1261,34 +1132,12 @@ type ConfigProviderFull struct {
 }
 
 // ConfigMemResponse holds memory section of config response.
-type ConfigMemResponse struct {
-	Episodic ConfigEpisodicResp `json:"episodic"`
-	Semantic struct{}           `json:"semantic"`
-}
-
-// ConfigEpisodicResp holds episodic memory config values.
-type ConfigEpisodicResp struct {
-	RetentionDays  int `json:"retention_days"`
-	RetrievalLimit int `json:"retrieval_limit"`
-}
+type ConfigMemResponse struct{}
 
 // ConfigSearchResp holds search config values.
 type ConfigSearchResp struct {
 	Provider string `json:"provider"`
 	APIKey   string `json:"api_key"`
-}
-
-// MemoryStatsResponse holds memory system statistics.
-type MemoryStatsResponse struct {
-	Episodic   int `json:"episodic"`
-	Semantic   int `json:"semantic"`
-	Procedural int `json:"procedural"`
-	Reflexion  int `json:"reflexion"`
-}
-
-// SessionMemoryStatsResponse holds per-session memory statistics.
-type SessionMemoryStatsResponse struct {
-	Episodic int `json:"episodic"`
 }
 
 // SessionTokensResponse holds token usage for a session.
@@ -1335,12 +1184,7 @@ func (a *App) GetConfig() ConfigResponse {
 				Model:  a.config.LLM.ChatGPT.Model,
 			},
 		},
-		Memory: ConfigMemResponse{
-			Episodic: ConfigEpisodicResp{
-				RetentionDays:  a.config.Memory.Episodic.RetentionDays,
-				RetrievalLimit: a.config.Memory.Episodic.RetrievalLimit,
-			},
-		},
+		Memory: ConfigMemResponse{},
 		Search: ConfigSearchResp{
 			Provider: a.config.Search.Provider,
 			APIKey:   maskAPIKey(a.config.Search.APIKey),
@@ -1450,47 +1294,6 @@ func (a *App) listLMStudioModels(baseURL, apiKey string) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
-}
-
-// GetMemoryStats returns current memory system statistics.
-func (a *App) GetMemoryStats() MemoryStatsResponse {
-	var stats MemoryStatsResponse
-
-	if a.memorySystem != nil {
-		if a.memorySystem.Episodic != nil {
-			if count, err := a.memorySystem.Episodic.Count(context.Background()); err == nil {
-				stats.Episodic = count
-			}
-		}
-		if a.memorySystem.Semantic != nil {
-			if count, err := a.memorySystem.Semantic.Count(context.Background()); err == nil {
-				stats.Semantic = count
-			}
-		}
-		if a.memorySystem.Procedural != nil {
-			stats.Procedural = len(a.memorySystem.Procedural.ListTools())
-		}
-		if a.memorySystem.Reflexion != nil {
-			if count, err := a.memorySystem.Reflexion.Count(context.Background()); err == nil {
-				stats.Reflexion = count
-			}
-		}
-	}
-
-	return stats
-}
-
-// GetSessionMemoryStats returns memory statistics scoped to a specific session.
-func (a *App) GetSessionMemoryStats(sessionID string) SessionMemoryStatsResponse {
-	var stats SessionMemoryStatsResponse
-
-	if a.memorySystem != nil && a.memorySystem.Episodic != nil && sessionID != "" {
-		if count, err := a.memorySystem.Episodic.CountBySession(context.Background(), sessionID); err == nil {
-			stats.Episodic = count
-		}
-	}
-
-	return stats
 }
 
 // UpdateSessionTokens persists accumulated token counts for a session.
@@ -1707,36 +1510,6 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 	return nil
 }
 
-// EpisodicSettingsRequest holds episodic memory settings.
-type EpisodicSettingsRequest struct {
-	RetentionDays  int `json:"retention_days"`
-	RetrievalLimit int `json:"retrieval_limit"`
-}
-
-// MemorySettingsRequest holds memory settings from the frontend.
-type MemorySettingsRequest struct {
-	Episodic EpisodicSettingsRequest `json:"episodic"`
-}
-
-// UpdateMemorySettings updates memory configuration settings.
-func (a *App) UpdateMemorySettings(settings MemorySettingsRequest) error {
-	if a.config == nil {
-		return errors.New("config not initialized")
-	}
-
-	if settings.Episodic.RetentionDays > 0 {
-		a.config.Memory.Episodic.RetentionDays = settings.Episodic.RetentionDays
-	}
-	if settings.Episodic.RetrievalLimit > 0 {
-		a.config.Memory.Episodic.RetrievalLimit = settings.Episodic.RetrievalLimit
-	}
-
-	if err := a.persistConfig(); err != nil {
-		slog.Warn("failed to persist memory settings", "error", err)
-	}
-	return nil
-}
-
 // SearchSettingsRequest holds search settings from the frontend.
 type SearchSettingsRequest struct {
 	Provider string `json:"provider"`
@@ -1759,133 +1532,4 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 		slog.Warn("failed to persist search settings", "error", err)
 	}
 	return nil
-}
-
-// semanticStoreAdapter adapts memory.SemanticMemory to toolcore.SemanticStore interface.
-type semanticStoreAdapter struct {
-	mem *memory.SemanticMemory
-}
-
-func (a *semanticStoreAdapter) Store(ctx context.Context, key, content string, metadata map[string]string) error {
-	return a.mem.Store(ctx, key, content, metadata)
-}
-
-func (a *semanticStoreAdapter) Search(ctx context.Context, query string, topK int) ([]toolcore.SemanticSearchResult, error) {
-	results, err := a.mem.Search(ctx, query, topK)
-	if err != nil {
-		return nil, err
-	}
-	adapted := make([]toolcore.SemanticSearchResult, len(results))
-	for i, r := range results {
-		adapted[i] = toolcore.SemanticSearchResult{
-			Key:     r.Key,
-			Content: r.Content,
-			Score:   r.Score,
-		}
-	}
-	return adapted, nil
-}
-
-// episodicToolAdapter adapts memory.EpisodicMemory to toolcore.EpisodicStore interface.
-type episodicToolAdapter struct {
-	em *memory.EpisodicMemory
-}
-
-func (a *episodicToolAdapter) StoreEntry(ctx context.Context, entry toolcore.EpisodicEntry) error {
-	memEntry := memory.EpisodicEntry{
-		SessionID:   entry.SessionID,
-		UserMessage: entry.UserMessage,
-		Summary:     entry.Summary,
-		Mode:        entry.Mode,
-		ToolsUsed:   entry.ToolsUsed,
-		Success:     entry.Success,
-		Timestamp:   entry.Timestamp,
-	}
-	return a.em.StoreEntry(ctx, memEntry)
-}
-
-func (a *episodicToolAdapter) RetrieveEntries(ctx context.Context, sessionID string, limit int) ([]toolcore.EpisodicEntry, error) {
-	entries, err := a.em.RetrieveEntries(ctx, sessionID, limit)
-	if err != nil {
-		return nil, err
-	}
-	adapted := make([]toolcore.EpisodicEntry, len(entries))
-	for i, e := range entries {
-		adapted[i] = toolcore.EpisodicEntry{
-			SessionID:   e.SessionID,
-			UserMessage: e.UserMessage,
-			Summary:     e.Summary,
-			Mode:        e.Mode,
-			ToolsUsed:   e.ToolsUsed,
-			Success:     e.Success,
-			Timestamp:   e.Timestamp,
-		}
-	}
-	return adapted, nil
-}
-
-// reflexionToolAdapter adapts memory.ReflexionMemory to toolcore.ReflexionStore interface.
-type reflexionToolAdapter struct {
-	rm *memory.ReflexionMemory
-}
-
-func (a *reflexionToolAdapter) Store(ctx context.Context, reflection toolcore.StoredReflexion) error {
-	memReflection := memory.StoredReflexion{
-		TaskDescription: reflection.TaskDescription,
-		Summary:         reflection.Summary,
-		Hypotheses:      reflection.Hypotheses,
-		SuggestedAction: reflection.SuggestedAction,
-		Timestamp:       reflection.Timestamp,
-	}
-	return a.rm.Store(ctx, memReflection)
-}
-
-func (a *reflexionToolAdapter) Search(ctx context.Context, query string, limit int) ([]toolcore.StoredReflexion, error) {
-	results, err := a.rm.Search(ctx, query, limit)
-	if err != nil {
-		return nil, err
-	}
-	adapted := make([]toolcore.StoredReflexion, len(results))
-	for i, r := range results {
-		adapted[i] = toolcore.StoredReflexion{
-			TaskDescription: r.TaskDescription,
-			Summary:         r.Summary,
-			Hypotheses:      r.Hypotheses,
-			SuggestedAction: r.SuggestedAction,
-			Timestamp:       r.Timestamp,
-		}
-	}
-	return adapted, nil
-}
-
-// reflexionMemoryStoreAdapter adapts memory.ReflexionMemory to core.ReflexionMemoryStore interface.
-type reflexionMemoryStoreAdapter struct {
-	rm *memory.ReflexionMemory
-}
-
-func (a *reflexionMemoryStoreAdapter) Store(ctx context.Context, reflection core.StoredReflexion) error {
-	memReflection := memory.StoredReflexion{
-		TaskDescription: reflection.TaskDescription,
-		Summary:         reflection.Summary,
-		Hypotheses:      reflection.Hypotheses,
-		SuggestedAction: reflection.SuggestedAction,
-	}
-	return a.rm.Store(ctx, memReflection)
-}
-
-func (a *reflexionMemoryStoreAdapter) Search(ctx context.Context, query string, limit int) ([]core.StoredReflexion, error) {
-	results, err := a.rm.Search(ctx, query, limit)
-	if err != nil {
-		return nil, err
-	}
-	adapted := make([]core.StoredReflexion, len(results))
-	for i, r := range results {
-		adapted[i] = core.StoredReflexion{
-			TaskDescription: r.TaskDescription,
-			Summary:         r.Summary,
-			Hypotheses:      r.Hypotheses,
-			SuggestedAction: r.SuggestedAction,
-		}
-	}
-	return adapted, nil
 }

@@ -148,17 +148,6 @@ llm:
 		t.Errorf("Expected default enabled_above_steps 40, got %d", cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps)
 	}
 
-	// Check Memory defaults
-	if cfg.Memory.Episodic.RetentionDays != 90 {
-		t.Errorf("Expected default retention_days 90, got %d", cfg.Memory.Episodic.RetentionDays)
-	}
-	if cfg.Memory.Episodic.RetrievalLimit != 5 {
-		t.Errorf("Expected default retrieval_limit 5, got %d", cfg.Memory.Episodic.RetrievalLimit)
-	}
-	if cfg.Memory.Constitution.UpdateIntervalSessions != 10 {
-		t.Errorf("Expected default update_interval_sessions 10, got %d", cfg.Memory.Constitution.UpdateIntervalSessions)
-	}
-
 	// Check Router defaults
 	if cfg.Router.HistoryWindow != 10 {
 		t.Errorf("Expected default history_window 10, got %d", cfg.Router.HistoryWindow)

@@ -103,21 +103,7 @@ type ExternalToolsConfig struct {
 
 // MemoryConfig holds memory system configuration.
 type MemoryConfig struct {
-	Database     string             `yaml:"database"` // single DB path for all persistent memory
-	Episodic     EpisodicConfig     `yaml:"episodic"`
-	Constitution ConstitutionConfig `yaml:"constitution"`
-}
-
-// EpisodicConfig configures episodic memory storage.
-type EpisodicConfig struct {
-	RetentionDays  int `yaml:"retention_days"`
-	RetrievalLimit int `yaml:"retrieval_limit"`
-}
-
-// ConstitutionConfig configures the agent's constitution.
-type ConstitutionConfig struct {
-	File                   string `yaml:"file"`
-	UpdateIntervalSessions int    `yaml:"update_interval_sessions"`
+	Database string `yaml:"database"` // single DB path for all persistent memory
 }
 
 // RouterConfig holds router settings.

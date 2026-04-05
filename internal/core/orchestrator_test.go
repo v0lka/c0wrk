@@ -146,8 +146,6 @@ func TestOrchestrator_DirectMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "What is the capital of France?")
@@ -280,8 +278,6 @@ func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "What is 2+2?")
@@ -418,8 +414,6 @@ func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Complex task")
@@ -568,8 +562,6 @@ func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Complex task")
@@ -729,8 +721,6 @@ func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Task that needs retries")
@@ -786,8 +776,6 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	// Test with no criteria
@@ -915,8 +903,6 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Fix the code")
@@ -1052,8 +1038,6 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -1143,8 +1127,6 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -1254,8 +1236,6 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				nil, // emitter - nil for tests
 				nil, // modelRegistry - nil for tests
 				config.ToolResultBudgetConfig{},
-				nil, // constitution
-				nil, // reflexionMem
 			)
 
 			result, err := orchestrator.Handle(context.Background(), "test")
@@ -1313,8 +1293,6 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -1431,8 +1409,6 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1550,8 +1526,6 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1674,8 +1648,6 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1799,8 +1771,6 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Build and test feature")
@@ -1938,8 +1908,6 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -2052,8 +2020,6 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	userMessage := "Please complete this important task"
@@ -2123,8 +2089,6 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	prompt := orchestrator.buildSystemPrompt(context.Background(), "", nil, false)
@@ -2262,8 +2226,6 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Do task with potential failure")
@@ -2367,8 +2329,6 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		mockEm, // emitter - use mock to track events
 		nil,    // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -2597,8 +2557,6 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -2845,8 +2803,6 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps with dependency")
@@ -3063,8 +3019,6 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		config.ToolResultBudgetConfig{},
-		nil, // constitution
-		nil, // reflexionMem
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps without AC mapping")
@@ -3946,304 +3900,5 @@ func TestValidateACMapping_AllMapped(t *testing.T) {
 	unmapped := validateACMapping(plan, ac)
 	if len(unmapped) != 0 {
 		t.Fatalf("expected no unmapped, got: %v", unmapped)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// mockReflexionMemoryStore implements ReflexionMemoryStore for testing.
-// ---------------------------------------------------------------------------
-type mockReflexionMemoryStore struct {
-	stored       []StoredReflexion
-	storeCalled  int
-	searchCalled int
-	searchResult []StoredReflexion
-	storeErr     error
-	searchErr    error
-}
-
-func (m *mockReflexionMemoryStore) Store(_ context.Context, r StoredReflexion) error {
-	m.storeCalled++
-	m.stored = append(m.stored, r)
-	return m.storeErr
-}
-
-func (m *mockReflexionMemoryStore) Search(_ context.Context, _ string, _ int) ([]StoredReflexion, error) {
-	m.searchCalled++
-	return m.searchResult, m.searchErr
-}
-
-// TestPostTaskReflection_StoresReflections verifies that postTaskReflection
-// stores each reflection to the reflexion memory store.
-func TestPostTaskReflection_StoresReflections(t *testing.T) {
-	mem := &mockReflexionMemoryStore{}
-
-	orch := &Orchestrator{
-		reflexionMem: mem,
-		emitter:      &noopEmitter{},
-	}
-
-	reflections := []Reflection{
-		{Summary: "first", Hypotheses: []string{"h1"}, SuggestedAction: "retry"},
-		{Summary: "second", Hypotheses: []string{"h2"}, SuggestedAction: "replan"},
-	}
-
-	orch.postTaskReflection(context.Background(), "do something", reflections)
-
-	if mem.storeCalled != 2 {
-		t.Fatalf("expected Store called 2 times, got %d", mem.storeCalled)
-	}
-	if mem.stored[0].Summary != "first" || mem.stored[1].Summary != "second" {
-		t.Errorf("stored reflections mismatch: %+v", mem.stored)
-	}
-}
-
-// TestPostTaskReflection_MetaReflectionTriggersAtInterval verifies that
-// meta-reflection is triggered when the constitution's session count hits
-// the configured interval boundary.
-func TestPostTaskReflection_MetaReflectionTriggersAtInterval(t *testing.T) {
-	tmpDir := t.TempDir()
-	constPath := tmpDir + "/constitution.json"
-
-	c, err := NewConstitution(constPath)
-	if err != nil {
-		t.Fatalf("NewConstitution: %v", err)
-	}
-
-	// Set interval to 3 and increment session count to 3 (boundary).
-	interval := 3
-	for i := 0; i < interval; i++ {
-		c.IncrementSession()
-	}
-	if !c.ShouldMetaReflect(interval) {
-		t.Fatalf("expected ShouldMetaReflect=true at session %d with interval %d", c.SessionCount(), interval)
-	}
-
-	// Prepare reflexion memory with stored reflexions for Search to return.
-	mem := &mockReflexionMemoryStore{
-		searchResult: []StoredReflexion{
-			{TaskDescription: "task1", Summary: "learned A", Hypotheses: []string{"h"}, SuggestedAction: "retry"},
-		},
-	}
-
-	// Mock LLM that returns numbered principles for meta-reflection.
-	mockLLM := &mockLLMCaller{
-		callFn: func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: "1. Always verify assumptions before proceeding with implementation\n2. Break complex tasks into smaller verifiable steps",
-				},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	orch := &Orchestrator{
-		reflexionMem: mem,
-		constitution: c,
-		llm:          mockLLM,
-		config:       OrchestratorConfig{ConstitutionUpdateInterval: interval},
-		emitter:      &noopEmitter{},
-	}
-
-	reflections := []Reflection{
-		{Summary: "something failed", Hypotheses: []string{"wrong approach"}, SuggestedAction: "retry"},
-	}
-
-	orch.postTaskReflection(context.Background(), "build feature", reflections)
-
-	// Store must have been called (reflections are always stored).
-	if mem.storeCalled != 1 {
-		t.Fatalf("expected Store called 1 time, got %d", mem.storeCalled)
-	}
-
-	// Search must have been called (meta-reflection was triggered).
-	if mem.searchCalled != 1 {
-		t.Fatalf("expected Search called 1 time, got %d", mem.searchCalled)
-	}
-
-	// MetaReflect should have added new principles.
-	principles := c.Principles()
-	if len(principles) == 0 {
-		t.Fatalf("expected principles to be added after meta-reflection, got 0")
-	}
-
-	found := false
-	for _, p := range principles {
-		if strings.Contains(p.Principle, "verify assumptions") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected principle about verifying assumptions, got: %+v", principles)
-	}
-}
-
-// TestPostTaskReflection_MetaReflectionSkippedWhenNotAtInterval verifies that
-// meta-reflection does NOT trigger when the session count hasn't reached the
-// interval boundary. Reflections should still be stored.
-func TestPostTaskReflection_MetaReflectionSkippedWhenNotAtInterval(t *testing.T) {
-	tmpDir := t.TempDir()
-	constPath := tmpDir + "/constitution.json"
-
-	c, err := NewConstitution(constPath)
-	if err != nil {
-		t.Fatalf("NewConstitution: %v", err)
-	}
-
-	// Set interval to 5 but only increment to 2 (not at boundary).
-	interval := 5
-	c.IncrementSession()
-	c.IncrementSession()
-	if c.ShouldMetaReflect(interval) {
-		t.Fatalf("expected ShouldMetaReflect=false at session %d with interval %d", c.SessionCount(), interval)
-	}
-
-	mem := &mockReflexionMemoryStore{}
-
-	orch := &Orchestrator{
-		reflexionMem: mem,
-		constitution: c,
-		config:       OrchestratorConfig{ConstitutionUpdateInterval: interval},
-		emitter:      &noopEmitter{},
-	}
-
-	reflections := []Reflection{
-		{Summary: "something", Hypotheses: []string{"h"}, SuggestedAction: "retry"},
-	}
-
-	orch.postTaskReflection(context.Background(), "task", reflections)
-
-	// Store must have been called (reflections are always stored).
-	if mem.storeCalled != 1 {
-		t.Fatalf("expected Store called 1 time, got %d", mem.storeCalled)
-	}
-
-	// Search must NOT have been called (meta-reflection should not trigger).
-	if mem.searchCalled != 0 {
-		t.Fatalf("expected Search not called, got %d calls", mem.searchCalled)
-	}
-}
-
-// TestConstitutionPrinciplesPassedToPlanner verifies that when the orchestrator
-// has a constitution with principles, those principles are forwarded to
-// planner.Plan() during handlePlanExecute.
-func TestConstitutionPrinciplesPassedToPlanner(t *testing.T) {
-	tmpDir := t.TempDir()
-	constPath := tmpDir + "/constitution.json"
-
-	c, err := NewConstitution(constPath)
-	if err != nil {
-		t.Fatalf("NewConstitution: %v", err)
-	}
-	if err := c.AddPrinciple("Always write tests before implementation"); err != nil {
-		t.Fatalf("AddPrinciple: %v", err)
-	}
-	if err := c.AddPrinciple("Prefer small incremental changes over big rewrites"); err != nil {
-		t.Fatalf("AddPrinciple: %v", err)
-	}
-
-	// Track what the planner receives by inspecting the LLM call.
-	var plannerSystemPrompt string
-	mockLLM := &mockLLMCaller{
-		callFn: func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			callType := detectCallType(req)
-			switch callType {
-			case "extract_raw":
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[]`},
-					StopReason: "end_turn",
-				}, nil
-			case "route":
-				return &llm.ChatResponse{
-					Message: llm.Message{Role: "assistant", Content: `{
-						"mode": "plan_execute",
-						"domain": "code",
-						"complexity": 4,
-						"compaction_strategy": "sliding_window",
-						"suggested_tools": ["bash_exec"],
-						"confidence": 0.9
-					}`},
-					StopReason: "end_turn",
-				}, nil
-			case "enrich":
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[]`},
-					StopReason: "end_turn",
-				}, nil
-			case "planner":
-				// Capture the planner system prompt to verify constitution principles
-				for _, msg := range req.Messages {
-					if msg.Role == "system" {
-						plannerSystemPrompt = msg.Content
-					}
-				}
-				return &llm.ChatResponse{
-					Message: llm.Message{Role: "assistant", Content: `{
-						"steps": [
-							{"id": "step_1", "description": "Do the thing", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash_exec"]}
-						]
-					}`},
-					StopReason: "end_turn",
-				}, nil
-			default:
-				// Executor: return a finish tool call
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "",
-						ToolCalls: []llm.ToolCall{{
-							ID:    "tc1",
-							Name:  "finish",
-							Input: json.RawMessage(`{"result": "done"}`),
-						}},
-					},
-					StopReason: "tool_use",
-				}, nil
-			}
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-	toolExec := &mockToolExecutor{results: map[string]tools.ToolResult{
-		"finish": {Content: "done"},
-	}}
-
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewACExtractor(mockLLM),
-		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
-		mockLLM,
-		toolExec,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil,  // reflector
-		nil,  // logger
-		nil,  // emitter
-		nil,  // modelRegistry
-		config.ToolResultBudgetConfig{},
-		c,    // constitution with principles
-		nil,  // reflexionMem
-	)
-
-	_, err = orchestrator.Handle(context.Background(), "Implement the feature")
-	if err != nil {
-		t.Fatalf("Handle failed: %v", err)
-	}
-
-	// Verify that the planner received the constitution principles.
-	if plannerSystemPrompt == "" {
-		t.Fatal("planner was never called")
-	}
-	if !strings.Contains(plannerSystemPrompt, "Always write tests before implementation") {
-		t.Errorf("planner prompt missing first principle, got:\n%s", plannerSystemPrompt)
-	}
-	if !strings.Contains(plannerSystemPrompt, "Prefer small incremental changes over big rewrites") {
-		t.Errorf("planner prompt missing second principle, got:\n%s", plannerSystemPrompt)
 	}
 }

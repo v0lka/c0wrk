@@ -9,12 +9,6 @@ interface EvalCriterionView {
   status: 'pass' | 'fail' | 'unclear'
 }
 
-// Placeholder data - will be populated by events
-// interface EvalResult {
-//   criteria: EvalCriterion[]
-//   summary?: string
-// }
-
 function StatusIcon({ status }: { status: EvalCriterionView['status'] }) {
   switch (status) {
     case 'pass':

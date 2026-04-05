@@ -77,17 +77,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.LMStudio.BaseURL = "http://localhost:1234"
 	}
 
-	// Memory defaults
-	if cfg.Memory.Episodic.RetentionDays == 0 {
-		cfg.Memory.Episodic.RetentionDays = 90
-	}
-	if cfg.Memory.Episodic.RetrievalLimit == 0 {
-		cfg.Memory.Episodic.RetrievalLimit = 5
-	}
-	if cfg.Memory.Constitution.UpdateIntervalSessions == 0 {
-		cfg.Memory.Constitution.UpdateIntervalSessions = 10
-	}
-
 	// Router defaults
 	if cfg.Router.HistoryWindow == 0 {
 		cfg.Router.HistoryWindow = 10

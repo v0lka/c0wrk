@@ -176,36 +176,6 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class MemoryStatsResponse {
-	    episodic: number;
-	    semantic: number;
-	    procedural: number;
-	    reflexion: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new MemoryStatsResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.episodic = source["episodic"];
-	        this.semantic = source["semantic"];
-	        this.procedural = source["procedural"];
-	        this.reflexion = source["reflexion"];
-	    }
-	}
-	export class SessionMemoryStatsResponse {
-	    episodic: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new SessionMemoryStatsResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.episodic = source["episodic"];
-	    }
-	}
 	export class SessionTokensResponse {
 	    total_input_tokens: number;
 	    total_output_tokens: number;

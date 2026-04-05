@@ -16,8 +16,6 @@ type ContextWindow struct {
 	taskDefinition string
 	criteria       []core.AcceptanceCriterion
 	plan           *core.Plan
-	reflections    []core.Reflection
-	constitution   []string
 	steps          []core.Step
 	strategy       core.CompactionStrategy
 	tracker        *llm.ContextTokenTracker
@@ -113,16 +111,6 @@ func (cw *ContextWindow) SetPlan(plan *core.Plan) {
 	cw.plan = plan
 }
 
-// SetReflections sets the reflections.
-func (cw *ContextWindow) SetReflections(reflections []core.Reflection) {
-	cw.reflections = reflections
-}
-
-// SetConstitution sets the constitution principles.
-func (cw *ContextWindow) SetConstitution(principles []string) {
-	cw.constitution = principles
-}
-
 // AddStep appends a step to the history and updates the token tracker.
 func (cw *ContextWindow) AddStep(step core.Step) {
 	cw.steps = append(cw.steps, step)
@@ -170,25 +158,7 @@ func (cw *ContextWindow) BuildPrompt() []llm.Message {
 		})
 	}
 
-	// 4. System message with reflections
-	if len(cw.reflections) > 0 {
-		reflectionsContent := cw.formatReflections()
-		messages = append(messages, llm.Message{
-			Role:    "system",
-			Content: reflectionsContent,
-		})
-	}
-
-	// 5. System message with constitution principles
-	if len(cw.constitution) > 0 {
-		constitutionContent := cw.formatConstitution()
-		messages = append(messages, llm.Message{
-			Role:    "system",
-			Content: constitutionContent,
-		})
-	}
-
-	// 6. Step history
+	// 4. Step history
 	stepMessages := cw.buildStepMessages()
 	messages = append(messages, stepMessages...)
 
@@ -291,31 +261,4 @@ func (cw *ContextWindow) formatPlan() string {
 	return strings.Join(parts, "\n")
 }
 
-// formatReflections formats the reflections.
-func (cw *ContextWindow) formatReflections() string {
-	parts := make([]string, 0, 2+len(cw.reflections)*7)
-	parts = append(parts, "## Previous Attempt Reflections",
-		"(READ these carefully and AVOID repeating the same mistakes)")
-	for i, r := range cw.reflections {
-		parts = append(parts,
-			fmt.Sprintf("\n### Reflection %d", i+1),
-			"- Summary: "+r.Summary,
-			"- Failed Criteria: "+strings.Join(r.FailedCriteria, ", "),
-			"- Root Cause: "+r.RootCause,
-			"- Action Plan: "+r.ActionPlan,
-			"- Analysis: "+r.FailureAnalysis,
-		)
-	}
-	return strings.Join(parts, "\n")
-}
 
-// formatConstitution formats the constitution principles.
-func (cw *ContextWindow) formatConstitution() string {
-	parts := make([]string, 1, 1+len(cw.constitution))
-	parts[0] = "Constitution Principles:"
-	for i, principle := range cw.constitution {
-		parts = append(parts, fmt.Sprintf("%d. %s", i+1, principle))
-	}
-
-	return strings.Join(parts, "\n")
-}

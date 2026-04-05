@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"sync"
 	"time"
 
@@ -206,30 +205,6 @@ type Reflection struct {
 	ActionPlan      string    `json:"action_plan"`      // what to do differently
 	Timestamp       time.Time `json:"timestamp"`
 	TaskType        string    `json:"task_type"` // for Episodic Memory indexing
-}
-
-// SemanticSearchResult represents a result from semantic memory search.
-type SemanticSearchResult struct {
-	Key     string
-	Content string
-	Score   float64
-}
-
-// StoredReflexion mirrors memory.StoredReflexion to avoid an import cycle.
-// Implementations in the memory package satisfy this via adapter.
-type StoredReflexion struct {
-	TaskDescription string
-	Summary         string
-	Hypotheses      []string
-	SuggestedAction string
-}
-
-// ReflexionMemoryStore is the interface the orchestrator uses for reflexion memory.
-// It is implemented by memory.ReflexionMemory (via adapter in app.go) to break the
-// core → memory import cycle.
-type ReflexionMemoryStore interface {
-	Store(ctx context.Context, reflection StoredReflexion) error
-	Search(ctx context.Context, query string, limit int) ([]StoredReflexion, error)
 }
 
 // SubAgentResult — result from a SubAgent (AD 4.7).

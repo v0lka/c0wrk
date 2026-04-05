@@ -104,9 +104,6 @@ type mockContextManager struct {
 	// steps records all steps added
 	steps []Step
 
-	// reflections set via SetReflections
-	reflections []Reflection
-
 	// criteria set via SetTask
 	criteria []AcceptanceCriterion
 
@@ -153,10 +150,6 @@ func (m *mockContextManager) NeedsCompaction() bool {
 
 func (m *mockContextManager) Compact(ctx context.Context) {
 	m.compactCalled = true
-}
-
-func (m *mockContextManager) SetReflections(reflections []Reflection) {
-	m.reflections = reflections
 }
 
 func (m *mockContextManager) SetTask(task string, criteria []AcceptanceCriterion) {

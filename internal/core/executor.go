@@ -59,8 +59,6 @@ type ContextManager interface {
 	Compact(ctx context.Context)
 	// SetTask sets the user's task and acceptance criteria into the context window.
 	SetTask(task string, criteria []AcceptanceCriterion)
-	// SetReflections sets reflections for the retry loop (Phase 3).
-	SetReflections(reflections []Reflection)
 	// SetStrategy changes the compaction strategy at runtime.
 	SetStrategy(strategy CompactionStrategy)
 	// CheckFill returns the current fill status of the context window.

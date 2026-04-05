@@ -47,7 +47,7 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 		{Name: "file_write", Description: "Write content to a file"},
 	}
 
-	plan, err := planner.Plan(context.Background(), "Create a new Go project", criteria, availableTools, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Create a new Go project", criteria, availableTools, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestPlan_IncludesToolsAndCriteria(t *testing.T) {
 		{Name: "file_read", Description: "Read file contents"},
 	}
 
-	_, err := planner.Plan(context.Background(), "Build project", criteria, availableTools, nil, nil)
+	_, err := planner.Plan(context.Background(), "Build project", criteria, availableTools, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestPlan_WithReflections(t *testing.T) {
 		},
 	}
 
-	_, err := planner.Plan(context.Background(), "Deploy application", nil, nil, reflections, nil)
+	_, err := planner.Plan(context.Background(), "Deploy application", nil, nil, reflections)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -275,47 +275,6 @@ func TestPlan_WithReflections(t *testing.T) {
 	}
 }
 
-func TestPlan_WithConstitution(t *testing.T) {
-	var capturedRequest llm.ChatRequest
-
-	mock := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			capturedRequest = req
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
-				},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	planner := NewPlanner(mock)
-
-	constitution := []string{
-		"Always write tests before implementation",
-		"Never delete files without confirmation",
-	}
-
-	_, err := planner.Plan(context.Background(), "Build project", nil, nil, nil, constitution)
-	if err != nil {
-		t.Fatalf("Plan() returned error: %v", err)
-	}
-
-	// Verify constitution is included in the prompt
-	systemPrompt := capturedRequest.Messages[0].Content
-	if !strings.Contains(systemPrompt, "Always write tests before implementation") {
-		t.Error("System prompt should contain first constitution principle")
-	}
-	if !strings.Contains(systemPrompt, "Never delete files without confirmation") {
-		t.Error("System prompt should contain second constitution principle")
-	}
-	if !strings.Contains(systemPrompt, "Constitution principles") {
-		t.Error("System prompt should contain constitution header")
-	}
-}
-
 func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
 	mockResponse := "```json\n{\"steps\": [{\"id\": \"step_1\", \"description\": \"Test\", \"depends_on\": [], \"parallelizable\": true, \"estimated_tools\": [], \"relevant_ac\": []}]}\n```"
 
@@ -333,7 +292,7 @@ func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Test task", nil, nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Test task", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() should parse markdown code block, got error: %v", err)
 	}
@@ -454,7 +413,7 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Research task", nil, nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Research task", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -505,7 +464,7 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Simple task", nil, nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Simple task", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -542,7 +501,7 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 
 	// With workspace path
 	ctx := tools.WithWorkspacePath(context.Background(), "/my/project")
-	_, err := planner.Plan(ctx, "Build project", nil, nil, nil, nil)
+	_, err := planner.Plan(ctx, "Build project", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -559,7 +518,7 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 	}
 
 	// Without workspace path
-	_, err = planner.Plan(context.Background(), "Build project", nil, nil, nil, nil)
+	_, err = planner.Plan(context.Background(), "Build project", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}

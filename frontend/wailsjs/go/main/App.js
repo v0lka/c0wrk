@@ -26,20 +26,12 @@ export function GetLogLevel() {
   return window['go']['main']['App']['GetLogLevel']();
 }
 
-export function GetMemoryStats() {
-  return window['go']['main']['App']['GetMemoryStats']();
-}
-
 export function GetSecuritySettings() {
   return window['go']['main']['App']['GetSecuritySettings']();
 }
 
 export function GetSessionHistory(arg1) {
   return window['go']['main']['App']['GetSessionHistory'](arg1);
-}
-
-export function GetSessionMemoryStats(arg1) {
-  return window['go']['main']['App']['GetSessionMemoryStats'](arg1);
 }
 
 export function GetSessionTokens(arg1) {

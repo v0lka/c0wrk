@@ -73,12 +73,6 @@ external_tools:
 
 memory:
   database: ""
-  episodic:
-    retention_days: 90
-    retrieval_limit: 5
-  constitution:
-    file: ""
-    update_interval_sessions: 10
 
 mcp:
   servers: {}

@@ -17,11 +17,10 @@ import (
 
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
-	MaxSteps                   int
-	KeepFirst                  int // for sliding window compaction
-	KeepLast                   int // for sliding window compaction
-	MaxRetries                 int // max retry attempts after failed evaluation (default: 3)
-	ConstitutionUpdateInterval int // how many sessions between meta-reflections (0 = disabled)
+	MaxSteps   int
+	KeepFirst  int // for sliding window compaction
+	KeepLast   int // for sliding window compaction
+	MaxRetries int // max retry attempts after failed evaluation (default: 3)
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -50,8 +49,6 @@ type Orchestrator struct {
 	logger              *slog.Logger  // structured logger (nil-safe)
 	emitter             Emitter       // event emitter (nil-safe, uses noopEmitter if nil)
 	toolResultBudget    config.ToolResultBudgetConfig
-	constitution        *Constitution         // optional, nil-safe
-	reflexionMem        ReflexionMemoryStore  // optional, nil-safe
 }
 
 // NewOrchestrator creates a new Orchestrator with all Phase 2 components.
@@ -72,8 +69,6 @@ func NewOrchestrator(
 	emitter Emitter, // optional, uses noopEmitter if nil
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
 	toolResultBudget config.ToolResultBudgetConfig,
-	constitution *Constitution, // optional, nil-safe
-	reflexionMem ReflexionMemoryStore, // optional, nil-safe
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
@@ -109,8 +104,6 @@ func NewOrchestrator(
 		logger:           logger,
 		emitter:          emitter,
 		toolResultBudget: toolResultBudget,
-		constitution:     constitution,
-		reflexionMem:     reflexionMem,
 	}
 }
 
@@ -201,11 +194,6 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 
 	if err != nil {
 		return nil, err
-	}
-
-	// 6. Post-task reflection storage and meta-reflection (non-fatal)
-	if result != nil {
-		o.postTaskReflection(ctx, userMessage, result.Reflections)
 	}
 
 	// 7. Accumulate conversation history for future routing context
@@ -331,11 +319,6 @@ func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, rout
 
 		// Set the task and acceptance criteria into the context window
 		cw.SetTask(taskDef.Task, taskDef.Criteria)
-
-		// Set session reflections in context window
-		if len(sessionReflections) > 0 {
-			cw.SetReflections(sessionReflections)
-		}
 
 		// Run executor (don't suppress assistant events for react mode)
 		executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.logger, o.emitter, false, o.toolResultBudget)
@@ -554,13 +537,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 	// 2. Generate initial plan
 	o.emitter.ServiceWithMeta("Creating execution plan...", map[string]interface{}{"phase": "orchestration"})
-	var constitutionPrinciples []string
-	if o.constitution != nil {
-		for _, p := range o.constitution.Principles() {
-			constitutionPrinciples = append(constitutionPrinciples, p.Principle)
-		}
-	}
-	plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, sessionReflections, constitutionPrinciples)
+	plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, sessionReflections)
 	if err != nil {
 		return nil, fmt.Errorf("planning failed: %w", err)
 	}
@@ -796,10 +773,6 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 
 			// Set the task and acceptance criteria into the context window
 			cm.SetTask(taskDef.Task, taskDef.Criteria)
-
-			if len(sessionReflections) > 0 {
-				cm.SetReflections(sessionReflections)
-			}
 			// Scope emitter to plan step for event association
 			scopedEmitter := scopeEmitterToStep(o.emitter, step.ID)
 
@@ -1201,62 +1174,6 @@ STEP EXECUTION SCOPE: You are executing a single step in a multi-step plan. Your
 // Kept for compatibility with Phase 1 code.
 func (o *Orchestrator) Run(ctx context.Context, userMessage string) (*HandleResult, error) {
 	return o.Handle(ctx, userMessage)
-}
-
-// postTaskReflection stores session reflections to reflexion memory and
-// conditionally triggers constitution meta-reflection. This method is a no-op
-// when reflexionMem or constitution is nil, and never returns errors — all
-// failures are logged but do not affect the Handle() return value.
-func (o *Orchestrator) postTaskReflection(ctx context.Context, userMessage string, reflections []Reflection) {
-	// Step A: Store reflections to reflexion memory
-	if o.reflexionMem == nil || len(reflections) == 0 {
-		return
-	}
-
-	for _, r := range reflections {
-		stored := StoredReflexion{
-			TaskDescription: userMessage,
-			Summary:         r.Summary,
-			Hypotheses:      r.Hypotheses,
-			SuggestedAction: r.SuggestedAction,
-		}
-		if err := o.reflexionMem.Store(ctx, stored); err != nil {
-			o.logWarn("failed to store reflexion", "error", err)
-		}
-	}
-
-	// Step B: Conditionally trigger meta-reflection
-	if o.constitution == nil || o.config.ConstitutionUpdateInterval <= 0 {
-		return
-	}
-	if !o.constitution.ShouldMetaReflect(o.config.ConstitutionUpdateInterval) {
-		return
-	}
-
-	o.logInfo("triggering constitution meta-reflection")
-
-	// Retrieve recent reflections from memory
-	storedReflexions, err := o.reflexionMem.Search(ctx, "", 50)
-	if err != nil {
-		o.logWarn("failed to search reflexion memory for meta-reflection", "error", err)
-		return
-	}
-	if len(storedReflexions) == 0 {
-		return
-	}
-
-	// Convert to StoredReflectionData (the type constitution.MetaReflect expects)
-	data := make([]StoredReflectionData, len(storedReflexions))
-	for i, sr := range storedReflexions {
-		data[i] = StoredReflectionData(sr)
-	}
-
-	if err := o.constitution.MetaReflect(ctx, data, o.llm); err != nil {
-		o.logWarn("constitution meta-reflection failed", "error", err)
-		return
-	}
-
-	o.logInfo("constitution meta-reflection completed", "principles", len(o.constitution.Principles()))
 }
 
 // isRecoverableAPIError checks if an error is a recoverable API error

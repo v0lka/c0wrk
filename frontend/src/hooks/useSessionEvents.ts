@@ -193,8 +193,6 @@ export function useSessionEvents(sessionId: string | null) {
 
     on('reflection', () => {
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Reflecting on results...')
-      // Skip reflection events - not shown in chat timeline
-      // Inspector can still track internal reflection data if needed elsewhere
     })
 
     on('plan_generated', (data: unknown) => {

@@ -1,7 +1,6 @@
 import { useRef, useCallback, useState, useEffect, type MouseEvent as ReactMouseEvent } from 'react'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
-import { InspectorPanel } from '@/components/inspector/InspectorPanel'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { ExecutionPanels } from '@/components/chat/ExecutionPanels'
@@ -10,10 +9,6 @@ import { PendingActionsBar } from '@/components/chat/PendingActionsBar'
 const SIDEBAR_DEFAULT = 260
 const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 400
-
-const INSPECTOR_DEFAULT = 320
-const INSPECTOR_MIN = 200
-const INSPECTOR_MAX = 500
 
 function useResizeHandle(
   defaultWidth: number,
@@ -95,7 +90,6 @@ function ResizeHandle({ onMouseDown }: { onMouseDown: (e: ReactMouseEvent) => vo
 
 export function AppLayout() {
   const sidebar = useResizeHandle(SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, 'left')
-  const inspector = useResizeHandle(INSPECTOR_DEFAULT, INSPECTOR_MIN, INSPECTOR_MAX, 'right')
 
   return (
     <div className="h-screen w-screen flex overflow-hidden">
@@ -120,16 +114,6 @@ export function AppLayout() {
           </div>
         </main>
         <StatusBar />
-      </div>
-
-      <ResizeHandle onMouseDown={inspector.onMouseDown} />
-
-      {/* Inspector */}
-      <div
-        className="flex-shrink-0 overflow-hidden"
-        style={{ width: inspector.width }}
-      >
-        <InspectorPanel />
       </div>
     </div>
   )

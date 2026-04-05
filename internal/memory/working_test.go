@@ -67,19 +67,6 @@ func TestBuildPromptOrdering(t *testing.T) {
 	}
 	cw.SetPlan(plan)
 
-	// Set reflections
-	reflections := []core.Reflection{
-		{FailureAnalysis: "Test failed", RootCause: "Missing import", ActionPlan: "Add import"},
-	}
-	cw.SetReflections(reflections)
-
-	// Set constitution
-	constitution := []string{
-		"Be helpful",
-		"Be safe",
-	}
-	cw.SetConstitution(constitution)
-
 	// Add steps
 	cw.AddStep(makeStep("Thinking step 1", "Observation 1", 1))
 	cw.AddStep(makeStep("Thinking step 2", "Observation 2", 2))
@@ -87,9 +74,9 @@ func TestBuildPromptOrdering(t *testing.T) {
 
 	messages := cw.BuildPrompt()
 
-	// Verify order: system, task+AC (user), plan (system), reflections (system), constitution (system), steps
-	if len(messages) < 11 {
-		t.Fatalf("Expected at least 11 messages, got %d", len(messages))
+	// Verify order: system, task+AC (user), plan (system), steps
+	if len(messages) < 9 {
+		t.Fatalf("Expected at least 9 messages, got %d", len(messages))
 	}
 
 	// Message 0: System prompt
@@ -107,23 +94,13 @@ func TestBuildPromptOrdering(t *testing.T) {
 		t.Errorf("Message 2 should be system (plan), got role=%s", messages[2].Role)
 	}
 
-	// Message 3: Reflections (system)
-	if messages[3].Role != "system" {
-		t.Errorf("Message 3 should be system (reflections), got role=%s", messages[3].Role)
+	// Messages 3+: Step messages (assistant, tool, assistant, tool, ...)
+	if messages[3].Role != "assistant" || messages[3].Content != "Thinking step 1" {
+		t.Errorf("Message 3 should be assistant (step 1 thought), got role=%s, content=%s", messages[3].Role, messages[3].Content)
 	}
 
-	// Message 4: Constitution (system)
-	if messages[4].Role != "system" {
-		t.Errorf("Message 4 should be system (constitution), got role=%s", messages[4].Role)
-	}
-
-	// Messages 5+: Step messages (assistant, tool, assistant, tool, ...)
-	if messages[5].Role != "assistant" || messages[5].Content != "Thinking step 1" {
-		t.Errorf("Message 5 should be assistant (step 1 thought), got role=%s, content=%s", messages[5].Role, messages[5].Content)
-	}
-
-	if messages[6].Role != "tool" || messages[6].Content != "Observation 1" {
-		t.Errorf("Message 6 should be tool (step 1 observation), got role=%s", messages[6].Role)
+	if messages[4].Role != "tool" || messages[4].Content != "Observation 1" {
+		t.Errorf("Message 4 should be tool (step 1 observation), got role=%s", messages[4].Role)
 	}
 }
 
@@ -135,7 +112,7 @@ func TestBuildPromptWithEmptySections(t *testing.T) {
 
 	cw := NewContextWindow("System prompt only", testModelMeta(128000), tracker, testThresholds(), strategy)
 
-	// Only add steps, no task, criteria, plan, reflections, or constitution
+	// Only add steps, no task, criteria, or plan
 	cw.AddStep(makeStep("Thought 1", "Obs 1", 1))
 	cw.AddStep(makeStep("Thought 2", "Obs 2", 2))
 

@@ -19,7 +19,6 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"ACEnricherSystem", ACEnricherSystem},
 		{"EvaluatorJudge", EvaluatorJudge},
 		{"EvaluatorReconsider", EvaluatorReconsider},
-		{"ConstitutionMetaReflection", ConstitutionMetaReflection},
 	}
 
 	for _, tt := range tests {
@@ -73,7 +72,6 @@ func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 		"ACEnricherSystem":           ACEnricherSystem,
 		"EvaluatorJudge":             EvaluatorJudge,
 		"EvaluatorReconsider":        EvaluatorReconsider,
-		"ConstitutionMetaReflection": ConstitutionMetaReflection,
 	}
 
 	seen := make(map[string]string) // content -> name

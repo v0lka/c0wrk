@@ -42,8 +42,3 @@ var EvaluatorJudge string
 
 //go:embed evaluator_reconsider.md
 var EvaluatorReconsider string
-
-// Constitution prompt
-
-//go:embed constitution_meta_reflection.md
-var ConstitutionMetaReflection string
