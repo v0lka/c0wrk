@@ -14,6 +14,7 @@ export interface EvalItem {
   name: string        // criterion name/ID
   description: string // criterion description
   status: 'pending' | 'pass' | 'fail' | 'unclear'
+  diagnostic?: string
 }
 
 export interface PlanGroup {
@@ -52,8 +53,8 @@ interface PanelState {
   // Actions
   addPlanGroup: (steps: Array<{ description: string; status?: string }>, progress?: { progress?: number; completed_count?: number; total_count?: number }) => void
   updatePlanItemStatus: (stepId: string, status: PlanItem['status'], duration?: number) => void
-  addEvalGroup: (criteria: Array<{ name: string; description?: string; passed?: boolean }>) => void
-  updateEvalGroupStatuses: (criteria: Array<{ name: string; description?: string; passed?: boolean }>) => void
+  addEvalGroup: (criteria: Array<{ name: string; description?: string; passed?: boolean; status?: 'pass' | 'fail' | 'unclear'; diagnostic?: string }>) => void
+  updateEvalGroupStatuses: (criteria: Array<{ name: string; description?: string; passed?: boolean; status?: 'pass' | 'fail' | 'unclear'; diagnostic?: string }>) => void
   updateStats: (update: Partial<SessionStats>) => void
   resetPanels: () => void
   resetEvalStatuses: () => void
@@ -122,7 +123,8 @@ export const usePanelStore = create<PanelState>((set) => ({
       items: criteria.map((c) => ({
         name: c.name,
         description: c.description || c.name,
-        status: c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const,
+        status: c.status ?? (c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const),
+        ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
       })),
     }
     set((state) => ({
@@ -140,7 +142,8 @@ export const usePanelStore = create<PanelState>((set) => ({
           items: criteria.map((c) => ({
             name: c.name,
             description: c.description || c.name,
-            status: c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const,
+            status: c.status ?? (c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const),
+            ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
           })),
         }
         return { evalGroups: [newGroup] }
@@ -152,7 +155,8 @@ export const usePanelStore = create<PanelState>((set) => ({
         if (match) {
           return {
             ...item,
-            status: match.passed === undefined ? 'pending' as const : match.passed ? 'pass' as const : 'fail' as const,
+            status: match.status ?? (match.passed === undefined ? 'pending' as const : match.passed ? 'pass' as const : 'fail' as const),
+            ...(match.diagnostic !== undefined ? { diagnostic: match.diagnostic } : {}),
           }
         }
         return item
@@ -266,7 +270,7 @@ export const usePanelStore = create<PanelState>((set) => ({
 
         case 'eval': {
           const meta = msg.metadata as Record<string, unknown> | undefined
-          const rawCriteria = (meta?.criteria as Array<{ name: string; description?: string; passed: boolean }>) || []
+          const rawCriteria = (meta?.criteria as Array<{ name: string; description?: string; passed: boolean; status?: 'pass' | 'fail' | 'unclear'; diagnostic?: string }>) || []
           // Check if latest group has matching criteria names - update instead of creating new
           if (evalGroups.length > 0) {
             const latestGroup = evalGroups[evalGroups.length - 1]
@@ -284,7 +288,8 @@ export const usePanelStore = create<PanelState>((set) => ({
                   if (match) {
                     return {
                       ...item,
-                      status: match.passed ? 'pass' as const : 'fail' as const,
+                      status: match.status ?? (match.passed ? 'pass' as const : 'fail' as const),
+                      ...(match.diagnostic !== undefined ? { diagnostic: match.diagnostic } : {}),
                     }
                   }
                   return item
@@ -299,7 +304,8 @@ export const usePanelStore = create<PanelState>((set) => ({
             items: rawCriteria.map((c) => ({
               name: c.name,
               description: c.description || c.name,
-              status: c.passed ? 'pass' as const : 'fail' as const,
+              status: c.status ?? (c.passed ? 'pass' as const : 'fail' as const),
+              ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
             })),
           }
           evalGroups.push(group)

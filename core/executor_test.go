@@ -1804,9 +1804,9 @@ func TestExecutor_RepeatedToolCallCircuitBreaker(t *testing.T) {
 		t.Errorf("expected circuit breaker to kick in early (less than 10 steps), got %d", len(result.Steps))
 	}
 
-	// Exactly 3 steps: 2 normal executions + 1 nudge step (nudge at repeat 3, abort at repeat 4 returns before adding step)
-	if len(result.Steps) != 3 {
-		t.Errorf("expected exactly 3 steps (2 normal + 1 nudge), got %d", len(result.Steps))
+	// Exactly 2 steps: 1 normal execution + 1 nudge step (error-aware thresholds: nudge at repeat 2, abort at repeat 3)
+	if len(result.Steps) != 2 {
+		t.Errorf("expected exactly 2 steps (1 normal + 1 nudge), got %d", len(result.Steps))
 	}
 }
 

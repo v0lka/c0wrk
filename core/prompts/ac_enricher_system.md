@@ -4,7 +4,7 @@ You will receive raw criteria and routing context. All output must be in English
 Input context provided:
 
 - Raw criteria: domain-agnostic requirements with Nature (objective/subjective), Weight (must/should/nice_to_have), and Implicit flags
-- Routing decision: domain, mode, complexity, and suggested tools
+- Routing decision: domain, complexity, and suggested tools
 
 Enrichment rules by domain:
 
@@ -36,11 +36,9 @@ Workspace confinement:
 - CheckType: "llm_judge"
 - Mark this criterion as implicit
 
-Granularity adaptation by mode:
+Granularity adaptation:
 
-- "plan_execute": Split broad criteria into fine-grained, step-mappable criteria
-- "react": Keep criteria at moderate granularity
-- "direct": Keep criteria coarse — only essential checks
+- Split broad criteria into fine-grained, step-mappable criteria suitable for plan-execute workflows
 
 IMPORTANT:
 

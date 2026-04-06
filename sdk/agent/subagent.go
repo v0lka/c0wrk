@@ -62,19 +62,24 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 		emitter.SubAgentComplete(stepID, success, duration)
 
 		if err != nil {
-			ch <- SubAgentResult{StepID: stepID, Error: err}
+			var steps []Step
+			if result != nil {
+				steps = result.Steps
+			}
+			ch <- SubAgentResult{StepID: stepID, Steps: steps, Error: err}
 			return
 		}
 
 		// Treat max steps exhaustion (no proper finish) as a step failure
 		if !result.Finished {
-			ch <- SubAgentResult{StepID: stepID, Output: result.Output, Error: errors.New("step execution did not complete within max steps")}
+			ch <- SubAgentResult{StepID: stepID, Output: result.Output, Steps: result.Steps, Error: errors.New("step execution did not complete within max steps")}
 			return
 		}
 
 		ch <- SubAgentResult{
 			StepID: stepID,
 			Output: result.Output,
+			Steps:  result.Steps,
 		}
 	}()
 

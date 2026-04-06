@@ -1,27 +1,83 @@
 package session
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
+
+// openTestDB opens an in-memory SQLite database with required pragmas.
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to enable WAL: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to enable foreign keys: %v", err)
+	}
+	return db
+}
+
+// createProjectsTable creates the projects table needed for FK references.
+func createProjectsTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	_, err := db.ExecContext(context.Background(), `
+		CREATE TABLE IF NOT EXISTS projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			workspace_path TEXT NOT NULL,
+			is_external BOOLEAN NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL,
+			last_active_at TIMESTAMP
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create projects table: %v", err)
+	}
+}
+
+// insertTestProject inserts a test project and returns its ID.
+func insertTestProject(t *testing.T, db *sql.DB, id string) string {
+	t.Helper()
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO projects (id, name, workspace_path, created_at)
+		VALUES (?, ?, ?, ?)`,
+		id, "Test Project", "/tmp/test", time.Now().Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatalf("failed to insert test project: %v", err)
+	}
+	return id
+}
+
+const testProjectID = "test-project-1"
 
 func setupTestStore(t *testing.T) (store *SQLiteSessionStore, cleanup func()) {
 	t.Helper()
 
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test.db")
+	db := openTestDB(t)
+	createProjectsTable(t, db)
+	insertTestProject(t, db, testProjectID)
 
 	var err error
-	store, err = NewSQLiteSessionStore(dbPath)
+	store, err = NewSQLiteSessionStore(db)
 	if err != nil {
+		_ = db.Close()
 		t.Fatalf("failed to create test store: %v", err)
 	}
 
 	cleanup = func() {
-		_ = store.Close()
+		_ = db.Close()
 	}
 
 	return
@@ -33,6 +89,7 @@ func TestSaveAndLoadSession(t *testing.T) {
 
 	session := SessionInfo{
 		ID:        "test-session-1",
+		ProjectID: testProjectID,
 		Name:      "Test Session",
 		CreatedAt: "2024-01-15T10:30:00Z",
 		Archived:  false,
@@ -54,6 +111,9 @@ func TestSaveAndLoadSession(t *testing.T) {
 
 	if loaded.ID != session.ID {
 		t.Errorf("session ID mismatch: got %q, want %q", loaded.ID, session.ID)
+	}
+	if loaded.ProjectID != session.ProjectID {
+		t.Errorf("session ProjectID mismatch: got %q, want %q", loaded.ProjectID, session.ProjectID)
 	}
 	if loaded.Name != session.Name {
 		t.Errorf("session name mismatch: got %q, want %q", loaded.Name, session.Name)
@@ -80,18 +140,21 @@ func TestListSessions(t *testing.T) {
 	sessions := []SessionInfo{
 		{
 			ID:        "session-1",
+			ProjectID: testProjectID,
 			Name:      "First Session",
 			CreatedAt: "2024-01-15T10:00:00Z",
 			Archived:  false,
 		},
 		{
 			ID:        "session-2",
+			ProjectID: testProjectID,
 			Name:      "Second Session",
 			CreatedAt: "2024-01-15T11:00:00Z",
 			Archived:  true,
 		},
 		{
 			ID:        "session-3",
+			ProjectID: testProjectID,
 			Name:      "Third Session",
 			CreatedAt: "2024-01-15T12:00:00Z",
 			Archived:  false,
@@ -132,6 +195,7 @@ func TestDeleteSession(t *testing.T) {
 	// Create session with messages
 	session := SessionInfo{
 		ID:        "delete-test",
+		ProjectID: testProjectID,
 		Name:      "Delete Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -198,6 +262,7 @@ func TestArchiveSession(t *testing.T) {
 
 	session := SessionInfo{
 		ID:        "archive-test",
+		ProjectID: testProjectID,
 		Name:      "Archive Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Archived:  false,
@@ -247,6 +312,7 @@ func TestRenameSession(t *testing.T) {
 
 	session := SessionInfo{
 		ID:        "rename-test",
+		ProjectID: testProjectID,
 		Name:      "Original Name",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -280,6 +346,7 @@ func TestSaveAndLoadMessages(t *testing.T) {
 	// Create session first
 	session := SessionInfo{
 		ID:        "msg-test",
+		ProjectID: testProjectID,
 		Name:      "Message Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -371,6 +438,7 @@ func TestDeleteMessages(t *testing.T) {
 	// Create session
 	session := SessionInfo{
 		ID:        "delete-msg-test",
+		ProjectID: testProjectID,
 		Name:      "Delete Messages Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -425,10 +493,11 @@ func TestDeleteMessages(t *testing.T) {
 }
 
 func TestSessionStoreClose(t *testing.T) {
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "close_test.db")
+	db := openTestDB(t)
+	createProjectsTable(t, db)
+	insertTestProject(t, db, testProjectID)
 
-	store, err := NewSQLiteSessionStore(dbPath)
+	store, err := NewSQLiteSessionStore(db)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -436,6 +505,7 @@ func TestSessionStoreClose(t *testing.T) {
 	// Save some data
 	session := SessionInfo{
 		ID:        "close-test",
+		ProjectID: testProjectID,
 		Name:      "Close Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -443,22 +513,21 @@ func TestSessionStoreClose(t *testing.T) {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
-	// Close the store
+	// Close the store (no-op since DB lifecycle is external)
 	if err := store.Close(); err != nil {
 		t.Fatalf("failed to close store: %v", err)
 	}
 
-	// Verify database file exists and has content
-	info, err := os.Stat(dbPath)
+	// DB should still be usable (Close is a no-op)
+	loaded, err := store.LoadSession(session.ID)
 	if err != nil {
-		t.Fatalf("database file should exist: %v", err)
+		t.Fatalf("failed to load after close: %v", err)
 	}
-	if info.IsDir() {
-		t.Error("should be a file not directory")
+	if loaded == nil || loaded.ID != session.ID {
+		t.Error("expected to still load session after Close (no-op)")
 	}
-	if info.Size() == 0 {
-		t.Error("database file should have content")
-	}
+
+	_ = db.Close()
 }
 
 func TestEmptyListSessions(t *testing.T) {
@@ -485,6 +554,7 @@ func TestEmptyLoadMessages(t *testing.T) {
 	// Create session without messages
 	session := SessionInfo{
 		ID:        "empty-msg-test",
+		ProjectID: testProjectID,
 		Name:      "Empty Messages Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -512,6 +582,7 @@ func TestSaveSessionUpdate(t *testing.T) {
 	// Create initial session
 	session := SessionInfo{
 		ID:        "update-test",
+		ProjectID: testProjectID,
 		Name:      "Original Name",
 		CreatedAt: "2024-01-15T10:00:00Z",
 		Archived:  false,
@@ -523,6 +594,7 @@ func TestSaveSessionUpdate(t *testing.T) {
 	// Update the session
 	updated := SessionInfo{
 		ID:        session.ID,
+		ProjectID: testProjectID,
 		Name:      "Updated Name",
 		CreatedAt: session.CreatedAt,
 		Archived:  true,
@@ -554,11 +626,13 @@ func TestMultipleSessionsMessagesIsolation(t *testing.T) {
 	// Create two sessions
 	session1 := SessionInfo{
 		ID:        "session-1",
+		ProjectID: testProjectID,
 		Name:      "Session 1",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 	session2 := SessionInfo{
 		ID:        "session-2",
+		ProjectID: testProjectID,
 		Name:      "Session 2",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -635,6 +709,7 @@ func TestSaveAndLoadSessionTokens(t *testing.T) {
 
 	session := SessionInfo{
 		ID:                "token-test",
+		ProjectID:         testProjectID,
 		Name:              "Token Test",
 		CreatedAt:         time.Now().Format(time.RFC3339),
 		TotalInputTokens:  5000,
@@ -667,6 +742,7 @@ func TestUpdateSessionTokens(t *testing.T) {
 	// Create session with zero tokens
 	session := SessionInfo{
 		ID:        "update-tokens-test",
+		ProjectID: testProjectID,
 		Name:      "Update Tokens Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -718,6 +794,7 @@ func TestListSessionsWithTokens(t *testing.T) {
 	sessions := []SessionInfo{
 		{
 			ID:                "list-token-1",
+			ProjectID:         testProjectID,
 			Name:              "Session 1",
 			CreatedAt:         "2024-01-15T10:00:00Z",
 			TotalInputTokens:  1000,
@@ -725,6 +802,7 @@ func TestListSessionsWithTokens(t *testing.T) {
 		},
 		{
 			ID:                "list-token-2",
+			ProjectID:         testProjectID,
 			Name:              "Session 2",
 			CreatedAt:         "2024-01-15T11:00:00Z",
 			TotalInputTokens:  2000,
@@ -762,6 +840,7 @@ func TestUpdateSessionActivity(t *testing.T) {
 
 	session := SessionInfo{
 		ID:        "activity-test",
+		ProjectID: testProjectID,
 		Name:      "Activity Test",
 		CreatedAt: "2024-01-15T10:00:00Z",
 	}
@@ -801,6 +880,7 @@ func TestSaveSessionWithLastActiveAt(t *testing.T) {
 
 	session := SessionInfo{
 		ID:           "last-active-test",
+		ProjectID:    testProjectID,
 		Name:         "Last Active Test",
 		CreatedAt:    "2024-01-15T10:00:00Z",
 		LastActiveAt: "2024-06-01T15:30:00Z",
@@ -825,6 +905,7 @@ func TestSaveSessionLastActiveAtFallback(t *testing.T) {
 
 	session := SessionInfo{
 		ID:           "fallback-test",
+		ProjectID:    testProjectID,
 		Name:         "Fallback Test",
 		CreatedAt:    "2024-01-15T10:00:00Z",
 		LastActiveAt: "", // empty
@@ -843,17 +924,22 @@ func TestSaveSessionLastActiveAtFallback(t *testing.T) {
 	}
 }
 
-// TestNewSQLiteSessionStore_InMemory verifies :memory: database works.
+// TestNewSQLiteSessionStore_InMemory verifies in-memory database works with shared DB.
 func TestNewSQLiteSessionStore_InMemory(t *testing.T) {
-	store, err := NewSQLiteSessionStore(":memory:")
+	db := openTestDB(t)
+	defer func() { _ = db.Close() }()
+	createProjectsTable(t, db)
+	insertTestProject(t, db, testProjectID)
+
+	store, err := NewSQLiteSessionStore(db)
 	if err != nil {
 		t.Fatalf("failed to create in-memory store: %v", err)
 	}
-	defer func() { _ = store.Close() }()
 
 	// Basic operation on in-memory store
 	session := SessionInfo{
 		ID:        "mem-test",
+		ProjectID: testProjectID,
 		Name:      "Memory Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
@@ -870,15 +956,6 @@ func TestNewSQLiteSessionStore_InMemory(t *testing.T) {
 	}
 }
 
-// TestNewSQLiteSessionStore_InvalidPath verifies error on invalid path.
-func TestNewSQLiteSessionStore_InvalidPath(t *testing.T) {
-	// Use a path that can't be opened
-	_, err := NewSQLiteSessionStore("/nonexistent/path/to/dir/test.db")
-	if err == nil {
-		t.Error("expected error for invalid database path")
-	}
-}
-
 // TestListSessionsOrderedByActivity verifies sessions ordered by last_active_at DESC.
 func TestListSessionsOrderedByActivity(t *testing.T) {
 	store, cleanup := setupTestStore(t)
@@ -888,18 +965,21 @@ func TestListSessionsOrderedByActivity(t *testing.T) {
 	sessions := []SessionInfo{
 		{
 			ID:           "old",
+			ProjectID:    testProjectID,
 			Name:         "Old Session",
 			CreatedAt:    "2024-01-01T10:00:00Z",
 			LastActiveAt: "2024-01-01T10:00:00Z",
 		},
 		{
 			ID:           "newest",
+			ProjectID:    testProjectID,
 			Name:         "Newest Activity",
 			CreatedAt:    "2024-01-01T09:00:00Z",
 			LastActiveAt: "2024-06-15T20:00:00Z",
 		},
 		{
 			ID:           "mid",
+			ProjectID:    testProjectID,
 			Name:         "Mid Session",
 			CreatedAt:    "2024-03-01T10:00:00Z",
 			LastActiveAt: "2024-03-01T10:00:00Z",
@@ -929,5 +1009,71 @@ func TestListSessionsOrderedByActivity(t *testing.T) {
 	}
 	if listed[2].ID != "old" {
 		t.Errorf("third session should be 'old', got %q", listed[2].ID)
+	}
+}
+
+// TestListSessionsByProject verifies filtering sessions by project ID.
+func TestListSessionsByProject(t *testing.T) {
+	db := openTestDB(t)
+	defer func() { _ = db.Close() }()
+	createProjectsTable(t, db)
+	insertTestProject(t, db, "project-a")
+	insertTestProject(t, db, "project-b")
+
+	store, err := NewSQLiteSessionStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	// Create sessions across two projects
+	sessions := []SessionInfo{
+		{ID: "s1", ProjectID: "project-a", Name: "A1", CreatedAt: "2024-01-15T10:00:00Z"},
+		{ID: "s2", ProjectID: "project-a", Name: "A2", CreatedAt: "2024-01-15T11:00:00Z"},
+		{ID: "s3", ProjectID: "project-b", Name: "B1", CreatedAt: "2024-01-15T12:00:00Z"},
+	}
+	for _, s := range sessions {
+		if err := store.SaveSession(s); err != nil {
+			t.Fatalf("failed to save session: %v", err)
+		}
+	}
+
+	// List project-a sessions
+	projectASessions, err := store.ListSessionsByProject("project-a")
+	if err != nil {
+		t.Fatalf("failed to list sessions by project: %v", err)
+	}
+	if len(projectASessions) != 2 {
+		t.Fatalf("expected 2 sessions for project-a, got %d", len(projectASessions))
+	}
+	// Should be ordered by last_active_at DESC
+	if projectASessions[0].ID != "s2" {
+		t.Errorf("first session should be s2 (newest), got %q", projectASessions[0].ID)
+	}
+	if projectASessions[1].ID != "s1" {
+		t.Errorf("second session should be s1 (oldest), got %q", projectASessions[1].ID)
+	}
+
+	// List project-b sessions
+	projectBSessions, err := store.ListSessionsByProject("project-b")
+	if err != nil {
+		t.Fatalf("failed to list sessions by project: %v", err)
+	}
+	if len(projectBSessions) != 1 {
+		t.Fatalf("expected 1 session for project-b, got %d", len(projectBSessions))
+	}
+	if projectBSessions[0].ID != "s3" {
+		t.Errorf("expected session s3, got %q", projectBSessions[0].ID)
+	}
+
+	// List nonexistent project
+	emptySessions, err := store.ListSessionsByProject("nonexistent")
+	if err != nil {
+		t.Fatalf("failed to list sessions for nonexistent project: %v", err)
+	}
+	if len(emptySessions) != 0 {
+		t.Errorf("expected 0 sessions, got %d", len(emptySessions))
+	}
+	if emptySessions == nil {
+		t.Error("sessions should not be nil")
 	}
 }

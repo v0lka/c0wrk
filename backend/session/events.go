@@ -111,6 +111,7 @@ type ContextFillEventData struct {
 	UsedTokens          int     `json:"used_tokens"`
 	MaxTokens           int     `json:"max_tokens"`
 	Status              string  `json:"status"`
+	PlanStepID          string  `json:"plan_step_id,omitempty"`
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
 }

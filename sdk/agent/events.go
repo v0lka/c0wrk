@@ -15,7 +15,7 @@ type AgentEvents interface {
 	AssistantChunk(content string)
 	AssistantDone(content string, inputTokens, outputTokens int)
 	TokensUsed(inputTokens, outputTokens int)
-	ContextFill(fillPercent float64, usedTokens, maxTokens int, status string)
+	ContextFill(fillPercent float64, usedTokens, maxTokens int, status string, stepID string)
 }
 
 // NoopEvents is a no-op implementation of AgentEvents.
@@ -33,4 +33,4 @@ func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
 func (n *NoopEvents) AssistantChunk(_ string)                            {}
 func (n *NoopEvents) AssistantDone(_ string, _, _ int)                   {}
 func (n *NoopEvents) TokensUsed(_, _ int)                                {}
-func (n *NoopEvents) ContextFill(_ float64, _, _ int, _ string)          {}
+func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string) {}

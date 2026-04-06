@@ -194,18 +194,10 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
     addLaneEvent(nodes[row].lane, row)
   }
 
-  // Connector endpoints that pass through a lane
-  for (const c of connectors) {
-    if (c.fromLane === c.toLane) {
-      // Already covered by node events
-      continue
-    }
-    // The connector crosses lanes; the horizontal transition happens at toRow.
-    // The fromLane is active from fromRow to toRow (vertical portion before
-    // the horizontal jog). Add intermediate rows for the fromLane.
-    addLaneEvent(c.fromLane, c.toRow)
-    addLaneEvent(c.toLane, c.fromRow)
-  }
+  // Cross-lane connectors (fork/merge) draw their own complete visual paths
+  // via the SVG path elements. No additional lane events are needed for them.
+  // Vertical continuation segments are only needed between nodes in the same lane,
+  // which are already registered above.
 
   // Build a set of existing vertical connectors to avoid duplicates
   const existingVerticals = new Set<string>()

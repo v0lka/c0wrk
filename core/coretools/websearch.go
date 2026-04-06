@@ -87,6 +87,11 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (too
 		return tools.ParseInputError(err)
 	}
 
+	// Fallback extraction for common model-generated parameter variations.
+	if params.Query == "" {
+		params.Query = extractQueryFallback(input)
+	}
+
 	// Validate query parameter
 	if params.Query == "" {
 		return tools.ToolResult{Content: "query parameter is required", IsError: true}, nil
@@ -174,6 +179,35 @@ func (t *WebSearchTool) formatResults(results []tavilyResult) string {
 		fmt.Fprintf(&output, "%d. **%s**\n   URL: %s\n   Snippet: %s", i+1, result.Title, result.URL, result.Content)
 	}
 	return output.String()
+}
+
+// extractQueryFallback attempts to extract a query string from common
+// parameter variations that models may produce (e.g. "queries", "search_query").
+func extractQueryFallback(input json.RawMessage) string {
+	var raw map[string]any
+	if err := json.Unmarshal(input, &raw); err != nil {
+		return ""
+	}
+
+	for _, key := range []string{"queries", "search_query"} {
+		val, ok := raw[key]
+		if !ok {
+			continue
+		}
+		switch v := val.(type) {
+		case string:
+			if v != "" {
+				return v
+			}
+		case []any:
+			for _, elem := range v {
+				if s, ok := elem.(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // SetBaseURL allows setting a custom base URL (useful for testing).

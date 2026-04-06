@@ -75,6 +75,8 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	// Test with no criteria
@@ -210,6 +212,8 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Fix the code")
@@ -341,6 +345,8 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -426,6 +432,8 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -531,6 +539,8 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				nil, // emitter - nil for tests
 				nil, // modelRegistry - nil for tests
 				ToolResultBudget{},
+				nil, // intentVerifier - nil for tests
+				nil, // worktreeFactory - nil for tests
 			)
 
 			result, err := orchestrator.Handle(context.Background(), "test")
@@ -600,6 +610,8 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -725,6 +737,8 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -851,6 +865,8 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -982,6 +998,8 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1034,6 +1052,14 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Revise") || strings.Contains(msg.Content, "partially completed") {
 						replanCalled = true
+						// Return plan with a NEW step ID so buildCarryForward doesn't skip it
+						return &llm.ChatResponse{
+							Message: llm.Message{
+								Role:    "assistant",
+								Content: `{"steps": [{"id": "step_1_v2", "description": "Do task (revised)", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+							},
+							StopReason: "end_turn",
+						}, nil
 					}
 				}
 				return &llm.ChatResponse{
@@ -1105,6 +1131,8 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Build and test feature")
@@ -1242,6 +1270,8 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -1363,6 +1393,8 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	userMessage := "Please complete this important task"
@@ -1433,6 +1465,8 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	prompt := orchestrator.buildSystemPrompt(context.Background(), "", nil, false)
@@ -1497,6 +1531,14 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Revise") || strings.Contains(msg.Content, "partially completed") {
 						replanCalled = true
+						// Return plan with a NEW step ID so buildCarryForward doesn't skip it
+						return &llm.ChatResponse{
+							Message: llm.Message{
+								Role:    "assistant",
+								Content: `{"steps": [{"id": "step_1_v2", "description": "Do task (revised)", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+							},
+							StopReason: "end_turn",
+						}, nil
 					}
 				}
 				return &llm.ChatResponse{
@@ -1570,6 +1612,8 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Do task with potential failure")
@@ -1673,6 +1717,8 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		mockEm, // emitter - use mock to track events
 		nil,    // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -1901,6 +1947,8 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -1939,8 +1987,9 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 	}
 }
 
-// TestPlanExecute_StepLevelRetry_WithDependents tests that transitive dependents are also re-executed.
+// TestPlanExecute_StepLevelRetry_WithDependents tests that transitive dependents are NOT re-executed.
 // Steps are chained: step_1 -> step_2 -> step_3 to ensure sequential execution.
+// Only step_2 (directly mapped to the failed criterion) is retried; step_3 keeps its original output.
 func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 	var step1Output string
 	var step2Attempt1Output string
@@ -2052,32 +2101,39 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 						StopReason: "tool_use",
 					}, nil
 				}
-				// step_3 - depends on step_2, should also be re-executed
-				if step3Attempt1Output == "" {
-					// First attempt
-					step3Attempt1Output = "Step 3 attempt 1"
+				// step_3 - depends on step_2
+				if stepID == "step_3" {
+					if step3Attempt1Output == "" {
+						// First attempt
+						step3Attempt1Output = "Step 3 attempt 1"
+						return &llm.ChatResponse{
+							Message: llm.Message{
+								Role:    "assistant",
+								Content: "Step 3 output attempt 1",
+								ToolCalls: []llm.ToolCall{
+									{ID: "c4", Name: "finish", Input: json.RawMessage(`{"answer": "Step 3 attempt 1"}`)},
+								},
+							},
+							StopReason: "tool_use",
+						}, nil
+					}
+					// Retry attempt
+					step3Attempt2Output = "Step 3 attempt 2"
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: "Step 3 output attempt 1",
+							Content: "Step 3 output attempt 2",
 							ToolCalls: []llm.ToolCall{
-								{ID: "c4", Name: "finish", Input: json.RawMessage(`{"answer": "Step 3 attempt 1"}`)},
+								{ID: "c5", Name: "finish", Input: json.RawMessage(`{"answer": "Step 3 attempt 2"}`)},
 							},
 						},
 						StopReason: "tool_use",
 					}, nil
 				}
-				// Retry attempt
-				step3Attempt2Output = "Step 3 attempt 2"
+				// Default: unmatched executor call (e.g. evaluator reconsider misidentified as executor)
 				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Step 3 output attempt 2",
-						ToolCalls: []llm.ToolCall{
-							{ID: "c5", Name: "finish", Input: json.RawMessage(`{"answer": "Step 3 attempt 2"}`)},
-						},
-					},
-					StopReason: "tool_use",
+					Message:    llm.Message{Role: "assistant", Content: "NO - not satisfied"},
+					StopReason: "end_turn",
 				}, nil
 			}
 			if detectCallType(req) == "evaluator_judge" {
@@ -2147,6 +2203,8 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps with dependency")
@@ -2166,9 +2224,9 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 
 	// Note: aggregateOutput only returns terminal step outputs (steps that no other step depends on)
 	// In this test: step_1 -> step_2 -> step_3, so only step_3 output appears in final result
-	// Verify step_3 (the terminal step) has the attempt 2 output (since it was re-executed as dependent)
-	if !strings.Contains(result.Output, step3Attempt2Output) {
-		t.Errorf("expected step_3 output from attempt 2, got output: %s", result.Output)
+	// Since transitive expansion is removed, step_3 is NOT re-executed and keeps its attempt 1 output
+	if !strings.Contains(result.Output, step3Attempt1Output) {
+		t.Errorf("expected step_3 output from attempt 1 (not re-executed), got output: %s", result.Output)
 	}
 
 	// Verify step_1 was executed (not re-executed since it passed)
@@ -2176,18 +2234,19 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		t.Error("expected step_1 to have been executed")
 	}
 
-	// Verify step_2 and step_3 were re-executed
+	// Verify step_2 was re-executed (directly mapped to failed criterion ac_2)
 	if step2Attempt1Output == "" {
 		t.Error("expected step_2 to have been executed in attempt 1")
 	}
 	if step2Attempt2Output == "" {
 		t.Error("expected step_2 to have been re-executed in attempt 2")
 	}
+	// step_3 should NOT have been re-executed (no transitive expansion)
 	if step3Attempt1Output == "" {
 		t.Error("expected step_3 to have been executed in attempt 1")
 	}
-	if step3Attempt2Output == "" {
-		t.Error("expected step_3 to have been re-executed in attempt 2 (as dependent of step_2)")
+	if step3Attempt2Output != "" {
+		t.Errorf("expected step_3 to NOT be re-executed (no transitive expansion), but got attempt 2 output: %s", step3Attempt2Output)
 	}
 }
 
@@ -2363,6 +2422,8 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps without AC mapping")
@@ -2421,7 +2482,7 @@ func TestComputeRetrySteps(t *testing.T) {
 				{ID: "step_2", Description: "Step 2", DependsOn: []string{"step_1"}, RelevantAC: []string{"ac_2"}},
 			},
 			failedCriteriaIDs: []string{"ac_1"},
-			wantRetrySet:      map[string]bool{"step_1": true, "step_2": true},
+			wantRetrySet:      map[string]bool{"step_1": true}, // no transitive expansion
 		},
 		{
 			name: "no mapping - returns nil for fallback",
@@ -2450,7 +2511,7 @@ func TestComputeRetrySteps(t *testing.T) {
 				{ID: "step_4", Description: "Step 4", DependsOn: []string{"step_2"}, RelevantAC: []string{"ac_4"}},
 			},
 			failedCriteriaIDs: []string{"ac_2"}, // step_2 fails
-			wantRetrySet:      map[string]bool{"step_2": true, "step_3": true, "step_4": true},
+			wantRetrySet:      map[string]bool{"step_2": true}, // no transitive expansion to step_3/step_4
 		},
 		{
 			name: "deep transitive chain",
@@ -2461,7 +2522,7 @@ func TestComputeRetrySteps(t *testing.T) {
 				{ID: "step_4", Description: "Step 4", DependsOn: []string{"step_3"}, RelevantAC: []string{"ac_4"}},
 			},
 			failedCriteriaIDs: []string{"ac_1"},
-			wantRetrySet:      map[string]bool{"step_1": true, "step_2": true, "step_3": true, "step_4": true},
+			wantRetrySet:      map[string]bool{"step_1": true}, // no transitive expansion
 		},
 		{
 			name: "multiple failed criteria map to same step",
@@ -2714,7 +2775,7 @@ func TestBuildStepTask(t *testing.T) {
 			o := &Orchestrator{} // buildStepTask doesn't need other fields
 			availableTools := []tools.ToolDescriptor{}
 
-			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools, nil, "")
+			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools, nil, "", "")
 
 			// Check that wanted strings are present
 			for _, want := range tt.wantContains {
@@ -3199,6 +3260,185 @@ func TestBuildPlanExecutionSteps_Empty(t *testing.T) {
 	}
 }
 
+func TestBuildPlanExecutionSteps_ActualSteps(t *testing.T) {
+	plan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "Fetch data"},
+			{ID: "step_2", Description: "Analyze data"},
+		},
+	}
+
+	// step_1 has actual executor steps; step_2 has none (fallback to synthetic)
+	completedSteps := []CompletedStep{
+		{
+			StepID: "step_1",
+			Output: "Fetched",
+			Steps: []Step{
+				{Thought: "Need to call API", Observation: "Got 100 records"},
+				{Thought: "Parse response", Observation: "Parsed OK"},
+			},
+		},
+		{
+			StepID: "step_2",
+			Output: "Analysis complete",
+		},
+	}
+
+	steps := buildPlanExecutionSteps(completedSteps, plan)
+
+	// step_1 contributes 2 actual steps, step_2 contributes 1 synthetic step
+	if len(steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(steps))
+	}
+
+	// Actual steps from step_1
+	if steps[0].Thought != "Need to call API" {
+		t.Errorf("step 0 thought = %q, want %q", steps[0].Thought, "Need to call API")
+	}
+	if steps[1].Thought != "Parse response" {
+		t.Errorf("step 1 thought = %q, want %q", steps[1].Thought, "Parse response")
+	}
+
+	// Synthetic step from step_2 (fallback)
+	if !strings.Contains(steps[2].Thought, "step_2") {
+		t.Errorf("step 2 thought should reference step_2, got: %s", steps[2].Thought)
+	}
+	if steps[2].Observation != "Analysis complete" {
+		t.Errorf("step 2 observation = %q, want %q", steps[2].Observation, "Analysis complete")
+	}
+}
+
+func TestBuildCarryForward(t *testing.T) {
+	tests := []struct {
+		name      string
+		completed []CompletedStep
+		newPlan   *Plan
+		wantNil   bool
+		wantIDs   []string // expected carried-forward step IDs
+	}{
+		{
+			name: "carries forward matching steps",
+			completed: []CompletedStep{
+				{StepID: "step_1", Output: "done1"},
+				{StepID: "step_2", Output: "done2"},
+				{StepID: "step_3", Output: "done3"},
+			},
+			newPlan: &Plan{Steps: []PlanStep{
+				{ID: "step_1"},
+				{ID: "step_3"},
+				{ID: "step_4"}, // new step, not in completed
+			}},
+			wantIDs: []string{"step_1", "step_3"},
+		},
+		{
+			name: "skips errored steps",
+			completed: []CompletedStep{
+				{StepID: "step_1", Output: "done1"},
+				{StepID: "step_2", Output: "failed", Error: errors.New("step error")},
+			},
+			newPlan: &Plan{Steps: []PlanStep{
+				{ID: "step_1"},
+				{ID: "step_2"},
+			}},
+			wantIDs: []string{"step_1"}, // step_2 had error, not carried
+		},
+		{
+			name: "returns nil when no overlap",
+			completed: []CompletedStep{
+				{StepID: "step_1", Output: "done1"},
+			},
+			newPlan: &Plan{Steps: []PlanStep{
+				{ID: "step_x"},
+				{ID: "step_y"},
+			}},
+			wantNil: true,
+		},
+		{
+			name:      "returns nil for empty completed",
+			completed: []CompletedStep{},
+			newPlan: &Plan{Steps: []PlanStep{
+				{ID: "step_1"},
+			}},
+			wantNil: true,
+		},
+		{
+			name: "dependent_of_non_carried_step_excluded",
+			completed: []CompletedStep{
+				{StepID: "step_1", Output: "out1"},
+				{StepID: "step_2", Output: "out2"},
+				{StepID: "step_3", Output: "out3"},
+			},
+			newPlan: &Plan{
+				Steps: []PlanStep{
+					{ID: "step_1_v2", Description: "replanned step 1"},
+					{ID: "step_2", Description: "depends on replanned", DependsOn: []string{"step_1_v2"}},
+					{ID: "step_3", Description: "depends on step_2", DependsOn: []string{"step_2"}},
+				},
+			},
+			wantNil: true, // step_1_v2 is new (not carried), step_2 depends on it → excluded, step_3 depends on step_2 → excluded
+		},
+		{
+			name: "partial_dag_carry_forward",
+			completed: []CompletedStep{
+				{StepID: "step_1", Output: "out1"},
+				{StepID: "step_2", Output: "out2"},
+				{StepID: "step_3", Output: "out3"},
+			},
+			newPlan: &Plan{
+				Steps: []PlanStep{
+					{ID: "step_1", Description: "unchanged"},
+					{ID: "step_2_v2", Description: "replanned step 2", DependsOn: []string{"step_1"}},
+					{ID: "step_3", Description: "depends on replanned", DependsOn: []string{"step_2_v2"}},
+				},
+			},
+			wantIDs: []string{"step_1"}, // step_1 carried; step_2_v2 is new; step_3 depends on step_2_v2 → excluded
+		},
+		{
+			name: "independent_branches_partially_carried",
+			completed: []CompletedStep{
+				{StepID: "step_1", Output: "out1"},
+				{StepID: "step_2", Output: "out2"},
+				{StepID: "step_3", Output: "out3"},
+			},
+			newPlan: &Plan{
+				Steps: []PlanStep{
+					{ID: "step_1", Description: "unchanged branch A"},
+					{ID: "step_2", Description: "unchanged branch A", DependsOn: []string{"step_1"}},
+					{ID: "step_3_v2", Description: "replanned branch B"},
+				},
+			},
+			wantIDs: []string{"step_1", "step_2"}, // branch A fully carried; step_3_v2 is new
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildCarryForward(tt.completed, tt.newPlan)
+
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("buildCarryForward() = %v, want nil", got)
+				}
+				return
+			}
+
+			if got == nil {
+				t.Fatalf("buildCarryForward() = nil, want map with %v", tt.wantIDs)
+			}
+
+			if len(got) != len(tt.wantIDs) {
+				t.Errorf("buildCarryForward() returned %d steps, want %d", len(got), len(tt.wantIDs))
+			}
+
+			for _, id := range tt.wantIDs {
+				if _, ok := got[id]; !ok {
+					t.Errorf("buildCarryForward() missing step %s", id)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateACMapping(t *testing.T) {
 	plan := &Plan{
 		Steps: []PlanStep{
@@ -3244,5 +3484,151 @@ func TestValidateACMapping_AllMapped(t *testing.T) {
 	unmapped := validateACMapping(plan, ac)
 	if len(unmapped) != 0 {
 		t.Fatalf("expected no unmapped, got: %v", unmapped)
+	}
+}
+
+// mockWorktree is a mock implementation of Worktree for testing.
+type mockWorktree struct {
+	initErr  error
+	resetErr error
+	mergeErr error
+
+	resetCalled  bool
+	initCalled   bool
+	cleanupCalls int
+}
+
+func (m *mockWorktree) Init() error          { m.initCalled = true; return m.initErr }
+func (m *mockWorktree) Reset() error         { m.resetCalled = true; return m.resetErr }
+func (m *mockWorktree) Cleanup() error       { m.cleanupCalls++; return nil }
+func (m *mockWorktree) WorktreePath() string { return "/tmp/mock-worktree" }
+func (m *mockWorktree) GetDiff() (string, error)     { return "", nil }
+func (m *mockWorktree) GetDiffStat() (string, error)  { return "", nil }
+func (m *mockWorktree) Merge(commitMsg string) error   { return m.mergeErr }
+
+// TestPlanExecute_ReplanWorktreeResetFailure verifies that when the Reflector
+// suggests "replan" but worktree Reset() returns an error, the orchestrator
+// does NOT return an error — it falls back to retry behaviour.
+func TestPlanExecute_ReplanWorktreeResetFailure(t *testing.T) {
+	evalCallCount := 0
+	var tracker routerCallTracker
+
+	mwt := &mockWorktree{
+		resetErr: errors.New("git checkout failed: mock error"),
+	}
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: `[{"id": "rc_1", "description": "Test passes", "nature": "objective", "weight": "must"}]`},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: `[{"id": "ac_1", "description": "Test passes", "check_type": "llm_judge"}]`},
+						StopReason: "end_turn",
+					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				}
+			}
+			if detectCallType(req) == "planner" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Do task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			if detectCallType(req) == "executor" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Task done",
+						ToolCalls: []llm.ToolCall{
+							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Done"}`)},
+						},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+			if detectCallType(req) == "evaluator_judge" {
+				evalCallCount++
+				if evalCallCount == 1 {
+					// First eval fails
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: "NO - needs more work"},
+						StopReason: "end_turn",
+					}, nil
+				}
+				// Second eval passes
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: "YES - looks good"},
+					StopReason: "end_turn",
+				}, nil
+			}
+			if detectCallType(req) == "reflector" {
+				// Suggest replan — but Reset() will fail, so orchestrator should fall back to retry
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"summary": "Plan incomplete", "failed_criteria": ["ac_1"], "hypotheses": ["Missing step"], "suggested_action": "replan", "reasoning": "Need to add step", "failure_analysis": "Plan was incomplete", "root_cause": "Missing step", "action_plan": "Add step"}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: ""},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+	reflector := NewReflector(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		NewRouter(mockLLM, 5),
+		NewACExtractor(mockLLM),
+		NewPlanner(mockLLM),
+		NewEvaluator(registry, mockLLM),
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
+		testContextFactory,
+		reflector,
+		nil, // logger - nil for tests
+		nil, // emitter - nil for tests
+		nil, // modelRegistry - nil for tests
+		ToolResultBudget{},
+		nil, // intentVerifier - nil for tests
+		func(sessionID string) Worktree { return mwt },
+	)
+
+	result, err := orchestrator.Handle(context.Background(), "Build and test feature")
+	if err != nil {
+		t.Fatalf("Handle should not return error when worktree Reset fails, got: %v", err)
+	}
+
+	if !mwt.resetCalled {
+		t.Error("expected worktree Reset() to be called")
+	}
+
+	// Should have succeeded after falling back to retry
+	if result.EvalResult == nil || !result.EvalResult.AllPassed {
+		t.Error("expected final eval to pass after retry fallback")
 	}
 }

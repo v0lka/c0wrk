@@ -223,8 +223,9 @@ func (c *LLMConfig) GetActiveProviderConfig() (providerType, apiKey, baseURL, mo
 	}
 }
 
-// Load reads a configuration file, substitutes environment variables,
-// applies defaults, validates the configuration, and returns it.
+// Load reads a configuration file, applies defaults, validates the configuration, and returns it.
+// Environment variable references like ${VAR} are preserved as-is in the config struct;
+// use ExpandEnvVars() at runtime to resolve them when needed.
 // For better error handling and migration support, use LoadWithResult.
 func Load(path string) (*Config, error) {
 	result, err := LoadWithResult(path)
@@ -235,7 +236,8 @@ func Load(path string) (*Config, error) {
 }
 
 // LoadWithResult reads a configuration file with full error reporting.
-// It substitutes environment variables, applies defaults, and validates.
+// Environment variable references like ${VAR} are preserved as-is;
+// they are resolved at runtime via ExpandEnvVars() when actually needed.
 func LoadWithResult(path string) (*LoadResult, error) {
 	// Read file
 	data, err := os.ReadFile(path)
@@ -243,16 +245,10 @@ func LoadWithResult(path string) (*LoadResult, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Substitute ${ENV_VAR} patterns with environment variable values
-	content := envVarPattern.ReplaceAllStringFunc(string(data), func(match string) string {
-		// Extract the variable name from ${VAR_NAME}
-		varName := match[2 : len(match)-1]
-		return os.Getenv(varName)
-	})
-
-	// Unmarshal as current format
+	// Unmarshal as current format (env var references like ${VAR} are preserved as-is;
+	// they are resolved at runtime via ExpandEnvVars when actually needed).
 	var cfg Config
-	if err := yaml.Unmarshal([]byte(content), &cfg); err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
 	}
 

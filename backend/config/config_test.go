@@ -36,8 +36,9 @@ llm:
 	}
 }
 
-// TestEnvVarSubstitution tests that ${ENV_VAR} patterns are replaced with env values.
-func TestEnvVarSubstitution(t *testing.T) {
+// TestEnvVarPreservationAndExpansion tests that ${ENV_VAR} patterns are preserved
+// in the config struct after Load(), and that ExpandEnvVars resolves them at runtime.
+func TestEnvVarPreservationAndExpansion(t *testing.T) {
 	// Set test environment variable
 	testAPIKey := "secret-api-key-12345"
 	t.Setenv("TEST_API_KEY", testAPIKey)
@@ -56,8 +57,15 @@ llm:
 		t.Fatalf("Load() failed: %v", err)
 	}
 
-	if cfg.LLM.Anthropic.APIKey != testAPIKey {
-		t.Errorf("Expected api_key %q after env substitution, got %q", testAPIKey, cfg.LLM.Anthropic.APIKey)
+	// After Load(), the raw ${...} reference should be preserved in the struct
+	if cfg.LLM.Anthropic.APIKey != "${TEST_API_KEY}" {
+		t.Errorf("Expected raw reference ${TEST_API_KEY}, got %q", cfg.LLM.Anthropic.APIKey)
+	}
+
+	// ExpandEnvVars should resolve it at runtime
+	resolved := ExpandEnvVars(cfg.LLM.Anthropic.APIKey)
+	if resolved != testAPIKey {
+		t.Errorf("Expected ExpandEnvVars to return %q, got %q", testAPIKey, resolved)
 	}
 }
 
@@ -502,5 +510,47 @@ func TestSave_InvalidPath(t *testing.T) {
 	err := Save(cfg, "/nonexistent/deeply/nested/dir/config.yaml")
 	if err == nil {
 		t.Error("expected error for invalid path")
+	}
+}
+
+func TestSave_PreservesEnvVarReferences(t *testing.T) {
+	t.Setenv("MY_SECRET_KEY", "actual-secret-value")
+
+	content := `
+llm:
+  active_provider: anthropic
+  anthropic:
+    api_key: "${MY_SECRET_KEY}"
+    model: claude-3-haiku
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Config struct should hold the raw reference
+	if cfg.LLM.Anthropic.APIKey != "${MY_SECRET_KEY}" {
+		t.Fatalf("Expected raw reference ${MY_SECRET_KEY}, got %q", cfg.LLM.Anthropic.APIKey)
+	}
+
+	// Save config to a new file
+	savePath := filepath.Join(t.TempDir(), "saved_config.yaml")
+	if err := Save(cfg, savePath); err != nil {
+		t.Fatalf("Save() failed: %v", err)
+	}
+
+	// Read saved file and verify ${...} reference is preserved
+	savedData, err := os.ReadFile(savePath)
+	if err != nil {
+		t.Fatalf("failed to read saved config: %v", err)
+	}
+	savedContent := string(savedData)
+	if !findSubstring(savedContent, "${MY_SECRET_KEY}") {
+		t.Errorf("saved config should contain ${MY_SECRET_KEY}, got:\n%s", savedContent)
+	}
+	if findSubstring(savedContent, "actual-secret-value") {
+		t.Errorf("saved config should NOT contain the resolved secret value")
 	}
 }

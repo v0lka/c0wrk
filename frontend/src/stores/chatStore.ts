@@ -277,15 +277,15 @@ export interface ContextFillState {
   usedTokens: number
   maxTokens: number
   status: string
-  sessionInputTokens: number
-  sessionOutputTokens: number
 }
 
 interface ChatState {
   messages: Record<string, ChatMessageUI[]> // sessionId -> messages
   streamingText: string | null
   isThinking: boolean
-  contextFill: ContextFillState | null
+  stepContextFill: Record<string, ContextFillState> // per-step context fill
+  sessionInputTokens: number
+  sessionOutputTokens: number
   activityStatus: string | null
   isTaskActive: boolean
   addMessage: (sessionId: string, msg: ChatMessageUI) => void
@@ -295,7 +295,9 @@ interface ChatState {
   setStreaming: (text: string | null) => void
   appendStreamToken: (token: string) => void
   setThinking: (thinking: boolean) => void
-  setContextFill: (data: ContextFillState | null) => void
+  setStepContextFill: (stepId: string, data: ContextFillState) => void
+  clearStepContextFill: (stepId: string) => void
+  setSessionTokens: (inputTokens: number, outputTokens: number) => void
   setActivityStatus: (status: string | null) => void
   pendingActions: DisplayItem[]
   setPendingActions: (actions: DisplayItem[]) => void
@@ -308,7 +310,9 @@ export const useChatStore = create<ChatState>((set) => ({
   messages: {},
   streamingText: null,
   isThinking: false,
-  contextFill: null,
+  stepContextFill: {},
+  sessionInputTokens: 0,
+  sessionOutputTokens: 0,
   activityStatus: null,
   isTaskActive: false,
   addMessage: (sessionId, msg) => set((s) => ({
@@ -344,7 +348,18 @@ export const useChatStore = create<ChatState>((set) => ({
     streamingText: (s.streamingText || '') + token,
   })),
   setThinking: (thinking) => set({ isThinking: thinking }),
-  setContextFill: (data) => set({ contextFill: data }),
+  setStepContextFill: (stepId, data) => set((s) => ({
+    stepContextFill: { ...s.stepContextFill, [stepId]: data },
+  })),
+  clearStepContextFill: (stepId) => set((s) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { [stepId]: _, ...rest } = s.stepContextFill
+    return { stepContextFill: rest }
+  }),
+  setSessionTokens: (inputTokens, outputTokens) => set({
+    sessionInputTokens: inputTokens,
+    sessionOutputTokens: outputTokens,
+  }),
   setActivityStatus: (status) => set({ activityStatus: status }),
   pendingActions: [],
   setPendingActions: (actions) => set({ pendingActions: actions }),
@@ -378,13 +393,8 @@ export const useChatStore = create<ChatState>((set) => ({
     activityStatus: null,
     streamingText: null,
     isThinking: false,
-    contextFill: {
-      fillPercent: 0,
-      usedTokens: 0,
-      maxTokens: 0,
-      status: 'ok',
-      sessionInputTokens: 0,
-      sessionOutputTokens: 0,
-    },
+    stepContextFill: {},
+    sessionInputTokens: 0,
+    sessionOutputTokens: 0,
   }),
 }))

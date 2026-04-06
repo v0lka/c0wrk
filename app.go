@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	openai "github.com/sashabaranov/go-openai"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	_ "modernc.org/sqlite" // register SQLite driver
 
 	// SDK layer
 	"github.com/user/agent/sdk/llm"
@@ -33,6 +35,7 @@ import (
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/backend/logger"
 	"github.com/user/agent/backend/memory"
+	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/core/tools"
 	"github.com/user/agent/core/tools/external"
@@ -137,7 +140,9 @@ func loadShellEnvironment() {
 type App struct {
 	ctx        context.Context
 	manager    *session.Manager
+	db         *sql.DB // shared SQLite connection
 	store      *session.SQLiteSessionStore
+	projStore  *project.SQLiteProjectStore
 	config     *config.Config
 	configMu   sync.RWMutex // protects config and config-related state
 	configPath string
@@ -157,8 +162,13 @@ type App struct {
 	pendingConfirmations sync.Map
 	pendingAskUser       sync.Map
 
-	watcher       *workspace.Watcher
-	workspacesDir string // parent directory for all session workspaces
+	watcher        *workspace.Watcher
+	projectManager *project.Manager
+
+	projectsDir     string // ~/.c0wrk/Projects/
+	activeProjectID string // currently active project ID
+	activeProjectPath string // workspace path of active project
+	activeProjectMu sync.RWMutex // protects activeProjectID/Path
 }
 
 // currentConfig returns a shallow copy of the current config, safe to read without holding the lock.
@@ -300,16 +310,38 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
-	// Note: workspace watcher will be initialized after workspacesDir is set below
+	// Note: workspace watcher is initialized per-project in SwitchProject
 
-	// Initialize SQLite session store
+	// Initialize shared SQLite database
 	dbPath := filepath.Join(agentDir, "sessions.db")
-	store, err := session.NewSQLiteSessionStore(dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		log.Error("failed to init session store", "error", err)
-		// Continue without persistence
+		log.Error("failed to open sqlite database", "error", err)
 	} else {
-		a.store = store
+		// Apply pragmas once on the shared connection
+		if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
+			log.Error("failed to enable WAL mode", "error", err)
+		}
+		if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
+			log.Error("failed to enable foreign keys", "error", err)
+		}
+		a.db = db
+
+		// Project store first (sessions FK references projects)
+		projStore, err := project.NewSQLiteProjectStore(db)
+		if err != nil {
+			log.Error("failed to init project store", "error", err)
+		} else {
+			a.projStore = projStore
+		}
+
+		// Session store (depends on projects table)
+		store, err := session.NewSQLiteSessionStore(db)
+		if err != nil {
+			log.Error("failed to init session store", "error", err)
+		} else {
+			a.store = store
+		}
 	}
 
 	// Create emit function that bridges to Wails events
@@ -501,10 +533,15 @@ func (a *App) startup(ctx context.Context) {
 		// Convert config MCP server configs to core/tools/mcp types
 		mcpConfigs := make(map[string]mcp.MCPServerConfig, len(a.config.MCP.Servers))
 		for name, cfg := range a.config.MCP.Servers {
+			// Resolve ${ENV_VAR} references in server environment values at startup
+			env := make(map[string]string, len(cfg.Env))
+			for ek, ev := range cfg.Env {
+				env[ek] = config.ExpandEnvVars(ev)
+			}
 			mcpConfigs[name] = mcp.MCPServerConfig{
 				Command: cfg.Command,
 				Args:    cfg.Args,
-				Env:     cfg.Env,
+				Env:     env,
 			}
 		}
 
@@ -683,7 +720,7 @@ func (a *App) startup(ctx context.Context) {
 	// Create orchestrator factory — rebuilds all LLM-dependent objects per session
 	// so that config changes (e.g. via UpdateLLMSettings) take effect for new sessions.
 	// The tool registry is shared (expensive to rebuild, has dynamic policy updates).
-	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error) {
 		cfg := a.currentConfig()
 
 		newLLMRouter, newModelRegistry, err := a.buildLLMRouter(cfg)
@@ -702,41 +739,64 @@ func (a *App) startup(ctx context.Context) {
 		orchConfig := a.buildOrchestratorConfig(cfg)
 		contextFactory := a.buildContextFactory(newLLMRouter, cfg)
 
+		tokenCounter := llm.NewSimpleTokenCounter()
+		toolResultBudget := core.ToolResultBudget{
+			HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
+			MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
+		}
+
+		// Create WorktreeFactory for git-worktree isolation per request
+		worktreeFactory := func(sessionID string) core.Worktree {
+			return workspace.NewWorktreeManager(workspacePath, sessionID, logger)
+		}
+
+		// Create IntentVerifier (Tier 2 intent-based evaluation)
+		caller := core.NewTokenTrackingCaller(newLLMRouter, emitter)
+		intentVerifier := core.NewIntentVerifier(
+			caller,
+			registry.ToolRegistry,
+			tokenCounter,
+			contextFactory,
+			logger,
+			emitter,
+			toolResultBudget,
+		)
+
 		return core.NewOrchestrator(
-			newRouter,                   // Router
-			newACExtractor,              // ACExtractor
-			newPlanner,                  // Planner
-			newEvaluator,                // Evaluator
-			newLLMRouter,                // LLMCaller
-			registry,                    // ToolExecutor (shared)
-			registry.ToolRegistry,       // ToolRegistry (SDK base, shared)
-			llm.NewSimpleTokenCounter(), // TokenCounter (for backward compatibility)
+			newRouter,        // Router
+			newACExtractor,   // ACExtractor
+			newPlanner,       // Planner
+			newEvaluator,     // Evaluator
+			newLLMRouter,     // LLMCaller
+			registry,         // ToolExecutor (shared)
+			registry.ToolRegistry, // ToolRegistry (SDK base, shared)
+			tokenCounter,     // TokenCounter
 			orchConfig,
 			contextFactory,
-			newReflector,    // Reflector for retry-loop
-			logger,          // Logger
-			emitter,         // Emitter
+			newReflector,     // Reflector for retry-loop
+			logger,           // Logger
+			emitter,          // Emitter
 			newModelRegistry, // ModelRegistry for resolving model metadata
-			core.ToolResultBudget{
-				HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
-				MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
-			},
+			toolResultBudget,
+			intentVerifier,   // IntentVerifier (Tier 2)
+			worktreeFactory,  // WorktreeFactory for git isolation
 		), nil
 	}
 
 	logDir := filepath.Join(agentDir, "logs")
-	a.workspacesDir = filepath.Join(agentDir, "workspaces")
-	a.manager = session.NewManager(factory, emitFunc, logDir, a.workspacesDir)
 
-	// Initialize file watcher on the workspaces parent directory
-	watcher, err := workspace.NewWatcher(a.workspacesDir, func() {
-		wailsRuntime.EventsEmit(a.ctx, "workspace:tree_changed", nil)
-	})
-	if err != nil {
-		log.Warn("failed to start workspace file watcher", "error", err)
-	} else {
-		a.watcher = watcher
+	// Initialize project manager
+	a.projectsDir = filepath.Join(agentDir, "Projects")
+	if err := os.MkdirAll(a.projectsDir, 0o755); err != nil {
+		log.Error("failed to create projects directory", "error", err)
 	}
+	if a.projStore != nil {
+		a.projectManager = project.NewManager(a.projStore, a.projectsDir)
+	}
+
+	a.manager = session.NewManager(factory, emitFunc, logDir)
+
+	// File watcher is NOT initialized at startup — it's created per-project in SwitchProject.
 
 	// Wire token persistence: each emitter will call store.UpdateSessionTokens
 	// with cumulative totals after every AssistantDone.
@@ -1003,36 +1063,40 @@ func (a *App) buildContextFactory(llmRouter *llm.LLMRouter, cfg *config.Config) 
 
 // GetSessionWorkspace returns the workspace directory path for a given session.
 func (a *App) GetSessionWorkspace(sessionID string) (string, error) {
-	if a.manager == nil {
-		return "", errors.New("session manager not initialized")
+	a.activeProjectMu.RLock()
+	projectPath := a.activeProjectPath
+	a.activeProjectMu.RUnlock()
+
+	if projectPath == "" {
+		return "", errors.New("no active project")
 	}
-	path, exists := a.manager.GetSessionWorkspacePath(sessionID)
-	if !exists {
-		return "", fmt.Errorf("session not found: %s", sessionID)
-	}
-	return path, nil
+	return projectPath, nil
 }
 
 // ListDirectory returns the immediate children of a directory, sorted directories first then alphabetically.
 func (a *App) ListDirectory(dirPath string) ([]FileNode, error) {
-	if a.workspacesDir == "" {
-		return nil, errors.New("workspaces directory not set")
+	a.activeProjectMu.RLock()
+	projectPath := a.activeProjectPath
+	a.activeProjectMu.RUnlock()
+
+	if projectPath == "" {
+		return nil, errors.New("no active project")
 	}
 
-	// Security: resolve and validate the path is under workspaces directory
-	absPath, err := filepath.Abs(dirPath)
+	// Security: validate path is under the active project's workspace
+	absDir, err := filepath.Abs(dirPath)
 	if err != nil {
 		return nil, fmt.Errorf("invalid path: %w", err)
 	}
-	absRoot, err := filepath.Abs(a.workspacesDir)
+	absRoot, err := filepath.Abs(projectPath)
 	if err != nil {
-		return nil, fmt.Errorf("invalid workspaces directory: %w", err)
+		return nil, fmt.Errorf("invalid workspace path: %w", err)
 	}
-	if !strings.HasPrefix(absPath, absRoot) {
-		return nil, errors.New("path is outside workspaces directory")
+	if !strings.HasPrefix(absDir, absRoot) {
+		return nil, errors.New("path outside project workspace")
 	}
 
-	entries, err := os.ReadDir(absPath)
+	entries, err := os.ReadDir(absDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
@@ -1041,7 +1105,7 @@ func (a *App) ListDirectory(dirPath string) ([]FileNode, error) {
 	for _, entry := range entries {
 		node := FileNode{
 			Name:  entry.Name(),
-			Path:  filepath.Join(absPath, entry.Name()),
+			Path:  filepath.Join(absDir, entry.Name()),
 			IsDir: entry.IsDir(),
 		}
 		if entry.IsDir() {
@@ -1064,7 +1128,7 @@ func (a *App) ListDirectory(dirPath string) ([]FileNode, error) {
 // WatchDirectory adds a directory to the file watcher.
 func (a *App) WatchDirectory(dirPath string) error {
 	if a.watcher == nil {
-		return nil
+		return errors.New("no active file watcher")
 	}
 	return a.watcher.WatchDir(dirPath)
 }
@@ -1072,9 +1136,116 @@ func (a *App) WatchDirectory(dirPath string) error {
 // UnwatchDirectory removes a directory from the file watcher.
 func (a *App) UnwatchDirectory(dirPath string) error {
 	if a.watcher == nil {
-		return nil
+		return errors.New("no active file watcher")
 	}
 	return a.watcher.UnwatchDir(dirPath)
+}
+
+// CreateProject creates a new project. If externalPath is empty, an internal workspace is created.
+func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, error) {
+	if a.projectManager == nil {
+		return nil, errors.New("project subsystem not initialized")
+	}
+	p, err := a.projectManager.CreateProject(name, externalPath)
+	if err != nil {
+		return nil, err
+	}
+	wailsRuntime.EventsEmit(a.ctx, "project:created", p)
+	return p, nil
+}
+
+// DeleteProject deletes a project and all its sessions.
+func (a *App) DeleteProject(id string) error {
+	if a.projectManager == nil {
+		return errors.New("project subsystem not initialized")
+	}
+	// If deleting the active project, clear active state
+	a.activeProjectMu.Lock()
+	wasActive := a.activeProjectID == id
+	if wasActive {
+		a.activeProjectID = ""
+		a.activeProjectPath = ""
+	}
+	a.activeProjectMu.Unlock()
+
+	if err := a.projectManager.DeleteProject(id); err != nil {
+		return err
+	}
+
+	// Stop watcher if this was the active project
+	if wasActive && a.watcher != nil {
+		_ = a.watcher.Close()
+		a.watcher = nil
+	}
+
+	wailsRuntime.EventsEmit(a.ctx, "project:deleted", id)
+	return nil
+}
+
+// RenameProject renames a project.
+func (a *App) RenameProject(id, name string) error {
+	if a.projectManager == nil {
+		return errors.New("project subsystem not initialized")
+	}
+	if err := a.projectManager.RenameProject(id, name); err != nil {
+		return err
+	}
+	wailsRuntime.EventsEmit(a.ctx, "project:renamed", map[string]string{"id": id, "name": name})
+	return nil
+}
+
+// ListProjects returns all projects sorted by last activity.
+func (a *App) ListProjects() ([]project.ProjectInfo, error) {
+	if a.projectManager == nil {
+		return nil, errors.New("project subsystem not initialized")
+	}
+	return a.projectManager.ListProjects()
+}
+
+// PickDirectory opens a native directory picker dialog.
+func (a *App) PickDirectory() (string, error) {
+	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Select Workspace Directory",
+	})
+}
+
+// SwitchProject activates a project, setting it as the current workspace.
+func (a *App) SwitchProject(id string) error {
+	if a.projectManager == nil {
+		return errors.New("project subsystem not initialized")
+	}
+	p, err := a.projectManager.GetProject(id)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		return fmt.Errorf("project not found: %s", id)
+	}
+
+	a.activeProjectMu.Lock()
+	a.activeProjectID = p.ID
+	a.activeProjectPath = p.WorkspacePath
+	a.activeProjectMu.Unlock()
+
+	// Update project activity timestamp
+	_ = a.projStore.UpdateProjectActivity(id)
+
+	// Recreate file watcher for the new project workspace
+	if a.watcher != nil {
+		_ = a.watcher.Close()
+		a.watcher = nil
+	}
+	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
+		wailsRuntime.EventsEmit(a.ctx, "workspace:tree_changed", nil)
+	})
+	if err != nil {
+		slog.Warn("failed to start workspace file watcher", "project", id, "error", err)
+	} else {
+		a.watcher = watcher
+	}
+
+	wailsRuntime.EventsEmit(a.ctx, "project:switched", p)
+	return nil
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -1082,6 +1253,7 @@ func (a *App) shutdown(ctx context.Context) {
 		if err := a.watcher.Close(); err != nil {
 			slog.Error("failed to close workspace watcher", "error", err)
 		}
+		a.watcher = nil
 	}
 
 	if a.manager != nil {
@@ -1091,6 +1263,18 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.store != nil {
 		if err := a.store.Close(); err != nil {
 			slog.Error("failed to close session store", "error", err)
+		}
+	}
+
+	if a.projStore != nil {
+		if err := a.projStore.Close(); err != nil {
+			slog.Error("failed to close project store", "error", err)
+		}
+	}
+
+	if a.db != nil {
+		if err := a.db.Close(); err != nil {
+			slog.Error("failed to close database", "error", err)
 		}
 	}
 
@@ -1107,12 +1291,22 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
-// CreateSession creates a new agent session.
+// CreateSession creates a new agent session within the active project.
 func (a *App) CreateSession() (*session.SessionInfo, error) {
 	if a.manager == nil {
 		return nil, errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
-	info, err := a.manager.CreateSession()
+
+	a.activeProjectMu.RLock()
+	projectID := a.activeProjectID
+	projectPath := a.activeProjectPath
+	a.activeProjectMu.RUnlock()
+
+	if projectID == "" {
+		return nil, errors.New("no active project — create or select a project first")
+	}
+
+	info, err := a.manager.CreateSession(projectID, projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
@@ -1147,16 +1341,32 @@ func (a *App) DeleteSession(id string) error {
 	return nil
 }
 
-// ListSessions returns all sessions.
+// ListSessions returns sessions for the active project.
 func (a *App) ListSessions() ([]session.SessionInfo, error) {
-	// Load from store for persisted sessions
+	a.activeProjectMu.RLock()
+	projectID := a.activeProjectID
+	a.activeProjectMu.RUnlock()
+
+	if projectID == "" {
+		return []session.SessionInfo{}, nil
+	}
+
 	if a.store != nil {
-		sessions, err := a.store.ListSessions()
+		sessions, err := a.store.ListSessionsByProject(projectID)
 		if err != nil {
 			return nil, err
 		}
-		if sessions == nil {
-			return []session.SessionInfo{}, nil
+		// Overlay in-memory active state from the manager, since the SQLite
+		// store never persists the transient "active" flag.
+		if a.manager != nil {
+			for _, ms := range a.manager.ListSessions() {
+				for i := range sessions {
+					if sessions[i].ID == ms.ID {
+						sessions[i].Active = ms.Active
+						break
+					}
+				}
+			}
 		}
 		return sessions, nil
 	}

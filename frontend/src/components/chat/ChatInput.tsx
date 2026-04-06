@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useWails } from '@/hooks/useWails'
 import { Play, Square } from 'lucide-react'
@@ -14,14 +15,22 @@ export function ChatInput() {
   const [isProcessing, setIsProcessing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const sessions = useSessionStore(s => s.sessions)
   const touchSession = useSessionStore(s => s.touchSession)
   const addSession = useSessionStore(s => s.addSession)
   const setActiveSession = useSessionStore(s => s.setActiveSession)
+  const activeProjectId = useProjectStore(s => s.activeProjectId)
   const isThinking = useChatStore(s => s.isThinking)
   const isTaskActive = useChatStore(s => s.isTaskActive)
   const setTaskActive = useChatStore(s => s.setTaskActive)
   const addMessage = useChatStore(s => s.addMessage)
   const { api } = useWails()
+
+  // Blocking conditions
+  const isNoProject = !activeProjectId
+  const busySession = sessions.find(s => s.active && s.id !== activeSessionId)
+  const isBlockedByOtherSession = !!busySession
+  const isInputDisabled = isTaskActive || isNoProject || isBlockedByOtherSession
 
   const showCancel = isThinking || isProcessing
 
@@ -118,11 +127,22 @@ export function ChatInput() {
     // Enter to send, Shift+Enter for new line
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (!showCancel && !isTaskActive) {
+      if (!showCancel && !isInputDisabled) {
         handleSend()
       }
     }
-  }, [handleSend, showCancel, isTaskActive])
+  }, [handleSend, showCancel, isInputDisabled])
+
+  // Determine placeholder and blocking message
+  let placeholder = 'Type a message... (Enter to send, Shift+Enter for new line)'
+  let blockingMessage: string | null = null
+  if (isNoProject) {
+    placeholder = 'Select or create a project to start'
+    blockingMessage = 'Select or create a project to start'
+  } else if (isBlockedByOtherSession) {
+    placeholder = `Session '${busySession?.name || 'Unknown'}' is currently active`
+    blockingMessage = `Session '${busySession?.name || 'Unknown'}' is currently active`
+  }
 
   return (
     <div className="border-t border-border bg-card p-4">
@@ -133,13 +153,17 @@ export function ChatInput() {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
+            placeholder={placeholder}
             rows={1}
-            disabled={isTaskActive}
-            className={`w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none${isTaskActive ? ' opacity-50 cursor-not-allowed' : ''}`}
+            disabled={isInputDisabled}
+            className={`w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none${isInputDisabled ? ' opacity-50 cursor-not-allowed' : ''}`}
             style={{ overflow: text.split('\n').length > MAX_LINES ? 'auto' : 'hidden' }}
           />
         </div>
+
+        {blockingMessage && (
+          <p className="px-3 text-xs italic text-muted-foreground">{blockingMessage}</p>
+        )}
 
         <div className="flex items-center justify-end pt-2 min-h-[40px]">
           {showCancel ? (
@@ -156,7 +180,7 @@ export function ChatInput() {
           ) : (
             <Button
               onClick={handleSend}
-              disabled={!text.trim()}
+              disabled={!text.trim() || isInputDisabled}
               className="shrink-0 h-8 w-8 rounded-md bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-colors text-white"
               title="Send message"
               aria-label="Send message"

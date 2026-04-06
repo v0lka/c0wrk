@@ -1,8 +1,18 @@
 // Type definitions for Wails v2 runtime
 // These match the Go backend types
 
+export interface ProjectInfo {
+  id: string
+  name: string
+  workspace_path: string
+  is_external: boolean
+  created_at: string
+  last_active_at: string
+}
+
 export interface SessionInfo {
   id: string
+  project_id: string
   name: string
   created_at: string
   last_active_at: string
@@ -72,6 +82,8 @@ export interface EvalCriterionData {
   name: string
   description: string
   passed: boolean
+  status?: 'pass' | 'fail' | 'unclear'
+  diagnostic?: string
 }
 
 export interface EvalData {
@@ -146,6 +158,7 @@ export interface ContextFillData {
   used_tokens: number
   max_tokens: number
   status: string // "ok" | "compact" | "warning" | "emergency" | "reject"
+  plan_step_id?: string
   session_input_tokens: number
   session_output_tokens: number
 }

@@ -21,5 +21,5 @@ func TestNoopEvents_NoPanic(t *testing.T) {
 	n.SubAgentComplete("step_1", true, 200*time.Millisecond)
 	n.AssistantChunk("partial")
 	n.AssistantDone("full", 100, 50)
-	n.ContextFill(0.5, 5000, 10000, "ok")
+	n.ContextFill(0.5, 5000, 10000, "ok", "")
 }

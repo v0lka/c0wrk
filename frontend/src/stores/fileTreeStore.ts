@@ -7,13 +7,13 @@ export interface FileNode {
 }
 
 interface FileTreeState {
-  sessionId: string
+  projectWorkspacePath: string
   rootPath: string
   entries: Record<string, FileNode[]>
   expandedDirs: Set<string>
   loadingDirs: Set<string>
 
-  initForSession: (sessionId: string) => void
+  initForProject: (workspacePath: string) => void
   clearTree: () => void
   setEntries: (path: string, nodes: FileNode[]) => void
   toggleDir: (path: string) => void
@@ -42,13 +42,18 @@ async function unwatchDirectory(path: string): Promise<void> {
 }
 
 export const useFileTreeStore = create<FileTreeState>((set, get) => ({
-  sessionId: '',
+  projectWorkspacePath: '',
   rootPath: '',
   entries: {},
   expandedDirs: new Set<string>(),
   loadingDirs: new Set<string>(),
 
-  initForSession: async (sessionId: string) => {
+  initForProject: async (workspacePath: string) => {
+    const { rootPath: currentRoot } = get()
+
+    // Skip re-init if same workspace path is already loaded
+    if (currentRoot && currentRoot === workspacePath) return
+
     // Unwatch all previously watched dirs
     const { expandedDirs, rootPath } = get()
     if (rootPath) {
@@ -60,29 +65,25 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
 
     // Reset state
     set({
-      sessionId,
+      projectWorkspacePath: workspacePath,
       rootPath: '',
       entries: {},
       expandedDirs: new Set<string>(),
       loadingDirs: new Set<string>(),
     })
 
-    if (!sessionId) return
-    if (!window?.go?.main?.App?.GetSessionWorkspace) return
+    if (!workspacePath) return
 
     try {
-      const root = await window.go.main.App.GetSessionWorkspace(sessionId)
-      if (!root || get().sessionId !== sessionId) return
+      set({ rootPath: workspacePath })
 
-      set({ rootPath: root })
+      const nodes = await listDirectory(workspacePath)
+      if (get().projectWorkspacePath !== workspacePath) return
 
-      const nodes = await listDirectory(root)
-      if (get().sessionId !== sessionId) return
-
-      set((state) => ({ entries: { ...state.entries, [root]: nodes } }))
-      watchDirectory(root)
+      set((state) => ({ entries: { ...state.entries, [workspacePath]: nodes } }))
+      watchDirectory(workspacePath)
     } catch {
-      // Session workspace not available
+      // Workspace not available
     }
   },
 
@@ -95,7 +96,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       }
     }
     set({
-      sessionId: '',
+      projectWorkspacePath: '',
       rootPath: '',
       entries: {},
       expandedDirs: new Set<string>(),
@@ -140,8 +141,8 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
     }),
 
   refreshVisibleDirs: async () => {
-    const { rootPath, expandedDirs, sessionId } = get()
-    if (!rootPath || !sessionId) return
+    const { rootPath, expandedDirs, projectWorkspacePath } = get()
+    if (!rootPath || !projectWorkspacePath) return
 
     const dirsToRefresh = [rootPath, ...expandedDirs]
     const results = await Promise.all(
@@ -151,7 +152,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       })
     )
 
-    if (get().sessionId !== sessionId) return // session changed during refresh
+    if (get().projectWorkspacePath !== projectWorkspacePath) return // project changed during refresh
 
     const newEntries = { ...get().entries }
     for (const [dir, nodes] of results) {

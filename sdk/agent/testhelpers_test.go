@@ -154,6 +154,10 @@ func (m *mockContextManager) AvailableTokens() int {
 	return m.availableTokens
 }
 
+func (m *mockContextManager) OutputLimit() int {
+	return 8192
+}
+
 // --- Mock TokenCounter ---
 
 type mockTokenCounter struct{}
@@ -223,7 +227,7 @@ func (r *recordingEvents) TokensUsed(inputTokens, outputTokens int) {
 	r.record("TokensUsed")
 }
 
-func (r *recordingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens int, status string) {
+func (r *recordingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
 	r.record("ContextFill:" + status)
 }
 

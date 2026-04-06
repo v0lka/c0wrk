@@ -41,6 +41,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []Acce
 			detail, err = e.evaluateProgrammatic(ctx, criterion)
 		case "llm_judge":
 			detail, err = e.evaluateLLMJudge(ctx, criterion, result, steps)
+		case "intent_verification":
+			detail = EvalDetail{
+				Criterion:  criterion,
+				Diagnostic: "SKIPPED:evaluated externally by IntentVerifier",
+			}
 		default:
 			// Unknown check type - mark as unclear
 			detail = EvalDetail{

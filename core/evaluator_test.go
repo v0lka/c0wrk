@@ -605,3 +605,43 @@ func TestEvaluator_NoReconsiderationWithoutSteps(t *testing.T) {
 		t.Error("expected AllPassed to be false")
 	}
 }
+
+// TestEvaluateIntentVerificationSkipped verifies that an intent_verification
+// criterion is placed into Unclear with a SKIPPED diagnostic and AllPassed remains true.
+func TestEvaluateIntentVerificationSkipped(t *testing.T) {
+	evaluator := NewEvaluator(nil, nil)
+
+	criteria := []AcceptanceCriterion{
+		{
+			ID:          "ac_intent",
+			Description: "User intent must be verified",
+			CheckType:   "intent_verification",
+		},
+	}
+
+	evalResult, err := evaluator.Evaluate(context.Background(), "", criteria, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(evalResult.Unclear) != 1 {
+		t.Fatalf("expected 1 unclear, got %d", len(evalResult.Unclear))
+	}
+	if len(evalResult.Passed) != 0 {
+		t.Errorf("expected 0 passed, got %d", len(evalResult.Passed))
+	}
+	if len(evalResult.Failed) != 0 {
+		t.Errorf("expected 0 failed, got %d", len(evalResult.Failed))
+	}
+
+	detail := evalResult.Unclear[0]
+	if detail.Criterion.ID != "ac_intent" {
+		t.Errorf("expected criterion ID ac_intent, got %s", detail.Criterion.ID)
+	}
+	if !strings.HasPrefix(detail.Diagnostic, "SKIPPED:") {
+		t.Errorf("expected diagnostic to start with 'SKIPPED:', got %q", detail.Diagnostic)
+	}
+	if !evalResult.AllPassed {
+		t.Error("expected AllPassed to be true since intent_verification is Unclear, not Failed")
+	}
+}

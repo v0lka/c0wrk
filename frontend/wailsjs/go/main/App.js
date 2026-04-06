@@ -10,8 +10,16 @@ export function CancelTask(arg1) {
   return window['go']['main']['App']['CancelTask'](arg1);
 }
 
+export function CreateProject(arg1, arg2) {
+  return window['go']['main']['App']['CreateProject'](arg1, arg2);
+}
+
 export function CreateSession() {
   return window['go']['main']['App']['CreateSession']();
+}
+
+export function DeleteProject(arg1) {
+  return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
 export function DeleteSession(arg1) {
@@ -46,12 +54,24 @@ export function ListDirectory(arg1) {
   return window['go']['main']['App']['ListDirectory'](arg1);
 }
 
+export function ListProjects() {
+  return window['go']['main']['App']['ListProjects']();
+}
+
 export function ListProviderModels(arg1) {
   return window['go']['main']['App']['ListProviderModels'](arg1);
 }
 
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
+}
+
+export function PickDirectory() {
+  return window['go']['main']['App']['PickDirectory']();
+}
+
+export function RenameProject(arg1, arg2) {
+  return window['go']['main']['App']['RenameProject'](arg1, arg2);
 }
 
 export function RenameSession(arg1, arg2) {
@@ -68,6 +88,10 @@ export function SetLogLevel(arg1) {
 
 export function SetTheme(arg1) {
   return window['go']['main']['App']['SetTheme'](arg1);
+}
+
+export function SwitchProject(arg1) {
+  return window['go']['main']['App']['SwitchProject'](arg1);
 }
 
 export function UnwatchDirectory(arg1) {

@@ -1,19 +1,16 @@
 import { useRef, useCallback, useState, useEffect, type MouseEvent as ReactMouseEvent } from 'react'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
-import { FileTreePanel } from './FileTreePanel'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { ExecutionPanels } from '@/components/chat/ExecutionPanels'
 import { PendingActionsBar } from '@/components/chat/PendingActionsBar'
-import { useUIStore } from '@/stores/uiStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { NoProjectEmptyState } from '@/components/project/NoProjectEmptyState'
 
-const SIDEBAR_DEFAULT = 260
+const SIDEBAR_DEFAULT = 300
 const SIDEBAR_MIN = 180
-const SIDEBAR_MAX = 400
-const FILETREE_DEFAULT = 280
-const FILETREE_MIN = 180
-const FILETREE_MAX = 500
+const SIDEBAR_MAX = 500
 
 function useResizeHandle(
   defaultWidth: number,
@@ -29,7 +26,6 @@ function useResizeHandle(
   const upHandlerRef = useRef<(() => void) | null>(null)
   const mountedRef = useRef(true)
 
-  // Cleanup effect for unmount during active drag
   useEffect(() => {
     mountedRef.current = true
     return () => {
@@ -75,7 +71,6 @@ function useResizeHandle(
         }
       }
 
-      // Store references for cleanup
       moveHandlerRef.current = onMouseMove
       upHandlerRef.current = onMouseUp
 
@@ -101,8 +96,9 @@ function ResizeHandle({ onMouseDown }: { onMouseDown: (e: ReactMouseEvent) => vo
 
 export function AppLayout() {
   const sidebar = useResizeHandle(SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, 'left')
-  const rightPanel = useResizeHandle(FILETREE_DEFAULT, FILETREE_MIN, FILETREE_MAX, 'right')
-  const fileTreePanelOpen = useUIStore((s) => s.fileTreePanelOpen)
+  const hasProjects = useProjectStore(s => s.projects.length > 0)
+  const activeProjectId = useProjectStore(s => s.activeProjectId)
+  const showEmptyState = !hasProjects || !activeProjectId
 
   return (
     <div className="h-screen w-screen flex overflow-hidden">
@@ -118,29 +114,20 @@ export function AppLayout() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <main className="flex-1 flex min-h-0 min-w-0">
-          <div className="flex-1 flex flex-col min-w-0 min-h-0">
-            <ChatArea />
-            <PendingActionsBar />
-            <ExecutionPanels />
-            <ChatInput />
-          </div>
-        </main>
+        {showEmptyState ? (
+          <NoProjectEmptyState />
+        ) : (
+          <main className="flex-1 flex min-h-0 min-w-0">
+            <div className="flex-1 flex flex-col min-w-0 min-h-0">
+              <ChatArea />
+              <PendingActionsBar />
+              <ExecutionPanels />
+              <ChatInput />
+            </div>
+          </main>
+        )}
         <StatusBar />
       </div>
-
-      {/* File tree panel */}
-      {fileTreePanelOpen && (
-        <>
-          <ResizeHandle onMouseDown={rightPanel.onMouseDown} />
-          <div
-            className="flex-shrink-0 overflow-hidden"
-            style={{ width: rightPanel.width }}
-          >
-            <FileTreePanel />
-          </div>
-        </>
-      )}
     </div>
   )
 }

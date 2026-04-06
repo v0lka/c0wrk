@@ -402,7 +402,7 @@ func TestNoopEmitter_AllMethodsAreNoop(t *testing.T) {
 	e.ACExtracted(2, nil)
 	e.AssistantChunk("chunk")
 	e.AssistantDone("full", 100, 50)
-	e.ContextFill(0.5, 50000, 100000, "ok")
+	e.ContextFill(0.5, 50000, 100000, "ok", "")
 	e.Service("msg")
 	e.ServiceWithMeta("msg", map[string]any{"key": "val"})
 }

@@ -256,6 +256,33 @@ export namespace main {
 
 }
 
+export namespace project {
+	
+	export class ProjectInfo {
+	    id: string;
+	    name: string;
+	    workspace_path: string;
+	    is_external: boolean;
+	    created_at: string;
+	    last_active_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.workspace_path = source["workspace_path"];
+	        this.is_external = source["is_external"];
+	        this.created_at = source["created_at"];
+	        this.last_active_at = source["last_active_at"];
+	    }
+	}
+
+}
+
 export namespace session {
 	
 	export class ChatMessage {
@@ -282,6 +309,7 @@ export namespace session {
 	}
 	export class SessionInfo {
 	    id: string;
+	    project_id: string;
 	    name: string;
 	    created_at: string;
 	    last_active_at: string;
@@ -297,6 +325,7 @@ export namespace session {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.project_id = source["project_id"];
 	        this.name = source["name"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];

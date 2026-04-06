@@ -319,6 +319,79 @@ func TestWebSearchTool_DefaultPolicy(t *testing.T) {
 	}
 }
 
+func TestWebSearchTool_QueryFallback(t *testing.T) {
+	// Create mock server that echoes the query back.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody tavilyRequest
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		response := tavilyResponse{
+			Results: []tavilyResult{
+				{Title: "Result", URL: "https://example.com", Content: reqBody.Query},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name      string
+		input     string
+		wantQuery string
+		wantError bool
+	}{
+		{
+			name:      "queries array",
+			input:     `{"queries": ["test query"]}`,
+			wantQuery: "test query",
+		},
+		{
+			name:      "queries string",
+			input:     `{"queries": "test query"}`,
+			wantQuery: "test query",
+		},
+		{
+			name:      "search_query string",
+			input:     `{"search_query": "test query"}`,
+			wantQuery: "test query",
+		},
+		{
+			name:      "empty object still errors",
+			input:     `{}`,
+			wantError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := NewWebSearchTool("test-api-key")
+			tool.SetBaseURL(server.URL)
+
+			result, err := tool.Execute(context.Background(), json.RawMessage(tc.input))
+			if err != nil {
+				t.Fatalf("Execute() returned error: %v", err)
+			}
+
+			if tc.wantError {
+				if !result.IsError {
+					t.Error("Expected IsError=true")
+				}
+				if !strings.Contains(result.Content, "query parameter is required") {
+					t.Errorf("Expected 'query parameter is required', got: %s", result.Content)
+				}
+				return
+			}
+
+			if result.IsError {
+				t.Fatalf("Execute() returned IsError=true: %s", result.Content)
+			}
+			if !strings.Contains(result.Content, tc.wantQuery) {
+				t.Errorf("Expected result to contain %q, got: %s", tc.wantQuery, result.Content)
+			}
+		})
+	}
+}
+
 func TestWebSearchTool_RealSearch(t *testing.T) {
 	apiKey := os.Getenv("TAVILY_API_KEY")
 	if apiKey == "" {

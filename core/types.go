@@ -74,6 +74,8 @@ type EvalCriterionEvent struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Passed      bool   `json:"passed"`
+	Status      string `json:"status"`              // "pass", "fail", or "unclear"
+	Diagnostic  string `json:"diagnostic,omitempty"` // evaluation reasoning / intent verification feedback
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +193,7 @@ type CompletedStep struct {
 	StepID string `json:"step_id"`
 	Output string `json:"output"`
 	Error  error  `json:"-"` // not serialized
+	Steps  []Step `json:"steps,omitempty"` // actual executor steps for evaluator evidence
 }
 
 // ExecutorConfig — configuration for the Executor (AD 4.4).
@@ -223,6 +226,13 @@ type EvalDetail struct {
 	OriginalDiagnostic string              `json:"original_diagnostic,omitempty"`
 }
 
+// IntentVerification holds the result of Tier 2 intent-based verification.
+type IntentVerification struct {
+	Passed   bool   `json:"passed"`
+	Feedback string `json:"feedback"` // structured explanation for replan/reflector
+	Steps    []Step `json:"steps"`    // verification steps taken (for audit trail)
+}
+
 // Reflection — result of Reflector analysis (AD 4.6).
 type Reflection struct {
 	Summary         string    `json:"summary"`          // brief summary of what happened
@@ -243,6 +253,19 @@ type AgentProfile struct {
 	SystemPrompt string   `json:"system_prompt,omitempty"` // role-specific prompt override (optional)
 	AllowedTools []string `json:"allowed_tools,omitempty"` // subset of available tools (empty = all)
 	MaxSteps     int      `json:"max_steps,omitempty"`     // budget per agent (0 = use default)
+	Domain       string   `json:"domain,omitempty"`        // "code" | "research" | "general" - affects compaction and AC handling
+}
+
+// Worktree abstracts the git-worktree operations used by the orchestrator.
+// The concrete implementation is workspace.WorktreeManager.
+type Worktree interface {
+	Init() error
+	Reset() error
+	Cleanup() error
+	WorktreePath() string
+	GetDiff() (string, error)
+	GetDiffStat() (string, error)
+	Merge(commitMsg string) error
 }
 
 // DefaultAgentProfile returns the default executor profile.

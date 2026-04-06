@@ -126,11 +126,15 @@ function DAGGraph({ items }: { items: PlanItem[] }) {
         }
 
         if (c.type === 'fork' || c.type === 'merge') {
-          const midY = (y1 + y2) / 2
+          // Fork: jog near parent so the branch visually originates from it.
+          // Merge: jog near child so lines visually converge into it.
+          const jogY = c.type === 'fork'
+            ? y1 + ROW_HEIGHT / 4
+            : y2 - ROW_HEIGHT / 4
           return (
             <path
               key={i}
-              d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
+              d={`M ${x1} ${y1} L ${x1} ${jogY} L ${x2} ${jogY} L ${x2} ${y2}`}
               stroke={STROKE_COLOR}
               strokeWidth={STROKE_WIDTH}
               strokeLinecap="round"
@@ -175,7 +179,7 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
                 <button
                   key={`${group.id}-${item.id}`}
                   onClick={() => onStepClick?.(item.id)}
-                  className="flex items-center gap-2 h-6 px-1 -mx-1 w-full text-left rounded hover:bg-zinc-800/50 transition-colors cursor-pointer"
+                  className="flex items-center gap-2 h-[24px] px-1 -mx-1 w-full text-left rounded hover:bg-zinc-800/50 transition-colors cursor-pointer"
                 >
                   <PlanStatusIcon status={item.status} />
                   <span className="text-xs text-zinc-400 truncate">{item.title}</span>
@@ -202,9 +206,14 @@ function EvalContent({ groups }: EvalContentProps) {
           {groupIdx > 0 && <div className="border-t border-zinc-800 my-2" />}
           <div className="space-y-1">
             {group.items.map((item) => (
-              <div key={`${group.id}-${item.name}`} className="flex items-center gap-2 py-0.5">
-                <EvalStatusIcon status={item.status} />
-                <span className="text-xs text-zinc-400 truncate">{item.description}</span>
+              <div key={`${group.id}-${item.name}`} className="py-0.5">
+                <div className="flex items-center gap-2">
+                  <EvalStatusIcon status={item.status} />
+                  <span className="text-xs text-zinc-400 truncate">{item.description}</span>
+                </div>
+                {item.diagnostic && (item.status === 'fail' || item.status === 'unclear') && (
+                  <p className="text-xs text-zinc-500 ml-[22px] mt-0.5 whitespace-pre-wrap">{item.diagnostic}</p>
+                )}
               </div>
             ))}
           </div>

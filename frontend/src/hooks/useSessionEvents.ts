@@ -99,7 +99,8 @@ export function useSessionEvents(sessionId: string | null) {
   const setStreaming = useChatStore(s => s.setStreaming)
   const appendStreamToken = useChatStore(s => s.appendStreamToken)
   const setThinking = useChatStore(s => s.setThinking)
-  const setContextFill = useChatStore(s => s.setContextFill)
+  const setStepContextFill = useChatStore(s => s.setStepContextFill)
+  const setSessionTokens = useChatStore(s => s.setSessionTokens)
   const updateSession = useSessionStore(s => s.updateSession)
 
   useEffect(() => {
@@ -116,14 +117,7 @@ export function useSessionEvents(sessionId: string | null) {
     // Load persisted session token totals
     GetSessionTokens(sessionId).then((resp) => {
       if (!isActiveSession()) return
-      const current = useChatStore.getState().contextFill
-      if (current) {
-        setContextFill({
-          ...current,
-          sessionInputTokens: resp.total_input_tokens ?? 0,
-          sessionOutputTokens: resp.total_output_tokens ?? 0,
-        })
-      }
+      setSessionTokens(resp.total_input_tokens ?? 0, resp.total_output_tokens ?? 0)
     }).catch(() => {}) // Ignore errors, will show 0
     
     // Reset panel data for new session (before any events arrive)
@@ -545,25 +539,23 @@ export function useSessionEvents(sessionId: string | null) {
       if (!isContextFillData(data)) return
       if (!isActiveSession()) return
       const fillData = data
-      setContextFill({
-        fillPercent: fillData.fill_percent,
-        usedTokens: fillData.used_tokens,
-        maxTokens: fillData.max_tokens,
-        status: fillData.status,
-        sessionInputTokens: fillData.session_input_tokens ?? 0,
-        sessionOutputTokens: fillData.session_output_tokens ?? 0,
-      })
+      // Store per-step context fill if step_id is present
+      if (fillData.plan_step_id) {
+        setStepContextFill(fillData.plan_step_id, {
+          fillPercent: fillData.fill_percent,
+          usedTokens: fillData.used_tokens,
+          maxTokens: fillData.max_tokens,
+          status: fillData.status,
+        })
+      }
+      // Always update session tokens
+      setSessionTokens(fillData.session_input_tokens ?? 0, fillData.session_output_tokens ?? 0)
     })
 
     on('session_tokens', (data: unknown) => {
       if (!isSessionTokensData(data)) return
       if (!isActiveSession()) return
-      const current = useChatStore.getState().contextFill
-      setContextFill({
-        ...(current ?? { fillPercent: 0, usedTokens: 0, maxTokens: 0, status: 'ok', sessionInputTokens: 0, sessionOutputTokens: 0 }),
-        sessionInputTokens: data.session_input_tokens,
-        sessionOutputTokens: data.session_output_tokens,
-      })
+      setSessionTokens(data.session_input_tokens, data.session_output_tokens)
     })
 
     on('session_renamed', (data: unknown) => {
@@ -573,5 +565,5 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     return () => unsubs.forEach(fn => fn())
-  }, [sessionId, runtime, addMessage, updateMessage, setStreaming, appendStreamToken, setThinking, setContextFill, updateSession])
+  }, [sessionId, runtime, addMessage, updateMessage, setStreaming, appendStreamToken, setThinking, setStepContextFill, setSessionTokens, updateSession])
 }

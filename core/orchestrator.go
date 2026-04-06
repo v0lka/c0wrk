@@ -15,6 +15,9 @@ import (
 	tools "github.com/user/agent/sdk/tools"
 )
 
+// WorktreeFactory creates a Worktree for a given session.
+type WorktreeFactory func(sessionID string) Worktree
+
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps   int
@@ -49,10 +52,12 @@ type Orchestrator struct {
 	logger              *slog.Logger  // structured logger (nil-safe)
 	emitter             Emitter       // event emitter (nil-safe, uses noopEmitter if nil)
 	toolResultBudget    ToolResultBudget
+	intentVerifier      *IntentVerifier  // optional Tier 2 intent verifier (nil-safe)
+	worktreeFactory     WorktreeFactory  // optional worktree factory for isolation (nil-safe)
 }
 
 // NewOrchestrator creates a new Orchestrator with all Phase 2 components.
-// reflector, logger, and emitter are optional (nil-safe) for Phase 3 features.
+// reflector, logger, emitter, intentVerifier, and worktreeFactory are optional (nil-safe) for Phase 3 features.
 func NewOrchestrator(
 	router *Router,
 	acExtractor *ACExtractor,
@@ -69,6 +74,8 @@ func NewOrchestrator(
 	emitter Emitter, // optional, uses noopEmitter if nil
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
 	toolResultBudget ToolResultBudget,
+	intentVerifier *IntentVerifier, // optional, nil-safe
+	worktreeFactory WorktreeFactory, // optional, nil-safe
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
@@ -104,6 +111,8 @@ func NewOrchestrator(
 		logger:           logger,
 		emitter:          emitter,
 		toolResultBudget: toolResultBudget,
+		intentVerifier:   intentVerifier,
+		worktreeFactory:  worktreeFactory,
 	}
 }
 
@@ -142,7 +151,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 				effectiveMax = meta.ContextWindow - meta.OutputLimit - safetyMargin
 			}
 		}
-		o.emitter.ContextFill(0, 0, effectiveMax, "ok")
+		o.emitter.ContextFill(0, 0, effectiveMax, "ok", "")
 	}
 
 	// 1. Get available tools
@@ -221,13 +230,13 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 func (o *Orchestrator) buildEvalCriterionEvents(evalResult *EvalResult) []EvalCriterionEvent {
 	criteria := make([]EvalCriterionEvent, 0, len(evalResult.Passed)+len(evalResult.Failed)+len(evalResult.Unclear))
 	for _, d := range evalResult.Passed {
-		criteria = append(criteria, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: true})
+		criteria = append(criteria, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: true, Status: "pass", Diagnostic: d.Diagnostic})
 	}
 	for _, d := range evalResult.Failed {
-		criteria = append(criteria, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: false})
+		criteria = append(criteria, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: false, Status: "fail", Diagnostic: d.Diagnostic})
 	}
 	for _, d := range evalResult.Unclear {
-		criteria = append(criteria, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: false})
+		criteria = append(criteria, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: false, Status: "unclear", Diagnostic: d.Diagnostic})
 	}
 	return criteria
 }
@@ -278,6 +287,24 @@ func (o *Orchestrator) filterToolsByProfile(allTools []tools.ToolDescriptor, pro
 
 // handlePlanExecute handles plan_execute mode - DAG planning and execution with retry.
 func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, escalatedReflections []Reflection, ac []AcceptanceCriterion) (*HandleResult, error) {
+	// Create worktree for isolation
+	var wt Worktree
+	if o.worktreeFactory != nil {
+		sessionID := fmt.Sprintf("req-%d", time.Now().UnixNano())
+		wt = o.worktreeFactory(sessionID)
+		if err := wt.Init(); err != nil {
+			o.logWarn("worktree init failed, working in main workspace", "error", err)
+			wt = nil
+		} else {
+			defer func() { _ = wt.Cleanup() }()
+		}
+	}
+
+	// If worktree is active, override workspace path in context
+	if wt != nil {
+		ctx = tools.WithWorkspacePath(ctx, wt.WorktreePath())
+	}
+
 	// Initialize session reflections from escalated reflections (if any)
 	var sessionReflections []Reflection
 	if len(escalatedReflections) > 0 {
@@ -311,9 +338,10 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	var lastEvalResult *EvalResult
 	var currentPlan = plan
 	var preCompleted map[string]CompletedStep
+	var stepRetryContext string // workspace change summary for step-level retries
 
 	// Create shared workspace for inter-agent communication
-	workspace := NewSharedWorkspace()
+	sharedWS := NewSharedWorkspace()
 
 	// 3. Retry loop
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
@@ -324,7 +352,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		}
 
 		// Execute the current plan
-		finalOutput, completedSteps, _ := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted, workspace, userMessage)
+		finalOutput, completedSteps, _ := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted, sharedWS, userMessage, stepRetryContext)
 		// Note: step execution errors are handled within executePlanWithSteps
 		lastOutput = finalOutput
 		prevCompletedSteps := completedSteps
@@ -338,23 +366,69 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		}
 
 		// Final evaluation
-		if len(ac) == 0 {
-			return handleResult, nil
-		}
-
-		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
+		var evalResult *EvalResult
 		syntheticSteps := buildPlanExecutionSteps(completedSteps, currentPlan)
-		evalResult, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, syntheticSteps)
-		if evalErr != nil {
-			o.logWarn("evaluation failed, returning result without evaluation", "error", evalErr)
-			o.emitter.ServiceWithMeta("Evaluation failed: "+evalErr.Error(), map[string]any{"phase": "orchestration", "severity": "warning"})
-			//nolint:nilerr // evaluation failure is non-fatal; return best-effort result without eval
-			return handleResult, nil
-		}
-		handleResult.EvalResult = evalResult
-		lastEvalResult = evalResult
 
-		// Emit evaluation result
+		if len(ac) == 0 {
+			// No Tier 1 criteria — synthesize empty passing result so Tier 2 still runs
+			evalResult = &EvalResult{AllPassed: true}
+			handleResult.EvalResult = evalResult
+			lastEvalResult = evalResult
+		} else {
+			o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
+			er, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, syntheticSteps)
+			if evalErr != nil {
+				o.logWarn("evaluation failed, returning result without evaluation", "error", evalErr)
+				o.emitter.ServiceWithMeta("Evaluation failed: "+evalErr.Error(), map[string]any{"phase": "orchestration", "severity": "warning"})
+				//nolint:nilerr // evaluation failure is non-fatal; return best-effort result without eval
+				return handleResult, nil
+			}
+			evalResult = er
+			handleResult.EvalResult = evalResult
+			lastEvalResult = evalResult
+		}
+
+		// Define intent criterion (always present)
+		intentAC := AcceptanceCriterion{
+			ID:          "ac_intent",
+			Description: "Implementation matches the user's original intent",
+			CheckType:   "intent_verification",
+		}
+
+		// Run Tier 2 only if Tier 1 passed and intent verifier is available
+		if evalResult.AllPassed && o.intentVerifier != nil {
+			var gitDiff, changeSummary string
+			if wt != nil {
+				gitDiff, _ = wt.GetDiff()
+				changeSummary, _ = wt.GetDiffStat()
+			}
+
+			intentResult, intentErr := o.intentVerifier.Verify(
+				ctx, userMessage, finalOutput, gitDiff, changeSummary,
+			)
+
+			intentDetail := EvalDetail{Criterion: intentAC}
+			switch {
+			case intentErr != nil:
+				intentDetail.Diagnostic = "UNCLEAR:intent verification error: " + intentErr.Error()
+				evalResult.Unclear = append(evalResult.Unclear, intentDetail)
+			case intentResult.Passed:
+				intentDetail.Diagnostic = "PASSED:" + intentResult.Feedback
+				evalResult.Passed = append(evalResult.Passed, intentDetail)
+			default:
+				intentDetail.Diagnostic = "FAILED:" + intentResult.Feedback
+				evalResult.Failed = append(evalResult.Failed, intentDetail)
+				evalResult.AllPassed = false
+			}
+		} else if !evalResult.AllPassed {
+			// Tier 1 failed, skip intent verification
+			evalResult.Unclear = append(evalResult.Unclear, EvalDetail{
+				Criterion:  intentAC,
+				Diagnostic: "SKIPPED:tier 1 criteria not passed",
+			})
+		}
+
+		// Emit evaluation result (including intent criterion)
 		passed := len(evalResult.Passed)
 		total := passed + len(evalResult.Failed) + len(evalResult.Unclear)
 		o.emitter.Evaluation(passed, total, o.buildEvalCriterionEvents(evalResult))
@@ -363,6 +437,16 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 		// Success - all criteria passed
 		if evalResult.AllPassed {
+			// Merge worktree changes on success
+			if wt != nil {
+				commitMsg := "Agent: " + userMessage
+				if len(commitMsg) > 72 {
+					commitMsg = commitMsg[:69] + "..."
+				}
+				if err := wt.Merge(commitMsg); err != nil {
+					return nil, fmt.Errorf("plan succeeded but failed to merge worktree into workspace: %w", err)
+				}
+			}
 			return handleResult, nil
 		}
 
@@ -396,6 +480,13 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 				// Replan if suggested, otherwise retry with same plan
 				if reflection.SuggestedAction == "replan" {
+					if wt != nil {
+						if err := wt.Reset(); err != nil {
+							o.logWarn("worktree reset failed during replan, falling back to retry", "error", err)
+							continue
+						}
+					}
+
 					// Find failed step (for replan context) - use first completed step as proxy
 					var failedStep CompletedStep
 					if len(completedSteps) > 0 {
@@ -408,8 +499,10 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 						continue
 					}
 					currentPlan = newPlan
-					preCompleted = nil
-					workspace.Clear()
+					// Carry forward completed step results that the new plan preserves (by ID).
+					preCompleted = buildCarryForward(prevCompletedSteps, newPlan)
+					stepRetryContext = "" // reset retry context on full replan
+					sharedWS.Clear()
 					// Validate AC mapping in new plan
 					if unmappedAC := validateACMapping(currentPlan, ac); len(unmappedAC) > 0 {
 						o.logWarn("unmapped acceptance criteria in replanned plan", "unmapped_ac", unmappedAC)
@@ -430,6 +523,10 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 							}
 						}
 						o.logInfo("step_level_retry", "retry_steps", len(retrySet), "preserved_steps", len(preCompleted))
+						// Capture workspace changes for retry context
+						if wt != nil {
+							stepRetryContext, _ = wt.GetDiffStat()
+						}
 					} else {
 						// No criteria-to-step mapping — fall back to full retry
 						preCompleted = nil
@@ -461,7 +558,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 }
 
 // executePlanWithSteps executes a DAG plan and returns completed steps for replan.
-func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac []AcceptanceCriterion, routing *RoutingDecision, availableTools []tools.ToolDescriptor, sessionReflections []Reflection, preCompleted map[string]CompletedStep, workspace *SharedWorkspace, userMessage string) (string, []CompletedStep, error) {
+func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac []AcceptanceCriterion, routing *RoutingDecision, availableTools []tools.ToolDescriptor, sessionReflections []Reflection, preCompleted map[string]CompletedStep, sharedWS *SharedWorkspace, userMessage, retryContext string) (string, []CompletedStep, error) {
 	var completedSteps map[string]CompletedStep
 	var completedList []CompletedStep
 	if preCompleted != nil {
@@ -513,7 +610,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			profile := o.resolveProfile(step)
 			stepTools := o.filterToolsByProfile(availableTools, profile)
 
-			taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, workspace, userMessage)
+			taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, sharedWS, userMessage, retryContext)
 
 			// Use profile-specific system prompt if provided
 			var systemPrompt string
@@ -528,7 +625,15 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			if o.modelRegistry != nil {
 				modelMeta = o.modelRegistry.Resolve("")
 			}
-			cm := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
+
+			// Resolve compaction strategy from step domain (fallback to routing domain)
+			stepDomain := "general"
+			if profile.Domain != "" {
+				stepDomain = profile.Domain
+			}
+			stepCompactionStrategy := applyCompactionStrategy(stepDomain, 3) // default complexity for step-level
+
+			cm := o.contextFactory(systemPrompt, modelMeta, stepCompactionStrategy)
 
 			// Set the task and acceptance criteria into the context window
 			cm.SetTask(taskDef.Task, taskDef.Criteria)
@@ -559,8 +664,8 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			o.emitter.PlanStepComplete(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
 
 			// Store output in workspace
-			if workspace != nil && r.Error == nil {
-				workspace.Store(r.StepID+"/output", r.Output, r.StepID)
+			if sharedWS != nil && r.Error == nil {
+				sharedWS.Store(r.StepID+"/output", r.Output, r.StepID)
 			}
 
 			cs := CompletedStep(r)
@@ -627,9 +732,11 @@ func buildCriteriaToStepsMap(plan *Plan) map[string][]string {
 
 // computeRetrySteps determines the minimal set of step IDs that need re-execution
 // given a list of failed acceptance-criteria IDs. It maps failed criteria back to
-// their responsible steps (via PlanStep.RelevantAC), then expands the set to include
-// all transitive dependents in the DAG. Returns nil if no criteria map to any step,
-// signaling the caller should fall back to full plan retry.
+// their responsible steps (via PlanStep.RelevantAC). Returns nil if no criteria
+// map to any step, signaling the caller should fall back to full plan retry.
+// Downstream dependents are NOT expanded — they keep their successful output.
+// If the retry changes a dependency's output, downstream mismatches will be
+// caught by the next evaluation cycle.
 func computeRetrySteps(plan *Plan, failedCriteriaIDs []string) map[string]bool {
 	acMap := buildCriteriaToStepsMap(plan)
 
@@ -645,17 +752,43 @@ func computeRetrySteps(plan *Plan, failedCriteriaIDs []string) map[string]bool {
 		return nil
 	}
 
-	// Expand with transitive dependents: any step that (transitively) depends on a retry step
+	return retrySet
+}
+
+// buildCarryForward maps previously completed step outputs to the new plan.
+// Steps whose IDs appear in the new plan AND completed without error are
+// candidates for carry-forward. Steps whose dependencies (in the new plan)
+// include a step that is NOT carried forward are transitively excluded,
+// ensuring that a replanned step invalidates all its downstream dependents.
+// Returns nil if no steps can be preserved (triggering full re-execution).
+func buildCarryForward(completed []CompletedStep, newPlan *Plan) map[string]CompletedStep {
+	newStepIDs := make(map[string]bool, len(newPlan.Steps))
+	for _, s := range newPlan.Steps {
+		newStepIDs[s.ID] = true
+	}
+
+	// Phase 1: collect candidates — old steps that match new plan IDs and had no error.
+	carried := make(map[string]CompletedStep)
+	for _, cs := range completed {
+		if newStepIDs[cs.StepID] && cs.Error == nil {
+			carried[cs.StepID] = cs
+		}
+	}
+
+	// Phase 2: transitively remove steps whose dependencies won't be carried forward.
+	// If a step depends on a new-plan step that is NOT in `carried`, the dependency
+	// will be re-executed, so this step's prior output is stale and must be re-run.
 	changed := true
 	for changed {
 		changed = false
-		for _, step := range plan.Steps {
-			if retrySet[step.ID] {
-				continue
+		for _, s := range newPlan.Steps {
+			if _, ok := carried[s.ID]; !ok {
+				continue // not a candidate
 			}
-			for _, depID := range step.DependsOn {
-				if retrySet[depID] {
-					retrySet[step.ID] = true
+			for _, depID := range s.DependsOn {
+				if newStepIDs[depID] && carried[depID].StepID == "" {
+					// Dependency exists in new plan but is not carried forward
+					delete(carried, s.ID)
 					changed = true
 					break
 				}
@@ -663,13 +796,17 @@ func computeRetrySteps(plan *Plan, failedCriteriaIDs []string) map[string]bool {
 		}
 	}
 
-	return retrySet
+	if len(carried) == 0 {
+		return nil
+	}
+	return carried
 }
 
-// buildPlanExecutionSteps converts completed plan steps into a synthetic execution
-// trajectory ([]Step) so that the Reflector and Evaluator can see what actually
-// happened during Plan&Execute execution. Each CompletedStep maps to a Step with
-// the step description as Thought and the step output (or error) as Observation.
+// buildPlanExecutionSteps converts completed plan steps into an execution
+// trajectory ([]Step) for the Reflector and Evaluator. When a CompletedStep
+// carries the actual executor steps (tool calls + observations), those are
+// used directly so the evaluator sees real evidence. Otherwise, a synthetic
+// summary step is created as a backward-compatible fallback.
 func buildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []Step {
 	// Build a map from step ID to plan step description
 	stepDescriptions := make(map[string]string)
@@ -677,18 +814,24 @@ func buildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []Step {
 		stepDescriptions[ps.ID] = ps.Description
 	}
 
-	steps := make([]Step, 0, len(completedList))
+	var steps []Step
 	for _, cs := range completedList {
-		desc := stepDescriptions[cs.StepID]
-		step := Step{
-			Thought: fmt.Sprintf("Executing plan step %s: %s", cs.StepID, desc),
-		}
-		if cs.Error != nil {
-			step.Observation = fmt.Sprintf("STEP FAILED: %s\nOutput: %s", cs.Error.Error(), cs.Output)
+		if len(cs.Steps) > 0 {
+			// Use actual executor steps (preserves tool calls + observations)
+			steps = append(steps, cs.Steps...)
 		} else {
-			step.Observation = cs.Output
+			// Fallback: synthetic summary (backward compat)
+			desc := stepDescriptions[cs.StepID]
+			step := Step{
+				Thought: fmt.Sprintf("Executing plan step %s: %s", cs.StepID, desc),
+			}
+			if cs.Error != nil {
+				step.Observation = fmt.Sprintf("STEP FAILED: %s\nOutput: %s", cs.Error.Error(), cs.Output)
+			} else {
+				step.Observation = cs.Output
+			}
+			steps = append(steps, step)
 		}
-		steps = append(steps, step)
 	}
 	return steps
 }
@@ -714,7 +857,8 @@ func validateACMapping(plan *Plan, ac []AcceptanceCriterion) []string {
 
 // buildStepTask creates a TaskDefinition for a plan step.
 // stepIndex is 0-based index of this step in the plan.
-func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, workspace *SharedWorkspace, userMessage string) TaskDefinition {
+// retryContext is an optional string with workspace state from a previous attempt (empty on first attempt).
+func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, sharedWS *SharedWorkspace, userMessage, retryContext string) TaskDefinition {
 	// Build task description with scoping context
 	var taskBuilder strings.Builder
 
@@ -762,10 +906,10 @@ func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, al
 	}
 
 	// Inject workspace artifacts from completed dependencies
-	if workspace != nil {
+	if sharedWS != nil {
 		var artifactContext strings.Builder
 		for _, depID := range step.DependsOn {
-			artifacts := workspace.GetByProducer(depID)
+			artifacts := sharedWS.GetByProducer(depID)
 			for _, a := range artifacts {
 				fmt.Fprintf(&artifactContext, "\n\n--- Artifact from %s ---\n%s", a.ProducedBy, a.Content)
 			}
@@ -853,6 +997,11 @@ func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, al
 				}
 			}
 		}
+	}
+
+	// Append retry context if retrying a step
+	if retryContext != "" {
+		fmt.Fprintf(&taskBuilder, "\n\n## Existing Files From Previous Attempt\n%s\nIMPORTANT: Fix these files IN PLACE. Do NOT create new files with different names.\n", retryContext)
 	}
 
 	return TaskDefinition{

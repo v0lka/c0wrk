@@ -441,7 +441,7 @@ func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int) {
 }
 
 // ContextFill emits a context fill status event, enriched with session-level token totals.
-func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status string) {
+func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
 	// Cache fill state and read session totals atomically.
 	e.tokens.mu.Lock()
 	e.tokens.lastFillPercent = fillPercent
@@ -457,13 +457,14 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "context_fill",
-		Data: map[string]any{
-			"fill_percent":          fillPercent,
-			"used_tokens":           usedTokens,
-			"max_tokens":            maxTokens,
-			"status":                status,
-			"session_input_tokens":  totalIn,
-			"session_output_tokens": totalOut,
+		Data: ContextFillEventData{
+			FillPercent:         fillPercent,
+			UsedTokens:          usedTokens,
+			MaxTokens:           maxTokens,
+			Status:              status,
+			PlanStepID:          stepID,
+			SessionInputTokens:  totalIn,
+			SessionOutputTokens: totalOut,
 		},
 	})
 }

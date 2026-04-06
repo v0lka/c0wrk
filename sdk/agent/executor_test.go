@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -717,5 +718,327 @@ func TestBuildToolDefinitions_EmptyInput(t *testing.T) {
 	}
 	if defs[0].Name != "finish" {
 		t.Errorf("expected finish tool, got %q", defs[0].Name)
+	}
+}
+
+func TestExecutor_Run_CircuitBreaker_JSONNormalization(t *testing.T) {
+	// Tool calls with semantically identical JSON but different whitespace
+	// should be detected as identical by the circuit breaker.
+	responses := []*llm.ChatResponse{
+		llmResponseWithToolCall("try1", "search", json.RawMessage(`{"q":"same"}`)),
+		llmResponseWithToolCall("try2", "search", json.RawMessage(`{"q": "same"}`)),
+		llmResponseWithToolCall("try3", "search", json.RawMessage(`{ "q" : "same" }`)),
+		llmResponseWithToolCall("try4", "search", json.RawMessage(`{  "q"  :  "same"  }`)),
+		llmResponseWithToolCall("try5", "search", json.RawMessage(`{"q":"same"}`)), // extra, should not be reached
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Finished {
+		t.Error("expected Finished=false on circuit breaker abort")
+	}
+	if !strings.Contains(result.Output, "Aborted") {
+		t.Errorf("expected abort message in output, got %q", result.Output)
+	}
+}
+
+func TestExecutor_Run_CircuitBreaker_ErrorAwareAbort(t *testing.T) {
+	// When repeated identical calls produce errors (IsError=true),
+	// the abort threshold should be 3 instead of 4.
+	sameInput := json.RawMessage(`{"q":"same"}`)
+	responses := make([]*llm.ChatResponse, 5)
+	for i := range responses {
+		responses[i] = llmResponseWithToolCall("trying", "search", sameInput)
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	// Return error results for the tool
+	mockTools.results["search"] = tools.ToolResult{Content: "not found", IsError: true}
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Finished {
+		t.Error("expected Finished=false on circuit breaker abort")
+	}
+	if !strings.Contains(result.Output, "Aborted") {
+		t.Errorf("expected abort message in output, got %q", result.Output)
+	}
+	// With error-aware thresholds: call 1 executes (count=1), call 2 executes (count=2, nudge),
+	// call 3 aborts (count=3). So only 2 tool executions should happen.
+	toolCalls := 0
+	for _, c := range mockTools.calls {
+		if c.Name == "search" {
+			toolCalls++
+		}
+	}
+	// First call: count=1, executes. Second call: count=2, nudge (no execute).
+	// Third call: count=3, abort (no execute). So 1 tool execution.
+	if toolCalls != 1 {
+		t.Errorf("expected 1 tool execution with error-aware abort (threshold=3), got %d", toolCalls)
+	}
+}
+
+func TestExecutor_Run_CircuitBreaker_ErrorAwareNudge(t *testing.T) {
+	// When repeated error calls occur, the nudge should happen at count 2
+	// with the error-specific message.
+	sameInput := json.RawMessage(`{"q":"same"}`)
+	responses := []*llm.ChatResponse{
+		llmResponseWithToolCall("try1", "search", sameInput),
+		llmResponseWithToolCall("try2", "search", sameInput), // triggers nudge at count=2
+		llmResponseFinish("ok", "done"),                       // after nudge
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	mockTools.results["search"] = tools.ToolResult{Content: "not found", IsError: true}
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Finished {
+		t.Error("expected Finished=true after error-aware nudge + finish")
+	}
+
+	// Verify the nudge step contains the error-specific message
+	foundErrorNudge := false
+	for _, s := range cm.steps {
+		if strings.Contains(s.Observation, "returned an error") {
+			foundErrorNudge = true
+			break
+		}
+	}
+	if !foundErrorNudge {
+		t.Error("expected error-specific nudge message in steps")
+	}
+}
+
+// --- Truncation protection tests ---
+
+func TestExecutor_Run_TruncatedToolCall_SkipsExecution(t *testing.T) {
+	// LLM returns a max_tokens response with a truncated tool call, then a normal finish.
+	// The tool should NOT be executed, and a truncation system message should appear.
+	truncatedInput := json.RawMessage(`{"content": "hello worl`)
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Let me write the file",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "write_file", Input: truncatedInput},
+					},
+				},
+				StopReason: "max_tokens",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 4096},
+			},
+			llmResponseFinish("done", "completed"),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "write_file", Description: "write a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Tool should NOT have been executed
+	for _, c := range mockTools.calls {
+		if c.Name == "write_file" {
+			t.Error("write_file tool should NOT have been executed on truncated response")
+		}
+	}
+
+	// Executor should not abort (only 1 truncation, threshold is 3)
+	if !result.Finished {
+		t.Error("expected Finished=true (only 1 truncation, should not abort)")
+	}
+
+	// The truncation system message should appear in steps
+	foundTruncMsg := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "was NOT executed") && strings.Contains(s.Observation, "write_file") {
+			foundTruncMsg = true
+			break
+		}
+	}
+	if !foundTruncMsg {
+		t.Error("expected truncation system message in step observation")
+	}
+}
+
+func TestExecutor_Run_ConsecutiveTruncation_Aborts(t *testing.T) {
+	// 3 consecutive max_tokens responses with tool calls → abort
+	responses := make([]*llm.ChatResponse, 3)
+	for i := range responses {
+		responses[i] = &llm.ChatResponse{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("attempt %d", i+1),
+				ToolCalls: []llm.ToolCall{
+					{ID: fmt.Sprintf("call_%d", i), Name: "write_file", Input: json.RawMessage(`{"content": "trunca`)},
+				},
+			},
+			StopReason: "max_tokens",
+			Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 4096},
+		}
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "write_file", Description: "write a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Finished {
+		t.Error("expected Finished=false on truncation abort")
+	}
+	if !strings.Contains(result.Output, "truncated") {
+		t.Errorf("expected truncation abort message, got %q", result.Output)
+	}
+}
+
+func TestExecutor_Run_ConsecutiveParseErrors_Aborts(t *testing.T) {
+	// 3 tool calls to the same tool, each with invalid JSON that causes parse errors.
+	// The tool executor returns IsError=true with "failed to parse input" content.
+	responses := make([]*llm.ChatResponse, 3)
+	badInputs := []string{
+		`{"path": 123}`,
+		`{"path": null, "extra": true}`,
+		`{"wrong_field": "value"}`,
+	}
+	for i := range responses {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("attempt %d", i+1),
+			"create_file",
+			json.RawMessage(badInputs[i]),
+		)
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	mockTools.results["create_file"] = tools.ToolResult{
+		Content: "failed to parse input: invalid field type",
+		IsError: true,
+	}
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "create_file", Description: "create a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Finished {
+		t.Error("expected Finished=false on parse error abort")
+	}
+	if !strings.Contains(result.Output, "failed to parse input") {
+		t.Errorf("expected parse error abort message, got %q", result.Output)
+	}
+}
+
+func TestExecutor_Run_MaxTokens_SetFromOutputLimit(t *testing.T) {
+	// Verify that ChatRequest.MaxTokens is set from cw.OutputLimit()
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseFinish("done", "42"),
+		},
+	}
+	cm := newMockContextManager()
+	// OutputLimit() returns 8192 by default in the mock
+
+	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, nil, false, ToolResultBudget{})
+	_, err := exec.Run(context.Background(), nil, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mockLLM.calls) == 0 {
+		t.Fatal("expected at least 1 LLM call")
+	}
+	if mockLLM.calls[0].MaxTokens != 8192 {
+		t.Errorf("MaxTokens = %d, want 8192", mockLLM.calls[0].MaxTokens)
+	}
+}
+
+func TestExecutor_Run_TruncationCounterResets(t *testing.T) {
+	// truncated → normal tool call (success) → truncated → normal finish
+	// Counter should reset after the successful call, so no abort.
+	responses := []*llm.ChatResponse{
+		// 1st: truncated
+		{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: "try big write",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "write_file", Input: json.RawMessage(`{"content": "trunc`)},
+				},
+			},
+			StopReason: "max_tokens",
+			Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 4096},
+		},
+		// 2nd: normal tool call (not truncated)
+		llmResponseWithToolCall("smaller write", "write_file", json.RawMessage(`{"content": "ok"}`)),
+		// 3rd: truncated again
+		{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: "try big write again",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_3", Name: "write_file", Input: json.RawMessage(`{"content": "trunc2`)},
+				},
+			},
+			StopReason: "max_tokens",
+			Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 4096},
+		},
+		// 4th: finish
+		llmResponseFinish("done", "all good"),
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	mockTools.results["write_file"] = tools.ToolResult{Content: "written"}
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "write_file", Description: "write a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT abort — counter resets after successful call
+	if !result.Finished {
+		t.Error("expected Finished=true (counter should reset after successful call)")
+	}
+	if result.Output != "all good" {
+		t.Errorf("Output = %q, want %q", result.Output, "all good")
 	}
 }

@@ -179,6 +179,10 @@ func (m *mockContextManager) AvailableTokens() int {
 	return 100000 // large default so existing tests aren't affected
 }
 
+func (m *mockContextManager) OutputLimit() int {
+	return 8192
+}
+
 // mockEmitter is a mock implementation of Emitter for testing.
 // It tracks all calls for assertion purposes.
 type mockEmitter struct {
@@ -228,8 +232,8 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 		outputTokens int
 	}{content, inputTokens, outputTokens})
 }
-func (m *mockEmitter) TokensUsed(_, _ int)                                 {}
-func (m *mockEmitter) ContextFill(_ float64, _, _ int, _ string)  {}
+func (m *mockEmitter) TokensUsed(_, _ int)                                    {}
+func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string)   {}
 func (m *mockEmitter) Service(_ string)                           {}
 func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any) {}
 
@@ -281,7 +285,7 @@ func detectCallType(req llm.ChatRequest) string {
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
 			// Check specific role identifiers first (most specific to least specific)
-			if strings.Contains(msg.Content, "task planner") || strings.Contains(msg.Content, "Revise the remaining plan") {
+			if strings.Contains(msg.Content, "task planner") || strings.Contains(msg.Content, "Revise the plan") {
 				return "planner"
 			}
 			if strings.Contains(msg.Content, "self-correction analyst") {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,30 @@ const (
 	repeatNudgeMessage = "[System] You have called the same tool with the same arguments " +
 		"multiple times in a row and it keeps failing. Try a different approach: " +
 		"use different arguments, a different tool, or call finish if the task cannot be completed."
+
+	repeatErrorNudgeMessage = "[System] The previous call to this tool with " +
+		"identical arguments returned an error. Retrying the same call will produce the " +
+		"same error. You must try a different approach: use different arguments, a " +
+		"different tool, or call finish if the task cannot be completed."
+
+	// truncationAbortThreshold is the number of consecutive truncated responses
+	// before aborting the executor loop.
+	truncationAbortThreshold = 3
+
+	truncationMessage = "[System] Your tool call to '%s' was NOT executed because your output " +
+		"was cut off by the model's maximum output token limit. The tool call arguments are " +
+		"incomplete/truncated. You MUST use a different approach that produces smaller output — " +
+		"for example, break large file writes into multiple smaller append operations, or reduce " +
+		"the content size."
+
+	// parseErrorAbortThreshold is the number of consecutive parse errors on the
+	// same tool before aborting.
+	parseErrorAbortThreshold = 3
+
+	parseErrorNudgeMessage = "[System] This tool has now failed to parse input %d times in a row. " +
+		"The arguments you are generating are malformed. Try a completely different approach: " +
+		"reduce the size of your arguments, use a different tool, or break the operation into " +
+		"smaller steps."
 )
 
 // Executor runs the ReAct loop: Thought → Action → Observation.
@@ -40,7 +65,15 @@ type Executor struct {
 
 	// Circuit breaker: detect repeated identical tool calls
 	consecutiveRepeatCount int
-	lastToolKey            string // "name:" + string(input) for dedup
+	lastToolKey            string // "name:" + compactJSON(input) for dedup
+	lastToolResultIsError  bool   // whether the last identical tool call returned an error
+
+	// Truncation tracker: detect consecutive max_tokens responses with tool calls
+	consecutiveTruncationCount int
+
+	// Parse error tracker: detect consecutive parse failures on the same tool
+	consecutiveParseErrorTool  string
+	consecutiveParseErrorCount int
 
 	// Plan-step context for structured logging
 	planStepID    string // e.g. "step_3" (empty if not plan mode)
@@ -167,8 +200,9 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		// Create chat request
 		req := llm.ChatRequest{
-			Messages: messages,
-			Tools:    toolDefs,
+			Messages:  messages,
+			Tools:     toolDefs,
+			MaxTokens: cw.OutputLimit(),
 		}
 
 		// Call LLM
@@ -277,6 +311,42 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}, nil
 		}
 
+		// --- Truncation detection: max_tokens with tool calls ---
+		if resp.StopReason == "max_tokens" && len(resp.Message.ToolCalls) > 0 {
+			truncAction := resp.Message.ToolCalls[0]
+			e.emitter.ToolCall(stepNum, truncAction.Name, string(truncAction.Input))
+
+			e.consecutiveTruncationCount++
+			if e.consecutiveTruncationCount >= truncationAbortThreshold {
+				e.logWarn("truncation_abort", "step", stepNum, "tool", truncAction.Name,
+					"consecutive_truncations", e.consecutiveTruncationCount)
+				return &ExecutorResult{
+					Output:   fmt.Sprintf("Aborted: tool '%s' output was truncated %d times consecutively by max output token limit", truncAction.Name, e.consecutiveTruncationCount),
+					Steps:    allSteps,
+					Finished: false,
+				}, nil
+			}
+
+			truncObs := fmt.Sprintf(truncationMessage, truncAction.Name)
+			e.logWarn("truncation_detected", "step", stepNum, "tool", truncAction.Name,
+				"consecutive_truncations", e.consecutiveTruncationCount)
+
+			step := Step{
+				Thought:     thought,
+				Action:      truncAction,
+				Observation: truncObs,
+				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			}
+			allSteps = append(allSteps, step)
+			cw.AddStep(step)
+			e.emitter.ToolResult(stepNum, len(truncObs), truncObs)
+			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
+			continue
+		}
+
+		// Reset truncation counter on any non-truncated response
+		e.consecutiveTruncationCount = 0
+
 		action := resp.Message.ToolCalls[0]
 
 		// Emit tool call
@@ -289,15 +359,24 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		e.logDebug("tool_call_args", "step", stepNum, "tool", action.Name, "args", string(action.Input))
 
 		// --- Circuit breaker: detect repeated identical tool calls ---
-		toolKey := action.Name + ":" + string(action.Input)
+		toolKey := action.Name + ":" + compactJSON(action.Input)
 		if toolKey == e.lastToolKey {
 			e.consecutiveRepeatCount++
 		} else {
 			e.consecutiveRepeatCount = 1
 			e.lastToolKey = toolKey
+			e.lastToolResultIsError = false
 		}
 
-		if e.consecutiveRepeatCount >= repeatAbortThreshold {
+		// Use lower thresholds when the previous identical call produced an error
+		nudgeThreshold := repeatNudgeThreshold
+		abortThreshold := repeatAbortThreshold
+		if e.lastToolResultIsError {
+			nudgeThreshold = 2
+			abortThreshold = 3
+		}
+
+		if e.consecutiveRepeatCount >= abortThreshold {
 			e.logWarn("repeated_tool_call_abort", "step", stepNum, "tool", action.Name, "repeat_count", e.consecutiveRepeatCount)
 			return &ExecutorResult{
 				Output:   fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount),
@@ -306,12 +385,16 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}, nil
 		}
 
-		if e.consecutiveRepeatCount >= repeatNudgeThreshold {
+		if e.consecutiveRepeatCount >= nudgeThreshold {
+			nudgeMsg := repeatNudgeMessage
+			if e.lastToolResultIsError {
+				nudgeMsg = repeatErrorNudgeMessage
+			}
 			e.logWarn("repeated_tool_call_nudge", "step", stepNum, "tool", action.Name, "repeat_count", e.consecutiveRepeatCount)
 			step := Step{
 				Thought:     thought,
 				Action:      action,
-				Observation: repeatNudgeMessage,
+				Observation: nudgeMsg,
 				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			allSteps = append(allSteps, step)
@@ -357,10 +440,38 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		}
 
 		observation := result.Content
+		e.lastToolResultIsError = result.IsError
 		// Ensure non-empty observation for tool messages (OpenAI API requirement)
 		if observation == "" {
 			observation = "(no output)"
 		}
+
+		// --- Parse error tracker ---
+		if result.IsError && isParseError(observation) {
+			if action.Name == e.consecutiveParseErrorTool {
+				e.consecutiveParseErrorCount++
+			} else {
+				e.consecutiveParseErrorTool = action.Name
+				e.consecutiveParseErrorCount = 1
+			}
+
+			if e.consecutiveParseErrorCount >= parseErrorAbortThreshold {
+				e.logWarn("parse_error_abort", "step", stepNum, "tool", action.Name,
+					"consecutive_parse_errors", e.consecutiveParseErrorCount)
+				return &ExecutorResult{
+					Output:   fmt.Sprintf("Aborted: tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount),
+					Steps:    allSteps,
+					Finished: false,
+				}, nil
+			}
+
+			observation += "\n\n" + fmt.Sprintf(parseErrorNudgeMessage, e.consecutiveParseErrorCount)
+		} else if !result.IsError {
+			// Reset parse error tracker on successful execution
+			e.consecutiveParseErrorTool = ""
+			e.consecutiveParseErrorCount = 0
+		}
+		// --- End parse error tracker ---
 
 		// Apply tool result budget
 		observation = e.applyToolResultBudget(observation, cw)
@@ -401,7 +512,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		fill := cw.CheckFill()
 
 		// Emit context fill status
-		e.emitter.ContextFill(fill.Percent, fill.Used, fill.Max, fill.Status)
+		e.emitter.ContextFill(fill.Percent, fill.Used, fill.Max, fill.Status, e.planStepID)
 
 		switch fill.Status {
 		case "compact", "warning":
@@ -464,6 +575,22 @@ func (e *Executor) buildToolDefinitions(taskTools []tools.ToolDescriptor) []llm.
 	}
 
 	return defs
+}
+
+// compactJSON normalizes JSON by removing insignificant whitespace.
+// This ensures semantically identical JSON strings produce the same output
+// regardless of formatting differences from different LLM responses.
+func compactJSON(raw json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw) // fallback to raw if malformed
+	}
+	return buf.String()
+}
+
+// isParseError checks if a tool result content indicates a JSON parse failure.
+func isParseError(content string) bool {
+	return strings.Contains(content, "failed to parse input")
 }
 
 // isContextExceededError checks if an error indicates the context window was exceeded.

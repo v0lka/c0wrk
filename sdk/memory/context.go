@@ -67,6 +67,11 @@ func (cw *ContextWindow) FillPercent() float64 {
 	return float64(cw.tracker.EstimateTotal()) / float64(effectiveMax) * 100
 }
 
+// OutputLimit returns the model's maximum output token limit.
+func (cw *ContextWindow) OutputLimit() int {
+	return cw.modelMeta.OutputLimit
+}
+
 // AvailableTokens returns the number of tokens remaining in the context window.
 func (cw *ContextWindow) AvailableTokens() int {
 	available := cw.EffectiveMax() - cw.tracker.EstimateTotal()

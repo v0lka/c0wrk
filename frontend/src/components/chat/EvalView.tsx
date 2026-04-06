@@ -7,6 +7,7 @@ interface EvalCriterionView {
   id: string
   description: string
   status: 'pending' | 'pass' | 'fail' | 'unclear'
+  diagnostic?: string
 }
 
 function StatusIcon({ status }: { status: EvalCriterionView['status'] }) {
@@ -43,6 +44,9 @@ function CriterionItem({ criterion }: { criterion: EvalCriterionView }) {
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm">{criterion.description}</p>
+        {criterion.diagnostic && (criterion.status === 'fail' || criterion.status === 'unclear') && (
+          <p className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap">{criterion.diagnostic}</p>
+        )}
       </div>
       <StatusBadge status={criterion.status} />
     </div>
@@ -83,6 +87,7 @@ export function EvalView() {
         id: item.name,
         description: item.description,
         status: item.status,
+        diagnostic: item.diagnostic,
       }))
     : []
   const hasEvalResult = criteria.length > 0

@@ -28,6 +28,7 @@ type SubAgentResult struct {
 	StepID string `json:"step_id"`
 	Output string `json:"output"`
 	Error  error  `json:"-"`
+	Steps  []Step `json:"steps,omitempty"` // actual executor steps (tool calls + observations)
 }
 
 // FillCheck represents the result of a context window fill check.
@@ -71,4 +72,5 @@ type ContextManager interface {
 	CorrectTokenCount(apiInputTokens int)
 	FillPercent() float64
 	AvailableTokens() int
+	OutputLimit() int
 }

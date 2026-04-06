@@ -392,7 +392,7 @@ func TestEventEmitterContextFill(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.ContextFill(75.5, 75500, 100000, "compact")
+	emitter.ContextFill(75.5, 75500, 100000, "compact", "step_1")
 
 	if received.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", received.SessionID)
@@ -401,21 +401,24 @@ func TestEventEmitterContextFill(t *testing.T) {
 		t.Errorf("expected type 'context_fill', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]any)
+	data, ok := received.Data.(ContextFillEventData)
 	if !ok {
-		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+		t.Fatalf("expected ContextFillEventData data, got %T", received.Data)
 	}
-	if data["fill_percent"] != 75.5 {
-		t.Errorf("expected fill_percent 75.5, got %v", data["fill_percent"])
+	if data.FillPercent != 75.5 {
+		t.Errorf("expected FillPercent 75.5, got %v", data.FillPercent)
 	}
-	if data["used_tokens"] != 75500 {
-		t.Errorf("expected used_tokens 75500, got %v", data["used_tokens"])
+	if data.UsedTokens != 75500 {
+		t.Errorf("expected UsedTokens 75500, got %v", data.UsedTokens)
 	}
-	if data["max_tokens"] != 100000 {
-		t.Errorf("expected max_tokens 100000, got %v", data["max_tokens"])
+	if data.MaxTokens != 100000 {
+		t.Errorf("expected MaxTokens 100000, got %v", data.MaxTokens)
 	}
-	if data["status"] != "compact" {
-		t.Errorf("expected status 'compact', got %v", data["status"])
+	if data.Status != "compact" {
+		t.Errorf("expected Status 'compact', got %v", data.Status)
+	}
+	if data.PlanStepID != "step_1" {
+		t.Errorf("expected PlanStepID 'step_1', got %v", data.PlanStepID)
 	}
 }
 
@@ -476,7 +479,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.Reflection("Something went wrong", []string{"Issue found"}, 1, 3)
 	emitter.Retry(2, 3)
 	emitter.ACExtracted(4, []core.EvalCriterionEvent{{Name: "ac_1", Description: "Test"}})
-	emitter.ContextFill(75.5, 75500, 100000, "compact")
+	emitter.ContextFill(75.5, 75500, 100000, "compact", "step_1")
 
 	mu.Lock()
 	if len(events) != 14 {

@@ -6,7 +6,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { formatDuration } from '@/lib/formatters'
-import type { DisplayItem } from '@/stores/chatStore'
+import { useChatStore, type DisplayItem } from '@/stores/chatStore'
 
 interface PlanStepBlockProps {
   stepId: string
@@ -19,8 +19,25 @@ interface PlanStepBlockProps {
   renderItem: (item: DisplayItem, index: number) => React.ReactNode
 }
 
+function getStatusColor(status: string): string {
+  switch (status) {
+    case 'ok':
+      return 'text-muted-foreground'
+    case 'compact':
+      return 'text-foreground'
+    case 'warning':
+      return 'text-amber-500'
+    case 'emergency':
+    case 'reject':
+      return 'text-red-500'
+    default:
+      return 'text-muted-foreground'
+  }
+}
+
 export function PlanStepBlock({ stepId, stepNum, title, status, duration, isRetry, children, renderItem }: PlanStepBlockProps) {
   const [isOpen, setIsOpen] = useState(status === 'running')
+  const stepContextFill = useChatStore(s => s.stepContextFill[stepId])
 
   // Auto-collapse when status transitions to completed/failed
   useEffect(() => {
@@ -54,6 +71,11 @@ export function PlanStepBlock({ stepId, stepNum, title, status, duration, isRetr
         )}
         <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${iconClass}`} />
         <span className="text-sm truncate">Step {stepNum}: {title}{isRetry ? ' (retry)' : ''}</span>
+        {status === 'running' && stepContextFill && (
+          <span className={`text-xs ml-2 ${getStatusColor(stepContextFill.status)}`}>
+            {Math.round(stepContextFill.fillPercent)}%
+          </span>
+        )}
         {duration !== undefined && (
           <span className="ml-auto text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded shrink-0">
             {formatDuration(duration)}
@@ -62,6 +84,17 @@ export function PlanStepBlock({ stepId, stepNum, title, status, duration, isRetr
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className={`mt-2 border-l-2 ${borderColor} rounded pl-3 py-2 space-y-3 min-w-0`}>
+          {status === 'running' && stepContextFill && (
+            <div className="text-xs text-muted-foreground flex items-center gap-2">
+              <span>Context:</span>
+              <span className={getStatusColor(stepContextFill.status)}>
+                {Math.round(stepContextFill.fillPercent)}%
+              </span>
+              <span className="text-muted-foreground/60">
+                ({stepContextFill.usedTokens.toLocaleString()} / {stepContextFill.maxTokens.toLocaleString()} tokens)
+              </span>
+            </div>
+          )}
           {children.map((child, idx) => renderItem(child, idx))}
         </div>
       </CollapsibleContent>

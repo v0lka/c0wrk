@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,9 +19,8 @@ import (
 func testManager(t *testing.T) (manager *Manager, events chan Event, dir string) {
 	t.Helper()
 
-	// Create temp directories for logs and workspaces
+	// Create temp directory for logs
 	logDir := t.TempDir()
-	workspacesDir := t.TempDir()
 
 	// Create event channel to capture events
 	eventChan := make(chan Event, 100)
@@ -33,14 +33,20 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, dir string)
 	}
 
 	// Create factory that returns nil orchestrator with no error (we'll patch sessions manually)
-	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 
-	manager = NewManager(factory, emitFunc, logDir, workspacesDir)
+	manager = NewManager(factory, emitFunc, logDir)
 	events = eventChan
 	dir = logDir
 	return
+}
+
+// testWorkspacePath returns a temp workspace path for tests.
+func testWorkspacePath(t *testing.T) string {
+	t.Helper()
+	return t.TempDir()
 }
 
 // drainEvents drains all pending events from the channel.
@@ -77,7 +83,8 @@ func TestNewManager(t *testing.T) {
 func TestManager_CreateSession(t *testing.T) {
 	manager, eventChan, logDir := testManager(t)
 
-	info, err := manager.CreateSession()
+	wsPath := testWorkspacePath(t)
+	info, err := manager.CreateSession(testProjectID, wsPath)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -131,10 +138,11 @@ func TestManager_CreateSession(t *testing.T) {
 func TestManager_CreateSession_Multiple(t *testing.T) {
 	manager, _, _ := testManager(t)
 
-	// Create multiple sessions
+	// Create multiple sessions (each in a different project to avoid active-session conflict)
 	infos := make([]*SessionInfo, 3)
 	for i := 0; i < 3; i++ {
-		info, err := manager.CreateSession()
+		projID := fmt.Sprintf("project-%d", i)
+		info, err := manager.CreateSession(projID, testWorkspacePath(t))
 		if err != nil {
 			t.Fatalf("CreateSession %d failed: %v", i, err)
 		}
@@ -167,7 +175,7 @@ func TestManager_GetSession(t *testing.T) {
 	}
 
 	// Create and get session
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	session, exists := manager.GetSession(info.ID)
 	if !exists {
 		t.Error("GetSession should return true for existing session")
@@ -187,8 +195,8 @@ func TestManager_ListSessions(t *testing.T) {
 	}
 
 	// Create sessions
-	info1, _ := manager.CreateSession()
-	info2, _ := manager.CreateSession()
+	info1, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	info2, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 
 	// List should return both
 	sessions = manager.ListSessions()
@@ -220,7 +228,7 @@ func TestManager_DeleteSession(t *testing.T) {
 	}
 
 	// Create and delete session
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 
 	// Drain the session_created event
 	drainEvents(eventChan)
@@ -266,7 +274,7 @@ func TestManager_RenameSession(t *testing.T) {
 	}
 
 	// Create and rename session
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 
 	// Drain the session_created event
 	drainEvents(eventChan)
@@ -320,7 +328,7 @@ func TestManager_ArchiveSession(t *testing.T) {
 	}
 
 	// Create session
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 
 	// Drain the session_created event
 	drainEvents(eventChan)
@@ -383,7 +391,7 @@ func TestManager_CancelTask(t *testing.T) {
 	}
 
 	// Create session
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 
 	// Cancel when no task is active
 	err = manager.CancelTask(info.ID)
@@ -406,7 +414,7 @@ func TestManager_SendMessage_AlreadyActive(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	// Create session with a mock orchestrator
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	session, _ := manager.GetSession(info.ID)
 
 	// Manually set session as active
@@ -434,7 +442,7 @@ func TestManager_ConcurrentCreateDelete(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		go func() {
 			defer wg.Done()
-			info, err := manager.CreateSession()
+			info, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
 			if err != nil {
 				t.Errorf("CreateSession failed: %v", err)
 				return
@@ -475,7 +483,7 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 
 	// Create some sessions
 	for i := 0; i < 5; i++ {
-		_, _ = manager.CreateSession()
+		_, _ = manager.CreateSession(testProjectID, testWorkspacePath(t))
 	}
 
 	const numOps = 100
@@ -529,7 +537,7 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 func TestSession_IsActive(t *testing.T) {
 	manager, _, _ := testManager(t)
 
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	session, _ := manager.GetSession(info.ID)
 
 	// Initially not active
@@ -550,7 +558,7 @@ func TestSession_IsActive(t *testing.T) {
 func TestSession_GetOrchestrator(t *testing.T) {
 	manager, _, _ := testManager(t)
 
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	session, _ := manager.GetSession(info.ID)
 
 	// GetOrchestrator returns nil because we used a mock factory
@@ -629,7 +637,7 @@ func TestManager_Shutdown(t *testing.T) {
 
 	// Create several sessions
 	for i := 0; i < 3; i++ {
-		_, err := manager.CreateSession()
+		_, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
 		if err != nil {
 			t.Fatalf("CreateSession failed: %v", err)
 		}
@@ -663,7 +671,7 @@ func TestManager_Shutdown(t *testing.T) {
 func TestManager_DeleteSession_WithActiveTask(t *testing.T) {
 	manager, _, _ := testManager(t)
 
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	session, _ := manager.GetSession(info.ID)
 
 	// Simulate an active task
@@ -692,7 +700,7 @@ func TestManager_DeleteSession_WithActiveTask(t *testing.T) {
 func TestManager_CancelTask_WithActiveTask(t *testing.T) {
 	manager, _, _ := testManager(t)
 
-	info, _ := manager.CreateSession()
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	session, _ := manager.GetSession(info.ID)
 
 	// Simulate an active task
@@ -715,7 +723,6 @@ func TestManager_CancelTask_WithActiveTask(t *testing.T) {
 // TestManager_CreateSession_FactoryError verifies error handling when factory fails.
 func TestManager_CreateSession_FactoryError(t *testing.T) {
 	logDir := t.TempDir()
-	workspacesDir := t.TempDir()
 
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
@@ -726,17 +733,84 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 	}
 
 	// Factory that always fails
-	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error) {
 		return nil, errors.New("factory error")
 	}
 
-	manager := NewManager(factory, emitFunc, logDir, workspacesDir)
+	manager := NewManager(factory, emitFunc, logDir)
 
-	_, err := manager.CreateSession()
+	_, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	if err == nil {
 		t.Fatal("expected error from CreateSession when factory fails")
 	}
 	if !strings.Contains(err.Error(), "failed to create orchestrator") {
 		t.Errorf("expected 'failed to create orchestrator' in error, got: %v", err)
+	}
+}
+
+// TestManager_CreateSession_ActiveSessionEnforcement verifies that creating a session
+// while another session in the same project is active returns an error.
+func TestManager_CreateSession_ActiveSessionEnforcement(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	wsPath := testWorkspacePath(t)
+
+	// Create first session and make it active
+	info1, err := manager.CreateSession(testProjectID, wsPath)
+	if err != nil {
+		t.Fatalf("first CreateSession failed: %v", err)
+	}
+	sess1, _ := manager.GetSession(info1.ID)
+	sess1.mu.Lock()
+	sess1.active = true
+	sess1.mu.Unlock()
+
+	// Try to create second session in same project — should fail
+	_, err = manager.CreateSession(testProjectID, wsPath)
+	if err == nil {
+		t.Fatal("expected error when creating session in project with active session")
+	}
+	if !strings.Contains(err.Error(), "another session is active") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Creating session in a different project should succeed
+	_, err = manager.CreateSession("different-project", testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession in different project should succeed: %v", err)
+	}
+}
+
+// TestManager_SendMessage_CrossProjectActiveRejection verifies that SendMessage rejects
+// when another session in the same project is already active.
+func TestManager_SendMessage_CrossProjectActiveRejection(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	wsPath := testWorkspacePath(t)
+
+	// Create two sessions in the same project
+	info1, err := manager.CreateSession(testProjectID, wsPath)
+	if err != nil {
+		t.Fatalf("CreateSession 1 failed: %v", err)
+	}
+	info2, err := manager.CreateSession(testProjectID, wsPath)
+	if err != nil {
+		t.Fatalf("CreateSession 2 failed: %v", err)
+	}
+
+	// Make session 1 active
+	sess1, _ := manager.GetSession(info1.ID)
+	sess1.mu.Lock()
+	sess1.active = true
+	sess1.mu.Unlock()
+
+	// Sending message to session 2 in the same project should fail
+	ctx := context.Background()
+	err = manager.SendMessage(ctx, info2.ID, "hello")
+	if err == nil {
+		t.Fatal("expected error when sending message while another session in same project is active")
+	}
+	if !strings.Contains(err.Error(), "another session is active") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }

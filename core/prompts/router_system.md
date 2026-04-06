@@ -15,6 +15,23 @@ Use these criteria to inform your routing decision:
 - If criteria show "(none — task appears trivial)": extraction succeeded but found no
   requirements. This is likely a greeting or simple question.
 
+Domain classification rules:
+
+- "code": Task primarily involves file operations, code implementation, tests, or build commands
+- "research": Task primarily involves web search, documentation gathering, analysis, or information retrieval
+- "mixed": Task spans BOTH objective (code) AND subjective (research) criteria
+  - Criteria span BOTH objective AND subjective natures (mixed nature distribution)
+  - Task requires BOTH code/file operations AND web/external research
+  - Available tools include BOTH file tools (file_read, file_write) AND web tools (web_search, web_fetch)
+  - Task has distinct phases that need different approaches
+- "general": Task is conversational, unclear, or doesn't fit other categories
+
+When domain is "mixed":
+
+- Complexity is typically >= 3
+- Planner will assign per-step domains based on step content
+- Use "hierarchical" compaction strategy for complex mixed tasks
+
 Available tools:
 AVAILABLE-TOOLS
 Respond ONLY with a JSON object:

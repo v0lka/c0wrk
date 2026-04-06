@@ -8,8 +8,6 @@ interface UIState {
   setTheme: (theme: Theme) => void
   logLevel: LogLevel
   setLogLevel: (level: LogLevel) => void
-  fileTreePanelOpen: boolean
-  toggleFileTreePanel: () => void
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -31,9 +29,5 @@ export const useUIStore = create<UIState>((set) => ({
   logLevel: 'DEBUG',
   setLogLevel: (level) => {
     set({ logLevel: level })
-  },
-  fileTreePanelOpen: true,
-  toggleFileTreePanel: () => {
-    set((state) => ({ fileTreePanelOpen: !state.fileTreePanelOpen }))
   },
 }))

@@ -43,3 +43,8 @@ var EvaluatorJudge string
 
 //go:embed evaluator_reconsider.md
 var EvaluatorReconsider string
+
+// Intent Verifier prompt
+
+//go:embed intent_verifier_system.md
+var IntentVerifierSystem string

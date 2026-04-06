@@ -40,10 +40,11 @@ func SessionIDFromContext(ctx context.Context) string {
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
 	ID            string
+	ProjectID     string
 	Name          string
 	CreatedAt     time.Time
 	Archived      bool
-	WorkspacePath string // session-specific workspace directory
+	WorkspacePath string // workspace directory (from project)
 	orchestrator  *core.Orchestrator
 	logFile       *os.File           // session log file handle, closed on deletion
 	cancel        context.CancelFunc // cancel for current task
@@ -51,10 +52,11 @@ type Session struct {
 	mu            sync.Mutex
 }
 
-// OrchestratorFactory creates a new Orchestrator with the given emitter and logger.
-// This allows the Manager to defer Orchestrator construction details to the caller.
+// OrchestratorFactory creates a new Orchestrator with the given emitter, logger, and workspace path.
+// The workspace path is the project workspace directory so the worktree factory can
+// capture the correct project workspace.
 // Returns an error if the orchestrator cannot be created.
-type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error)
+type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error)
 
 // TokenPersistFunc is called with cumulative session token totals after each LLM call.
 // The sessionID parameter identifies which session the tokens belong to.
@@ -68,19 +70,17 @@ type Manager struct {
 	emitFunc            func(Event) // shared event emission callback
 	logDir              string      // base directory for session logs
 	logLevel            string      // current log level for session loggers
-	workspacesDir       string      // base directory for session workspaces
 	tokenPersist        TokenPersistFunc
 }
 
 // NewManager creates a new session Manager.
-func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir, workspacesDir string) *Manager {
+func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir string) *Manager {
 	return &Manager{
 		sessions:            make(map[string]*Session),
 		orchestratorFactory: factory,
 		emitFunc:            emitFunc,
 		logDir:              logDir,
 		logLevel:            "DEBUG",
-		workspacesDir:       workspacesDir,
 	}
 }
 
@@ -92,15 +92,25 @@ func (m *Manager) SetTokenPersist(fn TokenPersistFunc) {
 }
 
 // CreateSession creates a new session with a fresh orchestrator.
-func (m *Manager) CreateSession() (*SessionInfo, error) {
+// The projectID ties the session to a project; workspacePath is the project's workspace directory.
+func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, error) {
 	// Generate UUID for session ID
 	id := uuid.New().String()
 
-	// Create session workspace directory
-	workspacePath := filepath.Join(m.workspacesDir, id)
-	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create session workspace: %w", err)
+	// Check no other session in the same project is active
+	m.mu.Lock()
+	for _, s := range m.sessions {
+		if s.ProjectID == projectID {
+			s.mu.Lock()
+			isActive := s.active
+			s.mu.Unlock()
+			if isActive {
+				m.mu.Unlock()
+				return nil, fmt.Errorf("another session is active in project %s", projectID)
+			}
+		}
 	}
+	m.mu.Unlock()
 
 	// Create session-specific logger
 	logger, logFile, err := m.createSessionLogger(id)
@@ -120,7 +130,7 @@ func (m *Manager) CreateSession() (*SessionInfo, error) {
 	}
 
 	// Create orchestrator using the factory
-	orchestrator, err := m.orchestratorFactory(emitter, logger)
+	orchestrator, err := m.orchestratorFactory(emitter, logger, workspacePath)
 	if err != nil {
 		// Close the log file since we're not creating the session
 		if logFile != nil {
@@ -132,6 +142,7 @@ func (m *Manager) CreateSession() (*SessionInfo, error) {
 	// Create session
 	session := &Session{
 		ID:            id,
+		ProjectID:     projectID,
 		Name:          "Session " + id[:8], // Default name using first 8 chars of UUID
 		CreatedAt:     time.Now(),
 		Archived:      false,
@@ -159,6 +170,7 @@ func (m *Manager) CreateSession() (*SessionInfo, error) {
 
 	return &SessionInfo{
 		ID:           session.ID,
+		ProjectID:    projectID,
 		Name:         session.Name,
 		CreatedAt:    session.CreatedAt.Format(time.RFC3339),
 		LastActiveAt: session.CreatedAt.Format(time.RFC3339),
@@ -274,6 +286,7 @@ func (m *Manager) ListSessions() []SessionInfo {
 		s.mu.Lock()
 		sessions = append(sessions, SessionInfo{
 			ID:           s.ID,
+			ProjectID:    s.ProjectID,
 			Name:         s.Name,
 			CreatedAt:    s.CreatedAt.Format(time.RFC3339),
 			LastActiveAt: s.CreatedAt.Format(time.RFC3339),
@@ -357,17 +370,37 @@ func (m *Manager) ArchiveSession(id string) error {
 func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 	m.mu.RLock()
 	session, exists := m.sessions[id]
-	m.mu.RUnlock()
-
 	if !exists {
+		m.mu.RUnlock()
 		return fmt.Errorf("session not found: %s", id)
 	}
+
+	// Snapshot other sessions in the same project under the manager lock
+	// to avoid racing with CreateSession/DeleteSession/Shutdown.
+	others := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if s.ProjectID == session.ProjectID && s.ID != id {
+			others = append(others, s)
+		}
+	}
+	m.mu.RUnlock()
 
 	session.mu.Lock()
 	// Check if already active
 	if session.active {
 		session.mu.Unlock()
 		return errors.New("session is already processing a task")
+	}
+
+	// Check no other session in the same project is active
+	for _, s := range others {
+		s.mu.Lock()
+		isActive := s.active
+		s.mu.Unlock()
+		if isActive {
+			session.mu.Unlock()
+			return fmt.Errorf("another session is active in project %s", session.ProjectID)
+		}
 	}
 
 	// Set active and create cancellable context with session ID

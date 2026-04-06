@@ -7,13 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	_ "modernc.org/sqlite" // register SQLite driver
 )
 
 // SessionInfo is the public-facing session metadata.
 type SessionInfo struct {
 	ID                string `json:"id"`
+	ProjectID         string `json:"project_id"`
 	Name              string `json:"name"`
 	CreatedAt         string `json:"created_at"`     // RFC 3339 formatted timestamp
 	LastActiveAt      string `json:"last_active_at"` // RFC 3339 formatted timestamp
@@ -39,6 +38,7 @@ type SessionStore interface {
 	SaveSession(info SessionInfo) error
 	LoadSession(id string) (*SessionInfo, error)
 	ListSessions() ([]SessionInfo, error)
+	ListSessionsByProject(projectID string) ([]SessionInfo, error)
 	DeleteSession(id string) error
 	ArchiveSession(id string, archived bool) error
 	RenameSession(id, name string) error
@@ -63,30 +63,13 @@ type SQLiteSessionStore struct {
 	db *sql.DB
 }
 
-// NewSQLiteSessionStore opens SQLite at dbPath and auto-creates tables.
-// Use ":memory:" for in-memory testing.
-func NewSQLiteSessionStore(dbPath string) (*SQLiteSessionStore, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
-	}
-
-	// Enable WAL mode for better performance
-	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
-
-	// Enable foreign keys for cascade deletes
-	if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
-	}
-
+// NewSQLiteSessionStore wraps an existing *sql.DB and auto-creates tables.
+// The caller is responsible for opening the DB and applying pragmas (WAL, foreign_keys).
+// The projects table must be created before calling this (sessions has FK to projects).
+func NewSQLiteSessionStore(db *sql.DB) (*SQLiteSessionStore, error) {
 	store := &SQLiteSessionStore{db: db}
 
 	if err := store.createTables(); err != nil {
-		_ = db.Close()
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
@@ -98,9 +81,13 @@ func (s *SQLiteSessionStore) createTables() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sessions (
 		id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 		name TEXT NOT NULL,
 		created_at TIMESTAMP NOT NULL,
-		archived BOOLEAN DEFAULT FALSE
+		last_active_at TIMESTAMP,
+		archived BOOLEAN DEFAULT FALSE,
+		total_input_tokens INTEGER DEFAULT 0,
+		total_output_tokens INTEGER DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS session_messages (
@@ -113,26 +100,10 @@ func (s *SQLiteSessionStore) createTables() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id);
+	CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
 	`
-	if _, err := s.db.ExecContext(context.Background(), schema); err != nil {
-		return err
-	}
-
-	// Migrate: add token columns to sessions (ignore "duplicate column" errors)
-	migrations := []string{
-		"ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER DEFAULT 0",
-		"ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0",
-	}
-	for _, m := range migrations {
-		_, _ = s.db.ExecContext(context.Background(), m)
-	}
-
-	// Migrate: add last_active_at column (ignore "duplicate column" errors)
-	_, _ = s.db.ExecContext(context.Background(), "ALTER TABLE sessions ADD COLUMN last_active_at TIMESTAMP")
-	// Backfill: set last_active_at to created_at for existing rows where it's NULL
-	_, _ = s.db.ExecContext(context.Background(), "UPDATE sessions SET last_active_at = created_at WHERE last_active_at IS NULL")
-
-	return nil
+	_, err := s.db.ExecContext(context.Background(), schema)
+	return err
 }
 
 // SaveSession saves or updates a session.
@@ -143,15 +114,15 @@ func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 		lastActiveAt = info.CreatedAt
 	}
 	_, err := s.db.ExecContext(context.Background(), `
-		INSERT INTO sessions (id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			last_active_at = excluded.last_active_at,
 			archived = excluded.archived,
 			total_input_tokens = excluded.total_input_tokens,
 			total_output_tokens = excluded.total_output_tokens`,
-		info.ID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens,
+		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -163,9 +134,9 @@ func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
 	var info SessionInfo
 	err := s.db.QueryRowContext(context.Background(), `
-		SELECT id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions WHERE id = ?`,
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions WHERE id = ?`,
 		id,
-	).Scan(&info.ID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens)
+	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -180,8 +151,8 @@ func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
 // ListSessions returns all sessions ordered by last activity time (newest first).
 func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
-		SELECT id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions
-		ORDER BY last_active_at DESC`)
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions
+		ORDER BY COALESCE(last_active_at, created_at) DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
@@ -190,7 +161,7 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -205,6 +176,35 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 		sessions = []SessionInfo{}
 	}
 
+	return sessions, nil
+}
+
+// ListSessionsByProject returns all sessions for a given project, ordered by last activity (newest first).
+func (s *SQLiteSessionStore) ListSessionsByProject(projectID string) ([]SessionInfo, error) {
+	rows, err := s.db.QueryContext(context.Background(), `
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions
+		WHERE project_id = ?
+		ORDER BY COALESCE(last_active_at, created_at) DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sessions by project: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sessions []SessionInfo
+	for rows.Next() {
+		var info SessionInfo
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens); err != nil {
+			return nil, fmt.Errorf("failed to scan session: %w", err)
+		}
+		sessions = append(sessions, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating sessions: %w", err)
+	}
+
+	if sessions == nil {
+		sessions = []SessionInfo{}
+	}
 	return sessions, nil
 }
 
@@ -323,7 +323,7 @@ func (s *SQLiteSessionStore) DeleteMessages(sessionID string) error {
 	return nil
 }
 
-// Close closes the database connection.
+// Close is a no-op — the DB lifecycle is managed externally.
 func (s *SQLiteSessionStore) Close() error {
-	return s.db.Close()
+	return nil
 }

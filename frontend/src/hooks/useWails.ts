@@ -2,7 +2,7 @@
 // Wails v2 generates bindings at runtime accessible via window.go
 
 import { useMemo } from 'react'
-import type { SessionInfo, ChatMessage } from '@/lib/wails'
+import type { SessionInfo, ProjectInfo, ChatMessage } from '@/lib/wails'
 import type { main } from '../../wailsjs/go/models'
 
 declare global {
@@ -26,6 +26,12 @@ declare global {
           ListDirectory(path: string): Promise<Array<{ name: string; path: string; is_dir: boolean }>>
           WatchDirectory(path: string): Promise<void>
           UnwatchDirectory(path: string): Promise<void>
+          CreateProject(name: string, externalPath: string): Promise<ProjectInfo>
+          DeleteProject(id: string): Promise<void>
+          RenameProject(id: string, name: string): Promise<void>
+          ListProjects(): Promise<ProjectInfo[]>
+          SwitchProject(id: string): Promise<void>
+          PickDirectory(): Promise<string>
         }
       }
     }

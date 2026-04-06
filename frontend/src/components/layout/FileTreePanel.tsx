@@ -2,7 +2,7 @@ import { useEffect, useCallback } from 'react'
 import { ChevronRight, Loader2 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useFileTreeStore, type FileNode } from '@/stores/fileTreeStore'
-import { useSessionStore } from '@/stores/sessionStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { FileIcon } from './FileIcon'
 
 function basename(path: string): string {
@@ -82,20 +82,22 @@ function TreeNode({ node, depth }: TreeNodeProps) {
 export function FileTreePanel() {
   const rootPath = useFileTreeStore((s) => s.rootPath)
   const entries = useFileTreeStore((s) => s.entries)
-  const initForSession = useFileTreeStore((s) => s.initForSession)
+  const initForProject = useFileTreeStore((s) => s.initForProject)
   const clearTree = useFileTreeStore((s) => s.clearTree)
   const refreshVisibleDirs = useFileTreeStore((s) => s.refreshVisibleDirs)
 
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const projects = useProjectStore((s) => s.projects)
+  const activeProject = projects.find((p) => p.id === activeProjectId)
 
-  // React to session changes
+  // React to project changes
   useEffect(() => {
-    if (activeSessionId) {
-      initForSession(activeSessionId)
+    if (activeProject?.workspace_path) {
+      initForProject(activeProject.workspace_path)
     } else {
       clearTree()
     }
-  }, [activeSessionId, initForSession, clearTree])
+  }, [activeProject?.workspace_path, initForProject, clearTree])
 
   // Listen for workspace:tree_changed events
   useEffect(() => {
@@ -106,15 +108,15 @@ export function FileTreePanel() {
     return cleanup
   }, [refreshVisibleDirs])
 
-  // No session selected
-  if (!activeSessionId) {
+  // No project selected
+  if (!activeProjectId) {
     return (
       <div className="h-full bg-card flex flex-col">
         <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-border flex-shrink-0">
           Workspace
         </div>
         <div className="flex-1 flex items-center justify-center">
-          <span className="text-xs text-zinc-600">No session selected</span>
+          <span className="text-xs text-zinc-600">No project selected</span>
         </div>
       </div>
     )
