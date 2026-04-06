@@ -21,6 +21,10 @@ export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage
 
 export function GetSessionTokens(arg1:string):Promise<main.SessionTokensResponse>;
 
+export function GetSessionWorkspace(arg1:string):Promise<string>;
+
+export function ListDirectory(arg1:string):Promise<Array<main.FileNode>>;
+
 export function ListProviderModels(arg1:string):Promise<Array<string>>;
 
 export function ListSessions():Promise<Array<session.SessionInfo>>;
@@ -33,12 +37,14 @@ export function SetLogLevel(arg1:string):Promise<void>;
 
 export function SetTheme(arg1:string):Promise<void>;
 
-export function UpdateLLMSettings(arg1:main.LLMSettingsRequest):Promise<void>;
+export function UnwatchDirectory(arg1:string):Promise<void>;
 
-export function UpdateMemorySettings(arg1:main.MemorySettingsRequest):Promise<void>;
+export function UpdateLLMSettings(arg1:main.LLMSettingsRequest):Promise<void>;
 
 export function UpdateSearchSettings(arg1:main.SearchSettingsRequest):Promise<void>;
 
 export function UpdateSecuritySettings(arg1:main.SecuritySettingsResponse):Promise<void>;
 
 export function UpdateSessionTokens(arg1:string,arg2:number,arg3:number):Promise<void>;
+
+export function WatchDirectory(arg1:string):Promise<void>;

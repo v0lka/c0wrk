@@ -38,6 +38,14 @@ export function GetSessionTokens(arg1) {
   return window['go']['main']['App']['GetSessionTokens'](arg1);
 }
 
+export function GetSessionWorkspace(arg1) {
+  return window['go']['main']['App']['GetSessionWorkspace'](arg1);
+}
+
+export function ListDirectory(arg1) {
+  return window['go']['main']['App']['ListDirectory'](arg1);
+}
+
 export function ListProviderModels(arg1) {
   return window['go']['main']['App']['ListProviderModels'](arg1);
 }
@@ -62,12 +70,12 @@ export function SetTheme(arg1) {
   return window['go']['main']['App']['SetTheme'](arg1);
 }
 
-export function UpdateLLMSettings(arg1) {
-  return window['go']['main']['App']['UpdateLLMSettings'](arg1);
+export function UnwatchDirectory(arg1) {
+  return window['go']['main']['App']['UnwatchDirectory'](arg1);
 }
 
-export function UpdateMemorySettings(arg1) {
-  return window['go']['main']['App']['UpdateMemorySettings'](arg1);
+export function UpdateLLMSettings(arg1) {
+  return window['go']['main']['App']['UpdateLLMSettings'](arg1);
 }
 
 export function UpdateSearchSettings(arg1) {
@@ -80,4 +88,8 @@ export function UpdateSecuritySettings(arg1) {
 
 export function UpdateSessionTokens(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateSessionTokens'](arg1, arg2, arg3);
+}
+
+export function WatchDirectory(arg1) {
+  return window['go']['main']['App']['WatchDirectory'](arg1);
 }

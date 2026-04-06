@@ -5,9 +5,17 @@ import { Input } from '@/components/ui/input'
 import { useWails } from '@/hooks/useWails'
 import { useChatStore } from '@/stores/chatStore'
 
+export interface AskUserPanelMetadata {
+  request_id?: string
+  question?: string
+  options?: Array<{ label: string; value: string }>
+  multi_select?: boolean
+  recommended?: string[]
+}
+
 interface AskUserPanelProps {
   sessionId: string
-  metadata?: unknown
+  metadata?: Record<string, unknown>
 }
 
 export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
@@ -16,12 +24,11 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [customText, setCustomText] = useState('')
 
-  const meta = metadata as Record<string, unknown> | undefined
-  const requestId = meta?.request_id as string | undefined
-  const question = meta?.question as string | undefined
-  const options = (meta?.options as Array<{ label: string; value: string }>) || []
-  const multiSelect = meta?.multi_select as boolean | undefined
-  const recommended = (meta?.recommended as string[]) || []
+  const requestId = typeof metadata?.request_id === 'string' ? metadata.request_id : undefined
+  const question = typeof metadata?.question === 'string' ? metadata.question : undefined
+  const options: Array<{ label: string; value: string }> = Array.isArray(metadata?.options) ? metadata.options : []
+  const multiSelect = typeof metadata?.multi_select === 'boolean' ? metadata.multi_select : undefined
+  const recommended: string[] = Array.isArray(metadata?.recommended) ? metadata.recommended : []
 
   const toggleOption = (value: string) => {
     setSelected(prev => {

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import React, { useState } from 'react'
 import { Check, X, Loader2, Clock, ChevronDown, ChevronRight, Wrench } from 'lucide-react'
 import {
   Collapsible,
@@ -22,7 +22,7 @@ function formatResultLen(len: number): string {
   return len + ' chars'
 }
 
-export function ToolBlock({ toolName, args, parsedArgs, result, resultLen, status }: ToolBlockProps) {
+export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedArgs, result, resultLen, status }: ToolBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [showFullArgs, setShowFullArgs] = useState(false)
   const [showFullResult, setShowFullResult] = useState(false)
@@ -30,21 +30,12 @@ export function ToolBlock({ toolName, args, parsedArgs, result, resultLen, statu
   const MAX_PREVIEW = 200
 
   // Use pre-parsed args from backend if available, fall back to raw string
-  const formattedArgs = useMemo(() => {
+  const formattedArgs = (() => {
     if (parsedArgs) {
-      try {
-        return JSON.stringify(parsedArgs, null, 2)
-      } catch {
-        // fall through
-      }
+      try { return JSON.stringify(parsedArgs, null, 2) } catch { /* fall through */ }
     }
-    // Fallback: try to pretty-print raw args string
-    try {
-      return JSON.stringify(JSON.parse(args), null, 2)
-    } catch {
-      return args
-    }
-  }, [parsedArgs, args])
+    try { return JSON.stringify(JSON.parse(args), null, 2) } catch { return args }
+  })()
 
   const isArgsLong = formattedArgs.length > MAX_PREVIEW || formattedArgs.includes('\n')
   const displayArgs = (!showFullArgs && isArgsLong) ? formattedArgs.slice(0, MAX_PREVIEW) + '...' : formattedArgs
@@ -129,4 +120,4 @@ export function ToolBlock({ toolName, args, parsedArgs, result, resultLen, statu
       </CollapsibleContent>
     </Collapsible>
   )
-}
+})

@@ -1,16 +1,19 @@
 import { useSessionStore } from '@/stores/sessionStore'
-import { useInspectorStore } from '@/stores/inspectorStore'
+import { usePanelStore } from '@/stores/panelStore'
 import { useChatStore } from '@/stores/chatStore'
+import { useUIStore } from '@/stores/uiStore'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { ContextBadge } from '@/components/chat/ContextBadge'
-import { Cpu, Activity, Loader2, AtSign } from 'lucide-react'
+import { Cpu, Activity, Loader2, AtSign, PanelRight } from 'lucide-react'
 
 export function StatusBar() {
   const sessions = useSessionStore(s => s.sessions)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const isThinking = useChatStore(s => s.isThinking)
-  const stats = useInspectorStore(s => s.sessionStats)
+  const stats = usePanelStore(s => s.sessionStats)
+  const toggleFileTreePanel = useUIStore(s => s.toggleFileTreePanel)
+  const fileTreePanelOpen = useUIStore(s => s.fileTreePanelOpen)
   
   const activeSession = sessions.find(s => s.id === activeSessionId)
   const routingLabel = stats.routingMode || 'idle'
@@ -55,6 +58,18 @@ export function StatusBar() {
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* File tree toggle */}
+      <button
+        onClick={toggleFileTreePanel}
+        className={`p-1 rounded hover:bg-zinc-700/50 transition-colors ${
+          fileTreePanelOpen ? 'text-foreground' : 'text-muted-foreground'
+        }`}
+        title="Toggle file tree"
+        aria-label="Toggle file tree panel"
+      >
+        <PanelRight className="h-3.5 w-3.5" />
+      </button>
 
       {/* Version */}
       <span className="text-muted-foreground">c0wrk v0.1.0</span>

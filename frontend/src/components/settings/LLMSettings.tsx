@@ -1,26 +1,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Loader2 } from 'lucide-react'
 import { GetConfig, UpdateLLMSettings, ListProviderModels } from '../../../wailsjs/go/main/App'
 import { main } from '../../../wailsjs/go/models'
+import { logger } from '@/lib/logger'
+import { ProviderSelector } from './ProviderSelector'
+import { ProviderConfigForm } from './ProviderConfigForm'
+import { ModelSelector } from './ModelSelector'
 
 interface ProviderConfig {
   api_key: string
   base_url: string
   model: string
 }
-
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  anthropic: 'Anthropic',
-  gemini: 'Gemini',
-  lmstudio: 'LM Studio',
-  openai_compatible: 'OpenAI Compatible',
-  chatgpt: 'ChatGPT',
-}
-
-const PROVIDER_KEYS = ['anthropic', 'gemini', 'lmstudio', 'openai_compatible', 'chatgpt']
 
 export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void }) {
   const [activeProvider, setActiveProvider] = useState<string>('')
@@ -36,13 +26,9 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
 
   // Compute a stable key for the current provider + credentials
   // This naturally deduplicates: model changes don't change the key, but provider/credential changes do
-  const credentialKey = useMemo(() => {
-    if (!activeProvider || !providerConfigs[activeProvider]) {
-      return ''
-    }
-    const config = providerConfigs[activeProvider]
-    return `${activeProvider}|${config.api_key}|${config.base_url}`
-  }, [activeProvider, providerConfigs])
+  const credentialKey = (!activeProvider || !providerConfigs[activeProvider])
+    ? ''
+    : `${activeProvider}|${providerConfigs[activeProvider].api_key}|${providerConfigs[activeProvider].base_url}`
 
   // Load config on mount
   const loadConfig = useCallback(async () => {
@@ -59,8 +45,8 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
           chatgpt: { api_key: llmConfig.chatgpt.api_key, model: llmConfig.chatgpt.model, base_url: '' },
         })
       }
-    } catch {
-      // Keep defaults if fetch fails
+    } catch (error) {
+      logger.error('Failed to load LLM config:', error)
     } finally {
       setIsLoading(false)
     }
@@ -125,8 +111,8 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
         })
         await UpdateLLMSettings(request)
         onSettingsSaved?.()
-      } catch {
-        // Handle error silently
+      } catch (error) {
+        logger.error('Failed to save LLM settings:', error)
       }
     },
     [onSettingsSaved]
@@ -153,16 +139,16 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
     }
   }
 
-  const updateProviderConfig = (provider: string, updates: Partial<ProviderConfig>) => {
+  const updateProviderConfig = (updates: Partial<ProviderConfig>) => {
     setProviderConfigs((prev) => {
       const newConfig = {
         ...prev,
-        [provider]: {
-          ...prev[provider],
+        [activeProvider]: {
+          ...prev[activeProvider],
           ...updates,
         },
       }
-      debouncedSave(provider, newConfig[provider])
+      debouncedSave(activeProvider, newConfig[activeProvider])
       return newConfig
     })
   }
@@ -215,114 +201,35 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
 
   return (
     <div className="flex flex-col gap-6">
-
       {/* Provider Selection */}
-      <div className="flex flex-col gap-2">
-        <label className="text-xs text-muted-foreground">Provider</label>
-        <div className="flex items-center gap-3">
-          <select
-            value={activeProvider}
-            onChange={(e) => handleProviderChange(e.target.value)}
-            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none min-w-[180px]"
-          >
-            {PROVIDER_KEYS.map((key) => (
-              <option key={key} value={key}>
-                {PROVIDER_DISPLAY_NAMES[key]}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
+      <ProviderSelector
+        activeProvider={activeProvider}
+        onProviderChange={handleProviderChange}
+      />
 
-      {/* Provider-specific fields */}
+      {/* Provider-specific fields + Model selection */}
       {currentConfig && (
         <div className="flex flex-col gap-4">
-          {/* Base URL - for LM Studio and OpenAI Compatible */}
-          {(activeProvider === 'lmstudio' || activeProvider === 'openai_compatible') && (
-            <div className="flex flex-col gap-2">
-              <label className="text-xs text-muted-foreground">Base URL</label>
-              <div className="flex items-center gap-2">
-                <Input
-                  placeholder="http://localhost:1234"
-                  value={currentConfig.base_url}
-                  onChange={(e) => updateProviderConfig(activeProvider, { base_url: e.target.value })}
-                  className="h-9 text-sm flex-1"
-                />
-                {activeProvider === 'lmstudio' && apiKeyDirty && hasRequiredCredentials && (
-                  <Button size="sm" onClick={handleApply} disabled={modelsLoading}>
-                    {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply'}
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
+          <ProviderConfigForm
+            activeProvider={activeProvider}
+            config={currentConfig}
+            apiKeyDirty={apiKeyDirty}
+            hasRequiredCredentials={hasRequiredCredentials}
+            modelsLoading={modelsLoading}
+            onConfigChange={updateProviderConfig}
+            onApply={handleApply}
+          />
 
-          {/* API Key - for all except LM Studio */}
-          {activeProvider !== 'lmstudio' && (
-            <div className="flex flex-col gap-2">
-              <label className="text-xs text-muted-foreground">API Key</label>
-              <div className="flex items-center gap-2">
-                <Input
-                  type={(() => {
-                    const val = currentConfig.api_key === '***configured***' ? '' : currentConfig.api_key
-                    return val.startsWith('${') ? 'text' : 'password'
-                  })()}
-                  placeholder="Enter API key"
-                  value={currentConfig.api_key === '***configured***' ? '' : currentConfig.api_key}
-                  onChange={(e) => updateProviderConfig(activeProvider, { api_key: e.target.value })}
-                  className="h-9 text-sm flex-1"
-                />
-                {currentConfig.api_key === '***configured***' && (
-                  <Badge variant="outline" className="text-xs">
-                    Configured
-                  </Badge>
-                )}
-                {apiKeyDirty && hasRequiredCredentials && (
-                  <Button size="sm" onClick={handleApply} disabled={modelsLoading}>
-                    {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply'}
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Model selection */}
-          <div className="flex flex-col gap-2">
-            <label className="text-xs text-muted-foreground">Model</label>
-            <div className="flex flex-col gap-2">
-              {models.length > 0 && !modelsLoading ? (
-                // Non-editable select when models are successfully fetched
-                <select
-                  value={currentConfig.model}
-                  onChange={(e) => updateProviderConfig(activeProvider, { model: e.target.value })}
-                  disabled={isModelInputDisabled()}
-                  className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none"
-                >
-                  <option value="">Select a model...</option>
-                  {models.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                // Plain text input when no models available or fetch failed
-                <Input
-                  placeholder={getModelInputPlaceholder()}
-                  value={currentConfig.model}
-                  onChange={(e) => updateProviderConfig(activeProvider, { model: e.target.value })}
-                  disabled={isModelInputDisabled() || modelsLoading}
-                  className="h-9 text-sm"
-                />
-              )}
-              {modelsLoading && (
-                <span className="text-xs text-muted-foreground">Loading models...</span>
-              )}
-              {modelsError && (
-                <span className="text-xs text-destructive">{modelsError}</span>
-              )}
-            </div>
-          </div>
+          <ModelSelector
+            activeProvider={activeProvider}
+            model={currentConfig?.model ?? ''}
+            models={models}
+            modelsLoading={modelsLoading}
+            modelsError={modelsError}
+            disabled={isModelInputDisabled()}
+            placeholder={getModelInputPlaceholder()}
+            onModelChange={(model) => updateProviderConfig({ model })}
+          />
         </div>
       )}
     </div>

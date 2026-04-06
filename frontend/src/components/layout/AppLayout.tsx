@@ -1,14 +1,19 @@
 import { useRef, useCallback, useState, useEffect, type MouseEvent as ReactMouseEvent } from 'react'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
+import { FileTreePanel } from './FileTreePanel'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { ExecutionPanels } from '@/components/chat/ExecutionPanels'
 import { PendingActionsBar } from '@/components/chat/PendingActionsBar'
+import { useUIStore } from '@/stores/uiStore'
 
 const SIDEBAR_DEFAULT = 260
 const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 400
+const FILETREE_DEFAULT = 280
+const FILETREE_MIN = 180
+const FILETREE_MAX = 500
 
 function useResizeHandle(
   defaultWidth: number,
@@ -96,6 +101,8 @@ function ResizeHandle({ onMouseDown }: { onMouseDown: (e: ReactMouseEvent) => vo
 
 export function AppLayout() {
   const sidebar = useResizeHandle(SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, 'left')
+  const rightPanel = useResizeHandle(FILETREE_DEFAULT, FILETREE_MIN, FILETREE_MAX, 'right')
+  const fileTreePanelOpen = useUIStore((s) => s.fileTreePanelOpen)
 
   return (
     <div className="h-screen w-screen flex overflow-hidden">
@@ -121,6 +128,19 @@ export function AppLayout() {
         </main>
         <StatusBar />
       </div>
+
+      {/* File tree panel */}
+      {fileTreePanelOpen && (
+        <>
+          <ResizeHandle onMouseDown={rightPanel.onMouseDown} />
+          <div
+            className="flex-shrink-0 overflow-hidden"
+            style={{ width: rightPanel.width }}
+          >
+            <FileTreePanel />
+          </div>
+        </>
+      )}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useWails } from '@/hooks/useWails'
 import { Play, Square } from 'lucide-react'
+import { logger } from '@/lib/logger'
 
 /** Maximum visible lines before the textarea scrolls, balancing input visibility with chat area space. */
 const MAX_LINES = 6
@@ -58,7 +59,7 @@ export function ChatInput() {
         setActiveSession(newSession.id)
         sessionId = newSession.id
       } catch (error) {
-        console.error('Failed to create session:', error)
+        logger.error('Failed to create session:', error)
         // Show error to user - we don't have a session ID yet, so we can't add to chat
         setIsProcessing(false)
         // Restore the text so user can retry
@@ -86,7 +87,7 @@ export function ChatInput() {
     try {
       await api.SendMessage(sessionId, messageText)
     } catch (error) {
-      console.error('Failed to send message:', error)
+      logger.error('Failed to send message:', error)
       // Display the error in the chat UI so the user can see it
       const errorMessage = error instanceof Error ? error.message : String(error)
       addMessage(sessionId, {
@@ -109,7 +110,7 @@ export function ChatInput() {
     try {
       await api.CancelTask(activeSessionId)
     } catch (error) {
-      console.error('Failed to cancel task:', error)
+      logger.error('Failed to cancel task:', error)
     }
   }, [activeSessionId, api])
 
@@ -125,7 +126,7 @@ export function ChatInput() {
 
   return (
     <div className="border-t border-border bg-card p-4">
-      <div className="flex flex-col max-w-4xl mx-auto">
+      <div className="flex flex-col">
         <div className="relative">
           <textarea
             ref={textareaRef}
@@ -148,6 +149,7 @@ export function ChatInput() {
               onClick={handleCancel}
               className="shrink-0 h-8 w-8 rounded-md"
               title="Cancel"
+              aria-label="Cancel task"
             >
               <Square className="h-3.5 w-3.5 fill-current" />
             </Button>
@@ -157,6 +159,7 @@ export function ChatInput() {
               disabled={!text.trim()}
               className="shrink-0 h-8 w-8 rounded-md bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-colors text-white"
               title="Send message"
+              aria-label="Send message"
             >
               <Play className="h-3.5 w-3.5 fill-current" />
             </Button>

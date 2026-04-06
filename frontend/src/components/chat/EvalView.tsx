@@ -1,12 +1,12 @@
 import { CheckCircle2, XCircle, HelpCircle, ClipboardCheck } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { useInspectorStore } from '@/stores/inspectorStore'
+import { usePanelStore } from '@/stores/panelStore'
 
 // View-specific criterion type for display
 interface EvalCriterionView {
   id: string
   description: string
-  status: 'pass' | 'fail' | 'unclear'
+  status: 'pending' | 'pass' | 'fail' | 'unclear'
 }
 
 function StatusIcon({ status }: { status: EvalCriterionView['status'] }) {
@@ -17,6 +17,8 @@ function StatusIcon({ status }: { status: EvalCriterionView['status'] }) {
       return <XCircle className="h-4 w-4 text-red-500" />
     case 'unclear':
       return <HelpCircle className="h-4 w-4 text-amber-500" />
+    case 'pending':
+      return <HelpCircle className="h-4 w-4 text-muted-foreground" />
   }
 }
 
@@ -28,6 +30,8 @@ function StatusBadge({ status }: { status: EvalCriterionView['status'] }) {
       return <Badge variant="secondary" className="text-xs bg-red-500/10 text-red-500 hover:bg-red-500/20">Fail</Badge>
     case 'unclear':
       return <Badge variant="secondary" className="text-xs bg-amber-500/10 text-amber-500 hover:bg-amber-500/20">Unclear</Badge>
+    case 'pending':
+      return <Badge variant="outline" className="text-xs text-muted-foreground">Pending</Badge>
   }
 }
 
@@ -70,15 +74,17 @@ function SummaryHeader({ passed, total }: { passed: number; total: number }) {
 }
 
 export function EvalView() {
-  // Get eval criteria from store
-  const storeCriteria = useInspectorStore((s) => s.evalCriteria)
+  // Get eval criteria from the latest eval group in panelStore
+  const latestEvalGroup = usePanelStore((s) => s.evalGroups.length > 0 ? s.evalGroups[0] : null)
   
   // Map store criteria to view format
-  const criteria: EvalCriterionView[] = storeCriteria.map((c) => ({
-    id: c.id || c.name,
-    description: c.description,
-    status: c.status,
-  }))
+  const criteria: EvalCriterionView[] = latestEvalGroup
+    ? latestEvalGroup.items.map((item) => ({
+        id: item.name,
+        description: item.description,
+        status: item.status,
+      }))
+    : []
   const hasEvalResult = criteria.length > 0
   
   if (!hasEvalResult || criteria.length === 0) {

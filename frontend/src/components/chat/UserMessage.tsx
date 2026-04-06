@@ -34,7 +34,7 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
     const ro = new ResizeObserver(measureHeight)
     ro.observe(contentRef.current)
     return () => ro.disconnect()
-  }, [isPinned, content])
+  }, [isPinned])
 
   const isOverflowing = isPinned && maxHeight !== undefined && maxHeight > 0 && naturalHeight > maxHeight
 
@@ -48,7 +48,7 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
 
   const handleBlur = useCallback((e: React.FocusEvent) => {
     // Only collapse if focus moved outside this component
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+    if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) {
       setExpanded(false)
     }
   }, [])

@@ -2,6 +2,9 @@ import { useState, useEffect, type KeyboardEvent } from 'react'
 import { Info, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { GetSecuritySettings, UpdateSecuritySettings } from '../../../wailsjs/go/main/App'
+import { main } from '../../../wailsjs/go/models'
+import { logger } from '@/lib/logger'
 
 type ToolPolicy = 'always_allow' | 'always_deny' | 'user_confirm' | 'auto'
 
@@ -45,13 +48,10 @@ export function SecuritySettings() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const getSecuritySettings = window.go?.main?.App?.GetSecuritySettings
-        if (getSecuritySettings) {
-          const result = (await getSecuritySettings()) as unknown as SecuritySettings
-          setSettings(result)
-        }
-      } catch {
-        // Keep defaults if fetch fails
+        const result = await GetSecuritySettings() as unknown as SecuritySettings
+        setSettings(result)
+      } catch (error) {
+        logger.error('Failed to load security settings:', error)
       } finally {
         setIsLoading(false)
       }
@@ -62,12 +62,9 @@ export function SecuritySettings() {
   const updateSettings = async (newSettings: SecuritySettings) => {
     setSettings(newSettings)
     try {
-      const updateSecuritySettings = window.go?.main?.App?.UpdateSecuritySettings
-      if (updateSecuritySettings) {
-        await updateSecuritySettings(newSettings as unknown as Record<string, unknown>)
-      }
-    } catch {
-      // Handle error silently
+      await UpdateSecuritySettings(newSettings as unknown as main.SecuritySettingsResponse)
+    } catch (error) {
+      logger.error('Failed to update security settings:', error)
     }
   }
 
@@ -175,9 +172,9 @@ export function SecuritySettings() {
                 <p className="text-xs text-muted-foreground">Blacklist patterns (regex):</p>
                 {blacklist.length > 0 && (
                   <div className="flex flex-wrap gap-2">
-                    {blacklist.map((pattern, index) => (
+                    {blacklist.map((pattern) => (
                       <div
-                        key={index}
+                        key={pattern}
                         className="flex items-center gap-1 px-2 py-1 bg-muted rounded text-xs"
                       >
                         <code className="font-mono">{pattern}</code>

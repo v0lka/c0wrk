@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { GetConfig, UpdateSearchSettings } from '../../../wailsjs/go/main/App'
+import { logger } from '@/lib/logger'
 
 interface SearchConfig {
   provider: string
@@ -34,8 +35,8 @@ export function SearchSettings() {
           // Initialize input with masked value if key exists
           setApiKeyInput(searchConfig.api_key === '***configured***' ? '' : searchConfig.api_key)
         }
-      } catch {
-        // Keep defaults if fetch fails
+      } catch (error) {
+        logger.error('Failed to load search config:', error)
       } finally {
         setIsLoading(false)
       }
@@ -50,8 +51,8 @@ export function SearchSettings() {
           provider: newConfig.provider,
           api_key: newConfig.api_key,
         })
-      } catch {
-        // Handle error silently
+      } catch (error) {
+        logger.error('Failed to save search settings:', error)
       }
     },
     []

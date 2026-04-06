@@ -20,16 +20,26 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/user/agent/internal/config"
-	"github.com/user/agent/internal/core"
-	"github.com/user/agent/internal/llm"
-	"github.com/user/agent/internal/logger"
-	"github.com/user/agent/internal/memory"
-	"github.com/user/agent/internal/session"
-	"github.com/user/agent/internal/tools"
-	toolcore "github.com/user/agent/internal/tools/core"
-	"github.com/user/agent/internal/tools/external"
-	"github.com/user/agent/internal/tools/mcp"
+	// SDK layer
+	"github.com/user/agent/sdk/llm"
+	sdkmemory "github.com/user/agent/sdk/memory"
+	"github.com/user/agent/sdk/tools/builtins"
+
+	// Core layer
+	"github.com/user/agent/core"
+	toolcore "github.com/user/agent/core/coretools"
+
+	// Backend layer
+	"github.com/user/agent/backend/config"
+	"github.com/user/agent/backend/logger"
+	"github.com/user/agent/backend/memory"
+	"github.com/user/agent/backend/session"
+	"github.com/user/agent/core/tools"
+	"github.com/user/agent/core/tools/external"
+	"github.com/user/agent/core/tools/mcp"
+
+	// Workspace layer
+	"github.com/user/agent/backend/workspace"
 )
 
 // compactionSummarizePrompt is the system prompt used when summarizing step blocks
@@ -80,6 +90,7 @@ func loadShellEnvironment() {
 	// Parse KEY=VALUE lines and set environment variables
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	loaded := 0
+	var setErrors int
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -105,11 +116,16 @@ func loadShellEnvironment() {
 		}
 
 		if err := os.Setenv(key, value); err != nil {
+			setErrors++
 			// Log but continue - some vars may not be settable
 			slog.Debug("failed to set env var", "key", key, "error", err)
 			continue
 		}
 		loaded++
+	}
+
+	if setErrors > 0 {
+		slog.Warn("some shell environment variables could not be set", "failed", setErrors, "loaded", loaded)
 	}
 
 	if loaded > 0 {
@@ -123,6 +139,7 @@ type App struct {
 	manager    *session.Manager
 	store      *session.SQLiteSessionStore
 	config     *config.Config
+	configMu   sync.RWMutex // protects config and config-related state
 	configPath string
 
 	llmRouter    *llm.LLMRouter
@@ -139,6 +156,62 @@ type App struct {
 
 	pendingConfirmations sync.Map
 	pendingAskUser       sync.Map
+
+	watcher       *workspace.Watcher
+	workspacesDir string // parent directory for all session workspaces
+}
+
+// currentConfig returns a shallow copy of the current config, safe to read without holding the lock.
+// Slices and maps are deep-copied so the snapshot is fully independent from the live config.
+func (a *App) currentConfig() *config.Config {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+	if a.config == nil {
+		return nil
+	}
+	cfgCopy := *a.config
+
+	// Deep-copy LLM.Models (map)
+	if a.config.LLM.Models != nil {
+		cfgCopy.LLM.Models = make(map[string]config.ModelOverride, len(a.config.LLM.Models))
+		for k, v := range a.config.LLM.Models {
+			cfgCopy.LLM.Models[k] = v
+		}
+	}
+
+	// Deep-copy MCP.Servers (map containing slices and maps)
+	if a.config.MCP.Servers != nil {
+		cfgCopy.MCP.Servers = make(map[string]config.MCPServerConfig, len(a.config.MCP.Servers))
+		for k, v := range a.config.MCP.Servers {
+			srv := v
+			if v.Args != nil {
+				srv.Args = make([]string, len(v.Args))
+				copy(srv.Args, v.Args)
+			}
+			if v.Env != nil {
+				srv.Env = make(map[string]string, len(v.Env))
+				for ek, ev := range v.Env {
+					srv.Env[ek] = ev
+				}
+			}
+			cfgCopy.MCP.Servers[k] = srv
+		}
+	}
+
+	// Deep-copy Security.ToolPolicies (map containing slices)
+	if a.config.Security.ToolPolicies != nil {
+		cfgCopy.Security.ToolPolicies = make(map[string]config.ToolPolicyConfig, len(a.config.Security.ToolPolicies))
+		for k, v := range a.config.Security.ToolPolicies {
+			tp := v
+			if v.Blacklist != nil {
+				tp.Blacklist = make([]string, len(v.Blacklist))
+				copy(tp.Blacklist, v.Blacklist)
+			}
+			cfgCopy.Security.ToolPolicies[k] = tp
+		}
+	}
+
+	return &cfgCopy
 }
 
 // NewApp creates a new App instance.
@@ -226,6 +299,8 @@ func (a *App) startup(ctx context.Context) {
 			log = newLogger.Logger()
 		}
 	}
+
+	// Note: workspace watcher will be initialized after workspacesDir is set below
 
 	// Initialize SQLite session store
 	dbPath := filepath.Join(agentDir, "sessions.db")
@@ -316,6 +391,8 @@ func (a *App) startup(ctx context.Context) {
 			role = "subagent_launch"
 		case "subagent_complete":
 			role = "subagent_complete"
+		case "session_tokens":
+			return // Transient event: already emitted via Wails above, no persistence needed
 		default:
 			return // Don't persist transient events
 		}
@@ -362,20 +439,10 @@ func (a *App) startup(ctx context.Context) {
 		})
 	}
 
-	// Create ModelRegistry from config overrides (before router so providers can register sources)
-	overrides := make(map[string]llm.ModelMetadata)
-	for name, override := range a.config.LLM.Models {
-		overrides[name] = llm.ModelMetadata{
-			ContextWindow: override.ContextWindow,
-			OutputLimit:   override.OutputLimit,
-			TokenizerType: "approximate", // config overrides don't specify tokenizer
-		}
-	}
-	modelRegistry := llm.NewModelRegistry(overrides)
-
-	// Initialize LLM Router - CRITICAL: must succeed for the app to work
-	// Pass registry so LM Studio providers can register their metadata sources
-	llmRouter, err := llm.NewLLMRouter(a.config.LLM, modelRegistry)
+	// Build LLM Router + ModelRegistry at startup for validation (fail-fast).
+	// These are also needed for the ToolJudge and WebFetch summarizer initialization.
+	// The factory closure will rebuild them per-session from current config.
+	llmRouter, modelRegistry, err := a.buildLLMRouter(a.config)
 	if err != nil {
 		emitStartupError("failed to initialize LLM router", err)
 		// Don't set llmRouter - it will remain nil and orchestrator creation will fail
@@ -385,6 +452,7 @@ func (a *App) startup(ctx context.Context) {
 		emitStartupError("no active LLM provider configured - check your config.yaml", errors.New("config has no active_provider defined under llm"))
 	}
 	a.llmRouter = llmRouter
+	_ = modelRegistry // used only for startup validation; factory rebuilds per-session
 
 	// Initialize Tool Registry
 	registry := tools.NewToolRegistry()
@@ -395,17 +463,17 @@ func (a *App) startup(ctx context.Context) {
 	if bashCfg, ok := a.config.Security.ToolPolicies["bash_exec"]; ok {
 		bashBlacklist = bashCfg.Blacklist
 	}
-	bashTool := toolcore.NewBashExecTool(bashBlacklist)
+	bashTool := builtins.NewBashExecTool(bashBlacklist)
 	registry.Register(bashTool)
 
-	fileOpsTool := toolcore.NewFileOpsTool()
+	fileOpsTool := builtins.NewFileOpsTool()
 	registry.Register(fileOpsTool)
 
 	finishTool := core.NewFinishTool()
 	registry.Register(finishTool)
 
 	// Web tools: WebFetch with optional LLM summarizer
-	var summarizer toolcore.LLMSummarizer
+	var summarizer builtins.LLMSummarizer
 	if llmRouter != nil {
 		summarizer = func(ctx context.Context, content string, prompt string) (string, error) {
 			req := llm.ChatRequest{
@@ -420,7 +488,7 @@ func (a *App) startup(ctx context.Context) {
 			return resp.Message.Content, nil
 		}
 	}
-	webFetchTool := toolcore.NewWebFetchTool(summarizer)
+	webFetchTool := builtins.NewWebFetchTool(summarizer)
 	registry.Register(webFetchTool)
 
 	// WebSearch tool (requires Tavily API key)
@@ -432,8 +500,18 @@ func (a *App) startup(ctx context.Context) {
 
 	// Initialize MCP Gateway (optional)
 	if len(a.config.MCP.Servers) > 0 {
+		// Convert config MCP server configs to core/tools/mcp types
+		mcpConfigs := make(map[string]mcp.MCPServerConfig, len(a.config.MCP.Servers))
+		for name, cfg := range a.config.MCP.Servers {
+			mcpConfigs[name] = mcp.MCPServerConfig{
+				Command: cfg.Command,
+				Args:    cfg.Args,
+				Env:     cfg.Env,
+			}
+		}
+
 		gateway := mcp.NewMCPGateway()
-		if err := gateway.Start(context.Background(), a.config.MCP.Servers); err != nil {
+		if err := gateway.Start(context.Background(), mcpConfigs); err != nil {
 			log.Warn("MCP gateway start errors", "error", err)
 			// MCP is optional; continue
 		}
@@ -470,7 +548,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Register ToolCreatorTool for dynamic tool creation
-	toolCreator := toolcore.NewToolCreatorTool(toolsDir, registry)
+	toolCreator := toolcore.NewToolCreatorTool(toolsDir, registry.ToolRegistry)
 	registry.Register(toolCreator)
 
 	// Configure per-tool security policies from config
@@ -486,15 +564,15 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Glob tool (doublestar pattern matching)
-	globTool := toolcore.NewGlobTool()
+	globTool := builtins.NewGlobTool()
 	registry.Register(globTool)
 
 	// Ripgrep tool (content search)
-	ripgrepTool := toolcore.NewRipgrepTool()
+	ripgrepTool := builtins.NewRipgrepTool()
 	registry.Register(ripgrepTool)
 
 	// Ask User tool (interactive question panel)
-	askUserTool := toolcore.NewAskUserTool(func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
+	askUserTool := builtins.NewAskUserTool(func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
 		if a.ctx == nil {
 			return tools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
 		}
@@ -532,82 +610,13 @@ func (a *App) startup(ctx context.Context) {
 	})
 	registry.Register(askUserTool)
 
-	// Create Phase 2 components (only if LLM router is available)
-	var router *core.Router
-	var acExtractor *core.ACExtractor
-	var planner *core.Planner
-	var evaluator *core.Evaluator
-	var reflector *core.Reflector
+	// Validate LLM-dependent objects at startup (fail-fast).
+	// The factory closure will rebuild these per-session from current config.
 	if llmRouter != nil {
-		// Router: classifies requests and determines execution strategy
-		router = core.NewRouter(llmRouter, a.config.Router.HistoryWindow)
-
-		// ACExtractor: extracts acceptance criteria from user requests
-		acExtractor = core.NewACExtractor(llmRouter)
-
-		// Planner: generates DAG execution plans for complex tasks
-		planner = core.NewPlanner(llmRouter)
-
-		// Evaluator: checks results against acceptance criteria
-		evaluator = core.NewEvaluator(registry, llmRouter)
-
-		// Reflector: for retry-loop
-		reflector = core.NewReflector(llmRouter)
+		_, _, _, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil)
 	}
-
-	contextFactory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) core.ContextManager {
-		// Create model-specific token counter
-		counter := llm.NewTokenCounter(modelMeta.TokenizerType)
-		tracker := llm.NewContextTokenTracker(counter)
-
-		// Create domain-aware compaction strategy using the factory
-		strategy := memory.NewCompactionStrategy(compactionStrategy, memory.CompactionConfig{
-			SlidingWindow: struct{ KeepFirst, KeepLast int }{
-				KeepFirst: a.config.Executor.Compaction.SlidingWindow.KeepFirst,
-				KeepLast:  a.config.Executor.Compaction.SlidingWindow.KeepLast,
-			},
-			Summarization: struct{ BlockSize, KeepLast int }{
-				BlockSize: a.config.Executor.Compaction.Summarization.BlockSize,
-				KeepLast:  5, // default
-			},
-			Hierarchical: struct{ DistantRatio, MiddleRatio, RecentRatio float64 }{
-				DistantRatio: 0.4,
-				MiddleRatio:  0.3,
-				RecentRatio:  0.3,
-			},
-		}, memory.CompactionDeps{
-			TokenCounter: counter,
-			Summarize: func(ctx context.Context, blockText string) (string, error) {
-				if llmRouter == nil {
-					return "", errors.New("compaction summarize: LLM router not available")
-				}
-				req := llm.ChatRequest{
-					Messages: []llm.Message{
-						{Role: "system", Content: compactionSummarizePrompt},
-						{Role: "user", Content: blockText},
-					},
-				}
-				resp, err := llmRouter.Call(ctx, req)
-				if err != nil {
-					return "", fmt.Errorf("compaction summarize: %w", err)
-				}
-				return resp.Message.Content, nil
-			},
-		})
-
-		thresholds := a.config.Executor.Compaction.Thresholds
-
-		cw := memory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy)
-		return cw
-	}
-
-	// Orchestrator configuration
-	orchConfig := core.OrchestratorConfig{
-		MaxSteps:   a.config.Executor.MaxReactSteps,
-		KeepFirst:  a.config.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:   a.config.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries: a.config.Executor.MaxRetries,
-	}
+	_ = a.buildOrchestratorConfig(a.config)
+	_ = a.buildContextFactory(llmRouter, a.config)
 
 	// Initialize ToolJudge if enabled in config
 	if a.config.Security.Judge.Enabled != nil && *a.config.Security.Judge.Enabled && llmRouter != nil {
@@ -673,33 +682,73 @@ func (a *App) startup(ctx context.Context) {
 		}
 	})
 
-	// Create orchestrator factory
+	// Create orchestrator factory — rebuilds all LLM-dependent objects per session
+	// so that config changes (e.g. via UpdateLLMSettings) take effect for new sessions.
+	// The tool registry is shared (expensive to rebuild, has dynamic policy updates).
 	factory := func(emitter core.Emitter, logger *slog.Logger) (*core.Orchestrator, error) {
-		if llmRouter == nil || router == nil || acExtractor == nil || planner == nil || evaluator == nil {
+		cfg := a.currentConfig()
+
+		newLLMRouter, newModelRegistry, err := a.buildLLMRouter(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build LLM router: %w", err)
+		}
+		if cfg.LLM.ActiveProvider == "" {
+			return nil, errors.New("no active LLM provider configured - check your config.yaml")
+		}
+
+		newRouter, newACExtractor, newPlanner, newEvaluator, newReflector := a.buildCoreAgents(newLLMRouter, registry, cfg, emitter)
+		if newRouter == nil || newACExtractor == nil || newPlanner == nil || newEvaluator == nil {
 			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
 		}
+
+		orchConfig := a.buildOrchestratorConfig(cfg)
+		contextFactory := a.buildContextFactory(newLLMRouter, cfg)
+
 		return core.NewOrchestrator(
-			router,                      // Router
-			acExtractor,                 // ACExtractor
-			planner,                     // Planner
-			evaluator,                   // Evaluator
-			llmRouter,                   // LLMCaller
-			registry,                    // ToolExecutor
-			registry,                    // ToolRegistry
+			newRouter,                   // Router
+			newACExtractor,              // ACExtractor
+			newPlanner,                  // Planner
+			newEvaluator,                // Evaluator
+			newLLMRouter,                // LLMCaller
+			registry,                    // ToolExecutor (shared)
+			registry.ToolRegistry,       // ToolRegistry (SDK base, shared)
 			llm.NewSimpleTokenCounter(), // TokenCounter (for backward compatibility)
 			orchConfig,
 			contextFactory,
-			reflector,     // Reflector for retry-loop
-			logger,        // Logger
-			emitter,       // Emitter
-			modelRegistry, // ModelRegistry for resolving model metadata
-			a.config.Executor.ToolResultBudget,
+			newReflector,    // Reflector for retry-loop
+			logger,          // Logger
+			emitter,         // Emitter
+			newModelRegistry, // ModelRegistry for resolving model metadata
+			core.ToolResultBudget{
+				HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
+				MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
+			},
 		), nil
 	}
 
 	logDir := filepath.Join(agentDir, "logs")
-	workspacesDir := filepath.Join(agentDir, "workspaces")
-	a.manager = session.NewManager(factory, emitFunc, logDir, workspacesDir)
+	a.workspacesDir = filepath.Join(agentDir, "workspaces")
+	a.manager = session.NewManager(factory, emitFunc, logDir, a.workspacesDir)
+
+	// Initialize file watcher on the workspaces parent directory
+	watcher, err := workspace.NewWatcher(a.workspacesDir, func() {
+		wailsRuntime.EventsEmit(a.ctx, "workspace:tree_changed", nil)
+	})
+	if err != nil {
+		log.Warn("failed to start workspace file watcher", "error", err)
+	} else {
+		a.watcher = watcher
+	}
+
+	// Wire token persistence: each emitter will call store.UpdateSessionTokens
+	// with cumulative totals after every AssistantDone.
+	if a.store != nil {
+		a.manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int) {
+			if err := a.store.UpdateSessionTokens(sessionID, inputTokens, outputTokens); err != nil {
+				slog.Error("failed to persist session tokens", "session", sessionID, "error", err)
+			}
+		})
+	}
 
 	// Listen for confirmation responses from frontend
 	wailsRuntime.EventsOn(a.ctx, "tool_confirm_response", func(data ...any) {
@@ -841,8 +890,202 @@ func (a *App) startup(ctx context.Context) {
 	})
 }
 
-// shutdown is called when the Wails app is closing.
+// buildLLMRouter creates a new LLMRouter and ModelRegistry from the given config.
+// This is extracted from startup() so it can be called per-session in the factory closure.
+func (a *App) buildLLMRouter(cfg *config.Config) (*llm.LLMRouter, *llm.ModelRegistry, error) {
+	// Create ModelRegistry from config overrides
+	overrides := make(map[string]llm.ModelMetadata)
+	for name, override := range cfg.LLM.Models {
+		overrides[name] = llm.ModelMetadata{
+			ContextWindow: override.ContextWindow,
+			OutputLimit:   override.OutputLimit,
+			TokenizerType: "approximate",
+		}
+	}
+	modelRegistry := llm.NewModelRegistry(overrides)
+
+	// Initialize LLM Router
+	provType, apiKey, baseURL, model := cfg.LLM.GetActiveProviderConfig()
+	initialBackoff, _ := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
+	maxBackoff, _ := time.ParseDuration(cfg.LLM.Retry.MaxBackoff)
+	routerCfg := llm.RouterConfig{
+		ActiveProvider: cfg.LLM.ActiveProvider,
+		ProviderType:   provType,
+		APIKey:         config.ExpandEnvVars(apiKey),
+		BaseURL:        config.ExpandEnvVars(baseURL),
+		Model:          model,
+		MaxRetries:     cfg.LLM.Retry.MaxRetries,
+		InitialBackoff: initialBackoff,
+		MaxBackoff:     maxBackoff,
+	}
+	llmRouter, err := llm.NewLLMRouter(routerCfg, modelRegistry)
+	if err != nil {
+		return nil, nil, err
+	}
+	return llmRouter, modelRegistry, nil
+}
+
+// buildCoreAgents creates the Phase 2 components (router, acExtractor, planner, evaluator, reflector)
+// from the given LLM router and config. Returns nil values if llmRouter is nil.
+// When emitter is non-nil, each component receives a token-tracking wrapper so
+// that service-level LLM calls are accumulated in session totals.
+func (a *App) buildCoreAgents(llmRouter *llm.LLMRouter, registry *tools.ToolRegistry, cfg *config.Config, emitter core.Emitter) (*core.Router, *core.ACExtractor, *core.Planner, *core.Evaluator, *core.Reflector) {
+	if llmRouter == nil {
+		return nil, nil, nil, nil, nil
+	}
+	caller := core.NewTokenTrackingCaller(llmRouter, emitter)
+	router := core.NewRouter(caller, cfg.Router.HistoryWindow)
+	acExtractor := core.NewACExtractor(caller)
+	planner := core.NewPlanner(caller)
+	evaluator := core.NewEvaluator(registry, caller)
+	reflector := core.NewReflector(caller)
+	return router, acExtractor, planner, evaluator, reflector
+}
+
+// buildOrchestratorConfig creates an OrchestratorConfig from the given config.
+func (a *App) buildOrchestratorConfig(cfg *config.Config) core.OrchestratorConfig {
+	return core.OrchestratorConfig{
+		MaxSteps:   cfg.Executor.MaxReactSteps,
+		KeepFirst:  cfg.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:   cfg.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxRetries: cfg.Executor.MaxRetries,
+	}
+}
+
+// buildContextFactory creates a ContextManagerFactory from the given LLM router and config.
+func (a *App) buildContextFactory(llmRouter *llm.LLMRouter, cfg *config.Config) core.ContextManagerFactory {
+	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) core.ContextManager {
+		counter := llm.NewTokenCounter(modelMeta.TokenizerType)
+		tracker := llm.NewContextTokenTracker(counter)
+
+		strategy := sdkmemory.NewCompactionStrategy(compactionStrategy, sdkmemory.CompactionConfig{
+			SlidingWindow: struct{ KeepFirst, KeepLast int }{
+				KeepFirst: cfg.Executor.Compaction.SlidingWindow.KeepFirst,
+				KeepLast:  cfg.Executor.Compaction.SlidingWindow.KeepLast,
+			},
+			Summarization: struct{ BlockSize, KeepLast int }{
+				BlockSize: cfg.Executor.Compaction.Summarization.BlockSize,
+				KeepLast:  5,
+			},
+			Hierarchical: struct{ DistantRatio, MiddleRatio, RecentRatio float64 }{
+				DistantRatio: 0.4,
+				MiddleRatio:  0.3,
+				RecentRatio:  0.3,
+			},
+		}, sdkmemory.CompactionDeps{
+			TokenCounter: counter,
+			Summarize: func(ctx context.Context, blockText string) (string, error) {
+				if llmRouter == nil {
+					return "", errors.New("compaction summarize: LLM router not available")
+				}
+				req := llm.ChatRequest{
+					Messages: []llm.Message{
+						{Role: "system", Content: compactionSummarizePrompt},
+						{Role: "user", Content: blockText},
+					},
+				}
+				resp, err := llmRouter.Call(ctx, req)
+				if err != nil {
+					return "", fmt.Errorf("compaction summarize: %w", err)
+				}
+				return resp.Message.Content, nil
+			},
+		})
+
+		thresholds := sdkmemory.CompactionThresholds{
+			PredictivePercent: cfg.Executor.Compaction.Thresholds.PredictivePercent,
+			WarningPercent:    cfg.Executor.Compaction.Thresholds.WarningPercent,
+			EmergencyPercent:  cfg.Executor.Compaction.Thresholds.EmergencyPercent,
+		}
+
+		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy)
+		return core.NewCoreContextManager(cw)
+	}
+}
+
+// GetSessionWorkspace returns the workspace directory path for a given session.
+func (a *App) GetSessionWorkspace(sessionID string) (string, error) {
+	if a.manager == nil {
+		return "", errors.New("session manager not initialized")
+	}
+	path, exists := a.manager.GetSessionWorkspacePath(sessionID)
+	if !exists {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	return path, nil
+}
+
+// ListDirectory returns the immediate children of a directory, sorted directories first then alphabetically.
+func (a *App) ListDirectory(dirPath string) ([]FileNode, error) {
+	if a.workspacesDir == "" {
+		return nil, errors.New("workspaces directory not set")
+	}
+
+	// Security: resolve and validate the path is under workspaces directory
+	absPath, err := filepath.Abs(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+	absRoot, err := filepath.Abs(a.workspacesDir)
+	if err != nil {
+		return nil, fmt.Errorf("invalid workspaces directory: %w", err)
+	}
+	if !strings.HasPrefix(absPath, absRoot) {
+		return nil, errors.New("path is outside workspaces directory")
+	}
+
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	var dirs, files []FileNode
+	for _, entry := range entries {
+		node := FileNode{
+			Name:  entry.Name(),
+			Path:  filepath.Join(absPath, entry.Name()),
+			IsDir: entry.IsDir(),
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, node)
+		} else {
+			files = append(files, node)
+		}
+	}
+
+	// Sort each group alphabetically
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+
+	nodes := make([]FileNode, 0, len(dirs)+len(files))
+	nodes = append(nodes, dirs...)
+	nodes = append(nodes, files...)
+	return nodes, nil
+}
+
+// WatchDirectory adds a directory to the file watcher.
+func (a *App) WatchDirectory(dirPath string) error {
+	if a.watcher == nil {
+		return nil
+	}
+	return a.watcher.WatchDir(dirPath)
+}
+
+// UnwatchDirectory removes a directory from the file watcher.
+func (a *App) UnwatchDirectory(dirPath string) error {
+	if a.watcher == nil {
+		return nil
+	}
+	return a.watcher.UnwatchDir(dirPath)
+}
+
 func (a *App) shutdown(ctx context.Context) {
+	if a.watcher != nil {
+		if err := a.watcher.Close(); err != nil {
+			slog.Error("failed to close workspace watcher", "error", err)
+		}
+	}
+
 	if a.manager != nil {
 		a.manager.Shutdown()
 	}
@@ -910,12 +1153,23 @@ func (a *App) DeleteSession(id string) error {
 func (a *App) ListSessions() ([]session.SessionInfo, error) {
 	// Load from store for persisted sessions
 	if a.store != nil {
-		return a.store.ListSessions()
+		sessions, err := a.store.ListSessions()
+		if err != nil {
+			return nil, err
+		}
+		if sessions == nil {
+			return []session.SessionInfo{}, nil
+		}
+		return sessions, nil
 	}
 	if a.manager == nil {
-		return nil, errors.New("session manager not initialized")
+		return []session.SessionInfo{}, nil
 	}
-	return a.manager.ListSessions(), nil
+	sessions := a.manager.ListSessions()
+	if sessions == nil {
+		return []session.SessionInfo{}, nil
+	}
+	return sessions, nil
 }
 
 // RenameSession changes session name.
@@ -1037,6 +1291,8 @@ func (a *App) generateSessionTitle(sessionID, userMessage string) {
 }
 
 // generateTitleViaLLM calls the LLM to generate a concise session title.
+// TODO: token usage from this call is not tracked in session totals because
+// the session emitter is not available here. Wire emitter when possible.
 func (a *App) generateTitleViaLLM(ctx context.Context, userMessage string) string {
 	temp := 0.3
 	req := llm.ChatRequest{
@@ -1093,7 +1349,7 @@ func (a *App) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	if a.store != nil {
 		return a.store.LoadMessages(id)
 	}
-	return nil, nil
+	return []session.ChatMessage{}, nil
 }
 
 // persistConfig saves the current in-memory config to disk.
@@ -1102,6 +1358,13 @@ func (a *App) persistConfig() error {
 		return errors.New("config path or config not set")
 	}
 	return config.Save(a.config, a.configPath)
+}
+
+// FileNode represents a file or directory entry in the workspace tree.
+type FileNode struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"is_dir"`
 }
 
 // ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
@@ -1141,7 +1404,9 @@ type ConfigProviderFull struct {
 }
 
 // ConfigMemResponse holds memory section of config response.
-type ConfigMemResponse struct{}
+type ConfigMemResponse struct {
+	Database string `json:"database"`
+}
 
 // ConfigSearchResp holds search config values.
 type ConfigSearchResp struct {
@@ -1157,6 +1422,9 @@ type SessionTokensResponse struct {
 
 // GetConfig returns the current configuration (sanitized, no raw API keys).
 func (a *App) GetConfig() ConfigResponse {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+
 	if a.config == nil {
 		return ConfigResponse{Loaded: false}
 	}
@@ -1167,7 +1435,7 @@ func (a *App) GetConfig() ConfigResponse {
 		Theme:              a.config.Theme,
 		ConfigMigrated:     a.configMigrated,
 		ConfigMigrationMsg: a.configMigrationMsg,
-		ConfigErrors:       a.configLoadErrors,
+		ConfigErrors:       nonNilStringSlice(a.configLoadErrors),
 		LLM: ConfigLLMResponse{
 			ActiveProvider: a.config.LLM.ActiveProvider,
 			Anthropic: ConfigProviderKeyModel{
@@ -1193,7 +1461,9 @@ func (a *App) GetConfig() ConfigResponse {
 				Model:  a.config.LLM.ChatGPT.Model,
 			},
 		},
-		Memory: ConfigMemResponse{},
+		Memory: ConfigMemResponse{
+			Database: a.config.Memory.Database,
+		},
 		Search: ConfigSearchResp{
 			Provider: a.config.Search.Provider,
 			APIKey:   maskAPIKey(a.config.Search.APIKey),
@@ -1212,10 +1482,22 @@ func maskAPIKey(key string) string {
 	return "***configured***"
 }
 
+// nonNilStringSlice returns an empty slice if the input is nil,
+// ensuring JSON serialization produces [] instead of null.
+func nonNilStringSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
 // ListProviderModels returns available model names for a given provider.
 // For Anthropic/Gemini: returns hardcoded list from model registry.
 // For ChatGPT/OpenAI Compatible/LM Studio: fetches from the provider's API.
 func (a *App) ListProviderModels(provider string) ([]string, error) {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+
 	if a.config == nil {
 		return nil, errors.New("config not initialized")
 	}
@@ -1335,6 +1617,9 @@ func (a *App) GetLogLevel() string {
 
 // SetLogLevel sets the log level dynamically.
 func (a *App) SetLogLevel(level string) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
 	// Validate the level
 	level = strings.ToUpper(level)
 	switch level {
@@ -1355,6 +1640,9 @@ func (a *App) SetLogLevel(level string) error {
 
 // SetTheme sets the UI theme and persists to config.
 func (a *App) SetTheme(theme string) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
 	switch theme {
 	case "light", "dark", "system":
 		a.config.Theme = theme
@@ -1378,6 +1666,9 @@ type ToolPolicyResponse struct {
 
 // GetSecuritySettings returns current security settings for the UI.
 func (a *App) GetSecuritySettings() SecuritySettingsResponse {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+
 	if a.config == nil {
 		return SecuritySettingsResponse{DefaultPolicy: "auto"}
 	}
@@ -1396,6 +1687,9 @@ func (a *App) GetSecuritySettings() SecuritySettingsResponse {
 
 // UpdateSecuritySettings updates security settings at runtime.
 func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
 	if a.config == nil {
 		return errors.New("config not initialized")
 	}
@@ -1442,6 +1736,9 @@ type LLMSettingsRequest struct {
 
 // UpdateLLMSettings updates LLM active provider and model settings.
 func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
 	if a.config == nil {
 		return errors.New("config not initialized")
 	}
@@ -1527,6 +1824,9 @@ type SearchSettingsRequest struct {
 
 // UpdateSearchSettings updates search configuration.
 func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
 	if a.config == nil {
 		return errors.New("config not initialized")
 	}

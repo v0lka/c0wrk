@@ -2,6 +2,14 @@
 @plugin "@tailwindcss/typography";
 @import 'highlight.js/styles/github-dark.min.css';
 
+@font-face {
+  font-family: 'SauceCodePro NF';
+  src: url('./assets/fonts/SauceCodeProNerdFont-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
 /* Remove underline from heading anchor links */
 .prose :where(h1, h2, h3, h4, h5, h6) a {
   text-decoration: none;

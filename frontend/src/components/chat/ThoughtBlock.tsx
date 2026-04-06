@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { BrainCircuit, ChevronDown, ChevronRight } from 'lucide-react'
 import {
   Collapsible,
@@ -11,7 +11,7 @@ interface ThoughtBlockProps {
   reasoning?: string
 }
 
-export function ThoughtBlock({ content, reasoning }: ThoughtBlockProps) {
+export const ThoughtBlock = React.memo(function ThoughtBlock({ content, reasoning }: ThoughtBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [showFull, setShowFull] = useState(false)
 
@@ -62,4 +62,4 @@ export function ThoughtBlock({ content, reasoning }: ThoughtBlockProps) {
       )}
     </div>
   )
-}
+})

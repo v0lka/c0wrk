@@ -1,10 +1,11 @@
 import { useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
-import { useInspectorStore } from '@/stores/inspectorStore'
 import { usePanelStore } from '@/stores/panelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
 import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData } from '@/lib/wails'
+import { isSessionTokensData } from '@/lib/wails'
+import { GetSessionTokens } from '../../wailsjs/go/main/App'
 
 // --- Type guards for event data validation ---
 function isRoutingData(data: unknown): data is RoutingData {
@@ -60,7 +61,7 @@ function isErrorData(data: unknown): data is { error: string } {
 }
 
 function isTaskCompleteData(data: unknown): data is { output?: string; attempt_count?: number; routing_decision?: { mode?: string } } {
-  return typeof data === 'object' && data !== null
+  return typeof data === 'object' && data !== null && ('output' in data || 'attempt_count' in data || 'routing_decision' in data)
 }
 
 function isRetryData(data: unknown): data is { attempt: number; max_attempts: number } {
@@ -76,7 +77,7 @@ function isServiceData(data: unknown): data is { content: string } {
 }
 
 function isACExtractedData(data: unknown): data is { count?: number; criteria?: Array<{ name: string; description: string }> } {
-  return typeof data === 'object' && data !== null
+  return typeof data === 'object' && data !== null && ('count' in data || 'criteria' in data)
 }
 
 function isSubAgentLaunchData(data: unknown): data is { step_id: string; description: string; plan_step_id?: string } {
@@ -108,20 +109,29 @@ export function useSessionEvents(sessionId: string | null) {
   useEffect(() => {
     if (!sessionId || !runtime) return
 
-    const inspectorStore = useInspectorStore.getState()
     const panelStore = usePanelStore.getState()
+
+    // Helper: only update global UI state if this session is still active
+    const isActiveSession = () => useSessionStore.getState().activeSessionId === sessionId
 
     // Reset global UI state from previous session
     useChatStore.getState().clearSessionUIState()
     
-    // Reset inspector data for new session
-    inspectorStore.resetSessionData()
+    // Load persisted session token totals
+    GetSessionTokens(sessionId).then((resp) => {
+      if (!isActiveSession()) return
+      const current = useChatStore.getState().contextFill
+      if (current) {
+        setContextFill({
+          ...current,
+          sessionInputTokens: resp.total_input_tokens ?? 0,
+          sessionOutputTokens: resp.total_output_tokens ?? 0,
+        })
+      }
+    }).catch(() => {}) // Ignore errors, will show 0
     
     // Reset panel data for new session (before any events arrive)
     panelStore.resetPanels()
-
-    // Helper: only update global UI state if this session is still active
-    const isActiveSession = () => useSessionStore.getState().activeSessionId === sessionId
 
     const unsubs: (() => void)[] = []
     const on = (type: string, cb: (...data: unknown[]) => void) => {
@@ -140,7 +150,7 @@ export function useSessionEvents(sessionId: string | null) {
         metadata: { mode: routing.mode, domain: routing.domain, complexity: routing.complexity },
         timestamp: Date.now(),
       })
-      inspectorStore.updateStats({ routingMode: routing.mode, routingDomain: routing.domain, routingComplexity: routing.complexity })
+      panelStore.updateStats({ routingMode: routing.mode, routingDomain: routing.domain, routingComplexity: routing.complexity })
     })
 
     on('step_start', (data: unknown) => {
@@ -150,9 +160,6 @@ export function useSessionEvents(sessionId: string | null) {
         useChatStore.getState().setActivityStatus('Thinking...')
       }
       const step = data
-      if (step.step_num > 0) {
-        inspectorStore.updateStepStatus(step.step_num - 1, 'running')
-      }
       addMessage(sessionId, {
         id: `step-${step.step_num}`,
         sessionId,
@@ -171,7 +178,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'thought',
         content: thought.content,
-        metadata: { step_num: thought.step_num, reasoning: thought.reasoning },
+        metadata: { step_num: thought.step_num, reasoning: thought.reasoning, plan_step_id: thought.plan_step_id },
         timestamp: Date.now(),
       })
     })
@@ -237,10 +244,13 @@ export function useSessionEvents(sessionId: string | null) {
         type: 'tool_confirm',
         content: `Confirm: ${toolConfirm.tool}`,
         metadata: {
-          ...toolConfirm,
+          confirm_id: toolConfirm.confirm_id,
+          tool: toolConfirm.tool,
+          args: toolConfirm.args,
+          reasoning: toolConfirm.reasoning,
           tool_msg_id: toolMsgId,
           plan_step_id: toolPlanStepId,
-        } as unknown as Record<string, unknown>,
+        } as Record<string, unknown>,
         timestamp: Date.now(),
       })
 
@@ -258,7 +268,13 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'ask_user',
         content: askData.question,
-        metadata: askData as unknown as Record<string, unknown>,
+        metadata: {
+          request_id: askData.request_id,
+          question: askData.question,
+          options: askData.options,
+          multi_select: askData.multi_select,
+          recommended: askData.recommended,
+        } as Record<string, unknown>,
         timestamp: Date.now(),
       })
       if (isActiveSession()) {
@@ -270,11 +286,7 @@ export function useSessionEvents(sessionId: string | null) {
     on('step_complete', (data: unknown) => {
       if (!isStepData(data)) return
       if (isActiveSession()) setThinking(false)
-      const step = data
-      if (step.step_num > 0) {
-        inspectorStore.updateStepStatus(step.step_num - 1, 'completed')
-      }
-      updateMessage(sessionId, `step-${step.step_num}`, {
+      updateMessage(sessionId, `step-${(data as { step_num: number }).step_num}`, {
         type: 'step_done',
       })
     })
@@ -326,7 +338,6 @@ export function useSessionEvents(sessionId: string | null) {
       if (!isPlanStepStartData(data)) return
       const stepData = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Executing: ${stepData.description || 'step'}...`)
-      inspectorStore.updateStepById(stepData.step_id, 'running')
       // Route to panelStore
       panelStore.updatePlanItemStatus(stepData.step_id, 'running')
       // Add to chat messages for plan step containers
@@ -343,11 +354,6 @@ export function useSessionEvents(sessionId: string | null) {
     on('plan_step_complete', (data: unknown) => {
       if (!isPlanStepCompleteData(data)) return
       const stepData = data
-      inspectorStore.updateStepById(
-        stepData.step_id,
-        stepData.success ? 'completed' : 'failed',
-        stepData.duration
-      )
       // Route to panelStore
       panelStore.updatePlanItemStatus(
         stepData.step_id,
@@ -462,7 +468,7 @@ export function useSessionEvents(sessionId: string | null) {
         metadata: { mode: 'retry', ...retry },
         timestamp: Date.now(),
       })
-      inspectorStore.updateStats({ attempt: retry.attempt + 1, maxAttempts: retry.max_attempts })
+      panelStore.updateStats({ attempt: retry.attempt + 1, maxAttempts: retry.max_attempts })
     })
 
     on('escalation', (data: unknown) => {
@@ -482,9 +488,19 @@ export function useSessionEvents(sessionId: string | null) {
     on('service', (data: unknown) => {
       if (!isServiceData(data)) return
       if (!isActiveSession()) return
-      const service = data
+      const service = data as { content: string; phase?: string }
       if (service.content) {
         useChatStore.getState().setActivityStatus(service.content)
+      }
+      // Add orchestration phases to chat timeline for visible progress
+      if (service.phase === 'orchestration' && service.content) {
+        addMessage(sessionId, {
+          id: `status-${Date.now()}`,
+          sessionId,
+          type: 'status',
+          content: service.content,
+          timestamp: Date.now(),
+        })
       }
     })
 
@@ -552,6 +568,19 @@ export function useSessionEvents(sessionId: string | null) {
         usedTokens: fillData.used_tokens,
         maxTokens: fillData.max_tokens,
         status: fillData.status,
+        sessionInputTokens: fillData.session_input_tokens ?? 0,
+        sessionOutputTokens: fillData.session_output_tokens ?? 0,
+      })
+    })
+
+    on('session_tokens', (data: unknown) => {
+      if (!isSessionTokensData(data)) return
+      if (!isActiveSession()) return
+      const current = useChatStore.getState().contextFill
+      setContextFill({
+        ...(current ?? { fillPercent: 0, usedTokens: 0, maxTokens: 0, status: 'ok', sessionInputTokens: 0, sessionOutputTokens: 0 }),
+        sessionInputTokens: data.session_input_tokens,
+        sessionOutputTokens: data.session_output_tokens,
       })
     })
 

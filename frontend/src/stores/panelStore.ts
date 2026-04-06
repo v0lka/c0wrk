@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { useShallow } from 'zustand/shallow'
 import type { ChatMessageUI } from './chatStore'
 
 // Types matching backend event data structures
@@ -8,6 +7,7 @@ export interface PlanItem {
   title: string     // step description
   status: 'pending' | 'running' | 'completed' | 'failed'
   duration?: number // milliseconds, from plan_step_complete
+  dependsOn: string[] // DAG dependency IDs
 }
 
 export interface EvalItem {
@@ -30,15 +30,33 @@ export interface EvalGroup {
   items: EvalItem[]
 }
 
+interface SessionStats {
+  routingMode: string
+  routingDomain: string
+  routingComplexity: string
+  attempt: number
+  maxAttempts: number
+}
+
+const defaultStats: SessionStats = {
+  routingMode: '',
+  routingDomain: '',
+  routingComplexity: '',
+  attempt: 1,
+  maxAttempts: 3,
+}
+
 interface PanelState {
   planGroups: PlanGroup[]  // newest first
   evalGroups: EvalGroup[]  // newest first
+  sessionStats: SessionStats
   
   // Actions
   addPlanGroup: (steps: Array<{ description: string; status?: string }>, progress?: { progress?: number; completed_count?: number; total_count?: number }) => void
   updatePlanItemStatus: (stepId: string, status: PlanItem['status'], duration?: number) => void
   addEvalGroup: (criteria: Array<{ name: string; description?: string; passed?: boolean }>) => void
   updateEvalGroupStatuses: (criteria: Array<{ name: string; description?: string; passed?: boolean }>) => void
+  updateStats: (update: Partial<SessionStats>) => void
   resetPanels: () => void
   resetEvalStatuses: () => void
   resetPlanStatuses: () => void
@@ -51,14 +69,17 @@ let evalGroupCounter = 0
 export const usePanelStore = create<PanelState>((set) => ({
   planGroups: [],
   evalGroups: [],
+  sessionStats: { ...defaultStats },
 
   addPlanGroup: (steps, progress) => {
+    if (!steps) return  // Guard against null/undefined from backend nil slices
     const newGroup: PlanGroup = {
       id: ++planGroupCounter,
       items: steps.map((s, i) => ({
         id: (s as { id?: string }).id || String(i + 1),
         title: s.description,
         status: (s.status as PlanItem['status']) || 'pending',
+        dependsOn: (s as { depends_on?: string[] }).depends_on || [],
       })),
       progress: progress?.progress,
       completedCount: progress?.completed_count,
@@ -80,14 +101,24 @@ export const usePanelStore = create<PanelState>((set) => ({
           ? { ...item, status, ...(duration !== undefined ? { duration } : {}) }
           : item
       )
-      
+
+      // Recompute completedCount from items to keep group-level counter in sync
+      const completedCount = updatedItems.filter(
+        (item) => item.status === 'completed' || item.status === 'failed'
+      ).length
+
       return {
-        planGroups: [{ ...latestGroup, items: updatedItems }, ...rest],
+        planGroups: [{
+          ...latestGroup,
+          items: updatedItems,
+          completedCount,
+        }, ...rest],
       }
     })
   },
 
   addEvalGroup: (criteria) => {
+    if (!criteria) return  // Guard against null/undefined from backend nil slices
     const newGroup: EvalGroup = {
       id: ++evalGroupCounter,
       items: criteria.map((c) => ({
@@ -102,6 +133,7 @@ export const usePanelStore = create<PanelState>((set) => ({
   },
 
   updateEvalGroupStatuses: (criteria) => {
+    if (!criteria) return  // Guard against null/undefined from backend nil slices
     set((state) => {
       if (state.evalGroups.length === 0) {
         // No existing group, create one
@@ -133,10 +165,14 @@ export const usePanelStore = create<PanelState>((set) => ({
     })
   },
 
+  updateStats: (update) => set((s) => ({
+    sessionStats: { ...s.sessionStats, ...update },
+  })),
+
   resetPanels: () => {
     planGroupCounter = 0
     evalGroupCounter = 0
-    set({ planGroups: [], evalGroups: [] })
+    set({ planGroups: [], evalGroups: [], sessionStats: { ...defaultStats } })
   },
 
   resetEvalStatuses: () => {
@@ -185,6 +221,7 @@ export const usePanelStore = create<PanelState>((set) => ({
               id: s.id || String(i + 1),
               title: s.description,
               status: (s.status as PlanItem['status']) || 'pending',
+              dependsOn: (s as { depends_on?: string[] }).depends_on || [],
             })),
           }
           planGroups.push(group)
@@ -284,70 +321,74 @@ export const usePanelStore = create<PanelState>((set) => ({
   },
 }))
 
-// Computed selectors with equality comparators for performance
-// Using useShallow for computed values to prevent unnecessary re-renders
+// Stable module-level selectors for computed values.
+// These return primitive numbers so Zustand's default Object.is comparison
+// is sufficient — no useShallow needed. Keeping selector references stable
+// ensures useSyncExternalStore reliably detects store changes and triggers
+// re-renders (fixes collapsed panel header counter not updating).
+
+const selectPlanCompleted = (state: PanelState): number => {
+  // Use backend-provided count from latest group if available
+  if (state.planGroups.length > 0 && state.planGroups[0].completedCount !== undefined) {
+    return state.planGroups[0].completedCount
+  }
+  // Fallback: compute from items
+  let count = 0
+  for (const group of state.planGroups) {
+    for (const item of group.items) {
+      if (item.status === 'completed' || item.status === 'failed') {
+        count++
+      }
+    }
+  }
+  return count
+}
+
+const selectPlanTotal = (state: PanelState): number => {
+  // Use backend-provided count from latest group if available
+  if (state.planGroups.length > 0 && state.planGroups[0].totalCount !== undefined) {
+    return state.planGroups[0].totalCount
+  }
+  // Fallback: compute from items
+  let count = 0
+  for (const group of state.planGroups) {
+    count += group.items.length
+  }
+  return count
+}
+
+const selectEvalCompleted = (state: PanelState): number => {
+  let count = 0
+  for (const group of state.evalGroups) {
+    for (const item of group.items) {
+      if (item.status === 'pass' || item.status === 'fail' || item.status === 'unclear') {
+        count++
+      }
+    }
+  }
+  return count
+}
+
+const selectEvalTotal = (state: PanelState): number => {
+  let count = 0
+  for (const group of state.evalGroups) {
+    count += group.items.length
+  }
+  return count
+}
+
 export function usePlanCompleted(): number {
-  return usePanelStore(
-    useShallow((state) => {
-      // Use backend-provided count from latest group if available
-      if (state.planGroups.length > 0 && state.planGroups[0].completedCount !== undefined) {
-        return state.planGroups[0].completedCount
-      }
-      // Fallback: compute from items
-      let count = 0
-      for (const group of state.planGroups) {
-        for (const item of group.items) {
-          if (item.status === 'completed' || item.status === 'failed') {
-            count++
-          }
-        }
-      }
-      return count
-    })
-  )
+  return usePanelStore(selectPlanCompleted)
 }
 
 export function usePlanTotal(): number {
-  return usePanelStore(
-    useShallow((state) => {
-      // Use backend-provided count from latest group if available
-      if (state.planGroups.length > 0 && state.planGroups[0].totalCount !== undefined) {
-        return state.planGroups[0].totalCount
-      }
-      // Fallback: compute from items
-      let count = 0
-      for (const group of state.planGroups) {
-        count += group.items.length
-      }
-      return count
-    })
-  )
+  return usePanelStore(selectPlanTotal)
 }
 
 export function useEvalCompleted(): number {
-  return usePanelStore(
-    useShallow((state) => {
-      let count = 0
-      for (const group of state.evalGroups) {
-        for (const item of group.items) {
-          if (item.status === 'pass' || item.status === 'fail' || item.status === 'unclear') {
-            count++
-          }
-        }
-      }
-      return count
-    })
-  )
+  return usePanelStore(selectEvalCompleted)
 }
 
 export function useEvalTotal(): number {
-  return usePanelStore(
-    useShallow((state) => {
-      let count = 0
-      for (const group of state.evalGroups) {
-        count += group.items.length
-      }
-      return count
-    })
-  )
+  return usePanelStore(selectEvalTotal)
 }

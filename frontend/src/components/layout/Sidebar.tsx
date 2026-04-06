@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { Plus, Settings, MoreVertical, Archive, Trash2, Edit3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
@@ -41,9 +41,16 @@ interface SessionItemProps {
   onDelete: () => void
 }
 
-function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelete }: SessionItemProps) {
+const SessionItem = React.memo(function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelete }: SessionItemProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editName, setEditName] = useState(session.name)
+
+  // Sync editName when session name changes (e.g., LLM auto-naming)
+  useEffect(() => {
+    if (!isEditing) {
+      setEditName(session.name)
+    }
+  }, [session.name, isEditing])
 
   const handleRename = () => {
     if (editName.trim() && editName !== session.name) {
@@ -103,12 +110,13 @@ function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelet
             size="icon"
             className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
             onClick={(e: React.MouseEvent) => e.stopPropagation()}
+            aria-label="Session options"
           >
             <MoreVertical className="h-3 w-3" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onClick={() => setIsEditing(true)}>
+          <DropdownMenuItem onClick={() => { setEditName(session.name); setIsEditing(true) }}>
             <Edit3 className="h-4 w-4 mr-2" />
             Rename
           </DropdownMenuItem>
@@ -128,7 +136,7 @@ function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelet
       </DropdownMenu>
     </div>
   )
-}
+})
 
 export function Sidebar() {
   const sessions = useSessionStore(s => s.sessions)

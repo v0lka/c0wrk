@@ -46,6 +46,7 @@ export interface ThoughtData {
   step_num: number
   content: string
   reasoning?: string
+  plan_step_id?: string
 }
 
 export interface StepData {
@@ -56,6 +57,7 @@ export interface PlanStepData {
   id?: string
   description: string
   status: string // "pending" | "running" | "completed" | "failed"
+  depends_on?: string[]
 }
 
 export interface PlanData {
@@ -150,6 +152,17 @@ export interface ContextFillData {
   used_tokens: number
   max_tokens: number
   status: string // "ok" | "compact" | "warning" | "emergency" | "reject"
+  session_input_tokens: number
+  session_output_tokens: number
+}
+
+export interface SessionTokensData {
+  session_input_tokens: number
+  session_output_tokens: number
+}
+
+export function isSessionTokensData(data: unknown): data is SessionTokensData {
+  return typeof data === 'object' && data !== null && 'session_input_tokens' in data && 'session_output_tokens' in data
 }
 
 export interface AskUserOption {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   ChevronDown,
   ChevronUp,
@@ -21,6 +21,7 @@ import {
   type EvalGroup,
 } from '@/stores/panelStore'
 import { useScrollStore } from '@/stores/scrollStore'
+import { computeDAGLayout } from '@/lib/dagLayout'
 
 // Status icon for plan items
 function PlanStatusIcon({ status }: { status: PlanItem['status'] }) {
@@ -57,24 +58,101 @@ interface PanelHeaderProps {
   icon: React.ReactNode
   title: string
   completed: number
+  verb: string
   total: number
 }
 
-function PanelHeader({ isOpen, onToggle, icon, title, completed, total }: PanelHeaderProps) {
+function PanelHeader({ isOpen, onToggle, icon, title, completed, total, verb }: PanelHeaderProps) {
   return (
     <button
       onClick={onToggle}
       className="flex items-center gap-2 w-full px-3 py-2 text-left text-zinc-300 hover:bg-zinc-800 transition-colors rounded-sm"
     >
       {isOpen ? (
-        <ChevronUp className="h-3.5 w-3.5 text-zinc-500" />
-      ) : (
         <ChevronDown className="h-3.5 w-3.5 text-zinc-500" />
+      ) : (
+        <ChevronUp className="h-3.5 w-3.5 text-zinc-500" />
       )}
       {icon}
       <span className="text-sm font-medium">{title}</span>
-      <span className="text-xs text-zinc-500">{completed}/{total}</span>
+      <span className="text-xs text-zinc-500">{completed}/{total} {verb}</span>
     </button>
+  )
+}
+
+// DAG graph constants
+const LANE_WIDTH = 6
+const ROW_HEIGHT = 24
+const PADDING = 4
+const STROKE_COLOR = '#52525b'
+const STROKE_WIDTH = 1
+
+// SVG DAG column for plan items
+function DAGGraph({ items }: { items: PlanItem[] }) {
+  const layout = useMemo(() => computeDAGLayout(items), [items])
+
+  if (layout.maxLane === -1) return null
+
+  const width = (layout.maxLane + 1) * LANE_WIDTH + PADDING * 2
+  const height = items.length * ROW_HEIGHT
+
+  const laneX = (lane: number) => lane * LANE_WIDTH + PADDING + LANE_WIDTH / 2
+  const rowY = (row: number) => row * ROW_HEIGHT + ROW_HEIGHT / 2
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      className="flex-shrink-0"
+    >
+      {layout.connectors.map((c, i) => {
+        const x1 = laneX(c.fromLane)
+        const y1 = rowY(c.fromRow)
+        const x2 = laneX(c.toLane)
+        const y2 = rowY(c.toRow)
+
+        if (c.type === 'vertical') {
+          return (
+            <line
+              key={i}
+              x1={x1} y1={y1}
+              x2={x2} y2={y2}
+              stroke={STROKE_COLOR}
+              strokeWidth={STROKE_WIDTH}
+              strokeLinecap="round"
+              fill="none"
+            />
+          )
+        }
+
+        if (c.type === 'fork' || c.type === 'merge') {
+          const midY = (y1 + y2) / 2
+          return (
+            <path
+              key={i}
+              d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
+              stroke={STROKE_COLOR}
+              strokeWidth={STROKE_WIDTH}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          )
+        }
+
+        return null
+      })}
+      {layout.nodes.map((node, i) => (
+        <circle
+          key={`node-${i}`}
+          cx={laneX(node.lane)}
+          cy={rowY(i)}
+          r={2}
+          fill={STROKE_COLOR}
+          stroke="none"
+        />
+      ))}
+    </svg>
   )
 }
 
@@ -90,17 +168,20 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
       {groups.map((group, groupIdx) => (
         <div key={group.id}>
           {groupIdx > 0 && <div className="border-t border-zinc-800 my-2" />}
-          <div className="space-y-1">
-            {group.items.map((item) => (
-              <button
-                key={`${group.id}-${item.id}`}
-                onClick={() => onStepClick?.(item.id)}
-                className="flex items-center gap-2 py-0.5 px-1 -mx-1 w-full text-left rounded hover:bg-zinc-800/50 transition-colors cursor-pointer"
-              >
-                <PlanStatusIcon status={item.status} />
-                <span className="text-xs text-zinc-400 truncate">{item.title}</span>
-              </button>
-            ))}
+          <div className="flex items-start">
+            <DAGGraph items={group.items} />
+            <div className="flex-1 min-w-0">
+              {group.items.map((item) => (
+                <button
+                  key={`${group.id}-${item.id}`}
+                  onClick={() => onStepClick?.(item.id)}
+                  className="flex items-center gap-2 h-6 px-1 -mx-1 w-full text-left rounded hover:bg-zinc-800/50 transition-colors cursor-pointer"
+                >
+                  <PlanStatusIcon status={item.status} />
+                  <span className="text-xs text-zinc-400 truncate">{item.title}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       ))}
@@ -166,6 +247,7 @@ export function ExecutionPanels() {
             title="Execution plan"
             completed={planCompleted}
             total={planTotal}
+            verb="completed"
           />
           {planOpen && <PlanContent groups={planGroups} onStepClick={scrollToStep ?? undefined} />}
         </div>
@@ -181,6 +263,7 @@ export function ExecutionPanels() {
             title="Acceptance criteria"
             completed={evalCompleted}
             total={evalTotal}
+            verb="checked"
           />
           {evalOpen && <EvalContent groups={evalGroups} />}
         </div>

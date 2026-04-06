@@ -1,0 +1,77 @@
+// Package tools provides the tool abstraction, registry, and security policies for agent tool execution.
+package tools
+
+import (
+	"context"
+	"encoding/json"
+
+	sdktools "github.com/user/agent/sdk/tools"
+)
+
+// Type aliases for SDK types — core/tools re-exports these for convenience.
+type Tool = sdktools.Tool
+type ToolPolicy = sdktools.ToolPolicy
+type ToolResult = sdktools.ToolResult
+type ToolDescriptor = sdktools.ToolDescriptor
+type BaseTool = sdktools.BaseTool
+
+// Re-export SDK constants.
+const (
+	PolicyAlwaysAllow = sdktools.PolicyAlwaysAllow
+	PolicyAlwaysDeny  = sdktools.PolicyAlwaysDeny
+	PolicyUserConfirm = sdktools.PolicyUserConfirm
+	PolicyAuto        = sdktools.PolicyAuto
+)
+
+// Re-export SDK functions.
+var (
+	ErrorResult     = sdktools.ErrorResult
+	ParseInputError = sdktools.ParseInputError
+	ParseToolPolicy = sdktools.ParseToolPolicy
+	WithWorkspacePath  = sdktools.WithWorkspacePath
+	WorkspacePathFrom  = sdktools.WorkspacePathFrom
+	WithTaskContext     = sdktools.WithTaskContext
+	TaskContextFrom    = sdktools.TaskContextFrom
+)
+
+// ToolJudger is an optional interface that tools can implement to provide
+// tool-specific safety heuristics for Auto policy mode.
+// If allow is true, the tool call is safe to execute.
+// If allow is false and reasoning is non-empty, the tool explicitly flags the call (ask user).
+// If allow is false and reasoning is empty, the tool defers to the LLM Judge.
+type ToolJudger interface {
+	Judge(ctx context.Context, input json.RawMessage) (allow bool, reasoning string)
+}
+
+// ConfirmationRequest describes a tool execution that needs user confirmation.
+type ConfirmationRequest struct {
+	ToolName       string          `json:"tool_name"`
+	Input          json.RawMessage `json:"input"`
+	JudgeReasoning string          `json:"judge_reasoning,omitempty"`
+}
+
+// ConfirmationResponse represents the user's confirmation decision.
+type ConfirmationResponse int
+
+const (
+	ConfirmAllowOnce   ConfirmationResponse = iota // Allow this single execution
+	ConfirmDeny                                    // Deny this execution
+	ConfirmDenyAndStop                             // Deny and cancel the entire task
+)
+
+// ConfirmFunc is called before executing a mutating tool.
+// If nil, all tools execute without confirmation (CLI mode).
+type ConfirmFunc func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error)
+
+// AskUserOption represents a single answer option for the ask_user tool.
+type AskUserOption = sdktools.AskUserOption
+
+// AskUserRequest describes a question to ask the user via the UI.
+type AskUserRequest = sdktools.AskUserRequest
+
+// AskUserResponse represents the user's answer.
+type AskUserResponse = sdktools.AskUserResponse
+
+// AskUserFunc is called when the ask_user tool needs to display a question to the user.
+// If nil, ask_user is not available (CLI mode).
+type AskUserFunc = sdktools.AskUserFunc

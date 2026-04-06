@@ -1,19 +1,5 @@
 export namespace main {
 	
-	export class ConfigProviderKeyModel {
-	    api_key: string;
-	    model: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ConfigProviderKeyModel(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.api_key = source["api_key"];
-	        this.model = source["model"];
-	    }
-	}
 	export class ConfigProviderFull {
 	    base_url: string;
 	    api_key: string;
@@ -26,6 +12,20 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.base_url = source["base_url"];
+	        this.api_key = source["api_key"];
+	        this.model = source["model"];
+	    }
+	}
+	export class ConfigProviderKeyModel {
+	    api_key: string;
+	    model: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigProviderKeyModel(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.api_key = source["api_key"];
 	        this.model = source["model"];
 	    }
@@ -70,23 +70,8 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class ConfigEpisodicResp {
-	    retention_days: number;
-	    retrieval_limit: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ConfigEpisodicResp(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.retention_days = source["retention_days"];
-	        this.retrieval_limit = source["retrieval_limit"];
-	    }
-	}
 	export class ConfigMemResponse {
-	    episodic: ConfigEpisodicResp;
-	    semantic: any;
+	    database: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigMemResponse(source);
@@ -94,28 +79,11 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.episodic = this.convertValues(source["episodic"], ConfigEpisodicResp);
-	        this.semantic = source["semantic"];
+	        this.database = source["database"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
+	
+	
 	export class ConfigSearchResp {
 	    provider: string;
 	    api_key: string;
@@ -176,32 +144,21 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class SessionTokensResponse {
-	    total_input_tokens: number;
-	    total_output_tokens: number;
+	
+	export class FileNode {
+	    name: string;
+	    path: string;
+	    is_dir: boolean;
 	
 	    static createFrom(source: any = {}) {
-	        return new SessionTokensResponse(source);
+	        return new FileNode(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.total_input_tokens = source["total_input_tokens"];
-	        this.total_output_tokens = source["total_output_tokens"];
-	    }
-	}
-	export class EpisodicSettingsRequest {
-	    retention_days: number;
-	    retrieval_limit: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new EpisodicSettingsRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.retention_days = source["retention_days"];
-	        this.retrieval_limit = source["retrieval_limit"];
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.is_dir = source["is_dir"];
 	    }
 	}
 	export class LLMSettingsRequest {
@@ -221,36 +178,6 @@ export namespace main {
 	        this.base_url = source["base_url"];
 	        this.model = source["model"];
 	    }
-	}
-	export class MemorySettingsRequest {
-	    episodic: EpisodicSettingsRequest;
-	
-	    static createFrom(source: any = {}) {
-	        return new MemorySettingsRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.episodic = this.convertValues(source["episodic"], EpisodicSettingsRequest);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class SearchSettingsRequest {
 	    provider: string;
@@ -312,6 +239,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SessionTokensResponse {
+	    total_input_tokens: number;
+	    total_output_tokens: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionTokensResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.total_input_tokens = source["total_input_tokens"];
+	        this.total_output_tokens = source["total_output_tokens"];
+	    }
+	}
 
 }
 
@@ -322,8 +263,7 @@ export namespace session {
 	    session_id: string;
 	    role: string;
 	    content: string;
-	    // json.RawMessage → any (object when present, not a JSON string)
-	    metadata: any;
+	    metadata: number[];
 	    created_at: string;
 	
 	    static createFrom(source: any = {}) {

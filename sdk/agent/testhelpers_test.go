@@ -1,0 +1,270 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/tools"
+)
+
+// --- Mock LLMCaller ---
+
+// mockLLMCaller returns predefined responses in sequence.
+type mockLLMCaller struct {
+	mu        sync.Mutex
+	responses []*llm.ChatResponse
+	errors    []error
+	callIdx   int
+	calls     []llm.ChatRequest // recorded calls
+}
+
+func (m *mockLLMCaller) Call(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, req)
+	idx := m.callIdx
+	m.callIdx++
+
+	if idx < len(m.errors) && m.errors[idx] != nil {
+		return nil, m.errors[idx]
+	}
+	if idx < len(m.responses) {
+		return m.responses[idx], nil
+	}
+	// Default: return end_turn with no tool calls
+	return &llm.ChatResponse{
+		Message:    llm.Message{Role: "assistant", Content: "default response"},
+		StopReason: "end_turn",
+	}, nil
+}
+
+// --- Mock ToolExecutor ---
+
+// mockToolExecutor returns predefined results by tool name.
+type mockToolExecutor struct {
+	mu      sync.Mutex
+	results map[string]tools.ToolResult
+	errors  map[string]error
+	calls   []toolExecCall
+}
+
+type toolExecCall struct {
+	Name  string
+	Input json.RawMessage
+}
+
+func newMockToolExecutor() *mockToolExecutor {
+	return &mockToolExecutor{
+		results: make(map[string]tools.ToolResult),
+		errors:  make(map[string]error),
+	}
+}
+
+func (m *mockToolExecutor) Execute(_ context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, toolExecCall{Name: name, Input: input})
+	if err, ok := m.errors[name]; ok {
+		return tools.ToolResult{}, err
+	}
+	if r, ok := m.results[name]; ok {
+		return r, nil
+	}
+	return tools.ToolResult{Content: "ok"}, nil
+}
+
+// --- Mock ContextManager ---
+
+type mockContextManager struct {
+	mu               sync.Mutex
+	messages         []llm.Message
+	steps            []Step
+	needsCompaction  bool
+	compactCalled    int
+	fillCheck        FillCheck
+	availableTokens  int
+	fillPercent      float64
+	correctedTokens  int
+	strategySet      bool
+}
+
+func newMockContextManager() *mockContextManager {
+	return &mockContextManager{
+		messages:        []llm.Message{{Role: "system", Content: "you are helpful"}},
+		availableTokens: 100000,
+		fillCheck:       FillCheck{Percent: 10, Status: "ok", Used: 1000, Max: 100000},
+	}
+}
+
+func (m *mockContextManager) BuildPrompt() []llm.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.messages
+}
+
+func (m *mockContextManager) AddStep(step Step) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.steps = append(m.steps, step)
+}
+
+func (m *mockContextManager) NeedsCompaction() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.needsCompaction
+}
+
+func (m *mockContextManager) Compact(_ context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.compactCalled++
+}
+
+func (m *mockContextManager) SetStrategy(_ CompactionStrategy) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.strategySet = true
+}
+
+func (m *mockContextManager) CheckFill() FillCheck {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.fillCheck
+}
+
+func (m *mockContextManager) CorrectTokenCount(apiInputTokens int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.correctedTokens = apiInputTokens
+}
+
+func (m *mockContextManager) FillPercent() float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.fillPercent
+}
+
+func (m *mockContextManager) AvailableTokens() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.availableTokens
+}
+
+// --- Mock TokenCounter ---
+
+type mockTokenCounter struct{}
+
+func (m *mockTokenCounter) Count(text string) int {
+	return len(text) / 4
+}
+
+func (m *mockTokenCounter) CountMessages(msgs []llm.Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += m.Count(msg.Content)
+	}
+	return total
+}
+
+// --- Mock AgentEvents (recording) ---
+
+type recordingEvents struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *recordingEvents) record(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, name)
+}
+
+func (r *recordingEvents) StepStart(stepNum int) {
+	r.record(fmt.Sprintf("StepStart:%d", stepNum))
+}
+
+func (r *recordingEvents) Thought(stepNum int, content, reasoning string) {
+	r.record(fmt.Sprintf("Thought:%d", stepNum))
+}
+
+func (r *recordingEvents) ToolCall(stepNum int, toolName, argsPreview string) {
+	r.record(fmt.Sprintf("ToolCall:%d:%s", stepNum, toolName))
+}
+
+func (r *recordingEvents) ToolResult(stepNum, resultLen int, preview string) {
+	r.record(fmt.Sprintf("ToolResult:%d", stepNum))
+}
+
+func (r *recordingEvents) StepComplete(stepNum int, _ time.Duration) {
+	r.record(fmt.Sprintf("StepComplete:%d", stepNum))
+}
+
+func (r *recordingEvents) SubAgentLaunch(stepID, description string) {
+	r.record("SubAgentLaunch:" + stepID)
+}
+
+func (r *recordingEvents) SubAgentComplete(stepID string, success bool, _ time.Duration) {
+	r.record(fmt.Sprintf("SubAgentComplete:%s:%v", stepID, success))
+}
+
+func (r *recordingEvents) AssistantChunk(content string) {
+	r.record("AssistantChunk")
+}
+
+func (r *recordingEvents) AssistantDone(content string, inputTokens, outputTokens int) {
+	r.record("AssistantDone")
+}
+
+func (r *recordingEvents) TokensUsed(inputTokens, outputTokens int) {
+	r.record("TokensUsed")
+}
+
+func (r *recordingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens int, status string) {
+	r.record("ContextFill:" + status)
+}
+
+// --- Helper to build LLM responses ---
+
+func llmResponseWithToolCall(thought, toolName string, toolInput json.RawMessage) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: thought,
+			ToolCalls: []llm.ToolCall{
+				{ID: "call_1", Name: toolName, Input: toolInput},
+			},
+		},
+		StopReason: "tool_use",
+		Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+	}
+}
+
+func llmResponseFinish(thought, answer string) *llm.ChatResponse {
+	input, _ := json.Marshal(map[string]string{"answer": answer})
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: thought,
+			ToolCalls: []llm.ToolCall{
+				{ID: "call_finish", Name: "finish", Input: input},
+			},
+		},
+		StopReason: "tool_use",
+		Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+	}
+}
+
+func llmResponseEndTurn(content string) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: content,
+		},
+		StopReason: "end_turn",
+		Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+	}
+}

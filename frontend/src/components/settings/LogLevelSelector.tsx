@@ -3,6 +3,7 @@ import { Info } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { Button } from '@/components/ui/button'
 import { GetLogLevel, SetLogLevel } from '../../../wailsjs/go/main/App'
+import { logger } from '@/lib/logger'
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
 
@@ -29,17 +30,15 @@ export function LogLevelSelector() {
           setLogLevel(level as LogLevel)
         }
       })
-      .catch(() => {
-        // Keep default if fetch fails
-      })
+      .catch((err) => logger.error('Failed to load log level:', err))
   }, [setLogLevel])
 
   const handleLogLevelChange = async (level: LogLevel) => {
     try {
       await SetLogLevel(level)
       setLogLevel(level)
-    } catch {
-      // Revert on error
+    } catch (error) {
+      logger.error('Failed to set log level:', error)
     }
   }
 

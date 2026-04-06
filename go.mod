@@ -15,6 +15,8 @@ require (
 	modernc.org/sqlite v1.47.0
 )
 
+require github.com/fsnotify/fsnotify v1.9.0
+
 require (
 	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/auth v0.9.3 // indirect

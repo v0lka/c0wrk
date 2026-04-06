@@ -22,6 +22,10 @@ declare global {
           Greet(name: string): Promise<string>
           GetSecuritySettings?: () => Promise<Record<string, unknown>>
           UpdateSecuritySettings?: (settings: Record<string, unknown>) => Promise<void>
+          GetSessionWorkspace(sessionID: string): Promise<string>
+          ListDirectory(path: string): Promise<Array<{ name: string; path: string; is_dir: boolean }>>
+          WatchDirectory(path: string): Promise<void>
+          UnwatchDirectory(path: string): Promise<void>
         }
       }
     }

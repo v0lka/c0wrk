@@ -4,23 +4,28 @@ import { Button } from '@/components/ui/button'
 import { useWails } from '@/hooks/useWails'
 import { useChatStore } from '@/stores/chatStore'
 
+export interface ToolConfirmationMetadata {
+  tool?: string
+  args?: string
+  confirm_id?: string
+  reasoning?: string
+  tool_msg_id?: string
+}
+
 interface ToolConfirmationProps {
   sessionId: string
-  metadata?: unknown
+  metadata?: Record<string, unknown>
 }
 
 export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps) {
   const { runtime } = useWails()
   const [resolved, setResolved] = useState<'confirmed' | 'denied' | null>(null)
 
-  const meta = (typeof metadata === 'object' && metadata !== null)
-    ? (metadata as Record<string, unknown>)
-    : undefined
-  const tool = meta?.tool as string | undefined
-  const args = meta?.args as string | undefined
-  const confirmId = meta?.confirm_id as string | undefined
-  const reasoning = meta?.reasoning as string | undefined
-  const toolMsgId = meta?.tool_msg_id as string | undefined
+  const tool = typeof metadata?.tool === 'string' ? metadata.tool : undefined
+  const args = typeof metadata?.args === 'string' ? metadata.args : undefined
+  const confirmId = typeof metadata?.confirm_id === 'string' ? metadata.confirm_id : undefined
+  const reasoning = typeof metadata?.reasoning === 'string' ? metadata.reasoning : undefined
+  const toolMsgId = typeof metadata?.tool_msg_id === 'string' ? metadata.tool_msg_id : undefined
 
   const handleResponse = (decision: 'allow_once' | 'deny') => {
     if (!runtime) return

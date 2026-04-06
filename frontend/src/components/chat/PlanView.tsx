@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { CheckCircle2, Circle, Loader2, ChevronDown, ChevronRight, ListTodo, XCircle, Clock } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { useInspectorStore } from '@/stores/inspectorStore'
+import { formatDuration } from '@/lib/formatters'
+import { usePanelStore } from '@/stores/panelStore'
 
 // View-specific step type for display
 interface PlanStepView {
@@ -11,19 +12,6 @@ interface PlanStepView {
   status: 'done' | 'running' | 'waiting' | 'failed'
   details?: string
   duration?: number // milliseconds
-}
-
-// Format duration human-readably
-function formatDuration(ms: number): string {
-  if (ms < 1000) {
-    return `${ms}ms`
-  } else if (ms < 60000) {
-    return `${(ms / 1000).toFixed(1)}s`
-  } else {
-    const minutes = Math.floor(ms / 60000)
-    const seconds = Math.round((ms % 60000) / 1000)
-    return `${minutes}m ${seconds}s`
-  }
 }
 
 function StatusIcon({ status }: { status: PlanStepView['status'] }) {
@@ -95,16 +83,18 @@ function PlanStepItem({ step }: { step: PlanStepView }) {
 }
 
 export function PlanView() {
-  // Get plan steps from store and map status values
-  const storeSteps = useInspectorStore((s) => s.planSteps)
+  // Get plan steps from the latest plan group in panelStore
+  const latestPlanGroup = usePanelStore((s) => s.planGroups.length > 0 ? s.planGroups[0] : null)
   
   // Map store status to view status
-  const steps: PlanStepView[] = storeSteps.map((step, index) => ({
-    id: step.id || String(index + 1),
-    description: step.description,
-    status: step.status === 'completed' ? 'done' : step.status === 'pending' ? 'waiting' : step.status,
-    duration: step.duration,
-  }))
+  const steps: PlanStepView[] = latestPlanGroup
+    ? latestPlanGroup.items.map((item, index) => ({
+        id: item.id || String(index + 1),
+        description: item.title,
+        status: item.status === 'completed' ? 'done' : item.status === 'pending' ? 'waiting' : item.status,
+        duration: item.duration,
+      }))
+    : []
   const hasPlan = steps.length > 0
 
   if (!hasPlan) {

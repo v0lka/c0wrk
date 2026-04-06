@@ -1,55 +1,60 @@
-import { useState, useEffect } from 'react'
-import { Cpu, Info } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { useSessionAPI } from '@/hooks/useSession'
+import { Input } from '@/components/ui/input'
 
-export function ModelSelector() {
-  const api = useSessionAPI()
-  const [modelName, setModelName] = useState<string>('Loading...')
+interface ModelSelectorProps {
+  activeProvider: string
+  model: string
+  models: string[]
+  modelsLoading: boolean
+  modelsError: string | null
+  disabled: boolean
+  placeholder: string
+  onModelChange: (model: string) => void
+}
 
-  useEffect(() => {
-    const promise = api.getConfig?.()
-    if (!promise) {
-      setModelName('Not configured')
-      return
-    }
-    promise.then((config) => {
-      // Extract active model from typed config
-      const llm = config?.llm
-      const activeProvider = llm?.active_provider
-      let model = 'Not configured'
-      if (activeProvider && llm) {
-        const providerConfig = llm[activeProvider as keyof typeof llm]
-        if (providerConfig && typeof providerConfig === 'object' && 'model' in providerConfig) {
-          model = (providerConfig as { model: string }).model || 'Not configured'
-        }
-      }
-      setModelName(model)
-    }).catch(() => {
-      setModelName('Not configured')
-    })
-  }, [api])
-
+export function ModelSelector({
+  model,
+  models,
+  modelsLoading,
+  modelsError,
+  disabled,
+  placeholder,
+  onModelChange,
+}: ModelSelectorProps) {
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Model</span>
-      </div>
-      
-      <Button 
-        variant="outline" 
-        className="w-full justify-start gap-2"
-        disabled
-      >
-        <Cpu className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm truncate">{modelName}</span>
-      </Button>
-
-      <div className="flex items-start gap-2 text-xs text-muted-foreground">
-        <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-        <p>
-          Model selection is managed through the configuration file.
-        </p>
+    <div className="flex flex-col gap-2">
+      <label className="text-xs text-muted-foreground">Model</label>
+      <div className="flex flex-col gap-2">
+        {models.length > 0 && !modelsLoading ? (
+          // Non-editable select when models are successfully fetched
+          <select
+            value={model}
+            onChange={(e) => onModelChange(e.target.value)}
+            disabled={disabled}
+            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none"
+          >
+            <option value="">Select a model...</option>
+            {models.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        ) : (
+          // Plain text input when no models available or fetch failed
+          <Input
+            placeholder={placeholder}
+            value={model}
+            onChange={(e) => onModelChange(e.target.value)}
+            disabled={disabled || modelsLoading}
+            className="h-9 text-sm"
+          />
+        )}
+        {modelsLoading && (
+          <span className="text-xs text-muted-foreground">Loading models...</span>
+        )}
+        {modelsError && (
+          <span className="text-xs text-destructive">{modelsError}</span>
+        )}
       </div>
     </div>
   )

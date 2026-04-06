@@ -1,9 +1,10 @@
-import { GitBranch, RotateCcw, ArrowUpRight, ListChecks } from 'lucide-react'
+import { GitBranch, RotateCcw, ArrowUpRight, ListChecks, Activity } from 'lucide-react'
 import React from 'react'
+import { domainLabels, modeLabels, complexityStars } from '@/constants/routingLabels'
 
 interface ServiceMessageProps {
   id: string
-  variant: 'routing' | 'retry' | 'escalation' | 'ac_extracted'
+  variant: 'routing' | 'retry' | 'escalation' | 'ac_extracted' | 'status'
   content: string
   metadata?: Record<string, unknown>
 }
@@ -25,36 +26,18 @@ const variantConfig = {
     icon: ListChecks,
     label: 'AC Extracted',
   },
-}
-
-// Human-readable value mappings for routing messages
-const domainLabels: Record<string, string> = {
-  general: 'General',
-  code: 'Code',
-  research: 'Research',
-  mixed: 'Mixed',
-}
-
-const modeLabels: Record<string, string> = {
-  direct: 'Direct',
-  react: 'ReAct',
-  plan_execute: 'Plan&Execute',
-}
-
-const complexityStars: Record<string, string> = {
-  '1': '★☆☆☆☆',
-  '2': '★★☆☆☆',
-  '3': '★★★☆☆',
-  '4': '★★★★☆',
-  '5': '★★★★★',
+  status: {
+    icon: Activity,
+    label: 'Status',
+  },
 }
 
 function formatRoutingContent(metadata?: Record<string, unknown>): React.ReactNode {
   if (!metadata) return null
   
-  const mode = String(metadata.mode || '')
-  const domain = String(metadata.domain || '')
-  const complexity = String(metadata.complexity || '')
+  const mode = typeof metadata.mode === 'string' ? metadata.mode : ''
+  const domain = typeof metadata.domain === 'string' ? metadata.domain : ''
+  const complexity = typeof metadata.complexity === 'string' ? metadata.complexity : typeof metadata.complexity === 'number' ? String(metadata.complexity) : ''
   
   const domainDisplay = domainLabels[domain] || domain || 'Unknown'
   const modeDisplay = modeLabels[mode] || mode || 'Unknown'
