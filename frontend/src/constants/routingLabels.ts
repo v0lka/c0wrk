@@ -6,12 +6,6 @@ export const domainLabels: Record<string, string> = {
   mixed: 'Mixed',
 }
 
-export const modeLabels: Record<string, string> = {
-  direct: 'Direct',
-  react: 'ReAct',
-  plan_execute: 'Plan&Execute',
-}
-
 export const complexityStars: Record<string, string> = {
   '1': '★☆☆☆☆',
   '2': '★★☆☆☆',

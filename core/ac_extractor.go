@@ -89,7 +89,6 @@ func (e *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, ro
 
 	contextLines := []string{
 		"Domain: " + routing.Domain,
-		"Mode: " + routing.Mode,
 		fmt.Sprintf("Complexity: %d", routing.Complexity),
 		"Suggested tools: " + strings.Join(routing.SuggestedTools, ", "),
 	}
@@ -120,11 +119,7 @@ func (e *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, ro
 
 // fallbackCriteria generates minimal acceptance criteria when raw extraction produced no results.
 func (e *ACExtractor) fallbackCriteria(routing *RoutingDecision) []AcceptanceCriterion {
-	// Direct mode: no criteria needed (trivial task or will escalate if eval fails)
-	if routing.Mode == "direct" {
-		return []AcceptanceCriterion{}
-	}
-	// React/plan_execute: generate minimal evaluable criteria
+	// Generate minimal evaluable criteria
 	criteria := []AcceptanceCriterion{
 		{
 			ID:          "ac_fallback_1",

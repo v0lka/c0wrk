@@ -52,706 +52,6 @@ func testContextFactory(systemPrompt string, modelMeta llm.ModelMetadata, compac
 	}
 }
 
-// TestOrchestrator_DirectMode tests the direct mode path with AC extraction and evaluation.
-func TestOrchestrator_DirectMode(t *testing.T) {
-	// Setup mock LLM that returns direct mode routing, answer, AC extraction, and eval
-	var routerCallCount int
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
-				routerCallCount++
-				// Call 1: ExtractRaw (Phase 1) - no "Domain:" in message
-				// Call 2: Route - returns RoutingDecision
-				// Call 3: Extract (Phase 2) - has "Domain:" in message
-				hasDomain := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasDomain = true
-						break
-					}
-				}
-
-				if routerCallCount == 1 {
-					// ExtractRaw - returns RawCriterion array
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "rc_1", "description": "Answer identifies correct capital", "nature": "objective", "weight": "must"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-
-				if hasDomain {
-					// Regular AC extraction (Phase 2)
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "ac_1", "description": "Answer identifies correct capital", "check_type": "llm_judge"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-
-				// Route call
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"mode": "direct", "domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "evaluator_judge" {
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - Paris is correct"},
-					StopReason: "end_turn",
-				}, nil
-			}
-			// Direct response for the actual question
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: "The capital of France is Paris.",
-				},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-
-	router := NewRouter(mockLLM, 5)
-	acExtractor := NewACExtractor(mockLLM)
-	planner := NewPlanner(mockLLM)
-	evaluator := NewEvaluator(registry, mockLLM)
-
-	orchestrator := NewOrchestrator(
-		router,
-		acExtractor,
-		planner,
-		evaluator,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{
-			MaxSteps: 10,
-		},
-		testContextFactory,
-		nil, // reflector - nil for Phase 2 tests
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-	)
-
-	result, err := orchestrator.Handle(context.Background(), "What is the capital of France?")
-	if err != nil {
-		t.Fatalf("Handle failed: %v", err)
-	}
-
-	if result.Output != "The capital of France is Paris." {
-		t.Errorf("unexpected output: %s", result.Output)
-	}
-
-	if result.RoutingDecision == nil {
-		t.Fatal("routing decision is nil")
-	}
-
-	if result.RoutingDecision.Mode != "direct" {
-		t.Errorf("expected mode=direct, got %s", result.RoutingDecision.Mode)
-	}
-
-	// Direct mode should not have plan
-	if result.Plan != nil {
-		t.Errorf("direct mode should not have plan")
-	}
-
-	// Direct mode now HAS eval result when AC is present and eval passes
-	if result.EvalResult == nil {
-		t.Error("direct mode should have eval result when AC is present")
-	} else if !result.EvalResult.AllPassed {
-		t.Error("direct mode eval should have passed")
-	}
-}
-
-// TestDirectMode_EscalatesToReactOnFailedEval tests that direct mode escalates to react when eval fails.
-func TestDirectMode_EscalatesToReactOnFailedEval(t *testing.T) {
-	evalCallCount := 0
-	executorCallCount := 0
-	var tracker routerCallTracker
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
-				switch tracker.nextCall(req) {
-				case "extract_raw":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "rc_1", "description": "Answer must be accurate", "nature": "objective", "weight": "must"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				case "enrich":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "ac_1", "description": "Answer must be accurate", "check_type": "llm_judge"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				default: // route
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `{"mode": "direct", "domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-			}
-			if detectCallType(req) == "evaluator_judge" {
-				evalCallCount++
-				if evalCallCount == 1 {
-					// First eval (direct mode) - fail
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - answer is wrong"},
-						StopReason: "end_turn",
-					}, nil
-				}
-				// Second eval (react mode) - pass
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - answer is correct"},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "executor" {
-				executorCallCount++
-				if executorCallCount == 1 {
-					// Direct mode answer (will fail eval)
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: "Wrong answer",
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-				// React mode - finish with correct answer
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Using tools to find answer",
-						ToolCalls: []llm.ToolCall{
-							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Correct answer after escalation"}`)},
-						},
-					},
-					StopReason: "tool_use",
-				}, nil
-			}
-			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: ""},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewACExtractor(mockLLM),
-		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // No reflector needed
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-	)
-
-	result, err := orchestrator.Handle(context.Background(), "What is 2+2?")
-	if err != nil {
-		t.Fatalf("Handle failed: %v", err)
-	}
-
-	// Verify escalation occurred
-	if !result.Escalated {
-		t.Error("expected result.Escalated to be true")
-	}
-
-	if result.OriginalMode != "direct" {
-		t.Errorf("expected OriginalMode=direct, got %s", result.OriginalMode)
-	}
-
-	// After escalation, routing shows the escalated mode
-	if result.RoutingDecision.Mode != "react" {
-		t.Errorf("expected escalated mode=react, got %s", result.RoutingDecision.Mode)
-	}
-
-	// Final eval should pass
-	if result.EvalResult == nil || !result.EvalResult.AllPassed {
-		t.Error("expected final eval to pass after escalation")
-	}
-}
-
-// TestReactMode_EscalatesToPlanExecute tests escalation from react to plan_execute when reflector suggests "escalate".
-func TestReactMode_EscalatesToPlanExecute(t *testing.T) {
-	evalCallCount := 0
-	plannerCalled := false
-	var tracker routerCallTracker
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
-				switch tracker.nextCall(req) {
-				case "extract_raw":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				case "enrich":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				default: // route
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-			}
-			if detectCallType(req) == "planner" {
-				plannerCalled = true
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"steps": [{"id": "step_1", "description": "Complete task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "executor" {
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Task done",
-						ToolCalls: []llm.ToolCall{
-							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Task completed"}`)},
-						},
-					},
-					StopReason: "tool_use",
-				}, nil
-			}
-			if detectCallType(req) == "evaluator_judge" {
-				evalCallCount++
-				if evalCallCount == 1 {
-					// First eval (react mode) - fail
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - task not complete"},
-						StopReason: "end_turn",
-					}, nil
-				}
-				// Second eval (plan_execute mode) - pass
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - task complete"},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "reflector" {
-				// Suggest escalation to plan_execute
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"summary": "React mode insufficient", "failed_criteria": ["ac_1"], "hypotheses": ["Task too complex"], "suggested_action": "escalate", "reasoning": "Need structured planning", "failure_analysis": "Too complex for react", "root_cause": "Complexity", "action_plan": "Use plan_execute"}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: ""},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-	reflector := NewReflector(mockLLM)
-
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewACExtractor(mockLLM),
-		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
-		testContextFactory,
-		reflector,
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-	)
-
-	result, err := orchestrator.Handle(context.Background(), "Complex task")
-	if err != nil {
-		t.Fatalf("Handle failed: %v", err)
-	}
-
-	// Verify escalation occurred
-	if !result.Escalated {
-		t.Error("expected result.Escalated to be true")
-	}
-
-	if result.OriginalMode != "react" {
-		t.Errorf("expected OriginalMode=react, got %s", result.OriginalMode)
-	}
-
-	// Plan should be present after escalation to plan_execute
-	if result.Plan == nil {
-		t.Error("expected result.Plan to be present after escalation")
-	}
-
-	// Planner should have been called
-	if !plannerCalled {
-		t.Error("expected Planner to be called during escalation")
-	}
-
-	// Final eval should pass
-	if result.EvalResult == nil || !result.EvalResult.AllPassed {
-		t.Error("expected final eval to pass after escalation")
-	}
-}
-
-// TestEscalation_ReactReflectionsPassedToPlanExecute verifies that reflections generated
-// during React mode are passed to Planner when escalating to plan_execute.
-func TestEscalation_ReactReflectionsPassedToPlanExecute(t *testing.T) {
-	evalCallCount := 0
-	var capturedPlannerPrompt string
-	var tracker routerCallTracker
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
-				switch tracker.nextCall(req) {
-				case "extract_raw":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				case "enrich":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				default: // route
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-			}
-			if detectCallType(req) == "planner" {
-				// Capture the system prompt to verify reflections are included
-				for _, msg := range req.Messages {
-					if msg.Role == "system" {
-						capturedPlannerPrompt = msg.Content
-						break
-					}
-				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"steps": [{"id": "step_1", "description": "Complete task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "executor" {
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Task done",
-						ToolCalls: []llm.ToolCall{
-							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Task completed"}`)},
-						},
-					},
-					StopReason: "tool_use",
-				}, nil
-			}
-			if detectCallType(req) == "evaluator_judge" {
-				evalCallCount++
-				if evalCallCount == 1 {
-					// First eval (react mode) - fail
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - task not complete"},
-						StopReason: "end_turn",
-					}, nil
-				}
-				// Second eval (plan_execute mode) - pass
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - task complete"},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "reflector" {
-				// Return reflection with "escalate" action - include distinctive content to verify it's passed
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"summary": "React mode insufficient", "failed_criteria": ["ac_1"], "hypotheses": ["Task too complex"], "suggested_action": "escalate", "reasoning": "Need structured planning", "failure_analysis": "Too complex for react mode - this is distinctive", "root_cause": "Complexity exceeds react capabilities", "action_plan": "Use plan_execute with structured approach"}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: ""},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-	reflector := NewReflector(mockLLM)
-
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewACExtractor(mockLLM),
-		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
-		testContextFactory,
-		reflector,
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-	)
-
-	result, err := orchestrator.Handle(context.Background(), "Complex task")
-	if err != nil {
-		t.Fatalf("Handle failed: %v", err)
-	}
-
-	// Verify escalation occurred
-	if !result.Escalated {
-		t.Error("expected result.Escalated to be true")
-	}
-
-	if result.OriginalMode != "react" {
-		t.Errorf("expected OriginalMode=react, got %s", result.OriginalMode)
-	}
-
-	// Verify reflections were passed to planner by checking the captured system prompt
-	if capturedPlannerPrompt == "" {
-		t.Fatal("planner was not called or system prompt not captured")
-	}
-
-	// The planner's system prompt should contain the reflection content if reflections were passed
-	if !strings.Contains(capturedPlannerPrompt, "Too complex for react mode - this is distinctive") {
-		t.Error("expected planner system prompt to contain reflection failure_analysis, but it was not found")
-		t.Logf("captured prompt (first 500 chars): %s", truncateString(capturedPlannerPrompt, 500))
-	}
-
-	if !strings.Contains(capturedPlannerPrompt, "Complexity exceeds react capabilities") {
-		t.Error("expected planner system prompt to contain reflection root_cause, but it was not found")
-	}
-
-	if !strings.Contains(capturedPlannerPrompt, "Use plan_execute with structured approach") {
-		t.Error("expected planner system prompt to contain reflection action_plan, but it was not found")
-	}
-
-	// Verify result has the expected reflections
-	if len(result.Reflections) == 0 {
-		t.Error("expected result to contain reflections from react attempt")
-	}
-}
-
-// truncateString truncates a string to maxLen characters.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
-// TestReactMode_EscalatesOnMaxRetries tests auto-escalation to plan_execute when max retries exhausted.
-func TestReactMode_EscalatesOnMaxRetries(t *testing.T) {
-	executorCallCount := 0
-	plannerCalled := false
-	evalCallCount := 0
-	var tracker routerCallTracker
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
-				switch tracker.nextCall(req) {
-				case "extract_raw":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				case "enrich":
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `[{"id": "ac_1", "description": "Task completes", "check_type": "llm_judge"}]`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				default: // route
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `{"mode": "react", "domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-			}
-			if detectCallType(req) == "planner" {
-				plannerCalled = true
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"steps": [{"id": "step_1", "description": "Complete task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "executor" {
-				executorCallCount++
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Task done",
-						ToolCalls: []llm.ToolCall{
-							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Task result"}`)},
-						},
-					},
-					StopReason: "tool_use",
-				}, nil
-			}
-			if detectCallType(req) == "evaluator_judge" {
-				evalCallCount++
-				// Fail for first 2 evals (react mode attempts), pass for plan_execute
-				if evalCallCount <= 2 {
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - task not complete"},
-						StopReason: "end_turn",
-					}, nil
-				}
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - task complete"},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "reflector" {
-				// Always suggest retry (not escalate) - this tests auto-escalation after max retries
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"summary": "Task failed", "failed_criteria": ["ac_1"], "hypotheses": ["Minor issue"], "suggested_action": "retry", "reasoning": "Try again", "failure_analysis": "Failure", "root_cause": "Unknown", "action_plan": "Retry"}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: ""},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-	reflector := NewReflector(mockLLM)
-
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewACExtractor(mockLLM),
-		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10, MaxRetries: 1}, // Only 1 retry to keep test fast
-		testContextFactory,
-		reflector,
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-	)
-
-	result, err := orchestrator.Handle(context.Background(), "Task that needs retries")
-	if err != nil {
-		t.Fatalf("Handle failed: %v", err)
-	}
-
-	// Verify escalation occurred after max retries
-	if !result.Escalated {
-		t.Error("expected result.Escalated to be true after max retries")
-	}
-
-	if result.OriginalMode != "react" {
-		t.Errorf("expected OriginalMode=react, got %s", result.OriginalMode)
-	}
-
-	// Plan should be present after escalation to plan_execute
-	if result.Plan == nil {
-		t.Error("expected result.Plan to be present after auto-escalation")
-	}
-
-	// Planner should have been called
-	if !plannerCalled {
-		t.Error("expected Planner to be called during auto-escalation")
-	}
-
-	// Final eval should pass
-	if result.EvalResult == nil || !result.EvalResult.AllPassed {
-		t.Error("expected final eval to pass after auto-escalation")
-	}
-}
-
 // TestBuildSystemPrompt_IncludesAC tests that buildSystemPrompt includes acceptance criteria when provided.
 func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 	// Create minimal orchestrator just for this test
@@ -813,7 +113,7 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 	}
 }
 
-// TestOrchestrator_ReactMode tests the react mode path with AC extraction, execution, and evaluation.
+// TestOrchestrator_ReactMode tests the plan-execute path with AC extraction, execution, and evaluation.
 func TestOrchestrator_ReactMode(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
@@ -832,7 +132,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
-						Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": ["bash_exec"], "needs_clarification": false}`,
+						Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": ["bash_exec"], "needs_clarification": false}`,
 					},
 					StopReason: "end_turn",
 				}, nil
@@ -844,7 +144,15 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 					},
 					StopReason: "end_turn",
 				}, nil
-			case 4: // Executor - finish immediately
+			case 4: // Planner
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Fix the code", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash_exec"], "relevant_ac": ["ac_1"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 5: // Executor - finish immediately
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -859,7 +167,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 					},
 					StopReason: "tool_use",
 				}, nil
-			case 5: // Evaluator (programmatic check runs via tools.Execute)
+			case 6: // Evaluator (programmatic check runs via tools.Execute)
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
@@ -913,17 +221,13 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		t.Fatal("routing decision is nil")
 	}
 
-	if result.RoutingDecision.Mode != "react" {
-		t.Errorf("expected mode=react, got %s", result.RoutingDecision.Mode)
-	}
-
 	if result.RoutingDecision.Domain != "code" {
 		t.Errorf("expected domain=code, got %s", result.RoutingDecision.Domain)
 	}
 
-	// React mode should have evaluation result
+	// Should have evaluation result
 	if result.EvalResult == nil {
-		t.Error("react mode should have eval result")
+		t.Error("should have eval result")
 	} else if !result.EvalResult.AllPassed {
 		t.Logf("eval result: passed=%d, failed=%d, unclear=%d",
 			len(result.EvalResult.Passed), len(result.EvalResult.Failed), len(result.EvalResult.Unclear))
@@ -949,7 +253,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": ["bash_exec", "file_ops"], "needs_clarification": false}`,
+						Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": ["bash_exec", "file_ops"], "needs_clarification": false}`,
 					},
 					StopReason: "end_turn",
 				}, nil
@@ -1048,10 +352,6 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		t.Fatal("routing decision is nil")
 	}
 
-	if result.RoutingDecision.Mode != "plan_execute" {
-		t.Errorf("expected mode=plan_execute, got %s", result.RoutingDecision.Mode)
-	}
-
 	// Plan execute mode should have a plan
 	if result.Plan == nil {
 		t.Fatal("plan_execute mode should have plan")
@@ -1088,7 +388,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
-						Content: `{"mode": "needs_clarification", "domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": true}`,
+						Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": true}`,
 					},
 					StopReason: "end_turn",
 				}, nil
@@ -1137,10 +437,6 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		t.Fatal("routing decision is nil")
 	}
 
-	if result.RoutingDecision.Mode != "needs_clarification" {
-		t.Errorf("expected mode=needs_clarification, got %s", result.RoutingDecision.Mode)
-	}
-
 	// Should return clarification request
 	if result.Output == "" {
 		t.Error("needs_clarification should return a clarification message")
@@ -1186,7 +482,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 							return &llm.ChatResponse{
 								Message: llm.Message{
 									Role:    "assistant",
-									Content: `{"mode": "` + mode + `", "domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+									Content: `{"domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 								},
 								StopReason: "end_turn",
 							}, nil
@@ -1245,10 +541,6 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 			if result.RoutingDecision == nil {
 				t.Fatalf("RoutingDecision should not be nil for mode %s", mode)
 			}
-
-			if result.RoutingDecision.Mode != mode {
-				t.Errorf("expected mode=%s, got %s", mode, result.RoutingDecision.Mode)
-			}
 		})
 	}
 }
@@ -1261,14 +553,30 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
-						Content: `{"mode": "direct", "domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 					},
 					StopReason: "end_turn",
 				}, nil
 			}
+			if detectCallType(req) == "planner" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Respond to greeting", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": []}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			// Executor - finish with greeting
 			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "Hello!"},
-				StopReason: "end_turn",
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Hello!",
+					ToolCalls: []llm.ToolCall{
+						{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Hello!"}`)},
+					},
+				},
+				StopReason: "tool_use",
 			}, nil
 		},
 	}
@@ -1339,11 +647,20 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
 				}
+			}
+			if detectCallType(req) == "planner" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Run task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
 			}
 			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
@@ -1461,11 +778,20 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
 				}
+			}
+			if detectCallType(req) == "planner" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Run tests", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
 			}
 			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
@@ -1508,11 +834,11 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 	reflector := NewReflector(mockLLM)
 	maxRetries := 2
 
-	// Create orchestrator WITHOUT planner to test non-escalation path
+	// Create orchestrator with planner for plan_execute path
 	orchestrator := NewOrchestrator(
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
-		nil, // No planner - prevents auto-escalation
+		NewPlanner(mockLLM),
 		NewEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
@@ -1585,11 +911,20 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "react", "domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
 				}
+			}
+			if detectCallType(req) == "planner" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Run task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
 			}
 			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
@@ -1688,7 +1023,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
@@ -1824,7 +1159,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
@@ -1969,11 +1304,20 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "react", "domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
 				}
+			}
+			if detectCallType(req) == "planner" {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Complete task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
 			}
 			if detectCallType(req) == "executor" {
 				return &llm.ChatResponse{
@@ -2032,10 +1376,11 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		t.Fatal("expected SetTask to be called, but it was not")
 	}
 
-	// Verify the task was set with the user's message
+	// Verify the task was set with content that includes the user's message
+	// (In plan_execute mode, SetTask receives the step task definition which embeds the user message)
 	found := false
 	for _, call := range setTaskCalls {
-		if call.Task == userMessage {
+		if strings.Contains(call.Task, userMessage) {
 			found = true
 			// Verify criteria was also passed
 			if len(call.Criteria) == 0 {
@@ -2048,7 +1393,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected SetTask to be called with user message '%s', got calls: %+v", userMessage, setTaskCalls)
+		t.Errorf("expected SetTask to be called with task containing user message '%s', got calls: %+v", userMessage, setTaskCalls)
 	}
 }
 
@@ -2142,7 +1487,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
-						Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 					},
 					StopReason: "end_turn",
 				}, nil
@@ -2275,7 +1620,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
@@ -2335,9 +1680,9 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		t.Fatalf("Handle failed: %v", err)
 	}
 
-	// Verify plan_execute mode was used
-	if result.RoutingDecision == nil || result.RoutingDecision.Mode != "plan_execute" {
-		t.Fatalf("expected plan_execute mode, got %v", result.RoutingDecision)
+	// Verify plan_execute mode was used (routing decision should exist)
+	if result.RoutingDecision == nil {
+		t.Fatal("expected non-nil RoutingDecision")
 	}
 
 	// Verify plan has 2 steps
@@ -2413,7 +1758,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
@@ -2628,7 +1973,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil
@@ -2879,7 +2224,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
-							Content: `{"mode": "plan_execute", "domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
 						},
 						StopReason: "end_turn",
 					}, nil

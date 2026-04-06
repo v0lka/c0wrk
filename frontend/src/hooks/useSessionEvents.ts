@@ -9,7 +9,7 @@ import { GetSessionTokens } from '../../wailsjs/go/main/App'
 
 // --- Type guards for event data validation ---
 function isRoutingData(data: unknown): data is RoutingData {
-  return typeof data === 'object' && data !== null && 'mode' in data && 'domain' in data && 'complexity' in data
+  return typeof data === 'object' && data !== null && 'domain' in data && 'complexity' in data
 }
 
 function isStepData(data: unknown): data is { step_num: number } {
@@ -60,16 +60,12 @@ function isErrorData(data: unknown): data is { error: string } {
   return typeof data === 'object' && data !== null && 'error' in data
 }
 
-function isTaskCompleteData(data: unknown): data is { output?: string; attempt_count?: number; routing_decision?: { mode?: string } } {
+function isTaskCompleteData(data: unknown): data is { output?: string; attempt_count?: number; routing_decision?: Record<string, unknown> } {
   return typeof data === 'object' && data !== null && ('output' in data || 'attempt_count' in data || 'routing_decision' in data)
 }
 
 function isRetryData(data: unknown): data is { attempt: number; max_attempts: number } {
   return typeof data === 'object' && data !== null && 'attempt' in data && 'max_attempts' in data
-}
-
-function isEscalationData(data: unknown): data is { from_mode: string; to_mode: string } {
-  return typeof data === 'object' && data !== null && 'from_mode' in data && 'to_mode' in data
 }
 
 function isServiceData(data: unknown): data is { content: string } {
@@ -146,11 +142,11 @@ export function useSessionEvents(sessionId: string | null) {
         id: `routing-${Date.now()}`,
         sessionId,
         type: 'routing',
-        content: `Mode: ${routing.mode} | Domain: ${routing.domain} | Complexity: ${routing.complexity}`,
-        metadata: { mode: routing.mode, domain: routing.domain, complexity: routing.complexity },
+        content: `Domain: ${routing.domain} | Complexity: ${routing.complexity}`,
+        metadata: { domain: routing.domain, complexity: routing.complexity },
         timestamp: Date.now(),
       })
-      panelStore.updateStats({ routingMode: routing.mode, routingDomain: routing.domain, routingComplexity: routing.complexity })
+      panelStore.updateStats({ routingDomain: routing.domain, routingComplexity: routing.complexity })
     })
 
     on('step_start', (data: unknown) => {
@@ -465,24 +461,10 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'routing',
         content: `Retry attempt ${retry.attempt}/${retry.max_attempts}`,
-        metadata: { mode: 'retry', ...retry },
+        metadata: { ...retry },
         timestamp: Date.now(),
       })
       panelStore.updateStats({ attempt: retry.attempt + 1, maxAttempts: retry.max_attempts })
-    })
-
-    on('escalation', (data: unknown) => {
-      if (!isEscalationData(data)) return
-      const escalation = data
-      if (isActiveSession()) useChatStore.getState().setActivityStatus(`Escalating to ${escalation.to_mode}...`)
-      addMessage(sessionId, {
-        id: `escalation-${Date.now()}`,
-        sessionId,
-        type: 'routing',
-        content: `Escalated: ${escalation.from_mode} → ${escalation.to_mode}`,
-        metadata: { mode: escalation.to_mode, domain: '', complexity: '' },
-        timestamp: Date.now(),
-      })
     })
 
     on('service', (data: unknown) => {

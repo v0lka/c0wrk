@@ -100,9 +100,6 @@ func (r *Router) Route(ctx context.Context, userMessage string, rawCriteria []Ra
 	}
 
 	// Validate and apply defaults
-	if routingDecision.Mode == "" {
-		routingDecision.Mode = "react"
-	}
 	if routingDecision.CompactionStrategy == "" {
 		routingDecision.CompactionStrategy = applyCompactionStrategy(routingDecision.Domain, routingDecision.Complexity)
 	}

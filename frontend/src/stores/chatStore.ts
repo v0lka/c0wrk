@@ -3,7 +3,7 @@ import { create } from 'zustand'
 export type MessageType =
   | 'user' | 'assistant' | 'thinking' | 'step_done' | 'tool_call' | 'tool_result'
   | 'tool_confirm' | 'ask_user' | 'routing' | 'eval' | 'reflection' | 'plan' | 'error' | 'thought'
-  | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'escalation' | 'ac_extracted' | 'subagent_launch' | 'subagent_complete' | 'status'
+  | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'ac_extracted' | 'subagent_launch' | 'subagent_complete' | 'status'
 
 export interface ChatMessageUI {
   id: string
@@ -24,7 +24,7 @@ export type DisplayItem =
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
-  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'escalation' | 'ac_extracted' | 'status'; content: string; metadata?: Record<string, unknown> }
+  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'ac_extracted' | 'status'; content: string; metadata?: Record<string, unknown> }
   | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; isRetry?: boolean; children: DisplayItem[] }
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
@@ -212,12 +212,11 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         break
 
       case 'routing':
-      case 'retry':
-      case 'escalation': {
+      case 'retry': {
         pushItem({
           kind: 'service',
           id: msg.id,
-          variant: msg.type as 'routing' | 'retry' | 'escalation',
+          variant: msg.type as 'routing' | 'retry',
           content: msg.content,
           metadata: meta,
         }, planStepId)

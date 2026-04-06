@@ -183,7 +183,7 @@ func (r *Reflector) parseReflectionResponse(content string) (*Reflection, error)
 
 	// Validate suggested action
 	switch reflection.SuggestedAction {
-	case "retry", "replan", "abort", "escalate":
+	case "retry", "replan", "abort":
 		// Valid
 	case "":
 		reflection.SuggestedAction = "retry" // Default to retry if not specified

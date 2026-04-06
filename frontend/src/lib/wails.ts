@@ -21,7 +21,6 @@ export interface ChatMessage {
 
 // Event data types
 export interface RoutingData {
-  mode: string
   domain: string
   complexity: string
 }
@@ -92,11 +91,6 @@ export interface ReflectionData {
 export interface RetryData {
   attempt: number
   max_attempts: number
-}
-
-export interface EscalationData {
-  from_mode: string
-  to_mode: string
 }
 
 export interface ACExtractedData {

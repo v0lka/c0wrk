@@ -94,7 +94,6 @@ type Emitter interface {
 	Evaluation(passed, total int, criteria []EvalCriterionEvent)
 	Reflection(summary string, insights []string, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
-	Escalation(fromMode, toMode string)
 	ACExtracted(count int, criteria []EvalCriterionEvent)
 	// Service emits a general service message without metadata.
 	Service(content string)
@@ -134,7 +133,6 @@ func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
 func (n *noopEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
 func (n *noopEmitter) Reflection(_ string, _ []string, _, _ int)          {}
 func (n *noopEmitter) Retry(_, _ int)                                     {}
-func (n *noopEmitter) Escalation(_, _ string)                             {}
 func (n *noopEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (n *noopEmitter) Service(_ string)                                   {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
@@ -145,7 +143,6 @@ func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
 
 // RoutingDecision — result of Router classification (AD 4.1).
 type RoutingDecision struct {
-	Mode               string   `json:"mode"`                // "direct" | "react" | "plan_execute"
 	Domain             string   `json:"domain"`              // "code" | "research" | "general" | "mixed"
 	Complexity         int      `json:"complexity"`          // 1-5
 	CompactionStrategy string   `json:"compaction_strategy"` // "sliding_window" | "summarization" | "hierarchical"
@@ -263,6 +260,4 @@ type HandleResult struct {
 	// Retry-loop fields (Phase 3)
 	AttemptCount int          `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
 	Reflections  []Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
-	Escalated    bool         `json:"escalated,omitempty"`     // true if mode was escalated
-	OriginalMode string       `json:"original_mode,omitempty"` // original mode before escalation
 }

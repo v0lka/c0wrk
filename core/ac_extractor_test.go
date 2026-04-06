@@ -57,7 +57,6 @@ func TestEnrich_EmptyRawCriteriaReturnsReactFallback(t *testing.T) {
 
 	extractor := NewACExtractor(mock)
 	routing := &RoutingDecision{
-		Mode:   "react",
 		Domain: "code",
 	}
 
@@ -94,7 +93,6 @@ func TestEnrich_NilRawCriteriaReturnsResearchFallback(t *testing.T) {
 
 	extractor := NewACExtractor(mock)
 	routing := &RoutingDecision{
-		Mode:   "react",
 		Domain: "research",
 	}
 
@@ -128,9 +126,9 @@ func TestEnrich_NilRawCriteriaReturnsResearchFallback(t *testing.T) {
 	}
 }
 
-// TestEnrich_EmptyRawCriteriaReturnsEmptyForDirectMode tests that Enrich returns
-// empty criteria for direct mode when rawCriteria is empty.
-func TestEnrich_EmptyRawCriteriaReturnsEmptyForDirectMode(t *testing.T) {
+// TestEnrich_EmptyRawCriteriaReturnsFallbackForGeneral tests that Enrich returns
+// fallback criteria for general domain when rawCriteria is an empty slice.
+func TestEnrich_EmptyRawCriteriaReturnsFallbackForGeneral(t *testing.T) {
 	// Use a mock that would fail if called
 	mock := &mockLLMCaller{
 		err: errors.New("LLM should not be called"),
@@ -138,24 +136,23 @@ func TestEnrich_EmptyRawCriteriaReturnsEmptyForDirectMode(t *testing.T) {
 
 	extractor := NewACExtractor(mock)
 	routing := &RoutingDecision{
-		Mode:   "direct",
 		Domain: "general",
 	}
 
-	// Empty slice with direct mode should return empty
+	// Empty slice should trigger fallback
 	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing)
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
 
-	// Should return empty slice for direct mode
-	if len(criteria) != 0 {
-		t.Fatalf("expected 0 criteria for direct mode, got %d", len(criteria))
+	// Should return 2 fallback criteria for general domain (includes Markdown criterion)
+	if len(criteria) != 2 {
+		t.Fatalf("expected 2 fallback criteria for general domain, got %d", len(criteria))
 	}
 
 	// LLM should NOT have been called
 	if len(mock.calls) != 0 {
-		t.Error("LLM should not have been called for direct mode fallback")
+		t.Error("LLM should not have been called for empty rawCriteria fallback")
 	}
 }
 
@@ -174,7 +171,6 @@ func TestEnrich_NonEmptyRawCriteriaCallsLLM(t *testing.T) {
 
 	extractor := NewACExtractor(mock)
 	routing := &RoutingDecision{
-		Mode:   "react",
 		Domain: "code",
 	}
 
@@ -213,7 +209,6 @@ func TestEnrich_GeneralDomainAlsoGetsMarkdownCriterion(t *testing.T) {
 
 	extractor := NewACExtractor(mock)
 	routing := &RoutingDecision{
-		Mode:   "plan_execute",
 		Domain: "general",
 	}
 
@@ -249,7 +244,7 @@ func TestEnrich_WorkspacePathIncludedInContext(t *testing.T) {
 	}
 
 	extractor := NewACExtractor(mock)
-	routing := &RoutingDecision{Mode: "react", Domain: "code"}
+	routing := &RoutingDecision{Domain: "code"}
 	rawCriteria := []RawCriterion{
 		{ID: "rc_1", Description: "raw criterion", Nature: "objective", Weight: "must"},
 	}

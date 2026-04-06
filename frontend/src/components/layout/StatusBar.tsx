@@ -16,7 +16,7 @@ export function StatusBar() {
   const fileTreePanelOpen = useUIStore(s => s.fileTreePanelOpen)
   
   const activeSession = sessions.find(s => s.id === activeSessionId)
-  const routingLabel = stats.routingMode || 'idle'
+  const domainLabel = stats.routingDomain || 'idle'
 
   return (
     <div className="h-8 border-t border-border bg-muted/50 flex items-center px-3 gap-4 text-xs">
@@ -30,11 +30,11 @@ export function StatusBar() {
 
       <Separator orientation="vertical" className="h-4" />
 
-      {/* Routing mode badge */}
+      {/* Routing domain badge */}
       <div className="flex items-center gap-2">
         <Cpu className="h-3 w-3 text-muted-foreground" />
         <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
-          {routingLabel}
+          {domainLabel}
         </Badge>
       </div>
 

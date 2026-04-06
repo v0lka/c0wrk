@@ -31,7 +31,6 @@ export interface EvalGroup {
 }
 
 interface SessionStats {
-  routingMode: string
   routingDomain: string
   routingComplexity: string
   attempt: number
@@ -39,7 +38,6 @@ interface SessionStats {
 }
 
 const defaultStats: SessionStats = {
-  routingMode: '',
   routingDomain: '',
   routingComplexity: '',
   attempt: 1,

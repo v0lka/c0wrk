@@ -437,8 +437,6 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				EvalResult:      result.EvalResult,
 				AttemptCount:    result.AttemptCount,
 				Reflections:     result.Reflections,
-				Escalated:       result.Escalated,
-				OriginalMode:    result.OriginalMode,
 			},
 		})
 	}()

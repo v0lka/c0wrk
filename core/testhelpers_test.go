@@ -217,7 +217,6 @@ func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
 func (m *mockEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
 func (m *mockEmitter) Reflection(_ string, _ []string, _, _ int)          {}
 func (m *mockEmitter) Retry(_, _ int)                                     {}
-func (m *mockEmitter) Escalation(_, _ string)                             {}
 func (m *mockEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (m *mockEmitter) AssistantChunk(content string) {
 	m.assistantChunks = append(m.assistantChunks, content)

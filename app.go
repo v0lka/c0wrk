@@ -383,8 +383,6 @@ func (a *App) startup(ctx context.Context) {
 			role = "plan_step_complete"
 		case "retry":
 			role = "retry"
-		case "escalation":
-			role = "escalation"
 		case "ac_extracted":
 			role = "ac_extracted"
 		case "subagent_launch":

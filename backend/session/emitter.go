@@ -344,20 +344,6 @@ func (e *EventEmitter) Retry(attempt, maxAttempts int) {
 	})
 }
 
-// Escalation emits an escalation event.
-func (e *EventEmitter) Escalation(fromMode, toMode string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.emitEvent(Event{
-		SessionID: e.sessionID,
-		Type:      "escalation",
-		Data: map[string]string{
-			"from_mode": fromMode,
-			"to_mode":   toMode,
-		},
-	})
-}
-
 // ACExtracted emits an acceptance criteria extraction event.
 func (e *EventEmitter) ACExtracted(count int, criteria []core.EvalCriterionEvent) {
 	e.mu.Lock()

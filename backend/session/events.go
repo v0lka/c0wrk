@@ -51,8 +51,6 @@ type TaskCompleteData struct {
 	EvalResult      *core.EvalResult      `json:"eval_result,omitempty"`
 	AttemptCount    int                   `json:"attempt_count,omitempty"`
 	Reflections     []core.Reflection     `json:"reflections,omitempty"`
-	Escalated       bool                  `json:"escalated,omitempty"`
-	OriginalMode    string                `json:"original_mode,omitempty"`
 }
 
 // TaskCancelledData is the payload for "task_cancelled" events.

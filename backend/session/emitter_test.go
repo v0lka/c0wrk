@@ -344,32 +344,6 @@ func TestEventEmitterRetry(t *testing.T) {
 	}
 }
 
-// TestEventEmitterEscalation verifies Escalation emits correct event.
-func TestEventEmitterEscalation(t *testing.T) {
-	var received Event
-	emit := func(e Event) {
-		received = e
-	}
-
-	emitter := NewEventEmitter("test-session", emit)
-	emitter.Escalation("direct", "react")
-
-	if received.Type != "escalation" {
-		t.Errorf("expected type 'escalation', got %q", received.Type)
-	}
-
-	data, ok := received.Data.(map[string]string)
-	if !ok {
-		t.Fatalf("expected map[string]string data, got %T", received.Data)
-	}
-	if data["from_mode"] != "direct" {
-		t.Errorf("expected from_mode 'direct', got %q", data["from_mode"])
-	}
-	if data["to_mode"] != "react" {
-		t.Errorf("expected to_mode 'react', got %q", data["to_mode"])
-	}
-}
-
 // TestEventEmitterACExtracted verifies ACExtracted emits correct event.
 func TestEventEmitterACExtracted(t *testing.T) {
 	var received Event
@@ -501,13 +475,12 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.Evaluation(3, 5, []core.EvalCriterionEvent{{Name: "ac_1", Description: "Test", Passed: true}})
 	emitter.Reflection("Something went wrong", []string{"Issue found"}, 1, 3)
 	emitter.Retry(2, 3)
-	emitter.Escalation("direct", "react")
 	emitter.ACExtracted(4, []core.EvalCriterionEvent{{Name: "ac_1", Description: "Test"}})
 	emitter.ContextFill(75.5, 75500, 100000, "compact")
 
 	mu.Lock()
-	if len(events) != 15 {
-		t.Errorf("expected 15 events, got %d", len(events))
+	if len(events) != 14 {
+		t.Errorf("expected 14 events, got %d", len(events))
 	}
 
 	// Verify all event types
@@ -524,7 +497,6 @@ func TestEventEmitterAllMethods(t *testing.T) {
 		"evaluation":        false,
 		"reflection":        false,
 		"retry":             false,
-		"escalation":        false,
 		"ac_extracted":      false,
 		"context_fill":      false,
 	}

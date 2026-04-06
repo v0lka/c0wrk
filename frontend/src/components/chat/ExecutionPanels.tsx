@@ -1,13 +1,13 @@
 import { useState, useMemo } from 'react'
 import {
   ChevronDown,
-  ChevronUp,
   ListChecks,
   ClipboardCheck,
   CircleHelp,
   CircleDot,
   CircleCheck,
   CircleX,
+  ChevronRight,
 } from 'lucide-react'
 import {
   usePanelStore,
@@ -71,7 +71,7 @@ function PanelHeader({ isOpen, onToggle, icon, title, completed, total, verb }: 
       {isOpen ? (
         <ChevronDown className="h-3.5 w-3.5 text-zinc-500" />
       ) : (
-        <ChevronUp className="h-3.5 w-3.5 text-zinc-500" />
+        <ChevronRight className="h-3.5 w-3.5 text-zinc-500" />
       )}
       {icon}
       <span className="text-sm font-medium">{title}</span>

@@ -1,10 +1,10 @@
-import { GitBranch, RotateCcw, ArrowUpRight, ListChecks, Activity } from 'lucide-react'
+import { GitBranch, RotateCcw, ListChecks, Activity } from 'lucide-react'
 import React from 'react'
-import { domainLabels, modeLabels, complexityStars } from '@/constants/routingLabels'
+import { domainLabels, complexityStars } from '@/constants/routingLabels'
 
 interface ServiceMessageProps {
   id: string
-  variant: 'routing' | 'retry' | 'escalation' | 'ac_extracted' | 'status'
+  variant: 'routing' | 'retry' | 'ac_extracted' | 'status'
   content: string
   metadata?: Record<string, unknown>
 }
@@ -17,10 +17,6 @@ const variantConfig = {
   retry: {
     icon: RotateCcw,
     label: 'Retry',
-  },
-  escalation: {
-    icon: ArrowUpRight,
-    label: 'Escalation',
   },
   ac_extracted: {
     icon: ListChecks,
@@ -35,21 +31,16 @@ const variantConfig = {
 function formatRoutingContent(metadata?: Record<string, unknown>): React.ReactNode {
   if (!metadata) return null
   
-  const mode = typeof metadata.mode === 'string' ? metadata.mode : ''
   const domain = typeof metadata.domain === 'string' ? metadata.domain : ''
   const complexity = typeof metadata.complexity === 'string' ? metadata.complexity : typeof metadata.complexity === 'number' ? String(metadata.complexity) : ''
   
   const domainDisplay = domainLabels[domain] || domain || 'Unknown'
-  const modeDisplay = modeLabels[mode] || mode || 'Unknown'
   const complexityDisplay = complexityStars[complexity] || complexity || '☆☆☆☆☆'
   
   return (
     <>
       <span className="text-muted-foreground">Domain:</span>{' '}
       <span className="text-foreground/80">{domainDisplay}</span>
-      <span className="text-muted-foreground"> | </span>
-      <span className="text-muted-foreground">Mode:</span>{' '}
-      <span className="text-foreground/80">{modeDisplay}</span>
       <span className="text-muted-foreground"> | </span>
       <span className="text-muted-foreground">Complexity:</span>{' '}
       <span className="text-foreground/80">{complexityDisplay}</span>
@@ -74,7 +65,7 @@ export function ServiceMessage({ variant, content, metadata }: ServiceMessagePro
   const Icon = config.icon
 
   // For routing messages, render human-readable format
-  const isRoutingWithMetadata = variant === 'routing' && metadata?.mode && metadata?.domain && metadata?.complexity
+  const isRoutingWithMetadata = variant === 'routing' && metadata?.domain && metadata?.complexity
   const isACWithMetadata = variant === 'ac_extracted' && metadata?.criteria
 
   return (

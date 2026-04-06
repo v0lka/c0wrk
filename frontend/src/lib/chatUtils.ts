@@ -18,7 +18,6 @@ export const roleToType: Record<string, MessageType> = {
   plan_step_start: 'plan_step_start',
   plan_step_complete: 'plan_step_complete',
   retry: 'retry',
-  escalation: 'escalation',
   ac_extracted: 'ac_extracted',
   subagent_launch: 'subagent_launch',
   subagent_complete: 'subagent_complete',
@@ -36,11 +35,10 @@ function reconstructContent(
 
   switch (role) {
     case 'routing': {
-      const mode = meta.mode as string | undefined
       const domain = meta.domain as string | undefined
       const complexity = meta.complexity as string | undefined
-      if (mode || domain || complexity) {
-        return `Mode: ${mode ?? ''} | Domain: ${domain ?? ''} | Complexity: ${complexity ?? ''}`
+      if (domain || complexity) {
+        return `Domain: ${domain ?? ''} | Complexity: ${complexity ?? ''}`
       }
       return rawContent
     }
@@ -80,14 +78,6 @@ function reconstructContent(
       const maxAttempts = meta.max_attempts as number | undefined
       if (attempt !== undefined && maxAttempts !== undefined) {
         return `Retry attempt ${attempt}/${maxAttempts}`
-      }
-      return rawContent
-    }
-    case 'escalation': {
-      const fromMode = meta.from_mode as string | undefined
-      const toMode = meta.to_mode as string | undefined
-      if (fromMode && toMode) {
-        return `Escalated: ${fromMode} → ${toMode}`
       }
       return rawContent
     }
@@ -164,8 +154,6 @@ function buildHistoryId(
     }
     case 'retry':
       return `retry-${timestamp}`
-    case 'escalation':
-      return `escalation-${timestamp}`
     case 'ac_extracted':
       return `ac-extracted-${timestamp}`
     case 'subagent_launch': {

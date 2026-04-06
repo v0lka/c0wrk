@@ -30,9 +30,6 @@ func TestRoute_ReturnsValidRoutingDecision(t *testing.T) {
 		t.Fatalf("Route returned error: %v", err)
 	}
 
-	if decision.Mode != "react" {
-		t.Errorf("expected mode 'react', got '%s'", decision.Mode)
-	}
 	if decision.Domain != "code" {
 		t.Errorf("expected domain 'code', got '%s'", decision.Domain)
 	}
@@ -154,9 +151,6 @@ func TestRoute_PlanExecuteMode(t *testing.T) {
 		t.Fatalf("Route returned error: %v", err)
 	}
 
-	if decision.Mode != "plan_execute" {
-		t.Errorf("expected mode 'plan_execute', got '%s'", decision.Mode)
-	}
 	if decision.Complexity != 5 {
 		t.Errorf("expected complexity 5, got %d", decision.Complexity)
 	}
@@ -185,37 +179,11 @@ func TestRoute_HandlesJSONInCodeBlocks(t *testing.T) {
 		t.Fatalf("Route returned error: %v", err)
 	}
 
-	if decision.Mode != "direct" {
-		t.Errorf("expected mode 'direct', got '%s'", decision.Mode)
-	}
 	if decision.Domain != "general" {
 		t.Errorf("expected domain 'general', got '%s'", decision.Domain)
 	}
 	if decision.Complexity != 1 {
 		t.Errorf("expected complexity 1, got %d", decision.Complexity)
-	}
-}
-
-func TestRoute_DefaultsEmptyMode(t *testing.T) {
-	// Mock returns empty mode
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"","domain":"code","complexity":2}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	decision, err := router.Route(context.Background(), "some request", nil, nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	if decision.Mode != "react" {
-		t.Errorf("expected default mode 'react', got '%s'", decision.Mode)
 	}
 }
 
@@ -381,9 +349,6 @@ func TestRoute_ConfidenceField(t *testing.T) {
 	}
 
 	// Verify other fields are still correct
-	if decision.Mode != "react" {
-		t.Errorf("expected mode 'react', got '%s'", decision.Mode)
-	}
 	if decision.Domain != "code" {
 		t.Errorf("expected domain 'code', got '%s'", decision.Domain)
 	}

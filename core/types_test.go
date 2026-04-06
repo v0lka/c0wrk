@@ -9,7 +9,6 @@ import (
 
 func TestRoutingDecision_JSONRoundTrip(t *testing.T) {
 	original := RoutingDecision{
-		Mode:               "plan_execute",
 		Domain:             "code",
 		Complexity:         4,
 		CompactionStrategy: "summarization",
@@ -27,9 +26,6 @@ func TestRoutingDecision_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("failed to unmarshal RoutingDecision: %v", err)
 	}
 
-	if decoded.Mode != original.Mode {
-		t.Errorf("Mode mismatch: got %q, want %q", decoded.Mode, original.Mode)
-	}
 	if decoded.Domain != original.Domain {
 		t.Errorf("Domain mismatch: got %q, want %q", decoded.Domain, original.Domain)
 	}
@@ -403,7 +399,6 @@ func TestNoopEmitter_AllMethodsAreNoop(t *testing.T) {
 	e.Evaluation(2, 3, nil)
 	e.Reflection("summary", []string{"insight"}, 1, 3)
 	e.Retry(1, 3)
-	e.Escalation("direct", "plan_execute")
 	e.ACExtracted(2, nil)
 	e.AssistantChunk("chunk")
 	e.AssistantDone("full", 100, 50)

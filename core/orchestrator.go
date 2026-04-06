@@ -165,8 +165,8 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	}
 
 	// Emit routing decision
-	o.emitter.Routing(routing.Mode, routing.Domain, strconv.Itoa(routing.Complexity))
-	o.logInfo("routing_decision", "mode", routing.Mode, "domain", routing.Domain, "complexity", routing.Complexity)
+	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
+	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
 
 	// 4. Enrich acceptance criteria with domain context (Phase 2 — after routing)
 	o.emitter.ServiceWithMeta("Enriching acceptance criteria...", map[string]any{"phase": "orchestration"})
@@ -187,22 +187,15 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	o.logInfo("ac_extracted", "count", len(ac))
 	o.logDebug("acceptance_criteria", "criteria", ac)
 
-	// 5. Handle based on routing mode
+	// 5. Handle execution — always use Plan & Execute
 	var result *HandleResult
-	switch routing.Mode {
-	case "direct":
-		result, err = o.handleDirect(ctx, userMessage, routing, availableTools, ac)
-	case "react":
-		result, err = o.handleReact(ctx, userMessage, routing, availableTools, ac)
-	case "plan_execute":
-		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools, nil, ac)
-	case "needs_clarification":
+	if routing.NeedsClarification {
 		result = &HandleResult{
 			Output:          "I need more information to help you. Could you please clarify your request?",
 			RoutingDecision: routing,
 		}
-	default:
-		result, err = o.handleReact(ctx, userMessage, routing, availableTools, ac)
+	} else {
+		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools, nil, ac)
 	}
 
 	if err != nil {
@@ -222,263 +215,6 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	}
 
 	return result, nil
-}
-
-// handleDirect handles direct mode - single LLM call without tools.
-func (o *Orchestrator) handleDirect(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, ac []AcceptanceCriterion) (*HandleResult, error) {
-	// Build messages: prepend conversation history before the current user message
-	messages := make([]llm.Message, 0, len(o.conversationHistory)+1)
-	messages = append(messages, o.conversationHistory...)
-	messages = append(messages, llm.Message{Role: "user", Content: userMessage})
-
-	req := llm.ChatRequest{
-		Messages: messages,
-	}
-
-	resp, err := o.llm.Call(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("direct LLM call failed: %w", err)
-	}
-
-	directOutput := resp.Message.Content
-
-	// No AC available — return direct answer without evaluation
-	if len(ac) == 0 {
-		return &HandleResult{
-			Output:          directOutput,
-			RoutingDecision: routing,
-		}, nil
-	}
-
-	// Lightweight evaluation against AC
-	o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
-	evalResult, evalErr := o.evaluator.Evaluate(ctx, directOutput, ac, nil)
-	if evalErr != nil {
-		//nolint:nilerr // error is handled by returning result without evaluation
-		return &HandleResult{
-			Output:          directOutput,
-			RoutingDecision: routing,
-		}, nil
-	}
-
-	// Emit evaluation result
-	passed := len(evalResult.Passed)
-	total := passed + len(evalResult.Failed) + len(evalResult.Unclear)
-	o.emitter.Evaluation(passed, total, o.buildEvalCriterionEvents(evalResult))
-	o.logInfo("evaluation", "passed", passed, "total", total, "all_passed", evalResult.AllPassed)
-	o.logDebug("evaluation_details", "passed", evalResult.Passed, "failed", evalResult.Failed, "unclear", evalResult.Unclear)
-
-	// If eval passes, return direct answer with eval result
-	if evalResult.AllPassed {
-		return &HandleResult{
-			Output:          directOutput,
-			RoutingDecision: routing,
-			EvalResult:      evalResult,
-		}, nil
-	}
-
-	// Eval failed — escalate to react mode
-	o.emitter.Escalation("direct", "react")
-	o.logInfo("escalation", "from", "direct", "to", "react")
-	escalatedRouting := &RoutingDecision{
-		Mode:               "react",
-		Domain:             routing.Domain,
-		Complexity:         routing.Complexity + 1,
-		CompactionStrategy: routing.CompactionStrategy,
-		SuggestedTools:     routing.SuggestedTools,
-		Confidence:         routing.Confidence,
-	}
-	result, err := o.handleReact(ctx, userMessage, escalatedRouting, availableTools, ac)
-	if err != nil {
-		return nil, err
-	}
-	if result != nil {
-		result.Escalated = true
-		result.OriginalMode = "direct"
-	}
-	return result, nil
-}
-
-// handleReact handles react mode - ReAct loop with evaluation and retry.
-func (o *Orchestrator) handleReact(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, ac []AcceptanceCriterion) (*HandleResult, error) {
-	// 2. Create task definition
-	taskDef := TaskDefinition{
-		Task:     userMessage,
-		Criteria: ac,
-		Tools:    availableTools,
-	}
-
-	// Track reflections from this session's attempts
-	var sessionReflections []Reflection
-	var lastResult *ExecutorResult
-	var lastEvalResult *EvalResult
-
-	// 4. Retry loop
-	for attempt := 0; attempt <= o.maxRetries; attempt++ {
-		// Emit retry attempt (skip for first attempt)
-		if attempt > 0 {
-			o.emitter.Retry(attempt, o.maxRetries+1)
-			o.logInfo("retry", "attempt", attempt, "max_attempts", o.maxRetries+1)
-		}
-
-		// Create fresh context manager for each attempt
-		systemPrompt := o.buildSystemPrompt(ctx, userMessage, ac, false) // false = not a step execution (full react mode)
-		// Resolve model metadata for the executor role
-		var modelMeta llm.ModelMetadata
-		if o.modelRegistry != nil {
-			modelMeta = o.modelRegistry.Resolve("")
-		}
-		cw := o.contextFactory(systemPrompt, modelMeta, routing.CompactionStrategy)
-
-		// Set the task and acceptance criteria into the context window
-		cw.SetTask(taskDef.Task, taskDef.Criteria)
-
-		// Run executor (don't suppress assistant events for react mode)
-		executor := NewExecutor(o.llm, o.tools, o.tokenCounter, o.config.MaxSteps, o.logger, o.emitter, false, o.toolResultBudget)
-		ctx = tools.WithTaskContext(ctx, taskDef.Task)
-		result, err := executor.Run(ctx, taskDef.Tools, cw)
-		if err != nil {
-			// Check if this is a recoverable API error (e.g., 400-class errors)
-			if isRecoverableAPIError(err) {
-				// Log the error and report to user rather than crashing
-				o.logWarn("executor_api_error_recovered", "error", err, "attempt", attempt+1)
-				// Return a user-visible error message
-				return &HandleResult{
-					Output:          fmt.Sprintf("I encountered an API error: %s. Please try again.", err),
-					RoutingDecision: routing,
-					AttemptCount:    attempt + 1,
-					Reflections:     sessionReflections,
-				}, nil
-			}
-			return nil, fmt.Errorf("executor failed: %w", err)
-		}
-		lastResult = result
-
-		// Build initial handle result
-		handleResult := &HandleResult{
-			Output:          result.Output,
-			RoutingDecision: routing,
-			AttemptCount:    attempt + 1,
-			Reflections:     sessionReflections,
-		}
-
-		// Evaluate results (if we have AC)
-		if len(ac) == 0 {
-			return handleResult, nil
-		}
-
-		o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
-		evalResult, evalErr := o.evaluator.Evaluate(ctx, result.Output, ac, result.Steps)
-		if evalErr != nil {
-			// Return result even if evaluation fails
-			//nolint:nilerr // error is handled by embedding in result
-			return handleResult, nil
-		}
-		handleResult.EvalResult = evalResult
-		lastEvalResult = evalResult
-
-		// Emit evaluation result
-		passed := len(evalResult.Passed)
-		total := passed + len(evalResult.Failed) + len(evalResult.Unclear)
-		o.emitter.Evaluation(passed, total, o.buildEvalCriterionEvents(evalResult))
-		o.logInfo("evaluation", "passed", passed, "total", total, "all_passed", evalResult.AllPassed)
-		o.logDebug("evaluation_details", "passed", evalResult.Passed, "failed", evalResult.Failed, "unclear", evalResult.Unclear)
-
-		// Success - all criteria passed
-		if evalResult.AllPassed {
-			return handleResult, nil
-		}
-
-		// Failure - check if we should retry
-		if attempt < o.maxRetries {
-			if o.reflector != nil {
-				// Generate reflection
-				o.emitter.ServiceWithMeta("Some acceptance criteria not met, reflecting...", map[string]any{"phase": "orchestration"})
-				reflection, reflectErr := o.reflector.Reflect(ctx, result.Steps, evalResult, nil, sessionReflections)
-				if reflectErr != nil {
-					// Reflection failed — still continue retry without reflection guidance
-					o.logWarn("reflection failed in react, retrying without guidance", "error", reflectErr, "attempt", attempt+1)
-					continue
-				}
-
-				// Check if reflector suggests abort
-				if reflection.SuggestedAction == "abort" {
-					sessionReflections = append(sessionReflections, *reflection)
-					handleResult.Reflections = sessionReflections
-					failedCriteria := o.formatFailedCriteria(evalResult)
-					handleResult.Output = result.Output + "\n\n[Evaluation: some criteria not met: " + failedCriteria + ". Reflector suggests abort.]"
-					return handleResult, nil
-				}
-
-				// Check if reflector suggests escalate to plan_execute
-				if reflection.SuggestedAction == "escalate" {
-					sessionReflections = append(sessionReflections, *reflection)
-					o.emitter.Escalation("react", "plan_execute")
-					o.logInfo("escalation", "from", "react", "to", "plan_execute")
-					result, escErr := o.handlePlanExecute(ctx, userMessage, routing, availableTools, sessionReflections, ac)
-					if escErr != nil {
-						return nil, escErr
-					}
-					if result != nil {
-						result.Escalated = true
-						result.OriginalMode = "react"
-						result.Reflections = sessionReflections
-					}
-					return result, nil
-				}
-
-				// Emit reflection
-				o.emitter.Reflection(reflection.Summary, reflection.Hypotheses, attempt+1, o.maxRetries)
-				o.logInfo("reflection", "summary", reflection.Summary, "suggested_action", reflection.SuggestedAction)
-				o.logDebug("reflection_details", "hypotheses", reflection.Hypotheses, "reasoning", reflection.Reasoning, "failure_analysis", reflection.FailureAnalysis, "root_cause", reflection.RootCause, "action_plan", reflection.ActionPlan)
-
-				// Add reflection to session list for next attempt
-				sessionReflections = append(sessionReflections, *reflection)
-			} else {
-				o.logWarn("reflector not available, retrying without reflection", "attempt", attempt+1)
-			}
-		}
-	}
-
-	// Max retries exhausted — last-resort escalation to plan_execute
-	if o.planner != nil {
-		o.emitter.Escalation("react", "plan_execute")
-		o.logInfo("escalation", "from", "react", "to", "plan_execute", "reason", "max_retries_exhausted")
-		escalatedRouting := &RoutingDecision{
-			Mode:               "plan_execute",
-			Domain:             routing.Domain,
-			Complexity:         routing.Complexity + 1,
-			CompactionStrategy: routing.CompactionStrategy,
-			SuggestedTools:     routing.SuggestedTools,
-			Confidence:         routing.Confidence,
-		}
-		result, escErr := o.handlePlanExecute(ctx, userMessage, escalatedRouting, availableTools, sessionReflections, ac)
-		if escErr != nil {
-			return nil, escErr
-		}
-		if result != nil {
-			result.Escalated = true
-			result.OriginalMode = "react"
-			result.Reflections = sessionReflections
-		}
-		return result, nil
-	}
-
-	// Max retries exhausted
-	handleResult := &HandleResult{
-		Output:          lastResult.Output,
-		RoutingDecision: routing,
-		EvalResult:      lastEvalResult,
-		AttemptCount:    o.maxRetries + 1,
-		Reflections:     sessionReflections,
-	}
-
-	if lastEvalResult != nil && !lastEvalResult.AllPassed {
-		failedCriteria := o.formatFailedCriteria(lastEvalResult)
-		handleResult.Output = lastResult.Output + "\n\n[Evaluation: some criteria not met after " + strconv.Itoa(o.maxRetries+1) + " attempts: " + failedCriteria + "]"
-	}
-
-	return handleResult, nil
 }
 
 // buildEvalCriterionEvents converts EvalResult into EvalCriterionEvent slice.
