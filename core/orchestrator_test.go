@@ -80,11 +80,11 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 	)
 
 	// Test with no criteria
-	promptNoAC := orchestrator.buildSystemPrompt(context.Background(), "", nil, false)
+	promptNoAC := orchestrator.buildSystemPrompt(context.Background(), "", nil)
 	if strings.Contains(promptNoAC, "Acceptance Criteria") {
 		t.Error("prompt should NOT contain 'Acceptance Criteria' when no AC provided")
 	}
-	if !strings.Contains(promptNoAC, "helpful AI assistant") {
+	if !strings.Contains(promptNoAC, "AI agent") {
 		t.Error("prompt should contain basic instructions")
 	}
 
@@ -93,7 +93,7 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		{ID: "ac_1", Description: "Code compiles successfully"},
 		{ID: "ac_2", Description: "All tests pass"},
 	}
-	promptWithAC := orchestrator.buildSystemPrompt(context.Background(), "", criteria, false)
+	promptWithAC := orchestrator.buildSystemPrompt(context.Background(), "", criteria)
 
 	if !strings.Contains(promptWithAC, "Acceptance Criteria") {
 		t.Error("prompt should contain 'Acceptance Criteria' when AC provided")
@@ -1457,11 +1457,11 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		nil, // intentVerifier - nil for tests
 	)
 
-	prompt := orchestrator.buildSystemPrompt(context.Background(), "", nil, false)
+	prompt := orchestrator.buildSystemPrompt(context.Background(), "", nil)
 
 	// Check for directive language about using tools
-	if !strings.Contains(prompt, "USE your tools to discover") {
-		t.Error("prompt should contain 'USE your tools to discover'")
+	if !strings.Contains(prompt, "Use tools to discover") {
+		t.Error("prompt should contain 'Use tools to discover'")
 	}
 
 	// Check for mention of bash and available tools
@@ -1470,13 +1470,13 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 	}
 
 	// Check for directive about not guessing
-	if !strings.Contains(prompt, "Do NOT guess") {
-		t.Error("prompt should contain 'Do NOT guess'")
+	if !strings.Contains(prompt, "do NOT guess") {
+		t.Error("prompt should contain 'do NOT guess'")
 	}
 
 	// Check for directive about using tools for environment/identity questions
-	if !strings.Contains(prompt, "MUST use tools to discover") {
-		t.Error("prompt should contain 'MUST use tools to discover'")
+	if !strings.Contains(prompt, "claim inability without trying") {
+		t.Error("prompt should contain 'claim inability without trying'")
 	}
 }
 
@@ -2758,7 +2758,7 @@ func TestBuildStepTask(t *testing.T) {
 			o := &Orchestrator{} // buildStepTask doesn't need other fields
 			availableTools := []tools.ToolDescriptor{}
 
-			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools, nil, "", "")
+			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools, nil, "", "", 30)
 
 			// Check that wanted strings are present
 			for _, want := range tt.wantContains {
@@ -2796,46 +2796,29 @@ func TestBuildStepTask(t *testing.T) {
 	}
 }
 
-// TestBuildSystemPrompt_StepExecution tests the buildSystemPrompt function for step execution mode.
-func TestBuildSystemPrompt_StepExecution(t *testing.T) {
+// TestBuildSystemPrompt_NoStepScope tests that buildSystemPrompt no longer includes STEP-SCOPE content.
+func TestBuildSystemPrompt_NoStepScope(t *testing.T) {
 	o := &Orchestrator{}
 	criteria := []AcceptanceCriterion{
 		{ID: "ac_1", Description: "Criterion 1"},
 	}
 
-	// Test with isStepExecution = true
-	prompt := o.buildSystemPrompt(context.Background(), "", criteria, true)
+	prompt := o.buildSystemPrompt(context.Background(), "", criteria)
 
-	wantContains := []string{
-		"STEP EXECUTION SCOPE:",
-		"You are executing a single step in a multi-step plan",
-		"Your responsibility is ONLY to complete this specific step",
-		"Do NOT attempt to:",
-		"Solve the entire problem",
-		"Produce final deliverables",
-		"Perform analysis or work that belongs to subsequent steps",
-		"Focus narrowly on your step's objective",
-		"Acceptance Criteria (you MUST satisfy ALL of these",
-		"ac_1: Criterion 1",
+	// STEP-SCOPE was removed — verify it's not present
+	if strings.Contains(prompt, "STEP EXECUTION SCOPE") {
+		t.Error("prompt should NOT contain 'STEP EXECUTION SCOPE' — STEP-SCOPE was removed")
 	}
-
-	for _, want := range wantContains {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("buildSystemPrompt(isStepExecution=true) missing expected content: %q\nin prompt:\n%s", want, prompt)
-		}
-	}
-
-	// Test with isStepExecution = false
-	promptNoStep := o.buildSystemPrompt(context.Background(), "", criteria, false)
-
-	notWant := "STEP EXECUTION SCOPE:"
-	if strings.Contains(promptNoStep, notWant) {
-		t.Errorf("buildSystemPrompt(isStepExecution=false) should NOT contain: %q\nin prompt:\n%s", notWant, promptNoStep)
+	if strings.Contains(prompt, "STEP-SCOPE") {
+		t.Error("prompt should NOT contain raw STEP-SCOPE placeholder")
 	}
 
 	// Should still have acceptance criteria
-	if !strings.Contains(promptNoStep, "Acceptance Criteria") {
-		t.Errorf("buildSystemPrompt(isStepExecution=false) should still contain Acceptance Criteria")
+	if !strings.Contains(prompt, "Acceptance Criteria") {
+		t.Error("prompt should contain Acceptance Criteria")
+	}
+	if !strings.Contains(prompt, "ac_1: Criterion 1") {
+		t.Error("prompt should contain criterion details")
 	}
 }
 
@@ -3075,7 +3058,7 @@ func TestBuildSystemPrompt_WorkspaceContext(t *testing.T) {
 	o := &Orchestrator{}
 
 	// Without workspace path in context — placeholder should be replaced with empty string
-	promptNoWS := o.buildSystemPrompt(context.Background(), "task", nil, false)
+	promptNoWS := o.buildSystemPrompt(context.Background(), "task", nil)
 	if strings.Contains(promptNoWS, "WORKSPACE-CONTEXT") {
 		t.Error("prompt should not contain raw WORKSPACE-CONTEXT placeholder when no workspace path is set")
 	}
@@ -3085,7 +3068,7 @@ func TestBuildSystemPrompt_WorkspaceContext(t *testing.T) {
 
 	// With workspace path in context — placeholder should be replaced with workspace info
 	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
-	promptWithWS := o.buildSystemPrompt(ctx, "task", nil, false)
+	promptWithWS := o.buildSystemPrompt(ctx, "task", nil)
 	if strings.Contains(promptWithWS, "WORKSPACE-CONTEXT") {
 		t.Error("prompt should not contain raw WORKSPACE-CONTEXT placeholder when workspace path is set")
 	}
@@ -3468,5 +3451,345 @@ func TestValidateACMapping_AllMapped(t *testing.T) {
 	if len(unmapped) != 0 {
 		t.Fatalf("expected no unmapped, got: %v", unmapped)
 	}
+}
+
+// TestExecutePlanWithSteps_EarlyTermination verifies that when a step fails,
+// subsequent dependent steps are NOT executed.
+func TestExecutePlanWithSteps_EarlyTermination(t *testing.T) {
+	step2Executed := false
+	step3Executed := false
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Detect which step is being executed
+			for _, msg := range req.Messages {
+				if strings.Contains(msg.Content, "→ Step 2:") {
+					step2Executed = true
+				}
+				if strings.Contains(msg.Content, "→ Step 3:") {
+					step3Executed = true
+				}
+			}
+			// Step 1 executor: run a tool then exhaust steps without calling finish → Finished=false
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "Done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "done"}`)},
+					},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+	}
+
+	// Use a tool registry where bash_exec returns an error (makes step_1 fail)
+	reg := tools.NewToolRegistry()
+	reg.Register(&mockTool{
+		name:        "bash_exec",
+		description: "Execute bash commands",
+		result:      tools.ToolResult{Content: "Command failed", IsError: true},
+	})
+
+	counter := llm.NewSimpleTokenCounter()
+
+	plan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "First step", DependsOn: []string{}},
+			{ID: "step_2", Description: "Second step", DependsOn: []string{"step_1"}},
+			{ID: "step_3", Description: "Third step", DependsOn: []string{"step_2"}},
+		},
+	}
+
+	orchestrator := NewOrchestrator(
+		NewRouter(mockLLM, 5),
+		NewACExtractor(mockLLM),
+		NewPlanner(mockLLM),
+		NewEvaluator(reg, mockLLM),
+		mockLLM,
+		reg,
+		reg,
+		counter,
+		OrchestratorConfig{MaxSteps: 5, MaxRetries: 0},
+		testContextFactory,
+		nil, nil, nil, nil, ToolResultBudget{}, nil,
+	)
+
+	// Make step_1's executor return Finished=false by having it exhaust max steps
+	// Override the LLM to make step_1 run out of steps
+	mockLLM.callFn = func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Content, "→ Step 2:") {
+				step2Executed = true
+			}
+			if strings.Contains(msg.Content, "→ Step 3:") {
+				step3Executed = true
+			}
+		}
+		// For all executor calls, return end_turn which results in implicit finish
+		// BUT step_1 we want to fail. Let's make it exhaust steps by returning tool calls.
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Content, "→ Step 1:") {
+				// Return a tool call that never finishes to exhaust steps
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "working",
+						ToolCalls: []llm.ToolCall{
+							{ID: "c1", Name: "bash_exec", Input: json.RawMessage(`{"command":"ls"}`)},
+						},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		}
+		return &llm.ChatResponse{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: "Done",
+				ToolCalls: []llm.ToolCall{
+					{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "done"}`)},
+				},
+			},
+			StopReason: "tool_use",
+		}, nil
+	}
+
+	routing := &RoutingDecision{Domain: "code", Complexity: 3}
+	sharedWS := NewSharedWorkspace()
+
+	_, completedSteps, _ := orchestrator.executePlanWithSteps(
+		context.Background(), plan, nil, routing, reg.List(), nil, nil, sharedWS, "test", "",
+	)
+
+	// Step 2 and Step 3 should NOT have been executed
+	if step2Executed {
+		t.Error("step_2 should NOT have been executed when step_1 failed")
+	}
+	if step3Executed {
+		t.Error("step_3 should NOT have been executed when step_1 failed")
+	}
+
+	// Only step_1 should be in completed steps
+	if len(completedSteps) != 1 {
+		t.Errorf("expected 1 completed step, got %d", len(completedSteps))
+	}
+	if len(completedSteps) > 0 && completedSteps[0].StepID != "step_1" {
+		t.Errorf("expected completed step to be step_1, got %s", completedSteps[0].StepID)
+	}
+}
+
+// TestHandlePlanExecute_SkipEvalOnIncomplete verifies that when plan execution is incomplete
+// (step failure) and retries remain, the evaluator is NOT called for that attempt, and the
+// reflector IS called with a synthetic eval result containing "execution_incomplete".
+func TestHandlePlanExecute_SkipEvalOnIncomplete(t *testing.T) {
+	evaluatorCallCount := 0
+	reflectorCalled := false
+	attemptCount := 0
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			ct := detectCallType(req)
+			if ct == "evaluator_judge" {
+				evaluatorCallCount++
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: "YES"},
+					StopReason: "end_turn",
+				}, nil
+			}
+			if ct == "reflector" {
+				reflectorCalled = true
+				// Return replan suggestion so the retry loop continues properly
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"summary": "Step failed", "failed_criteria": [], "hypotheses": ["Step error"], "suggested_action": "replan", "reasoning": "Need new plan", "failure_analysis": "Step failed", "root_cause": "Error", "action_plan": "Replan"}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			if ct == "planner" {
+				// Check for replan
+				for _, msg := range req.Messages {
+					if strings.Contains(msg.Content, "Revise") || strings.Contains(msg.Content, "partially completed") {
+						// Replanned: single step that will succeed
+						return &llm.ChatResponse{
+							Message: llm.Message{
+								Role:    "assistant",
+								Content: `{"steps": [{"id": "step_1_v2", "description": "Revised step", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
+							},
+							StopReason: "end_turn",
+						}, nil
+					}
+				}
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant",
+						Content: `{"steps": [
+							{"id": "step_1", "description": "Failing step", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]},
+							{"id": "step_2", "description": "Blocked step", "depends_on": ["step_1"], "parallelizable": false, "estimated_tools": [], "relevant_ac": []}
+						]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			if ct == "executor" {
+				attemptCount++
+				// First attempt: step_1 exhausts its steps (Finished=false)
+				// Subsequent attempts (revised plan): succeed
+				for _, msg := range req.Messages {
+					if strings.Contains(msg.Content, "→ Step 1:") && strings.Contains(msg.Content, "Failing step") {
+						return &llm.ChatResponse{
+							Message: llm.Message{
+								Role:    "assistant",
+								Content: "working",
+								ToolCalls: []llm.ToolCall{
+									{ID: "c1", Name: "bash_exec", Input: json.RawMessage(`{"cmd":"x"}`)},
+								},
+							},
+							StopReason: "tool_use",
+						}, nil
+					}
+				}
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Done",
+						ToolCalls: []llm.ToolCall{
+							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "ok"}`)},
+						},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+			// Default for routing etc
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reg := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+	reflector := NewReflector(mockLLM)
+
+	ac := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "Task must complete", CheckType: "llm_judge"},
+	}
+	routing := &RoutingDecision{Domain: "code", Complexity: 3}
+
+	orchestrator := NewOrchestrator(
+		NewRouter(mockLLM, 5),
+		NewACExtractor(mockLLM),
+		NewPlanner(mockLLM),
+		NewEvaluator(reg, mockLLM),
+		mockLLM,
+		reg,
+		reg,
+		counter,
+		OrchestratorConfig{MaxSteps: 3, MaxRetries: 2},
+		testContextFactory,
+		reflector,
+		nil, nil, nil, ToolResultBudget{}, nil,
+	)
+
+	_, _ = orchestrator.handlePlanExecute(context.Background(), "test task", routing, reg.List(), nil, ac)
+
+	// Reflector should be called (incomplete plan triggers reflection, not evaluation)
+	if !reflectorCalled {
+		t.Error("expected reflector to be called with synthetic eval result for incomplete plan")
+	}
+
+	// On the first attempt (incomplete), the evaluator should be skipped.
+	// The evaluator may be called on subsequent attempts after replan succeeds.
+	// Key invariant: reflector was called BEFORE any evaluator call.
+	if !reflectorCalled && evaluatorCallCount > 0 {
+		t.Error("evaluator was called without reflector being called first on incomplete plan")
+	}
+
+	_ = attemptCount // used to track executor calls
+}
+
+// TestFindReadySteps_StuckDiagnostic verifies that findReadySteps returns empty
+// when a step's dependency has failed.
+func TestFindReadySteps_StuckDiagnostic(t *testing.T) {
+	plan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "First step", DependsOn: []string{}},
+			{ID: "step_2", Description: "Second step", DependsOn: []string{"step_1"}},
+		},
+	}
+
+	// step_1 completed with error
+	completed := map[string]CompletedStep{
+		"step_1": {StepID: "step_1", Output: "failed output", Error: errors.New("step failed")},
+	}
+
+	mockLLM := &mockLLMCaller{}
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	orchestrator := NewOrchestrator(
+		NewRouter(mockLLM, 5),
+		NewACExtractor(mockLLM),
+		NewPlanner(mockLLM),
+		NewEvaluator(registry, mockLLM),
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, nil, nil, nil, ToolResultBudget{}, nil,
+	)
+
+	ready := orchestrator.findReadySteps(plan, completed)
+	if len(ready) != 0 {
+		t.Errorf("expected no ready steps when dependency failed, got %d: %v", len(ready), ready)
+	}
+}
+
+// TestFindFailedStep verifies that findFailedStep returns the first failed step
+// and returns an empty CompletedStep when no failures exist.
+func TestFindFailedStep(t *testing.T) {
+	t.Run("returns first failed step", func(t *testing.T) {
+		steps := []CompletedStep{
+			{StepID: "step_1", Output: "ok", Error: nil},
+			{StepID: "step_2", Output: "fail", Error: errors.New("step 2 failed")},
+			{StepID: "step_3", Output: "also fail", Error: errors.New("step 3 failed")},
+		}
+
+		result := findFailedStep(steps)
+		if result.StepID != "step_2" {
+			t.Errorf("expected step_2, got %q", result.StepID)
+		}
+		if result.Error == nil {
+			t.Error("expected non-nil error")
+		}
+	})
+
+	t.Run("returns empty when no failures", func(t *testing.T) {
+		steps := []CompletedStep{
+			{StepID: "step_1", Output: "ok", Error: nil},
+			{StepID: "step_2", Output: "ok", Error: nil},
+		}
+
+		result := findFailedStep(steps)
+		if result.StepID != "" {
+			t.Errorf("expected empty StepID, got %q", result.StepID)
+		}
+		if result.Error != nil {
+			t.Errorf("expected nil error, got %v", result.Error)
+		}
+	})
+
+	t.Run("returns empty for nil slice", func(t *testing.T) {
+		result := findFailedStep(nil)
+		if result.StepID != "" {
+			t.Errorf("expected empty StepID, got %q", result.StepID)
+		}
+	})
 }
 

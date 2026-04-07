@@ -74,6 +74,13 @@ export function ChatArea(): React.ReactNode {
   // Subscribe to session events
   useSessionEvents(activeSessionId)
 
+  // Clear panels when there is no active session
+  useEffect(() => {
+    if (!activeSessionId) {
+      usePanelStore.getState().resetPanels()
+    }
+  }, [activeSessionId])
+
   // Load persisted history when active session changes
   useEffect(() => {
     if (!activeSessionId) return

@@ -6,7 +6,7 @@ You will receive:
 2. The agent's final output/response
 3. A step-by-step workspace changes summary from the executor's per-step reports
 
-You have access to read-only file tools (read_file, list_dir, grep, find_file) to inspect the actual workspace and verify the implementation.
+You have access to file tools (file_ops, ripgrep, glob) to inspect the actual workspace and verify the implementation. Use ONLY read operations — do not modify any files.
 
 ## Evaluation Process
 

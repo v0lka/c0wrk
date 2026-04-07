@@ -50,7 +50,7 @@ type Orchestrator struct {
 	logger              *slog.Logger  // structured logger (nil-safe)
 	emitter             Emitter       // event emitter (nil-safe, uses noopEmitter if nil)
 	toolResultBudget    ToolResultBudget
-	intentVerifier      *IntentVerifier  // optional Tier 2 intent verifier (nil-safe)
+	intentVerifier      *IntentVerifier // optional Tier 2 intent verifier (nil-safe)
 }
 
 // NewOrchestrator creates a new Orchestrator with all Phase 2 components.
@@ -329,10 +329,82 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		}
 
 		// Execute the current plan
-		finalOutput, completedSteps, _ := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted, sharedWS, userMessage, stepRetryContext)
+		finalOutput, completedSteps, aggErr := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted, sharedWS, userMessage, stepRetryContext)
 		// Note: step execution errors are handled within executePlanWithSteps
 		lastOutput = finalOutput
 		prevCompletedSteps := completedSteps
+
+		// --- Handle incomplete plan execution (step failure) ---
+		allExecuted := len(completedSteps) == len(currentPlan.Steps)
+		if aggErr != nil && !allExecuted && attempt < o.maxRetries {
+			o.logWarn("plan_execution_incomplete",
+				"completed", len(completedSteps),
+				"total", len(currentPlan.Steps),
+				"error", aggErr)
+
+			// Synthesize failure for reflection
+			syntheticEval := &EvalResult{
+				AllPassed: false,
+				Failed: []EvalDetail{{
+					Criterion:  AcceptanceCriterion{ID: "execution_incomplete", Description: "Plan execution did not complete"},
+					Diagnostic: fmt.Sprintf("FAILED: %d of %d steps executed. Error: %s", len(completedSteps), len(currentPlan.Steps), aggErr),
+				}},
+			}
+			syntheticSteps := buildPlanExecutionSteps(completedSteps, currentPlan)
+
+			// Emit evaluation showing incomplete state
+			o.emitter.Evaluation(0, 1, o.buildEvalCriterionEvents(syntheticEval))
+
+			// Reflect and force replan
+			if o.reflector != nil {
+				o.emitter.ServiceWithMeta("Step execution failed, reflecting for replan...", map[string]any{"phase": "orchestration"})
+				reflection, reflectErr := o.reflector.Reflect(ctx, syntheticSteps, syntheticEval, currentPlan, sessionReflections)
+				if reflectErr == nil && reflection.SuggestedAction != "abort" {
+					sessionReflections = append(sessionReflections, *reflection)
+					o.emitter.Reflection(reflection.Summary, reflection.Hypotheses, attempt+1, o.maxRetries)
+
+					// Force replan — step failure suggests plan decomposition issue
+					newPlan, replanErr := o.planner.Replan(ctx, currentPlan, completedSteps, findFailedStep(completedSteps), reflection, ac, sessionReflections)
+					if replanErr == nil {
+						currentPlan = newPlan
+						preCompleted = buildCarryForward(prevCompletedSteps, newPlan)
+						stepRetryContext = ""
+						sharedWS.Clear()
+
+						// Re-emit new plan
+						planStepEvents := make([]PlanStepEvent, len(currentPlan.Steps))
+						for i, s := range currentPlan.Steps {
+							status := "pending"
+							if preCompleted != nil {
+								if _, ok := preCompleted[s.ID]; ok {
+									status = "completed"
+								}
+							}
+							planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: status, DependsOn: s.DependsOn}
+						}
+						o.emitter.PlanGenerated(len(currentPlan.Steps), planStepEvents)
+
+						if unmappedAC := validateACMapping(currentPlan, ac); len(unmappedAC) > 0 {
+							o.logWarn("unmapped acceptance criteria in replanned plan", "unmapped_ac", unmappedAC)
+						}
+						continue // next retry attempt with new plan
+					}
+					o.logWarn("replan failed after step failure, retrying with current plan", "error", replanErr)
+				} else if reflectErr != nil {
+					o.logWarn("reflection failed after step failure, retrying without guidance", "error", reflectErr)
+				}
+			}
+			continue // retry with same plan if reflection/replan failed
+		}
+		// --- END incomplete execution handling ---
+
+		// Safety net: warn if evaluation is reached with incomplete execution
+		if len(completedSteps) < len(currentPlan.Steps) {
+			o.logWarn("evaluation_on_incomplete_plan",
+				"completed", len(completedSteps),
+				"total", len(currentPlan.Steps),
+				"hint", "this should have been caught by incomplete execution handler above")
+		}
 
 		handleResult := &HandleResult{
 			Output:          finalOutput,
@@ -530,7 +602,33 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 		// Find steps that are ready to execute (all dependencies completed)
 		readySteps := o.findReadySteps(plan, completedSteps)
 		if len(readySteps) == 0 {
-			break // All done or stuck
+			if len(completedSteps) < len(plan.Steps) {
+				var stuckSteps []string
+				var stuckReasons []string
+				for _, s := range plan.Steps {
+					if _, done := completedSteps[s.ID]; !done {
+						blockedBy := "unknown"
+						for _, depID := range s.DependsOn {
+							if cs, ok := completedSteps[depID]; ok && cs.Error != nil {
+								blockedBy = fmt.Sprintf("dependency %s failed", depID)
+								break
+							}
+							if _, ok := completedSteps[depID]; !ok {
+								blockedBy = fmt.Sprintf("dependency %s not executed", depID)
+								break
+							}
+						}
+						stuckSteps = append(stuckSteps, s.ID)
+						stuckReasons = append(stuckReasons, s.ID+": "+blockedBy)
+					}
+				}
+				o.logWarn("plan_execution_stuck",
+					"completed", len(completedSteps),
+					"total", len(plan.Steps),
+					"stuck_steps", stuckSteps,
+					"reasons", stuckReasons)
+			}
+			break
 		}
 
 		// Run steps via SubAgents (works for both single and parallel execution)
@@ -565,14 +663,20 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			profile := o.resolveProfile(step)
 			stepTools := o.filterToolsByProfile(availableTools, profile)
 
-			taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, sharedWS, userMessage, retryContext)
+			// Resolve max steps budget from profile (fallback to orchestrator config)
+			maxSteps := profile.MaxSteps
+			if maxSteps == 0 {
+				maxSteps = o.config.MaxSteps
+			}
+
+			taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, sharedWS, userMessage, retryContext, maxSteps)
 
 			// Use profile-specific system prompt if provided
 			var systemPrompt string
 			if profile.SystemPrompt != "" {
 				systemPrompt = profile.SystemPrompt
 			} else {
-				systemPrompt = o.buildSystemPrompt(ctx, step.Description, ac, true) // true = step execution
+				systemPrompt = o.buildSystemPrompt(ctx, step.Description, ac)
 			}
 
 			// Resolve model metadata for the profile's LLM role
@@ -594,12 +698,6 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			cm.SetTask(taskDef.Task, taskDef.Criteria)
 			// Scope emitter to plan step for event association
 			scopedEmitter := scopeEmitterToStep(o.emitter, step.ID)
-
-			// Suppress assistant events for plan-step executors
-			maxSteps := profile.MaxSteps
-			if maxSteps == 0 {
-				maxSteps = o.config.MaxSteps
-			}
 			executor := agent.NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, o.logger, scopedEmitter, true, o.toolResultBudget)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 
@@ -614,6 +712,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 		}
 
 		results := agent.RunSubAgentsParallel(ctx, tasks)
+		var stepFailed bool
 		for _, r := range results {
 			// Emit PlanStepComplete for each result
 			o.emitter.PlanStepComplete(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
@@ -626,6 +725,19 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			cs := CompletedStep(r)
 			completedSteps[r.StepID] = cs
 			completedList = append(completedList, cs)
+			if r.Error != nil {
+				stepFailed = true
+			}
+		}
+		if stepFailed {
+			var skippedIDs []string
+			for _, s := range plan.Steps {
+				if _, done := completedSteps[s.ID]; !done {
+					skippedIDs = append(skippedIDs, s.ID)
+				}
+			}
+			o.logWarn("plan_execution_aborted", "reason", "step_failure", "skipped_steps", skippedIDs)
+			break
 		}
 	}
 
@@ -716,6 +828,16 @@ func computeRetrySteps(plan *Plan, failedCriteriaIDs []string) map[string]bool {
 // include a step that is NOT carried forward are transitively excluded,
 // ensuring that a replanned step invalidates all its downstream dependents.
 // Returns nil if no steps can be preserved (triggering full re-execution).
+// findFailedStep returns the first CompletedStep with an error from the list.
+func findFailedStep(completedSteps []CompletedStep) CompletedStep {
+	for _, cs := range completedSteps {
+		if cs.Error != nil {
+			return cs
+		}
+	}
+	return CompletedStep{}
+}
+
 func buildCarryForward(completed []CompletedStep, newPlan *Plan) map[string]CompletedStep {
 	newStepIDs := make(map[string]bool, len(newPlan.Steps))
 	for _, s := range newPlan.Steps {
@@ -813,12 +935,15 @@ func validateACMapping(plan *Plan, ac []AcceptanceCriterion) []string {
 // buildStepTask creates a TaskDefinition for a plan step.
 // stepIndex is 0-based index of this step in the plan.
 // retryContext is an optional string with workspace state from a previous attempt (empty on first attempt).
-func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, sharedWS *SharedWorkspace, userMessage, retryContext string) TaskDefinition {
+func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, sharedWS *SharedWorkspace, userMessage, retryContext string, maxSteps int) TaskDefinition {
 	// Build task description with scoping context
 	var taskBuilder strings.Builder
 
 	// Step position header
 	fmt.Fprintf(&taskBuilder, "[Step %d of %d] Your task: %s\n\n", stepIndex+1, len(plan.Steps), step.Description)
+
+	// Budget awareness: tell the executor how many iterations it has
+	fmt.Fprintf(&taskBuilder, "Tool call budget: %d iterations. Plan your approach to finish within this budget.\n\n", maxSteps)
 
 	// Explicit scoping instruction
 	taskBuilder.WriteString("IMPORTANT: You are executing ONE step in a multi-step plan. Complete ONLY this step's objective. Do NOT produce final deliverables or perform work belonging to other steps.\n\n")
@@ -1013,25 +1138,11 @@ func (o *Orchestrator) aggregateOutput(completedSteps map[string]CompletedStep, 
 }
 
 // buildSystemPrompt creates the system prompt for executors.
-// If isStepExecution is true, adds scoping instructions for single-step execution.
-func (o *Orchestrator) buildSystemPrompt(ctx context.Context, userMessage string, criteria []AcceptanceCriterion, isStepExecution bool) string {
+func (o *Orchestrator) buildSystemPrompt(ctx context.Context, userMessage string, criteria []AcceptanceCriterion) string {
 	// Build workspace context string
 	var workspaceCtxStr string
 	if wsPath := tools.WorkspacePathFrom(ctx); wsPath != "" {
 		workspaceCtxStr = "## Workspace\nYour session workspace is: " + wsPath + "\nAll artifacts you create (files, directories, temporary files) MUST be placed strictly inside this workspace directory, unless the task explicitly requires creating artifacts at a specific external location."
-	}
-
-	// Build step scope string
-	var stepScopeStr string
-	if isStepExecution {
-		stepScopeStr = `
-STEP EXECUTION SCOPE: You are executing a single step in a multi-step plan. Your responsibility is ONLY to complete this specific step. Do NOT attempt to:
-
-- Solve the entire problem
-- Produce final deliverables
-- Perform analysis or work that belongs to subsequent steps
-  Focus narrowly on your step's objective and acceptance criteria. Your output will be consumed by downstream steps.
-`
 	}
 
 	// Build acceptance criteria string
@@ -1049,7 +1160,6 @@ STEP EXECUTION SCOPE: You are executing a single step in a multi-step plan. Your
 	// Apply template substitutions
 	result := prompts.OrchestratorSystem
 	result = strings.ReplaceAll(result, "WORKSPACE-CONTEXT", workspaceCtxStr)
-	result = strings.ReplaceAll(result, "STEP-SCOPE", stepScopeStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 
 	return result

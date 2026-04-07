@@ -1,5 +1,4 @@
 A plan execution completed but some acceptance criteria were not met. Revise the plan to address the failures.
-All step descriptions must be in English regardless of the original task language.
 
 Original plan:
 ORIGINAL-PLAN

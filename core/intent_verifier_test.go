@@ -122,27 +122,25 @@ func newMockVerifierTool(name string) *mockVerifierTool {
 
 func TestFilterReadOnlyTools(t *testing.T) {
 	allTools := []tools.ToolDescriptor{
-		{Name: "read_file", Description: "read a file"},
-		{Name: "write_file", Description: "write a file"},
-		{Name: "list_dir", Description: "list directory"},
+		{Name: "file_ops", Description: "file operations"},
 		{Name: "bash_exec", Description: "execute bash"},
-		{Name: "grep", Description: "search files"},
-		{Name: "find_file", Description: "find files"},
-		{Name: "delete_file", Description: "delete a file"},
+		{Name: "ripgrep", Description: "search files"},
+		{Name: "glob", Description: "find files"},
+		{Name: "web_fetch", Description: "fetch web content"},
+		{Name: "ask_user", Description: "ask user"},
 	}
 
 	filtered := filterReadOnlyTools(allTools)
 
-	// Should only keep read_file, list_dir, grep, find_file
-	if len(filtered) != 4 {
-		t.Fatalf("expected 4 filtered tools, got %d", len(filtered))
+	// Should only keep file_ops, ripgrep, glob
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 filtered tools, got %d", len(filtered))
 	}
 
 	allowed := map[string]bool{
-		"read_file": false,
-		"list_dir":  false,
-		"grep":      false,
-		"find_file": false,
+		"file_ops": false,
+		"ripgrep":  false,
+		"glob":     false,
 	}
 	for _, td := range filtered {
 		if _, ok := allowed[td.Name]; !ok {
@@ -249,18 +247,17 @@ func TestIntentVerifierVerify_Failed(t *testing.T) {
 func TestIntentVerifierToolFiltering(t *testing.T) {
 	// Register both read-only and dangerous tools
 	registry := tools.NewToolRegistry()
-	registry.Register(newMockVerifierTool("read_file"))
-	registry.Register(newMockVerifierTool("list_dir"))
-	registry.Register(newMockVerifierTool("grep"))
-	registry.Register(newMockVerifierTool("find_file"))
+	registry.Register(newMockVerifierTool("file_ops"))
+	registry.Register(newMockVerifierTool("ripgrep"))
+	registry.Register(newMockVerifierTool("glob"))
 	registry.Register(newMockVerifierTool("bash_exec"))
 	registry.Register(newMockVerifierTool("write_file"))
 
 	allTools := registry.List()
 	filtered := filterReadOnlyTools(allTools)
 
-	if len(filtered) != 4 {
-		t.Fatalf("expected 4 read-only tools, got %d", len(filtered))
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 read-only tools, got %d", len(filtered))
 	}
 
 	for _, td := range filtered {

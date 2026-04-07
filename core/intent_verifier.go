@@ -12,12 +12,12 @@ import (
 )
 
 // readOnlyToolWhitelist defines the tools that the intent verifier is allowed to use.
-// These are read-only tools that cannot modify the workspace.
+// file_ops is included because the verifier's system prompt restricts it to read-only
+// operations, and the file_ops Judge already enforces workspace boundaries for writes.
 var readOnlyToolWhitelist = map[string]bool{
-	"read_file": true,
-	"list_dir":  true,
-	"grep":      true,
-	"find_file": true,
+	"file_ops": true,
+	"ripgrep":  true,
+	"glob":     true,
 }
 
 // IntentVerifier is a mini-agent that performs Tier 2 intent-based verification.

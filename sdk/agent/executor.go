@@ -15,6 +15,8 @@ import (
 
 const executorNudge = "[System] You have tools available that can help answer this request. Before finishing, try using relevant tools to discover the answer. Do NOT say you cannot determine something without first attempting to use your tools."
 
+const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Wrap up your work NOW: summarize your findings and finish. Do not start new explorations."
+
 const (
 	// repeatNudgeThreshold is the number of consecutive identical tool calls
 	// before injecting a system message to try a different approach.
@@ -183,6 +185,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 	var allSteps []Step
 	nudgeAttempted := false
+	wrapUpNudgeAttempted := false
 	reactiveCompactAttempted := false
 
 	for stepNum := 1; stepNum <= e.maxSteps; stepNum++ {
@@ -502,6 +505,21 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", len(observation))
 		}
 		e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
+
+		// Wrap-up nudge: warn LLM when approaching budget limit
+		// Only applies when the budget is large enough for the nudge to be meaningful.
+		if e.maxSteps > 3 && stepNum >= e.maxSteps-3 && !wrapUpNudgeAttempted {
+			wrapUpNudgeAttempted = true
+			wrapUpMsg := fmt.Sprintf(executorWrapUpNudge, e.maxSteps-stepNum)
+			wrapUpStep := Step{
+				Thought:     "",
+				Observation: wrapUpMsg,
+				TokensUsed:  0,
+			}
+			allSteps = append(allSteps, wrapUpStep)
+			cw.AddStep(wrapUpStep)
+			e.logInfo("executor_wrapup_nudge", "step", stepNum, "remaining", e.maxSteps-stepNum)
+		}
 
 		// Correct token count with actual API usage
 		if resp.Usage.InputTokens > 0 {

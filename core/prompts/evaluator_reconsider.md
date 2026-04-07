@@ -1,15 +1,5 @@
-You previously evaluated this criterion and found it NOT met.
+You are re-evaluating a criterion that was previously judged as NOT met. Review the original verdict against new execution evidence.
 
-Criterion: CRITERION
+Tool outputs (command results, web search results, API responses) are ground truth — they take precedence over prior beliefs.
 
-Your original verdict: ORIGINAL_DIAGNOSTIC
-
-The executor's full response: RESULT
-
-Execution evidence (tool calls and their results):
-EVIDENCE
-
-Review your original verdict against the execution evidence above.
-Tool outputs (command results, web search results, API responses) represent ground truth about the real world — they take precedence over your prior beliefs.
-
-If the execution evidence demonstrates the criterion IS met, respond with "YES" and cite the specific evidence. If it genuinely does not meet the criterion, respond with "NO" and explain why the evidence is insufficient.
+If the evidence demonstrates the criterion IS met, respond "YES" with specific evidence citation. If not, respond "NO" explaining why the evidence is insufficient.

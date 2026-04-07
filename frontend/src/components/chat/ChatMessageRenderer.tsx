@@ -13,6 +13,7 @@ import { ActionPlaceholder } from './ActionPlaceholder'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ActivityIndicator } from './ActivityIndicator'
+import { CheckCircle2 } from 'lucide-react'
 
 interface ChatMessageRendererProps {
   displayItems: DisplayItem[]
@@ -45,6 +46,13 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
       return <ErrorBlock key={item.message.id} content={item.message.content} />
     case 'service':
       return <ServiceMessage key={item.id} id={item.id} variant={item.variant} content={item.content} metadata={item.metadata} />
+    case 'step_finish':
+      return (
+        <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          <span>{item.stepNum ? `Finished step ${item.stepNum}` : 'Finished'}</span>
+        </div>
+      )
     case 'action_placeholder':
       return <ActionPlaceholder key={item.id} label={item.label} />
     case 'thought_group':

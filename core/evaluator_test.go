@@ -357,7 +357,7 @@ func TestEvaluator_LLMJudgeWithTrajectory(t *testing.T) {
 	if len(mockLLM.calls) == 0 {
 		t.Fatal("expected at least one LLM call")
 	}
-	lastCallContent := mockLLM.calls[0].Messages[0].Content
+	lastCallContent := mockLLM.calls[0].Messages[1].Content
 	if !strings.Contains(lastCallContent, "Step 1") {
 		t.Error("expected prompt to contain 'Step 1' from execution evidence")
 	}

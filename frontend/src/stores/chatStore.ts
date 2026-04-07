@@ -26,6 +26,7 @@ export type DisplayItem =
   | { kind: 'error'; message: ChatMessageUI }
   | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'ac_extracted' | 'status'; content: string; metadata?: Record<string, unknown> }
   | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
 
@@ -149,14 +150,21 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         break
 
       case 'tool_call': {
+        const toolName = (meta?.tool as string) || ''
         // Skip subagent tool calls – activity is already visible in plan step history
-        if ((meta?.tool as string) === 'subagent') break
+        if (toolName === 'subagent') break
+        // Render finish tool as a compact "Finished step N" message
+        if (toolName === 'finish') {
+          const planStepNum = planStepId ? stepIndexMap.get(planStepId)?.num : undefined
+          pushItem({ kind: 'step_finish', id: msg.id, stepNum: planStepNum }, planStepId)
+          break
+        }
         const isAwaiting = meta?.awaiting_confirmation === true
         const hasResult = meta?.completed === true
         const toolItem: DisplayItem & { kind: 'tool' } = {
           kind: 'tool',
           id: msg.id,
-          toolName: (meta?.tool as string) || 'Tool',
+          toolName: toolName || 'Tool',
           args: (meta?.args as string) || '',
           parsedArgs: meta?.parsed_args as Record<string, unknown> | undefined,
           result: hasResult ? ((meta?.result as string) ?? (meta?.result_preview as string)) : undefined,

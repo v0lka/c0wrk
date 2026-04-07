@@ -5,18 +5,6 @@ import { useFileTreeStore, type FileNode } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { FileIcon } from './FileIcon'
 
-function basename(path: string): string {
-  const parts = path.replace(/\/+$/, '').split('/')
-  return parts[parts.length - 1] || path
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function workspaceLabel(path: string): string {
-  const name = basename(path)
-  return UUID_RE.test(name) ? 'Workspace directory' : name
-}
-
 interface TreeNodeProps {
   node: FileNode
   depth: number
@@ -123,12 +111,11 @@ export function FileTreePanel() {
   }
 
   const rootEntries = rootPath ? entries[rootPath] : undefined
-  const rootName = rootPath ? workspaceLabel(rootPath) : 'WORKSPACE'
 
   return (
     <div className="h-full bg-card flex flex-col">
       <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-border flex-shrink-0">
-        {rootName}
+        'WORKSPACE'
       </div>
       <ScrollArea className="flex-1">
         <div className="py-1" role="tree">

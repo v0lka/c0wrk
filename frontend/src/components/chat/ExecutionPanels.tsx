@@ -20,6 +20,7 @@ import {
   type PlanGroup,
   type EvalGroup,
 } from '@/stores/panelStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { useScrollStore } from '@/stores/scrollStore'
 import { computeDAGLayout } from '@/lib/dagLayout'
 
@@ -126,15 +127,20 @@ function DAGGraph({ items }: { items: PlanItem[] }) {
         }
 
         if (c.type === 'fork' || c.type === 'merge') {
-          // Fork: jog near parent so the branch visually originates from it.
-          // Merge: jog near child so lines visually converge into it.
-          const jogY = c.type === 'fork'
-            ? y1 + ROW_HEIGHT / 4
-            : y2 - ROW_HEIGHT / 4
+          const r = LANE_WIDTH / 2
+          const dx = Math.sign(x2 - x1)
+          let d: string
+          if (c.type === 'fork') {
+            // L-shape: horizontal from parent vertex, curve, then down to child
+            d = `M ${x1} ${y1} L ${x2 - dx * r} ${y1} Q ${x2} ${y1} ${x2} ${y1 + r} L ${x2} ${y2}`
+          } else {
+            // L-shape: down from parent, curve, then horizontal to child vertex
+            d = `M ${x1} ${y1} L ${x1} ${y2 - r} Q ${x1} ${y2} ${x1 + dx * r} ${y2} L ${x2} ${y2}`
+          }
           return (
             <path
               key={i}
-              d={`M ${x1} ${y1} L ${x1} ${jogY} L ${x2} ${jogY} L ${x2} ${y2}`}
+              d={d}
               stroke={STROKE_COLOR}
               strokeWidth={STROKE_WIDTH}
               strokeLinecap="round"
@@ -224,6 +230,7 @@ function EvalContent({ groups }: EvalContentProps) {
 }
 
 export function ExecutionPanels() {
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const planGroups = usePanelStore((s) => s.planGroups)
   const evalGroups = usePanelStore((s) => s.evalGroups)
   const planCompleted = usePlanCompleted()
@@ -239,8 +246,8 @@ export function ExecutionPanels() {
   const hasPlan = planGroups.length > 0
   const hasEval = evalGroups.length > 0
 
-  // Don't render if both are empty
-  if (!hasPlan && !hasEval) {
+  // Don't render if both are empty or no active session
+  if ((!hasPlan && !hasEval) || !activeSessionId) {
     return null
   }
 

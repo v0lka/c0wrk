@@ -1042,3 +1042,79 @@ func TestExecutor_Run_TruncationCounterResets(t *testing.T) {
 		t.Errorf("Output = %q, want %q", result.Output, "all good")
 	}
 }
+
+func TestExecutor_WrapUpNudge(t *testing.T) {
+	// maxSteps=6, LLM always returns tool calls (never finishes).
+	// Wrap-up nudge should fire at stepNum=3 (which is maxSteps-3=3).
+	maxSteps := 6
+	responses := make([]*llm.ChatResponse, maxSteps)
+	for i := range responses {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("working step %d", i+1),
+			fmt.Sprintf("tool_%d", i+1),
+			json.RawMessage(fmt.Sprintf(`{"i":%d}`, i+1)),
+		)
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "tool_1", Description: "t", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Finished {
+		t.Error("expected Finished=false (max steps exhausted)")
+	}
+
+	// Find the wrap-up nudge step
+	foundNudge := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "running low on tool call iterations") {
+			foundNudge = true
+			break
+		}
+	}
+	if !foundNudge {
+		t.Error("expected wrap-up nudge observation containing 'running low on tool call iterations'")
+	}
+}
+
+func TestExecutor_WrapUpNudge_OnlyOnce(t *testing.T) {
+	// maxSteps=8, LLM always returns tool calls (never finishes).
+	// Nudge should fire once at stepNum=5 (maxSteps-3) and NOT repeat on steps 6, 7, 8.
+	maxSteps := 8
+	responses := make([]*llm.ChatResponse, maxSteps)
+	for i := range responses {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("working step %d", i+1),
+			fmt.Sprintf("tool_%d", i+1),
+			json.RawMessage(fmt.Sprintf(`{"i":%d}`, i+1)),
+		)
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, nil, false, ToolResultBudget{})
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "tool_1", Description: "t", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Count nudge occurrences
+	nudgeCount := 0
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "running low on tool call iterations") {
+			nudgeCount++
+		}
+	}
+	if nudgeCount != 1 {
+		t.Errorf("expected exactly 1 wrap-up nudge, got %d", nudgeCount)
+	}
+}

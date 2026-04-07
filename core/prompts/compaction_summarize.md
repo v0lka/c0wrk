@@ -1,8 +1,9 @@
-Summarize the following agent execution steps concisely. Preserve:
+Summarize the following agent execution steps as a bullet list. Maximum 8 bullets, ~150 words.
 
-- Key decisions made
-- Important tool results and their outcomes
-- Critical observations and findings
-- Final state or conclusion
+Preserve:
+- Key decisions and reasoning
+- Tool results that affect subsequent steps
+- Errors encountered and their resolutions
+- Current state or conclusion
 
-Be brief but complete. Output only the summary, no preamble.
+Omit: verbose tool outputs, repeated attempts, intermediate reasoning. Output only the summary.

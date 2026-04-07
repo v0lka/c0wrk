@@ -144,24 +144,18 @@ func (e *Evaluator) evaluateProgrammatic(ctx context.Context, criterion Acceptan
 
 // evaluateLLMJudge uses LLM to evaluate whether a criterion is met.
 func (e *Evaluator) evaluateLLMJudge(ctx context.Context, criterion AcceptanceCriterion, result string, steps []Step) (EvalDetail, error) {
-	// Build evidence section from execution trajectory
-	evidenceSection := ""
+	// Build user message with criterion, result, and evidence
+	var userMsg strings.Builder
+	fmt.Fprintf(&userMsg, "Criterion: %s\n\nResult: %s", criterion.Description, result)
 	if len(steps) > 0 {
-		evidenceSection = "Execution Evidence:\n" + buildEvidenceSection(steps)
+		fmt.Fprintf(&userMsg, "\n\nExecution Evidence:\n%s", buildEvidenceSection(steps))
 	}
 
-	// Build evaluation prompt
-	prompt := strings.ReplaceAll(prompts.EvaluatorJudge, "CRITERION", criterion.Description)
-	prompt = strings.ReplaceAll(prompt, "RESULT", result)
-	prompt = strings.ReplaceAll(prompt, "EVIDENCE_SECTION", evidenceSection)
-
-	// Create chat request
+	// Create chat request with system + user messages
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
-			{
-				Role:    "user",
-				Content: prompt,
-			},
+			{Role: "system", Content: prompts.EvaluatorJudge},
+			{Role: "user", Content: userMsg.String()},
 		},
 	}
 
@@ -224,17 +218,15 @@ func (e *Evaluator) reconsiderCriterion(
 	steps []Step,
 	originalDiagnostic string,
 ) (passed bool, diagnostic string, err error) {
-	// Build evidence section from steps
-	evidence := buildEvidenceSection(steps)
-
-	prompt := strings.ReplaceAll(prompts.EvaluatorReconsider, "CRITERION", criterion.Description)
-	prompt = strings.ReplaceAll(prompt, "ORIGINAL_DIAGNOSTIC", originalDiagnostic)
-	prompt = strings.ReplaceAll(prompt, "RESULT", result)
-	prompt = strings.ReplaceAll(prompt, "EVIDENCE", evidence)
+	// Build user message with criterion details and evidence
+	var userMsg strings.Builder
+	fmt.Fprintf(&userMsg, "Criterion: %s\n\nOriginal verdict: %s\n\nExecutor's response: %s\n\nExecution evidence:\n%s",
+		criterion.Description, originalDiagnostic, result, buildEvidenceSection(steps))
 
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
-			{Role: "user", Content: prompt},
+			{Role: "system", Content: prompts.EvaluatorReconsider},
+			{Role: "user", Content: userMsg.String()},
 		},
 	}
 
