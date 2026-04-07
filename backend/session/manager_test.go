@@ -748,9 +748,9 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 	}
 }
 
-// TestManager_CreateSession_ActiveSessionEnforcement verifies that creating a session
-// while another session in the same project is active returns an error.
-func TestManager_CreateSession_ActiveSessionEnforcement(t *testing.T) {
+// TestManager_CreateSession_AllowsParallelActiveSessions verifies that creating a session
+// while another session in the same project is active succeeds (parallel sessions allowed).
+func TestManager_CreateSession_AllowsParallelActiveSessions(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	wsPath := testWorkspacePath(t)
@@ -765,25 +765,25 @@ func TestManager_CreateSession_ActiveSessionEnforcement(t *testing.T) {
 	sess1.active = true
 	sess1.mu.Unlock()
 
-	// Try to create second session in same project — should fail
-	_, err = manager.CreateSession(testProjectID, wsPath)
-	if err == nil {
-		t.Fatal("expected error when creating session in project with active session")
+	// Creating second session in same project should succeed
+	info2, err := manager.CreateSession(testProjectID, wsPath)
+	if err != nil {
+		t.Fatalf("CreateSession should succeed while another session is active: %v", err)
 	}
-	if !strings.Contains(err.Error(), "another session is active") {
-		t.Errorf("unexpected error: %v", err)
+	if info2.ID == info1.ID {
+		t.Error("second session should have a different ID")
 	}
 
-	// Creating session in a different project should succeed
+	// Creating session in a different project should also succeed
 	_, err = manager.CreateSession("different-project", testWorkspacePath(t))
 	if err != nil {
 		t.Fatalf("CreateSession in different project should succeed: %v", err)
 	}
 }
 
-// TestManager_SendMessage_CrossProjectActiveRejection verifies that SendMessage rejects
-// when another session in the same project is already active.
-func TestManager_SendMessage_CrossProjectActiveRejection(t *testing.T) {
+// TestManager_SendMessage_AllowsParallelActiveSessions verifies that SendMessage succeeds
+// when another session in the same project is already active (parallel sessions allowed).
+func TestManager_SendMessage_AllowsParallelActiveSessions(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	wsPath := testWorkspacePath(t)
@@ -793,7 +793,7 @@ func TestManager_SendMessage_CrossProjectActiveRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession 1 failed: %v", err)
 	}
-	info2, err := manager.CreateSession(testProjectID, wsPath)
+	_, err = manager.CreateSession(testProjectID, wsPath)
 	if err != nil {
 		t.Fatalf("CreateSession 2 failed: %v", err)
 	}
@@ -804,13 +804,13 @@ func TestManager_SendMessage_CrossProjectActiveRejection(t *testing.T) {
 	sess1.active = true
 	sess1.mu.Unlock()
 
-	// Sending message to session 2 in the same project should fail
+	// Sending message to session 1 again should fail (same session double-send)
 	ctx := context.Background()
-	err = manager.SendMessage(ctx, info2.ID, "hello")
+	err = manager.SendMessage(ctx, info1.ID, "hello")
 	if err == nil {
-		t.Fatal("expected error when sending message while another session in same project is active")
+		t.Fatal("expected error when sending message to already-active session")
 	}
-	if !strings.Contains(err.Error(), "another session is active") {
+	if !strings.Contains(err.Error(), "already processing") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

@@ -97,21 +97,6 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Generate UUID for session ID
 	id := uuid.New().String()
 
-	// Check no other session in the same project is active
-	m.mu.Lock()
-	for _, s := range m.sessions {
-		if s.ProjectID == projectID {
-			s.mu.Lock()
-			isActive := s.active
-			s.mu.Unlock()
-			if isActive {
-				m.mu.Unlock()
-				return nil, fmt.Errorf("another session is active in project %s", projectID)
-			}
-		}
-	}
-	m.mu.Unlock()
-
 	// Create session-specific logger
 	logger, logFile, err := m.createSessionLogger(id)
 	if err != nil {
@@ -375,32 +360,13 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
-	// Snapshot other sessions in the same project under the manager lock
-	// to avoid racing with CreateSession/DeleteSession/Shutdown.
-	others := make([]*Session, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		if s.ProjectID == session.ProjectID && s.ID != id {
-			others = append(others, s)
-		}
-	}
 	m.mu.RUnlock()
 
 	session.mu.Lock()
-	// Check if already active
+	// Check if already active (prevent double-send on the same session)
 	if session.active {
 		session.mu.Unlock()
 		return errors.New("session is already processing a task")
-	}
-
-	// Check no other session in the same project is active
-	for _, s := range others {
-		s.mu.Lock()
-		isActive := s.active
-		s.mu.Unlock()
-		if isActive {
-			session.mu.Unlock()
-			return fmt.Errorf("another session is active in project %s", session.ProjectID)
-		}
 	}
 
 	// Set active and create cancellable context with session ID

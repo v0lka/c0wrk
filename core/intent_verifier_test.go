@@ -196,7 +196,7 @@ func TestIntentVerifierVerify_Passed(t *testing.T) {
 
 	verifier := NewIntentVerifier(mockLLM, registry, tokenCounter, contextFactory, nil, nil, ToolResultBudget{})
 
-	result, err := verifier.Verify(context.Background(), "implement feature X", "done", "diff --git a/main.go", "modified main.go")
+	result, err := verifier.Verify(context.Background(), "implement feature X", "done", "modified main.go")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestIntentVerifierVerify_Failed(t *testing.T) {
 
 	verifier := NewIntentVerifier(mockLLM, registry, tokenCounter, contextFactory, nil, nil, ToolResultBudget{})
 
-	result, err := verifier.Verify(context.Background(), "implement feature X", "partial", "", "modified main.go")
+	result, err := verifier.Verify(context.Background(), "implement feature X", "partial", "modified main.go")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestIntentVerifierEmptyDiff(t *testing.T) {
 
 	verifier := NewIntentVerifier(mockLLM, registry, tokenCounter, contextFactory, nil, nil, ToolResultBudget{})
 
-	result, err := verifier.Verify(context.Background(), "what is Go?", "Go is a programming language", "", "no changes")
+	result, err := verifier.Verify(context.Background(), "what is Go?", "Go is a programming language", "no changes")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,9 +312,9 @@ func TestIntentVerifierEmptyDiff(t *testing.T) {
 		t.Error("expected Passed=true")
 	}
 
-	// Verify that the empty diff was handled gracefully
-	if !strings.Contains(capturedTask, "No git diff available") {
-		t.Errorf("expected task to contain empty diff placeholder, got %q", capturedTask)
+	// Verify that the change summary was included in the task
+	if !strings.Contains(capturedTask, "no changes") {
+		t.Errorf("expected task to contain change summary, got %q", capturedTask)
 	}
 }
 
@@ -373,7 +373,7 @@ func TestIntentVerifierVerify_WithToolUse(t *testing.T) {
 
 	verifier := NewIntentVerifier(mockLLM, registry, tokenCounter, contextFactory, nil, nil, ToolResultBudget{})
 
-	result, err := verifier.Verify(context.Background(), "fix bug in main.go", "fixed", "diff content", "modified main.go")
+	result, err := verifier.Verify(context.Background(), "fix bug in main.go", "fixed", "modified main.go")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

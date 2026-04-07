@@ -15,9 +15,6 @@ import (
 	tools "github.com/user/agent/sdk/tools"
 )
 
-// WorktreeFactory creates a Worktree for a given session.
-type WorktreeFactory func(sessionID string) Worktree
-
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps   int
@@ -53,11 +50,10 @@ type Orchestrator struct {
 	emitter             Emitter       // event emitter (nil-safe, uses noopEmitter if nil)
 	toolResultBudget    ToolResultBudget
 	intentVerifier      *IntentVerifier  // optional Tier 2 intent verifier (nil-safe)
-	worktreeFactory     WorktreeFactory  // optional worktree factory for isolation (nil-safe)
 }
 
 // NewOrchestrator creates a new Orchestrator with all Phase 2 components.
-// reflector, logger, emitter, intentVerifier, and worktreeFactory are optional (nil-safe) for Phase 3 features.
+// reflector, logger, emitter, and intentVerifier are optional (nil-safe) for Phase 3 features.
 func NewOrchestrator(
 	router *Router,
 	acExtractor *ACExtractor,
@@ -75,7 +71,6 @@ func NewOrchestrator(
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
 	toolResultBudget ToolResultBudget,
 	intentVerifier *IntentVerifier, // optional, nil-safe
-	worktreeFactory WorktreeFactory, // optional, nil-safe
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
@@ -112,7 +107,6 @@ func NewOrchestrator(
 		emitter:          emitter,
 		toolResultBudget: toolResultBudget,
 		intentVerifier:   intentVerifier,
-		worktreeFactory:  worktreeFactory,
 	}
 }
 
@@ -287,24 +281,6 @@ func (o *Orchestrator) filterToolsByProfile(allTools []tools.ToolDescriptor, pro
 
 // handlePlanExecute handles plan_execute mode - DAG planning and execution with retry.
 func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, escalatedReflections []Reflection, ac []AcceptanceCriterion) (*HandleResult, error) {
-	// Create worktree for isolation
-	var wt Worktree
-	if o.worktreeFactory != nil {
-		sessionID := fmt.Sprintf("req-%d", time.Now().UnixNano())
-		wt = o.worktreeFactory(sessionID)
-		if err := wt.Init(); err != nil {
-			o.logWarn("worktree init failed, working in main workspace", "error", err)
-			wt = nil
-		} else {
-			defer func() { _ = wt.Cleanup() }()
-		}
-	}
-
-	// If worktree is active, override workspace path in context
-	if wt != nil {
-		ctx = tools.WithWorkspacePath(ctx, wt.WorktreePath())
-	}
-
 	// Initialize session reflections from escalated reflections (if any)
 	var sessionReflections []Reflection
 	if len(escalatedReflections) > 0 {
@@ -397,14 +373,13 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 		// Run Tier 2 only if Tier 1 passed and intent verifier is available
 		if evalResult.AllPassed && o.intentVerifier != nil {
-			var gitDiff, changeSummary string
-			if wt != nil {
-				gitDiff, _ = wt.GetDiff()
-				changeSummary, _ = wt.GetDiffStat()
+			completedMap := make(map[string]CompletedStep, len(completedSteps))
+			for _, cs := range completedSteps {
+				completedMap[cs.StepID] = cs
 			}
-
+			changeSummary := buildChangeSummary(completedMap, currentPlan)
 			intentResult, intentErr := o.intentVerifier.Verify(
-				ctx, userMessage, finalOutput, gitDiff, changeSummary,
+				ctx, userMessage, finalOutput, changeSummary,
 			)
 
 			intentDetail := EvalDetail{Criterion: intentAC}
@@ -437,16 +412,6 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 		// Success - all criteria passed
 		if evalResult.AllPassed {
-			// Merge worktree changes on success
-			if wt != nil {
-				commitMsg := "Agent: " + userMessage
-				if len(commitMsg) > 72 {
-					commitMsg = commitMsg[:69] + "..."
-				}
-				if err := wt.Merge(commitMsg); err != nil {
-					return nil, fmt.Errorf("plan succeeded but failed to merge worktree into workspace: %w", err)
-				}
-			}
 			return handleResult, nil
 		}
 
@@ -480,13 +445,6 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 				// Replan if suggested, otherwise retry with same plan
 				if reflection.SuggestedAction == "replan" {
-					if wt != nil {
-						if err := wt.Reset(); err != nil {
-							o.logWarn("worktree reset failed during replan, falling back to retry", "error", err)
-							continue
-						}
-					}
-
 					// Find failed step (for replan context) - use first completed step as proxy
 					var failedStep CompletedStep
 					if len(completedSteps) > 0 {
@@ -523,10 +481,6 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 							}
 						}
 						o.logInfo("step_level_retry", "retry_steps", len(retrySet), "preserved_steps", len(preCompleted))
-						// Capture workspace changes for retry context
-						if wt != nil {
-							stepRetryContext, _ = wt.GetDiffStat()
-						}
 					} else {
 						// No criteria-to-step mapping — fall back to full retry
 						preCompleted = nil
@@ -1009,6 +963,20 @@ func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, al
 		Criteria: stepCriteria,
 		Tools:    availableTools,
 	}
+}
+
+// buildChangeSummary creates a markdown summary of what the executor did at each step.
+// It iterates through plan steps in plan order so the summary is deterministic.
+func buildChangeSummary(completedSteps map[string]CompletedStep, plan *Plan) string {
+	var b strings.Builder
+	for _, step := range plan.Steps {
+		cs, ok := completedSteps[step.ID]
+		if !ok || cs.Output == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "### Step %q: %s\n%s\n\n", step.ID, step.Description, cs.Output)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // aggregateOutput combines outputs from all completed steps.

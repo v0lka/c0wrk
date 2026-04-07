@@ -4,8 +4,7 @@ You will receive:
 
 1. The user's original request
 2. The agent's final output/response
-3. A summary of workspace changes (files created/modified)
-4. A detailed git diff of all changes (if available)
+3. A step-by-step workspace changes summary from the executor's per-step reports
 
 You have access to read-only file tools (read_file, list_dir, grep, find_file) to inspect the actual workspace and verify the implementation.
 
@@ -13,8 +12,9 @@ You have access to read-only file tools (read_file, list_dir, grep, find_file) t
 
 1. Carefully read the user's original request to understand their intent
 2. Review the agent's final output
-3. If workspace changes exist, review the diff and use file tools to inspect key files
-4. Compare what was requested against what was actually delivered
+3. Review the step-by-step change summary to understand what was done
+4. Use file tools to inspect key files and verify the implementation
+5. Compare what was requested against what was actually delivered
 
 ## What to Check
 

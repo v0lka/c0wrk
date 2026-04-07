@@ -76,7 +76,6 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	// Test with no criteria
@@ -213,7 +212,6 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Fix the code")
@@ -346,7 +344,6 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -433,7 +430,6 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -540,7 +536,6 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				nil, // modelRegistry - nil for tests
 				ToolResultBudget{},
 				nil, // intentVerifier - nil for tests
-				nil, // worktreeFactory - nil for tests
 			)
 
 			result, err := orchestrator.Handle(context.Background(), "test")
@@ -611,7 +606,6 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -738,7 +732,6 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -866,7 +859,6 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -999,7 +991,6 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1132,7 +1123,6 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Build and test feature")
@@ -1271,7 +1261,6 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -1394,7 +1383,6 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	userMessage := "Please complete this important task"
@@ -1466,7 +1454,6 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	prompt := orchestrator.buildSystemPrompt(context.Background(), "", nil, false)
@@ -1613,7 +1600,6 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Do task with potential failure")
@@ -1718,7 +1704,6 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		nil,    // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -1948,7 +1933,6 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -2204,7 +2188,6 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps with dependency")
@@ -2423,7 +2406,6 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
-		nil, // worktreeFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps without AC mapping")
@@ -3487,148 +3469,3 @@ func TestValidateACMapping_AllMapped(t *testing.T) {
 	}
 }
 
-// mockWorktree is a mock implementation of Worktree for testing.
-type mockWorktree struct {
-	initErr  error
-	resetErr error
-	mergeErr error
-
-	resetCalled  bool
-	initCalled   bool
-	cleanupCalls int
-}
-
-func (m *mockWorktree) Init() error          { m.initCalled = true; return m.initErr }
-func (m *mockWorktree) Reset() error         { m.resetCalled = true; return m.resetErr }
-func (m *mockWorktree) Cleanup() error       { m.cleanupCalls++; return nil }
-func (m *mockWorktree) WorktreePath() string { return "/tmp/mock-worktree" }
-func (m *mockWorktree) GetDiff() (string, error)     { return "", nil }
-func (m *mockWorktree) GetDiffStat() (string, error)  { return "", nil }
-func (m *mockWorktree) Merge(commitMsg string) error   { return m.mergeErr }
-
-// TestPlanExecute_ReplanWorktreeResetFailure verifies that when the Reflector
-// suggests "replan" but worktree Reset() returns an error, the orchestrator
-// does NOT return an error — it falls back to retry behaviour.
-func TestPlanExecute_ReplanWorktreeResetFailure(t *testing.T) {
-	evalCallCount := 0
-	var tracker routerCallTracker
-
-	mwt := &mockWorktree{
-		resetErr: errors.New("git checkout failed: mock error"),
-	}
-
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
-				switch tracker.nextCall(req) {
-				case "extract_raw":
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"id": "rc_1", "description": "Test passes", "nature": "objective", "weight": "must"}]`},
-						StopReason: "end_turn",
-					}, nil
-				case "enrich":
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"id": "ac_1", "description": "Test passes", "check_type": "llm_judge"}]`},
-						StopReason: "end_turn",
-					}, nil
-				default: // route
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				}
-			}
-			if detectCallType(req) == "planner" {
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"steps": [{"id": "step_1", "description": "Do task", "depends_on": [], "parallelizable": false, "estimated_tools": [], "relevant_ac": ["ac_1"]}]}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "executor" {
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Task done",
-						ToolCalls: []llm.ToolCall{
-							{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Done"}`)},
-						},
-					},
-					StopReason: "tool_use",
-				}, nil
-			}
-			if detectCallType(req) == "evaluator_judge" {
-				evalCallCount++
-				if evalCallCount == 1 {
-					// First eval fails
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - needs more work"},
-						StopReason: "end_turn",
-					}, nil
-				}
-				// Second eval passes
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - looks good"},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if detectCallType(req) == "reflector" {
-				// Suggest replan — but Reset() will fail, so orchestrator should fall back to retry
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"summary": "Plan incomplete", "failed_criteria": ["ac_1"], "hypotheses": ["Missing step"], "suggested_action": "replan", "reasoning": "Need to add step", "failure_analysis": "Plan was incomplete", "root_cause": "Missing step", "action_plan": "Add step"}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: ""},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-	reflector := NewReflector(mockLLM)
-
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewACExtractor(mockLLM),
-		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10, MaxRetries: 3},
-		testContextFactory,
-		reflector,
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-		nil, // intentVerifier - nil for tests
-		func(sessionID string) Worktree { return mwt },
-	)
-
-	result, err := orchestrator.Handle(context.Background(), "Build and test feature")
-	if err != nil {
-		t.Fatalf("Handle should not return error when worktree Reset fails, got: %v", err)
-	}
-
-	if !mwt.resetCalled {
-		t.Error("expected worktree Reset() to be called")
-	}
-
-	// Should have succeeded after falling back to retry
-	if result.EvalResult == nil || !result.EvalResult.AllPassed {
-		t.Error("expected final eval to pass after retry fallback")
-	}
-}

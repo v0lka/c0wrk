@@ -745,11 +745,6 @@ func (a *App) startup(ctx context.Context) {
 			MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
 		}
 
-		// Create WorktreeFactory for git-worktree isolation per request
-		worktreeFactory := func(sessionID string) core.Worktree {
-			return workspace.NewWorktreeManager(workspacePath, sessionID, logger)
-		}
-
 		// Create IntentVerifier (Tier 2 intent-based evaluation)
 		caller := core.NewTokenTrackingCaller(newLLMRouter, emitter)
 		intentVerifier := core.NewIntentVerifier(
@@ -779,7 +774,6 @@ func (a *App) startup(ctx context.Context) {
 			newModelRegistry, // ModelRegistry for resolving model metadata
 			toolResultBudget,
 			intentVerifier,   // IntentVerifier (Tier 2)
-			worktreeFactory,  // WorktreeFactory for git isolation
 		), nil
 	}
 

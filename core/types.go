@@ -256,18 +256,6 @@ type AgentProfile struct {
 	Domain       string   `json:"domain,omitempty"`        // "code" | "research" | "general" - affects compaction and AC handling
 }
 
-// Worktree abstracts the git-worktree operations used by the orchestrator.
-// The concrete implementation is workspace.WorktreeManager.
-type Worktree interface {
-	Init() error
-	Reset() error
-	Cleanup() error
-	WorktreePath() string
-	GetDiff() (string, error)
-	GetDiffStat() (string, error)
-	Merge(commitMsg string) error
-}
-
 // DefaultAgentProfile returns the default executor profile.
 func DefaultAgentProfile() AgentProfile {
 	return AgentProfile{Role: "executor"}

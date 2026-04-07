@@ -64,13 +64,10 @@ USER_MESSAGE
 FINAL_OUTPUT
 
 ## Workspace Changes Summary
-CHANGE_SUMMARY
-
-## Detailed Changes (git diff)
-GIT_DIFF`
+CHANGE_SUMMARY`
 
 // Verify runs intent verification and returns the result.
-func (v *IntentVerifier) Verify(ctx context.Context, userMessage, finalOutput, gitDiff, changeSummary string) (*IntentVerification, error) {
+func (v *IntentVerifier) Verify(ctx context.Context, userMessage, finalOutput, changeSummary string) (*IntentVerification, error) {
 	// 1. Build system prompt
 	systemPrompt := prompts.IntentVerifierSystem
 
@@ -79,12 +76,6 @@ func (v *IntentVerifier) Verify(ctx context.Context, userMessage, finalOutput, g
 	taskDescription = strings.ReplaceAll(taskDescription, "USER_MESSAGE", userMessage)
 	taskDescription = strings.ReplaceAll(taskDescription, "FINAL_OUTPUT", finalOutput)
 	taskDescription = strings.ReplaceAll(taskDescription, "CHANGE_SUMMARY", changeSummary)
-	if gitDiff == "" {
-		taskDescription = strings.ReplaceAll(taskDescription, "GIT_DIFF",
-			"No git diff available — use file tools to inspect the workspace.")
-	} else {
-		taskDescription = strings.ReplaceAll(taskDescription, "GIT_DIFF", gitDiff)
-	}
 
 	// 3. Filter tools to read-only subset
 	filteredTools := filterReadOnlyTools(v.toolRegistry.List())

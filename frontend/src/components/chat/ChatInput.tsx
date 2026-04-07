@@ -15,7 +15,6 @@ export function ChatInput() {
   const [isProcessing, setIsProcessing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
-  const sessions = useSessionStore(s => s.sessions)
   const touchSession = useSessionStore(s => s.touchSession)
   const addSession = useSessionStore(s => s.addSession)
   const setActiveSession = useSessionStore(s => s.setActiveSession)
@@ -28,9 +27,7 @@ export function ChatInput() {
 
   // Blocking conditions
   const isNoProject = !activeProjectId
-  const busySession = sessions.find(s => s.active && s.id !== activeSessionId)
-  const isBlockedByOtherSession = !!busySession
-  const isInputDisabled = isTaskActive || isNoProject || isBlockedByOtherSession
+  const isInputDisabled = isTaskActive || isNoProject
 
   const showCancel = isThinking || isProcessing
 
@@ -139,9 +136,8 @@ export function ChatInput() {
   if (isNoProject) {
     placeholder = 'Select or create a project to start'
     blockingMessage = 'Select or create a project to start'
-  } else if (isBlockedByOtherSession) {
-    placeholder = `Session '${busySession?.name || 'Unknown'}' is currently active`
-    blockingMessage = `Session '${busySession?.name || 'Unknown'}' is currently active`
+  } else if (isTaskActive) {
+    placeholder = 'Session is processing...'
   }
 
   return (
