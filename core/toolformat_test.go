@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/user/agent/sdk/agent"
 	tools "github.com/user/agent/sdk/tools"
 )
 
@@ -16,7 +17,7 @@ func TestBuildGroupedToolList_AllTiers(t *testing.T) {
 		{Name: "tool_creator", Description: "creates tools", Source: "core"},
 	}
 
-	result := buildGroupedToolList(descriptors)
+	result := agent.BuildGroupedToolList(descriptors)
 
 	// Check tier headers
 	if !strings.Contains(result, "TIER 1") {
@@ -51,12 +52,12 @@ func TestBuildGroupedToolList_AllTiers(t *testing.T) {
 }
 
 func TestBuildGroupedToolList_EmptyInput(t *testing.T) {
-	result := buildGroupedToolList(nil)
+	result := agent.BuildGroupedToolList(nil)
 	if result != "" {
 		t.Errorf("expected empty string for nil input, got %q", result)
 	}
 
-	result = buildGroupedToolList([]tools.ToolDescriptor{})
+	result = agent.BuildGroupedToolList([]tools.ToolDescriptor{})
 	if result != "" {
 		t.Errorf("expected empty string for empty input, got %q", result)
 	}
@@ -105,7 +106,7 @@ func TestBuildGroupedToolList_OnlyOneTier(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := buildGroupedToolList(tt.descriptors)
+			result := agent.BuildGroupedToolList(tt.descriptors)
 			if !strings.Contains(result, tt.wantTier) {
 				t.Errorf("expected %s in output", tt.wantTier)
 			}
@@ -123,7 +124,7 @@ func TestBuildGroupedToolList_FallbackToolDetection(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
 		{Name: "tool_creator", Description: "creates tools dynamically", Source: "core"},
 	}
-	result := buildGroupedToolList(descriptors)
+	result := agent.BuildGroupedToolList(descriptors)
 
 	if !strings.Contains(result, "Fallback") {
 		t.Error("tool_creator should be in Fallback tier")

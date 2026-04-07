@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/user/agent/core/prompts"
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -37,7 +38,7 @@ func NewRouter(caller LLMCaller, historyWindow int) *Router {
 // Route analyzes the user's request and determines the best execution strategy.
 func (r *Router) Route(ctx context.Context, userMessage string, rawCriteria []RawCriterion, availableTools []tools.ToolDescriptor, history []llm.Message) (decision *RoutingDecision, err error) {
 	// Build tool list for the prompt (grouped by priority tier)
-	toolListStr := buildGroupedToolList(availableTools)
+	toolListStr := agent.BuildGroupedToolList(availableTools)
 
 	// Build raw criteria summary for the prompt
 	var criteriaList string

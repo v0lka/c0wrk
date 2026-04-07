@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { GetConfig, UpdateLLMSettings, ListProviderModels } from '../../../wailsjs/go/main/App'
-import { main } from '../../../wailsjs/go/models'
+import { GetConfig, UpdateLLMSettings, ListProviderModels } from '../../../wailsjs/go/desktop/App'
+import { desktop } from '../../../wailsjs/go/models'
 import { logger } from '@/lib/logger'
 import { ProviderSelector } from './ProviderSelector'
 import { ProviderConfigForm } from './ProviderConfigForm'
@@ -103,7 +103,7 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
   const saveSettings = useCallback(
     async (provider: string, config: ProviderConfig) => {
       try {
-        const request = new main.LLMSettingsRequest({
+        const request = new desktop.LLMSettingsRequest({
           active_provider: provider,
           api_key: config.api_key,
           base_url: config.base_url,

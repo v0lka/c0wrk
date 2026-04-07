@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -237,4 +238,38 @@ func parseJudgeResponse(content string) (verdict JudgeVerdict, reasoning string)
 	}
 
 	return verdict, reasoning
+}
+
+// JudgeConfig holds the settings needed to create a ToolJudge.
+type JudgeConfig struct {
+	Enabled      bool
+	Model        string // specific model for judge; if empty, uses DefaultModel
+	DefaultModel string // fallback model from active provider
+	Provider     llm.LLMProvider
+}
+
+// NewToolJudgeFromConfig creates a ToolJudge if enabled and properly configured.
+// Returns nil if disabled or misconfigured. Logs warnings via the provided logger.
+func NewToolJudgeFromConfig(cfg JudgeConfig, logger *slog.Logger) *ToolJudge {
+	if !cfg.Enabled || cfg.Provider == nil {
+		return nil
+	}
+
+	model := cfg.Model
+	if model == "" {
+		model = cfg.DefaultModel
+	}
+
+	if model == "" {
+		if logger != nil {
+			logger.Warn("tool judge disabled: no model configured")
+		}
+		return nil
+	}
+
+	judge := NewToolJudge(cfg.Provider, model)
+	if logger != nil {
+		logger.Info("tool judge initialized", "model", model)
+	}
+	return judge
 }

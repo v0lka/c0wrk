@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/user/agent/core/prompts"
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -533,7 +534,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 		}
 
 		// Run steps via SubAgents (works for both single and parallel execution)
-		tasks := make([]SubAgentTask, 0, len(readySteps))
+		tasks := make([]agent.SubAgentTask, 0, len(readySteps))
 
 		// Emit PlanStepStart for all steps before launching
 		stepStartTimes := make(map[string]time.Time)
@@ -599,10 +600,10 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			if maxSteps == 0 {
 				maxSteps = o.config.MaxSteps
 			}
-			executor := NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, o.logger, scopedEmitter, true, o.toolResultBudget)
+			executor := agent.NewExecutor(o.llm, o.tools, o.tokenCounter, maxSteps, o.logger, scopedEmitter, true, o.toolResultBudget)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 
-			tasks = append(tasks, SubAgentTask{
+			tasks = append(tasks, agent.SubAgentTask{
 				StepID:    step.ID,
 				Executor:  executor,
 				CM:        cm,
@@ -612,7 +613,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			})
 		}
 
-		results := RunSubAgentsParallel(ctx, tasks)
+		results := agent.RunSubAgentsParallel(ctx, tasks)
 		for _, r := range results {
 			// Emit PlanStepComplete for each result
 			o.emitter.PlanStepComplete(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
@@ -1077,6 +1078,12 @@ func isRecoverableAPIError(err error) bool {
 	return strings.Contains(errStr, "status code: 400") ||
 		strings.Contains(errStr, "missing field `content`") ||
 		strings.Contains(errStr, "Failed to deserialize")
+}
+
+// RunSubAgent is a backward-compatible wrapper around agent.RunSubAgent.
+// It accepts a TaskDefinition (c0wrk-specific) and extracts tools/description for the SDK call.
+func RunSubAgent(ctx context.Context, stepID string, executor *agent.Executor, cm ContextManager, task TaskDefinition, emitter Emitter) <-chan SubAgentResult {
+	return agent.RunSubAgent(ctx, stepID, executor, cm, task.Tools, task.Task, emitter)
 }
 
 // isContextExceededError checks if an error indicates the context window was exceeded.

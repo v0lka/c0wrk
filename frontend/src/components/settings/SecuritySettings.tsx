@@ -2,8 +2,8 @@ import { useState, useEffect, type KeyboardEvent } from 'react'
 import { Info, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { GetSecuritySettings, UpdateSecuritySettings } from '../../../wailsjs/go/main/App'
-import { main } from '../../../wailsjs/go/models'
+import { GetSecuritySettings, UpdateSecuritySettings } from '../../../wailsjs/go/desktop/App'
+import { desktop } from '../../../wailsjs/go/models'
 import { logger } from '@/lib/logger'
 
 type ToolPolicy = 'always_allow' | 'always_deny' | 'user_confirm' | 'auto'
@@ -62,7 +62,7 @@ export function SecuritySettings() {
   const updateSettings = async (newSettings: SecuritySettings) => {
     setSettings(newSettings)
     try {
-      await UpdateSecuritySettings(newSettings as unknown as main.SecuritySettingsResponse)
+      await UpdateSecuritySettings(newSettings as unknown as desktop.SecuritySettingsResponse)
     } catch (error) {
       logger.error('Failed to update security settings:', error)
     }

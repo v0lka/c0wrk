@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -3124,7 +3125,7 @@ func TestIsRecoverableAPIError(t *testing.T) {
 }
 
 func TestFinishTool_DefaultPolicy(t *testing.T) {
-	ft := NewFinishTool()
+	ft := agent.NewFinishTool()
 	if ft.DefaultPolicy() != tools.PolicyAlwaysAllow {
 		t.Errorf("expected PolicyAlwaysAllow, got %v", ft.DefaultPolicy())
 	}
@@ -3143,7 +3144,7 @@ func TestFinishTool_Execute(t *testing.T) {
 		{"missing answer field", `{"other":"val"}`, "", false},
 	}
 
-	ft := NewFinishTool()
+	ft := agent.NewFinishTool()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := ft.Execute(context.Background(), json.RawMessage(tt.input))

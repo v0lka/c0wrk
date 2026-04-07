@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Sun, Moon, Monitor } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { Button } from '@/components/ui/button'
-import { SetTheme, GetConfig } from '../../../wailsjs/go/main/App'
+import { SetTheme, GetConfig } from '../../../wailsjs/go/desktop/App'
 import type { ReactNode } from 'react'
 
 type Theme = 'light' | 'dark' | 'system'

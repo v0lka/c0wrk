@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/user/agent/core/prompts"
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -96,7 +97,7 @@ func (p *Planner) buildPlanSystemPrompt(
 	reflections []Reflection,
 ) string {
 	// Build available tools string (grouped by priority tier)
-	availableToolsStr := buildGroupedToolList(availableTools)
+	availableToolsStr := agent.BuildGroupedToolList(availableTools)
 
 	// Build acceptance criteria string
 	var criteriaBuilder strings.Builder

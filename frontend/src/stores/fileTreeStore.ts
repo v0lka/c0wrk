@@ -23,22 +23,22 @@ interface FileTreeState {
 }
 
 async function listDirectory(path: string): Promise<FileNode[]> {
-  if (!window?.go?.main?.App?.ListDirectory) return []
+  if (!window?.go?.desktop?.App?.ListDirectory) return []
   try {
-    return await window.go.main.App.ListDirectory(path)
+    return await window.go.desktop.App.ListDirectory(path)
   } catch {
     return []
   }
 }
 
 async function watchDirectory(path: string): Promise<void> {
-  if (!window?.go?.main?.App?.WatchDirectory) return
-  try { await window.go.main.App.WatchDirectory(path) } catch { /* ignore */ }
+  if (!window?.go?.desktop?.App?.WatchDirectory) return
+  try { await window.go.desktop.App.WatchDirectory(path) } catch { /* ignore */ }
 }
 
 async function unwatchDirectory(path: string): Promise<void> {
-  if (!window?.go?.main?.App?.UnwatchDirectory) return
-  try { await window.go.main.App.UnwatchDirectory(path) } catch { /* ignore */ }
+  if (!window?.go?.desktop?.App?.UnwatchDirectory) return
+  try { await window.go.desktop.App.UnwatchDirectory(path) } catch { /* ignore */ }
 }
 
 export const useFileTreeStore = create<FileTreeState>((set, get) => ({

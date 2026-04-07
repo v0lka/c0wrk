@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -37,7 +38,7 @@ func TestRunSubAgent_Successful(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
+	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -74,7 +75,7 @@ func TestRunSubAgent_ContextCancellation(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
+	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -100,7 +101,7 @@ func TestRunSubAgent_ContextCancellation(t *testing.T) {
 
 func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 	// Create 3 mock executors that return different results
-	createMockExecutor := func(answer string) *Executor {
+	createMockExecutor := func(answer string) *agent.Executor {
 		mockLLM := &mockLLMCaller{
 			responses: []*llm.ChatResponse{
 				{
@@ -117,10 +118,10 @@ func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 			},
 		}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
+		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
 	}
 
-	agents := []SubAgentTask{
+	agents := []agent.SubAgentTask{
 		{
 			StepID:   "step_1",
 			Executor: createMockExecutor("Result 1"),
@@ -142,7 +143,7 @@ func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 	}
 
 	// Run all agents in parallel
-	results := RunSubAgentsParallel(context.Background(), agents)
+	results := agent.RunSubAgentsParallel(context.Background(), agents)
 
 	// Verify we got 3 results
 	if len(results) != 3 {
@@ -178,7 +179,7 @@ func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 }
 
 func TestRunSubAgentsParallel_EmptyInput(t *testing.T) {
-	results := RunSubAgentsParallel(context.Background(), []SubAgentTask{})
+	results := agent.RunSubAgentsParallel(context.Background(), []agent.SubAgentTask{})
 	if results != nil {
 		t.Errorf("expected nil for empty input, got %v", results)
 	}
@@ -187,9 +188,9 @@ func TestRunSubAgentsParallel_EmptyInput(t *testing.T) {
 func TestNewSubAgent(t *testing.T) {
 	mockLLM := &mockLLMCaller{}
 	mockTools := &mockToolExecutor{}
-	executor := NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
+	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
 
-	subAgent := NewSubAgent("test_id", executor)
+	subAgent := agent.NewSubAgent("test_id", executor)
 
 	if subAgent.ID != "test_id" {
 		t.Errorf("expected id 'test_id', got '%s'", subAgent.ID)
@@ -204,13 +205,13 @@ func TestRunSubAgentsParallel_WithContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	createMockExecutor := func() *Executor {
+	createMockExecutor := func() *agent.Executor {
 		mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{}}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
+		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, nil, false, ToolResultBudget{})
 	}
 
-	agents := []SubAgentTask{
+	agents := []agent.SubAgentTask{
 		{
 			StepID:   "step_1",
 			Executor: createMockExecutor(),
@@ -225,7 +226,7 @@ func TestRunSubAgentsParallel_WithContextCancellation(t *testing.T) {
 		},
 	}
 
-	results := RunSubAgentsParallel(ctx, agents)
+	results := agent.RunSubAgentsParallel(ctx, agents)
 
 	// All results should have errors
 	if len(results) != 2 {

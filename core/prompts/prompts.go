@@ -48,3 +48,8 @@ var EvaluatorReconsider string
 
 //go:embed intent_verifier_system.md
 var IntentVerifierSystem string
+
+// Compaction summarize prompt
+
+//go:embed compaction_summarize.md
+var CompactionSummarize string

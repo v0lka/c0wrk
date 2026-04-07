@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Info } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { Button } from '@/components/ui/button'
-import { GetLogLevel, SetLogLevel } from '../../../wailsjs/go/main/App'
+import { GetLogLevel, SetLogLevel } from '../../../wailsjs/go/desktop/App'
 import { logger } from '@/lib/logger'
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'

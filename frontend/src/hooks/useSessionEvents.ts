@@ -5,7 +5,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
 import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData } from '@/lib/wails'
 import { isSessionTokensData } from '@/lib/wails'
-import { GetSessionTokens } from '../../wailsjs/go/main/App'
+import { GetSessionTokens } from '../../wailsjs/go/desktop/App'
 
 // --- Type guards for event data validation ---
 function isRoutingData(data: unknown): data is RoutingData {

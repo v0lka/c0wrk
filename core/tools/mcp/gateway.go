@@ -4,6 +4,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/user/agent/core/tools"
@@ -149,4 +150,53 @@ func (e *MCPStopError) Error() string {
 		return fmt.Sprintf("MCP gateway stop error: %v", e.Errors[0])
 	}
 	return fmt.Sprintf("MCP gateway stop errors: %d servers failed to stop cleanly", len(e.Errors))
+}
+
+// GatewayConfig holds the raw MCP server entries for gateway initialization.
+type GatewayConfig struct {
+	Servers map[string]ServerEntry
+}
+
+// ServerEntry describes how to launch a single MCP server.
+type ServerEntry struct {
+	Command string
+	Args    []string
+	Env     map[string]string // values may contain ${ENV_VAR} references
+}
+
+// StartGateway creates, configures, starts, and registers an MCPGateway.
+// expandEnv resolves ${VAR} references in environment values.
+// Returns (nil, nil) if no servers are configured.
+func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) (*MCPGateway, error) {
+	if len(cfg.Servers) == 0 {
+		return nil, nil
+	}
+
+	mcpConfigs := make(map[string]MCPServerConfig, len(cfg.Servers))
+	for name, entry := range cfg.Servers {
+		env := make(map[string]string, len(entry.Env))
+		for ek, ev := range entry.Env {
+			env[ek] = expandEnv(ev)
+		}
+		mcpConfigs[name] = MCPServerConfig{
+			Command: entry.Command,
+			Args:    entry.Args,
+			Env:     env,
+		}
+	}
+
+	gateway := NewMCPGateway()
+	if err := gateway.Start(ctx, mcpConfigs); err != nil {
+		if logger != nil {
+			logger.Warn("MCP gateway start errors", "error", err)
+		}
+	}
+
+	if err := gateway.RegisterTools(registry); err != nil {
+		if logger != nil {
+			logger.Warn("MCP tool registration errors", "error", err)
+		}
+	}
+
+	return gateway, nil
 }

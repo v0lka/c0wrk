@@ -7,7 +7,7 @@ import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { MessageCircle } from 'lucide-react'
-import { GetSessionHistory } from '../../../wailsjs/go/main/App'
+import { GetSessionHistory } from '../../../wailsjs/go/desktop/App'
 import { chatMessageToUI } from '@/lib/chatUtils'
 import { logger } from '@/lib/logger'
 

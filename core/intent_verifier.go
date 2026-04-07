@@ -94,7 +94,7 @@ func (v *IntentVerifier) Verify(ctx context.Context, userMessage, finalOutput, c
 	cm.SetTask(taskDescription, nil)
 
 	// 7. Create executor — suppress assistant events, use noop emitter
-	exec := NewExecutor(
+	exec := agent.NewExecutor(
 		v.llm,
 		v.toolRegistry,
 		v.tokenCounter,

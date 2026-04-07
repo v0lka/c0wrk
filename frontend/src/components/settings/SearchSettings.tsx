@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
-import { GetConfig, UpdateSearchSettings } from '../../../wailsjs/go/main/App'
+import { GetConfig, UpdateSearchSettings } from '../../../wailsjs/go/desktop/App'
 import { logger } from '@/lib/logger'
 
 interface SearchConfig {

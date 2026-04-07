@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { AlertTriangle, Info } from 'lucide-react'
-import { GetConfig } from '../../../wailsjs/go/main/App'
+import { GetConfig } from '../../../wailsjs/go/desktop/App'
 
 interface ConfigWarningBannerProps {
   className?: string
