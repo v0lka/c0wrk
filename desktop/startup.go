@@ -336,6 +336,10 @@ func (a *App) Startup(ctx context.Context) {
 		registry.Register(webSearchTool)
 	}
 
+	// Evidence tool (read_evidence) — allows evaluator ReAct agents to read blackboard evidence
+	evidenceTool := toolcore.NewEvidenceTool()
+	registry.Register(evidenceTool)
+
 	// Initialize MCP Gateway (optional)
 	mcpEntries := make(map[string]mcp.ServerEntry, len(a.config.MCP.Servers))
 	for name, cfg := range a.config.MCP.Servers {
@@ -438,7 +442,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Validate LLM-dependent objects at startup (fail-fast).
 	// The factory closure will rebuild these per-session from current config.
 	if llmRouter != nil {
-		_, _, _, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil)
+		_, _, _, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil, nil)
 	}
 	_ = a.buildOrchestratorConfig(a.config)
 	_ = a.buildContextFactory(llmRouter, a.config)
@@ -514,7 +518,7 @@ func (a *App) Startup(ctx context.Context) {
 			return nil, errors.New("no active LLM provider configured - check your config.yaml")
 		}
 
-		newRouter, newACExtractor, newPlanner, newEvaluator, newReflector := a.buildCoreAgents(newLLMRouter, registry, cfg, emitter)
+		newRouter, newACExtractor, newPlanner, newEvaluator, newReflector := a.buildCoreAgents(newLLMRouter, registry, cfg, emitter, logger)
 		if newRouter == nil || newACExtractor == nil || newPlanner == nil || newEvaluator == nil {
 			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
 		}

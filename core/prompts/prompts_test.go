@@ -18,7 +18,6 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"RawACExtractorSystem", RawACExtractorSystem},
 		{"ACEnricherSystem", ACEnricherSystem},
 		{"EvaluatorJudge", EvaluatorJudge},
-		{"EvaluatorReconsider", EvaluatorReconsider},
 	}
 
 	for _, tt := range tests {
@@ -46,7 +45,6 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 		{"ReflectorSystem", ReflectorSystem, []string{"reflect"}},
 		{"RouterSystem", RouterSystem, []string{"classif"}},
 		{"EvaluatorJudge", EvaluatorJudge, []string{"evaluat"}},
-		{"EvaluatorReconsider", EvaluatorReconsider, []string{"evaluat"}},
 	}
 
 	for _, tt := range tests {
@@ -71,7 +69,6 @@ func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 		"RawACExtractorSystem": RawACExtractorSystem,
 		"ACEnricherSystem":     ACEnricherSystem,
 		"EvaluatorJudge":       EvaluatorJudge,
-		"EvaluatorReconsider":  EvaluatorReconsider,
 	}
 
 	seen := make(map[string]string) // content -> name

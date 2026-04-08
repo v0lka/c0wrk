@@ -16,6 +16,10 @@ import (
 	tools "github.com/user/agent/sdk/tools"
 )
 
+// maxDependencyContextChars is the maximum total character length for all
+// dependency summaries injected into a step's task description (~2000 tokens).
+const maxDependencyContextChars = 8000
+
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps   int
@@ -136,6 +140,9 @@ func (o *Orchestrator) logWarn(msg string, args ...any) {
 // This is the main entry point for Phase 2.
 // Returns a HandleResult with rich output including routing decision, plan, and evaluation.
 func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleResult, error) {
+	// Create a fresh blackboard for this request (per-request state).
+	bb := NewMapBlackboard()
+	bb.SetOriginalRequest(userMessage)
 	// 0. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
 	{
 		var effectiveMax int
@@ -182,6 +189,9 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 		ac = enrichedAC
 	}
 
+	// Populate blackboard with enriched criteria
+	bb.SetCriteria(ac)
+
 	// Emit AC extraction with criteria details
 	acEvents := make([]EvalCriterionEvent, len(ac))
 	for i, c := range ac {
@@ -197,9 +207,10 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 		result = &HandleResult{
 			Output:          "I need more information to help you. Could you please clarify your request?",
 			RoutingDecision: routing,
+			Blackboard:      bb,
 		}
 	} else {
-		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools, nil, ac)
+		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools, nil, ac, bb)
 	}
 
 	if err != nil {
@@ -281,7 +292,7 @@ func (o *Orchestrator) filterToolsByProfile(allTools []tools.ToolDescriptor, pro
 }
 
 // handlePlanExecute handles plan_execute mode - DAG planning and execution with retry.
-func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, escalatedReflections []Reflection, ac []AcceptanceCriterion) (*HandleResult, error) {
+func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, escalatedReflections []Reflection, ac []AcceptanceCriterion, bb Blackboard) (*HandleResult, error) {
 	// Initialize session reflections from escalated reflections (if any)
 	var sessionReflections []Reflection
 	if len(escalatedReflections) > 0 {
@@ -304,6 +315,9 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	o.emitter.PlanGenerated(len(plan.Steps), planStepEvents)
 	o.logInfo("plan_generated", "step_count", len(plan.Steps))
 	o.logDebug("plan_steps", "steps", plan.Steps)
+
+	// Populate blackboard with initial plan
+	bb.SetPlan(plan)
 
 	// Validate AC-to-step mapping
 	if unmappedAC := validateACMapping(plan, ac); len(unmappedAC) > 0 {
@@ -329,7 +343,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		}
 
 		// Execute the current plan
-		finalOutput, completedSteps, aggErr := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted, sharedWS, userMessage, stepRetryContext)
+		finalOutput, completedSteps, aggErr := o.executePlanWithSteps(ctx, currentPlan, ac, routing, availableTools, sessionReflections, preCompleted, sharedWS, userMessage, stepRetryContext, bb)
 		// Note: step execution errors are handled within executePlanWithSteps
 		lastOutput = finalOutput
 		prevCompletedSteps := completedSteps
@@ -361,12 +375,14 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 				reflection, reflectErr := o.reflector.Reflect(ctx, syntheticSteps, syntheticEval, currentPlan, sessionReflections)
 				if reflectErr == nil && reflection.SuggestedAction != "abort" {
 					sessionReflections = append(sessionReflections, *reflection)
+					bb.AddReflection(*reflection)
 					o.emitter.Reflection(reflection.Summary, reflection.Hypotheses, attempt+1, o.maxRetries)
 
 					// Force replan — step failure suggests plan decomposition issue
 					newPlan, replanErr := o.planner.Replan(ctx, currentPlan, completedSteps, findFailedStep(completedSteps), reflection, ac, sessionReflections)
 					if replanErr == nil {
 						currentPlan = newPlan
+						bb.SetPlan(currentPlan)
 						preCompleted = buildCarryForward(prevCompletedSteps, newPlan)
 						stepRetryContext = ""
 						sharedWS.Clear()
@@ -406,10 +422,14 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 				"hint", "this should have been caught by incomplete execution handler above")
 		}
 
+		// Populate blackboard with final output
+		bb.SetFinalResult(finalOutput)
+
 		handleResult := &HandleResult{
 			Output:          finalOutput,
 			RoutingDecision: routing,
 			Plan:            currentPlan,
+			Blackboard:      bb,
 			AttemptCount:    attempt + 1,
 			Reflections:     sessionReflections,
 		}
@@ -425,7 +445,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 			lastEvalResult = evalResult
 		} else {
 			o.emitter.ServiceWithMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
-			er, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, syntheticSteps)
+			er, evalErr := o.evaluator.Evaluate(ctx, finalOutput, ac, bb)
 			if evalErr != nil {
 				o.logWarn("evaluation failed, returning result without evaluation", "error", evalErr)
 				o.emitter.ServiceWithMeta("Evaluation failed: "+evalErr.Error(), map[string]any{"phase": "orchestration", "severity": "warning"})
@@ -503,6 +523,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 				// Check if reflector suggests abort
 				if reflection.SuggestedAction == "abort" {
 					sessionReflections = append(sessionReflections, *reflection)
+					bb.AddReflection(*reflection)
 					handleResult.Reflections = sessionReflections
 					failedCriteria := o.formatFailedCriteria(evalResult)
 					handleResult.Output = finalOutput + "\n\n[Evaluation: some criteria not met: " + failedCriteria + ". Reflector suggests abort.]"
@@ -515,6 +536,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 				o.logDebug("reflection_details", "hypotheses", reflection.Hypotheses, "reasoning", reflection.Reasoning, "failure_analysis", reflection.FailureAnalysis, "root_cause", reflection.RootCause, "action_plan", reflection.ActionPlan)
 
 				sessionReflections = append(sessionReflections, *reflection)
+				bb.AddReflection(*reflection)
 
 				// Replan if suggested, otherwise retry with same plan
 				if reflection.SuggestedAction == "replan" {
@@ -530,6 +552,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 						continue
 					}
 					currentPlan = newPlan
+					bb.SetPlan(currentPlan)
 					// Carry forward completed step results that the new plan preserves (by ID).
 					preCompleted = buildCarryForward(prevCompletedSteps, newPlan)
 					stepRetryContext = "" // reset retry context on full replan
@@ -567,10 +590,12 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	}
 
 	// Max retries exhausted
+	bb.SetFinalResult(lastOutput)
 	handleResult := &HandleResult{
 		Output:          lastOutput,
 		RoutingDecision: routing,
 		Plan:            currentPlan,
+		Blackboard:      bb,
 		EvalResult:      lastEvalResult,
 		AttemptCount:    o.maxRetries + 1,
 		Reflections:     sessionReflections,
@@ -585,7 +610,7 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 }
 
 // executePlanWithSteps executes a DAG plan and returns completed steps for replan.
-func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac []AcceptanceCriterion, routing *RoutingDecision, availableTools []tools.ToolDescriptor, sessionReflections []Reflection, preCompleted map[string]CompletedStep, sharedWS *SharedWorkspace, userMessage, retryContext string) (string, []CompletedStep, error) {
+func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac []AcceptanceCriterion, routing *RoutingDecision, availableTools []tools.ToolDescriptor, sessionReflections []Reflection, preCompleted map[string]CompletedStep, sharedWS *SharedWorkspace, userMessage, retryContext string, bb Blackboard) (string, []CompletedStep, error) {
 	var completedSteps map[string]CompletedStep
 	var completedList []CompletedStep
 	if preCompleted != nil {
@@ -669,7 +694,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 				maxSteps = o.config.MaxSteps
 			}
 
-			taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, sharedWS, userMessage, retryContext, maxSteps)
+			taskDef := o.buildStepTask(step, stepIndex, *plan, ac, completedSteps, stepTools, bb, userMessage, retryContext, maxSteps)
 
 			// Use profile-specific system prompt if provided
 			var systemPrompt string
@@ -725,6 +750,10 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			cs := CompletedStep(r)
 			completedSteps[r.StepID] = cs
 			completedList = append(completedList, cs)
+
+			// Record step result in blackboard
+			bb.SetStepResult(r.StepID, r.Output, r.Error, r.Steps)
+
 			if r.Error != nil {
 				stepFailed = true
 			}
@@ -935,7 +964,7 @@ func validateACMapping(plan *Plan, ac []AcceptanceCriterion) []string {
 // buildStepTask creates a TaskDefinition for a plan step.
 // stepIndex is 0-based index of this step in the plan.
 // retryContext is an optional string with workspace state from a previous attempt (empty on first attempt).
-func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, sharedWS *SharedWorkspace, userMessage, retryContext string, maxSteps int) TaskDefinition {
+func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, allAC []AcceptanceCriterion, completedSteps map[string]CompletedStep, availableTools []tools.ToolDescriptor, bb Blackboard, userMessage, retryContext string, maxSteps int) TaskDefinition {
 	// Build task description with scoping context
 	var taskBuilder strings.Builder
 
@@ -975,28 +1004,29 @@ func (o *Orchestrator) buildStepTask(step PlanStep, stepIndex int, plan Plan, al
 	fmt.Fprintf(&taskBuilder, "\nYour specific objective: %s\n\n", step.Description)
 	taskBuilder.WriteString("Produce output that is scoped to this step only. Later steps will build on your output.\n")
 
-	// Context from previous steps
+	// Context from previous steps (use blackboard summaries instead of full outputs)
 	if len(step.DependsOn) > 0 {
-		taskBuilder.WriteString("\nContext from previous steps:")
+		var depBuf strings.Builder
 		for _, depID := range step.DependsOn {
-			if completed, ok := completedSteps[depID]; ok {
-				fmt.Fprintf(&taskBuilder, "\n- [%s]: %s", depID, completed.Output)
+			summary := bb.GetStepSummary(depID)
+			if summary != "" {
+				fmt.Fprintf(&depBuf, "\n- [%s]: %s", depID, summary)
 			}
 		}
-	}
+		depContext := depBuf.String()
 
-	// Inject workspace artifacts from completed dependencies
-	if sharedWS != nil {
-		var artifactContext strings.Builder
-		for _, depID := range step.DependsOn {
-			artifacts := sharedWS.GetByProducer(depID)
-			for _, a := range artifacts {
-				fmt.Fprintf(&artifactContext, "\n\n--- Artifact from %s ---\n%s", a.ProducedBy, a.Content)
+		// Enforce total dependency context budget by trimming oldest entries first.
+		if len(depContext) > maxDependencyContextChars {
+			depContext = depContext[len(depContext)-maxDependencyContextChars:]
+			// Re-align to the next entry boundary ("\n- [") to avoid partial lines.
+			if idx := strings.Index(depContext, "\n- ["); idx >= 0 {
+				depContext = depContext[idx:]
 			}
 		}
-		if artifactContext.Len() > 0 {
-			taskBuilder.WriteString("\n\nContext from previous steps:")
-			taskBuilder.WriteString(artifactContext.String())
+
+		if depContext != "" {
+			taskBuilder.WriteString("\nContext from previous steps:")
+			taskBuilder.WriteString(depContext)
 		}
 	}
 

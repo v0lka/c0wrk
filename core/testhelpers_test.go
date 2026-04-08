@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/user/agent/sdk/llm"
@@ -16,6 +17,8 @@ import (
 //   - callFn: custom function for more complex behavior (takes precedence if set)
 //   - err: error to return from all calls (if set and callFn is nil)
 type mockLLMCaller struct {
+	mu sync.Mutex
+
 	// responses to return in order (cycles through callIdx)
 	responses []*llm.ChatResponse
 	callIdx   int
@@ -32,7 +35,9 @@ type mockLLMCaller struct {
 
 func (m *mockLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	// Record the call
+	m.mu.Lock()
 	m.calls = append(m.calls, req)
+	m.mu.Unlock()
 
 	// If callFn is set, use it
 	if m.callFn != nil {
@@ -45,6 +50,8 @@ func (m *mockLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.Cha
 	}
 
 	// Return from responses slice
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.callIdx >= len(m.responses) {
 		// Return empty response if we've exhausted responses
 		return &llm.ChatResponse{
@@ -59,6 +66,8 @@ func (m *mockLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.Cha
 
 // lastCall returns the last recorded call request, or empty if none
 func (m *mockLLMCaller) lastCall() llm.ChatRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if len(m.calls) == 0 {
 		return llm.ChatRequest{}
 	}

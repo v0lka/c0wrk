@@ -268,6 +268,7 @@ type HandleResult struct {
 	RoutingDecision *RoutingDecision `json:"routing_decision"`
 	Plan            *Plan            `json:"plan,omitempty"`
 	EvalResult      *EvalResult      `json:"eval_result,omitempty"`
+	Blackboard      Blackboard       `json:"-"` // shared state for downstream consumers (not serialized)
 	// Retry-loop fields (Phase 3)
 	AttemptCount int          `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
 	Reflections  []Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts

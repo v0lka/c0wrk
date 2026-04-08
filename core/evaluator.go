@@ -4,34 +4,112 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/user/agent/core/prompts"
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/tools"
 )
 
-// Evaluator checks execution results against acceptance criteria.
-type Evaluator struct {
-	tools ToolExecutor // for programmatic checks (bash_exec)
-	llm   LLMCaller    // for llm_judge checks
+// maxResultSummaryChars is the maximum character length for the result summary
+// passed to each evaluator ReAct agent (~500 tokens at 4 chars/token).
+const maxResultSummaryChars = 2000
+
+// evaluatorToolWhitelist defines the read-only tools the evaluator agents can use.
+// read_evidence is always added separately since it needs blackboard context.
+// file_ops is included but restricted to read-only actions via schema filtering
+// and the readOnlyToolExecutor runtime guard.
+var evaluatorToolWhitelist = map[string]bool{
+	"file_ops":      true,
+	"ripgrep":       true,
+	"glob":          true,
+	"read_evidence": true,
 }
 
-// NewEvaluator creates a new Evaluator.
-func NewEvaluator(tools ToolExecutor, caller LLMCaller) *Evaluator {
+// fileOpsReadOnlyActions lists the actions that are safe for evaluation mode.
+var fileOpsReadOnlyActions = map[string]bool{
+	"read_file":       true,
+	"list_directory":  true,
+	"search_files":    true,
+	"search_content":  true,
+}
+
+// fileOpsWriteActions lists the actions blocked in evaluation mode.
+var fileOpsWriteActions = map[string]bool{
+	"write_file":        true,
+	"edit_file":         true,
+	"create_directory":  true,
+	"delete_directory":  true,
+	"delete_file":       true,
+}
+
+// Evaluator checks execution results against acceptance criteria.
+// Each llm_judge criterion is evaluated by an independent ReAct agent
+// with its own context window, fetching evidence on-demand from the Blackboard.
+type Evaluator struct {
+	tools            ToolExecutor // for programmatic checks (bash_exec)
+	llm              LLMCaller
+	toolRegistry     *tools.ToolRegistry
+	tokenCounter     llm.TokenCounter
+	contextFactory   ContextManagerFactory
+	maxSteps         int
+	logger           *slog.Logger
+	emitter          Emitter
+	toolResultBudget ToolResultBudget
+}
+
+// NewEvaluator creates a new Evaluator with full ReAct agent support.
+func NewEvaluator(
+	toolExec ToolExecutor,
+	llmCaller LLMCaller,
+	toolRegistry *tools.ToolRegistry,
+	tokenCounter llm.TokenCounter,
+	contextFactory ContextManagerFactory,
+	logger *slog.Logger,
+	emitter Emitter,
+	toolResultBudget ToolResultBudget,
+) *Evaluator {
 	return &Evaluator{
-		tools: tools,
-		llm:   caller,
+		tools:            toolExec,
+		llm:              llmCaller,
+		toolRegistry:     toolRegistry,
+		tokenCounter:     tokenCounter,
+		contextFactory:   contextFactory,
+		maxSteps:         20, // evaluator agent budget
+		logger:           logger,
+		emitter:          emitter,
+		toolResultBudget: toolResultBudget,
 	}
 }
 
+// evaluatorTaskTemplate is the task description template for evaluator agents.
+const evaluatorTaskTemplate = `## Acceptance Criterion
+CRITERION_DESCRIPTION
+
+## Final Result Summary
+RESULT_SUMMARY
+
+## Available Evidence
+Use the read_evidence tool to list and inspect step results from the execution.
+Use file_ops, ripgrep, glob to inspect the actual workspace state.
+Start by listing available evidence, then fetch relevant steps to evaluate this criterion.`
+
 // Evaluate checks the result against all acceptance criteria.
-func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []AcceptanceCriterion, steps []Step) (*EvalResult, error) {
+// Non-LLM criteria (programmatic, intent_verification, unknown) run sequentially first.
+// All llm_judge criteria then run in parallel since each spawns an independent ReAct
+// agent with its own context window, and the Blackboard is thread-safe.
+func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []AcceptanceCriterion, bb Blackboard) (*EvalResult, error) {
 	evalResult := &EvalResult{
 		Passed:  []EvalDetail{},
 		Failed:  []EvalDetail{},
 		Unclear: []EvalDetail{},
 	}
 
+	// Phase 1: Process non-LLM criteria sequentially and collect llm_judge criteria.
+	var llmJudgeCriteria []AcceptanceCriterion
 	for _, criterion := range criteria {
 		var detail EvalDetail
 		var err error
@@ -40,7 +118,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []Acce
 		case "programmatic":
 			detail, err = e.evaluateProgrammatic(ctx, criterion)
 		case "llm_judge":
-			detail, err = e.evaluateLLMJudge(ctx, criterion, result, steps)
+			llmJudgeCriteria = append(llmJudgeCriteria, criterion)
+			continue
 		case "intent_verification":
 			detail = EvalDetail{
 				Criterion:  criterion,
@@ -60,56 +139,53 @@ func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []Acce
 			return nil, err
 		}
 
-		// Categorize based on diagnostic prefix convention
-		// The evaluation methods set Diagnostic to indicate pass/fail
-		switch {
-		case detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "PASSED:"):
-			evalResult.Passed = append(evalResult.Passed, detail)
-		case detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "FAILED:"):
-			evalResult.Failed = append(evalResult.Failed, detail)
-		default:
-			// Default to unclear if no prefix or UNCLEAR prefix
-			evalResult.Unclear = append(evalResult.Unclear, detail)
+		categorizeDetail(evalResult, detail)
+	}
+
+	// Phase 2: Run llm_judge criteria in parallel.
+	if len(llmJudgeCriteria) > 0 {
+		type llmJudgeResult struct {
+			detail EvalDetail
+			err    error
+		}
+		results := make([]llmJudgeResult, len(llmJudgeCriteria))
+
+		var wg sync.WaitGroup
+		for i, criterion := range llmJudgeCriteria {
+			wg.Add(1)
+			go func(idx int, ac AcceptanceCriterion) {
+				defer wg.Done()
+				detail, err := e.evaluateLLMJudgeReAct(ctx, ac, result, bb)
+				results[idx] = llmJudgeResult{detail: detail, err: err}
+			}(i, criterion)
+		}
+		wg.Wait()
+
+		// Collect results in original criteria order (deterministic).
+		for _, r := range results {
+			if r.err != nil {
+				return nil, r.err
+			}
+			categorizeDetail(evalResult, r.detail)
 		}
 	}
 
 	// AllPassed = no failures (unclear is a judge quality issue, not execution failure)
 	evalResult.AllPassed = len(evalResult.Failed) == 0
 
-	// Reconsider failed llm_judge criteria when execution evidence is available
-	if steps != nil && len(evalResult.Failed) > 0 {
-		var reconsidered []EvalDetail
-		var stillFailed []EvalDetail
-		for _, detail := range evalResult.Failed {
-			if detail.Criterion.CheckType == "llm_judge" {
-				passed, newDiagnostic, err := e.reconsiderCriterion(ctx, detail.Criterion, result, steps, detail.Diagnostic)
-				if err != nil {
-					// On error, keep original verdict
-					stillFailed = append(stillFailed, detail)
-					continue
-				}
-				if passed {
-					reconsidered = append(reconsidered, EvalDetail{
-						Criterion:          detail.Criterion,
-						Diagnostic:         newDiagnostic,
-						Reconsidered:       true,
-						OriginalDiagnostic: detail.Diagnostic,
-					})
-				} else {
-					stillFailed = append(stillFailed, detail)
-				}
-			} else {
-				stillFailed = append(stillFailed, detail)
-			}
-		}
-		if len(reconsidered) > 0 {
-			evalResult.Passed = append(evalResult.Passed, reconsidered...)
-			evalResult.Failed = stillFailed
-			evalResult.AllPassed = len(evalResult.Failed) == 0
-		}
-	}
-
 	return evalResult, nil
+}
+
+// categorizeDetail appends a detail to the appropriate category in the eval result.
+func categorizeDetail(evalResult *EvalResult, detail EvalDetail) {
+	switch {
+	case detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "PASSED:"):
+		evalResult.Passed = append(evalResult.Passed, detail)
+	case detail.Diagnostic != "" && strings.HasPrefix(detail.Diagnostic, "FAILED:"):
+		evalResult.Failed = append(evalResult.Failed, detail)
+	default:
+		evalResult.Unclear = append(evalResult.Unclear, detail)
+	}
 }
 
 // evaluateProgrammatic runs a programmatic check via bash_exec.
@@ -142,16 +218,179 @@ func (e *Evaluator) evaluateProgrammatic(ctx context.Context, criterion Acceptan
 	return detail, nil
 }
 
-// evaluateLLMJudge uses LLM to evaluate whether a criterion is met.
-func (e *Evaluator) evaluateLLMJudge(ctx context.Context, criterion AcceptanceCriterion, result string, steps []Step) (EvalDetail, error) {
-	// Build user message with criterion, result, and evidence
-	var userMsg strings.Builder
-	fmt.Fprintf(&userMsg, "Criterion: %s\n\nResult: %s", criterion.Description, result)
-	if len(steps) > 0 {
-		fmt.Fprintf(&userMsg, "\n\nExecution Evidence:\n%s", buildEvidenceSection(steps))
+// evaluateLLMJudgeReAct runs a per-criterion ReAct agent to evaluate an llm_judge criterion.
+func (e *Evaluator) evaluateLLMJudgeReAct(ctx context.Context, criterion AcceptanceCriterion, result string, bb Blackboard) (EvalDetail, error) {
+	// Guard: if dependencies for ReAct agent are missing, fall back to simple one-shot LLM call
+	if e.contextFactory == nil || e.llm == nil {
+		return e.evaluateLLMJudgeSimple(ctx, criterion, result)
 	}
 
-	// Create chat request with system + user messages
+	// 1. Build task description
+	resultSummary := result
+	if len(resultSummary) > maxResultSummaryChars {
+		resultSummary = resultSummary[:maxResultSummaryChars] + "..."
+	}
+
+	taskDescription := evaluatorTaskTemplate
+	taskDescription = strings.ReplaceAll(taskDescription, "CRITERION_DESCRIPTION", criterion.Description)
+	taskDescription = strings.ReplaceAll(taskDescription, "RESULT_SUMMARY", resultSummary)
+
+	// 2. Filter tools to read-only subset
+	var allTools []tools.ToolDescriptor
+	if e.toolRegistry != nil {
+		allTools = e.toolRegistry.List()
+	}
+	filteredTools := filterEvaluatorTools(allTools)
+
+	// 3. Model metadata for evaluator agents
+	modelMeta := llm.ModelMetadata{
+		ContextWindow: 128000,
+		OutputLimit:   4096,
+		TokenizerType: "approximate",
+	}
+
+	// 4. Create context manager
+	systemPrompt := prompts.EvaluatorJudge
+	cm := e.contextFactory(systemPrompt, modelMeta, "sliding_window")
+
+	// 5. Set task (no acceptance criteria for evaluator agent)
+	cm.SetTask(taskDescription, nil)
+
+	// 6. Attach blackboard to context (uses core.WithBlackboard, same package)
+	ctx = WithBlackboard(ctx, bb)
+
+	// 7. Create executor — suppress assistant events, use noop emitter.
+	// Wrap toolRegistry with read-only guard to block write actions at runtime.
+	readOnlyTools := &readOnlyToolExecutor{inner: e.toolRegistry}
+	exec := agent.NewExecutor(
+		e.llm,
+		readOnlyTools,
+		e.tokenCounter,
+		e.maxSteps,
+		e.logger,
+		(*agent.NoopEvents)(nil),
+		true, // suppressAssistantEvents
+		e.toolResultBudget,
+	)
+
+	// 8. Run the evaluation agent
+	execResult, err := exec.Run(ctx, filteredTools, cm)
+	if err != nil {
+		return EvalDetail{}, fmt.Errorf("evaluator agent failed for criterion %s: %w", criterion.ID, err)
+	}
+
+	// 9. Parse verdict from output
+	diagnostic := parseEvalVerdict(execResult.Output)
+
+	return EvalDetail{
+		Criterion:  criterion,
+		Diagnostic: diagnostic,
+	}, nil
+}
+
+// filterEvaluatorTools returns only tool descriptors whose Name is in the evaluator whitelist.
+// For file_ops, it modifies the schema to expose only read-only actions.
+func filterEvaluatorTools(allTools []tools.ToolDescriptor) []tools.ToolDescriptor {
+	filtered := make([]tools.ToolDescriptor, 0, len(evaluatorToolWhitelist))
+	for _, td := range allTools {
+		if !evaluatorToolWhitelist[td.Name] {
+			continue
+		}
+		if td.Name == "file_ops" {
+			td = filterFileOpsDescriptor(td)
+		}
+		filtered = append(filtered, td)
+	}
+	return filtered
+}
+
+// filterFileOpsDescriptor returns a copy of the file_ops descriptor with write
+// actions removed from the action enum in the JSON schema, and description
+// updated to reflect read-only nature.
+func filterFileOpsDescriptor(td tools.ToolDescriptor) tools.ToolDescriptor {
+	// Parse the schema
+	var schema map[string]any
+	if err := json.Unmarshal(td.InputSchema, &schema); err != nil {
+		return td // return unmodified on parse error
+	}
+
+	// Navigate to properties.action.enum
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return td
+	}
+	actionProp, ok := props["action"].(map[string]any)
+	if !ok {
+		return td
+	}
+	enumVals, ok := actionProp["enum"].([]any)
+	if !ok {
+		return td
+	}
+
+	// Filter to read-only actions only
+	readOnly := make([]any, 0, len(fileOpsReadOnlyActions))
+	for _, v := range enumVals {
+		if s, ok := v.(string); ok && fileOpsReadOnlyActions[s] {
+			readOnly = append(readOnly, s)
+		}
+	}
+	actionProp["enum"] = readOnly
+
+	// Update description to reflect read-only nature
+	if _, hasDesc := actionProp["description"]; hasDesc {
+		actionProp["description"] = "The read-only file operation to perform (write operations are not available in evaluation mode)"
+	}
+
+	newSchema, err := json.Marshal(schema)
+	if err != nil {
+		return td
+	}
+
+	return tools.ToolDescriptor{
+		Name:        td.Name,
+		Description: "File operations (read-only: read_file, list_directory, search_files, search_content)",
+		InputSchema: newSchema,
+		Source:      td.Source,
+	}
+}
+
+// readOnlyToolExecutor wraps a ToolExecutor and blocks write actions on file_ops.
+// This is a runtime safety net in case the LLM ignores schema restrictions.
+type readOnlyToolExecutor struct {
+	inner agent.ToolExecutor
+}
+
+// Execute delegates to the inner executor, but rejects file_ops write actions.
+func (r *readOnlyToolExecutor) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
+	if name == "file_ops" {
+		var parsed struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(input, &parsed); err == nil && fileOpsWriteActions[parsed.Action] {
+			return tools.ToolResult{
+				Content: fmt.Sprintf("write operations are not allowed in evaluation mode (action: %s)", parsed.Action),
+				IsError: true,
+			}, nil
+		}
+	}
+	return r.inner.Execute(ctx, name, input)
+}
+
+// evaluateLLMJudgeSimple is a fallback for when the ReAct agent dependencies
+// (contextFactory, tokenCounter, etc.) are not available. It performs a simple
+// one-shot LLM call, matching the old evaluator behavior.
+func (e *Evaluator) evaluateLLMJudgeSimple(ctx context.Context, criterion AcceptanceCriterion, result string) (EvalDetail, error) {
+	if e.llm == nil {
+		return EvalDetail{
+			Criterion:  criterion,
+			Diagnostic: "UNCLEAR:evaluator LLM not configured",
+		}, nil
+	}
+
+	var userMsg strings.Builder
+	fmt.Fprintf(&userMsg, "Criterion: %s\n\nResult: %s", criterion.Description, result)
+
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: prompts.EvaluatorJudge},
@@ -159,86 +398,28 @@ func (e *Evaluator) evaluateLLMJudge(ctx context.Context, criterion AcceptanceCr
 		},
 	}
 
-	// Call LLM
 	resp, err := e.llm.Call(ctx, req)
 	if err != nil {
 		return EvalDetail{}, fmt.Errorf("LLM judge call failed: %w", err)
 	}
 
-	detail := EvalDetail{
-		Criterion: criterion,
-	}
+	diagnostic := parseEvalVerdict(resp.Message.Content)
+	return EvalDetail{
+		Criterion:  criterion,
+		Diagnostic: diagnostic,
+	}, nil
+}
 
-	// Parse response
-	responseText := strings.TrimSpace(resp.Message.Content)
-	upperResponse := strings.ToUpper(responseText)
-
+// parseEvalVerdict parses the evaluator agent's output into a diagnostic string.
+func parseEvalVerdict(output string) string {
+	output = strings.TrimSpace(output)
+	upper := strings.ToUpper(output)
 	switch {
-	case strings.HasPrefix(upperResponse, "YES"):
-		detail.Diagnostic = "PASSED:" + responseText
-	case strings.HasPrefix(upperResponse, "NO"):
-		detail.Diagnostic = "FAILED:" + responseText
+	case strings.HasPrefix(upper, "YES"):
+		return "PASSED:" + output
+	case strings.HasPrefix(upper, "NO"):
+		return "FAILED:" + output
 	default:
-		detail.Diagnostic = "UNCLEAR:" + responseText
+		return "UNCLEAR:" + output
 	}
-
-	return detail, nil
-}
-
-// buildEvidenceSection formats execution steps into a readable evidence section.
-func buildEvidenceSection(steps []Step) string {
-	if len(steps) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	for i, step := range steps {
-		fmt.Fprintf(&sb, "### Step %d\n", i+1)
-		if step.Thought != "" {
-			fmt.Fprintf(&sb, "**Thought:** %s\n", step.Thought)
-		}
-		if step.Action.Name != "" {
-			fmt.Fprintf(&sb, "**Action:** %s\n", step.Action.Name)
-			if len(step.Action.Input) > 0 {
-				fmt.Fprintf(&sb, "**Input:** %s\n", string(step.Action.Input))
-			}
-		}
-		if step.Observation != "" {
-			fmt.Fprintf(&sb, "**Observation:** %s\n", step.Observation)
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
-// reconsiderCriterion re-evaluates a failed criterion using execution evidence.
-func (e *Evaluator) reconsiderCriterion(
-	ctx context.Context,
-	criterion AcceptanceCriterion,
-	result string,
-	steps []Step,
-	originalDiagnostic string,
-) (passed bool, diagnostic string, err error) {
-	// Build user message with criterion details and evidence
-	var userMsg strings.Builder
-	fmt.Fprintf(&userMsg, "Criterion: %s\n\nOriginal verdict: %s\n\nExecutor's response: %s\n\nExecution evidence:\n%s",
-		criterion.Description, originalDiagnostic, result, buildEvidenceSection(steps))
-
-	req := llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: "system", Content: prompts.EvaluatorReconsider},
-			{Role: "user", Content: userMsg.String()},
-		},
-	}
-
-	resp, err := e.llm.Call(ctx, req)
-	if err != nil {
-		return false, "", fmt.Errorf("reconsideration LLM call: %w", err)
-	}
-
-	answer := strings.TrimSpace(resp.Message.Content)
-	upper := strings.ToUpper(answer)
-	if strings.HasPrefix(upper, "YES") {
-		return true, "RECONSIDERED_PASSED: " + answer, nil
-	}
-	return false, "RECONSIDERED_FAILED: " + answer, nil
 }

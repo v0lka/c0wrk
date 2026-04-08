@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/user/agent/sdk/agent"
@@ -65,7 +66,7 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -193,7 +194,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	acExtractor := NewACExtractor(mockLLM)
 	planner := NewPlanner(mockLLM)
-	evaluator := NewEvaluator(registry, mockLLM)
+	evaluator := NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
 
 	orchestrator := NewOrchestrator(
 		router,
@@ -325,7 +326,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	acExtractor := NewACExtractor(mockLLM)
 	planner := NewPlanner(mockLLM)
-	evaluator := NewEvaluator(registry, mockLLM)
+	evaluator := NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
 
 	orchestrator := NewOrchestrator(
 		router,
@@ -411,7 +412,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	acExtractor := NewACExtractor(mockLLM)
 	planner := NewPlanner(mockLLM)
-	evaluator := NewEvaluator(registry, mockLLM)
+	evaluator := NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
 
 	orchestrator := NewOrchestrator(
 		router,
@@ -525,7 +526,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				NewRouter(mockLLM, 5),
 				NewACExtractor(mockLLM),
 				NewPlanner(mockLLM),
-				NewEvaluator(registry, mockLLM),
+				NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 				mockLLM,
 				registry,
 				registry,
@@ -595,7 +596,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -721,7 +722,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -848,7 +849,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -980,7 +981,7 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -1112,7 +1113,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -1250,7 +1251,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(reg, mockLLM),
+		NewEvaluator(reg, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		reg,
 		reg,
@@ -1372,7 +1373,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -1443,7 +1444,7 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -1589,7 +1590,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -1691,7 +1692,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -1765,7 +1766,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 	var step1Attempt1Output string
 	var step2Attempt1Output string
 	var step2Attempt2Output string
-	evalCallCount := 0
+	var evalCallCount int32
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -1869,7 +1870,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 			if detectCallType(req) == "evaluator_judge" {
 				// The evaluator is called once per criterion, so we need to track which criterion is being evaluated
 				// by examining the request content
-				evalCallCount++
+				currentEval := atomic.AddInt32(&evalCallCount, 1)
 				isAC2 := false
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Step 2 completes") {
@@ -1879,7 +1880,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 				}
 				if isAC2 {
 					// Evaluating ac_2 (step 2)
-					if evalCallCount <= 2 {
+					if currentEval <= 2 {
 						// First eval - fails
 						return &llm.ChatResponse{
 							Message:    llm.Message{Role: "assistant", Content: "NO - step 2 failed"},
@@ -1922,7 +1923,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -1982,7 +1983,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 	var step2Attempt2Output string
 	var step3Attempt1Output string
 	var step3Attempt2Output string
-	evalCallCount := 0
+	var evalCallCount int32
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -2124,7 +2125,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 			}
 			if detectCallType(req) == "evaluator_judge" {
 				// The evaluator is called once per criterion, so we need to track which criterion is being evaluated
-				evalCallCount++
+				currentEval := atomic.AddInt32(&evalCallCount, 1)
 				isAC2 := false
 				for _, msg := range req.Messages {
 					if strings.Contains(msg.Content, "Step 2 completes") {
@@ -2134,7 +2135,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 				}
 				if isAC2 {
 					// Evaluating ac_2 (step 2)
-					if evalCallCount <= 3 {
+					if currentEval <= 3 {
 						// First eval - fails (called after attempt 1 along with ac_1 and ac_3)
 						return &llm.ChatResponse{
 							Message:    llm.Message{Role: "assistant", Content: "NO - step 2 failed"},
@@ -2177,7 +2178,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -2395,7 +2396,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -2752,6 +2753,35 @@ func TestBuildStepTask(t *testing.T) {
 			wantContains:    []string{"[Step 1 of 1]"},
 			wantCriteriaLen: 0, // empty allAC means no criteria can be resolved
 		},
+		{
+			name:      "blackboard summary replaces full output",
+			stepIndex: 1,
+			step: PlanStep{
+				ID:          "step_2",
+				Description: "Analyze results",
+				DependsOn:   []string{"step_1"},
+				RelevantAC:  []string{"ac_2"},
+			},
+			plan: Plan{
+				Steps: []PlanStep{
+					{ID: "step_1", Description: "Gather data"},
+					{ID: "step_2", Description: "Analyze results"},
+				},
+			},
+			allAC: []AcceptanceCriterion{
+				{ID: "ac_2", Description: "Results are analyzed"},
+			},
+			completedSteps: map[string]CompletedStep{
+				"step_1": {StepID: "step_1", Output: "First paragraph summary.\n\nSecond paragraph with much more detail that should not appear in the summary because it comes after the paragraph break."},
+			},
+			wantContains: []string{
+				"[step_1]: First paragraph summary.",
+			},
+			wantNotContains: []string{
+				"Second paragraph with much more detail",
+			},
+			wantCriteriaLen: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2759,7 +2789,13 @@ func TestBuildStepTask(t *testing.T) {
 			o := &Orchestrator{} // buildStepTask doesn't need other fields
 			availableTools := []tools.ToolDescriptor{}
 
-			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools, nil, "", "", 30)
+			// Set up a blackboard with step results from completedSteps
+			bb := NewMapBlackboard()
+			for id, cs := range tt.completedSteps {
+				bb.SetStepResult(id, cs.Output, cs.Error, nil)
+			}
+
+			taskDef := o.buildStepTask(tt.step, tt.stepIndex, tt.plan, tt.allAC, tt.completedSteps, availableTools, bb, "", "", 30)
 
 			// Check that wanted strings are present
 			for _, want := range tt.wantContains {
@@ -3510,7 +3546,7 @@ func TestExecutePlanWithSteps_EarlyTermination(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(reg, mockLLM),
+		NewEvaluator(reg, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		reg,
 		reg,
@@ -3564,7 +3600,7 @@ func TestExecutePlanWithSteps_EarlyTermination(t *testing.T) {
 	sharedWS := NewSharedWorkspace()
 
 	_, completedSteps, _ := orchestrator.executePlanWithSteps(
-		context.Background(), plan, nil, routing, reg.List(), nil, nil, sharedWS, "test", "",
+		context.Background(), plan, nil, routing, reg.List(), nil, nil, sharedWS, "test", "", NewMapBlackboard(),
 	)
 
 	// Step 2 and Step 3 should NOT have been executed
@@ -3688,7 +3724,7 @@ func TestHandlePlanExecute_SkipEvalOnIncomplete(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(reg, mockLLM),
+		NewEvaluator(reg, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		reg,
 		reg,
@@ -3699,7 +3735,7 @@ func TestHandlePlanExecute_SkipEvalOnIncomplete(t *testing.T) {
 		nil, nil, nil, ToolResultBudget{}, nil,
 	)
 
-	_, _ = orchestrator.handlePlanExecute(context.Background(), "test task", routing, reg.List(), nil, ac)
+	_, _ = orchestrator.handlePlanExecute(context.Background(), "test task", routing, reg.List(), nil, ac, NewMapBlackboard())
 
 	// Reflector should be called (incomplete plan triggers reflection, not evaluation)
 	if !reflectorCalled {
@@ -3739,7 +3775,7 @@ func TestFindReadySteps_StuckDiagnostic(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
 		mockLLM,
 		registry,
 		registry,
@@ -3795,5 +3831,180 @@ func TestFindFailedStep(t *testing.T) {
 			t.Errorf("expected empty StepID, got %q", result.StepID)
 		}
 	})
+}
+
+// TestHandle_BlackboardPopulated verifies that Handle() populates the blackboard
+// with original request, criteria, plan, step results, and final output.
+func TestHandle_BlackboardPopulated(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // ExtractRaw
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `[{"id":"rc_1","description":"Tests pass","nature":"objective","weight":"must"}]`},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Router
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain":"code","complexity":3,"compaction_strategy":"sliding_window","suggested_tools":["bash_exec"],"needs_clarification":false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 3: // AC Enrichment
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `[{"id":"ac_1","description":"Tests pass","check_type":"llm_judge"}]`},
+					StopReason: "end_turn",
+				}, nil
+			case 4: // Planner
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps":[{"id":"step_1","description":"Run tests","depends_on":[],"parallelizable":false,"estimated_tools":["bash_exec"],"relevant_ac":["ac_1"]}]}`},
+					StopReason: "end_turn",
+				}, nil
+			case 5: // Executor — finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "done",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer":"All tests pass"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			case 6: // Evaluator judge
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: "YES - tests pass"},
+					StopReason: "end_turn",
+				}, nil
+			default:
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: ""},
+					StopReason: "end_turn",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	orchestrator := NewOrchestrator(
+		NewRouter(mockLLM, 5),
+		NewACExtractor(mockLLM),
+		NewPlanner(mockLLM),
+		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // intentVerifier
+	)
+
+	result, err := orchestrator.Handle(context.Background(), "Run the tests")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	bb := result.Blackboard
+	if bb == nil {
+		t.Fatal("blackboard is nil on HandleResult")
+	}
+
+	// Original request
+	if got := bb.GetOriginalRequest(); got != "Run the tests" {
+		t.Errorf("original request = %q, want %q", got, "Run the tests")
+	}
+
+	// Criteria
+	criteria := bb.GetCriteria()
+	if len(criteria) == 0 {
+		t.Error("blackboard criteria should not be empty")
+	} else if criteria[0].ID != "ac_1" {
+		t.Errorf("criteria[0].ID = %q, want %q", criteria[0].ID, "ac_1")
+	}
+
+	// Plan
+	plan := bb.GetPlan()
+	if plan == nil {
+		t.Fatal("blackboard plan is nil")
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("plan steps = %d, want 1", len(plan.Steps))
+	}
+	if plan.Steps[0].ID != "step_1" {
+		t.Errorf("plan step ID = %q, want %q", plan.Steps[0].ID, "step_1")
+	}
+
+	// Step result
+	sr, ok := bb.GetStepResult("step_1")
+	if !ok {
+		t.Fatal("blackboard missing step_1 result")
+	}
+	if sr.FullOutput == "" {
+		t.Error("step_1 full output should not be empty")
+	}
+
+	// Final result
+	if got := bb.GetFinalResult(); got == "" {
+		t.Error("blackboard final result should not be empty")
+	}
+}
+
+func TestBuildStepTask_DependencyBudgetCap(t *testing.T) {
+	o := &Orchestrator{}
+
+	// Create a blackboard with very large dependency summaries that exceed
+	// maxDependencyContextChars (8000). Each summary is 5000 chars.
+	bb := NewMapBlackboard()
+	bb.SetStepResult("dep_1", strings.Repeat("A", 5000), nil, nil)
+	bb.SetStepResult("dep_2", strings.Repeat("B", 5000), nil, nil)
+
+	step := PlanStep{
+		ID:          "step_3",
+		Description: "Combine results",
+		DependsOn:   []string{"dep_1", "dep_2"},
+		RelevantAC:  []string{"ac_1"},
+	}
+	plan := Plan{
+		Steps: []PlanStep{
+			{ID: "dep_1", Description: "First dep"},
+			{ID: "dep_2", Description: "Second dep"},
+			step,
+		},
+	}
+	ac := []AcceptanceCriterion{{ID: "ac_1", Description: "combined"}}
+	completed := map[string]CompletedStep{
+		"dep_1": {StepID: "dep_1", Output: strings.Repeat("A", 5000)},
+		"dep_2": {StepID: "dep_2", Output: strings.Repeat("B", 5000)},
+	}
+
+	taskDef := o.buildStepTask(step, 2, plan, ac, completed, nil, bb, "", "", 30)
+
+	// The dependency context section should be within the budget.
+	idx := strings.Index(taskDef.Task, "Context from previous steps:")
+	if idx < 0 {
+		t.Fatal("expected dependency context section in task")
+	}
+	depSection := taskDef.Task[idx:]
+	// The header + entries should not exceed maxDependencyContextChars + reasonable header overhead.
+	// The key invariant is that the dep entries themselves are capped.
+	if len(depSection) > maxDependencyContextChars+200 {
+		t.Errorf("dependency context too large: %d chars (cap %d)", len(depSection), maxDependencyContextChars)
+	}
+
+	// The most recent dependency (dep_2) should still be present.
+	if !strings.Contains(taskDef.Task, "[dep_2]") {
+		t.Error("expected dep_2 to be present (most recent dependency)")
+	}
 }
 
