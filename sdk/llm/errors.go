@@ -87,6 +87,21 @@ func classifyNetError(err error) bool {
 	return false
 }
 
+// ErrContextWindowExceeded is a sentinel error for pre-call context window validation failures.
+// Use errors.Is(err, ErrContextWindowExceeded) to detect this condition.
+var ErrContextWindowExceeded = errors.New("context window exceeded")
+
+// NewContextWindowError creates a non-retryable LLMError for context window overflow.
+func NewContextWindowError(model string, estimatedTokens, effectiveMax, contextWindow, outputReserve int) *LLMError {
+	return &LLMError{
+		Provider:   "router",
+		StatusCode: 0,
+		Retryable:  false,
+		Err: fmt.Errorf("%w: estimated %d tokens, model %q allows %d (context_window=%d, output_reserve=%d)",
+			ErrContextWindowExceeded, estimatedTokens, model, effectiveMax, contextWindow, outputReserve),
+	}
+}
+
 // WrapProviderError creates an LLMError by classifying an error based on HTTP status code
 // and underlying error type. If statusCode > 0, it uses HTTP status classification.
 // Otherwise falls back to network error classification.

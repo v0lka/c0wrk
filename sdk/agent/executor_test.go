@@ -599,6 +599,9 @@ func TestIsContextExceededError(t *testing.T) {
 		{"input is too long", errors.New("input is too long"), true},
 		{"prompt is too long", errors.New("Prompt is too long"), true},
 		{"case insensitive", errors.New("CONTEXT LENGTH EXCEEDED"), true},
+		{"sentinel ErrContextWindowExceeded", llm.ErrContextWindowExceeded, true},
+		{"wrapped ErrContextWindowExceeded", fmt.Errorf("outer: %w", llm.ErrContextWindowExceeded), true},
+		{"NewContextWindowError", llm.NewContextWindowError("test-model", 200000, 128000, 200000, 72000), true},
 	}
 
 	for _, tt := range tests {

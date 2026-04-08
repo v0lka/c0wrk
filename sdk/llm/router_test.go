@@ -599,3 +599,217 @@ func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
 		t.Errorf("expected first chunk 'Hello', got %q", chunks[0].Delta)
 	}
 }
+
+// newTestRouterWithRegistry creates a router with mock provider, model registry and token counter.
+func newTestRouterWithRegistry(mock *mockProvider, activeModel string, registry *ModelRegistry) *LLMRouter {
+	return &LLMRouter{
+		providers:          map[string]LLMProvider{"primary": mock},
+		activeProvider:     mock,
+		activeModel:        activeModel,
+		activeProviderName: "primary",
+		maxRetries:         0,
+		initialBackoff:     10 * time.Millisecond,
+		maxBackoff:         100 * time.Millisecond,
+		registry:           registry,
+		tokenCounter:       NewSimpleTokenCounter(),
+	}
+}
+
+func TestRouter_ContextWindowValidation(t *testing.T) {
+	// Helper: create a string of approximately N tokens (4 chars ≈ 1 token for SimpleTokenCounter)
+	makeContent := func(approxTokens int) string {
+		// SimpleTokenCounter uses (len+3)/4, so len = approxTokens*4 gives ~approxTokens tokens
+		return string(make([]byte, approxTokens*4))
+	}
+
+	successResp := &ChatResponse{
+		Message:    Message{Role: "assistant", Content: "OK"},
+		StopReason: "end_turn",
+	}
+
+	tests := []struct {
+		name          string
+		contextWindow int
+		outputLimit   int
+		model         string
+		msgTokens     int // approximate token count for request messages
+		useRegistry   bool
+		wantErr       bool
+		errSentinel   error // if non-nil, check errors.Is
+	}{
+		{
+			name:          "within context window - call proceeds",
+			contextWindow: 10000,
+			outputLimit:   2000,
+			model:         "test-model",
+			msgTokens:     100,
+			useRegistry:   true,
+			wantErr:       false,
+		},
+		{
+			name:          "exceeds context window - returns error",
+			contextWindow: 1000,
+			outputLimit:   200,
+			model:         "test-model",
+			msgTokens:     900, // exceeds (1000-200)*0.95 = 760 effective limit
+			useRegistry:   true,
+			wantErr:       true,
+			errSentinel:   ErrContextWindowExceeded,
+		},
+		{
+			name:          "no registry - skips validation",
+			contextWindow: 100,
+			outputLimit:   50,
+			model:         "test-model",
+			msgTokens:     200,
+			useRegistry:   false,
+			wantErr:       false,
+		},
+		{
+			name:          "context window 0 in metadata - skips validation",
+			contextWindow: 0,
+			outputLimit:   0,
+			model:         "zero-ctx-model",
+			msgTokens:     5000,
+			useRegistry:   true,
+			wantErr:       false,
+		},
+		{
+			name:          "output limit 0 uses default reserve of 4096",
+			contextWindow: 10000,
+			outputLimit:   0,
+			model:         "no-output-limit",
+			msgTokens:     100,
+			useRegistry:   true,
+			wantErr:       false,
+		},
+		{
+			name:          "safety margin - just over effective max fails",
+			contextWindow: 1000,
+			outputLimit:   200,
+			model:         "margin-model",
+			// effective = (1000-200)*0.95 = 760
+			msgTokens:   761,
+			useRegistry: true,
+			wantErr:     true,
+			errSentinel: ErrContextWindowExceeded,
+		},
+		{
+			name:          "safety margin - just under effective max succeeds",
+			contextWindow: 1000,
+			outputLimit:   200,
+			model:         "margin-model",
+			// effective = (1000-200)*0.95 = 760
+			msgTokens:   750,
+			useRegistry: true,
+			wantErr:     false,
+		},
+		{
+			name:          "error is non-retryable",
+			contextWindow: 1000,
+			outputLimit:   200,
+			model:         "test-model",
+			msgTokens:     900,
+			useRegistry:   true,
+			wantErr:       true,
+			errSentinel:   ErrContextWindowExceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" (Call)", func(t *testing.T) {
+			mock := &mockProvider{name: "test", response: successResp}
+
+			var registry *ModelRegistry
+			if tt.useRegistry {
+				overrides := map[string]ModelMetadata{
+					tt.model: {
+						ContextWindow: tt.contextWindow,
+						OutputLimit:   tt.outputLimit,
+						TokenizerType: "approximate",
+					},
+				}
+				registry = NewModelRegistry(overrides)
+			}
+
+			router := newTestRouterWithRegistry(mock, tt.model, registry)
+
+			req := ChatRequest{
+				Messages: []Message{{Role: "user", Content: makeContent(tt.msgTokens)}},
+			}
+
+			_, err := router.Call(context.Background(), req)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errSentinel != nil && !errors.Is(err, tt.errSentinel) {
+					t.Errorf("expected errors.Is(%v), got: %v", tt.errSentinel, err)
+				}
+				if IsRetryable(err) {
+					t.Error("context window error should not be retryable")
+				}
+				// Provider should NOT have been called
+				if mock.callCount != 0 {
+					t.Errorf("expected 0 provider calls, got %d", mock.callCount)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if mock.callCount != 1 {
+					t.Errorf("expected 1 provider call, got %d", mock.callCount)
+				}
+			}
+		})
+
+		t.Run(tt.name+" (Stream)", func(t *testing.T) {
+			mock := &mockProvider{
+				name:           "test",
+				streamResponse: []ChatChunk{{Delta: "hi"}, {StopReason: "end_turn"}},
+			}
+
+			var registry *ModelRegistry
+			if tt.useRegistry {
+				overrides := map[string]ModelMetadata{
+					tt.model: {
+						ContextWindow: tt.contextWindow,
+						OutputLimit:   tt.outputLimit,
+						TokenizerType: "approximate",
+					},
+				}
+				registry = NewModelRegistry(overrides)
+			}
+
+			router := newTestRouterWithRegistry(mock, tt.model, registry)
+
+			req := ChatRequest{
+				Messages: []Message{{Role: "user", Content: makeContent(tt.msgTokens)}},
+			}
+
+			ch, err := router.Stream(context.Background(), req)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errSentinel != nil && !errors.Is(err, tt.errSentinel) {
+					t.Errorf("expected errors.Is(%v), got: %v", tt.errSentinel, err)
+				}
+				if mock.callCount != 0 {
+					t.Errorf("expected 0 provider calls, got %d", mock.callCount)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				for range ch { //nolint:revive // intentionally draining channel
+				}
+				if mock.callCount != 1 {
+					t.Errorf("expected 1 provider call, got %d", mock.callCount)
+				}
+			}
+		})
+	}
+}

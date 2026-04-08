@@ -1202,6 +1202,9 @@ func isContextExceededError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, llm.ErrContextWindowExceeded) {
+		return true
+	}
 	errStr := strings.ToLower(err.Error())
 	patterns := []string{
 		"context length exceeded",

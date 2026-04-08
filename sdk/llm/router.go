@@ -31,6 +31,9 @@ type LLMRouter struct {
 	maxRetries     int
 	initialBackoff time.Duration
 	maxBackoff     time.Duration
+	// Pre-call context window validation
+	registry     *ModelRegistry
+	tokenCounter TokenCounter
 }
 
 // NewLLMRouter creates a new LLMRouter from the given configuration.
@@ -74,6 +77,8 @@ func NewLLMRouter(cfg RouterConfig, registry *ModelRegistry) (*LLMRouter, error)
 		maxRetries:         cfg.MaxRetries,
 		initialBackoff:     initialBackoff,
 		maxBackoff:         maxBackoff,
+		registry:           registry,
+		tokenCounter:       NewSimpleTokenCounter(),
 	}, nil
 }
 
@@ -123,6 +128,47 @@ func retryBackoff(ctx context.Context, backoff time.Duration) bool {
 	}
 }
 
+// contextWindowSafetyMargin is the fraction (5%) subtracted from the effective
+// max to account for token-counting inaccuracy.
+const contextWindowSafetyMargin = 0.05
+
+// validateContextWindow checks whether the estimated token count of msgs fits
+// within the model's context window minus output reserve. Returns nil when
+// validation passes or should be skipped (unknown model, zero context window,
+// nil registry).
+func (r *LLMRouter) validateContextWindow(model string, msgs []Message) error {
+	if r.registry == nil || r.tokenCounter == nil {
+		return nil
+	}
+
+	meta := r.registry.Resolve(model)
+
+	// Skip validation when metadata is a fallback or context window is 0
+	if meta.ContextWindow == 0 {
+		return nil
+	}
+
+	outputReserve := meta.OutputLimit
+	if outputReserve <= 0 {
+		outputReserve = 4096
+	}
+
+	effectiveMax := meta.ContextWindow - outputReserve
+	if effectiveMax <= 0 {
+		return nil
+	}
+
+	// Apply safety margin to account for counting inaccuracy
+	effectiveMax = int(float64(effectiveMax) * (1 - contextWindowSafetyMargin))
+
+	estimated := r.tokenCounter.CountMessages(msgs)
+	if estimated > effectiveMax {
+		return NewContextWindowError(model, estimated, effectiveMax, meta.ContextWindow, outputReserve)
+	}
+
+	return nil
+}
+
 // Call sends a chat request to the active provider.
 func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Set model if not specified
@@ -134,6 +180,11 @@ func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, e
 	if req.Temperature == nil {
 		temp := 0.0
 		req.Temperature = &temp
+	}
+
+	// Pre-call context window validation
+	if err := r.validateContextWindow(req.Model, req.Messages); err != nil {
+		return nil, err
 	}
 
 	var lastErr error
@@ -196,6 +247,11 @@ func (r *LLMRouter) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChu
 	if req.Temperature == nil {
 		temp := 0.0
 		req.Temperature = &temp
+	}
+
+	// Pre-call context window validation
+	if err := r.validateContextWindow(req.Model, req.Messages); err != nil {
+		return nil, err
 	}
 
 	var lastErr error
