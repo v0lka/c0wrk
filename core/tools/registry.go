@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	sdktools "github.com/user/agent/sdk/tools"
@@ -147,13 +148,16 @@ func (r *ToolRegistry) executeAuto(ctx context.Context, tool Tool, name string, 
 	if judger, ok := tool.(ToolJudger); ok {
 		allow, reasoning := judger.Judge(ctx, input)
 		if allow {
+			slog.Debug("executeAuto: tool-specific judge allowed", "tool", name)
 			return tool.Execute(ctx, input)
 		}
 		if reasoning != "" {
 			// Tool explicitly flagged the call with a reason -> ask user
+			slog.Debug("executeAuto: tool-specific judge flagged", "tool", name, "reasoning", reasoning)
 			return r.confirmAndExecute(ctx, tool, name, input, reasoning)
 		}
 		// reasoning == "" -> tool defers to LLM Judge, fall through
+		slog.Debug("executeAuto: tool-specific judge deferred to LLM", "tool", name)
 	}
 
 	// 2. LLM Judge fallback
@@ -164,12 +168,15 @@ func (r *ToolRegistry) executeAuto(ctx context.Context, tool Tool, name string, 
 	if judge != nil {
 		verdict, reasoning, err := judge.Judge(ctx, name, input, TaskContextFrom(ctx))
 		if err == nil && verdict == VerdictAllow {
+			slog.Debug("executeAuto: LLM judge allowed", "tool", name, "reasoning", reasoning)
 			return tool.Execute(ctx, input)
 		}
 		// VerdictConfirm or error -> ask user (fail-safe)
+		slog.Debug("executeAuto: LLM judge requesting confirmation", "tool", name, "reasoning", reasoning)
 		return r.confirmAndExecute(ctx, tool, name, input, reasoning)
 	}
 
 	// 3. No judge available -> ask user (fail-safe)
+	slog.Debug("executeAuto: no LLM judge available, requesting confirmation", "tool", name)
 	return r.confirmAndExecute(ctx, tool, name, input, "no judge available; requiring manual confirmation")
 }

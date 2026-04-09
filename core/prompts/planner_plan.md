@@ -25,6 +25,12 @@ Domain affects:
 - Compaction strategy: code uses sliding window, research uses summarization
 - Evaluation method: code uses programmatic checks when possible, research uses LLM judge
 
+Output expectations per role:
+- "researcher": Pass findings through finish tool. Do NOT write research notes to files.
+- "coder": Write code/config files as needed. Summarize what was done through finish tool.
+- "tester": Pass test results through finish tool. Do NOT write test reports to files.
+- "executor": Follow the same rule — files only when the file is the deliverable.
+
 Specify domain in profile when the step clearly falls into one category.
 
 Available tools:
@@ -35,5 +41,6 @@ ACCEPTANCE-CRITERIA
 
 WORKSPACE-PATH
 REFLECTIONS
+
 Respond ONLY with a JSON object:
 {"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "relevant_ac": ["ac_1"], "profile": {"role": "researcher", "allowed_tools": ["web_search", "web_fetch"], "domain": "research"}}]}

@@ -18,6 +18,7 @@ export const roleToType: Record<string, MessageType> = {
   plan_step_start: 'plan_step_start',
   plan_step_complete: 'plan_step_complete',
   retry: 'retry',
+  step_retry: 'step_retry',
   ac_extracted: 'ac_extracted',
   subagent_launch: 'subagent_launch',
   subagent_complete: 'subagent_complete',
@@ -78,6 +79,14 @@ function reconstructContent(
       const maxAttempts = meta.max_attempts as number | undefined
       if (attempt !== undefined && maxAttempts !== undefined) {
         return `Retry attempt ${attempt}/${maxAttempts}`
+      }
+      return rawContent
+    }
+    case 'step_retry': {
+      const attempt = meta.attempt as number | undefined
+      const maxAttempts = meta.max_attempts as number | undefined
+      if (attempt !== undefined && maxAttempts !== undefined) {
+        return `Retrying step (attempt ${attempt}/${maxAttempts})`
       }
       return rawContent
     }
@@ -154,6 +163,8 @@ function buildHistoryId(
     }
     case 'retry':
       return `retry-${timestamp}`
+    case 'step_retry':
+      return `step-retry-${timestamp}`
     case 'ac_extracted':
       return `ac-extracted-${timestamp}`
     case 'subagent_launch': {

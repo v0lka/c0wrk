@@ -98,6 +98,7 @@ type Emitter interface {
 	Evaluation(passed, total int, criteria []EvalCriterionEvent)
 	Reflection(summary string, insights []string, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
+	StepRetry(stepID string, attempt, maxAttempts int)
 	ACExtracted(count int, criteria []EvalCriterionEvent)
 	// Service emits a general service message without metadata.
 	Service(content string)
@@ -137,6 +138,7 @@ func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
 func (n *noopEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
 func (n *noopEmitter) Reflection(_ string, _ []string, _, _ int)          {}
 func (n *noopEmitter) Retry(_, _ int)                                     {}
+func (n *noopEmitter) StepRetry(_ string, _, _ int)                       {}
 func (n *noopEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (n *noopEmitter) Service(_ string)                                   {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
@@ -168,6 +170,9 @@ func (a *emitterEventsAdapter) OnReflected(s string, insights []string, attempt,
 }
 func (a *emitterEventsAdapter) OnRetry(attempt, maxAttempts int) {
 	a.Retry(attempt, maxAttempts)
+}
+func (a *emitterEventsAdapter) OnStepRetry(stepID string, attempt, maxAttempts int) {
+	a.StepRetry(stepID, attempt, maxAttempts)
 }
 func (a *emitterEventsAdapter) OnCriteriaExtracted(n int, c []EvalCriterionEvent) {
 	a.ACExtracted(n, c)

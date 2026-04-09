@@ -1,4 +1,4 @@
-.PHONY: build test lint dev-desktop fetch-onnx clean-onnx clean
+.PHONY: build test lint dev-desktop fetch-onnx clean-onnx clean frontend-deps
 
 # ONNX Runtime version
 ONNX_VERSION := 1.21.0
@@ -39,7 +39,11 @@ ONNX_CACHE_DIR := .cache
 # Target directory inside the .app bundle
 APP_BUNDLE_DIR := build/bin/c0wrk-desktop.app/Contents/MacOS
 
-build:
+# Install frontend dependencies
+frontend-deps:
+	cd frontend && npm install
+
+build: frontend-deps
 	wails build
 	$(MAKE) fetch-onnx
 

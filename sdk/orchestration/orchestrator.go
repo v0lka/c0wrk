@@ -176,45 +176,28 @@ func (o *Orchestrator) runPlanExecute(
 		}
 
 		// Execute the current plan
-		finalOutput, completedSteps, aggErr := o.executePlanWithSteps(ctx, currentPlan, criteria, availableTools, preCompleted, sharedWS, userMessage, stepRetryContext, bb)
+		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, criteria, availableTools, preCompleted, sharedWS, userMessage, stepRetryContext, bb, sessionReflections)
+		sessionReflections = updatedReflections
 		lastOutput = finalOutput
 		prevCompletedSteps := completedSteps
 
-		// Handle incomplete plan execution (step failure)
-		allExecuted := len(completedSteps) == len(currentPlan.Steps)
-		if aggErr != nil && !allExecuted && attempt < o.maxRetries {
-			syntheticEval := &EvalResult{
-				AllPassed: false,
-				Failed: []EvalDetail{{
-					Criterion:  Criterion{ID: "execution_incomplete", Description: "Plan execution did not complete"},
-					Diagnostic: fmt.Sprintf("FAILED: %d of %d steps executed. Error: %s", len(completedSteps), len(currentPlan.Steps), aggErr),
-				}},
+		// Handle execution errors
+		if execErr != nil {
+			// Check if all steps were executed (some may have failed but all were attempted)
+			allExecuted := len(completedSteps) == len(currentPlan.Steps)
+			if !allExecuted {
+				// Steps failed even after per-step retries — don't retry at the outer level
+				// (per-step retries already exhausted the budget for failed steps)
+				bb.SetFinalResult(finalOutput)
+				return &ExecutionResult{
+					Output:       finalOutput + "\n\n[Execution incomplete: " + execErr.Error() + "]",
+					Plan:         currentPlan,
+					Blackboard:   bb,
+					AttemptCount: attempt + 1,
+					Reflections:  sessionReflections,
+				}, nil
 			}
-			o.events.OnEvaluated(0, 1, buildEvalCriterionEvents(syntheticEval))
-
-			if o.cfg.Reflection != nil {
-				o.events.OnServiceMeta("Step execution failed, reflecting for replan...", map[string]any{"phase": "orchestration"})
-				syntheticSteps := BuildPlanExecutionSteps(completedSteps, currentPlan)
-				reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, syntheticEval, currentPlan, sessionReflections)
-				if reflectErr == nil && reflection.SuggestedAction != "abort" {
-					sessionReflections = append(sessionReflections, *reflection)
-					bb.AddReflection(*reflection)
-					o.events.OnReflected(reflection.Summary, reflection.Hypotheses, attempt+1, o.maxRetries)
-
-					failedStep := FindFailedStep(completedSteps)
-					newPlan, replanErr := o.cfg.Planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, criteria, sessionReflections)
-					if replanErr == nil {
-						currentPlan = newPlan
-						bb.SetPlan(currentPlan)
-						preCompleted = BuildCarryForward(prevCompletedSteps, newPlan)
-						stepRetryContext = ""
-						sharedWS.Clear()
-						o.emitPlanWithStatuses(currentPlan, preCompleted)
-						continue
-					}
-				}
-			}
-			continue // retry with same plan if reflection/replan failed
+			// All steps executed but some had errors — continue to evaluation
 		}
 
 		// Set final result in blackboard
@@ -351,6 +334,7 @@ func (o *Orchestrator) runPlanExecute(
 }
 
 // executePlanWithSteps runs a DAG plan to completion and returns completed steps.
+// It also handles per-step retries internally, returning updated reflections.
 func (o *Orchestrator) executePlanWithSteps(
 	ctx context.Context,
 	plan *Plan,
@@ -360,7 +344,8 @@ func (o *Orchestrator) executePlanWithSteps(
 	sharedWS *agent.SharedWorkspace,
 	userMessage, retryContext string,
 	bb Blackboard,
-) (string, []CompletedStep, error) {
+	sessionReflections []Reflection,
+) (string, []CompletedStep, []Reflection, error) {
 	var completedSteps map[string]CompletedStep
 	var completedList []CompletedStep
 	if preCompleted != nil {
@@ -427,7 +412,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			if o.cfg.ContextFactory != nil {
 				cm = o.cfg.ContextFactory(systemPrompt, modelMeta, stepCfg.CompactionStrategy)
 			} else {
-				return "", completedList, errors.New("ContextFactory is required but not configured")
+				return "", completedList, sessionReflections, errors.New("ContextFactory is required but not configured")
 			}
 			
 			// Allow consumer to inject task-specific context
@@ -448,9 +433,12 @@ func (o *Orchestrator) executePlanWithSteps(
 				Emitter:   scopedEvents,
 			})
 		}
-
+		
+		// Inject SharedWorkspace into context so tools can access step outputs
+		ctx = agent.WithSharedWorkspace(ctx, sharedWS)
+		
 		results := agent.RunSubAgentsParallel(ctx, tasks)
-		var stepFailed bool
+		var failedSteps []string
 		for _, r := range results {
 			o.events.OnStepCompleted(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
 
@@ -469,11 +457,184 @@ func (o *Orchestrator) executePlanWithSteps(
 			bb.SetStepResult(r.StepID, r.Output, r.Error, r.Steps)
 
 			if r.Error != nil {
-				stepFailed = true
+				failedSteps = append(failedSteps, r.StepID)
 			}
 		}
-		if stepFailed {
-			break
+
+		// Per-step retry loop for failed steps
+		if len(failedSteps) > 0 {
+			for _, failedStepID := range failedSteps {
+				// Find the failed step in the plan
+				var failedPlanStep PlanStep
+				for _, s := range plan.Steps {
+					if s.ID == failedStepID {
+						failedPlanStep = s
+						break
+					}
+				}
+
+				var stepRetryContext string
+			stepRetryLoop:
+				for retryAttempt := 1; retryAttempt <= o.maxRetries; retryAttempt++ {
+					scopedEvents := o.scopeEvents(failedStepID)
+					scopedEvents.OnStepRetry(failedStepID, retryAttempt, o.maxRetries+1)
+
+					// Build synthetic EvalResult for reflection
+					syntheticEval := &EvalResult{
+						AllPassed: false,
+						Failed: []EvalDetail{{
+							Criterion:  Criterion{ID: "step_failure", Description: "Step execution failed"},
+							Diagnostic: fmt.Sprintf("Step %s failed: %s", failedStepID, completedSteps[failedStepID].Error),
+						}},
+					}
+					o.events.OnEvaluated(0, 1, buildEvalCriterionEvents(syntheticEval))
+
+					// Reflect on failure if reflector is configured
+					if o.cfg.Reflection != nil {
+						o.events.OnServiceMeta(fmt.Sprintf("Step %s failed, reflecting...", failedStepID), map[string]any{"phase": "orchestration"})
+						syntheticSteps := BuildPlanExecutionSteps(completedList, plan)
+						reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, syntheticEval, plan, sessionReflections)
+						if reflectErr == nil {
+							if reflection.SuggestedAction == "abort" {
+								sessionReflections = append(sessionReflections, *reflection)
+								bb.AddReflection(*reflection)
+								o.events.OnReflected(reflection.Summary, reflection.Hypotheses, retryAttempt, o.maxRetries)
+								break stepRetryLoop // abort retry for this step
+							}
+
+							o.events.OnReflected(reflection.Summary, reflection.Hypotheses, retryAttempt, o.maxRetries)
+							sessionReflections = append(sessionReflections, *reflection)
+							bb.AddReflection(*reflection)
+
+							// Build step retry context from reflection
+							if reflection.ActionPlan != "" {
+								stepRetryContext = fmt.Sprintf("Previous attempt failed. Reflection guidance:\n%s\n", reflection.ActionPlan)
+							} else if reflection.RootCause != "" {
+								stepRetryContext = fmt.Sprintf("Previous attempt failed. Root cause: %s\n", reflection.RootCause)
+							}
+						}
+					}
+
+					// Re-execute the failed step
+					stepIndex := o.findStepIndex(plan, failedStepID)
+					stepCfg := o.resolveStepConfig(failedPlanStep, availableTools)
+					stepTools := stepCfg.AllowedTools
+					if len(stepTools) == 0 {
+						stepTools = availableTools
+					}
+					maxSteps := stepCfg.MaxSteps
+					if maxSteps == 0 {
+						maxSteps = o.maxSteps
+					}
+
+					taskDef := o.buildStepTask(failedPlanStep, stepIndex, *plan, criteria, completedSteps, stepTools, bb, userMessage, stepRetryContext, maxSteps)
+
+					// Build system prompt
+					var systemPrompt string
+					switch {
+					case stepCfg.SystemPrompt != "":
+						systemPrompt = stepCfg.SystemPrompt
+					case o.cfg.SystemPrompt != nil:
+						systemPrompt = o.cfg.SystemPrompt(ctx, failedPlanStep.Description, taskDef.criteria)
+					default:
+						systemPrompt = defaultSystemPrompt(ctx, failedPlanStep.Description, taskDef.criteria)
+					}
+
+					// Resolve model metadata
+					var modelMeta llm.ModelMetadata
+					if o.cfg.ModelRegistry != nil {
+						modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
+					}
+
+					// Create context manager
+					var cm agent.ContextManager
+					if o.cfg.ContextFactory != nil {
+						cm = o.cfg.ContextFactory(systemPrompt, modelMeta, stepCfg.CompactionStrategy)
+					} else {
+						return "", completedList, sessionReflections, errors.New("ContextFactory is required but not configured")
+					}
+
+					// Allow consumer to inject task-specific context
+					if o.cfg.ContextSetup != nil {
+						o.cfg.ContextSetup(cm, taskDef.task, taskDef.criteria)
+					}
+
+					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, nil, scopedEvents, true, o.cfg.ToolResultBudget)
+					executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
+
+					retryTask := agent.SubAgentTask{
+						StepID:    failedStepID,
+						Executor:  executor,
+						CM:        cm,
+						TaskTools: taskDef.tools,
+						TaskDesc:  taskDef.task,
+						Emitter:   scopedEvents,
+					}
+
+					// Execute single step
+					o.events.OnServiceMeta(fmt.Sprintf("Retrying step %d/%d: %s", stepIndex+1, len(plan.Steps), failedPlanStep.Description), map[string]any{"phase": "orchestration"})
+					o.events.OnStepStarted(failedStepID, failedPlanStep.Description)
+					stepStartTime := time.Now()
+
+					retryTasks := []agent.SubAgentTask{retryTask}
+					retryResults := agent.RunSubAgentsParallel(ctx, retryTasks)
+
+					for _, rr := range retryResults {
+						o.events.OnStepCompleted(rr.StepID, rr.Error == nil, time.Since(stepStartTime))
+
+						if rr.Error == nil {
+							// Step succeeded on retry
+							if sharedWS != nil {
+								sharedWS.Store(rr.StepID+"/output", rr.Output, rr.StepID)
+							}
+							cs := CompletedStep{
+								StepID: rr.StepID,
+								Output: rr.Output,
+								Error:  nil,
+								Steps:  rr.Steps,
+							}
+							completedSteps[rr.StepID] = cs
+							// Update the completedList to replace the failed entry
+							for i, c := range completedList {
+								if c.StepID == rr.StepID {
+									completedList[i] = cs
+									break
+								}
+							}
+							bb.SetStepResult(rr.StepID, rr.Output, nil, rr.Steps)
+							break stepRetryLoop // success, continue to next ready steps
+						}
+						// Step still failed, update the completedSteps with new error
+						cs := CompletedStep{
+							StepID: rr.StepID,
+							Output: rr.Output,
+							Error:  rr.Error,
+							Steps:  rr.Steps,
+						}
+						completedSteps[rr.StepID] = cs
+						for i, c := range completedList {
+							if c.StepID == rr.StepID {
+								completedList[i] = cs
+								break
+							}
+						}
+						bb.SetStepResult(rr.StepID, rr.Output, rr.Error, rr.Steps)
+						// Continue to next retry attempt
+					}
+				}
+			}
+		}
+
+		// Check if any steps are still failed after per-step retries
+		var stillFailed bool
+		for _, stepID := range failedSteps {
+			if cs, ok := completedSteps[stepID]; ok && cs.Error != nil {
+				stillFailed = true
+				break
+			}
+		}
+		if stillFailed {
+			break // escalate to outer loop
 		}
 	}
 
@@ -489,7 +650,7 @@ func (o *Orchestrator) executePlanWithSteps(
 		aggErr = errors.Join(stepErrors...)
 	}
 
-	return AggregateOutput(completedSteps, plan), completedList, aggErr
+	return AggregateOutput(completedSteps, plan), completedList, sessionReflections, aggErr
 }
 
 // stepTaskDef holds the result of buildStepTask.
@@ -543,6 +704,7 @@ func (o *Orchestrator) buildStepTask(
 	// Specific objective
 	fmt.Fprintf(&b, "\nYour specific objective: %s\n\n", step.Description)
 	b.WriteString("Produce output that is scoped to this step only. Later steps will build on your output.\n")
+	b.WriteString("Pass your result through the finish tool. Write files ONLY if the file itself is the deliverable (code, config, etc.) — do NOT write files just to pass data to later steps.\n")
 
 	// Context from previous steps
 	if len(step.DependsOn) > 0 {

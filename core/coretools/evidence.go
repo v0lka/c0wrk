@@ -120,22 +120,6 @@ func (t *evidenceTool) fetchStep(bb core.Blackboard, stepID string) (tools.ToolR
 
 	fmt.Fprintf(&sb, "### Output\n%s\n", result.FullOutput)
 
-	if len(result.Steps) > 0 {
-		sb.WriteString("\n### ReAct Steps\n")
-		for i, step := range result.Steps {
-			fmt.Fprintf(&sb, "\n**Step %d**\n", i+1)
-			if step.Thought != "" {
-				fmt.Fprintf(&sb, "- Thought: %s\n", step.Thought)
-			}
-			if step.Action.Name != "" {
-				fmt.Fprintf(&sb, "- Action: %s\n", step.Action.Name)
-			}
-			if step.Observation != "" {
-				fmt.Fprintf(&sb, "- Observation: %s\n", step.Observation)
-			}
-		}
-	}
-
 	return tools.ToolResult{Content: sb.String(), IsError: false}, nil
 }
 

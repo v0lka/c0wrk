@@ -96,6 +96,54 @@ func (a *App) buildOrchestratorConfig(cfg *config.Config) core.OrchestratorConfi
 	}
 }
 
+// rebuildJudge recreates the ToolJudge from current config and sets it on the registry.
+// If the judge cannot be created (disabled, no provider, no model), it keeps the existing judge.
+// router is optional; if nil, a new router is built from config.
+func (a *App) rebuildJudge(cfg *config.Config, router *llm.LLMRouter, logger *slog.Logger) {
+	if a.toolRegistry == nil {
+		return
+	}
+
+	if cfg.Security.Judge.Enabled == nil || !*cfg.Security.Judge.Enabled {
+		a.toolRegistry.SetJudge(nil)
+		if logger != nil {
+			logger.Info("tool judge disabled by configuration")
+		}
+		return
+	}
+
+	_, _, _, defaultModel := cfg.LLM.GetActiveProviderConfig()
+
+	var judgeProvider llm.LLMProvider
+	if router != nil {
+		judgeProvider = router.GetDefaultProvider()
+	} else {
+		// Try building a new router from current config
+		newRouter, _, err := a.buildLLMRouter(cfg)
+		if err == nil && newRouter != nil {
+			judgeProvider = newRouter.GetDefaultProvider()
+		} else if logger != nil {
+			logger.Warn("rebuildJudge: failed to build LLM router for judge", "error", err)
+		}
+	}
+
+	judge := tools.NewToolJudgeFromConfig(tools.JudgeConfig{
+		Enabled:      true,
+		Model:        cfg.Security.Judge.Model,
+		DefaultModel: defaultModel,
+		Provider:     judgeProvider,
+	}, logger)
+
+	if judge != nil {
+		a.toolRegistry.SetJudge(judge)
+		if logger != nil {
+			logger.Info("tool judge rebuilt successfully")
+		}
+	} else if logger != nil {
+		logger.Warn("tool judge rebuild failed: keeping existing judge (provider or model unavailable)")
+	}
+}
+
 // buildContextFactory creates a ContextManagerFactory from the given LLM router and config.
 func (a *App) buildContextFactory(llmRouter *llm.LLMRouter, cfg *config.Config) core.ContextManagerFactory {
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) core.ContextManager {

@@ -4,7 +4,7 @@ import { domainLabels, complexityStars } from '@/constants/routingLabels'
 
 interface ServiceMessageProps {
   id: string
-  variant: 'routing' | 'retry' | 'ac_extracted' | 'status'
+  variant: 'routing' | 'retry' | 'step_retry' | 'ac_extracted' | 'status'
   content: string
   metadata?: Record<string, unknown>
 }
@@ -18,6 +18,10 @@ const variantConfig = {
     icon: RotateCcw,
     label: 'Retry',
   },
+  step_retry: {
+    icon: RotateCcw,
+    label: 'Step Retry',
+  },
   ac_extracted: {
     icon: ListChecks,
     label: 'AC Extracted',
@@ -30,13 +34,13 @@ const variantConfig = {
 
 function formatRoutingContent(metadata?: Record<string, unknown>): React.ReactNode {
   if (!metadata) return null
-  
+
   const domain = typeof metadata.domain === 'string' ? metadata.domain : ''
   const complexity = typeof metadata.complexity === 'string' ? metadata.complexity : typeof metadata.complexity === 'number' ? String(metadata.complexity) : ''
-  
+
   const domainDisplay = domainLabels[domain] || domain || 'Unknown'
   const complexityDisplay = complexityStars[complexity] || complexity || '☆☆☆☆☆'
-  
+
   return (
     <>
       <span className="text-muted-foreground">Domain:</span>{' '}

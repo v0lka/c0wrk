@@ -6,29 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
-
-// concurrentSafeLLMCaller is a thread-safe LLMCaller for parallel evaluator tests.
-// Unlike mockLLMCaller, it does not record calls to avoid data races.
-type concurrentSafeLLMCaller struct {
-	callFn func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
-	mu     sync.Mutex
-	count  int
-}
-
-func (c *concurrentSafeLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	c.mu.Lock()
-	c.count++
-	c.mu.Unlock()
-	return c.callFn(ctx, req)
-}
 
 // Tests use shared mock types from testhelpers_test.go:
 // - mockLLMCaller: implements LLMCaller
@@ -142,19 +124,18 @@ func TestEvaluator_ProgrammaticFails(t *testing.T) {
 }
 
 func TestEvaluator_LLMJudgePasses(t *testing.T) {
-	// Mock LLM returns "YES" as a direct response (no tool calls).
-	// The Executor treats this as an implicit finish with "YES..." as output.
+	// Mock LLM returns batch JSON response.
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{{
 			Message: llm.Message{
 				Role:    "assistant",
-				Content: "YES, the criterion is met because the code implements proper error handling.",
+				Content: `[{"criterion_id":"ac_2","verdict":"YES","explanation":"the code implements proper error handling."}]`,
 			},
 			StopReason: "end_turn",
 		}},
 	}
 
-	evaluator := newTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
 	criteria := []AcceptanceCriterion{
 		{
@@ -187,13 +168,13 @@ func TestEvaluator_LLMJudgeFails(t *testing.T) {
 		responses: []*llm.ChatResponse{{
 			Message: llm.Message{
 				Role:    "assistant",
-				Content: "NO, the criterion is not met because there is no error handling.",
+				Content: `[{"criterion_id":"ac_2","verdict":"NO","explanation":"there is no error handling."}]`,
 			},
 			StopReason: "end_turn",
 		}},
 	}
 
-	evaluator := newTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
 	criteria := []AcceptanceCriterion{
 		{
@@ -225,17 +206,18 @@ func TestEvaluator_LLMJudgeFails(t *testing.T) {
 }
 
 func TestEvaluator_LLMJudgeUnclear(t *testing.T) {
+	// Batch response with unknown verdict maps to UNCLEAR.
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{{
 			Message: llm.Message{
 				Role:    "assistant",
-				Content: "I cannot determine if this criterion is met without more context.",
+				Content: `[{"criterion_id":"ac_1","verdict":"MAYBE","explanation":"cannot determine without more context"}]`,
 			},
 			StopReason: "end_turn",
 		}},
 	}
 
-	evaluator := newTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
 	criteria := []AcceptanceCriterion{
 		{
@@ -276,23 +258,18 @@ func TestEvaluator_MixedCriteria(t *testing.T) {
 		},
 	}
 
-	// LLM returns NO for the llm_judge criterion
+	// LLM returns NO for the llm_judge criterion via batch response
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{{
 			Message: llm.Message{
 				Role:    "assistant",
-				Content: "NO, the documentation is incomplete.",
+				Content: `[{"criterion_id":"ac_2","verdict":"NO","explanation":"the documentation is incomplete."}]`,
 			},
 			StopReason: "end_turn",
 		}},
 	}
 
-	reg := tools.NewToolRegistry()
-	counter, _ := llm.NewTokenCounter("approximate")
-	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
-		return &mockContextManager{systemPrompt: systemPrompt}
-	}
-	evaluator := NewEvaluator(mockTools, mockLLM, reg, counter, factory, nil, nil, ToolResultBudget{})
+	evaluator := NewEvaluator(mockTools, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
 
 	criteria := []AcceptanceCriterion{
 		{
@@ -348,18 +325,13 @@ func TestEvaluator_AllPassed(t *testing.T) {
 		responses: []*llm.ChatResponse{{
 			Message: llm.Message{
 				Role:    "assistant",
-				Content: "YES, the code quality is excellent.",
+				Content: `[{"criterion_id":"ac_2","verdict":"YES","explanation":"the code quality is excellent."}]`,
 			},
 			StopReason: "end_turn",
 		}},
 	}
 
-	reg := tools.NewToolRegistry()
-	counter, _ := llm.NewTokenCounter("approximate")
-	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
-		return &mockContextManager{systemPrompt: systemPrompt}
-	}
-	evaluator := NewEvaluator(mockTools, mockLLM, reg, counter, factory, nil, nil, ToolResultBudget{})
+	evaluator := NewEvaluator(mockTools, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
 
 	criteria := []AcceptanceCriterion{
 		{
@@ -436,71 +408,76 @@ func TestEvaluateIntentVerificationSkipped(t *testing.T) {
 	}
 }
 
-// TestEvaluator_BlackboardPassedToContext verifies that the blackboard is
-// attached to the context passed to the ReAct executor.
-func TestEvaluator_BlackboardPassedToContext(t *testing.T) {
-	var capturedCtx context.Context
+// TestEvaluator_BatchEvidencePrefetch verifies that evidence from blackboard
+// is included in the batch LLM call.
+func TestEvaluator_BatchEvidencePrefetch(t *testing.T) {
+	var capturedReq llm.ChatRequest
 
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			capturedCtx = ctx
+			capturedReq = req
 			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "YES, criterion met."},
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `[{"criterion_id":"ac_bb","verdict":"YES","explanation":"evidence confirms it."}]`,
+				},
 				StopReason: "end_turn",
 			}, nil
 		},
 	}
 
-	evaluator := newTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
 	criteria := []AcceptanceCriterion{{
 		ID:          "ac_bb",
-		Description: "Test blackboard context",
+		Description: "Test blackboard evidence",
 		CheckType:   "llm_judge",
 	}}
 
 	bb := NewMapBlackboard()
-	bb.SetStepResult("step_1", "some output", nil, nil)
+	bb.SetStepResult("step_1", "some output from step 1", nil, nil)
 
 	_, err := evaluator.Evaluate(context.Background(), "result", criteria, bb)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify blackboard is accessible from the context
-	if capturedCtx == nil {
-		t.Fatal("expected context to be captured during LLM call")
+	// Verify evidence is included in the user message
+	if len(capturedReq.Messages) < 2 {
+		t.Fatal("expected at least 2 messages in LLM request")
 	}
-	recoveredBB := BlackboardFromContext(capturedCtx)
-	if recoveredBB == nil {
-		t.Fatal("expected blackboard to be present in context")
+	userMsg := capturedReq.Messages[1].Content
+	if !strings.Contains(userMsg, "step_1") {
+		t.Error("expected step_1 ID in evidence summary")
 	}
-	if _, ok := recoveredBB.GetStepResult("step_1"); !ok {
-		t.Error("expected step_1 result to be accessible from blackboard in context")
+	if !strings.Contains(userMsg, "some output from step 1") {
+		t.Error("expected step_1 output in evidence summary")
 	}
 }
 
-// TestEvaluator_NoReconsideration verifies that the evaluator makes only ONE
-// LLM interaction per criterion (no reconsideration phase).
-func TestEvaluator_NoReconsideration(t *testing.T) {
+// TestEvaluator_BatchSingleLLMCall verifies that the batch evaluator makes
+// exactly one LLM call for all llm_judge criteria.
+func TestEvaluator_BatchSingleLLMCall(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
 			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "NO, criterion not met."},
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"not met"},{"criterion_id":"ac_2","verdict":"YES","explanation":"met"}]`,
+				},
 				StopReason: "end_turn",
 			}, nil
 		},
 	}
 
-	evaluator := newTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
-	criteria := []AcceptanceCriterion{{
-		ID:          "ac_no_recon",
-		Description: "Tests must pass",
-		CheckType:   "llm_judge",
-	}}
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "Tests must pass", CheckType: "llm_judge"},
+		{ID: "ac_2", Description: "Code quality", CheckType: "llm_judge"},
+	}
 
 	bb := NewMapBlackboard()
 	bb.SetStepResult("step_1", "some evidence", nil, nil)
@@ -510,26 +487,19 @@ func TestEvaluator_NoReconsideration(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The executor may call LLM multiple times due to nudge mechanism,
-	// but there should be no separate reconsideration phase.
-	// With the nudge, expect at most 2 calls (initial + nudge retry).
-	if callCount > 2 {
-		t.Errorf("expected at most 2 LLM calls (agent loop, no reconsideration), got %d", callCount)
+	// Batch evaluator should make exactly 1 LLM call for all criteria.
+	if callCount != 1 {
+		t.Errorf("expected exactly 1 LLM call for batch evaluation, got %d", callCount)
 	}
 
-	// Criterion should be failed (no reconsideration to flip it)
 	if len(evalResult.Failed) != 1 {
 		t.Errorf("expected 1 failed, got %d", len(evalResult.Failed))
 	}
+	if len(evalResult.Passed) != 1 {
+		t.Errorf("expected 1 passed, got %d", len(evalResult.Passed))
+	}
 	if evalResult.AllPassed {
 		t.Error("expected AllPassed to be false")
-	}
-
-	// Verify no reconsidered flag
-	for _, d := range evalResult.Failed {
-		if d.Reconsidered {
-			t.Error("expected Reconsidered to be false — reconsideration is removed")
-		}
 	}
 }
 
@@ -592,21 +562,24 @@ func TestFilterEvaluatorTools(t *testing.T) {
 	}
 }
 
-// TestEvaluator_ResultTruncation verifies that long results are truncated
-// in the task description sent to the evaluator agent.
+// TestEvaluator_BatchResultTruncation verifies that long results are truncated
+// in the batch evaluator prompt.
 func TestEvaluator_ResultTruncation(t *testing.T) {
 	var capturedReq llm.ChatRequest
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			capturedReq = req
 			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "YES, all good."},
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `[{"criterion_id":"ac_trunc","verdict":"YES","explanation":"all good."}]`,
+				},
 				StopReason: "end_turn",
 			}, nil
 		},
 	}
 
-	evaluator := newTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
 	criteria := []AcceptanceCriterion{{
 		ID:          "ac_trunc",
@@ -623,31 +596,22 @@ func TestEvaluator_ResultTruncation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Check that the task message in the context contains truncated result
-	// The task is set via cm.SetTask, which the mock records.
-	// We can verify indirectly through the LLM request messages
-	if len(capturedReq.Messages) == 0 {
-		t.Fatal("expected at least one message in LLM request")
+	if len(capturedReq.Messages) < 2 {
+		t.Fatal("expected at least 2 messages in LLM request")
 	}
 
 	// Find the user message containing the task
-	found := false
-	for _, msg := range capturedReq.Messages {
-		if strings.Contains(msg.Content, "Test truncation") {
-			found = true
-			// Should contain "..." indicating truncation
-			if !strings.Contains(msg.Content, "...") {
-				t.Error("expected truncated result to contain '...'")
-			}
-			// Should NOT contain the full 1000-char string
-			if strings.Contains(msg.Content, longResult) {
-				t.Error("expected result to be truncated, but full result was found")
-			}
-			break
-		}
+	userMsg := capturedReq.Messages[1].Content
+	if !strings.Contains(userMsg, "Test truncation") {
+		t.Error("expected to find criterion description in LLM request")
 	}
-	if !found {
-		t.Error("expected to find criterion description in LLM request messages")
+	// Should contain "..." indicating truncation
+	if !strings.Contains(userMsg, "...") {
+		t.Error("expected truncated result to contain '...'")
+	}
+	// Should NOT contain the full 3000-char string
+	if strings.Contains(userMsg, longResult) {
+		t.Error("expected result to be truncated, but full result was found")
 	}
 }
 
@@ -822,61 +786,26 @@ func TestReadOnlyToolExecutor_OtherToolsPassThrough(t *testing.T) {
 	}
 }
 
-// TestEvaluator_ProgrammaticInputMarshaling verifies bash_exec receives correct JSON input.
-// newConcurrentTestEvaluatorReAct creates an evaluator wired for parallel llm_judge tests
-// using a thread-safe LLM caller.
-func newConcurrentTestEvaluatorReAct(llmCaller LLMCaller) *Evaluator {
-	reg := tools.NewToolRegistry()
-	counter, _ := llm.NewTokenCounter("approximate")
-	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
-		return &mockContextManager{systemPrompt: systemPrompt}
-	}
-	return NewEvaluator(
-		nil,
-		llmCaller,
-		reg,
-		counter,
-		factory,
-		nil,
-		nil,
-		ToolResultBudget{},
-	)
-}
+// TestEvaluator_BatchMultipleCriteria verifies that multiple llm_judge criteria
+// are evaluated in a single batch call and results preserve criteria order.
+func TestEvaluator_BatchMultipleCriteria(t *testing.T) {
+	const numCriteria = 5
 
-// TestEvaluator_ParallelLLMJudge verifies that multiple llm_judge criteria
-// run concurrently by checking that total wall-clock time is less than
-// sequential execution would take.
-func TestEvaluator_ParallelLLMJudge(t *testing.T) {
-	const (
-		numCriteria  = 5
-		delayPerCall = 50 * time.Millisecond
-	)
-
-	var inflight int64
-	var maxInflight int64
-
-	mockLLM := &concurrentSafeLLMCaller{
+	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			cur := atomic.AddInt64(&inflight, 1)
-			defer atomic.AddInt64(&inflight, -1)
-
-			// Track max concurrent calls
-			for {
-				old := atomic.LoadInt64(&maxInflight)
-				if cur <= old || atomic.CompareAndSwapInt64(&maxInflight, old, cur) {
-					break
-				}
+			// Build a response for all criteria
+			var results []string
+			for i := 0; i < numCriteria; i++ {
+				results = append(results, fmt.Sprintf(`{"criterion_id":"ac_%d","verdict":"YES","explanation":"criterion %d met"}`, i, i))
 			}
-
-			time.Sleep(delayPerCall)
 			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "YES, criterion met."},
+				Message:    llm.Message{Role: "assistant", Content: "[" + strings.Join(results, ",") + "]"},
 				StopReason: "end_turn",
 			}, nil
 		},
 	}
 
-	evaluator := newConcurrentTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
 	criteria := make([]AcceptanceCriterion, numCriteria)
 	for i := range criteria {
@@ -888,82 +817,16 @@ func TestEvaluator_ParallelLLMJudge(t *testing.T) {
 	}
 
 	bb := NewMapBlackboard()
-	start := time.Now()
 	evalResult, err := evaluator.Evaluate(context.Background(), "some result", criteria, bb)
-	elapsed := time.Since(start)
-
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
 	if len(evalResult.Passed) != numCriteria {
 		t.Errorf("expected %d passed, got %d", numCriteria, len(evalResult.Passed))
 	}
 
-	// If sequential, it would take >= numCriteria * delayPerCall = 250ms.
-	// Parallel should complete much faster.
-	sequentialMin := time.Duration(numCriteria) * delayPerCall
-	if elapsed >= sequentialMin {
-		t.Errorf("expected parallel execution to be faster than %v, took %v", sequentialMin, elapsed)
-	}
-
-	// Verify concurrency actually happened
-	if atomic.LoadInt64(&maxInflight) < 2 {
-		t.Errorf("expected at least 2 concurrent calls, max was %d", atomic.LoadInt64(&maxInflight))
-	}
-}
-
-// TestEvaluator_ParallelPreservesDeterministicOrder verifies that results
-// appear in original criteria order regardless of goroutine completion order.
-func TestEvaluator_ParallelPreservesDeterministicOrder(t *testing.T) {
-	// Criteria complete in reverse order via staggered delays.
-	const numCriteria = 4
-
-	mockLLM := &concurrentSafeLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			// Determine which criterion this is from the user message content
-			var delay time.Duration
-			for _, msg := range req.Messages {
-				switch {
-				case strings.Contains(msg.Content, "Criterion 0"):
-					delay = 80 * time.Millisecond
-				case strings.Contains(msg.Content, "Criterion 1"):
-					delay = 60 * time.Millisecond
-				case strings.Contains(msg.Content, "Criterion 2"):
-					delay = 40 * time.Millisecond
-				case strings.Contains(msg.Content, "Criterion 3"):
-					delay = 20 * time.Millisecond
-				}
-			}
-			time.Sleep(delay)
-			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "YES, met."},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
-
-	evaluator := newConcurrentTestEvaluatorReAct(mockLLM)
-
-	criteria := make([]AcceptanceCriterion, numCriteria)
-	for i := range criteria {
-		criteria[i] = AcceptanceCriterion{
-			ID:          fmt.Sprintf("ac_%d", i),
-			Description: fmt.Sprintf("Criterion %d", i),
-			CheckType:   "llm_judge",
-		}
-	}
-
-	bb := NewMapBlackboard()
-	evalResult, err := evaluator.Evaluate(context.Background(), "result", criteria, bb)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(evalResult.Passed) != numCriteria {
-		t.Fatalf("expected %d passed, got %d", numCriteria, len(evalResult.Passed))
-	}
-
-	// Verify order matches original criteria order, NOT completion order
+	// Verify order matches original criteria order
 	for i, detail := range evalResult.Passed {
 		expectedID := fmt.Sprintf("ac_%d", i)
 		if detail.Criterion.ID != expectedID {
@@ -972,45 +835,28 @@ func TestEvaluator_ParallelPreservesDeterministicOrder(t *testing.T) {
 	}
 }
 
-// TestEvaluator_ParallelWithMixedTypes verifies that programmatic criteria
-// run before parallel llm_judge criteria, and all results are correct.
-func TestEvaluator_ParallelWithMixedTypes(t *testing.T) {
+// TestEvaluator_BatchWithMixedTypes verifies that programmatic criteria
+// run before batch llm_judge evaluation, and all results are correct.
+func TestEvaluator_BatchWithMixedTypes(t *testing.T) {
 	mockTools := &mockToolExecutor{
 		results: map[string]tools.ToolResult{
 			"bash_exec": {Content: "ok", IsError: false},
 		},
 	}
 
-	mockLLM := &concurrentSafeLLMCaller{
+	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			// Return YES for llm_judge_1, NO for llm_judge_2
-			for _, msg := range req.Messages {
-				if strings.Contains(msg.Content, "LLM check 1") {
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "YES, good."},
-						StopReason: "end_turn",
-					}, nil
-				}
-				if strings.Contains(msg.Content, "LLM check 2") {
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO, bad."},
-						StopReason: "end_turn",
-					}, nil
-				}
-			}
 			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "YES, default."},
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `[{"criterion_id":"llm_1","verdict":"YES","explanation":"good."},{"criterion_id":"llm_2","verdict":"NO","explanation":"bad."}]`,
+				},
 				StopReason: "end_turn",
 			}, nil
 		},
 	}
 
-	reg := tools.NewToolRegistry()
-	counter, _ := llm.NewTokenCounter("approximate")
-	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
-		return &mockContextManager{systemPrompt: systemPrompt}
-	}
-	evaluator := NewEvaluator(mockTools, mockLLM, reg, counter, factory, nil, nil, ToolResultBudget{})
+	evaluator := NewEvaluator(mockTools, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
 
 	criteria := []AcceptanceCriterion{
 		{ID: "prog_1", Description: "Programmatic", CheckType: "programmatic", CheckCmd: "echo ok"},
@@ -1048,29 +894,17 @@ func TestEvaluator_ParallelWithMixedTypes(t *testing.T) {
 	}
 }
 
-// TestEvaluator_ParallelErrorPropagation verifies that an error from one
-// llm_judge criterion propagates correctly, returning the first error
-// in criteria order.
-func TestEvaluator_ParallelErrorPropagation(t *testing.T) {
-	mockLLM := &concurrentSafeLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			for _, msg := range req.Messages {
-				if strings.Contains(msg.Content, "Failing criterion") {
-					return nil, errors.New("LLM call failed for failing criterion")
-				}
-			}
-			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "YES, met."},
-				StopReason: "end_turn",
-			}, nil
-		},
+// TestEvaluator_BatchErrorPropagation verifies that an LLM error from the
+// batch call propagates correctly.
+func TestEvaluator_BatchErrorPropagation(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		err: errors.New("batch LLM call failed"),
 	}
 
-	evaluator := newConcurrentTestEvaluatorReAct(mockLLM)
+	evaluator := newTestEvaluator(nil, mockLLM)
 
 	criteria := []AcceptanceCriterion{
 		{ID: "ac_ok", Description: "Good criterion", CheckType: "llm_judge"},
-		{ID: "ac_fail", Description: "Failing criterion", CheckType: "llm_judge"},
 		{ID: "ac_ok2", Description: "Another good criterion", CheckType: "llm_judge"},
 	}
 
@@ -1079,8 +913,112 @@ func TestEvaluator_ParallelErrorPropagation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "failing criterion") {
-		t.Errorf("expected error about failing criterion, got: %v", err)
+	if !strings.Contains(err.Error(), "batch LLM call failed") {
+		t.Errorf("expected error about batch LLM call, got: %v", err)
+	}
+}
+
+// TestEvaluator_BatchMalformedJSON verifies that malformed JSON in the batch
+// response marks all criteria as UNCLEAR.
+func TestEvaluator_BatchMalformedJSON(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{{
+			Message:    llm.Message{Role: "assistant", Content: "This is not JSON at all"},
+			StopReason: "end_turn",
+		}},
+	}
+
+	evaluator := newTestEvaluator(nil, mockLLM)
+
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "First", CheckType: "llm_judge"},
+		{ID: "ac_2", Description: "Second", CheckType: "llm_judge"},
+	}
+
+	bb := NewMapBlackboard()
+	evalResult, err := evaluator.Evaluate(context.Background(), "result", criteria, bb)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(evalResult.Unclear) != 2 {
+		t.Errorf("expected 2 unclear, got %d", len(evalResult.Unclear))
+	}
+	for _, d := range evalResult.Unclear {
+		if !strings.Contains(d.Diagnostic, "failed to parse batch response") {
+			t.Errorf("expected parse error diagnostic, got %q", d.Diagnostic)
+		}
+	}
+}
+
+// TestEvaluator_BatchMissingCriterion verifies that if the LLM response
+// omits a criterion, it's marked UNCLEAR.
+func TestEvaluator_BatchMissingCriterion(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"met"}]`,
+			},
+			StopReason: "end_turn",
+		}},
+	}
+
+	evaluator := newTestEvaluator(nil, mockLLM)
+
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "First", CheckType: "llm_judge"},
+		{ID: "ac_2", Description: "Second (missing from response)", CheckType: "llm_judge"},
+	}
+
+	bb := NewMapBlackboard()
+	evalResult, err := evaluator.Evaluate(context.Background(), "result", criteria, bb)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(evalResult.Passed) != 1 {
+		t.Errorf("expected 1 passed, got %d", len(evalResult.Passed))
+	}
+	if len(evalResult.Unclear) != 1 {
+		t.Errorf("expected 1 unclear, got %d", len(evalResult.Unclear))
+	}
+	if evalResult.Unclear[0].Criterion.ID != "ac_2" {
+		t.Errorf("expected ac_2 to be unclear, got %s", evalResult.Unclear[0].Criterion.ID)
+	}
+	if !strings.Contains(evalResult.Unclear[0].Diagnostic, "missing from batch response") {
+		t.Errorf("expected missing criterion diagnostic, got %q", evalResult.Unclear[0].Diagnostic)
+	}
+}
+
+// TestEvaluator_BatchCodeFenceStripping verifies that JSON wrapped in
+// markdown code fences is parsed correctly.
+func TestEvaluator_BatchCodeFenceStripping(t *testing.T) {
+	response := "```json\n" +
+		`[{"criterion_id":"ac_1","verdict":"YES","explanation":"met"}]` +
+		"\n```"
+
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{{
+			Message:    llm.Message{Role: "assistant", Content: response},
+			StopReason: "end_turn",
+		}},
+	}
+
+	evaluator := newTestEvaluator(nil, mockLLM)
+
+	criteria := []AcceptanceCriterion{
+		{ID: "ac_1", Description: "First", CheckType: "llm_judge"},
+	}
+
+	bb := NewMapBlackboard()
+	evalResult, err := evaluator.Evaluate(context.Background(), "result", criteria, bb)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(evalResult.Passed) != 1 {
+		t.Errorf("expected 1 passed, got %d", len(evalResult.Passed))
 	}
 }
 

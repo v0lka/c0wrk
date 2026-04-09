@@ -63,12 +63,11 @@ func TestEvidence_FetchByStepID(t *testing.T) {
 	if !contains(content, "full output of step 1") {
 		t.Errorf("missing full output in result:\n%s", content)
 	}
-	// Must contain ReAct step info
-	if !contains(content, "read_file") {
-		t.Errorf("missing tool call 'read_file' in result:\n%s", content)
-	}
-	if !contains(content, "bash_exec") {
-		t.Errorf("missing tool call 'bash_exec' in result:\n%s", content)
+	// Must NOT contain ReAct trace
+	for _, banned := range []string{"ReAct Steps", "Thought:", "Action:", "Observation:"} {
+		if contains(content, banned) {
+			t.Errorf("fetchStep output should not contain %q, got:\n%s", banned, content)
+		}
 	}
 }
 

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
-	"sync"
 
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
@@ -21,6 +21,26 @@ var _ orchestration.Evaluator = (*Evaluator)(nil)
 // maxResultSummaryChars is the maximum character length for the result summary
 // passed to each evaluator ReAct agent (~500 tokens at 4 chars/token).
 const maxResultSummaryChars = 2000
+
+// maxEvidenceChars is the maximum character length for the combined evidence
+// summary passed to the batch evaluator (~2000 tokens at 4 chars/token).
+const maxEvidenceChars = 8000
+
+// batchEvaluatorPrompt is the system prompt for the single-call batch evaluator.
+const batchEvaluatorPrompt = `You are an acceptance-criteria evaluation agent. Evaluate ALL criteria below against the provided evidence.
+
+## Grounding Rules
+- Evidence provided below is ground truth — do NOT override with your own beliefs.
+- Evaluate based on demonstrated evidence, not assumptions.
+- If evidence is insufficient for a criterion, verdict should be "NO".
+
+## Response Format
+Respond ONLY with a JSON array. Each element must have:
+- "criterion_id": the exact criterion ID
+- "verdict": "YES" or "NO"
+- "explanation": brief explanation citing specific evidence
+
+Example: [{"criterion_id":"ac_1","verdict":"YES","explanation":"Step step_3 output confirms..."}]`
 
 // evaluatorToolWhitelist defines the read-only tools the evaluator agents can use.
 // read_evidence is always added separately since it needs blackboard context.
@@ -82,7 +102,7 @@ func NewEvaluator(
 		toolRegistry:     toolRegistry,
 		tokenCounter:     tokenCounter,
 		contextFactory:   contextFactory,
-		maxSteps:         20, // evaluator agent budget
+		maxSteps:         8, // evaluator agent budget
 		logger:           logger,
 		emitter:          emitter,
 		toolResultBudget: toolResultBudget,
@@ -103,8 +123,7 @@ Start by listing available evidence, then fetch relevant steps to evaluate this 
 
 // Evaluate checks the result against all acceptance criteria.
 // Non-LLM criteria (programmatic, intent_verification, unknown) run sequentially first.
-// All llm_judge criteria then run in parallel since each spawns an independent ReAct
-// agent with its own context window, and the Blackboard is thread-safe.
+// All llm_judge criteria are then evaluated in a single batch LLM call.
 func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []AcceptanceCriterion, bb Blackboard) (*EvalResult, error) {
 	evalResult := &EvalResult{
 		Passed:  []EvalDetail{},
@@ -146,31 +165,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []Acce
 		categorizeDetail(evalResult, detail)
 	}
 
-	// Phase 2: Run llm_judge criteria in parallel.
+	// Phase 2: Run llm_judge criteria via single batch evaluation.
 	if len(llmJudgeCriteria) > 0 {
-		type llmJudgeResult struct {
-			detail EvalDetail
-			err    error
+		details, err := e.evaluateLLMJudgeBatch(ctx, llmJudgeCriteria, result, bb)
+		if err != nil {
+			return nil, err
 		}
-		results := make([]llmJudgeResult, len(llmJudgeCriteria))
-
-		var wg sync.WaitGroup
-		for i, criterion := range llmJudgeCriteria {
-			wg.Add(1)
-			go func(idx int, ac AcceptanceCriterion) {
-				defer wg.Done()
-				detail, err := e.evaluateLLMJudgeReAct(ctx, ac, result, bb)
-				results[idx] = llmJudgeResult{detail: detail, err: err}
-			}(i, criterion)
-		}
-		wg.Wait()
-
-		// Collect results in original criteria order (deterministic).
-		for _, r := range results {
-			if r.err != nil {
-				return nil, r.err
-			}
-			categorizeDetail(evalResult, r.detail)
+		for _, detail := range details {
+			categorizeDetail(evalResult, detail)
 		}
 	}
 
@@ -220,6 +222,140 @@ func (e *Evaluator) evaluateProgrammatic(ctx context.Context, criterion Acceptan
 	}
 
 	return detail, nil
+}
+
+// batchCriterionResult is the expected JSON structure for each criterion in the batch response.
+type batchCriterionResult struct {
+	CriterionID string `json:"criterion_id"`
+	Verdict     string `json:"verdict"`
+	Explanation string `json:"explanation"`
+}
+
+// evaluateLLMJudgeBatch evaluates all llm_judge criteria in a single LLM call.
+// It pre-fetches evidence from the blackboard, builds one prompt with all criteria,
+// and parses a structured JSON response.
+func (e *Evaluator) evaluateLLMJudgeBatch(ctx context.Context, criteria []AcceptanceCriterion, result string, bb Blackboard) ([]EvalDetail, error) {
+	if e.llm == nil {
+		// No LLM configured — mark all as UNCLEAR.
+		details := make([]EvalDetail, len(criteria))
+		for i, ac := range criteria {
+			details[i] = EvalDetail{
+				Criterion:  ac,
+				Diagnostic: "UNCLEAR:evaluator LLM not configured",
+			}
+		}
+		return details, nil
+	}
+
+	// 1. Pre-fetch all evidence from blackboard.
+	var evidenceSummary string
+	if bb != nil {
+		allSteps := bb.GetAllStepResults()
+		// Sort step IDs for deterministic output.
+		ids := make([]string, 0, len(allSteps))
+		for id := range allSteps {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+
+		var sb strings.Builder
+		for _, id := range ids {
+			sr := allSteps[id]
+			fmt.Fprintf(&sb, "### %s\n%s\n\n", id, sr.FullOutput)
+		}
+		evidenceSummary = sb.String()
+
+		// Cap evidence at maxEvidenceChars, truncating from the beginning.
+		if len(evidenceSummary) > maxEvidenceChars {
+			evidenceSummary = "...(truncated)...\n" + evidenceSummary[len(evidenceSummary)-maxEvidenceChars:]
+		}
+	}
+
+	// 2. Build result summary.
+	resultSummary := result
+	if len(resultSummary) > maxResultSummaryChars {
+		resultSummary = resultSummary[:maxResultSummaryChars] + "..."
+	}
+
+	// 3. Build user message with criteria list.
+	var userMsg strings.Builder
+	fmt.Fprintf(&userMsg, "## Result Summary\n%s\n\n", resultSummary)
+	if evidenceSummary != "" {
+		fmt.Fprintf(&userMsg, "## Evidence\n%s\n", evidenceSummary)
+	}
+	userMsg.WriteString("## Criteria\n")
+	for _, ac := range criteria {
+		fmt.Fprintf(&userMsg, "- %s: %s\n", ac.ID, ac.Description)
+	}
+
+	// 4. Make a single LLM call.
+	req := llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: batchEvaluatorPrompt},
+			{Role: "user", Content: userMsg.String()},
+		},
+	}
+
+	resp, err := e.llm.Call(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("batch evaluator LLM call failed: %w", err)
+	}
+
+	// 5. Parse JSON response.
+	responseText := strings.TrimSpace(resp.Message.Content)
+	// Strip markdown code fences if present.
+	if strings.HasPrefix(responseText, "```") {
+		if idx := strings.Index(responseText[3:], "\n"); idx >= 0 {
+			responseText = responseText[3+idx+1:]
+		}
+		if strings.HasSuffix(responseText, "```") {
+			responseText = responseText[:len(responseText)-3]
+		}
+		responseText = strings.TrimSpace(responseText)
+	}
+
+	var batchResults []batchCriterionResult
+	if err := json.Unmarshal([]byte(responseText), &batchResults); err != nil {
+		// Malformed JSON — mark all as UNCLEAR with the raw response.
+		details := make([]EvalDetail, len(criteria))
+		for i, ac := range criteria {
+			details[i] = EvalDetail{
+				Criterion:  ac,
+				Diagnostic: "UNCLEAR:failed to parse batch response: " + responseText,
+			}
+		}
+		return details, nil
+	}
+
+	// 6. Map results by criterion ID.
+	resultMap := make(map[string]batchCriterionResult, len(batchResults))
+	for _, br := range batchResults {
+		resultMap[br.CriterionID] = br
+	}
+
+	// 7. Convert to []EvalDetail in original criteria order.
+	details := make([]EvalDetail, len(criteria))
+	for i, ac := range criteria {
+		br, ok := resultMap[ac.ID]
+		if !ok {
+			details[i] = EvalDetail{
+				Criterion:  ac,
+				Diagnostic: "UNCLEAR:criterion missing from batch response",
+			}
+			continue
+		}
+		verdict := strings.ToUpper(strings.TrimSpace(br.Verdict))
+		switch verdict {
+		case "YES":
+			details[i] = EvalDetail{Criterion: ac, Diagnostic: "PASSED:" + br.Explanation}
+		case "NO":
+			details[i] = EvalDetail{Criterion: ac, Diagnostic: "FAILED:" + br.Explanation}
+		default:
+			details[i] = EvalDetail{Criterion: ac, Diagnostic: "UNCLEAR:" + br.Explanation}
+		}
+	}
+
+	return details, nil
 }
 
 // evaluateLLMJudgeReAct runs a per-criterion ReAct agent to evaluate an llm_judge criterion.

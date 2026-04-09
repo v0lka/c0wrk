@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -76,4 +77,21 @@ func (sw *SharedWorkspace) Clear() {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	sw.artifacts = make(map[string]Artifact)
+}
+
+// sharedWorkspaceKey is the context key for passing SharedWorkspace through context.Context.
+type sharedWorkspaceKey struct{}
+
+// WithSharedWorkspace returns a new context with the SharedWorkspace attached.
+func WithSharedWorkspace(ctx context.Context, ws *SharedWorkspace) context.Context {
+	return context.WithValue(ctx, sharedWorkspaceKey{}, ws)
+}
+
+// SharedWorkspaceFromContext extracts the SharedWorkspace from the context.
+// Returns nil if not found.
+func SharedWorkspaceFromContext(ctx context.Context) *SharedWorkspace {
+	if ws, ok := ctx.Value(sharedWorkspaceKey{}).(*SharedWorkspace); ok {
+		return ws
+	}
+	return nil
 }

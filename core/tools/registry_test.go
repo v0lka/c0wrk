@@ -1091,6 +1091,104 @@ func TestPolicyUniformity_AllToolFamilies(t *testing.T) {
 	})
 }
 
+// TestPolicyAuto_JudgeSetAfterCreation verifies that setting a judge after
+// registry creation enables judge evaluation for Auto-policy tools.
+func TestPolicyAuto_JudgeSetAfterCreation(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := &mockTool{
+		name:          "auto_tool",
+		description:   "auto policy tool",
+		inputSchema:   json.RawMessage(`{"type":"object"}`),
+		defaultPolicy: PolicyAuto,
+	}
+	registry.Register(tool)
+
+	// Phase 1: No judge → confirmation must be called
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	_, err := registry.Execute(context.Background(), "auto_tool", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("phase 1: expected confirmFunc to be called when no judge is set")
+	}
+
+	// Phase 2: Set judge that allows → confirmation must NOT be called
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+	registry.SetJudge(judge)
+
+	confirmCalled = false
+	_, err = registry.Execute(context.Background(), "auto_tool", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("phase 2: expected confirmFunc NOT to be called when judge allows")
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("phase 2: expected judge to be called once, got %d", mockProvider.callCount)
+	}
+}
+
+// TestPolicyAuto_SetJudgeNilFallsBackToConfirmation verifies that clearing the judge
+// (simulating rebuildJudge failure) reverts to fail-safe user confirmation.
+func TestPolicyAuto_SetJudgeNilFallsBackToConfirmation(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := &mockTool{
+		name:          "auto_tool",
+		description:   "auto policy tool",
+		inputSchema:   json.RawMessage(`{"type":"object"}`),
+		defaultPolicy: PolicyAuto,
+	}
+	registry.Register(tool)
+
+	// Set up a working judge that allows
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+	registry.SetJudge(judge)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	// Phase 1: Judge allows → no confirmation
+	_, err := registry.Execute(context.Background(), "auto_tool", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Fatal("phase 1: expected no confirmation when judge allows")
+	}
+
+	// Phase 2: Clear judge (simulates rebuildJudge failure) → confirmation MUST be requested
+	registry.SetJudge(nil)
+	confirmCalled = false
+
+	_, err = registry.Execute(context.Background(), "auto_tool", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("phase 2: expected confirmation when judge is nil (fail-safe)")
+	}
+}
+
 func TestSetDefaultPolicy_OverriddenByPerTool(t *testing.T) {
 	reg := NewToolRegistry()
 	tool := newMockReadOnlyTool("test_tool", "desc")

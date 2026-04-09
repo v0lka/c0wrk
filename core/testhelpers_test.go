@@ -230,6 +230,7 @@ func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
 func (m *mockEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
 func (m *mockEmitter) Reflection(_ string, _ []string, _, _ int)          {}
 func (m *mockEmitter) Retry(_, _ int)                                     {}
+func (m *mockEmitter) StepRetry(_ string, _, _ int)                       {}
 func (m *mockEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (m *mockEmitter) AssistantChunk(content string) {
 	m.assistantChunks = append(m.assistantChunks, content)
@@ -309,9 +310,13 @@ func detectCallType(req llm.ChatRequest) string {
 			if strings.Contains(msg.Content, "enricher") || strings.Contains(msg.Content, "Domain:") {
 				return "enrich"
 			}
+			// Batch evaluator uses "acceptance-criteria evaluation agent" in system prompt
+			if strings.Contains(msg.Content, "acceptance-criteria evaluation agent") {
+				return "evaluator_judge"
+			}
 		}
 		if msg.Role == "user" {
-			// Evaluator judge calls have specific format
+			// Evaluator judge calls have specific format (legacy per-criterion)
 			if strings.Contains(msg.Content, "Criterion:") && strings.Contains(msg.Content, "Result:") {
 				return "evaluator_judge"
 			}

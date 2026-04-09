@@ -105,6 +105,12 @@ export interface RetryData {
   max_attempts: number
 }
 
+export interface StepRetryData {
+  step_id: string
+  attempt: number
+  max_attempts: number
+}
+
 export interface ACExtractedData {
   count: number
 }

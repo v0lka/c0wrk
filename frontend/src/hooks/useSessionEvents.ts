@@ -68,6 +68,10 @@ function isRetryData(data: unknown): data is { attempt: number; max_attempts: nu
   return typeof data === 'object' && data !== null && 'attempt' in data && 'max_attempts' in data
 }
 
+function isStepRetryData(data: unknown): data is { step_id: string; attempt: number; max_attempts: number } {
+  return typeof data === 'object' && data !== null && 'step_id' in data && 'attempt' in data && 'max_attempts' in data
+}
+
 function isServiceData(data: unknown): data is { content: string } {
   return typeof data === 'object' && data !== null && 'content' in data
 }
@@ -106,13 +110,13 @@ export function useSessionEvents(sessionId: string | null) {
 
     // Reset global UI state from previous session
     useChatStore.getState().clearSessionUIState()
-    
+
     // Load persisted session token totals
     GetSessionTokens(sessionId).then((resp) => {
       if (!mounted || !isActiveSession()) return
       useChatStore.getState().setSessionTokens(resp.total_input_tokens ?? 0, resp.total_output_tokens ?? 0)
-    }).catch(() => {}) // Ignore errors, will show 0
-    
+    }).catch(() => { }) // Ignore errors, will show 0
+
     // Reset panel data for new session (before any events arrive)
     panelStore.resetPanels()
 
@@ -173,7 +177,8 @@ export function useSessionEvents(sessionId: string | null) {
       if (!mounted) return
       if (!isToolCallData(data)) return
       const toolCall = data
-      if (isActiveSession()) useChatStore.getState().setActivityStatus(`Running tool: ${toolCall.tool}...`)
+      const isMemoryTool = ['read_evidence', 'read_step_output', 'list_step_outputs'].includes(toolCall.tool)
+      if (isActiveSession()) useChatStore.getState().setActivityStatus(isMemoryTool ? 'Reading memory...' : `Running tool: ${toolCall.tool}...`)
       const toolMsgId = toolCall.plan_step_id
         ? `tool-${toolCall.plan_step_id}-${toolCall.step}`
         : `tool-${toolCall.step}`
@@ -472,6 +477,21 @@ export function useSessionEvents(sessionId: string | null) {
         timestamp: Date.now(),
       })
       panelStore.updateStats({ attempt: retry.attempt + 1, maxAttempts: retry.max_attempts })
+    })
+
+    on('step_retry', (data: unknown) => {
+      if (!mounted) return
+      if (!isStepRetryData(data)) return
+      const stepRetry = data
+      if (isActiveSession()) useChatStore.getState().setActivityStatus(`Retrying step (attempt ${stepRetry.attempt}/${stepRetry.max_attempts})...`)
+      useChatStore.getState().addMessage(sessionId, {
+        id: `step-retry-${Date.now()}`,
+        sessionId,
+        type: 'step_retry',
+        content: `Retrying step (attempt ${stepRetry.attempt}/${stepRetry.max_attempts})`,
+        metadata: { step_id: stepRetry.step_id, attempt: stepRetry.attempt, max_attempts: stepRetry.max_attempts },
+        timestamp: Date.now(),
+      })
     })
 
     on('service', (data: unknown) => {

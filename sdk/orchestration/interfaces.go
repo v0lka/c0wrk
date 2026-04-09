@@ -44,6 +44,7 @@ type Events interface {
 	OnEvaluated(passed, total int, criteria []EvalCriterionEvent)
 	OnReflected(summary string, insights []string, attempt, maxAttempts int)
 	OnRetry(attempt, maxAttempts int)
+	OnStepRetry(stepID string, attempt, maxAttempts int)
 	OnCriteriaExtracted(count int, criteria []EvalCriterionEvent)
 	OnService(content string)
 	OnServiceMeta(content string, meta map[string]any)

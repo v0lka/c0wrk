@@ -219,6 +219,10 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 	// Clear any config load errors since settings are now valid
 	a.configLoadErrors = nil
 
+	// Rebuild judge with updated LLM provider so Auto-policy tools use
+	// the new provider for safety evaluation.
+	a.rebuildJudge(a.config, nil, slog.Default())
+
 	return nil
 }
 

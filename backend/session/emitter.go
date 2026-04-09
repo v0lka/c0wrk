@@ -344,6 +344,21 @@ func (e *EventEmitter) Retry(attempt, maxAttempts int) {
 	})
 }
 
+// StepRetry emits a step retry event.
+func (e *EventEmitter) StepRetry(stepID string, attempt, maxAttempts int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "step_retry",
+		Data: map[string]any{
+			"step_id":      stepID,
+			"attempt":      attempt,
+			"max_attempts": maxAttempts,
+		},
+	})
+}
+
 // ACExtracted emits an acceptance criteria extraction event.
 func (e *EventEmitter) ACExtracted(count int, criteria []core.EvalCriterionEvent) {
 	e.mu.Lock()

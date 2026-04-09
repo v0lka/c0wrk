@@ -669,13 +669,13 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 				if evalCallCount == 1 {
 					// First eval - fail
 					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - test did not pass"},
+						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"test did not pass"}]`},
 						StopReason: "end_turn",
 					}, nil
 				}
 				// Second eval - pass
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - test passed"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"test passed"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -801,7 +801,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 				evalCallCount++
 				// Always fail
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "NO - test did not pass"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"test did not pass"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -935,7 +935,7 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 			if detectCallType(req) == "evaluator_judge" {
 				// Always fail
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "NO - test did not pass"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"test did not pass"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -1064,12 +1064,12 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 				evalCallCount++
 				if evalCallCount == 1 {
 					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - needs more work"},
+						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"needs more work"}]`},
 						StopReason: "end_turn",
 					}, nil
 				}
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - looks good"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"looks good"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -1452,18 +1452,21 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 	reflectorCalled := false
 	replanCalled := false
 	attemptCount := 0
+	var tracker routerCallTracker
 
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			if detectCallType(req) == "route" || detectCallType(req) == "extract_raw" || detectCallType(req) == "enrich" {
-				hasAC := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Domain:") {
-						hasAC = true
-						break
-					}
-				}
-				if hasAC {
+				switch tracker.nextCall(req) {
+				case "extract_raw":
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `[{"id": "rc_1", "description": "Task completes", "nature": "objective", "weight": "must"}]`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				case "enrich":
 					return &llm.ChatResponse{
 						Message: llm.Message{
 							Role:    "assistant",
@@ -1471,14 +1474,15 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 						},
 						StopReason: "end_turn",
 					}, nil
+				default: // route
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						},
+						StopReason: "end_turn",
+					}, nil
 				}
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
 			}
 			if detectCallType(req) == "planner" {
 				// Check if this is a replan call
@@ -1520,12 +1524,12 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 				// Fail first eval, pass second
 				if attemptCount <= 1 {
 					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - task not complete"},
+						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"task not complete"}]`},
 						StopReason: "end_turn",
 					}, nil
 				}
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - task complete"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"task complete"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -1834,34 +1838,18 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 				}, nil
 			}
 			if detectCallType(req) == "evaluator_judge" {
-				// The evaluator is called once per criterion, so we need to track which criterion is being evaluated
-				// by examining the request content
+				// Batch evaluator: all criteria in one call
 				currentEval := atomic.AddInt32(&evalCallCount, 1)
-				isAC2 := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Step 2 completes") {
-						isAC2 = true
-						break
-					}
-				}
-				if isAC2 {
-					// Evaluating ac_2 (step 2)
-					if currentEval <= 2 {
-						// First eval - fails
-						return &llm.ChatResponse{
-							Message:    llm.Message{Role: "assistant", Content: "NO - step 2 failed"},
-							StopReason: "end_turn",
-						}, nil
-					}
-					// Second eval - passes
+				if currentEval == 1 {
+					// First batch eval: ac_1 passes, ac_2 fails
 					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "YES - step 2 passed"},
+						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"step 1 passed"},{"criterion_id":"ac_2","verdict":"NO","explanation":"step 2 failed"}]`},
 						StopReason: "end_turn",
 					}, nil
 				}
-				// Evaluating ac_1 (step 1) - always passes
+				// Second batch eval: all pass
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - step 1 passed"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"step 1 passed"},{"criterion_id":"ac_2","verdict":"YES","explanation":"step 2 passed"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -2091,33 +2079,18 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 				}, nil
 			}
 			if detectCallType(req) == "evaluator_judge" {
-				// The evaluator is called once per criterion, so we need to track which criterion is being evaluated
+				// Batch evaluator: all criteria in one call
 				currentEval := atomic.AddInt32(&evalCallCount, 1)
-				isAC2 := false
-				for _, msg := range req.Messages {
-					if strings.Contains(msg.Content, "Step 2 completes") {
-						isAC2 = true
-						break
-					}
-				}
-				if isAC2 {
-					// Evaluating ac_2 (step 2)
-					if currentEval <= 3 {
-						// First eval - fails (called after attempt 1 along with ac_1 and ac_3)
-						return &llm.ChatResponse{
-							Message:    llm.Message{Role: "assistant", Content: "NO - step 2 failed"},
-							StopReason: "end_turn",
-						}, nil
-					}
-					// Second eval - passes
+				if currentEval == 1 {
+					// First batch eval: ac_1 passes, ac_2 fails, ac_3 passes
 					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "YES - step 2 passed"},
+						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"passed"},{"criterion_id":"ac_2","verdict":"NO","explanation":"step 2 failed"},{"criterion_id":"ac_3","verdict":"YES","explanation":"passed"}]`},
 						StopReason: "end_turn",
 					}, nil
 				}
-				// Evaluating ac_1 or ac_3 - always passes
+				// Second batch eval: all pass
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - passed"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"passed"},{"criterion_id":"ac_2","verdict":"YES","explanation":"step 2 passed"},{"criterion_id":"ac_3","verdict":"YES","explanation":"passed"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -2330,13 +2303,13 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 				if evalCallCount == 1 {
 					// First eval - fails
 					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: "NO - task failed"},
+						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"task failed"}]`},
 						StopReason: "end_turn",
 					}, nil
 				}
 				// Second eval - passes
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - task passed"},
+					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"task passed"}]`},
 					StopReason: "end_turn",
 				}, nil
 			}

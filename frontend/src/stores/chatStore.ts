@@ -3,7 +3,7 @@ import { create } from 'zustand'
 export type MessageType =
   | 'user' | 'assistant' | 'thinking' | 'step_done' | 'tool_call' | 'tool_result'
   | 'tool_confirm' | 'ask_user' | 'routing' | 'eval' | 'reflection' | 'plan' | 'error' | 'thought'
-  | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'ac_extracted' | 'subagent_launch' | 'subagent_complete' | 'status'
+  | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry' | 'ac_extracted' | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable'
 
 export interface ChatMessageUI {
@@ -25,9 +25,10 @@ export type DisplayItem =
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
-  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'ac_extracted' | 'status'; content: string; metadata?: Record<string, unknown> }
+  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'ac_extracted' | 'status'; content: string; metadata?: Record<string, unknown> }
   | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; isRetry?: boolean; children: DisplayItem[] }
   | { kind: 'step_finish'; id: string; stepNum?: number }
+  | { kind: 'memory_read'; id: string }
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
   | { kind: 'resume_action'; message: ChatMessageUI }
@@ -166,6 +167,11 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           pushItem({ kind: 'step_finish', id: msg.id, stepNum: planStepNum }, planStepId)
           break
         }
+        // Render memory/blackboard read tools as compact "Memory readed" message
+        if (['read_evidence', 'read_step_output', 'list_step_outputs'].includes(toolName)) {
+          pushItem({ kind: 'memory_read', id: msg.id }, planStepId)
+          break
+        }
         const isAwaiting = meta?.awaiting_confirmation === true
         const hasResult = meta?.completed === true
         const toolItem: DisplayItem & { kind: 'tool' } = {
@@ -224,10 +230,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
 
       case 'task_failed_resumable': {
         const resolved = meta?.resolved === true
-        if (!resolved) {
-          pendingActions.push({ kind: 'resume_action', message: msg })
+        if (resolved) {
+          break
         }
-        pushItem({ kind: 'resume_action', message: msg }, planStepId)
+        pendingActions.push({ kind: 'resume_action', message: msg })
         break
       }
 
@@ -236,11 +242,12 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         break
 
       case 'routing':
-      case 'retry': {
+      case 'retry':
+      case 'step_retry': {
         pushItem({
           kind: 'service',
           id: msg.id,
-          variant: msg.type as 'routing' | 'retry',
+          variant: msg.type as 'routing' | 'retry' | 'step_retry',
           content: msg.content,
           metadata: meta,
         }, planStepId)

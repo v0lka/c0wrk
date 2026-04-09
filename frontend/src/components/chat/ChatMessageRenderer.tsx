@@ -14,7 +14,7 @@ import { ActionPlaceholder } from './ActionPlaceholder'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ActivityIndicator } from './ActivityIndicator'
-import { CheckCircle2 } from 'lucide-react'
+import { CheckCircle2, BookOpen } from 'lucide-react'
 
 interface ChatMessageRendererProps {
   displayItems: DisplayItem[]
@@ -54,6 +54,13 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
         <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
           <span>{item.stepNum ? `Finished step ${item.stepNum}` : 'Finished'}</span>
+        </div>
+      )
+    case 'memory_read':
+      return (
+        <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <BookOpen className="h-3.5 w-3.5 text-violet-500" />
+          <span>Memory readed</span>
         </div>
       )
     case 'action_placeholder':

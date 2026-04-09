@@ -20,6 +20,7 @@ func (*NoopEvents) OnStepCompleted(_ string, _ bool, _ time.Duration) {}
 func (*NoopEvents) OnEvaluated(_, _ int, _ []EvalCriterionEvent)      {}
 func (*NoopEvents) OnReflected(_ string, _ []string, _, _ int)        {}
 func (*NoopEvents) OnRetry(_, _ int)                                  {}
+func (*NoopEvents) OnStepRetry(_ string, _, _ int)                    {}
 func (*NoopEvents) OnCriteriaExtracted(_ int, _ []EvalCriterionEvent) {}
 func (*NoopEvents) OnService(_ string)                                {}
 func (*NoopEvents) OnServiceMeta(_ string, _ map[string]any)          {}

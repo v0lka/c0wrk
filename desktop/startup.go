@@ -410,6 +410,13 @@ func (a *App) Startup(ctx context.Context) {
 	ripgrepTool := builtins.NewRipgrepTool()
 	registry.Register(ripgrepTool)
 
+	// SharedWorkspace tools for reading step outputs
+	readStepOutputTool := builtins.NewReadStepOutputTool()
+	registry.Register(readStepOutputTool)
+
+	listStepOutputsTool := builtins.NewListStepOutputsTool()
+	registry.Register(listStepOutputsTool)
+
 	// Ask User tool (interactive question panel)
 	askUserTool := builtins.NewAskUserTool(func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
 		if a.ctx == nil {
@@ -457,22 +464,8 @@ func (a *App) Startup(ctx context.Context) {
 	_ = a.buildOrchestratorConfig(a.config)
 	_ = a.buildContextFactory(llmRouter, a.config)
 
-	// Initialize ToolJudge if enabled in config
-	if a.config.Security.Judge.Enabled != nil && *a.config.Security.Judge.Enabled {
-		_, _, _, defaultModel := a.config.LLM.GetActiveProviderConfig()
-		var judgeProvider llm.LLMProvider
-		if llmRouter != nil {
-			judgeProvider = llmRouter.GetDefaultProvider()
-		}
-		if judge := tools.NewToolJudgeFromConfig(tools.JudgeConfig{
-			Enabled:      true,
-			Model:        a.config.Security.Judge.Model,
-			DefaultModel: defaultModel,
-			Provider:     judgeProvider,
-		}, log); judge != nil {
-			registry.SetJudge(judge)
-		}
-	}
+	// Initialize ToolJudge (also called on LLM settings update to keep judge in sync)
+	a.rebuildJudge(a.config, llmRouter, log)
 
 	// Wire tool confirmation callback (desktop-only)
 	registry.SetConfirmFunc(func(ctx context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
