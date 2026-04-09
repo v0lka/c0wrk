@@ -33,4 +33,4 @@ func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
 func (n *NoopEvents) AssistantChunk(_ string)                            {}
 func (n *NoopEvents) AssistantDone(_ string, _, _ int)                   {}
 func (n *NoopEvents) TokensUsed(_, _ int)                                {}
-func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string) {}
+func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)       {}

@@ -58,6 +58,12 @@ type TaskCancelledData struct {
 	SessionID string `json:"session_id"`
 }
 
+// TaskFailedResumableData is the payload for "task_failed_resumable" events.
+// Emitted when plan execution fails but the task can be resumed.
+type TaskFailedResumableData struct {
+	Message string `json:"message"`
+}
+
 // ErrorData is the payload for "error" events.
 type ErrorData struct {
 	SessionID string `json:"session_id"`

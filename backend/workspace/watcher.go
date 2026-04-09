@@ -11,6 +11,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+const defaultDebounce = 200 * time.Millisecond
+
 // Watcher watches directories for file system changes and calls onChange when changes occur.
 type Watcher struct {
 	root     string
@@ -56,7 +58,6 @@ func NewWatcher(root string, onChange func()) (*Watcher, error) {
 // eventLoop reads fsnotify events and debounces onChange calls.
 func (w *Watcher) eventLoop() {
 	var timer *time.Timer
-	const debounce = 200 * time.Millisecond
 
 	for {
 		select {
@@ -72,7 +73,7 @@ func (w *Watcher) eventLoop() {
 			if timer != nil {
 				timer.Stop()
 			}
-			timer = time.AfterFunc(debounce, w.onChange)
+			timer = time.AfterFunc(defaultDebounce, w.onChange)
 		case _, ok := <-w.watcher.Errors:
 			if !ok {
 				return

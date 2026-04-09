@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,7 +34,7 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, dir string)
 	}
 
 	// Create factory that returns nil orchestrator with no error (we'll patch sessions manually)
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 
@@ -733,7 +734,7 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 	}
 
 	// Factory that always fails
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error) {
 		return nil, errors.New("factory error")
 	}
 
@@ -812,5 +813,118 @@ func TestManager_SendMessage_AllowsParallelActiveSessions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already processing") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// mockTaskStoreForResumable is a minimal TaskStore mock that controls
+// what GetUnfinishedTask returns, used for emitResumableIfUnfinished tests.
+type mockTaskStoreForResumable struct {
+	unfinished *TaskRecord // returned by GetUnfinishedTask
+}
+
+func (m *mockTaskStoreForResumable) SaveTask(_ TaskRecord) error                      { return nil }
+func (m *mockTaskStoreForResumable) UpdateTaskPlan(_ string, _ json.RawMessage) error { return nil }
+func (m *mockTaskStoreForResumable) UpdateTaskCriteria(_ string, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) UpdateTaskRouting(_ string, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) SaveTaskStep(_ string, _ TaskStepRecord) error { return nil }
+func (m *mockTaskStoreForResumable) AddTaskReflection(_ string, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) CompleteTask(_, _ string, _ json.RawMessage, _ int) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) FailTask(_ string) error                { return nil }
+func (m *mockTaskStoreForResumable) LoadTask(_ string) (*TaskRecord, error) { return nil, nil }
+func (m *mockTaskStoreForResumable) LoadTaskSteps(_ string) ([]TaskStepRecord, error) {
+	return nil, nil
+}
+func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ string) (*TaskRecord, error) {
+	return m.unfinished, nil
+}
+
+// TestEmitResumableIfUnfinished_EmitsWhenUnfinishedTaskExists verifies that
+// emitResumableIfUnfinished emits a "task_failed_resumable" event when the
+// task store reports an in-progress task for the session.
+func TestEmitResumableIfUnfinished_EmitsWhenUnfinishedTaskExists(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	// Configure a mock store that reports an unfinished task.
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: &TaskRecord{ID: "task-123", SessionID: "sess-1", Status: "failed"},
+	})
+
+	// Drain any prior events.
+	drainEvents(eventChan)
+
+	// Call the method under test.
+	manager.emitResumableIfUnfinished("sess-1")
+
+	// Expect a task_failed_resumable event.
+	select {
+	case event := <-eventChan:
+		if event.Type != "task_failed_resumable" {
+			t.Errorf("expected task_failed_resumable event, got %s", event.Type)
+		}
+		if event.SessionID != "sess-1" {
+			t.Errorf("expected session ID sess-1, got %s", event.SessionID)
+		}
+		data, ok := event.Data.(TaskFailedResumableData)
+		if !ok {
+			t.Fatalf("expected TaskFailedResumableData, got %T", event.Data)
+		}
+		if data.Message == "" {
+			t.Error("expected non-empty message in TaskFailedResumableData")
+		}
+	case <-time.After(time.Second):
+		t.Error("timeout waiting for task_failed_resumable event")
+	}
+}
+
+// TestEmitResumableIfUnfinished_NoEventWhenNoUnfinishedTask verifies that
+// emitResumableIfUnfinished does NOT emit when the task store has no
+// in-progress task (e.g. after a successful completion).
+func TestEmitResumableIfUnfinished_NoEventWhenNoUnfinishedTask(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	// Configure a mock store that reports no unfinished task.
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: nil,
+	})
+
+	// Drain any prior events.
+	drainEvents(eventChan)
+
+	// Call the method under test.
+	manager.emitResumableIfUnfinished("sess-1")
+
+	// No event should be emitted.
+	select {
+	case event := <-eventChan:
+		t.Errorf("expected no event, but got %s", event.Type)
+	case <-time.After(100 * time.Millisecond):
+		// OK — no event emitted.
+	}
+}
+
+// TestEmitResumableIfUnfinished_NoEventWithoutTaskStore verifies that
+// emitResumableIfUnfinished is a no-op when no task store is configured.
+func TestEmitResumableIfUnfinished_NoEventWithoutTaskStore(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	// No SetTaskStore call — taskStore remains nil.
+
+	drainEvents(eventChan)
+
+	manager.emitResumableIfUnfinished("sess-1")
+
+	select {
+	case event := <-eventChan:
+		t.Errorf("expected no event, but got %s", event.Type)
+	case <-time.After(100 * time.Millisecond):
+		// OK — no event emitted.
 	}
 }

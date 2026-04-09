@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, type KeyboardEvent } from 'react'
+import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
@@ -32,7 +32,7 @@ export function ChatInput() {
   const showCancel = isThinking || isProcessing
 
   // Auto-resize textarea
-  useEffect(() => {
+  useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
 

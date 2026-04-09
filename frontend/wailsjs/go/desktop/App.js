@@ -78,6 +78,10 @@ export function RenameSession(arg1, arg2) {
   return window['go']['desktop']['App']['RenameSession'](arg1, arg2);
 }
 
+export function ResumeTask(arg1) {
+  return window['go']['desktop']['App']['ResumeTask'](arg1);
+}
+
 export function SendMessage(arg1, arg2) {
   return window['go']['desktop']['App']['SendMessage'](arg1, arg2);
 }

@@ -159,8 +159,8 @@ export function FileIcon({ name, isDir, isOpen }: FileIconProps) {
 
   return (
     <span
-      className="inline-block w-5 text-center text-base leading-none flex-shrink-0"
-      style={{ fontFamily: "'SauceCodePro NF', monospace", color }}
+      className="nerd-font-icon inline-block w-5 text-center text-base leading-none flex-shrink-0"
+      style={{ color }}
       aria-hidden
     >
       {glyph}

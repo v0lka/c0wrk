@@ -63,7 +63,7 @@ type GlobInput struct {
 // errMaxResults is a sentinel error used to stop walking when max results is reached.
 var errMaxResults = errors.New("max results reached")
 
-// Execute performs the glob search and returns matching paths.
+// Execute runs the glob pattern search and returns matching file paths.
 func (t *GlobTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params GlobInput
 	if err := json.Unmarshal(input, &params); err != nil {

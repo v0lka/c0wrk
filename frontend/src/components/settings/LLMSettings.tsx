@@ -40,8 +40,8 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
         setProviderConfigs({
           anthropic: { api_key: llmConfig.anthropic.api_key, model: llmConfig.anthropic.model, base_url: '' },
           gemini: { api_key: llmConfig.gemini.api_key, model: llmConfig.gemini.model, base_url: '' },
-          lmstudio: llmConfig.lmstudio,
-          openai_compatible: llmConfig.openai_compatible,
+          lmstudio: llmConfig.lmstudio ?? { api_key: '', base_url: '', model: '' },
+          openai_compatible: llmConfig.openai_compatible ?? { api_key: '', base_url: '', model: '' },
           chatgpt: { api_key: llmConfig.chatgpt.api_key, model: llmConfig.chatgpt.model, base_url: '' },
         })
       }
@@ -141,14 +141,17 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
 
   const updateProviderConfig = (updates: Partial<ProviderConfig>) => {
     setProviderConfigs((prev) => {
+      const existing = prev[activeProvider]
+      if (!existing) return prev
+      const updated: ProviderConfig = {
+        ...existing,
+        ...updates,
+      }
       const newConfig = {
         ...prev,
-        [activeProvider]: {
-          ...prev[activeProvider],
-          ...updates,
-        },
+        [activeProvider]: updated,
       }
-      debouncedSave(activeProvider, newConfig[activeProvider])
+      debouncedSave(activeProvider, updated)
       return newConfig
     })
   }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
@@ -33,6 +34,10 @@ type OrchestratorConfig struct {
 // This allows the Orchestrator to remain decoupled from the memory package.
 type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager
 
+// BlackboardFactory creates a Blackboard for a new task.
+// The taskID is a unique identifier for the orchestration request.
+type BlackboardFactory func(taskID string) Blackboard
+
 // Orchestrator coordinates the agent's reasoning cycle.
 // Phase 2: Full implementation with Router, Planner, Evaluator.
 // Phase 3: Retry-loop with Reflector.
@@ -54,7 +59,8 @@ type Orchestrator struct {
 	logger              *slog.Logger  // structured logger (nil-safe)
 	emitter             Emitter       // event emitter (nil-safe, uses noopEmitter if nil)
 	toolResultBudget    ToolResultBudget
-	intentVerifier      *IntentVerifier // optional Tier 2 intent verifier (nil-safe)
+	intentVerifier      *IntentVerifier   // optional Tier 2 intent verifier (nil-safe)
+	bbFactory           BlackboardFactory // optional factory for creating blackboards (nil = default MapBlackboard)
 }
 
 // NewOrchestrator creates a new Orchestrator with all Phase 2 components.
@@ -76,6 +82,7 @@ func NewOrchestrator(
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
 	toolResultBudget ToolResultBudget,
 	intentVerifier *IntentVerifier, // optional, nil-safe
+	bbFactory BlackboardFactory, // optional, nil = default MapBlackboard
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
@@ -112,6 +119,7 @@ func NewOrchestrator(
 		emitter:          emitter,
 		toolResultBudget: toolResultBudget,
 		intentVerifier:   intentVerifier,
+		bbFactory:        bbFactory,
 	}
 }
 
@@ -141,13 +149,19 @@ func (o *Orchestrator) logWarn(msg string, args ...any) {
 // Returns a HandleResult with rich output including routing decision, plan, and evaluation.
 func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleResult, error) {
 	// Create a fresh blackboard for this request (per-request state).
-	bb := NewMapBlackboard()
+	taskID := uuid.New().String()
+	var bb Blackboard
+	if o.bbFactory != nil {
+		bb = o.bbFactory(taskID)
+	} else {
+		bb = NewMapBlackboard()
+	}
 	bb.SetOriginalRequest(userMessage)
 	// 0. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
 	{
 		var effectiveMax int
 		if o.modelRegistry != nil {
-			meta := o.modelRegistry.Resolve("")
+			meta, _ := o.modelRegistry.Resolve("")
 			if meta.ContextWindow > 0 {
 				safetyMargin := meta.ContextWindow * 5 / 100
 				effectiveMax = meta.ContextWindow - meta.OutputLimit - safetyMargin
@@ -173,6 +187,11 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	routing, err := o.router.Route(ctx, userMessage, rawCriteria, availableTools, o.conversationHistory)
 	if err != nil {
 		return nil, fmt.Errorf("routing failed: %w", err)
+	}
+
+	// Persist routing decision if using persistent blackboard
+	if pbb, ok := bb.(*PersistentBlackboard); ok {
+		pbb.SetRouting(routing)
 	}
 
 	// Emit routing decision
@@ -210,10 +229,14 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 			Blackboard:      bb,
 		}
 	} else {
-		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools, nil, ac, bb)
+		result, err = o.handlePlanExecute(ctx, userMessage, routing, availableTools, nil, ac, bb, nil, nil)
 	}
 
 	if err != nil {
+		// Persist task failure if using persistent blackboard
+		if pbb, ok := bb.(*PersistentBlackboard); ok {
+			pbb.FailTask()
+		}
 		return nil, err
 	}
 
@@ -226,6 +249,80 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 		const maxHistoryMessages = 20
 		if len(o.conversationHistory) > maxHistoryMessages {
 			o.conversationHistory = o.conversationHistory[len(o.conversationHistory)-maxHistoryMessages:]
+		}
+	}
+
+	return result, nil
+}
+
+// Resume continues execution of a previously interrupted task from its checkpoint state.
+// The blackboard must be pre-loaded with the task's persisted state (via RestoreBlackboard).
+// It reads the plan and completed step results from the blackboard, then resumes execution
+// from the remaining steps, reusing the full retry/eval/reflect loop.
+func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *RoutingDecision) (*HandleResult, error) {
+	plan := bb.GetPlan()
+	if plan == nil {
+		return nil, errors.New("no plan found in restored blackboard")
+	}
+
+	userMessage := bb.GetOriginalRequest()
+	ac := bb.GetCriteria()
+	reflections := bb.GetReflections()
+	availableTools := o.toolRegistry.List()
+
+	// Build preCompleted from restored step results.
+	allResults := bb.GetAllStepResults()
+	preCompleted := make(map[string]CompletedStep, len(allResults))
+	for stepID, sr := range allResults {
+		preCompleted[stepID] = CompletedStep{
+			StepID: stepID,
+			Output: sr.FullOutput,
+			Error:  sr.Error,
+			Steps:  sr.Steps,
+		}
+	}
+
+	// Emit initial 0% context_fill so the frontend has a baseline.
+	{
+		var effectiveMax int
+		if o.modelRegistry != nil {
+			meta, _ := o.modelRegistry.Resolve("")
+			if meta.ContextWindow > 0 {
+				safetyMargin := meta.ContextWindow * 5 / 100
+				effectiveMax = meta.ContextWindow - meta.OutputLimit - safetyMargin
+			}
+		}
+		o.emitter.ContextFill(0, 0, effectiveMax, "ok", "")
+	}
+
+	// Emit routing decision so the frontend can display the resumed context.
+	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
+
+	// Emit AC if available.
+	if len(ac) > 0 {
+		acEvents := make([]EvalCriterionEvent, len(ac))
+		for i, c := range ac {
+			acEvents[i] = EvalCriterionEvent{Name: c.ID, Description: c.Description}
+		}
+		o.emitter.ACExtracted(len(ac), acEvents)
+	}
+
+	o.logInfo("resume_task", "plan_steps", len(plan.Steps), "completed_steps", len(preCompleted), "reflections", len(reflections))
+
+	// Resume execution with existing plan and preCompleted steps.
+	result, err := o.handlePlanExecute(ctx, userMessage, routing, availableTools, reflections, ac, bb, plan, preCompleted)
+	if err != nil {
+		// Persist task failure if using persistent blackboard.
+		if pbb, ok := bb.(*PersistentBlackboard); ok {
+			pbb.FailTask()
+		}
+		return nil, err
+	}
+
+	// Persist task completion if using persistent blackboard.
+	if pbb, ok := bb.(*PersistentBlackboard); ok {
+		if result.EvalResult != nil && result.EvalResult.AllPassed {
+			pbb.CompleteTask(result.EvalResult, result.AttemptCount)
 		}
 	}
 
@@ -292,7 +389,9 @@ func (o *Orchestrator) filterToolsByProfile(allTools []tools.ToolDescriptor, pro
 }
 
 // handlePlanExecute handles plan_execute mode - DAG planning and execution with retry.
-func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, escalatedReflections []Reflection, ac []AcceptanceCriterion, bb Blackboard) (*HandleResult, error) {
+// If initialPlan is non-nil, planning is skipped and execution resumes with the given plan
+// and initialPreCompleted step results (resume-from-checkpoint mode).
+func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string, routing *RoutingDecision, availableTools []tools.ToolDescriptor, escalatedReflections []Reflection, ac []AcceptanceCriterion, bb Blackboard, initialPlan *Plan, initialPreCompleted map[string]CompletedStep) (*HandleResult, error) {
 	// Initialize session reflections from escalated reflections (if any)
 	var sessionReflections []Reflection
 	if len(escalatedReflections) > 0 {
@@ -300,35 +399,57 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 		copy(sessionReflections, escalatedReflections)
 	}
 
-	// 2. Generate initial plan
-	o.emitter.ServiceWithMeta("Creating execution plan...", map[string]any{"phase": "orchestration"})
-	plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, sessionReflections)
-	if err != nil {
-		return nil, fmt.Errorf("planning failed: %w", err)
-	}
+	var currentPlan *Plan
+	var preCompleted map[string]CompletedStep
 
-	// Emit plan generation
-	planStepEvents := make([]PlanStepEvent, len(plan.Steps))
-	for i, s := range plan.Steps {
-		planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: "pending", DependsOn: s.DependsOn}
-	}
-	o.emitter.PlanGenerated(len(plan.Steps), planStepEvents)
-	o.logInfo("plan_generated", "step_count", len(plan.Steps))
-	o.logDebug("plan_steps", "steps", plan.Steps)
+	if initialPlan != nil {
+		// Resume mode: skip planning, use provided plan and preCompleted steps.
+		currentPlan = initialPlan
+		preCompleted = initialPreCompleted
 
-	// Populate blackboard with initial plan
-	bb.SetPlan(plan)
+		// Re-emit plan with correct statuses so the frontend reflects resumed state.
+		planStepEvents := make([]PlanStepEvent, len(currentPlan.Steps))
+		for i, s := range currentPlan.Steps {
+			status := "pending"
+			if preCompleted != nil {
+				if _, ok := preCompleted[s.ID]; ok {
+					status = "completed"
+				}
+			}
+			planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: status, DependsOn: s.DependsOn}
+		}
+		o.emitter.PlanGenerated(len(currentPlan.Steps), planStepEvents)
+		o.logInfo("resume_plan", "step_count", len(currentPlan.Steps), "pre_completed", len(preCompleted))
+	} else {
+		// Normal mode: generate a new plan.
+		o.emitter.ServiceWithMeta("Creating execution plan...", map[string]any{"phase": "orchestration"})
+		plan, err := o.planner.Plan(ctx, userMessage, ac, availableTools, sessionReflections)
+		if err != nil {
+			return nil, fmt.Errorf("planning failed: %w", err)
+		}
+
+		// Emit plan generation
+		planStepEvents := make([]PlanStepEvent, len(plan.Steps))
+		for i, s := range plan.Steps {
+			planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: "pending", DependsOn: s.DependsOn}
+		}
+		o.emitter.PlanGenerated(len(plan.Steps), planStepEvents)
+		o.logInfo("plan_generated", "step_count", len(plan.Steps))
+		o.logDebug("plan_steps", "steps", plan.Steps)
+
+		// Populate blackboard with initial plan
+		bb.SetPlan(plan)
+		currentPlan = plan
+	}
 
 	// Validate AC-to-step mapping
-	if unmappedAC := validateACMapping(plan, ac); len(unmappedAC) > 0 {
+	if unmappedAC := validateACMapping(currentPlan, ac); len(unmappedAC) > 0 {
 		o.logWarn("unmapped acceptance criteria detected", "unmapped_ac", unmappedAC, "hint", "these criteria are not assigned to any plan step's RelevantAC")
 	}
 
 	// Track state for retry loop
 	var lastOutput string
 	var lastEvalResult *EvalResult
-	var currentPlan = plan
-	var preCompleted map[string]CompletedStep
 	var stepRetryContext string // workspace change summary for step-level retries
 
 	// Create shared workspace for inter-agent communication
@@ -505,6 +626,10 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 
 		// Success - all criteria passed
 		if evalResult.AllPassed {
+			// Persist task completion if using persistent blackboard
+			if pbb, ok := bb.(*PersistentBlackboard); ok {
+				pbb.CompleteTask(handleResult.EvalResult, handleResult.AttemptCount)
+			}
 			return handleResult, nil
 		}
 
@@ -604,6 +729,11 @@ func (o *Orchestrator) handlePlanExecute(ctx context.Context, userMessage string
 	if lastEvalResult != nil && !lastEvalResult.AllPassed {
 		failedCriteria := o.formatFailedCriteria(lastEvalResult)
 		handleResult.Output = lastOutput + "\n\n[Evaluation: some criteria not met after " + strconv.Itoa(o.maxRetries+1) + " attempts: " + failedCriteria + "]"
+	}
+
+	// Persist task failure if using persistent blackboard (retries exhausted)
+	if pbb, ok := bb.(*PersistentBlackboard); ok {
+		pbb.FailTask()
 	}
 
 	return handleResult, nil
@@ -707,7 +837,7 @@ func (o *Orchestrator) executePlanWithSteps(ctx context.Context, plan *Plan, ac 
 			// Resolve model metadata for the profile's LLM role
 			var modelMeta llm.ModelMetadata
 			if o.modelRegistry != nil {
-				modelMeta = o.modelRegistry.Resolve("")
+				modelMeta, _ = o.modelRegistry.Resolve("")
 			}
 
 			// Resolve compaction strategy from step domain (fallback to routing domain)

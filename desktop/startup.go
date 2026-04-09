@@ -56,7 +56,12 @@ func (a *App) Startup(ctx context.Context) {
 	} else {
 		a.sessionLogger = sessionLogger
 	}
-	log := sessionLogger.Logger()
+	var log *slog.Logger
+	if sessionLogger != nil {
+		log = sessionLogger.Logger()
+	} else {
+		log = slog.Default()
+	}
 
 	// Determine config path: prefer ~/.c0wrk/config.yaml, fallback to ./config.yaml
 	homeDir, err := os.UserHomeDir()
@@ -229,6 +234,10 @@ func (a *App) Startup(ctx context.Context) {
 			role = "subagent_launch"
 		case "subagent_complete":
 			role = "subagent_complete"
+		case "task_failed_resumable":
+			role = "task_failed_resumable"
+		case "task_resumed":
+			role = "task_resumed"
 		case "session_tokens":
 			return // Transient event: already emitted via Wails above, no persistence needed
 		default:
@@ -507,7 +516,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Create orchestrator factory — rebuilds all LLM-dependent objects per session
 	// so that config changes (e.g. via UpdateLLMSettings) take effect for new sessions.
 	// The tool registry is shared (expensive to rebuild, has dynamic policy updates).
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error) {
 		cfg := a.currentConfig()
 
 		newLLMRouter, newModelRegistry, err := a.buildLLMRouter(cfg)
@@ -545,14 +554,14 @@ func (a *App) Startup(ctx context.Context) {
 		)
 
 		return core.NewOrchestrator(
-			newRouter,        // Router
-			newACExtractor,   // ACExtractor
-			newPlanner,       // Planner
-			newEvaluator,     // Evaluator
-			newLLMRouter,     // LLMCaller
-			registry,         // ToolExecutor (shared)
+			newRouter,             // Router
+			newACExtractor,        // ACExtractor
+			newPlanner,            // Planner
+			newEvaluator,          // Evaluator
+			newLLMRouter,          // LLMCaller
+			registry,              // ToolExecutor (shared)
 			registry.ToolRegistry, // ToolRegistry (SDK base, shared)
-			tokenCounter,     // TokenCounter
+			tokenCounter,          // TokenCounter
 			orchConfig,
 			contextFactory,
 			newReflector,     // Reflector for retry-loop
@@ -560,7 +569,8 @@ func (a *App) Startup(ctx context.Context) {
 			emitter,          // Emitter
 			newModelRegistry, // ModelRegistry for resolving model metadata
 			toolResultBudget,
-			intentVerifier,   // IntentVerifier (Tier 2)
+			intentVerifier, // IntentVerifier (Tier 2)
+			bbFactory,      // BlackboardFactory (nil = default MapBlackboard)
 		), nil
 	}
 
@@ -587,6 +597,10 @@ func (a *App) Startup(ctx context.Context) {
 				slog.Error("failed to persist session tokens", "session", sessionID, "error", err)
 			}
 		})
+
+		// Wire task persistence: CreateSession will build BlackboardFactory closures
+		// that create PersistentBlackboard instances backed by the session store.
+		a.manager.SetTaskStore(a.store)
 	}
 
 	// Listen for confirmation responses from frontend

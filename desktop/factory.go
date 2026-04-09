@@ -48,7 +48,7 @@ func (a *App) buildLLMRouter(cfg *config.Config) (*llm.LLMRouter, *llm.ModelRegi
 		InitialBackoff: initialBackoff,
 		MaxBackoff:     maxBackoff,
 	}
-	llmRouter, err := llm.NewLLMRouter(routerCfg, modelRegistry)
+	llmRouter, err := llm.NewLLMRouter(context.Background(), routerCfg, modelRegistry)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -67,14 +67,15 @@ func (a *App) buildCoreAgents(llmRouter *llm.LLMRouter, registry *tools.ToolRegi
 	router := core.NewRouter(caller, cfg.Router.HistoryWindow)
 	acExtractor := core.NewACExtractor(caller)
 	planner := core.NewPlanner(caller)
+	evaluatorCounter, _ := llm.NewTokenCounter("approximate") // "approximate" always succeeds
 	evaluator := core.NewEvaluator(
-		registry,              // ToolExecutor (for programmatic/bash_exec)
-		caller,                // LLMCaller
-		registry.ToolRegistry, // *sdktools.ToolRegistry (for tool filtering)
-		llm.NewTokenCounter("approximate"), // llm.TokenCounter
+		registry,                              // ToolExecutor (for programmatic/bash_exec)
+		caller,                                // LLMCaller
+		registry.ToolRegistry,                 // *sdktools.ToolRegistry (for tool filtering)
+		evaluatorCounter,                      // llm.TokenCounter
 		a.buildContextFactory(llmRouter, cfg), // ContextManagerFactory
-		logger,                // *slog.Logger
-		emitter,               // Emitter
+		logger,                                // *slog.Logger
+		emitter,                               // Emitter
 		core.ToolResultBudget{
 			HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
 			MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
@@ -97,7 +98,10 @@ func (a *App) buildOrchestratorConfig(cfg *config.Config) core.OrchestratorConfi
 // buildContextFactory creates a ContextManagerFactory from the given LLM router and config.
 func (a *App) buildContextFactory(llmRouter *llm.LLMRouter, cfg *config.Config) core.ContextManagerFactory {
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) core.ContextManager {
-		counter := llm.NewTokenCounter(modelMeta.TokenizerType)
+		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
+		if err != nil {
+			slog.Warn("token counter fallback", "tokenizer", modelMeta.TokenizerType, "error", err)
+		}
 		tracker := llm.NewContextTokenTracker(counter)
 
 		strategy := sdkmemory.NewCompactionStrategy(compactionStrategy, sdkmemory.CompactionConfig{

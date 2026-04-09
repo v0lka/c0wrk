@@ -31,19 +31,19 @@ var evaluatorToolWhitelist = map[string]bool{
 
 // fileOpsReadOnlyActions lists the actions that are safe for evaluation mode.
 var fileOpsReadOnlyActions = map[string]bool{
-	"read_file":       true,
-	"list_directory":  true,
-	"search_files":    true,
-	"search_content":  true,
+	"read_file":      true,
+	"list_directory": true,
+	"search_files":   true,
+	"search_content": true,
 }
 
 // fileOpsWriteActions lists the actions blocked in evaluation mode.
 var fileOpsWriteActions = map[string]bool{
-	"write_file":        true,
-	"edit_file":         true,
-	"create_directory":  true,
-	"delete_directory":  true,
-	"delete_file":       true,
+	"write_file":       true,
+	"edit_file":        true,
+	"create_directory": true,
+	"delete_directory": true,
+	"delete_file":      true,
 }
 
 // Evaluator checks execution results against acceptance criteria.

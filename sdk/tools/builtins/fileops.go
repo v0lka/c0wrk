@@ -113,15 +113,35 @@ func (t *FileOpsTool) Judge(ctx context.Context, input json.RawMessage) (allowed
 		return false, "" // Can't resolve path, defer to LLM Judge
 	}
 
-	// Ensure workspace path ends with separator for prefix matching
+	// Resolve workspace path to canonical path (follow symlinks)
 	workspaceAbs := filepath.Clean(workspacePath)
+	workspaceAbs, err = filepath.EvalSymlinks(workspaceAbs)
+	if err != nil {
+		return false, "" // Can't resolve workspace symlinks, defer to LLM Judge
+	}
+
+	// Resolve target path to canonical path (follow symlinks)
+	absPathClean := filepath.Clean(absPath)
+	if resolved, evalErr := filepath.EvalSymlinks(absPathClean); evalErr == nil {
+		absPathClean = resolved
+	} else {
+		// File may not exist yet (write operations); try resolving the parent directory
+		parentDir := filepath.Dir(absPathClean)
+		resolvedParent, parentErr := filepath.EvalSymlinks(parentDir)
+		if parentErr != nil {
+			return false, "" // Can't resolve target symlinks, defer to LLM Judge
+		}
+		absPathClean = filepath.Join(resolvedParent, filepath.Base(absPathClean))
+	}
+
+	// Ensure workspace path ends with separator for prefix matching
 	if !strings.HasSuffix(workspaceAbs, string(filepath.Separator)) {
 		workspaceAbs += string(filepath.Separator)
 	}
 
 	// Check if target is inside workspace
-	absPathClean := filepath.Clean(absPath)
-	if !strings.HasPrefix(absPathClean+string(filepath.Separator), workspaceAbs) && absPathClean != filepath.Clean(workspacePath) {
+	workspaceClean := strings.TrimSuffix(workspaceAbs, string(filepath.Separator))
+	if !strings.HasPrefix(absPathClean+string(filepath.Separator), workspaceAbs) && absPathClean != workspaceClean {
 		return false, "" // Outside workspace, defer to LLM Judge
 	}
 

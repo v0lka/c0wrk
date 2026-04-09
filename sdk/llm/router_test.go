@@ -399,7 +399,7 @@ func TestNewLLMRouter(t *testing.T) {
 			MaxBackoff:     1 * time.Second,
 		}
 
-		router, err := NewLLMRouter(cfg, nil)
+		router, err := NewLLMRouter(context.Background(), cfg, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -433,7 +433,7 @@ func TestNewLLMRouter(t *testing.T) {
 		}
 
 		registry := NewModelRegistry(nil)
-		router, err := NewLLMRouter(cfg, registry)
+		router, err := NewLLMRouter(context.Background(), cfg, registry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -449,7 +449,7 @@ func TestNewLLMRouter(t *testing.T) {
 	// Test with no active provider
 	t.Run("no active provider", func(t *testing.T) {
 		cfg := RouterConfig{}
-		_, err := NewLLMRouter(cfg, nil)
+		_, err := NewLLMRouter(context.Background(), cfg, nil)
 		if err == nil {
 			t.Fatal("expected error for no active provider")
 		}
@@ -466,7 +466,7 @@ func TestNewLLMRouter(t *testing.T) {
 			MaxBackoff:     0,
 		}
 
-		router, err := NewLLMRouter(cfg, nil)
+		router, err := NewLLMRouter(context.Background(), cfg, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -488,7 +488,7 @@ func TestNewLLMRouter(t *testing.T) {
 			Model:          "claude-3-sonnet",
 		}
 
-		_, err := NewLLMRouter(cfg, nil)
+		_, err := NewLLMRouter(context.Background(), cfg, nil)
 		if err == nil {
 			t.Fatal("expected error for anthropic without API key")
 		}
@@ -539,7 +539,7 @@ func TestCreateProviderFromConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := createProviderFromConfig(tt.provType, tt.apiKey, tt.baseURL)
+			p, err := createProviderFromConfig(context.Background(), tt.provType, tt.apiKey, tt.baseURL)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")

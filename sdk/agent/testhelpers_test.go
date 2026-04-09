@@ -80,16 +80,16 @@ func (m *mockToolExecutor) Execute(_ context.Context, name string, input json.Ra
 // --- Mock ContextManager ---
 
 type mockContextManager struct {
-	mu               sync.Mutex
-	messages         []llm.Message
-	steps            []Step
-	needsCompaction  bool
-	compactCalled    int
-	fillCheck        FillCheck
-	availableTokens  int
-	fillPercent      float64
-	correctedTokens  int
-	strategySet      bool
+	mu              sync.Mutex
+	messages        []llm.Message
+	steps           []Step
+	needsCompaction bool
+	compactCalled   int
+	fillCheck       FillCheck
+	availableTokens int
+	fillPercent     float64
+	correctedTokens int
+	strategySet     bool
 }
 
 func newMockContextManager() *mockContextManager {

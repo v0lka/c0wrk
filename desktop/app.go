@@ -159,10 +159,10 @@ type App struct {
 	watcher        *workspace.Watcher
 	projectManager *project.Manager
 
-	projectsDir     string // ~/.c0wrk/Projects/
-	activeProjectID string // currently active project ID
-	activeProjectPath string // workspace path of active project
-	activeProjectMu sync.RWMutex // protects activeProjectID/Path
+	projectsDir       string       // ~/.c0wrk/Projects/
+	activeProjectID   string       // currently active project ID
+	activeProjectPath string       // workspace path of active project
+	activeProjectMu   sync.RWMutex // protects activeProjectID/Path
 }
 
 // currentConfig returns a shallow copy of the current config, safe to read without holding the lock.

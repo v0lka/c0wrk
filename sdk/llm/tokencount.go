@@ -1,7 +1,7 @@
 package llm
 
 import (
-	"log/slog"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -93,28 +93,26 @@ func (c *TiktokenCounter) CountMessages(msgs []Message) int {
 //   - "tiktoken/cl100k_base" → TiktokenCounter with cl100k_base encoding
 //   - "anthropic-api" → SimpleTokenCounter (rely on API correction)
 //   - "approximate" or "" or unknown → SimpleTokenCounter
-func NewTokenCounter(tokenizerType string) TokenCounter {
+//
+// The returned TokenCounter is always valid (never nil). The error indicates
+// that a fallback counter was used instead of the requested type.
+func NewTokenCounter(tokenizerType string) (TokenCounter, error) {
 	switch {
 	case strings.HasPrefix(tokenizerType, "tiktoken/"):
 		encoding := strings.TrimPrefix(tokenizerType, "tiktoken/")
 		counter, err := NewTiktokenCounter(encoding)
 		if err != nil {
-			slog.Warn("failed to create tiktoken counter, falling back to simple",
-				"encoding", encoding,
-				"error", err)
-			return NewSimpleTokenCounter()
+			return NewSimpleTokenCounter(), fmt.Errorf("failed to create tiktoken counter for encoding %s: %w", encoding, err)
 		}
-		return counter
+		return counter, nil
 	case tokenizerType == "anthropic-api":
 		// For Anthropic models, we rely on API correction rather than local counting
-		return NewSimpleTokenCounter()
+		return NewSimpleTokenCounter(), nil
 	case tokenizerType == "approximate" || tokenizerType == "":
-		return NewSimpleTokenCounter()
+		return NewSimpleTokenCounter(), nil
 	default:
 		// Unknown tokenizer type, fallback to simple
-		slog.Warn("unknown tokenizer type, using simple counter",
-			"tokenizerType", tokenizerType)
-		return NewSimpleTokenCounter()
+		return NewSimpleTokenCounter(), fmt.Errorf("unknown tokenizer type: %s", tokenizerType)
 	}
 }
 

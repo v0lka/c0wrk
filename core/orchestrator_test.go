@@ -79,6 +79,7 @@ func TestBuildSystemPrompt_IncludesAC(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	// Test with no criteria
@@ -215,6 +216,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Fix the code")
@@ -347,6 +349,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -433,6 +436,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -539,6 +543,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				nil, // modelRegistry - nil for tests
 				ToolResultBudget{},
 				nil, // intentVerifier - nil for tests
+				nil, // bbFactory - nil for tests
 			)
 
 			result, err := orchestrator.Handle(context.Background(), "test")
@@ -609,6 +614,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -735,6 +741,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -862,6 +869,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -994,6 +1002,7 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run tests")
@@ -1126,6 +1135,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Build and test feature")
@@ -1264,6 +1274,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -1386,6 +1397,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	userMessage := "Please complete this important task"
@@ -1457,6 +1469,7 @@ func TestBuildSystemPrompt_IncludesToolUsageDirective(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	prompt := orchestrator.buildSystemPrompt(context.Background(), "", nil)
@@ -1603,6 +1616,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Do task with potential failure")
@@ -1707,6 +1721,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		nil,    // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -1936,6 +1951,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -2191,6 +2207,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps with dependency")
@@ -2409,6 +2426,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
 		nil, // intentVerifier - nil for tests
+		nil, // bbFactory - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run steps without AC mapping")
@@ -2495,7 +2513,7 @@ func TestComputeRetrySteps(t *testing.T) {
 				{ID: "step_3", Description: "Step 3", DependsOn: []string{"step_2"}, RelevantAC: []string{"ac_3"}},
 				{ID: "step_4", Description: "Step 4", DependsOn: []string{"step_2"}, RelevantAC: []string{"ac_4"}},
 			},
-			failedCriteriaIDs: []string{"ac_2"}, // step_2 fails
+			failedCriteriaIDs: []string{"ac_2"},                // step_2 fails
 			wantRetrySet:      map[string]bool{"step_2": true}, // no transitive expansion to step_3/step_4
 		},
 		{
@@ -3553,7 +3571,7 @@ func TestExecutePlanWithSteps_EarlyTermination(t *testing.T) {
 		counter,
 		OrchestratorConfig{MaxSteps: 5, MaxRetries: 0},
 		testContextFactory,
-		nil, nil, nil, nil, ToolResultBudget{}, nil,
+		nil, nil, nil, nil, ToolResultBudget{}, nil, nil,
 	)
 
 	// Make step_1's executor return Finished=false by having it exhaust max steps
@@ -3732,10 +3750,10 @@ func TestHandlePlanExecute_SkipEvalOnIncomplete(t *testing.T) {
 		OrchestratorConfig{MaxSteps: 3, MaxRetries: 2},
 		testContextFactory,
 		reflector,
-		nil, nil, nil, ToolResultBudget{}, nil,
+		nil, nil, nil, ToolResultBudget{}, nil, nil,
 	)
 
-	_, _ = orchestrator.handlePlanExecute(context.Background(), "test task", routing, reg.List(), nil, ac, NewMapBlackboard())
+	_, _ = orchestrator.handlePlanExecute(context.Background(), "test task", routing, reg.List(), nil, ac, NewMapBlackboard(), nil, nil)
 
 	// Reflector should be called (incomplete plan triggers reflection, not evaluation)
 	if !reflectorCalled {
@@ -3782,7 +3800,7 @@ func TestFindReadySteps_StuckDiagnostic(t *testing.T) {
 		counter,
 		OrchestratorConfig{MaxSteps: 10},
 		testContextFactory,
-		nil, nil, nil, nil, ToolResultBudget{}, nil,
+		nil, nil, nil, nil, ToolResultBudget{}, nil, nil,
 	)
 
 	ready := orchestrator.findReadySteps(plan, completed)
@@ -3908,6 +3926,7 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 		nil, // modelRegistry
 		ToolResultBudget{},
 		nil, // intentVerifier
+		nil, // bbFactory
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run the tests")
@@ -4007,4 +4026,3 @@ func TestBuildStepTask_DependencyBudgetCap(t *testing.T) {
 		t.Error("expected dep_2 to be present (most recent dependency)")
 	}
 }
-

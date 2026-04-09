@@ -15,6 +15,10 @@
   text-decoration: none;
 }
 
+.nerd-font-icon {
+  font-family: 'SauceCodePro NF', monospace;
+}
+
 
 /* Mermaid diagrams */
 .mermaid-container svg {

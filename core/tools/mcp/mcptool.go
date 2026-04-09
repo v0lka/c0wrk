@@ -96,7 +96,10 @@ func convertMCPResult(result *mcp.CallToolResult) tools.ToolResult {
 
 	// If there's structured content and no text content, try to marshal it
 	if content == "" && result.StructuredContent != nil {
-		if jsonBytes, err := json.Marshal(result.StructuredContent); err == nil {
+		jsonBytes, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			content = fmt.Sprintf("(failed to serialize structured content: %v)", err)
+		} else {
 			content = string(jsonBytes)
 		}
 	}
@@ -121,11 +124,11 @@ func extractTextFromContent(content mcp.Content) string {
 	}
 
 	// Try to marshal as JSON for other content types
-	if jsonBytes, err := json.Marshal(content); err == nil {
-		return string(jsonBytes)
+	jsonBytes, err := json.Marshal(content)
+	if err != nil {
+		return fmt.Sprintf("(failed to serialize content: %v)", err)
 	}
-
-	return ""
+	return string(jsonBytes)
 }
 
 // ServerName returns the name of the MCP server this tool belongs to.

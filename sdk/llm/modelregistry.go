@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -56,23 +55,26 @@ func NewModelRegistry(overrides map[string]ModelMetadata) *ModelRegistry {
 // 2. Built-in registry (hardcoded table)
 // 3. HuggingFace API lookup (lazy, cached)
 // 4. Registered sources (e.g., LM Studio provider)
-// 5. Fallback defaults with warning log
-func (r *ModelRegistry) Resolve(model string) ModelMetadata {
+// 5. Fallback defaults (ok=false)
+//
+// The second return value indicates whether the model was found in a known source.
+// When ok is false, the returned metadata contains usable fallback defaults.
+func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
 	// Priority 1: Check overrides (no lock needed for read-only map after construction)
 	if meta, ok := r.overrides[model]; ok {
-		return meta
+		return meta, true
 	}
 
 	// Priority 2: Check built-in registry (no lock needed for read-only map)
 	if meta, ok := r.builtIn[model]; ok {
-		return meta
+		return meta, true
 	}
 
 	// Priority 3: Check cache (needs lock)
 	r.mu.RLock()
 	if meta, ok := r.cache[model]; ok {
 		r.mu.RUnlock()
-		return meta
+		return meta, true
 	}
 	r.mu.RUnlock()
 
@@ -82,7 +84,7 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 		r.mu.Lock()
 		r.cache[model] = meta
 		r.mu.Unlock()
-		return meta
+		return meta, true
 	}
 
 	// Priority 4: Try registered sources
@@ -98,21 +100,16 @@ func (r *ModelRegistry) Resolve(model string) ModelMetadata {
 			r.mu.Lock()
 			r.cache[model] = m
 			r.mu.Unlock()
-			return m
+			return m, true
 		}
 	}
 
 	// Priority 5: Fallback to defaults
-	slog.Warn("model not found in registry, using fallback defaults",
-		"model", model,
-		"error", err,
-	)
-
 	return ModelMetadata{
 		ContextWindow: 128000,
 		OutputLimit:   4096,
 		TokenizerType: "approximate",
-	}
+	}, false
 }
 
 // Invalidate removes an entry from the cache map (for model change mid-session).

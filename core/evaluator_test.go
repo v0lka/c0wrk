@@ -48,12 +48,12 @@ func newTestEvaluator(toolExec ToolExecutor, llmCaller LLMCaller, opts ...func(*
 // newTestEvaluatorReAct creates an evaluator wired for llm_judge ReAct tests.
 func newTestEvaluatorReAct(llmCaller LLMCaller) *Evaluator {
 	reg := tools.NewToolRegistry()
-	counter := llm.NewTokenCounter("approximate")
+	counter, _ := llm.NewTokenCounter("approximate")
 	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		return &mockContextManager{systemPrompt: systemPrompt}
 	}
 	return NewEvaluator(
-		nil,     // ToolExecutor (not needed for llm_judge)
+		nil, // ToolExecutor (not needed for llm_judge)
 		llmCaller,
 		reg,
 		counter,
@@ -288,7 +288,7 @@ func TestEvaluator_MixedCriteria(t *testing.T) {
 	}
 
 	reg := tools.NewToolRegistry()
-	counter := llm.NewTokenCounter("approximate")
+	counter, _ := llm.NewTokenCounter("approximate")
 	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		return &mockContextManager{systemPrompt: systemPrompt}
 	}
@@ -355,7 +355,7 @@ func TestEvaluator_AllPassed(t *testing.T) {
 	}
 
 	reg := tools.NewToolRegistry()
-	counter := llm.NewTokenCounter("approximate")
+	counter, _ := llm.NewTokenCounter("approximate")
 	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		return &mockContextManager{systemPrompt: systemPrompt}
 	}
@@ -535,9 +535,9 @@ func TestEvaluator_NoReconsideration(t *testing.T) {
 
 func TestParseEvalVerdict(t *testing.T) {
 	tests := []struct {
-		name           string
-		output         string
-		expectPrefix   string
+		name         string
+		output       string
+		expectPrefix string
 	}{
 		{"YES response", "YES, criterion met.", "PASSED:"},
 		{"yes lowercase", "yes everything is fine", "PASSED:"},
@@ -827,7 +827,7 @@ func TestReadOnlyToolExecutor_OtherToolsPassThrough(t *testing.T) {
 // using a thread-safe LLM caller.
 func newConcurrentTestEvaluatorReAct(llmCaller LLMCaller) *Evaluator {
 	reg := tools.NewToolRegistry()
-	counter := llm.NewTokenCounter("approximate")
+	counter, _ := llm.NewTokenCounter("approximate")
 	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		return &mockContextManager{systemPrompt: systemPrompt}
 	}
@@ -848,7 +848,7 @@ func newConcurrentTestEvaluatorReAct(llmCaller LLMCaller) *Evaluator {
 // sequential execution would take.
 func TestEvaluator_ParallelLLMJudge(t *testing.T) {
 	const (
-		numCriteria = 5
+		numCriteria  = 5
 		delayPerCall = 50 * time.Millisecond
 	)
 
@@ -1006,7 +1006,7 @@ func TestEvaluator_ParallelWithMixedTypes(t *testing.T) {
 	}
 
 	reg := tools.NewToolRegistry()
-	counter := llm.NewTokenCounter("approximate")
+	counter, _ := llm.NewTokenCounter("approximate")
 	factory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		return &mockContextManager{systemPrompt: systemPrompt}
 	}

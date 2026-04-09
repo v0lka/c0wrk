@@ -241,10 +241,10 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 		outputTokens int
 	}{content, inputTokens, outputTokens})
 }
-func (m *mockEmitter) TokensUsed(_, _ int)                                    {}
-func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string)   {}
-func (m *mockEmitter) Service(_ string)                           {}
-func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any) {}
+func (m *mockEmitter) TokensUsed(_, _ int)                          {}
+func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string) {}
+func (m *mockEmitter) Service(_ string)                             {}
+func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
 
 // routerCallTracker helps track the three-phase AC extraction flow in tests.
 // It distinguishes between:

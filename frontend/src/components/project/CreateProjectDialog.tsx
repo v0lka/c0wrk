@@ -26,6 +26,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
   const [workspaceType, setWorkspaceType] = useState<WorkspaceType>('internal')
   const [externalPath, setExternalPath] = useState('')
   const [creating, setCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const api = useProjectAPI()
   const addProject = useProjectStore(s => s.addProject)
@@ -50,6 +51,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
   const handleCreate = useCallback(async () => {
     if (!canSubmit) return
     setCreating(true)
+    setError(null)
     try {
       const extPath = workspaceType === 'external' ? externalPath : ''
       const project = await api.createProject(name.trim(), extPath)
@@ -65,6 +67,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
       onOpenChange(false)
     } catch (err) {
       logger.error('Failed to create project:', err)
+      setError(err instanceof Error ? err.message : 'Failed to create project')
     } finally {
       setCreating(false)
     }
@@ -157,6 +160,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
             {creating ? 'Creating...' : 'Create'}
           </Button>
         </DialogFooter>
+        {error && <p className="text-sm text-red-500 mt-1 px-6 pb-4">{error}</p>}
       </DialogContent>
     </Dialog>
   )

@@ -7,6 +7,7 @@ import { ToolBlock } from './ToolBlock'
 import { PlanStepBlock } from './PlanStepBlock'
 import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
+import { ResumeActionPanel } from './ResumeActionPanel'
 import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
 import { ActionPlaceholder } from './ActionPlaceholder'
@@ -42,6 +43,8 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
       return <ToolConfirmation key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
     case 'ask_user':
       return <AskUserPanel key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
+    case 'resume_action':
+      return <ResumeActionPanel key={item.message.id} sessionId={item.message.sessionId} content={item.message.content} metadata={item.message.metadata} />
     case 'error':
       return <ErrorBlock key={item.message.id} content={item.message.content} />
     case 'service':

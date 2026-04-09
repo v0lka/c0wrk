@@ -27,7 +27,7 @@ export function ThoughtGroupBlock({ thoughts }: ThoughtGroupBlockProps) {
       <CollapsibleContent>
         <div className="mt-2 pl-3 border-l-2 border-muted space-y-2 min-w-0">
           {thoughts.map((t, idx) => (
-            <div key={t.content || `thought-${idx}`}>
+            <div key={`thought-${idx}`}>
               {t.reasoning && t.reasoning.trim() !== '' && (
                 <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.reasoning}</p>
               )}

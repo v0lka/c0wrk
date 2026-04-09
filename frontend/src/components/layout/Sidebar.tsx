@@ -59,8 +59,15 @@ function useVerticalResize(
 
   useEffect(() => {
     return () => {
-      if (moveRef.current) document.removeEventListener('mousemove', moveRef.current)
-      if (upRef.current) document.removeEventListener('mouseup', upRef.current)
+      if (moveRef.current) {
+        document.removeEventListener('mousemove', moveRef.current)
+        moveRef.current = null
+      }
+      if (upRef.current) {
+        document.removeEventListener('mouseup', upRef.current)
+        upRef.current = null
+      }
+      dragging.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
@@ -256,38 +263,48 @@ export function Sidebar() {
         if (list && list.length > 0) {
           setProjects(list)
           // Auto-select the most recent project
-          const firstId = list[0].id
-          setActiveProject(firstId)
-          await projectAPI.switchProject(firstId)
+          const first = list[0]
+          if (first) {
+            setActiveProject(first.id)
+            await projectAPI.switchProject(first.id)
+          }
         }
       } catch (err) {
         logger.error('Failed to load projects:', err)
       }
     }
     load()
+  // Intentionally omit projectAPI/setProjects/setActiveProject — they are stable store selectors/API hooks;
+  // we only want to load projects once on initial mount
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ── Load sessions when active project changes ──
+  const sessionFetchIdRef = useRef(0)
   useEffect(() => {
     if (!activeProjectId) {
       setSessions([])
       setActiveSession(null)
       return
     }
+    const myId = ++sessionFetchIdRef.current
     const load = async () => {
       try {
         const list = await sessionAPI.listSessions()
+        if (myId !== sessionFetchIdRef.current) return // stale response — project changed again
         if (list) {
           setSessions(list)
-          if (list.length > 0) setActiveSession(list[0].id)
+          if (list.length > 0) setActiveSession(list[0]!.id)
           else setActiveSession(null)
         }
       } catch (err) {
+        if (myId !== sessionFetchIdRef.current) return
         logger.error('Failed to load sessions:', err)
       }
     }
     load()
+  // Intentionally omit sessionAPI/setSessions/setActiveSession — they are stable store selectors/API hooks;
+  // we only want to re-fetch sessions when the active project changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectId])
 
@@ -335,7 +352,7 @@ export function Sidebar() {
       // If we just deleted the active project, pick the next one
       const remaining = useProjectStore.getState().projects
       if (remaining.length > 0) {
-        handleSwitchProject(remaining[0].id)
+        handleSwitchProject(remaining[0]!.id)
       }
     } catch (err) {
       logger.error('Failed to delete project:', err)

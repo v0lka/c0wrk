@@ -32,9 +32,11 @@ function useResizeHandle(
       mountedRef.current = false
       if (moveHandlerRef.current) {
         document.removeEventListener('mousemove', moveHandlerRef.current)
+        moveHandlerRef.current = null
       }
       if (upHandlerRef.current) {
         document.removeEventListener('mouseup', upHandlerRef.current)
+        upHandlerRef.current = null
       }
       dragging.current = false
       document.body.style.cursor = ''
@@ -82,14 +84,33 @@ function useResizeHandle(
     [width, minWidth, maxWidth, side]
   )
 
-  return { width, onMouseDown }
+  return { width, setWidth, onMouseDown }
 }
 
-function ResizeHandle({ onMouseDown }: { onMouseDown: (e: ReactMouseEvent) => void }) {
+interface ResizeHandleProps {
+  onMouseDown: (e: ReactMouseEvent) => void
+  onResize: (delta: number) => void
+}
+
+function ResizeHandle({ onMouseDown, onResize }: ResizeHandleProps) {
   return (
     <div
-      className="w-1 flex-shrink-0 bg-border hover:bg-ring active:bg-ring transition-colors cursor-col-resize"
+      className="w-1 flex-shrink-0 bg-border hover:bg-ring active:bg-ring transition-colors cursor-col-resize focus:outline-none focus:bg-ring"
       onMouseDown={onMouseDown}
+      role="separator"
+      aria-label="Resize panel"
+      aria-orientation="vertical"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 50 : 10
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          onResize(-step)
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          onResize(step)
+        }
+      }}
     />
   )
 }
@@ -110,7 +131,10 @@ export function AppLayout() {
         <Sidebar />
       </div>
 
-      <ResizeHandle onMouseDown={sidebar.onMouseDown} />
+      <ResizeHandle
+        onMouseDown={sidebar.onMouseDown}
+        onResize={(delta) => sidebar.setWidth(w => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w + delta)))}
+      />
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">

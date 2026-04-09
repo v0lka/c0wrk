@@ -23,6 +23,7 @@ export function SearchSettings() {
   const [isLoading, setIsLoading] = useState(true)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [isApiKeyFocused, setIsApiKeyFocused] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
@@ -51,8 +52,10 @@ export function SearchSettings() {
           provider: newConfig.provider,
           api_key: newConfig.api_key,
         })
+        setSaveError(null)
       } catch (error) {
         logger.error('Failed to save search settings:', error)
+        setSaveError('Failed to save search settings')
       }
     },
     []
@@ -173,6 +176,7 @@ export function SearchSettings() {
             : 'Enter your API key for the search provider.'}
         </p>
       </div>
+      {saveError && <p className="text-sm text-red-500 mt-2">{saveError}</p>}
     </div>
   )
 }

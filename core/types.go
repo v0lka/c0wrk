@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/user/agent/sdk/agent"
-	tools "github.com/user/agent/sdk/tools"
+	tools "github.com/user/agent/sdk/tools" // alias: avoids collision with core/tools subpackage
 )
 
 // ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ type EvalCriterionEvent struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Passed      bool   `json:"passed"`
-	Status      string `json:"status"`              // "pass", "fail", or "unclear"
+	Status      string `json:"status"`               // "pass", "fail", or "unclear"
 	Diagnostic  string `json:"diagnostic,omitempty"` // evaluation reasoning / intent verification feedback
 }
 
@@ -192,14 +192,14 @@ type PlanStep struct {
 type CompletedStep struct {
 	StepID string `json:"step_id"`
 	Output string `json:"output"`
-	Error  error  `json:"-"` // not serialized
+	Error  error  `json:"-"`               // not serialized
 	Steps  []Step `json:"steps,omitempty"` // actual executor steps for evaluator evidence
 }
 
 // ExecutorConfig — configuration for the Executor (AD 4.4).
 type ExecutorConfig struct {
 	MaxSteps           int
-	CompactionStrategy string                 // will be resolved to actual strategy by memory package
+	CompactionStrategy string // will be resolved to actual strategy by memory package
 	Tools              []tools.ToolDescriptor
 }
 

@@ -146,7 +146,10 @@ func TestSimpleTokenCounter_CountMessages(t *testing.T) {
 
 func TestNewTokenCounter(t *testing.T) {
 	t.Run("tiktoken/o200k_base returns TiktokenCounter", func(t *testing.T) {
-		counter := NewTokenCounter("tiktoken/o200k_base")
+		counter, err := NewTokenCounter("tiktoken/o200k_base")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}
@@ -157,7 +160,10 @@ func TestNewTokenCounter(t *testing.T) {
 	})
 
 	t.Run("tiktoken/cl100k_base returns TiktokenCounter", func(t *testing.T) {
-		counter := NewTokenCounter("tiktoken/cl100k_base")
+		counter, err := NewTokenCounter("tiktoken/cl100k_base")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}
@@ -168,7 +174,10 @@ func TestNewTokenCounter(t *testing.T) {
 	})
 
 	t.Run("anthropic-api returns SimpleTokenCounter", func(t *testing.T) {
-		counter := NewTokenCounter("anthropic-api")
+		counter, err := NewTokenCounter("anthropic-api")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}
@@ -179,7 +188,10 @@ func TestNewTokenCounter(t *testing.T) {
 	})
 
 	t.Run("approximate returns SimpleTokenCounter", func(t *testing.T) {
-		counter := NewTokenCounter("approximate")
+		counter, err := NewTokenCounter("approximate")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}
@@ -190,7 +202,10 @@ func TestNewTokenCounter(t *testing.T) {
 	})
 
 	t.Run("empty string returns SimpleTokenCounter", func(t *testing.T) {
-		counter := NewTokenCounter("")
+		counter, err := NewTokenCounter("")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}
@@ -201,7 +216,10 @@ func TestNewTokenCounter(t *testing.T) {
 	})
 
 	t.Run("unknown tokenizer returns SimpleTokenCounter", func(t *testing.T) {
-		counter := NewTokenCounter("unknown-tokenizer")
+		counter, err := NewTokenCounter("unknown-tokenizer")
+		if err == nil {
+			t.Fatal("expected error for unknown tokenizer")
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}
@@ -212,7 +230,10 @@ func TestNewTokenCounter(t *testing.T) {
 	})
 
 	t.Run("invalid tiktoken encoding falls back to SimpleTokenCounter", func(t *testing.T) {
-		counter := NewTokenCounter("tiktoken/invalid_encoding")
+		counter, err := NewTokenCounter("tiktoken/invalid_encoding")
+		if err == nil {
+			t.Fatal("expected error for invalid encoding")
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}
@@ -603,8 +624,8 @@ func TestTokenCounterInterface(t *testing.T) {
 	})
 
 	t.Run("factory returns consistent counters for same type", func(t *testing.T) {
-		counter1 := NewTokenCounter("tiktoken/o200k_base")
-		counter2 := NewTokenCounter("tiktoken/o200k_base")
+		counter1, _ := NewTokenCounter("tiktoken/o200k_base")
+		counter2, _ := NewTokenCounter("tiktoken/o200k_base")
 
 		// Both should be TiktokenCounters
 		_, ok1 := counter1.(*TiktokenCounter)
@@ -718,7 +739,10 @@ func TestTiktokenCounterVsSimpleCounter(t *testing.T) {
 func TestNewTokenCounter_FallbackBehavior(t *testing.T) {
 	t.Run("invalid tiktoken prefix falls back gracefully", func(t *testing.T) {
 		// This should not panic and should return a SimpleTokenCounter
-		counter := NewTokenCounter("tiktoken/nonexistent_encoding_12345")
+		counter, err := NewTokenCounter("tiktoken/nonexistent_encoding_12345")
+		if err == nil {
+			t.Fatal("expected error for nonexistent encoding")
+		}
 		if counter == nil {
 			t.Fatal("expected non-nil counter")
 		}

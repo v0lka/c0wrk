@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import mermaid from 'mermaid'
 
 interface MermaidBlockProps {
   code: string
@@ -10,23 +9,23 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
   const [error, setError] = useState<boolean>(false)
   const idRef = useRef(`mermaid-${crypto.randomUUID()}`)
 
-  // Initialize mermaid once on mount
+  // Render diagram when code changes (lazy-loads mermaid)
   useEffect(() => {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'dark',
-    })
-  }, [])
-
-  // Render diagram when code changes
-  useEffect(() => {
-    let isMounted = true
+    let cancelled = false
 
     const renderDiagram = async () => {
       if (!containerRef.current) return
       try {
+        const { default: mermaid } = await import('mermaid')
+        if (cancelled) return
+
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: 'dark',
+        })
+
         const { svg } = await mermaid.render(idRef.current, code.trim())
-        if (!isMounted) return
+        if (cancelled) return
         // Safely insert SVG without direct innerHTML on the container
         const temp = document.createElement('div')
         temp.innerHTML = svg
@@ -35,7 +34,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
         if (svgEl) containerRef.current.appendChild(svgEl)
         setError(false)
       } catch {
-        if (isMounted) {
+        if (!cancelled) {
           setError(true)
           if (containerRef.current) {
             containerRef.current.replaceChildren()
@@ -47,7 +46,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
     renderDiagram()
 
     return () => {
-      isMounted = false
+      cancelled = true
     }
   }, [code])
 

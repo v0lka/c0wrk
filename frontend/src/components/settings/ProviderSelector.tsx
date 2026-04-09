@@ -6,7 +6,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   chatgpt: 'ChatGPT',
 }
 
-export const PROVIDER_KEYS = ['anthropic', 'gemini', 'lmstudio', 'openai_compatible', 'chatgpt']
+const PROVIDER_KEYS = ['anthropic', 'gemini', 'lmstudio', 'openai_compatible', 'chatgpt']
 
 interface ProviderSelectorProps {
   activeProvider: string

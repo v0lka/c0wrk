@@ -205,6 +205,15 @@ func (a *App) CancelTask(id string) error {
 	return a.manager.CancelTask(id)
 }
 
+// ResumeTask resumes an interrupted task in the given session, if any.
+// Returns nil if no unfinished task exists. This is safe to call on session load.
+func (a *App) ResumeTask(id string) error {
+	if a.manager == nil {
+		return errors.New("session manager not initialized")
+	}
+	return a.manager.ResumeTask(a.ctx, id)
+}
+
 // GetSessionHistory returns chat history for a session.
 func (a *App) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	if a.store != nil {

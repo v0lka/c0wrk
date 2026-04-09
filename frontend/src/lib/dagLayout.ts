@@ -38,7 +38,8 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
   // Index lookup: id → row index
   const rowOf = new Map<string, number>()
   for (let i = 0; i < items.length; i++) {
-    rowOf.set(items[i].id, i)
+    const item = items[i]! // Safe: loop bounds guarantee valid index
+    rowOf.set(item.id, i)
   }
 
   // Build children map: parentId → list of child ids
@@ -76,7 +77,7 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
   function freeLane(lane: number): void {
     // Insert into sorted position
     let i = 0
-    while (i < freeLanes.length && freeLanes[i] < lane) i++
+    while (i < freeLanes.length && freeLanes[i]! < lane) i++ // Safe: loop bounds guarantee valid index
     freeLanes.splice(i, 0, lane)
   }
 
@@ -107,7 +108,7 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
       assignedLane = allocateLane()
     } else if (item.dependsOn.length === 1) {
       // Single dependency — inherit parent's lane only if parent still owns it
-      const parentId = item.dependsOn[0]
+      const parentId = item.dependsOn[0]! // Safe: length === 1 guarantees valid index
       const parentLane = laneOf.get(parentId)!
       if (laneOwner.get(parentLane) === parentId) {
         assignedLane = parentLane
@@ -123,7 +124,7 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
       }))
       parentLanes.sort((a, b) => a.lane - b.lane)
 
-      assignedLane = parentLanes[0].lane
+      assignedLane = parentLanes[0]!.lane // Safe: dependsOn.length > 1 guarantees at least one entry
 
       // Decrement all parents; free those with no remaining children
       for (const p of parentLanes) {
@@ -149,7 +150,7 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
 
   // Parent→child connectors
   for (let row = 0; row < items.length; row++) {
-    const item = items[row]
+    const item = items[row]! // Safe: loop bounds guarantee valid index
     const childLane = laneOf.get(item.id)!
 
     for (const parentId of item.dependsOn) {
@@ -191,7 +192,7 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
 
   // Nodes placed in lanes
   for (let row = 0; row < nodes.length; row++) {
-    addLaneEvent(nodes[row].lane, row)
+    addLaneEvent(nodes[row]!.lane, row) // Safe: loop bounds guarantee valid index
   }
 
   // Cross-lane connectors (fork/merge) draw their own complete visual paths
@@ -211,8 +212,8 @@ export function computeDAGLayout(items: DAGItem[]): DAGLayout {
   for (const [lane, rows] of laneEvents) {
     const unique = [...new Set(rows)].sort((a, b) => a - b)
     for (let i = 0; i < unique.length - 1; i++) {
-      const from = unique[i]
-      const to = unique[i + 1]
+      const from = unique[i]! // Safe: loop bounds guarantee valid index
+      const to = unique[i + 1]! // Safe: i < unique.length - 1 guarantees valid index
       if (to - from > 1 || !existingVerticals.has(`${lane}:${from}:${to}`)) {
         // Only add if this exact segment doesn't already exist
         const key = `${lane}:${from}:${to}`

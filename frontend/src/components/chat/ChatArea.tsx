@@ -111,8 +111,10 @@ export function ChatArea(): React.ReactNode {
   // Find the last user message for pinning at the top
   let lastUserMessage: Extract<typeof displayItems[number], { kind: 'user' }> | null = null
   for (let i = displayItems.length - 1; i >= 0; i--) {
-    if (displayItems[i].kind === 'user') {
-      lastUserMessage = displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
+    const item = displayItems[i]
+    if (!item) continue
+    if (item.kind === 'user') {
+      lastUserMessage = item as Extract<typeof displayItems[number], { kind: 'user' }>
       break
     }
   }

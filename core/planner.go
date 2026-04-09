@@ -139,8 +139,14 @@ func (p *Planner) buildReplanSystemPrompt(
 	sessionReflections []Reflection,
 ) string {
 	// Build original plan string
-	planJSON, _ := json.MarshalIndent(originalPlan, "", "  ")
-	originalPlanStr := string(planJSON)
+	var originalPlanStr string
+	planJSON, err := json.MarshalIndent(originalPlan, "", "  ")
+	if err != nil {
+		// Fallback to Go's default formatting if JSON marshaling fails
+		originalPlanStr = fmt.Sprintf("%+v", originalPlan)
+	} else {
+		originalPlanStr = string(planJSON)
+	}
 
 	// Build completed steps string
 	var completedBuilder strings.Builder

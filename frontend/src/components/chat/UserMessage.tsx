@@ -41,10 +41,10 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
   const handleClick = useCallback(() => {
     if (isOverflowing) {
       setExpanded(prev => !prev)
-    } else if (expanded) {
+    } else {
       setExpanded(false)
     }
-  }, [isOverflowing, expanded])
+  }, [isOverflowing])
 
   const handleBlur = useCallback((e: React.FocusEvent) => {
     // Only collapse if focus moved outside this component

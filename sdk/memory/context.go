@@ -18,14 +18,14 @@ type CompactionThresholds struct {
 
 // ContextWindow — managed representation of the LLM context window.
 type ContextWindow struct {
-	systemPrompt   string
-	taskContent    string // formatted task content (user message)
-	planContent    string // formatted plan content (system message)
-	steps          []sdkagent.Step
-	strategy       sdkagent.CompactionStrategy
-	tracker        *llm.ContextTokenTracker
-	modelMeta      llm.ModelMetadata
-	thresholds     CompactionThresholds
+	systemPrompt string
+	taskContent  string // formatted task content (user message)
+	planContent  string // formatted plan content (system message)
+	steps        []sdkagent.Step
+	strategy     sdkagent.CompactionStrategy
+	tracker      *llm.ContextTokenTracker
+	modelMeta    llm.ModelMetadata
+	thresholds   CompactionThresholds
 
 	// compactedMessages stores the result of compaction.
 	// When non-nil, BuildPrompt uses this instead of converting steps.

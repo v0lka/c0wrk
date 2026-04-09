@@ -40,13 +40,13 @@ type LLMRouter struct {
 // The caller is responsible for resolving provider config, expanding env vars,
 // and parsing durations before calling this function.
 // If registry is provided, LM Studio providers will register their metadata sources.
-func NewLLMRouter(cfg RouterConfig, registry *ModelRegistry) (*LLMRouter, error) {
+func NewLLMRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (*LLMRouter, error) {
 	if cfg.ProviderType == "" {
 		return nil, errors.New("no active provider configured")
 	}
 
 	// Create the active provider — values are already expanded by the caller
-	provider, err := createProviderFromConfig(cfg.ProviderType, cfg.APIKey, cfg.BaseURL)
+	provider, err := createProviderFromConfig(ctx, cfg.ProviderType, cfg.APIKey, cfg.BaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create provider %q: %w", cfg.ActiveProvider, err)
 	}
@@ -84,7 +84,7 @@ func NewLLMRouter(cfg RouterConfig, registry *ModelRegistry) (*LLMRouter, error)
 
 // createProviderFromConfig creates an LLMProvider based on the provider type.
 // The caller must have already expanded environment variables.
-func createProviderFromConfig(provType, apiKey, baseURL string) (LLMProvider, error) {
+func createProviderFromConfig(ctx context.Context, provType, apiKey, baseURL string) (LLMProvider, error) {
 	switch provType {
 	case "openai":
 		return NewOpenAIProvider(OpenAIProviderConfig{
@@ -104,7 +104,7 @@ func createProviderFromConfig(provType, apiKey, baseURL string) (LLMProvider, er
 		})
 
 	case "gemini":
-		return NewGeminiProvider(context.Background(), GeminiProviderConfig{
+		return NewGeminiProvider(ctx, GeminiProviderConfig{
 			APIKey: apiKey,
 		})
 
@@ -141,7 +141,7 @@ func (r *LLMRouter) validateContextWindow(model string, msgs []Message) error {
 		return nil
 	}
 
-	meta := r.registry.Resolve(model)
+	meta, _ := r.registry.Resolve(model)
 
 	// Skip validation when metadata is a fallback or context window is 0
 	if meta.ContextWindow == 0 {

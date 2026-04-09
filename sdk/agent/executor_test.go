@@ -282,7 +282,7 @@ func TestExecutor_Run_CircuitBreaker_Nudge(t *testing.T) {
 		llmResponseWithToolCall("try1", "search", sameInput),
 		llmResponseWithToolCall("try2", "search", sameInput),
 		llmResponseWithToolCall("try3", "search", sameInput), // triggers nudge
-		llmResponseFinish("ok", "done"),                       // after nudge
+		llmResponseFinish("ok", "done"),                      // after nudge
 	}
 	mockLLM := &mockLLMCaller{responses: responses}
 	mockTools := newMockToolExecutor()
@@ -802,7 +802,7 @@ func TestExecutor_Run_CircuitBreaker_ErrorAwareNudge(t *testing.T) {
 	responses := []*llm.ChatResponse{
 		llmResponseWithToolCall("try1", "search", sameInput),
 		llmResponseWithToolCall("try2", "search", sameInput), // triggers nudge at count=2
-		llmResponseFinish("ok", "done"),                       // after nudge
+		llmResponseFinish("ok", "done"),                      // after nudge
 	}
 	mockLLM := &mockLLMCaller{responses: responses}
 	mockTools := newMockToolExecutor()

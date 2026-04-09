@@ -4,6 +4,7 @@ export type MessageType =
   | 'user' | 'assistant' | 'thinking' | 'step_done' | 'tool_call' | 'tool_result'
   | 'tool_confirm' | 'ask_user' | 'routing' | 'eval' | 'reflection' | 'plan' | 'error' | 'thought'
   | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'ac_extracted' | 'subagent_launch' | 'subagent_complete' | 'status'
+  | 'task_failed_resumable'
 
 export interface ChatMessageUI {
   id: string
@@ -29,6 +30,7 @@ export type DisplayItem =
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
+  | { kind: 'resume_action'; message: ChatMessageUI }
 
 export interface GroupedMessages {
   items: DisplayItem[]
@@ -39,21 +41,26 @@ function collapseThoughts(items: DisplayItem[]): DisplayItem[] {
   const result: DisplayItem[] = []
   let i = 0
   while (i < items.length) {
-    if (items[i].kind === 'thought') {
+    const current = items[i]
+    if (!current) break
+    if (current.kind === 'thought') {
       const thoughts: Array<{ content: string; reasoning?: string }> = []
-      const firstId = (items[i] as DisplayItem & { kind: 'thought' }).id
-      while (i < items.length && items[i].kind === 'thought') {
-        const t = items[i] as DisplayItem & { kind: 'thought' }
-        thoughts.push({ content: t.content, reasoning: t.reasoning })
+      const firstId = current.id
+      while (i < items.length) {
+        const item = items[i]
+        if (!item || item.kind !== 'thought') break
+        thoughts.push({ content: item.content, reasoning: item.reasoning })
         i++
       }
       if (thoughts.length === 1) {
-        result.push(items[i - 1])
+        // i was already incremented past the single thought
+        const prev = items[i - 1]!
+        result.push(prev)
       } else {
         result.push({ kind: 'thought_group', id: `tg-${firstId}`, thoughts })
       }
     } else {
-      result.push(items[i])
+      result.push(current)
       i++
     }
   }
@@ -215,6 +222,15 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         break
       }
 
+      case 'task_failed_resumable': {
+        const resolved = meta?.resolved === true
+        if (!resolved) {
+          pendingActions.push({ kind: 'resume_action', message: msg })
+        }
+        pushItem({ kind: 'resume_action', message: msg }, planStepId)
+        break
+      }
+
       case 'error':
         pushItem({ kind: 'error', message: msg }, planStepId)
         break
@@ -310,6 +326,7 @@ interface ChatState {
   pendingActions: DisplayItem[]
   setPendingActions: (actions: DisplayItem[]) => void
   resolveAction: (sessionId: string, messageId: string, metadataUpdates?: Record<string, unknown>) => void
+  resolveResumeMessage: (sessionId: string) => void
   setTaskActive: (active: boolean) => void
   clearSessionUIState: () => void
 }
@@ -335,7 +352,7 @@ export const useChatStore = create<ChatState>((set) => ({
     const idx = msgs.findIndex(m => m.id === id)
     if (idx === -1) return s
     const updated = [...msgs]
-    const existing = updated[idx]
+    const existing = updated[idx]!
     updated[idx] = {
       ...existing,
       ...updates,
@@ -379,7 +396,7 @@ export const useChatStore = create<ChatState>((set) => ({
       const idx = msgs.findIndex(m => m.id === messageId)
       if (idx !== -1) {
         const updated = [...msgs]
-        const existing = updated[idx]
+        const existing = updated[idx]!
         updated[idx] = {
           ...existing,
           metadata: { ...existing.metadata, resolved: true, ...metadataUpdates },
@@ -389,12 +406,37 @@ export const useChatStore = create<ChatState>((set) => ({
     }
     // 2. Remove from pendingActions immediately
     const newPending = s.pendingActions.filter(a => {
-      if ('message' in a && (a as { message: ChatMessageUI }).message.id === messageId) {
-        return false
+      if (a.kind === 'tool_confirm' || a.kind === 'ask_user' || a.kind === 'resume_action') {
+        return a.message.id !== messageId
       }
       return true
     })
     return { messages: newMessages, pendingActions: newPending }
+  }),
+  resolveResumeMessage: (sessionId) => set((s) => {
+    const msgs = s.messages[sessionId]
+    if (!msgs) return s
+    // Find the most recent unresolved task_failed_resumable message
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (!m) continue
+      if (m.type === 'task_failed_resumable' && m.metadata?.resolved !== true) {
+        const updated = [...msgs]
+        updated[i] = {
+          ...m,
+          metadata: { ...m.metadata, resolved: true },
+        }
+        // Also remove from pendingActions
+        const newPending = s.pendingActions.filter(a => {
+          if (a.kind === 'tool_confirm' || a.kind === 'ask_user' || a.kind === 'resume_action') {
+            return a.message.id !== m.id
+          }
+          return true
+        })
+        return { messages: { ...s.messages, [sessionId]: updated }, pendingActions: newPending }
+      }
+    }
+    return s
   }),
   setTaskActive: (active) => set({ isTaskActive: active }),
   clearSessionUIState: () => set({

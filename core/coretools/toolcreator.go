@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -207,8 +208,7 @@ func (t *ToolCreatorTool) Execute(ctx context.Context, input json.RawMessage) (t
 
 	// Write to audit log
 	if err := t.writeAuditLog(params.Name, "created"); err != nil {
-		// Log warning but don't fail
-		_ = err
+		slog.Warn("failed to write audit log", "tool", params.Name, "error", err)
 	}
 
 	// Success - don't cleanup
@@ -232,7 +232,11 @@ func (t *ToolCreatorTool) writeAuditLog(toolName, action string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open audit log: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Warn("failed to close audit log file", "error", err)
+		}
+	}()
 
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	entry := fmt.Sprintf("%s\t%s\t%s\n", timestamp, toolName, action)

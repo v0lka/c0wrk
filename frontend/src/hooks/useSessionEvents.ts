@@ -94,17 +94,10 @@ function isSessionRenamedData(data: unknown): data is { new_name: string } {
 
 export function useSessionEvents(sessionId: string | null) {
   const { runtime } = useWails()
-  const addMessage = useChatStore(s => s.addMessage)
-  const updateMessage = useChatStore(s => s.updateMessage)
-  const setStreaming = useChatStore(s => s.setStreaming)
-  const appendStreamToken = useChatStore(s => s.appendStreamToken)
-  const setThinking = useChatStore(s => s.setThinking)
-  const setStepContextFill = useChatStore(s => s.setStepContextFill)
-  const setSessionTokens = useChatStore(s => s.setSessionTokens)
-  const updateSession = useSessionStore(s => s.updateSession)
 
   useEffect(() => {
     if (!sessionId || !runtime) return
+    let mounted = true
 
     const panelStore = usePanelStore.getState()
 
@@ -116,8 +109,8 @@ export function useSessionEvents(sessionId: string | null) {
     
     // Load persisted session token totals
     GetSessionTokens(sessionId).then((resp) => {
-      if (!isActiveSession()) return
-      setSessionTokens(resp.total_input_tokens ?? 0, resp.total_output_tokens ?? 0)
+      if (!mounted || !isActiveSession()) return
+      useChatStore.getState().setSessionTokens(resp.total_input_tokens ?? 0, resp.total_output_tokens ?? 0)
     }).catch(() => {}) // Ignore errors, will show 0
     
     // Reset panel data for new session (before any events arrive)
@@ -129,10 +122,11 @@ export function useSessionEvents(sessionId: string | null) {
     }
 
     on('routing', (data: unknown) => {
+      if (!mounted) return
       if (!isRoutingData(data)) return
       const routing = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Analyzing request...')
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `routing-${Date.now()}`,
         sessionId,
         type: 'routing',
@@ -144,13 +138,14 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('step_start', (data: unknown) => {
+      if (!mounted) return
       if (!isStepData(data)) return
       if (isActiveSession()) {
-        setThinking(true)
+        useChatStore.getState().setThinking(true)
         useChatStore.getState().setActivityStatus('Thinking...')
       }
       const step = data
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `step-${step.step_num}`,
         sessionId,
         type: 'thinking',
@@ -160,10 +155,11 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('thought', (data: unknown) => {
+      if (!mounted) return
       if (!isThoughtData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Reasoning...')
       const thought = data
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `thought-${thought.step_num}-${Date.now()}`,
         sessionId,
         type: 'thought',
@@ -174,13 +170,14 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('tool_call', (data: unknown) => {
+      if (!mounted) return
       if (!isToolCallData(data)) return
       const toolCall = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Running tool: ${toolCall.tool}...`)
       const toolMsgId = toolCall.plan_step_id
         ? `tool-${toolCall.plan_step_id}-${toolCall.step}`
         : `tool-${toolCall.step}`
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: toolMsgId,
         sessionId,
         type: 'tool_call',
@@ -191,12 +188,13 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('tool_result', (data: unknown) => {
+      if (!mounted) return
       if (!isToolResultData(data)) return
       const toolResult = data
       const toolMsgId = toolResult.plan_step_id
         ? `tool-${toolResult.plan_step_id}-${toolResult.step}`
         : `tool-${toolResult.step}`
-      updateMessage(sessionId, toolMsgId, {
+      useChatStore.getState().updateMessage(sessionId, toolMsgId, {
         metadata: {
           step: toolResult.step,
           completed: true,
@@ -209,6 +207,7 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('tool_confirm', (data: unknown) => {
+      if (!mounted) return
       if (!isToolConfirmData(data)) return
       const toolConfirm = data
       const msgs = useChatStore.getState().messages[sessionId] || []
@@ -218,17 +217,18 @@ export function useSessionEvents(sessionId: string | null) {
       let toolPlanStepId: string | undefined
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
+        if (!m) continue
         if (m.type === 'tool_call' && m.metadata?.tool === toolConfirm.tool) {
           toolMsgId = m.id
           toolPlanStepId = m.metadata?.plan_step_id as string | undefined
-          updateMessage(sessionId, m.id, {
+          useChatStore.getState().updateMessage(sessionId, m.id, {
             metadata: { ...m.metadata, awaiting_confirmation: true },
           })
           break
         }
       }
 
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `tool-confirm-${toolConfirm.confirm_id}`,
         sessionId,
         type: 'tool_confirm',
@@ -245,15 +245,16 @@ export function useSessionEvents(sessionId: string | null) {
       })
 
       if (isActiveSession()) {
-        setThinking(false)
+        useChatStore.getState().setThinking(false)
         useChatStore.getState().setActivityStatus('Awaiting confirmation...')
       }
     })
 
     on('ask_user', (data: unknown) => {
+      if (!mounted) return
       if (!isAskUserData(data)) return
       const askData = data
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `ask-user-${askData.request_id}`,
         sessionId,
         type: 'ask_user',
@@ -268,20 +269,22 @@ export function useSessionEvents(sessionId: string | null) {
         timestamp: Date.now(),
       })
       if (isActiveSession()) {
-        setThinking(false)
+        useChatStore.getState().setThinking(false)
         useChatStore.getState().setActivityStatus('Waiting for your answer...')
       }
     })
 
     on('step_complete', (data: unknown) => {
+      if (!mounted) return
       if (!isStepData(data)) return
-      if (isActiveSession()) setThinking(false)
-      updateMessage(sessionId, `step-${(data as { step_num: number }).step_num}`, {
+      if (isActiveSession()) useChatStore.getState().setThinking(false)
+      useChatStore.getState().updateMessage(sessionId, `step-${(data as { step_num: number }).step_num}`, {
         type: 'step_done',
       })
     })
 
     on('evaluation', (data: unknown) => {
+      if (!mounted) return
       if (!isEvalData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Evaluating results...')
       const evalData = data
@@ -292,10 +295,12 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('reflection', () => {
+      if (!mounted) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Reflecting on results...')
     })
 
     on('plan_generated', (data: unknown) => {
+      if (!mounted) return
       if (!isPlanData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Executing plan...')
       const plan = data
@@ -308,7 +313,7 @@ export function useSessionEvents(sessionId: string | null) {
         })
       }
       // Also add to chat messages so groupMessages can build stepIndexMap
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `plan-${Date.now()}`,
         sessionId,
         type: 'plan',
@@ -325,13 +330,14 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('plan_step_start', (data: unknown) => {
+      if (!mounted) return
       if (!isPlanStepStartData(data)) return
       const stepData = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Executing: ${stepData.description || 'step'}...`)
       // Route to panelStore
       panelStore.updatePlanItemStatus(stepData.step_id, 'running')
       // Add to chat messages for plan step containers
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `plan-step-start-${stepData.step_id}-${Date.now()}`,
         sessionId,
         type: 'plan_step_start',
@@ -342,6 +348,7 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('plan_step_complete', (data: unknown) => {
+      if (!mounted) return
       if (!isPlanStepCompleteData(data)) return
       const stepData = data
       // Route to panelStore
@@ -351,7 +358,7 @@ export function useSessionEvents(sessionId: string | null) {
         stepData.duration
       )
       // Add to chat messages for plan step lifecycle
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `plan-step-complete-${stepData.step_id}-${Date.now()}`,
         sessionId,
         type: 'plan_step_complete',
@@ -362,37 +369,40 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('assistant_chunk', (data: unknown) => {
+      if (!mounted) return
       if (!isAssistantChunkData(data)) return
       if (!isActiveSession()) return
       useChatStore.getState().setActivityStatus('Generating response...')
       const chunk = data
       if (chunk.accumulated_content !== undefined) {
         // Use backend-accumulated content (direct set, no delta accumulation needed)
-        setStreaming(chunk.accumulated_content)
+        useChatStore.getState().setStreaming(chunk.accumulated_content)
       } else if (chunk.content) {
         // Fallback for older backend: append delta
-        appendStreamToken(chunk.content)
+        useChatStore.getState().appendStreamToken(chunk.content)
       }
     })
 
     on('assistant_done', () => {
+      if (!mounted) return
       const streamingText = useChatStore.getState().streamingText
       if (streamingText) {
-        addMessage(sessionId, {
+        useChatStore.getState().addMessage(sessionId, {
           id: `assistant-${Date.now()}`,
           sessionId,
           type: 'assistant',
           content: streamingText,
           timestamp: Date.now(),
         })
-        if (isActiveSession()) setStreaming(null)
+        if (isActiveSession()) useChatStore.getState().setStreaming(null)
       }
     })
 
     on('error', (data: unknown) => {
+      if (!mounted) return
       if (!isErrorData(data)) return
       const error = data
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `error-${Date.now()}`,
         sessionId,
         type: 'error',
@@ -400,8 +410,8 @@ export function useSessionEvents(sessionId: string | null) {
         timestamp: Date.now(),
       })
       if (isActiveSession()) {
-        setThinking(false)
-        setStreaming(null)
+        useChatStore.getState().setThinking(false)
+        useChatStore.getState().setStreaming(null)
         useChatStore.getState().setActivityStatus(null)
         useChatStore.getState().setTaskActive(false)
       }
@@ -409,17 +419,18 @@ export function useSessionEvents(sessionId: string | null) {
 
     // Task lifecycle events
     on('task_complete', (data: unknown) => {
+      if (!mounted) return
       if (!isTaskCompleteData(data)) return
       if (isActiveSession()) {
-        setThinking(false)
-        setStreaming(null)
+        useChatStore.getState().setThinking(false)
+        useChatStore.getState().setStreaming(null)
         useChatStore.getState().setActivityStatus(null)
         useChatStore.getState().setTaskActive(false)
       }
       const taskData = data
       // Add completion message
       if (taskData.output) {
-        addMessage(sessionId, {
+        useChatStore.getState().addMessage(sessionId, {
           id: `assistant-done-${Date.now()}`,
           sessionId,
           type: 'assistant',
@@ -430,13 +441,14 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('task_cancelled', () => {
+      if (!mounted) return
       if (isActiveSession()) {
-        setThinking(false)
-        setStreaming(null)
+        useChatStore.getState().setThinking(false)
+        useChatStore.getState().setStreaming(null)
         useChatStore.getState().setActivityStatus(null)
         useChatStore.getState().setTaskActive(false)
       }
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `cancelled-${Date.now()}`,
         sessionId,
         type: 'error',
@@ -446,11 +458,12 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('retry', (data: unknown) => {
+      if (!mounted) return
       if (!isRetryData(data)) return
       const retry = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Retrying (attempt ${retry.attempt}/${retry.max_attempts})...`)
       panelStore.resetEvalStatuses()  // Reset criteria to pending on retry
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `retry-${Date.now()}`,
         sessionId,
         type: 'routing',
@@ -462,6 +475,7 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('service', (data: unknown) => {
+      if (!mounted) return
       if (!isServiceData(data)) return
       if (!isActiveSession()) return
       const service = data as { content: string; phase?: string }
@@ -470,7 +484,7 @@ export function useSessionEvents(sessionId: string | null) {
       }
       // Add orchestration phases to chat timeline for visible progress
       if (service.phase === 'orchestration' && service.content) {
-        addMessage(sessionId, {
+        useChatStore.getState().addMessage(sessionId, {
           id: `status-${Date.now()}`,
           sessionId,
           type: 'status',
@@ -481,6 +495,7 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('ac_extracted', (data: unknown) => {
+      if (!mounted) return
       if (!isACExtractedData(data)) return
       // Display extracted acceptance criteria as pending eval items
       const acData = data
@@ -494,7 +509,7 @@ export function useSessionEvents(sessionId: string | null) {
 
         // Also add to chat timeline
         if (isActiveSession()) {
-          addMessage(sessionId, {
+          useChatStore.getState().addMessage(sessionId, {
             id: `ac-extracted-${Date.now()}`,
             sessionId,
             type: 'ac_extracted',
@@ -507,10 +522,11 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('subagent_launch', (data: unknown) => {
+      if (!mounted) return
       if (!isSubAgentLaunchData(data)) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Launching sub-agent...')
       const sa = data
-      addMessage(sessionId, {
+      useChatStore.getState().addMessage(sessionId, {
         id: `subagent-${sa.step_id}-launch`,
         sessionId,
         type: 'tool_call',
@@ -521,9 +537,10 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('subagent_complete', (data: unknown) => {
+      if (!mounted) return
       if (!isSubAgentCompleteData(data)) return
       const sa = data
-      updateMessage(sessionId, `subagent-${sa.step_id}-launch`, {
+      useChatStore.getState().updateMessage(sessionId, `subagent-${sa.step_id}-launch`, {
         metadata: {
           tool: 'subagent',
           completed: true,
@@ -536,12 +553,13 @@ export function useSessionEvents(sessionId: string | null) {
     })
 
     on('context_fill', (data: unknown) => {
+      if (!mounted) return
       if (!isContextFillData(data)) return
       if (!isActiveSession()) return
       const fillData = data
       // Store per-step context fill if step_id is present
       if (fillData.plan_step_id) {
-        setStepContextFill(fillData.plan_step_id, {
+        useChatStore.getState().setStepContextFill(fillData.plan_step_id, {
           fillPercent: fillData.fill_percent,
           usedTokens: fillData.used_tokens,
           maxTokens: fillData.max_tokens,
@@ -549,21 +567,54 @@ export function useSessionEvents(sessionId: string | null) {
         })
       }
       // Always update session tokens
-      setSessionTokens(fillData.session_input_tokens ?? 0, fillData.session_output_tokens ?? 0)
+      useChatStore.getState().setSessionTokens(fillData.session_input_tokens ?? 0, fillData.session_output_tokens ?? 0)
     })
 
     on('session_tokens', (data: unknown) => {
+      if (!mounted) return
       if (!isSessionTokensData(data)) return
       if (!isActiveSession()) return
-      setSessionTokens(data.session_input_tokens, data.session_output_tokens)
+      useChatStore.getState().setSessionTokens(data.session_input_tokens, data.session_output_tokens)
+    })
+
+    on('task_failed_resumable', (data: unknown) => {
+      if (!mounted) return
+      const msg = (data && typeof data === 'object' && 'message' in data && typeof (data as { message: unknown }).message === 'string')
+        ? (data as { message: string }).message
+        : 'Plan execution failed.'
+      useChatStore.getState().addMessage(sessionId, {
+        id: `resume-${Date.now()}`,
+        sessionId,
+        type: 'task_failed_resumable',
+        content: msg,
+        metadata: { resolved: false },
+        timestamp: Date.now(),
+      })
+      if (isActiveSession()) {
+        useChatStore.getState().setThinking(false)
+        useChatStore.getState().setActivityStatus(null)
+      }
+    })
+
+    on('task_resumed', () => {
+      if (!mounted) return
+      useChatStore.getState().resolveResumeMessage(sessionId)
+      if (isActiveSession()) {
+        useChatStore.getState().setTaskActive(true)
+        useChatStore.getState().setActivityStatus('Resuming...')
+      }
     })
 
     on('session_renamed', (data: unknown) => {
+      if (!mounted) return
       if (!isSessionRenamedData(data)) return
       const renameData = data
-      updateSession(sessionId, { name: renameData.new_name })
+      useSessionStore.getState().updateSession(sessionId, { name: renameData.new_name })
     })
 
-    return () => unsubs.forEach(fn => fn())
-  }, [sessionId, runtime, addMessage, updateMessage, setStreaming, appendStreamToken, setThinking, setStepContextFill, setSessionTokens, updateSession])
+    return () => {
+      mounted = false
+      unsubs.forEach(fn => fn())
+    }
+  }, [sessionId, runtime])
 }

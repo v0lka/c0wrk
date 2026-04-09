@@ -48,8 +48,11 @@ export function SecuritySettings() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const result = await GetSecuritySettings() as unknown as SecuritySettings
-        setSettings(result)
+        const result = await GetSecuritySettings()
+        if (!result || typeof result !== 'object') {
+          throw new Error('Invalid security settings response')
+        }
+        setSettings(result as SecuritySettings)
       } catch (error) {
         logger.error('Failed to load security settings:', error)
       } finally {

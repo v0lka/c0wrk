@@ -52,11 +52,13 @@ type Session struct {
 	mu            sync.Mutex
 }
 
-// OrchestratorFactory creates a new Orchestrator with the given emitter, logger, and workspace path.
+// OrchestratorFactory creates a new Orchestrator with the given emitter, logger, workspace path,
+// and optional BlackboardFactory.
 // The workspace path is the project workspace directory so the worktree factory can
 // capture the correct project workspace.
+// bbFactory may be nil, in which case the orchestrator uses an in-memory MapBlackboard.
 // Returns an error if the orchestrator cannot be created.
-type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string) (*core.Orchestrator, error)
+type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error)
 
 // TokenPersistFunc is called with cumulative session token totals after each LLM call.
 // The sessionID parameter identifies which session the tokens belong to.
@@ -71,6 +73,7 @@ type Manager struct {
 	logDir              string      // base directory for session logs
 	logLevel            string      // current log level for session loggers
 	tokenPersist        TokenPersistFunc
+	taskStore           TaskStore // optional persistent task store
 }
 
 // NewManager creates a new session Manager.
@@ -89,6 +92,15 @@ func (m *Manager) SetTokenPersist(fn TokenPersistFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tokenPersist = fn
+}
+
+// SetTaskStore sets the TaskStore used to persist orchestration tasks.
+// When set, CreateSession will construct a BlackboardFactory that creates
+// PersistentBlackboard instances backed by this store.
+func (m *Manager) SetTaskStore(store TaskStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.taskStore = store
 }
 
 // CreateSession creates a new session with a fresh orchestrator.
@@ -114,8 +126,21 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		})
 	}
 
+	// Build BlackboardFactory if task persistence is configured
+	var bbFactory core.BlackboardFactory
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts != nil {
+		adapter := NewTaskStoreAdapter(ts)
+		sessionID := id // capture for closure
+		bbFactory = func(taskID string) core.Blackboard {
+			return core.NewPersistentBlackboard(taskID, sessionID, adapter, logger)
+		}
+	}
+
 	// Create orchestrator using the factory
-	orchestrator, err := m.orchestratorFactory(emitter, logger, workspacePath)
+	orchestrator, err := m.orchestratorFactory(emitter, logger, workspacePath, bbFactory)
 	if err != nil {
 		// Close the log file since we're not creating the session
 		if logFile != nil {
@@ -222,7 +247,9 @@ func (m *Manager) DeleteSession(id string) error {
 	}
 	// Close log file if it exists
 	if session.logFile != nil {
-		_ = session.logFile.Close()
+		if err := session.logFile.Close(); err != nil {
+			slog.Warn("failed to close session log file", "session_id", id, "error", err)
+		}
 	}
 	session.mu.Unlock()
 
@@ -388,7 +415,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 	})
 
 	// Launch goroutine to handle the message
-	go func() {
+	go func(ctx context.Context, msg string) {
 		defer func() {
 			session.mu.Lock()
 			session.active = false
@@ -397,11 +424,11 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 		}()
 
 		// Call orchestrator
-		result, err := session.orchestrator.Handle(taskCtx, text)
+		result, err := session.orchestrator.Handle(ctx, msg)
 
 		if err != nil {
 			// Check if it was a cancellation
-			if taskCtx.Err() == context.Canceled {
+			if ctx.Err() == context.Canceled {
 				m.emitFunc(Event{
 					SessionID: id,
 					Type:      "task_cancelled",
@@ -409,6 +436,16 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 						SessionID: id,
 					},
 				})
+				// Mark any in-progress task as completed so it's not left resumable.
+				m.mu.RLock()
+				ts := m.taskStore
+				m.mu.RUnlock()
+				if ts != nil {
+					adapter := NewTaskStoreAdapter(ts)
+					if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
+						_ = adapter.PersistCompletion(tid, "", nil, 0)
+					}
+				}
 				return
 			}
 
@@ -421,6 +458,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 					Error:     err.Error(),
 				},
 			})
+			m.emitResumableIfUnfinished(id)
 			return
 		}
 
@@ -438,9 +476,163 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				Reflections:     result.Reflections,
 			},
 		})
+		m.emitResumableIfUnfinished(id)
+	}(taskCtx, text)
+
+	return nil
+}
+
+// ResumeTask checks for an unfinished task in the given session and resumes it.
+// Returns nil if no unfinished task exists or if the task store is not configured.
+// This is called on app restart to resume interrupted tasks.
+func (m *Manager) ResumeTask(ctx context.Context, id string) error {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+
+	if ts == nil {
+		return nil // no task persistence — nothing to resume
+	}
+
+	m.mu.RLock()
+	session, exists := m.sessions[id]
+	m.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	adapter := NewTaskStoreAdapter(ts)
+	taskID, err := adapter.GetUnfinishedTaskID(id)
+	if err != nil {
+		return fmt.Errorf("failed to check unfinished tasks: %w", err)
+	}
+	if taskID == "" {
+		return nil // no unfinished task
+	}
+
+	// Load task state and restore blackboard.
+	bb, err := core.RestoreBlackboard(taskID, id, adapter, nil)
+	if err != nil {
+		return fmt.Errorf("failed to restore blackboard: %w", err)
+	}
+	if bb == nil {
+		return nil // task record not found (race condition or cleanup)
+	}
+
+	// Load routing decision from task state.
+	state, err := adapter.LoadTaskState(taskID)
+	if err != nil {
+		return fmt.Errorf("failed to load task state: %w", err)
+	}
+	if state == nil || state.RoutingDecision == nil {
+		return fmt.Errorf("cannot resume task %s: missing routing decision", taskID)
+	}
+
+	if bb.GetPlan() == nil {
+		return fmt.Errorf("cannot resume task %s: no plan in restored state", taskID)
+	}
+
+	session.mu.Lock()
+	if session.active {
+		session.mu.Unlock()
+		return errors.New("session is already processing a task")
+	}
+	session.active = true
+	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
+	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	session.cancel = cancel
+	session.mu.Unlock()
+
+	// Emit resume event so the frontend knows a task is resuming.
+	m.emitFunc(Event{
+		SessionID: id,
+		Type:      "task_resumed",
+		Data: MessageReceivedData{
+			SessionID: id,
+			Text:      state.OriginalRequest,
+		},
+	})
+
+	// Launch goroutine (same pattern as SendMessage).
+	go func() {
+		defer func() {
+			session.mu.Lock()
+			session.active = false
+			session.cancel = nil
+			session.mu.Unlock()
+		}()
+
+		result, err := session.orchestrator.Resume(taskCtx, bb, state.RoutingDecision)
+
+		if err != nil {
+			if taskCtx.Err() == context.Canceled {
+				m.emitFunc(Event{
+					SessionID: id,
+					Type:      "task_cancelled",
+					Data: TaskCancelledData{
+						SessionID: id,
+					},
+				})
+				// Mark the restored task as completed so it's not left resumable.
+				bb.CompleteTask(nil, 0)
+				return
+			}
+
+			m.emitFunc(Event{
+				SessionID: id,
+				Type:      "error",
+				Data: ErrorData{
+					SessionID: id,
+					Error:     err.Error(),
+				},
+			})
+			m.emitResumableIfUnfinished(id)
+			return
+		}
+
+		m.emitFunc(Event{
+			SessionID: id,
+			Type:      "task_complete",
+			Data: TaskCompleteData{
+				SessionID:       id,
+				Output:          result.Output,
+				RoutingDecision: result.RoutingDecision,
+				Plan:            result.Plan,
+				EvalResult:      result.EvalResult,
+				AttemptCount:    result.AttemptCount,
+				Reflections:     result.Reflections,
+			},
+		})
+		m.emitResumableIfUnfinished(id)
 	}()
 
 	return nil
+}
+
+// emitResumableIfUnfinished checks whether the session has an unfinished task
+// in the task store and, if so, emits a "task_failed_resumable" event so the
+// frontend can offer a Resume button.
+func (m *Manager) emitResumableIfUnfinished(sessionID string) {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return
+	}
+
+	adapter := NewTaskStoreAdapter(ts)
+	taskID, _ := adapter.GetUnfinishedTaskID(sessionID)
+	if taskID == "" {
+		return
+	}
+
+	m.emitFunc(Event{
+		SessionID: sessionID,
+		Type:      "task_failed_resumable",
+		Data: TaskFailedResumableData{
+			Message: "Plan execution failed. You can resume to retry from where it left off.",
+		},
+	})
 }
 
 // CancelTask cancels the currently running task in a session.

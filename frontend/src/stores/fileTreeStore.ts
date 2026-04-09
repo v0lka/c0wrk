@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { logger } from '@/lib/logger'
 
 export interface FileNode {
   name: string
@@ -26,7 +27,8 @@ async function listDirectory(path: string): Promise<FileNode[]> {
   if (!window?.go?.desktop?.App?.ListDirectory) return []
   try {
     return await window.go.desktop.App.ListDirectory(path)
-  } catch {
+  } catch (err) {
+    logger.error(`[fileTreeStore] Failed to list directory ${path}:`, err)
     return []
   }
 }
@@ -108,7 +110,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
     set((state) => ({ entries: { ...state.entries, [path]: nodes } })),
 
   toggleDir: async (path: string) => {
-    const { expandedDirs } = get()
+    const { expandedDirs, projectWorkspacePath } = get()
     if (expandedDirs.has(path)) {
       const next = new Set(expandedDirs)
       next.delete(path)
@@ -120,6 +122,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       set({ expandedDirs: next })
       get().setLoading(path, true)
       const nodes = await listDirectory(path)
+      if (get().projectWorkspacePath !== projectWorkspacePath) return // Stale — project changed
       get().setEntries(path, nodes)
       get().setLoading(path, false)
       watchDirectory(path)
