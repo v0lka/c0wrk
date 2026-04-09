@@ -10,6 +10,7 @@ import (
 	// SDK layer
 	"github.com/user/agent/sdk/llm"
 	sdkmemory "github.com/user/agent/sdk/memory"
+	"github.com/user/agent/sdk/orchestration"
 
 	// Core layer
 	"github.com/user/agent/core"
@@ -63,7 +64,7 @@ func (a *App) buildCoreAgents(llmRouter *llm.LLMRouter, registry *tools.ToolRegi
 	if llmRouter == nil {
 		return nil, nil, nil, nil, nil
 	}
-	caller := core.NewTokenTrackingCaller(llmRouter, emitter)
+	caller := orchestration.NewTokenTrackingCaller(llmRouter, emitter)
 	router := core.NewRouter(caller, cfg.Router.HistoryWindow)
 	acExtractor := core.NewACExtractor(caller)
 	planner := core.NewPlanner(caller)

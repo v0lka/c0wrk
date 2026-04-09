@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"log/slog"
+
+	"github.com/user/agent/sdk/orchestration"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,10 +109,10 @@ func (pb *PersistentBlackboard) SetPlan(plan *Plan) {
 func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, steps []Step) {
 	pb.MapBlackboard.SetStepResult(stepID, output, err, steps)
 
-	summary := generateSummary(output)
+	summary := orchestration.GenerateSummary(output)
 	// Apply the same token-budget cap as MapBlackboard.
-	if pb.maxSummaryTokens > 0 {
-		maxChars := pb.maxSummaryTokens * 4
+	if pb.MaxSummaryTokens() > 0 {
+		maxChars := pb.MaxSummaryTokens() * 4
 		if len(summary) > maxChars {
 			summary = summary[:maxChars] + "..."
 		}
@@ -200,10 +202,8 @@ func RestoreBlackboard(taskID, sessionID string, store TaskPersistence, logger *
 	}
 	for stepID, sr := range state.StepResults {
 		// Re-use the raw data; SetStepResult would regenerate the summary,
-		// so we populate the map directly under lock.
-		mb.mu.Lock()
-		mb.stepResults[stepID] = sr
-		mb.mu.Unlock()
+		// so we populate the map directly via SetStepResultRaw.
+		mb.SetStepResultRaw(stepID, sr)
 	}
 	for _, r := range state.Reflections {
 		mb.AddReflection(r)

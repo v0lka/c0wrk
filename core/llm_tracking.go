@@ -1,34 +1,8 @@
 package core
 
-import (
-	"context"
+import "github.com/user/agent/sdk/orchestration"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
-)
-
-// tokenTrackingCaller wraps an LLMCaller to report token usage after every call.
-// This ensures that service-level LLM calls (Router, ACExtractor, Planner,
-// Evaluator, Reflector) have their token consumption accumulated in session totals,
-// not just the Executor calls.
-type tokenTrackingCaller struct {
-	inner   agent.LLMCaller
-	emitter agent.AgentEvents
-}
-
-// NewTokenTrackingCaller wraps an LLMCaller so that every successful Call
-// reports token usage via emitter.TokensUsed.
-func NewTokenTrackingCaller(inner agent.LLMCaller, emitter agent.AgentEvents) agent.LLMCaller {
-	if emitter == nil {
-		return inner
-	}
-	return &tokenTrackingCaller{inner: inner, emitter: emitter}
-}
-
-func (t *tokenTrackingCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	resp, err := t.inner.Call(ctx, req)
-	if err == nil && resp != nil {
-		t.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens)
-	}
-	return resp, err
-}
+// NewTokenTrackingCaller wraps an LLMCaller to report token usage after every call.
+//
+// Deprecated: Use orchestration.NewTokenTrackingCaller directly.
+var NewTokenTrackingCaller = orchestration.NewTokenTrackingCaller

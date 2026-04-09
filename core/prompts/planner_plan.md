@@ -12,7 +12,7 @@ Prefer high-level tools over bash_exec — use bash_exec only when no built-in t
 - "tester": test execution, verification (tools: bash_exec for running test commands)
 - "executor": general purpose (default if omitted, all tools available — follow tool priority tiers)
 
-Only include agent_profile when specialization adds value. Omit it for simple tasks.
+Only include profile when specialization adds value. Omit it for simple tasks.
 
 Domain assignment for each step:
 
@@ -25,7 +25,7 @@ Domain affects:
 - Compaction strategy: code uses sliding window, research uses summarization
 - Evaluation method: code uses programmatic checks when possible, research uses LLM judge
 
-Specify domain in agent_profile when the step clearly falls into one category.
+Specify domain in profile when the step clearly falls into one category.
 
 Available tools:
 AVAILABLE-TOOLS
@@ -36,4 +36,4 @@ ACCEPTANCE-CRITERIA
 WORKSPACE-PATH
 REFLECTIONS
 Respond ONLY with a JSON object:
-{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "relevant_ac": ["ac_1"], "agent_profile": {"role": "researcher", "allowed_tools": ["web_search", "web_fetch"], "domain": "research"}}]}
+{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "relevant_ac": ["ac_1"], "profile": {"role": "researcher", "allowed_tools": ["web_search", "web_fetch"], "domain": "research"}}]}

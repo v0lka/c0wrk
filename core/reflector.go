@@ -9,7 +9,11 @@ import (
 
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 )
+
+// compile-time check: Reflector implements orchestration.Reflector.
+var _ orchestration.Reflector = (*Reflector)(nil)
 
 const reflectorAnalyzeFooter = "Please analyze this execution and provide a structured reflection."
 

@@ -1,10 +1,12 @@
-package core
+package orchestration
 
 import (
 	"errors"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/user/agent/sdk/agent"
 )
 
 func TestBlackboard_OriginalRequest(t *testing.T) {
@@ -27,7 +29,7 @@ func TestBlackboard_Criteria_DefensiveCopy(t *testing.T) {
 		t.Fatalf("expected nil, got %v", got)
 	}
 
-	criteria := []AcceptanceCriterion{
+	criteria := []Criterion{
 		{ID: "ac_1", Description: "must compile"},
 		{ID: "ac_2", Description: "must pass tests"},
 	}
@@ -244,7 +246,7 @@ func TestBlackboard_GetAllStepResults_DefensiveCopy(t *testing.T) {
 func TestBlackboard_Search_CaseInsensitive(t *testing.T) {
 	bb := NewMapBlackboard()
 
-	bb.SetCriteria([]AcceptanceCriterion{
+	bb.SetCriteria([]Criterion{
 		{ID: "ac_1", Description: "Must compile without errors"},
 	})
 	bb.SetStepResult("s1", "Compiled the project successfully", nil, nil)
@@ -269,7 +271,7 @@ func TestBlackboard_Search_NoResults(t *testing.T) {
 	bb := NewMapBlackboard()
 
 	bb.SetStepResult("s1", "hello world", nil, nil)
-	bb.SetCriteria([]AcceptanceCriterion{{ID: "ac_1", Description: "must pass"}})
+	bb.SetCriteria([]Criterion{{ID: "ac_1", Description: "must pass"}})
 
 	results := bb.Search("zzzznonexistentzzzz")
 	if len(results) != 0 {
@@ -293,7 +295,7 @@ func TestBlackboard_ConcurrentReadWrite(t *testing.T) {
 				stepID := "step"
 				bb.SetStepResult(stepID, "output", nil, nil)
 				bb.SetOriginalRequest("request")
-				bb.SetCriteria([]AcceptanceCriterion{{ID: "ac_1"}})
+				bb.SetCriteria([]Criterion{{ID: "ac_1"}})
 				bb.SetPlan(&Plan{Steps: []PlanStep{{ID: "s1"}}})
 				bb.AddReflection(Reflection{Summary: "r"})
 				bb.SetFinalResult("done")
@@ -408,7 +410,7 @@ func TestMapBlackboard_GetStepResultBudgeted_NotFound(t *testing.T) {
 func TestBlackboard_StepResult_StepsCopy(t *testing.T) {
 	bb := NewMapBlackboard()
 
-	steps := []Step{
+	steps := []agent.Step{
 		{Thought: "thinking"},
 	}
 	bb.SetStepResult("s1", "output", nil, steps)

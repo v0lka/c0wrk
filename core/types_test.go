@@ -313,9 +313,9 @@ func TestPlanStep_WithAgentProfile(t *testing.T) {
 	}
 
 	step := PlanStep{
-		ID:           "step_1",
-		Description:  "Research topic",
-		AgentProfile: profile,
+		ID:          "step_1",
+		Description: "Research topic",
+		Profile:     profile,
 	}
 
 	data, err := json.Marshal(step)
@@ -328,11 +328,16 @@ func TestPlanStep_WithAgentProfile(t *testing.T) {
 		t.Fatalf("failed to unmarshal PlanStep: %v", err)
 	}
 
-	if decoded.AgentProfile == nil {
-		t.Fatal("expected AgentProfile to be non-nil")
+	// Profile unmarshals as map[string]any since it's typed as `any`.
+	if decoded.Profile == nil {
+		t.Fatal("expected Profile to be non-nil")
 	}
-	if decoded.AgentProfile.Role != "researcher" {
-		t.Errorf("Role mismatch: got %q, want %q", decoded.AgentProfile.Role, "researcher")
+	profileMap, ok := decoded.Profile.(map[string]any)
+	if !ok {
+		t.Fatalf("expected Profile to be map[string]any, got %T", decoded.Profile)
+	}
+	if profileMap["role"] != "researcher" {
+		t.Errorf("Role mismatch: got %q, want %q", profileMap["role"], "researcher")
 	}
 }
 
@@ -352,8 +357,8 @@ func TestPlanStep_WithoutAgentProfile(t *testing.T) {
 		t.Fatalf("failed to unmarshal PlanStep: %v", err)
 	}
 
-	if decoded.AgentProfile != nil {
-		t.Error("expected AgentProfile to be nil when not set")
+	if decoded.Profile != nil {
+		t.Error("expected Profile to be nil when not set")
 	}
 }
 

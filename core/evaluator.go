@@ -11,8 +11,12 @@ import (
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/tools"
 )
+
+// compile-time check: Evaluator implements orchestration.Evaluator.
+var _ orchestration.Evaluator = (*Evaluator)(nil)
 
 // maxResultSummaryChars is the maximum character length for the result summary
 // passed to each evaluator ReAct agent (~500 tokens at 4 chars/token).

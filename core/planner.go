@@ -10,8 +10,12 @@ import (
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 	tools "github.com/user/agent/sdk/tools"
 )
+
+// compile-time check: Planner implements orchestration.Planner.
+var _ orchestration.Planner = (*Planner)(nil)
 
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {

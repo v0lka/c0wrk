@@ -15,9 +15,9 @@ import (
 // ---------------------------------------------------------------------------
 
 // bbCtx returns a context with a pre-populated blackboard.
-func bbCtx(t *testing.T) (context.Context, *core.MapBlackboard) {
+func bbCtx(t *testing.T) (ctx context.Context, bb *core.MapBlackboard) {
 	t.Helper()
-	bb := core.NewMapBlackboard()
+	bb = core.NewMapBlackboard()
 	bb.SetStepResult("step_1", "full output of step 1", nil, []core.Step{
 		{
 			Thought:     "I need to read the file",

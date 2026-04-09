@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/user/agent/sdk/agent"
+	"github.com/user/agent/sdk/orchestration"
 	tools "github.com/user/agent/sdk/tools" // alias: avoids collision with core/tools subpackage
 )
 
@@ -46,6 +47,28 @@ type CompactionStrategy = agent.CompactionStrategy
 var NewSharedWorkspace = agent.NewSharedWorkspace
 
 // ---------------------------------------------------------------------------
+// Type aliases for types that moved to sdk/orchestration
+// ---------------------------------------------------------------------------
+
+// CompletedStep — result of an executed plan step (AD 4.7).
+type CompletedStep = orchestration.CompletedStep
+
+// EvalResult — result of Evaluator checking AC (AD 4.5).
+type EvalResult = orchestration.EvalResult
+
+// EvalDetail — detail for a single AC evaluation (AD 4.5).
+type EvalDetail = orchestration.EvalDetail
+
+// IntentVerification holds the result of Tier 2 intent-based verification.
+type IntentVerification = orchestration.VerificationResult
+
+// PlanStepEvent represents a single step in a plan for event emission.
+type PlanStepEvent = orchestration.PlanStepEvent
+
+// EvalCriterionEvent represents a single evaluation criterion for event emission.
+type EvalCriterionEvent = orchestration.EvalCriterionEvent
+
+// ---------------------------------------------------------------------------
 // ContextManager — extends sdk/agent.ContextManager with c0wrk-specific SetTask
 // ---------------------------------------------------------------------------
 
@@ -55,27 +78,6 @@ type ContextManager interface {
 	agent.ContextManager
 	// SetTask sets the user's task and acceptance criteria into the context window.
 	SetTask(task string, criteria []AcceptanceCriterion)
-}
-
-// ---------------------------------------------------------------------------
-// Event types for the Emitter
-// ---------------------------------------------------------------------------
-
-// PlanStepEvent represents a single step in a plan for event emission.
-type PlanStepEvent struct {
-	ID          string   `json:"id"`
-	Description string   `json:"description"`
-	Status      string   `json:"status"` // "pending", "running", "completed", "failed"
-	DependsOn   []string `json:"depends_on"`
-}
-
-// EvalCriterionEvent represents a single evaluation criterion for event emission.
-type EvalCriterionEvent struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Passed      bool   `json:"passed"`
-	Status      string `json:"status"`               // "pass", "fail", or "unclear"
-	Diagnostic  string `json:"diagnostic,omitempty"` // evaluation reasoning / intent verification feedback
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +142,52 @@ func (n *noopEmitter) Service(_ string)                                   {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
 
 // ---------------------------------------------------------------------------
+// emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
+// ---------------------------------------------------------------------------
+
+type emitterEventsAdapter struct {
+	Emitter
+}
+
+var _ orchestration.Events = (*emitterEventsAdapter)(nil)
+
+func (a *emitterEventsAdapter) OnPlanGenerated(n int, steps []PlanStepEvent) {
+	a.PlanGenerated(n, steps)
+}
+func (a *emitterEventsAdapter) OnStepStarted(id, desc string) {
+	a.PlanStepStart(id, desc)
+}
+func (a *emitterEventsAdapter) OnStepCompleted(id string, ok bool, d time.Duration) {
+	a.PlanStepComplete(id, ok, d)
+}
+func (a *emitterEventsAdapter) OnEvaluated(p, t int, c []EvalCriterionEvent) {
+	a.Evaluation(p, t, c)
+}
+func (a *emitterEventsAdapter) OnReflected(s string, insights []string, attempt, maxAttempts int) {
+	a.Reflection(s, insights, attempt, maxAttempts)
+}
+func (a *emitterEventsAdapter) OnRetry(attempt, maxAttempts int) {
+	a.Retry(attempt, maxAttempts)
+}
+func (a *emitterEventsAdapter) OnCriteriaExtracted(n int, c []EvalCriterionEvent) {
+	a.ACExtracted(n, c)
+}
+func (a *emitterEventsAdapter) OnService(content string) {
+	a.Service(content)
+}
+func (a *emitterEventsAdapter) OnServiceMeta(content string, meta map[string]any) {
+	a.ServiceWithMeta(content, meta)
+}
+
+// WithStepID implements orchestration.StepScopable.
+func (a *emitterEventsAdapter) WithStepID(id string) orchestration.Events {
+	if s, ok := a.Emitter.(PlanStepScopable); ok {
+		return &emitterEventsAdapter{s.WithPlanStepID(id)}
+	}
+	return a
+}
+
+// ---------------------------------------------------------------------------
 // c0wrk-specific types
 // ---------------------------------------------------------------------------
 
@@ -154,13 +202,8 @@ type RoutingDecision struct {
 }
 
 // AcceptanceCriterion — criterion for evaluating task completion (AD 4.2).
-type AcceptanceCriterion struct {
-	ID          string `json:"id"` // "ac_1", "ac_2", ...
-	Description string `json:"description"`
-	CheckType   string `json:"check_type"` // "programmatic" | "llm_judge"
-	CheckCmd    string `json:"check_cmd"`  // for programmatic: "go test ./..."
-	StepHint    string `json:"step_hint"`  // optional hint for Planner
-}
+// Type alias for sdk/orchestration.Criterion.
+type AcceptanceCriterion = orchestration.Criterion
 
 // RawCriterion — domain-agnostic criterion extracted before routing (Phase 1 of two-phase AC).
 type RawCriterion struct {
@@ -173,28 +216,12 @@ type RawCriterion struct {
 }
 
 // Plan — DAG of execution steps (AD 4.3).
-type Plan struct {
-	Steps []PlanStep `json:"steps"`
-}
+// Type alias for sdk/orchestration.Plan.
+type Plan = orchestration.Plan
 
 // PlanStep — single step in the plan (AD 4.3).
-type PlanStep struct {
-	ID             string        `json:"id"` // "step_1", "step_2a", ...
-	Description    string        `json:"description"`
-	DependsOn      []string      `json:"depends_on"`
-	Parallelizable bool          `json:"parallelizable"`
-	EstimatedTools []string      `json:"estimated_tools"`
-	RelevantAC     []string      `json:"relevant_ac"`             // IDs of related AcceptanceCriteria
-	AgentProfile   *AgentProfile `json:"agent_profile,omitempty"` // optional specialization
-}
-
-// CompletedStep — result of an executed plan step (AD 4.7).
-type CompletedStep struct {
-	StepID string `json:"step_id"`
-	Output string `json:"output"`
-	Error  error  `json:"-"`               // not serialized
-	Steps  []Step `json:"steps,omitempty"` // actual executor steps for evaluator evidence
-}
+// Type alias for sdk/orchestration.PlanStep.
+type PlanStep = orchestration.PlanStep
 
 // ExecutorConfig — configuration for the Executor (AD 4.4).
 type ExecutorConfig struct {
@@ -210,41 +237,9 @@ type TaskDefinition struct {
 	Tools    []tools.ToolDescriptor `json:"tools"`
 }
 
-// EvalResult — result of Evaluator checking AC (AD 4.5).
-type EvalResult struct {
-	Passed    []EvalDetail `json:"passed"`
-	Failed    []EvalDetail `json:"failed"`
-	Unclear   []EvalDetail `json:"unclear"`
-	AllPassed bool         `json:"all_passed"`
-}
-
-// EvalDetail — detail for a single AC evaluation (AD 4.5).
-type EvalDetail struct {
-	Criterion          AcceptanceCriterion `json:"criterion"`
-	Diagnostic         string              `json:"diagnostic"`
-	Reconsidered       bool                `json:"reconsidered,omitempty"`
-	OriginalDiagnostic string              `json:"original_diagnostic,omitempty"`
-}
-
-// IntentVerification holds the result of Tier 2 intent-based verification.
-type IntentVerification struct {
-	Passed   bool   `json:"passed"`
-	Feedback string `json:"feedback"` // structured explanation for replan/reflector
-	Steps    []Step `json:"steps"`    // verification steps taken (for audit trail)
-}
-
 // Reflection — result of Reflector analysis (AD 4.6).
-type Reflection struct {
-	Summary         string    `json:"summary"`          // brief summary of what happened
-	FailedCriteria  []string  `json:"failed_criteria"`  // IDs of failed acceptance criteria
-	Hypotheses      []string  `json:"hypotheses"`       // what might have gone wrong
-	SuggestedAction string    `json:"suggested_action"` // "retry" | "replan" | "abort"
-	Reasoning       string    `json:"reasoning"`        // explanation for the suggested action
-	FailureAnalysis string    `json:"failure_analysis"` // detailed failure analysis
-	RootCause       string    `json:"root_cause"`       // identified root cause
-	ActionPlan      string    `json:"action_plan"`      // what to do differently
-	Timestamp       time.Time `json:"timestamp"`
-}
+// Type alias for sdk/orchestration.Reflection.
+type Reflection = orchestration.Reflection
 
 // AgentProfile defines a specialized agent role for plan step execution.
 type AgentProfile struct {

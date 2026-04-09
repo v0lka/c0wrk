@@ -16,6 +16,7 @@ import (
 	// SDK layer
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/tools/builtins"
 
 	// Core layer
@@ -542,7 +543,7 @@ func (a *App) Startup(ctx context.Context) {
 		}
 
 		// Create IntentVerifier (Tier 2 intent-based evaluation)
-		caller := core.NewTokenTrackingCaller(newLLMRouter, emitter)
+		caller := orchestration.NewTokenTrackingCaller(newLLMRouter, emitter)
 		intentVerifier := core.NewIntentVerifier(
 			caller,
 			registry.ToolRegistry,

@@ -391,7 +391,7 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 				"parallelizable": true,
 				"estimated_tools": ["web_search", "file_read"],
 				"relevant_ac": ["ac_1"],
-				"agent_profile": {
+				"profile": {
 					"role": "researcher",
 					"allowed_tools": ["web_search", "web_fetch", "bash_exec"]
 				}
@@ -423,16 +423,26 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 	}
 
 	step := plan.Steps[0]
-	if step.AgentProfile == nil {
-		t.Fatal("expected AgentProfile to be non-nil")
+	if step.Profile == nil {
+		t.Fatal("expected Profile to be non-nil")
 	}
 
-	if step.AgentProfile.Role != "researcher" {
-		t.Errorf("expected role 'researcher', got %q", step.AgentProfile.Role)
+	// Profile unmarshals as map[string]any from JSON since it's typed as `any`.
+	profileMap, ok := step.Profile.(map[string]any)
+	if !ok {
+		t.Fatalf("expected Profile to be map[string]any, got %T", step.Profile)
 	}
 
-	if len(step.AgentProfile.AllowedTools) != 3 {
-		t.Errorf("expected 3 allowed tools, got %d", len(step.AgentProfile.AllowedTools))
+	if profileMap["role"] != "researcher" {
+		t.Errorf("expected role 'researcher', got %q", profileMap["role"])
+	}
+
+	allowedTools, ok := profileMap["allowed_tools"].([]any)
+	if !ok {
+		t.Fatalf("expected allowed_tools to be []any, got %T", profileMap["allowed_tools"])
+	}
+	if len(allowedTools) != 3 {
+		t.Errorf("expected 3 allowed tools, got %d", len(allowedTools))
 	}
 }
 
@@ -474,8 +484,8 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 	}
 
 	step := plan.Steps[0]
-	if step.AgentProfile != nil {
-		t.Error("expected AgentProfile to be nil when not provided in JSON")
+	if step.Profile != nil {
+		t.Error("expected Profile to be nil when not provided in JSON")
 	}
 }
 

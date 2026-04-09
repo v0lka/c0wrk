@@ -8,8 +8,12 @@ import (
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/tools"
 )
+
+// compile-time check: IntentVerifier implements orchestration.Verifier.
+var _ orchestration.Verifier = (*IntentVerifier)(nil)
 
 // readOnlyToolWhitelist defines the tools that the intent verifier is allowed to use.
 // file_ops is included because the verifier's system prompt restricts it to read-only
