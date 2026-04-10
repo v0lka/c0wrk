@@ -246,6 +246,12 @@ func (m *mockEmitter) TokensUsed(_, _ int)                          {}
 func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string) {}
 func (m *mockEmitter) Service(_ string)                             {}
 func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
+func (m *mockEmitter) EvaluationError(_ error)                      {}
+func (m *mockEmitter) ReplanFailed(_ error)                         {}
+func (m *mockEmitter) FileRollbackError(_ string, _ error)                {}
+func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
+func (m *mockEmitter) EvalStepStart(_, _ string)                   {}
+func (m *mockEmitter) EvalStepComplete(_ string, _ bool, _ time.Duration) {}
 
 // routerCallTracker helps track the three-phase AC extraction flow in tests.
 // It distinguishes between:
@@ -311,7 +317,7 @@ func detectCallType(req llm.ChatRequest) string {
 				return "enrich"
 			}
 			// Batch evaluator uses "acceptance-criteria evaluation agent" in system prompt
-			if strings.Contains(msg.Content, "acceptance-criteria evaluation agent") {
+			if strings.Contains(msg.Content, "acceptance-criteria evaluation agent") || strings.Contains(msg.Content, "acceptance-criterion evaluation agent") {
 				return "evaluator_judge"
 			}
 		}

@@ -5,15 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolFileopsDescription = "File system operations: read, write, edit, list, search, create/delete directories, delete files"
+const toolFileopsDescription = `Perform file system operations: read, write, edit, list, search files, and manage directories. The action parameter selects the operation. Key behaviors: edit_file performs find-and-replace where old_string must appear exactly once in the file (fails if not found or if ambiguous). write_file creates parent directories automatically. search_content matches a regex across all files under the given path (max 100 results). For bulk file-name searches prefer the glob tool; for content searches with richer options prefer ripgrep.`
 
 // FileOpsTool provides file system operations: read, write, edit, list, search.
 type FileOpsTool struct {
@@ -32,31 +34,31 @@ func NewFileOpsTool() *FileOpsTool {
 			},
 			"path": {
 				"type": "string",
-				"description": "File or directory path"
+				"description": "Absolute or relative file/directory path for the operation"
 			},
 			"content": {
 				"type": "string",
-				"description": "Content to write (for write_file action)"
+				"description": "Content to write (used with write_file). Parent directories are created automatically."
 			},
 			"old_string": {
 				"type": "string",
-				"description": "String to find and replace (for edit_file action)"
+				"description": "Exact string to find (used with edit_file). Must appear exactly once in the file or the operation fails."
 			},
 			"new_string": {
 				"type": "string",
-				"description": "Replacement string (for edit_file action)"
+				"description": "Replacement string (used with edit_file). Replaces the single occurrence of old_string."
 			},
 			"pattern": {
 				"type": "string",
-				"description": "Glob pattern for file search (for search_files action)"
+				"description": "Glob pattern to match file names, e.g. *.go (used with search_files)"
 			},
 			"regex": {
 				"type": "string",
-				"description": "Regular expression pattern (for search_content action)"
+				"description": "Regular expression pattern to match file contents (used with search_content). Returns up to 100 matches."
 			},
 			"recursive": {
 				"type": "boolean",
-				"description": "If true, recursively delete directory contents (for delete_directory action)"
+				"description": "If true, recursively delete all directory contents (used with delete_directory). Required for non-empty directories."
 			}
 		},
 		"required": ["action", "path"]
@@ -159,9 +161,9 @@ func (t *FileOpsTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	case "read_file":
 		return t.readFile(params.Path)
 	case "write_file":
-		return t.writeFile(params.Path, params.Content)
+		return t.writeFile(ctx, params.Path, params.Content)
 	case "edit_file":
-		return t.editFile(params.Path, params.OldString, params.NewString)
+		return t.editFile(ctx, params.Path, params.OldString, params.NewString)
 	case "list_directory":
 		return t.listDirectory(params.Path)
 	case "search_files":
@@ -171,9 +173,9 @@ func (t *FileOpsTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	case "create_directory":
 		return t.createDirectory(params.Path)
 	case "delete_directory":
-		return t.deleteDirectory(params.Path, params.Recursive)
+		return t.deleteDirectory(ctx, params.Path, params.Recursive)
 	case "delete_file":
-		return t.deleteFile(params.Path)
+		return t.deleteFile(ctx, params.Path)
 	default:
 		return tools.ToolResult{Content: "unknown action: " + params.Action, IsError: true}, nil
 	}
@@ -189,7 +191,14 @@ func (t *FileOpsTool) readFile(path string) (tools.ToolResult, error) {
 }
 
 // writeFile writes content to a file, creating parent directories if needed.
-func (t *FileOpsTool) writeFile(path, content string) (tools.ToolResult, error) {
+func (t *FileOpsTool) writeFile(ctx context.Context, path, content string) (tools.ToolResult, error) {
+	tracker := agent.FileTrackerFromContext(ctx)
+	if tracker != nil {
+		tracker.AcquireFileLock(path)
+		defer tracker.ReleaseFileLock(path)
+		tracker.RecordBeforeWrite(ctx, path)
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to create directories: %v", err), IsError: true}, nil
@@ -199,11 +208,22 @@ func (t *FileOpsTool) writeFile(path, content string) (tools.ToolResult, error) 
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
 	}
 
+	if tracker != nil {
+		tracker.RecordAfterWrite(ctx, path)
+	}
+
 	return tools.ToolResult{Content: fmt.Sprintf("successfully wrote %d bytes to %s", len(content), path), IsError: false}, nil
 }
 
 // editFile performs ACI-style find-and-replace in a file.
-func (t *FileOpsTool) editFile(path, oldString, newString string) (tools.ToolResult, error) {
+func (t *FileOpsTool) editFile(ctx context.Context, path, oldString, newString string) (tools.ToolResult, error) {
+	tracker := agent.FileTrackerFromContext(ctx)
+	if tracker != nil {
+		tracker.AcquireFileLock(path)
+		defer tracker.ReleaseFileLock(path)
+		tracker.RecordBeforeWrite(ctx, path)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil
@@ -224,6 +244,10 @@ func (t *FileOpsTool) editFile(path, oldString, newString string) (tools.ToolRes
 
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
+	}
+
+	if tracker != nil {
+		tracker.RecordAfterWrite(ctx, path)
 	}
 
 	return tools.ToolResult{Content: "successfully edited file", IsError: false}, nil
@@ -351,13 +375,26 @@ func (t *FileOpsTool) createDirectory(path string) (tools.ToolResult, error) {
 }
 
 // deleteDirectory deletes a directory. If recursive is true, it removes all contents.
-func (t *FileOpsTool) deleteDirectory(path string, recursive bool) (tools.ToolResult, error) {
+func (t *FileOpsTool) deleteDirectory(ctx context.Context, path string, recursive bool) (tools.ToolResult, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to stat path: %v", err), IsError: true}, nil
 	}
 	if !info.IsDir() {
 		return tools.ToolResult{Content: "path is not a directory", IsError: true}, nil
+	}
+
+	tracker := agent.FileTrackerFromContext(ctx)
+	if tracker != nil {
+		_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil || d.IsDir() {
+				return walkErr
+			}
+			tracker.AcquireFileLock(p)
+			tracker.RecordDelete(ctx, p)
+			tracker.ReleaseFileLock(p)
+			return nil
+		})
 	}
 
 	if recursive {
@@ -374,13 +411,20 @@ func (t *FileOpsTool) deleteDirectory(path string, recursive bool) (tools.ToolRe
 }
 
 // deleteFile deletes a single file. Returns an error if the path is a directory.
-func (t *FileOpsTool) deleteFile(path string) (tools.ToolResult, error) {
+func (t *FileOpsTool) deleteFile(ctx context.Context, path string) (tools.ToolResult, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to stat path: %v", err), IsError: true}, nil
 	}
 	if info.IsDir() {
 		return tools.ToolResult{Content: "path is a directory, use delete_directory instead", IsError: true}, nil
+	}
+
+	tracker := agent.FileTrackerFromContext(ctx)
+	if tracker != nil {
+		tracker.AcquireFileLock(path)
+		defer tracker.ReleaseFileLock(path)
+		tracker.RecordDelete(ctx, path)
 	}
 
 	if err := os.Remove(path); err != nil {

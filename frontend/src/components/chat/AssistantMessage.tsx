@@ -13,6 +13,7 @@ import hljs from 'highlight.js/lib/core'
 import markdown from 'highlight.js/lib/languages/markdown'
 import { Code, Eye } from 'lucide-react'
 import { customSchema, markdownComponents } from '@/lib/markdownConfig'
+import { logger } from '@/lib/logger'
 
 // Register markdown language for raw mode highlighting
 hljs.registerLanguage('markdown', markdown)
@@ -36,7 +37,7 @@ class MarkdownErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('Markdown render error:', error, info)
+    logger.error('Markdown render error:', error, info)
   }
 
   render() {

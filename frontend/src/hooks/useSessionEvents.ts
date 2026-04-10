@@ -52,6 +52,14 @@ function isPlanStepCompleteData(data: unknown): data is PlanStepCompleteData {
   return typeof data === 'object' && data !== null && 'step_id' in data && 'success' in data
 }
 
+function isEvalStepStartData(data: unknown): data is { criterion_id: string; description: string } {
+  return typeof data === 'object' && data !== null && 'criterion_id' in data
+}
+
+function isEvalStepCompleteData(data: unknown): data is { criterion_id: string; success: boolean; duration: number } {
+  return typeof data === 'object' && data !== null && 'criterion_id' in data && 'success' in data
+}
+
 function isAssistantChunkData(data: unknown): data is AssistantChunkData {
   return typeof data === 'object' && data !== null && ('content' in data || 'accumulated_content' in data)
 }
@@ -369,6 +377,37 @@ export function useSessionEvents(sessionId: string | null) {
         type: 'plan_step_complete',
         content: '',
         metadata: { step_id: stepData.step_id, success: stepData.success, duration: stepData.duration },
+        timestamp: Date.now(),
+      })
+    })
+
+    on('eval_step_start', (data: unknown) => {
+      if (!mounted) return
+      if (!isEvalStepStartData(data)) return
+      const evalData = data
+      if (isActiveSession()) useChatStore.getState().setActivityStatus(`Evaluating: ${evalData.description || 'criterion'}...`)
+      // Add to chat messages for eval step containers
+      useChatStore.getState().addMessage(sessionId, {
+        id: `eval-step-start-${evalData.criterion_id}-${Date.now()}`,
+        sessionId,
+        type: 'eval_step_start',
+        content: evalData.description || '',
+        metadata: { criterion_id: evalData.criterion_id, description: evalData.description },
+        timestamp: Date.now(),
+      })
+    })
+
+    on('eval_step_complete', (data: unknown) => {
+      if (!mounted) return
+      if (!isEvalStepCompleteData(data)) return
+      const evalData = data
+      // Add to chat messages for eval step lifecycle
+      useChatStore.getState().addMessage(sessionId, {
+        id: `eval-step-complete-${evalData.criterion_id}-${Date.now()}`,
+        sessionId,
+        type: 'eval_step_complete',
+        content: '',
+        metadata: { criterion_id: evalData.criterion_id, success: evalData.success, duration: evalData.duration },
         timestamp: Date.now(),
       })
     })

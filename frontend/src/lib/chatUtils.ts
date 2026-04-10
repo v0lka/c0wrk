@@ -17,11 +17,18 @@ export const roleToType: Record<string, MessageType> = {
   step_done: 'step_done',
   plan_step_start: 'plan_step_start',
   plan_step_complete: 'plan_step_complete',
+  eval_step_start: 'eval_step_start',
+  eval_step_complete: 'eval_step_complete',
   retry: 'retry',
   step_retry: 'step_retry',
   ac_extracted: 'ac_extracted',
   subagent_launch: 'subagent_launch',
   subagent_complete: 'subagent_complete',
+  tool_confirm: 'tool_confirm',
+  ask_user: 'ask_user',
+  task_cancelled: 'error',
+  status: 'status',
+  task_resumed: 'task_resumed',
 }
 
 // Reconstruct human-readable content from metadata to match what live events produce.
@@ -70,6 +77,14 @@ function reconstructContent(
       // Live path uses empty content
       return ''
     }
+    case 'eval_step_start': {
+      const desc = meta.description as string | undefined
+      return desc || ''
+    }
+    case 'eval_step_complete': {
+      // Live path uses empty content
+      return ''
+    }
     case 'plan': {
       // Live path uses empty content
       return ''
@@ -104,6 +119,27 @@ function reconstructContent(
     case 'subagent_launch': {
       const desc = meta.description as string | undefined
       if (desc) return `SubAgent: ${desc}`
+      return rawContent
+    }
+    case 'tool_confirm': {
+      const tool = meta.tool as string | undefined
+      if (tool) return `Confirm: ${tool}`
+      return rawContent
+    }
+    case 'ask_user': {
+      const question = meta.question as string | undefined
+      if (question) return question
+      return rawContent
+    }
+    case 'task_cancelled': {
+      return 'Task was cancelled'
+    }
+    case 'status': {
+      const content = meta.content as string | undefined
+      if (content) return content
+      return rawContent
+    }
+    case 'task_resumed': {
       return rawContent
     }
     // For these types, rawContent from DB is fine as-is:
@@ -161,6 +197,14 @@ function buildHistoryId(
       const stepId = meta.step_id as string | undefined
       return stepId ? `plan-step-complete-${stepId}-${timestamp}` : `history-${dbId}`
     }
+    case 'eval_step_start': {
+      const criterionId = meta.criterion_id as string | undefined
+      return criterionId ? `eval-step-start-${criterionId}-${timestamp}` : `history-${dbId}`
+    }
+    case 'eval_step_complete': {
+      const criterionId = meta.criterion_id as string | undefined
+      return criterionId ? `eval-step-complete-${criterionId}-${timestamp}` : `history-${dbId}`
+    }
     case 'retry':
       return `retry-${timestamp}`
     case 'step_retry':
@@ -179,6 +223,20 @@ function buildHistoryId(
       return `assistant-${timestamp}`
     case 'error':
       return `error-${timestamp}`
+    case 'task_cancelled':
+      return `cancelled-${timestamp}`
+    case 'tool_confirm': {
+      const confirmId = meta.confirm_id as string | undefined
+      return confirmId ? `tool-confirm-${confirmId}` : `history-${dbId}`
+    }
+    case 'ask_user': {
+      const requestId = meta.request_id as string | undefined
+      return requestId ? `ask-user-${requestId}` : `history-${dbId}`
+    }
+    case 'status':
+      return `status-${timestamp}`
+    case 'task_resumed':
+      return `task-resumed-${timestamp}`
     default:
       return `history-${dbId}`
   }

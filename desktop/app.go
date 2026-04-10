@@ -107,7 +107,7 @@ func loadShellEnvironment() {
 
 // llmTitleCaller adapts the LLM router to the session.LLMTitleCaller interface.
 type llmTitleCaller struct {
-	router *llm.LLMRouter
+	router *llm.Router
 }
 
 func (c *llmTitleCaller) GenerateTitle(ctx context.Context, userMessage string) (string, error) {
@@ -141,9 +141,9 @@ type App struct {
 	configMu   sync.RWMutex // protects config and config-related state
 	configPath string
 
-	llmRouter    *llm.LLMRouter
+	llmRouter    *llm.Router
 	toolRegistry *tools.ToolRegistry
-	mcpGateway   *mcp.MCPGateway
+	mcpGateway   *mcp.Gateway
 
 	sessionLogger *logger.SessionLogger
 	logLevel      string
@@ -155,6 +155,8 @@ type App struct {
 
 	pendingConfirmations sync.Map
 	pendingAskUser       sync.Map
+
+	envInfo *tools.EnvInfo
 
 	watcher        *workspace.Watcher
 	projectManager *project.Manager

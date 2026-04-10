@@ -8,6 +8,14 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
+// FileChange represents a filesystem modification made by an agent step.
+type FileChange struct {
+	Path      string // relative path from workspace root
+	Operation string // "CREATE", "MODIFY", "DELETE"
+	Diff      string // unified diff for MODIFY, empty for CREATE/DELETE
+	SizeBytes int64  // size of resulting file (0 for DELETE)
+}
+
 // Step — single iteration of the ReAct loop.
 type Step struct {
 	Thought     string       `json:"thought"`

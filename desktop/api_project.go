@@ -58,7 +58,7 @@ func (a *App) RenameProject(id, name string) error {
 		return errors.New("project subsystem not initialized")
 	}
 	if err := a.projectManager.RenameProject(id, name); err != nil {
-		return err
+		return fmt.Errorf("failed to rename project: %w", err)
 	}
 	wailsRuntime.EventsEmit(a.ctx, "project:renamed", map[string]string{"id": id, "name": name})
 	return nil

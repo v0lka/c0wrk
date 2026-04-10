@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/tools"
@@ -54,7 +55,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userMessage string, criteria
 	// 1. Create blackboard
 	var bb Blackboard
 	if o.cfg.StateFactory != nil {
-		bb = o.cfg.StateFactory("task")
+		bb = o.cfg.StateFactory(uuid.New().String())
 	} else {
 		bb = NewMapBlackboard()
 	}
@@ -62,6 +63,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userMessage string, criteria
 	bb.SetCriteria(criteria)
 
 	// 2. Extract criteria (optional)
+	o.events.OnServiceMeta("extracting criteria", map[string]any{"hasCriteriaExtractor": o.cfg.Criteria != nil, "existingCriteria": len(criteria)})
 	if o.cfg.Criteria != nil && len(criteria) == 0 {
 		extracted, err := o.cfg.Criteria.Extract(ctx, userMessage)
 		if err != nil {
@@ -71,10 +73,12 @@ func (o *Orchestrator) Execute(ctx context.Context, userMessage string, criteria
 		bb.SetCriteria(criteria)
 		o.events.OnCriteriaExtracted(len(criteria), buildEvalCriterionEventsFromCriteria(criteria))
 	}
+	o.events.OnServiceMeta("criteria ready", map[string]any{"count": len(criteria)})
 
 	// Get available tools
 	availableTools := o.availableTools()
 
+	o.events.OnServiceMeta("starting plan-execute loop", map[string]any{"tools": len(availableTools)})
 	return o.runPlanExecute(ctx, userMessage, criteria, availableTools, nil, bb, nil, nil)
 }
 
@@ -141,10 +145,12 @@ func (o *Orchestrator) runPlanExecute(
 	var preCompleted map[string]CompletedStep
 
 	if initialPlan != nil {
+		o.events.OnServiceMeta("resuming with existing plan", map[string]any{"steps": len(initialPlan.Steps), "preCompleted": len(initialPreCompleted)})
 		currentPlan = initialPlan
 		preCompleted = initialPreCompleted
 	} else {
 		// Generate a new plan
+		o.events.OnServiceMeta("creating new plan", nil)
 		o.events.OnServiceMeta("Creating execution plan...", map[string]any{"phase": "orchestration"})
 		plan, err := o.cfg.Planner.Plan(ctx, userMessage, criteria, availableTools, sessionReflections)
 		if err != nil {
@@ -169,6 +175,12 @@ func (o *Orchestrator) runPlanExecute(
 
 	sharedWS := agent.NewSharedWorkspace()
 
+	// Create file change tracker for artifact tracking and rollback
+	var tracker *agent.FileChangeTracker
+	if workspaceRoot := tools.WorkspacePathFrom(ctx); workspaceRoot != "" {
+		tracker = agent.NewFileChangeTracker(workspaceRoot)
+	}
+
 	// Retry loop
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
 		if attempt > 0 {
@@ -176,7 +188,9 @@ func (o *Orchestrator) runPlanExecute(
 		}
 
 		// Execute the current plan
-		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, criteria, availableTools, preCompleted, sharedWS, userMessage, stepRetryContext, bb, sessionReflections)
+		o.events.OnServiceMeta("executing plan", map[string]any{"steps": len(currentPlan.Steps), "preCompleted": len(preCompleted)})
+		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, criteria, availableTools, preCompleted, sharedWS, tracker, userMessage, stepRetryContext, bb, sessionReflections)
+		o.events.OnServiceMeta("plan execution finished", map[string]any{"completedSteps": len(completedSteps), "hasError": execErr != nil})
 		sessionReflections = updatedReflections
 		lastOutput = finalOutput
 		prevCompletedSteps := completedSteps
@@ -212,12 +226,14 @@ func (o *Orchestrator) runPlanExecute(
 		}
 
 		// Evaluate (optional)
+		o.events.OnServiceMeta("starting evaluation", map[string]any{"hasCriteria": len(criteria) > 0, "hasEvaluator": o.cfg.Evaluation != nil})
 		var evalResult *EvalResult
 		switch {
 		case o.cfg.Evaluation != nil && len(criteria) > 0:
 			o.events.OnServiceMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
 			er, evalErr := o.cfg.Evaluation.Evaluate(ctx, finalOutput, criteria, bb)
 			if evalErr != nil {
+				o.events.OnEvaluationError(evalErr)
 				return result, nil //nolint:nilerr // evaluation failure is non-fatal
 			}
 			evalResult = er
@@ -256,10 +272,12 @@ func (o *Orchestrator) runPlanExecute(
 
 		// Success
 		if evalResult.AllPassed {
+			o.events.OnServiceMeta("all criteria passed", nil)
 			return result, nil
 		}
 
 		// Failure with retries remaining
+		o.events.OnServiceMeta("criteria not met", map[string]any{"attempt": attempt + 1, "retriesRemaining": o.maxRetries - attempt})
 		if attempt < o.maxRetries {
 			if o.cfg.Reflection != nil {
 				syntheticSteps := BuildPlanExecutionSteps(completedSteps, currentPlan)
@@ -281,14 +299,17 @@ func (o *Orchestrator) runPlanExecute(
 				bb.AddReflection(*reflection)
 
 				if reflection.SuggestedAction == "replan" {
+					o.events.OnServiceMeta("replanning after reflection", nil)
 					var failedStep CompletedStep
 					if len(completedSteps) > 0 {
 						failedStep = completedSteps[len(completedSteps)-1]
 					}
 					newPlan, replanErr := o.cfg.Planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, criteria, sessionReflections)
 					if replanErr != nil {
+						o.events.OnReplanFailed(replanErr)
 						continue
 					}
+					o.events.OnServiceMeta("replan succeeded", map[string]any{"newSteps": len(newPlan.Steps), "carryForward": len(BuildCarryForward(prevCompletedSteps, newPlan))})
 					currentPlan = newPlan
 					bb.SetPlan(currentPlan)
 					preCompleted = BuildCarryForward(prevCompletedSteps, newPlan)
@@ -317,7 +338,12 @@ func (o *Orchestrator) runPlanExecute(
 		}
 	}
 
-	// Max retries exhausted
+	// Max retries exhausted — rollback all file changes
+	if tracker != nil {
+		if rbErr := tracker.RollbackAll(); rbErr != nil {
+			o.events.OnFileRollbackError("", rbErr)
+		}
+	}
 	bb.SetFinalResult(lastOutput)
 	result := &ExecutionResult{
 		Output:       lastOutput,
@@ -342,6 +368,7 @@ func (o *Orchestrator) executePlanWithSteps(
 	availableTools []tools.ToolDescriptor,
 	preCompleted map[string]CompletedStep,
 	sharedWS *agent.SharedWorkspace,
+	tracker *agent.FileChangeTracker,
 	userMessage, retryContext string,
 	bb Blackboard,
 	sessionReflections []Reflection,
@@ -360,9 +387,17 @@ func (o *Orchestrator) executePlanWithSteps(
 
 	for {
 		readySteps := FindReadySteps(plan, completedSteps)
+		o.events.OnServiceMeta("finding ready steps", map[string]any{"ready": len(readySteps), "completed": len(completedSteps), "total": len(plan.Steps)})
 		if len(readySteps) == 0 {
+			o.events.OnServiceMeta("all steps complete", nil)
 			break
 		}
+
+		readyIDs := make([]string, len(readySteps))
+		for i, s := range readySteps {
+			readyIDs[i] = s.ID
+		}
+		o.events.OnServiceMeta("ready steps identified", map[string]any{"stepIDs": readyIDs})
 
 		tasks := make([]agent.SubAgentTask, 0, len(readySteps))
 		stepStartTimes := make(map[string]time.Time)
@@ -421,7 +456,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			}
 			
 			scopedEvents := o.scopeEvents(step.ID)
-			executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, nil, scopedEvents, true, o.cfg.ToolResultBudget)
+			executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 
 			tasks = append(tasks, agent.SubAgentTask{
@@ -436,13 +471,21 @@ func (o *Orchestrator) executePlanWithSteps(
 		
 		// Inject SharedWorkspace into context so tools can access step outputs
 		ctx = agent.WithSharedWorkspace(ctx, sharedWS)
-		
+
+		// Inject file change tracker into context so tools can record file operations
+		if tracker != nil {
+			ctx = agent.WithFileTracker(ctx, tracker)
+		}
+
+		o.events.OnServiceMeta("dispatching parallel execution", map[string]any{"taskCount": len(tasks)})
 		results := agent.RunSubAgentsParallel(ctx, tasks)
 		var failedSteps []string
 		for _, r := range results {
-			o.events.OnStepCompleted(r.StepID, r.Error == nil, time.Since(stepStartTimes[r.StepID]))
+			duration := time.Since(stepStartTimes[r.StepID])
+			o.events.OnStepCompleted(r.StepID, r.Error == nil, duration)
 
 			if sharedWS != nil && r.Error == nil {
+				o.events.OnServiceMeta("storing step output", map[string]any{"stepID": r.StepID})
 				sharedWS.Store(r.StepID+"/output", r.Output, r.StepID)
 			}
 
@@ -456,6 +499,14 @@ func (o *Orchestrator) executePlanWithSteps(
 			completedList = append(completedList, cs)
 			bb.SetStepResult(r.StepID, r.Output, r.Error, r.Steps)
 
+			// Collect file changes from tracker
+			if tracker != nil {
+				fileChanges := tracker.GetStepChanges(r.StepID)
+				if len(fileChanges) > 0 {
+					bb.SetStepFileChanges(r.StepID, fileChanges)
+				}
+			}
+
 			if r.Error != nil {
 				failedSteps = append(failedSteps, r.StepID)
 			}
@@ -463,6 +514,7 @@ func (o *Orchestrator) executePlanWithSteps(
 
 		// Per-step retry loop for failed steps
 		if len(failedSteps) > 0 {
+			o.events.OnServiceMeta("per-step retries starting", map[string]any{"failedSteps": failedSteps})
 			for _, failedStepID := range failedSteps {
 				// Find the failed step in the plan
 				var failedPlanStep PlanStep
@@ -515,6 +567,13 @@ func (o *Orchestrator) executePlanWithSteps(
 						}
 					}
 
+					// Rollback file changes from the failed step before retrying
+					if tracker != nil {
+						if rbErr := tracker.RollbackStep(failedStepID); rbErr != nil {
+							o.events.OnFileRollbackError(failedStepID, rbErr)
+						}
+					}
+					
 					// Re-execute the failed step
 					stepIndex := o.findStepIndex(plan, failedStepID)
 					stepCfg := o.resolveStepConfig(failedPlanStep, availableTools)
@@ -559,7 +618,7 @@ func (o *Orchestrator) executePlanWithSteps(
 						o.cfg.ContextSetup(cm, taskDef.task, taskDef.criteria)
 					}
 
-					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, nil, scopedEvents, true, o.cfg.ToolResultBudget)
+					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
 					executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
 
 					retryTask := agent.SubAgentTask{
@@ -602,6 +661,15 @@ func (o *Orchestrator) executePlanWithSteps(
 								}
 							}
 							bb.SetStepResult(rr.StepID, rr.Output, nil, rr.Steps)
+							
+							// Collect file changes from retry
+							if tracker != nil {
+								retryChanges := tracker.GetStepChanges(rr.StepID)
+								if len(retryChanges) > 0 {
+									bb.SetStepFileChanges(rr.StepID, retryChanges)
+								}
+							}
+							
 							break stepRetryLoop // success, continue to next ready steps
 						}
 						// Step still failed, update the completedSteps with new error
@@ -619,6 +687,15 @@ func (o *Orchestrator) executePlanWithSteps(
 							}
 						}
 						bb.SetStepResult(rr.StepID, rr.Output, rr.Error, rr.Steps)
+
+						// Collect file changes from failed retry
+						if tracker != nil {
+							retryChanges := tracker.GetStepChanges(rr.StepID)
+							if len(retryChanges) > 0 {
+								bb.SetStepFileChanges(rr.StepID, retryChanges)
+							}
+						}
+
 						// Continue to next retry attempt
 					}
 				}
@@ -634,6 +711,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			}
 		}
 		if stillFailed {
+			o.events.OnServiceMeta("steps still failed after retries, escalating", nil)
 			break // escalate to outer loop
 		}
 	}

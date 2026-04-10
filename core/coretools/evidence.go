@@ -31,7 +31,7 @@ func BlackboardFromContext(ctx context.Context) core.Blackboard {
 // evidenceTool — read_evidence tool implementation
 // ---------------------------------------------------------------------------
 
-const evidenceToolDescription = "Read evidence from the blackboard: fetch a full step result by ID, search across results, or list all available step summaries"
+const evidenceToolDescription = `Read execution evidence from the blackboard. Exactly one mode is active per call, resolved in priority order: step_id (fetch full step result) > query (search across all results) > file_changes (list all file modifications) > file_diff (get unified diff for a file) > list (default: show all step summaries). Use this to gather concrete evidence before reporting a verdict.`
 
 // evidenceTool implements tools.Tool for reading blackboard evidence.
 type evidenceTool struct {
@@ -39,21 +39,29 @@ type evidenceTool struct {
 }
 
 // NewEvidenceTool creates a new read_evidence tool instance.
-func NewEvidenceTool() *evidenceTool {
+func NewEvidenceTool() tools.Tool {
 	schema := `{
 	"type": "object",
 	"properties": {
 		"step_id": {
 			"type": "string",
-			"description": "Fetch the full result for a specific step ID"
+			"description": "Fetch the full result for a specific step by its ID, e.g. \"step_1\". Takes priority over other parameters."
 		},
 		"query": {
 			"type": "string",
-			"description": "Search across all step results for matching entries"
+			"description": "Search keyword or phrase to find across all step results. Ignored if step_id is provided."
 		},
 		"list": {
 			"type": "boolean",
-			"description": "List all available step summaries (default behavior when no other params given)"
+			"description": "Set to true to list all available step summaries. This is the default when no other parameters are given."
+		},
+		"file_changes": {
+			"type": "boolean",
+			"description": "Set to true to list all file changes (creates, modifications, deletions) made during task execution."
+		},
+		"file_diff": {
+			"type": "string",
+			"description": "Absolute file path to get a unified diff for, e.g. \"/path/to/file.go\". Shows what changed in that specific file."
 		}
 	}
 }`
@@ -69,9 +77,11 @@ func NewEvidenceTool() *evidenceTool {
 
 // evidenceInput represents the input parameters for the evidence tool.
 type evidenceInput struct {
-	StepID string `json:"step_id"`
-	Query  string `json:"query"`
-	List   bool   `json:"list"`
+	StepID      string `json:"step_id"`
+	Query       string `json:"query"`
+	List        bool   `json:"list"`
+	FileChanges bool   `json:"file_changes"`
+	FileDiff    string `json:"file_diff"`
 }
 
 // Execute reads evidence from the blackboard based on the input parameters.
@@ -95,6 +105,10 @@ func (t *evidenceTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return t.fetchStep(bb, params.StepID)
 	case params.Query != "":
 		return t.searchSteps(bb, params.Query)
+	case params.FileChanges:
+		return t.listFileChanges(bb)
+	case params.FileDiff != "":
+		return t.getFileDiff(bb, params.FileDiff)
 	default:
 		// list=true or no params at all → list summaries
 		return t.listSteps(bb)
@@ -169,6 +183,78 @@ func (t *evidenceTool) listSteps(bb core.Blackboard) (tools.ToolResult, error) {
 		fmt.Fprintf(&sb, "- %s [%s]: %s\n", sr.StepID, status, sr.Summary)
 	}
 	return tools.ToolResult{Content: sb.String(), IsError: false}, nil
+}
+
+// listFileChanges returns a formatted summary of all file changes in the session.
+func (t *evidenceTool) listFileChanges(bb core.Blackboard) (tools.ToolResult, error) {
+	changes := bb.GetSessionFileChanges()
+	if len(changes) == 0 {
+		return tools.ToolResult{Content: "No file changes recorded"}, nil
+	}
+
+	var b strings.Builder
+	b.WriteString("## File Changes Summary\n\n")
+
+	var created, modified, deleted int
+	for _, fc := range changes {
+		switch fc.Operation {
+		case "CREATE":
+			created++
+			fmt.Fprintf(&b, "- **CREATE**: %s (%d bytes)\n", fc.Path, fc.SizeBytes)
+		case "MODIFY":
+			modified++
+			added, removed := countDiffLines(fc.Diff)
+			fmt.Fprintf(&b, "- **MODIFY**: %s (+%d -%d lines)\n", fc.Path, added, removed)
+		case "DELETE":
+			deleted++
+			fmt.Fprintf(&b, "- **DELETE**: %s\n", fc.Path)
+		}
+	}
+
+	fmt.Fprintf(&b, "\nTotal: %d created, %d modified, %d deleted\n", created, modified, deleted)
+
+	return tools.ToolResult{Content: b.String()}, nil
+}
+
+// getFileDiff returns the diff for a specific file path.
+func (t *evidenceTool) getFileDiff(bb core.Blackboard, path string) (tools.ToolResult, error) {
+	changes := bb.GetSessionFileChanges()
+
+	for _, fc := range changes {
+		if fc.Path == path {
+			var b strings.Builder
+			fmt.Fprintf(&b, "## Diff: %s (%s)\n\n", fc.Path, fc.Operation)
+
+			switch fc.Operation {
+			case "MODIFY":
+				if fc.Diff != "" {
+					b.WriteString("```diff\n")
+					b.WriteString(fc.Diff)
+					b.WriteString("\n```\n")
+				}
+			case "CREATE":
+				fmt.Fprintf(&b, "New file created (%d bytes)\n", fc.SizeBytes)
+			case "DELETE":
+				b.WriteString("File was deleted\n")
+			}
+
+			return tools.ToolResult{Content: b.String()}, nil
+		}
+	}
+
+	return tools.ErrorResult("No changes found for file: %s", path), nil
+}
+
+// countDiffLines counts added and removed lines in a unified diff.
+func countDiffLines(diff string) (added, removed int) {
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			added++
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			removed++
+		}
+	}
+	return
 }
 
 // ---------------------------------------------------------------------------

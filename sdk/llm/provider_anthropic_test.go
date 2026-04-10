@@ -11,9 +11,9 @@ import (
 	"github.com/liushuangls/go-anthropic/v2"
 )
 
-// TestAnthropicProvider_ImplementsInterface verifies that AnthropicProvider implements LLMProvider.
+// TestAnthropicProvider_ImplementsInterface verifies that AnthropicProvider implements Provider.
 func TestAnthropicProvider_ImplementsInterface(t *testing.T) {
-	var _ LLMProvider = (*AnthropicProvider)(nil)
+	var _ Provider = (*AnthropicProvider)(nil)
 }
 
 // TestAnthropicProvider_NewRequiresAPIKey verifies that NewAnthropicProvider fails without an API key.
@@ -407,9 +407,9 @@ func TestAnthropicProvider_WrapError(t *testing.T) {
 
 	t.Run("plain error", func(t *testing.T) {
 		result := p.wrapError(errors.New("connection failed"))
-		var llmErr *LLMError
+		var llmErr *Error
 		if !errors.As(result, &llmErr) {
-			t.Fatal("expected *LLMError")
+			t.Fatal("expected *Error")
 		}
 		if llmErr.StatusCode != 0 {
 			t.Errorf("expected status 0, got %d", llmErr.StatusCode)

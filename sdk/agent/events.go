@@ -16,6 +16,11 @@ type AgentEvents interface {
 	AssistantDone(content string, inputTokens, outputTokens int)
 	TokensUsed(inputTokens, outputTokens int)
 	ContextFill(fillPercent float64, usedTokens, maxTokens int, status string, stepID string)
+
+	// ExecutorDiagnostic reports internal executor lifecycle events (nudges, circuit breakers,
+	// truncation, compaction errors, parse errors). The event parameter identifies
+	// what happened and details carries structured data.
+	ExecutorDiagnostic(stepNum int, event string, details map[string]any)
 }
 
 // NoopEvents is a no-op implementation of AgentEvents.
@@ -34,3 +39,4 @@ func (n *NoopEvents) AssistantChunk(_ string)                            {}
 func (n *NoopEvents) AssistantDone(_ string, _, _ int)                   {}
 func (n *NoopEvents) TokensUsed(_, _ int)                                {}
 func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)       {}
+func (*NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any)  {}

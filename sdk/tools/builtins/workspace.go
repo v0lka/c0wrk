@@ -10,9 +10,9 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolReadStepOutputDescription = "Read the complete output of a specific completed step by its ID. Use this when you need the full output from a dependency step that was only summarized in your task description."
+const toolReadStepOutputDescription = "Read the complete output of a specific completed step by its ID. Use this when the summary of a dependency step in your task description is insufficient and you need the full, untruncated result. Returns the raw text output exactly as the step produced it."
 
-const toolListStepOutputsDescription = "List all available step outputs with previews. Use this to discover what step outputs are available to read."
+const toolListStepOutputsDescription = "List all available step outputs with short previews (up to 200 characters each). Use this to discover which completed step results are available before fetching a specific one with read_step_output."
 
 // ReadStepOutputTool reads the full output of a completed step from SharedWorkspace.
 type ReadStepOutputTool struct {
@@ -29,7 +29,7 @@ func NewReadStepOutputTool() *ReadStepOutputTool {
 		"properties": {
 			"step_id": {
 				"type": "string",
-				"description": "The ID of the step whose output you want to read"
+				"description": "The ID of the completed step whose full output you want to read, e.g. \"step_1\""
 			}
 		},
 		"required": ["step_id"]

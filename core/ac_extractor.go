@@ -23,7 +23,7 @@ func NewACExtractor(caller LLMCaller) *ACExtractor {
 
 // ExtractRaw extracts domain-agnostic raw criteria from the user message (Phase 1).
 // This runs BEFORE the Router to provide structured context for routing decisions.
-func (e *ACExtractor) ExtractRaw(ctx context.Context, userMessage string) ([]RawCriterion, error) {
+func (ac *ACExtractor) ExtractRaw(ctx context.Context, userMessage string) ([]RawCriterion, error) {
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: prompts.RawACExtractorSystem},
@@ -31,7 +31,7 @@ func (e *ACExtractor) ExtractRaw(ctx context.Context, userMessage string) ([]Raw
 		},
 	}
 
-	resp, err := e.llm.Call(ctx, req)
+	resp, err := ac.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("raw AC extraction LLM call failed: %w", err)
 	}
@@ -44,8 +44,8 @@ func (e *ACExtractor) ExtractRaw(ctx context.Context, userMessage string) ([]Raw
 	return criteria, nil
 }
 
-// parseRawACJSON extracts and parses JSON from content into RawCriterion slice.
-func parseRawACJSON(content string) ([]RawCriterion, error) {
+// extractJSONContent strips markdown code fences and whitespace from LLM output.
+func extractJSONContent(content string) string {
 	content = strings.TrimSpace(content)
 
 	// Handle markdown code blocks
@@ -59,26 +59,28 @@ func parseRawACJSON(content string) ([]RawCriterion, error) {
 			content = strings.TrimSpace(content[start:end])
 		}
 	}
+	return content
+}
 
-	// Handle empty response
+// parseRawACJSON extracts and parses JSON from content into RawCriterion slice.
+func parseRawACJSON(content string) ([]RawCriterion, error) {
+	content = extractJSONContent(content)
 	if content == "" || content == "[]" {
 		return []RawCriterion{}, nil
 	}
-
 	var criteria []RawCriterion
 	if err := json.Unmarshal([]byte(content), &criteria); err != nil {
 		return nil, err
 	}
-
 	return criteria, nil
 }
 
 // Enrich transforms raw criteria into final AcceptanceCriteria using domain-specific logic (Phase 2).
 // This runs AFTER the Router, using the routing decision for domain-aware enrichment.
-func (e *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, routing *RoutingDecision) ([]AcceptanceCriterion, error) {
+func (ac *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, routing *RoutingDecision) ([]AcceptanceCriterion, error) {
 	// Fallback: when raw criteria are empty/nil, generate minimal criteria from routing context
 	if len(rawCriteria) == 0 {
-		return e.fallbackCriteria(routing), nil
+		return ac.fallbackCriteria(routing), nil
 	}
 
 	// Build context from routing decision and raw criteria
@@ -104,7 +106,7 @@ func (e *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, ro
 		},
 	}
 
-	resp, err := e.llm.Call(ctx, req)
+	resp, err := ac.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("AC enrichment LLM call failed: %w", err)
 	}
@@ -118,7 +120,7 @@ func (e *ACExtractor) Enrich(ctx context.Context, rawCriteria []RawCriterion, ro
 }
 
 // fallbackCriteria generates minimal acceptance criteria when raw extraction produced no results.
-func (e *ACExtractor) fallbackCriteria(routing *RoutingDecision) []AcceptanceCriterion {
+func (ac *ACExtractor) fallbackCriteria(routing *RoutingDecision) []AcceptanceCriterion {
 	// Generate minimal evaluable criteria
 	criteria := []AcceptanceCriterion{
 		{
@@ -139,31 +141,13 @@ func (e *ACExtractor) fallbackCriteria(routing *RoutingDecision) []AcceptanceCri
 
 // parseACJSON extracts and parses JSON from content, handling code blocks.
 func parseACJSON(content string) ([]AcceptanceCriterion, error) {
-	content = strings.TrimSpace(content)
-
-	// Handle markdown code blocks
-	if strings.HasPrefix(content, "```") {
-		// Find start of JSON
-		start := strings.Index(content, "[")
-		if start == -1 {
-			start = strings.Index(content, "\n") + 1
-		}
-		// Find end of code block
-		end := strings.LastIndex(content, "```")
-		if end > start {
-			content = strings.TrimSpace(content[start:end])
-		}
-	}
-
-	// Handle empty response
+	content = extractJSONContent(content)
 	if content == "" || content == "[]" {
 		return []AcceptanceCriterion{}, nil
 	}
-
 	var criteria []AcceptanceCriterion
 	if err := json.Unmarshal([]byte(content), &criteria); err != nil {
 		return nil, err
 	}
-
 	return criteria, nil
 }

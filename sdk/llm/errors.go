@@ -8,8 +8,8 @@ import (
 	"syscall"
 )
 
-// LLMError wraps provider errors with classification metadata.
-type LLMError struct {
+// Error wraps provider errors with classification metadata.
+type Error struct {
 	Provider   string // e.g. "openai", "anthropic", "gemini", "lmstudio"
 	StatusCode int    // HTTP status code (0 if not applicable, e.g. network error)
 	Retryable  bool   // whether this error is safe to retry
@@ -17,18 +17,18 @@ type LLMError struct {
 }
 
 // Error formats the error like "llm [provider] error (HTTP status, retryable=bool): original message".
-func (e *LLMError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("llm [%s] error (HTTP %d, retryable=%t): %v", e.Provider, e.StatusCode, e.Retryable, e.Err)
 }
 
 // Unwrap returns the original underlying error.
-func (e *LLMError) Unwrap() error {
+func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-// NewLLMError constructs an LLMError with the given fields.
-func NewLLMError(provider string, statusCode int, retryable bool, err error) *LLMError {
-	return &LLMError{
+// NewError constructs an Error with the given fields.
+func NewError(provider string, statusCode int, retryable bool, err error) *Error {
+	return &Error{
 		Provider:   provider,
 		StatusCode: statusCode,
 		Retryable:  retryable,
@@ -36,9 +36,9 @@ func NewLLMError(provider string, statusCode int, retryable bool, err error) *LL
 	}
 }
 
-// IsRetryable checks whether the error chain contains a *LLMError with Retryable == true.
+// IsRetryable checks whether the error chain contains a *Error with Retryable == true.
 func IsRetryable(err error) bool {
-	var llmErr *LLMError
+	var llmErr *Error
 	if errors.As(err, &llmErr) {
 		return llmErr.Retryable
 	}
@@ -91,9 +91,9 @@ func classifyNetError(err error) bool {
 // Use errors.Is(err, ErrContextWindowExceeded) to detect this condition.
 var ErrContextWindowExceeded = errors.New("context window exceeded")
 
-// NewContextWindowError creates a non-retryable LLMError for context window overflow.
-func NewContextWindowError(model string, estimatedTokens, effectiveMax, contextWindow, outputReserve int) *LLMError {
-	return &LLMError{
+// NewContextWindowError creates a non-retryable Error for context window overflow.
+func NewContextWindowError(model string, estimatedTokens, effectiveMax, contextWindow, outputReserve int) *Error {
+	return &Error{
 		Provider:   "router",
 		StatusCode: 0,
 		Retryable:  false,
@@ -102,10 +102,10 @@ func NewContextWindowError(model string, estimatedTokens, effectiveMax, contextW
 	}
 }
 
-// WrapProviderError creates an LLMError by classifying an error based on HTTP status code
+// WrapProviderError creates an Error by classifying an error based on HTTP status code
 // and underlying error type. If statusCode > 0, it uses HTTP status classification.
 // Otherwise falls back to network error classification.
-func WrapProviderError(provider string, statusCode int, err error) *LLMError {
+func WrapProviderError(provider string, statusCode int, err error) *Error {
 	retryable := false
 	if statusCode > 0 {
 		retryable = classifyHTTPStatus(statusCode)
@@ -113,5 +113,5 @@ func WrapProviderError(provider string, statusCode int, err error) *LLMError {
 	if !retryable {
 		retryable = classifyNetError(err)
 	}
-	return NewLLMError(provider, statusCode, retryable, err)
+	return NewError(provider, statusCode, retryable, err)
 }

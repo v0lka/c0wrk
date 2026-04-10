@@ -9,7 +9,7 @@ import (
 	"github.com/user/agent/sdk/llm"
 )
 
-// mockLLMProvider is a mock implementation of llm.LLMProvider for testing.
+// mockLLMProvider is a mock implementation of llm.Provider for testing.
 type mockLLMProvider struct {
 	response    *llm.ChatResponse
 	err         error
@@ -700,5 +700,49 @@ func TestAllPathsInWorkspace(t *testing.T) {
 				t.Errorf("allPathsInWorkspace() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestJudgeEvaluate_WithEnvInfo verifies that the judge's user prompt includes
+// the compact environment block when EnvInfo is present in context.
+func TestJudgeEvaluate_WithEnvInfo(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	info := &EnvInfo{
+		OS:   "macOS 15.4 (Darwin 24.4.0)",
+		Arch: "arm64",
+	}
+	ctx := WithEnvInfo(context.Background(), info)
+
+	// Use an input that will NOT be short-circuited by workspace path check
+	// (no workspace in context, so it falls through to LLM).
+	input := json.RawMessage(`{"query":"SELECT * FROM users"}`)
+
+	verdict, _, err := judge.Judge(ctx, "sql", input, "run query")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+
+	// Verify the user prompt contains the compact env block
+	if mockProvider.lastRequest == nil {
+		t.Fatal("last request was not captured")
+	}
+	found := false
+	for _, msg := range mockProvider.lastRequest.Messages {
+		if msg.Role == "user" && contains(msg.Content, "## Environment") && contains(msg.Content, "macOS 15.4") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected environment block with OS info in judge user prompt")
 	}
 }

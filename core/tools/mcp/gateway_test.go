@@ -10,10 +10,10 @@ import (
 	"github.com/user/agent/core/tools"
 )
 
-func TestNewMCPGateway(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestNewGateway(t *testing.T) {
+	gateway := NewGateway()
 	if gateway == nil {
-		t.Fatal("NewMCPGateway returned nil")
+		t.Fatal("NewGateway returned nil")
 	}
 
 	if gateway.servers == nil {
@@ -29,10 +29,10 @@ func TestNewMCPGateway(t *testing.T) {
 	}
 }
 
-func TestNewMCPServer(t *testing.T) {
-	server := NewMCPServer("test-server")
+func TestNewServer(t *testing.T) {
+	server := NewServer("test-server")
 	if server == nil {
-		t.Fatal("NewMCPServer returned nil")
+		t.Fatal("NewServer returned nil")
 	}
 
 	if server.Name() != "test-server" {
@@ -48,18 +48,18 @@ func TestNewMCPServer(t *testing.T) {
 	}
 }
 
-func TestNewMCPTool(t *testing.T) {
-	server := NewMCPServer("test-server")
+func TestNewTool(t *testing.T) {
+	server := NewServer("test-server")
 
-	info := MCPToolInfo{
+	info := ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool for testing",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`),
 	}
 
-	tool := NewMCPTool(server, info)
+	tool := NewTool(server, info)
 	if tool == nil {
-		t.Fatal("NewMCPTool returned nil")
+		t.Fatal("NewTool returned nil")
 	}
 
 	if tool.Name() != "test_tool" {
@@ -89,26 +89,26 @@ func TestNewMCPTool(t *testing.T) {
 	}
 }
 
-func TestMCPToolImplementsToolInterface(t *testing.T) {
-	server := NewMCPServer("test-server")
-	info := MCPToolInfo{
+func TestToolImplementsToolInterface(t *testing.T) {
+	server := NewServer("test-server")
+	info := ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}
 
-	mcpTool := NewMCPTool(server, info)
+	mcpTool := NewTool(server, info)
 
-	// Verify MCPTool implements tools.Tool interface
+	// Verify Tool implements tools.Tool interface
 	var _ tools.Tool = mcpTool
 }
 
-func TestMCPGatewayRegisterTools(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGatewayRegisterTools(t *testing.T) {
+	gateway := NewGateway()
 
 	// Manually add a mock server with tools for testing
-	server := NewMCPServer("mock-server")
-	server.tools = []MCPToolInfo{
+	server := NewServer("mock-server")
+	server.tools = []ToolInfo{
 		{
 			Name:        "mock_tool_1",
 			Description: "First mock tool",
@@ -148,11 +148,11 @@ func TestMCPGatewayRegisterTools(t *testing.T) {
 	}
 }
 
-func TestMCPGatewayStop(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGatewayStop(t *testing.T) {
+	gateway := NewGateway()
 
 	// Add a mock server (not actually connected)
-	server := NewMCPServer("mock-server")
+	server := NewServer("mock-server")
 	gateway.servers["mock-server"] = server
 
 	err := gateway.Stop()
@@ -234,8 +234,8 @@ func TestConvertMCPResult(t *testing.T) {
 	}
 }
 
-func TestMCPStartError(t *testing.T) {
-	singleErr := &MCPStartError{
+func TestStartError(t *testing.T) {
+	singleErr := &StartError{
 		Errors: []error{
 			&mockError{msg: "connection failed"},
 		},
@@ -245,7 +245,7 @@ func TestMCPStartError(t *testing.T) {
 		t.Errorf("unexpected error message: %s", singleErr.Error())
 	}
 
-	multiErr := &MCPStartError{
+	multiErr := &StartError{
 		Errors: []error{
 			&mockError{msg: "error 1"},
 			&mockError{msg: "error 2"},
@@ -257,8 +257,8 @@ func TestMCPStartError(t *testing.T) {
 	}
 }
 
-func TestMCPStopError(t *testing.T) {
-	singleErr := &MCPStopError{
+func TestStopError(t *testing.T) {
+	singleErr := &StopError{
 		Errors: []error{
 			&mockError{msg: "close failed"},
 		},
@@ -268,7 +268,7 @@ func TestMCPStopError(t *testing.T) {
 		t.Errorf("unexpected error message: %s", singleErr.Error())
 	}
 
-	multiErr := &MCPStopError{
+	multiErr := &StopError{
 		Errors: []error{
 			&mockError{msg: "error 1"},
 			&mockError{msg: "error 2"},
@@ -289,8 +289,8 @@ func (e *mockError) Error() string {
 	return e.msg
 }
 
-func TestMCPGateway_GetServer(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_GetServer(t *testing.T) {
+	gateway := NewGateway()
 
 	// GetServer on empty gateway should return nil
 	if s := gateway.GetServer("nonexistent"); s != nil {
@@ -298,7 +298,7 @@ func TestMCPGateway_GetServer(t *testing.T) {
 	}
 
 	// Add a server and retrieve it
-	server := NewMCPServer("my-server")
+	server := NewServer("my-server")
 	gateway.servers["my-server"] = server
 
 	got := gateway.GetServer("my-server")
@@ -315,12 +315,12 @@ func TestMCPGateway_GetServer(t *testing.T) {
 	}
 }
 
-func TestMCPGateway_ServerNames_Multiple(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_ServerNames_Multiple(t *testing.T) {
+	gateway := NewGateway()
 
-	gateway.servers["alpha"] = NewMCPServer("alpha")
-	gateway.servers["beta"] = NewMCPServer("beta")
-	gateway.servers["gamma"] = NewMCPServer("gamma")
+	gateway.servers["alpha"] = NewServer("alpha")
+	gateway.servers["beta"] = NewServer("beta")
+	gateway.servers["gamma"] = NewServer("gamma")
 
 	names := gateway.ServerNames()
 	if len(names) != 3 {
@@ -339,17 +339,17 @@ func TestMCPGateway_ServerNames_Multiple(t *testing.T) {
 	}
 }
 
-func TestMCPGateway_ToolCount_Multiple(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_ToolCount_Multiple(t *testing.T) {
+	gateway := NewGateway()
 
-	server1 := NewMCPServer("s1")
-	server1.tools = []MCPToolInfo{
+	server1 := NewServer("s1")
+	server1.tools = []ToolInfo{
 		{Name: "tool1"},
 		{Name: "tool2"},
 	}
 
-	server2 := NewMCPServer("s2")
-	server2.tools = []MCPToolInfo{
+	server2 := NewServer("s2")
+	server2.tools = []ToolInfo{
 		{Name: "tool3"},
 	}
 
@@ -361,25 +361,25 @@ func TestMCPGateway_ToolCount_Multiple(t *testing.T) {
 	}
 }
 
-func TestMCPGateway_ToolCount_Empty(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_ToolCount_Empty(t *testing.T) {
+	gateway := NewGateway()
 	if count := gateway.ToolCount(); count != 0 {
 		t.Errorf("expected ToolCount()=0, got %d", count)
 	}
 }
 
-func TestMCPGateway_Stop_EmptyGateway(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_Stop_EmptyGateway(t *testing.T) {
+	gateway := NewGateway()
 	err := gateway.Stop()
 	if err != nil {
 		t.Errorf("Stop on empty gateway should return nil, got: %v", err)
 	}
 }
 
-func TestMCPGateway_Stop_ClearsServers(t *testing.T) {
-	gateway := NewMCPGateway()
-	gateway.servers["s1"] = NewMCPServer("s1")
-	gateway.servers["s2"] = NewMCPServer("s2")
+func TestGateway_Stop_ClearsServers(t *testing.T) {
+	gateway := NewGateway()
+	gateway.servers["s1"] = NewServer("s1")
+	gateway.servers["s2"] = NewServer("s2")
 
 	err := gateway.Stop()
 	if err != nil {
@@ -391,8 +391,8 @@ func TestMCPGateway_Stop_ClearsServers(t *testing.T) {
 	}
 }
 
-func TestMCPGateway_RegisterTools_Empty(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_RegisterTools_Empty(t *testing.T) {
+	gateway := NewGateway()
 	registry := tools.NewToolRegistry()
 
 	err := gateway.RegisterTools(registry)
@@ -405,16 +405,16 @@ func TestMCPGateway_RegisterTools_Empty(t *testing.T) {
 	}
 }
 
-func TestMCPGateway_RegisterTools_MultipleServers(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_RegisterTools_MultipleServers(t *testing.T) {
+	gateway := NewGateway()
 
-	server1 := NewMCPServer("s1")
-	server1.tools = []MCPToolInfo{
+	server1 := NewServer("s1")
+	server1.tools = []ToolInfo{
 		{Name: "s1_tool1", Description: "tool from s1", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 
-	server2 := NewMCPServer("s2")
-	server2.tools = []MCPToolInfo{
+	server2 := NewServer("s2")
+	server2.tools = []ToolInfo{
 		{Name: "s2_tool1", Description: "tool from s2", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "s2_tool2", Description: "another tool from s2", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -434,20 +434,20 @@ func TestMCPGateway_RegisterTools_MultipleServers(t *testing.T) {
 	}
 }
 
-func TestMCPGateway_Start_EmptyConfigs(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_Start_EmptyConfigs(t *testing.T) {
+	gateway := NewGateway()
 
 	// Starting with empty configs should succeed with no errors
-	err := gateway.Start(context.Background(), map[string]MCPServerConfig{})
+	err := gateway.Start(context.Background(), map[string]ServerConfig{})
 	if err != nil {
 		t.Errorf("Start with empty configs should not error: %v", err)
 	}
 }
 
-func TestMCPGateway_Start_InvalidCommand(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_Start_InvalidCommand(t *testing.T) {
+	gateway := NewGateway()
 
-	configs := map[string]MCPServerConfig{
+	configs := map[string]ServerConfig{
 		"bad-server": {
 			Command: "/nonexistent/command/that/does/not/exist",
 			Args:    []string{},
@@ -459,11 +459,11 @@ func TestMCPGateway_Start_InvalidCommand(t *testing.T) {
 		t.Fatal("expected error for invalid command")
 	}
 
-	// Should be an MCPStartError
-	var startErr *MCPStartError
+	// Should be a StartError
+	var startErr *StartError
 	ok := errors.As(err, &startErr)
 	if !ok {
-		t.Fatalf("expected *MCPStartError, got %T", err)
+		t.Fatalf("expected *StartError, got %T", err)
 	}
 	if len(startErr.Errors) != 1 {
 		t.Errorf("expected 1 error, got %d", len(startErr.Errors))
@@ -475,10 +475,10 @@ func TestMCPGateway_Start_InvalidCommand(t *testing.T) {
 	}
 }
 
-func TestMCPGateway_Start_MultipleInvalidCommands(t *testing.T) {
-	gateway := NewMCPGateway()
+func TestGateway_Start_MultipleInvalidCommands(t *testing.T) {
+	gateway := NewGateway()
 
-	configs := map[string]MCPServerConfig{
+	configs := map[string]ServerConfig{
 		"bad1": {
 			Command: "/nonexistent/cmd1",
 		},
@@ -492,10 +492,10 @@ func TestMCPGateway_Start_MultipleInvalidCommands(t *testing.T) {
 		t.Fatal("expected error for invalid commands")
 	}
 
-	var startErr *MCPStartError
+	var startErr *StartError
 	ok := errors.As(err, &startErr)
 	if !ok {
-		t.Fatalf("expected *MCPStartError, got %T", err)
+		t.Fatalf("expected *StartError, got %T", err)
 	}
 	if len(startErr.Errors) != 2 {
 		t.Errorf("expected 2 errors, got %d", len(startErr.Errors))
@@ -505,13 +505,13 @@ func TestMCPGateway_Start_MultipleInvalidCommands(t *testing.T) {
 // Integration tests that require actual MCP servers.
 // These are skipped by default.
 
-func TestMCPGatewayIntegration(t *testing.T) {
+func TestGatewayIntegration(t *testing.T) {
 	t.Skip("Integration test: requires actual MCP server (e.g., npx @modelcontextprotocol/server-filesystem)")
 
 	ctx := context.Background()
-	gateway := NewMCPGateway()
+	gateway := NewGateway()
 
-	configs := map[string]MCPServerConfig{
+	configs := map[string]ServerConfig{
 		"filesystem": {
 			Command: "npx",
 			Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", "/tmp"},
@@ -560,13 +560,13 @@ func TestMCPGatewayIntegration(t *testing.T) {
 	}
 }
 
-func TestMCPToolExecuteIntegration(t *testing.T) {
+func TestToolExecuteIntegration(t *testing.T) {
 	t.Skip("Integration test: requires actual MCP server (e.g., npx @modelcontextprotocol/server-filesystem)")
 
 	ctx := context.Background()
-	gateway := NewMCPGateway()
+	gateway := NewGateway()
 
-	configs := map[string]MCPServerConfig{
+	configs := map[string]ServerConfig{
 		"filesystem": {
 			Command: "npx",
 			Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", "/tmp"},
@@ -584,10 +584,10 @@ func TestMCPToolExecuteIntegration(t *testing.T) {
 	}
 
 	// Find a tool to test (e.g., list_directory or similar)
-	var listDirTool *MCPTool
+	var listDirTool *Tool
 	for _, info := range server.Tools() {
 		if info.Name == "list_directory" || info.Name == "list_dir" {
-			listDirTool = NewMCPTool(server, info)
+			listDirTool = NewTool(server, info)
 			break
 		}
 	}

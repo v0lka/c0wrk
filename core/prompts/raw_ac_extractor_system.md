@@ -15,7 +15,6 @@ Guidelines:
 - Keep descriptions concise and verifiable
 - Do NOT include domain-specific tooling commands
 - Do NOT include formatting requirements (Markdown, etc.) — those are domain concerns
-- If the request is trivial (e.g., "Hello", "Hi"), return an empty array
 
 Actor Framing:
 

@@ -53,7 +53,7 @@ func (a *App) ListDirectory(dirPath string) ([]FileNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid workspace path: %w", err)
 	}
-	if !strings.HasPrefix(absDir, absRoot) {
+	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(filepath.Separator)) {
 		return nil, errors.New("path outside project workspace")
 	}
 

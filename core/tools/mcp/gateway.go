@@ -10,31 +10,31 @@ import (
 	"github.com/user/agent/core/tools"
 )
 
-// MCPGateway manages connections to multiple MCP servers and provides
+// Gateway manages connections to multiple MCP servers and provides
 // their tools to the agent through the ToolRegistry.
-type MCPGateway struct {
-	servers map[string]*MCPServer
+type Gateway struct {
+	servers map[string]*Server
 	mu      sync.RWMutex
 }
 
-// NewMCPGateway creates a new MCPGateway instance.
-func NewMCPGateway() *MCPGateway {
-	return &MCPGateway{
-		servers: make(map[string]*MCPServer),
+// NewGateway creates a new Gateway instance.
+func NewGateway() *Gateway {
+	return &Gateway{
+		servers: make(map[string]*Server),
 	}
 }
 
 // Start connects to all configured MCP servers and discovers their tools.
 // It returns an error if any server fails to connect, but continues
 // connecting to remaining servers.
-func (g *MCPGateway) Start(ctx context.Context, configs map[string]MCPServerConfig) error {
+func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	var errs []error
 
 	for name, cfg := range configs {
-		server := NewMCPServer(name)
+		server := NewServer(name)
 
 		if err := server.Connect(ctx, cfg); err != nil {
 			errs = append(errs, fmt.Errorf("server %s: %w", name, err))
@@ -53,21 +53,21 @@ func (g *MCPGateway) Start(ctx context.Context, configs map[string]MCPServerConf
 	}
 
 	if len(errs) > 0 {
-		return &MCPStartError{Errors: errs}
+		return &StartError{Errors: errs}
 	}
 
 	return nil
 }
 
 // RegisterTools registers all discovered MCP tools into the ToolRegistry.
-// Each tool is wrapped as an MCPTool that implements the Tool interface.
-func (g *MCPGateway) RegisterTools(registry *tools.ToolRegistry) error {
+// Each tool is wrapped as a Tool that implements the tools.Tool interface.
+func (g *Gateway) RegisterTools(registry *tools.ToolRegistry) error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
 	for _, server := range g.servers {
 		for _, toolInfo := range server.Tools() {
-			mcpTool := NewMCPTool(server, toolInfo)
+			mcpTool := NewTool(server, toolInfo)
 			registry.RegisterWithSource(mcpTool, "mcp")
 		}
 	}
@@ -76,7 +76,7 @@ func (g *MCPGateway) RegisterTools(registry *tools.ToolRegistry) error {
 }
 
 // Stop gracefully shuts down all MCP server connections.
-func (g *MCPGateway) Stop() error {
+func (g *Gateway) Stop() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -88,24 +88,24 @@ func (g *MCPGateway) Stop() error {
 		}
 	}
 
-	g.servers = make(map[string]*MCPServer)
+	g.servers = make(map[string]*Server)
 
 	if len(errs) > 0 {
-		return &MCPStopError{Errors: errs}
+		return &StopError{Errors: errs}
 	}
 
 	return nil
 }
 
 // GetServer returns a specific MCP server by name, or nil if not found.
-func (g *MCPGateway) GetServer(name string) *MCPServer {
+func (g *Gateway) GetServer(name string) *Server {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.servers[name]
 }
 
 // ServerNames returns a list of all connected server names.
-func (g *MCPGateway) ServerNames() []string {
+func (g *Gateway) ServerNames() []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
@@ -117,7 +117,7 @@ func (g *MCPGateway) ServerNames() []string {
 }
 
 // ToolCount returns the total number of tools across all connected servers.
-func (g *MCPGateway) ToolCount() int {
+func (g *Gateway) ToolCount() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
@@ -128,24 +128,24 @@ func (g *MCPGateway) ToolCount() int {
 	return count
 }
 
-// MCPStartError represents errors that occurred during gateway startup.
-type MCPStartError struct {
+// StartError represents errors that occurred during gateway startup.
+type StartError struct {
 	Errors []error
 }
 
-func (e *MCPStartError) Error() string {
+func (e *StartError) Error() string {
 	if len(e.Errors) == 1 {
 		return fmt.Sprintf("MCP gateway start error: %v", e.Errors[0])
 	}
 	return fmt.Sprintf("MCP gateway start errors: %d servers failed to connect", len(e.Errors))
 }
 
-// MCPStopError represents errors that occurred during gateway shutdown.
-type MCPStopError struct {
+// StopError represents errors that occurred during gateway shutdown.
+type StopError struct {
 	Errors []error
 }
 
-func (e *MCPStopError) Error() string {
+func (e *StopError) Error() string {
 	if len(e.Errors) == 1 {
 		return fmt.Sprintf("MCP gateway stop error: %v", e.Errors[0])
 	}
@@ -164,28 +164,28 @@ type ServerEntry struct {
 	Env     map[string]string // values may contain ${ENV_VAR} references
 }
 
-// StartGateway creates, configures, starts, and registers an MCPGateway.
+// StartGateway creates, configures, starts, and registers an Gateway.
 // expandEnv resolves ${VAR} references in environment values.
 // Returns (nil, nil) if no servers are configured.
-func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) (*MCPGateway, error) {
+func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) (*Gateway, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, nil
 	}
 
-	mcpConfigs := make(map[string]MCPServerConfig, len(cfg.Servers))
+	mcpConfigs := make(map[string]ServerConfig, len(cfg.Servers))
 	for name, entry := range cfg.Servers {
 		env := make(map[string]string, len(entry.Env))
 		for ek, ev := range entry.Env {
 			env[ek] = expandEnv(ev)
 		}
-		mcpConfigs[name] = MCPServerConfig{
+		mcpConfigs[name] = ServerConfig{
 			Command: entry.Command,
 			Args:    entry.Args,
 			Env:     env,
 		}
 	}
 
-	gateway := NewMCPGateway()
+	gateway := NewGateway()
 	if err := gateway.Start(ctx, mcpConfigs); err != nil {
 		if logger != nil {
 			logger.Warn("MCP gateway start errors", "error", err)

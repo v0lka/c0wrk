@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
+	"time"
 
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
@@ -22,35 +22,17 @@ var _ orchestration.Evaluator = (*Evaluator)(nil)
 // passed to each evaluator ReAct agent (~500 tokens at 4 chars/token).
 const maxResultSummaryChars = 2000
 
-// maxEvidenceChars is the maximum character length for the combined evidence
-// summary passed to the batch evaluator (~2000 tokens at 4 chars/token).
-const maxEvidenceChars = 8000
 
-// batchEvaluatorPrompt is the system prompt for the single-call batch evaluator.
-const batchEvaluatorPrompt = `You are an acceptance-criteria evaluation agent. Evaluate ALL criteria below against the provided evidence.
-
-## Grounding Rules
-- Evidence provided below is ground truth — do NOT override with your own beliefs.
-- Evaluate based on demonstrated evidence, not assumptions.
-- If evidence is insufficient for a criterion, verdict should be "NO".
-
-## Response Format
-Respond ONLY with a JSON array. Each element must have:
-- "criterion_id": the exact criterion ID
-- "verdict": "YES" or "NO"
-- "explanation": brief explanation citing specific evidence
-
-Example: [{"criterion_id":"ac_1","verdict":"YES","explanation":"Step step_3 output confirms..."}]`
-
-// evaluatorToolWhitelist defines the read-only tools the evaluator agents can use.
-// read_evidence is always added separately since it needs blackboard context.
+// evaluatorToolAllowlist defines the tools evaluator agents can use.
+// read_evidence and report_verdict are always added separately since they need blackboard context.
 // file_ops is included but restricted to read-only actions via schema filtering
 // and the readOnlyToolExecutor runtime guard.
-var evaluatorToolWhitelist = map[string]bool{
-	"file_ops":      true,
-	"ripgrep":       true,
-	"glob":          true,
-	"read_evidence": true,
+var evaluatorToolAllowlist = map[string]bool{
+	"file_ops":        true,
+	"ripgrep":         true,
+	"glob":            true,
+	"read_evidence":   true,
+	"report_verdict":  true,
 }
 
 // fileOpsReadOnlyActions lists the actions that are safe for evaluation mode.
@@ -111,7 +93,8 @@ func NewEvaluator(
 
 // evaluatorTaskTemplate is the task description template for evaluator agents.
 const evaluatorTaskTemplate = `## Acceptance Criterion
-CRITERION_DESCRIPTION
+ID: CRITERION_ID
+Description: CRITERION_DESCRIPTION
 
 ## Final Result Summary
 RESULT_SUMMARY
@@ -119,11 +102,13 @@ RESULT_SUMMARY
 ## Available Evidence
 Use the read_evidence tool to list and inspect step results from the execution.
 Use file_ops, ripgrep, glob to inspect the actual workspace state.
-Start by listing available evidence, then fetch relevant steps to evaluate this criterion.`
+Start by listing available evidence, then fetch relevant steps to evaluate this criterion.
+When done, call report_verdict with your determination.`
 
 // Evaluate checks the result against all acceptance criteria.
 // Non-LLM criteria (programmatic, intent_verification, unknown) run sequentially first.
-// All llm_judge criteria are then evaluated in a single batch LLM call.
+// Each llm_judge criterion is then evaluated by an independent ReAct agent
+// with a fresh context window, recording verdicts via report_verdict into the Blackboard.
 func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []AcceptanceCriterion, bb Blackboard) (*EvalResult, error) {
 	evalResult := &EvalResult{
 		Passed:  []EvalDetail{},
@@ -165,9 +150,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, result string, criteria []Acce
 		categorizeDetail(evalResult, detail)
 	}
 
-	// Phase 2: Run llm_judge criteria via single batch evaluation.
+	// Phase 2: Run llm_judge criteria via per-criterion ReAct agents.
 	if len(llmJudgeCriteria) > 0 {
-		details, err := e.evaluateLLMJudgeBatch(ctx, llmJudgeCriteria, result, bb)
+		details, err := e.evaluateLLMJudge(ctx, llmJudgeCriteria, result, bb)
 		if err != nil {
 			return nil, err
 		}
@@ -224,216 +209,147 @@ func (e *Evaluator) evaluateProgrammatic(ctx context.Context, criterion Acceptan
 	return detail, nil
 }
 
-// batchCriterionResult is the expected JSON structure for each criterion in the batch response.
-type batchCriterionResult struct {
-	CriterionID string `json:"criterion_id"`
-	Verdict     string `json:"verdict"`
-	Explanation string `json:"explanation"`
-}
-
-// evaluateLLMJudgeBatch evaluates all llm_judge criteria in a single LLM call.
-// It pre-fetches evidence from the blackboard, builds one prompt with all criteria,
-// and parses a structured JSON response.
-func (e *Evaluator) evaluateLLMJudgeBatch(ctx context.Context, criteria []AcceptanceCriterion, result string, bb Blackboard) ([]EvalDetail, error) {
-	if e.llm == nil {
-		// No LLM configured — mark all as UNCLEAR.
-		details := make([]EvalDetail, len(criteria))
-		for i, ac := range criteria {
-			details[i] = EvalDetail{
-				Criterion:  ac,
-				Diagnostic: "UNCLEAR:evaluator LLM not configured",
-			}
-		}
-		return details, nil
-	}
-
-	// 1. Pre-fetch all evidence from blackboard.
-	var evidenceSummary string
-	if bb != nil {
-		allSteps := bb.GetAllStepResults()
-		// Sort step IDs for deterministic output.
-		ids := make([]string, 0, len(allSteps))
-		for id := range allSteps {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-
-		var sb strings.Builder
-		for _, id := range ids {
-			sr := allSteps[id]
-			fmt.Fprintf(&sb, "### %s\n%s\n\n", id, sr.FullOutput)
-		}
-		evidenceSummary = sb.String()
-
-		// Cap evidence at maxEvidenceChars, truncating from the beginning.
-		if len(evidenceSummary) > maxEvidenceChars {
-			evidenceSummary = "...(truncated)...\n" + evidenceSummary[len(evidenceSummary)-maxEvidenceChars:]
-		}
-	}
-
-	// 2. Build result summary.
-	resultSummary := result
-	if len(resultSummary) > maxResultSummaryChars {
-		resultSummary = resultSummary[:maxResultSummaryChars] + "..."
-	}
-
-	// 3. Build user message with criteria list.
-	var userMsg strings.Builder
-	fmt.Fprintf(&userMsg, "## Result Summary\n%s\n\n", resultSummary)
-	if evidenceSummary != "" {
-		fmt.Fprintf(&userMsg, "## Evidence\n%s\n", evidenceSummary)
-	}
-	userMsg.WriteString("## Criteria\n")
-	for _, ac := range criteria {
-		fmt.Fprintf(&userMsg, "- %s: %s\n", ac.ID, ac.Description)
-	}
-
-	// 4. Make a single LLM call.
-	req := llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: "system", Content: batchEvaluatorPrompt},
-			{Role: "user", Content: userMsg.String()},
-		},
-	}
-
-	resp, err := e.llm.Call(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("batch evaluator LLM call failed: %w", err)
-	}
-
-	// 5. Parse JSON response.
-	responseText := strings.TrimSpace(resp.Message.Content)
-	// Strip markdown code fences if present.
-	if strings.HasPrefix(responseText, "```") {
-		if idx := strings.Index(responseText[3:], "\n"); idx >= 0 {
-			responseText = responseText[3+idx+1:]
-		}
-		if strings.HasSuffix(responseText, "```") {
-			responseText = responseText[:len(responseText)-3]
-		}
-		responseText = strings.TrimSpace(responseText)
-	}
-
-	var batchResults []batchCriterionResult
-	if err := json.Unmarshal([]byte(responseText), &batchResults); err != nil {
-		// Malformed JSON — mark all as UNCLEAR with the raw response.
-		details := make([]EvalDetail, len(criteria))
-		for i, ac := range criteria {
-			details[i] = EvalDetail{
-				Criterion:  ac,
-				Diagnostic: "UNCLEAR:failed to parse batch response: " + responseText,
-			}
-		}
-		return details, nil
-	}
-
-	// 6. Map results by criterion ID.
-	resultMap := make(map[string]batchCriterionResult, len(batchResults))
-	for _, br := range batchResults {
-		resultMap[br.CriterionID] = br
-	}
-
-	// 7. Convert to []EvalDetail in original criteria order.
-	details := make([]EvalDetail, len(criteria))
-	for i, ac := range criteria {
-		br, ok := resultMap[ac.ID]
-		if !ok {
-			details[i] = EvalDetail{
-				Criterion:  ac,
-				Diagnostic: "UNCLEAR:criterion missing from batch response",
-			}
-			continue
-		}
-		verdict := strings.ToUpper(strings.TrimSpace(br.Verdict))
-		switch verdict {
-		case "YES":
-			details[i] = EvalDetail{Criterion: ac, Diagnostic: "PASSED:" + br.Explanation}
-		case "NO":
-			details[i] = EvalDetail{Criterion: ac, Diagnostic: "FAILED:" + br.Explanation}
-		default:
-			details[i] = EvalDetail{Criterion: ac, Diagnostic: "UNCLEAR:" + br.Explanation}
-		}
-	}
-
-	return details, nil
-}
-
-// evaluateLLMJudgeReAct runs a per-criterion ReAct agent to evaluate an llm_judge criterion.
-func (e *Evaluator) evaluateLLMJudgeReAct(ctx context.Context, criterion AcceptanceCriterion, result string, bb Blackboard) (EvalDetail, error) {
-	// Guard: if dependencies for ReAct agent are missing, fall back to simple one-shot LLM call
+// evaluateLLMJudge evaluates all llm_judge criteria using per-criterion ReAct agents.
+// Each criterion gets a fresh context window. Verdicts are recorded into the Blackboard
+// via the report_verdict tool and collected after all criteria are processed.
+func (e *Evaluator) evaluateLLMJudge(ctx context.Context, criteria []AcceptanceCriterion, result string, bb Blackboard) ([]EvalDetail, error) {
+	// Guard: if dependencies for ReAct agent are missing, mark all as UNCLEAR.
 	if e.contextFactory == nil || e.llm == nil {
-		return e.evaluateLLMJudgeSimple(ctx, criterion, result)
+		details := make([]EvalDetail, len(criteria))
+		for i, ac := range criteria {
+			details[i] = EvalDetail{
+				Criterion:  ac,
+				Diagnostic: "UNCLEAR:evaluator dependencies not configured",
+			}
+		}
+		return details, nil
 	}
 
-	// 1. Build task description
+	// Build result summary (shared across all criteria).
 	resultSummary := result
 	if len(resultSummary) > maxResultSummaryChars {
 		resultSummary = resultSummary[:maxResultSummaryChars] + "..."
 	}
 
-	taskDescription := evaluatorTaskTemplate
-	taskDescription = strings.ReplaceAll(taskDescription, "CRITERION_DESCRIPTION", criterion.Description)
-	taskDescription = strings.ReplaceAll(taskDescription, "RESULT_SUMMARY", resultSummary)
-
-	// 2. Filter tools to read-only subset
+	// Filter tools once (shared across all criteria).
 	var allTools []tools.ToolDescriptor
 	if e.toolRegistry != nil {
 		allTools = e.toolRegistry.List()
 	}
 	filteredTools := filterEvaluatorTools(allTools)
 
-	// 3. Model metadata for evaluator agents
+	// Model metadata for evaluator agents.
 	modelMeta := llm.ModelMetadata{
 		ContextWindow: 128000,
 		OutputLimit:   4096,
 		TokenizerType: "approximate",
 	}
 
-	// 4. Create context manager
-	systemPrompt := prompts.EvaluatorJudge
-	cm := e.contextFactory(systemPrompt, modelMeta, "sliding_window")
+	// Evaluate each criterion with a fresh context window.
+	for _, criterion := range criteria {
+		// Emit eval step start event
+		if e.emitter != nil {
+			e.emitter.EvalStepStart(criterion.ID, criterion.Description)
+		}
+		evalStartTime := time.Now()
 
-	// 5. Set task (no acceptance criteria for evaluator agent)
-	cm.SetTask(taskDescription, nil)
+		// 1. Build task description.
+		taskDescription := evaluatorTaskTemplate
+		taskDescription = strings.ReplaceAll(taskDescription, "CRITERION_ID", criterion.ID)
+		taskDescription = strings.ReplaceAll(taskDescription, "CRITERION_DESCRIPTION", criterion.Description)
+		taskDescription = strings.ReplaceAll(taskDescription, "RESULT_SUMMARY", resultSummary)
 
-	// 6. Attach blackboard to context (uses core.WithBlackboard, same package)
-	ctx = WithBlackboard(ctx, bb)
+		// 2. Create fresh context manager.
+		systemPrompt := prompts.EvaluatorJudge
 
-	// 7. Create executor — suppress assistant events, use noop emitter.
-	// Wrap toolRegistry with read-only guard to block write actions at runtime.
-	readOnlyTools := &readOnlyToolExecutor{inner: e.toolRegistry}
-	exec := agent.NewExecutor(
-		e.llm,
-		readOnlyTools,
-		e.tokenCounter,
-		e.maxSteps,
-		e.logger,
-		(*agent.NoopEvents)(nil),
-		true, // suppressAssistantEvents
-		e.toolResultBudget,
-	)
+		// Append compact environment context (time, timezone, OS) for evaluator.
+		if envBlock := tools.FormatCompactEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+			systemPrompt += "\n\n" + envBlock
+		}
 
-	// 8. Run the evaluation agent
-	execResult, err := exec.Run(ctx, filteredTools, cm)
-	if err != nil {
-		return EvalDetail{}, fmt.Errorf("evaluator agent failed for criterion %s: %w", criterion.ID, err)
+		cm := e.contextFactory(systemPrompt, modelMeta, "sliding_window")
+		cm.SetTask(taskDescription, nil)
+
+		// 3. Attach blackboard to context.
+		evalCtx := WithBlackboard(ctx, bb)
+
+		// 4. Create executor with read-only tool guard and criterion-scoped emitter.
+		readOnlyTools := &readOnlyToolExecutor{inner: e.toolRegistry}
+		
+		// Create a criterion-scoped emitter for this evaluation step
+		var execEvents agent.AgentEvents = (*agent.NoopEvents)(nil)
+		if e.emitter != nil {
+			if scopable, ok := e.emitter.(CriterionScopable); ok {
+				scopedEmitter := scopable.WithCriterionID(criterion.ID)
+				execEvents = &evalStepEventsAdapter{emitter: scopedEmitter}
+			}
+		}
+		
+		exec := agent.NewExecutor(
+			e.llm,
+			readOnlyTools,
+			e.tokenCounter,
+			e.maxSteps,
+			execEvents,
+			true, // suppressAssistantEvents
+			e.toolResultBudget,
+		)
+
+		// 5. Run the evaluation agent.
+		_, err := exec.Run(evalCtx, filteredTools, cm)
+		
+		// Emit eval step complete event
+		if e.emitter != nil {
+			e.emitter.EvalStepComplete(criterion.ID, err == nil, time.Since(evalStartTime))
+		}
+		
+		if err != nil {
+			e.log("evaluator agent failed for criterion %s: %v", criterion.ID, err)
+			// Non-fatal: continue evaluating remaining criteria.
+			continue
+		}
 	}
 
-	// 9. Parse verdict from output
-	diagnostic := parseEvalVerdict(execResult.Output)
+	// Collect verdicts from blackboard.
+	verdicts := bb.GetEvalVerdicts()
 
-	return EvalDetail{
-		Criterion:  criterion,
-		Diagnostic: diagnostic,
-	}, nil
+	// Map verdicts to EvalDetail in original criteria order.
+	details := make([]EvalDetail, len(criteria))
+	for i, ac := range criteria {
+		v, ok := verdicts[ac.ID]
+		if !ok {
+			details[i] = EvalDetail{
+				Criterion:  ac,
+				Diagnostic: "UNCLEAR:no verdict reported by evaluator agent",
+			}
+			continue
+		}
+		switch strings.ToUpper(v.Verdict) {
+		case "YES":
+			details[i] = EvalDetail{Criterion: ac, Diagnostic: "PASSED:" + v.Explanation}
+		case "NO":
+			details[i] = EvalDetail{Criterion: ac, Diagnostic: "FAILED:" + v.Explanation}
+		default:
+			details[i] = EvalDetail{Criterion: ac, Diagnostic: "UNCLEAR:" + v.Explanation}
+		}
+	}
+
+	return details, nil
 }
 
-// filterEvaluatorTools returns only tool descriptors whose Name is in the evaluator whitelist.
+// log logs a formatted message if the logger is non-nil.
+func (e *Evaluator) log(format string, args ...any) {
+	if e.logger != nil {
+		e.logger.Warn(fmt.Sprintf(format, args...))
+	}
+}
+
+// filterEvaluatorTools returns only tool descriptors whose Name is in the evaluator allowlist.
 // For file_ops, it modifies the schema to expose only read-only actions.
 func filterEvaluatorTools(allTools []tools.ToolDescriptor) []tools.ToolDescriptor {
-	filtered := make([]tools.ToolDescriptor, 0, len(evaluatorToolWhitelist))
+	filtered := make([]tools.ToolDescriptor, 0, len(evaluatorToolAllowlist))
 	for _, td := range allTools {
-		if !evaluatorToolWhitelist[td.Name] {
+		if !evaluatorToolAllowlist[td.Name] {
 			continue
 		}
 		if td.Name == "file_ops" {
@@ -517,49 +433,73 @@ func (r *readOnlyToolExecutor) Execute(ctx context.Context, name string, input j
 	return r.inner.Execute(ctx, name, input)
 }
 
-// evaluateLLMJudgeSimple is a fallback for when the ReAct agent dependencies
-// (contextFactory, tokenCounter, etc.) are not available. It performs a simple
-// one-shot LLM call, matching the old evaluator behavior.
-func (e *Evaluator) evaluateLLMJudgeSimple(ctx context.Context, criterion AcceptanceCriterion, result string) (EvalDetail, error) {
-	if e.llm == nil {
-		return EvalDetail{
-			Criterion:  criterion,
-			Diagnostic: "UNCLEAR:evaluator LLM not configured",
-		}, nil
-	}
-
-	var userMsg strings.Builder
-	fmt.Fprintf(&userMsg, "Criterion: %s\n\nResult: %s", criterion.Description, result)
-
-	req := llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: "system", Content: prompts.EvaluatorJudge},
-			{Role: "user", Content: userMsg.String()},
-		},
-	}
-
-	resp, err := e.llm.Call(ctx, req)
-	if err != nil {
-		return EvalDetail{}, fmt.Errorf("LLM judge call failed: %w", err)
-	}
-
-	diagnostic := parseEvalVerdict(resp.Message.Content)
-	return EvalDetail{
-		Criterion:  criterion,
-		Diagnostic: diagnostic,
-	}, nil
+// evalStepEventsAdapter wraps an Emitter to implement agent.AgentEvents for eval steps.
+// The emitter should already be scoped with criterion_id via WithCriterionID.
+type evalStepEventsAdapter struct {
+	emitter Emitter
 }
 
-// parseEvalVerdict parses the evaluator agent's output into a diagnostic string.
-func parseEvalVerdict(output string) string {
-	output = strings.TrimSpace(output)
-	upper := strings.ToUpper(output)
-	switch {
-	case strings.HasPrefix(upper, "YES"):
-		return "PASSED:" + output
-	case strings.HasPrefix(upper, "NO"):
-		return "FAILED:" + output
-	default:
-		return "UNCLEAR:" + output
+// ensure evalStepEventsAdapter implements agent.AgentEvents.
+var _ agent.AgentEvents = (*evalStepEventsAdapter)(nil)
+
+func (a *evalStepEventsAdapter) StepStart(stepNum int) {
+	// Step start is handled by EvalStepStart, not needed here
+}
+
+func (a *evalStepEventsAdapter) Thought(stepNum int, content, reasoning string) {
+	// Thoughts during evaluation are emitted as thought events
+	// The criterion_id is already injected by the scoped emitter
+	if a.emitter != nil && content != "" {
+		a.emitter.Thought(stepNum, content, reasoning)
 	}
 }
+
+func (a *evalStepEventsAdapter) ToolCall(stepNum int, toolName, argsPreview string) {
+	if a.emitter != nil {
+		// Prefix the tool name to indicate it's from evaluation
+		a.emitter.ToolCall(stepNum, toolName, argsPreview)
+	}
+}
+
+func (a *evalStepEventsAdapter) ToolResult(stepNum, resultLen int, preview string) {
+	if a.emitter != nil {
+		a.emitter.ToolResult(stepNum, resultLen, preview)
+	}
+}
+
+func (a *evalStepEventsAdapter) StepComplete(stepNum int, duration time.Duration) {
+	// Step completion is handled by EvalStepComplete
+}
+
+func (a *evalStepEventsAdapter) SubAgentLaunch(stepID, description string) {
+	// Not used in evaluator
+}
+
+func (a *evalStepEventsAdapter) SubAgentComplete(stepID string, success bool, duration time.Duration) {
+	// Not used in evaluator
+}
+
+func (a *evalStepEventsAdapter) AssistantChunk(content string) {
+	// Suppressed in evaluator
+}
+
+func (a *evalStepEventsAdapter) AssistantDone(content string, inputTokens, outputTokens int) {
+	// Suppressed in evaluator
+}
+
+func (a *evalStepEventsAdapter) TokensUsed(inputTokens, outputTokens int) {
+	if a.emitter != nil {
+		a.emitter.TokensUsed(inputTokens, outputTokens)
+	}
+}
+
+func (a *evalStepEventsAdapter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
+	if a.emitter != nil {
+		a.emitter.ContextFill(fillPercent, usedTokens, maxTokens, status, stepID)
+	}
+}
+
+func (a *evalStepEventsAdapter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
+	// Diagnostics are logged but not emitted to UI for cleaner experience
+}
+

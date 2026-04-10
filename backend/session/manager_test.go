@@ -831,6 +831,9 @@ func (m *mockTaskStoreForResumable) UpdateTaskRouting(_ string, _ json.RawMessag
 	return nil
 }
 func (m *mockTaskStoreForResumable) SaveTaskStep(_ string, _ TaskStepRecord) error { return nil }
+func (m *mockTaskStoreForResumable) SaveStepFileChanges(_, _ string, _ json.RawMessage) error {
+	return nil
+}
 func (m *mockTaskStoreForResumable) AddTaskReflection(_ string, _ json.RawMessage) error {
 	return nil
 }
@@ -840,6 +843,9 @@ func (m *mockTaskStoreForResumable) CompleteTask(_, _ string, _ json.RawMessage,
 func (m *mockTaskStoreForResumable) FailTask(_ string) error                { return nil }
 func (m *mockTaskStoreForResumable) LoadTask(_ string) (*TaskRecord, error) { return nil, nil }
 func (m *mockTaskStoreForResumable) LoadTaskSteps(_ string) ([]TaskStepRecord, error) {
+	return nil, nil
+}
+func (m *mockTaskStoreForResumable) LoadStepFileChanges(_ string) (map[string]json.RawMessage, error) {
 	return nil, nil
 }
 func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ string) (*TaskRecord, error) {

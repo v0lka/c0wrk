@@ -49,6 +49,8 @@ interface PanelState {
   planGroups: PlanGroup[]  // newest first
   evalGroups: EvalGroup[]  // newest first
   sessionStats: SessionStats
+  _planGroupCounter: number
+  _evalGroupCounter: number
   
   // Actions
   addPlanGroup: (steps: Array<{ description: string; status?: string }>, progress?: { progress?: number; completed_count?: number; total_count?: number }) => void
@@ -69,31 +71,34 @@ function toValidStatus(s: unknown): ValidPlanStatus {
     ? (s as ValidPlanStatus) : 'pending'
 }
 
-let planGroupCounter = 0
-let evalGroupCounter = 0
-
 export const usePanelStore = create<PanelState>((set) => ({
   planGroups: [],
   evalGroups: [],
   sessionStats: { ...defaultStats },
+  _planGroupCounter: 0,
+  _evalGroupCounter: 0,
 
   addPlanGroup: (steps, progress) => {
     if (!steps) return  // Guard against null/undefined from backend nil slices
-    const newGroup: PlanGroup = {
-      id: ++planGroupCounter,
-      items: steps.map((s, i) => ({
-        id: (s as { id?: string }).id || String(i + 1),
-        title: s.description,
-        status: toValidStatus(s.status),
-        dependsOn: (s as { depends_on?: string[] }).depends_on || [],
-      })),
-      progress: progress?.progress,
-      completedCount: progress?.completed_count,
-      totalCount: progress?.total_count,
-    }
-    set((state) => ({
-      planGroups: [newGroup, ...state.planGroups],
-    }))
+    set((state) => {
+      const counter = state._planGroupCounter + 1
+      const newGroup: PlanGroup = {
+        id: counter,
+        items: steps.map((s, i) => ({
+          id: (s as { id?: string }).id || String(i + 1),
+          title: s.description,
+          status: toValidStatus(s.status),
+          dependsOn: (s as { depends_on?: string[] }).depends_on || [],
+        })),
+        progress: progress?.progress,
+        completedCount: progress?.completed_count,
+        totalCount: progress?.total_count,
+      }
+      return {
+        _planGroupCounter: counter,
+        planGroups: [newGroup, ...state.planGroups],
+      }
+    })
   },
 
   updatePlanItemStatus: (stepId, status, duration) => {
@@ -126,18 +131,22 @@ export const usePanelStore = create<PanelState>((set) => ({
 
   addEvalGroup: (criteria) => {
     if (!criteria) return  // Guard against null/undefined from backend nil slices
-    const newGroup: EvalGroup = {
-      id: ++evalGroupCounter,
-      items: criteria.map((c) => ({
-        name: c.name,
-        description: c.description || c.name,
-        status: c.status ?? (c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const),
-        ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
-      })),
-    }
-    set((state) => ({
-      evalGroups: [newGroup, ...state.evalGroups],
-    }))
+    set((state) => {
+      const counter = state._evalGroupCounter + 1
+      const newGroup: EvalGroup = {
+        id: counter,
+        items: criteria.map((c) => ({
+          name: c.name,
+          description: c.description || c.name,
+          status: c.status ?? (c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const),
+          ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
+        })),
+      }
+      return {
+        _evalGroupCounter: counter,
+        evalGroups: [newGroup, ...state.evalGroups],
+      }
+    })
   },
 
   updateEvalGroupStatuses: (criteria) => {
@@ -145,8 +154,9 @@ export const usePanelStore = create<PanelState>((set) => ({
     set((state) => {
       if (state.evalGroups.length === 0) {
         // No existing group, create one
+        const counter = state._evalGroupCounter + 1
         const newGroup: EvalGroup = {
-          id: ++evalGroupCounter,
+          id: counter,
           items: criteria.map((c) => ({
             name: c.name,
             description: c.description || c.name,
@@ -154,7 +164,7 @@ export const usePanelStore = create<PanelState>((set) => ({
             ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
           })),
         }
-        return { evalGroups: [newGroup] }
+        return { _evalGroupCounter: counter, evalGroups: [newGroup] }
       }
       // Update the latest group (index 0)
       const latest = state.evalGroups[0]! // Safe: length > 0 checked above
@@ -181,9 +191,7 @@ export const usePanelStore = create<PanelState>((set) => ({
   })),
 
   resetPanels: () => {
-    planGroupCounter = 0
-    evalGroupCounter = 0
-    set({ planGroups: [], evalGroups: [], sessionStats: { ...defaultStats } })
+    set({ planGroups: [], evalGroups: [], sessionStats: { ...defaultStats }, _planGroupCounter: 0, _evalGroupCounter: 0 })
   },
 
   resetEvalStatuses: () => {
@@ -215,9 +223,8 @@ export const usePanelStore = create<PanelState>((set) => ({
   },
 
   rebuildFromEvents: (messages) => {
-    // Reset counters
-    planGroupCounter = 0
-    evalGroupCounter = 0
+    let planCounter = 0
+    let evalCounter = 0
     
     let planGroups: PlanGroup[] = []
     let evalGroups: EvalGroup[] = []
@@ -229,7 +236,7 @@ export const usePanelStore = create<PanelState>((set) => ({
           const meta = msg.metadata as Record<string, unknown> | undefined
           const rawSteps = (meta?.steps as Array<{ id?: string; description: string; status?: string }>) || []
           const group: PlanGroup = {
-            id: ++planGroupCounter,
+            id: ++planCounter,
             items: rawSteps.map((s, i) => ({
               id: s.id || String(i + 1),
               title: s.description,
@@ -311,7 +318,7 @@ export const usePanelStore = create<PanelState>((set) => ({
           }
           // No matching group found, create new one
           const group: EvalGroup = {
-            id: ++evalGroupCounter,
+            id: ++evalCounter,
             items: rawCriteria.map((c) => ({
               name: c.name,
               description: c.description || c.name,
@@ -332,6 +339,8 @@ export const usePanelStore = create<PanelState>((set) => ({
     set({
       planGroups: planGroups.reverse(),
       evalGroups: evalGroups.reverse(),
+      _planGroupCounter: planCounter,
+      _evalGroupCounter: evalCounter,
     })
   },
 }))

@@ -10,33 +10,25 @@ import (
 
 func TestBuildGroupedToolList_AllTiers(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
-		{Name: "ext_tool", Description: "an external tool", Source: "external"},
 		{Name: "read_file", Description: "reads a file", Source: "core"},
 		{Name: "mcp_tool", Description: "an mcp tool", Source: "mcp"},
 		{Name: "bash_exec", Description: "run shell commands", Source: "core"},
-		{Name: "tool_creator", Description: "creates tools", Source: "core"},
 	}
 
 	result := agent.BuildGroupedToolList(descriptors)
 
 	// Check tier headers
 	if !strings.Contains(result, "TIER 1") {
-		t.Error("expected TIER 1 header for external tools")
+		t.Error("expected TIER 1 header for built-in tools")
 	}
 	if !strings.Contains(result, "TIER 2") {
-		t.Error("expected TIER 2 header for built-in tools")
+		t.Error("expected TIER 2 header for MCP tools")
 	}
 	if !strings.Contains(result, "TIER 3") {
-		t.Error("expected TIER 3 header for MCP tools")
-	}
-	if !strings.Contains(result, "TIER 4") {
-		t.Error("expected TIER 4 header for fallback tools")
+		t.Error("expected TIER 3 header for fallback tools")
 	}
 
 	// Check tool entries
-	if !strings.Contains(result, "- ext_tool: an external tool") {
-		t.Error("expected ext_tool in output")
-	}
 	if !strings.Contains(result, "- read_file: reads a file") {
 		t.Error("expected read_file in output")
 	}
@@ -45,9 +37,6 @@ func TestBuildGroupedToolList_AllTiers(t *testing.T) {
 	}
 	if !strings.Contains(result, "- bash_exec: run shell commands") {
 		t.Error("expected bash_exec in output")
-	}
-	if !strings.Contains(result, "- tool_creator: creates tools") {
-		t.Error("expected tool_creator in output")
 	}
 }
 
@@ -71,36 +60,28 @@ func TestBuildGroupedToolList_OnlyOneTier(t *testing.T) {
 		absentTiers []string
 	}{
 		{
-			name: "only external",
-			descriptors: []tools.ToolDescriptor{
-				{Name: "ext", Description: "ext desc", Source: "external"},
-			},
-			wantTier:    "TIER 1",
-			absentTiers: []string{"TIER 2", "TIER 3", "TIER 4"},
-		},
-		{
 			name: "only builtin",
 			descriptors: []tools.ToolDescriptor{
 				{Name: "read_file", Description: "read", Source: "core"},
 			},
-			wantTier:    "TIER 2",
-			absentTiers: []string{"TIER 1", "TIER 3", "TIER 4"},
+			wantTier:    "TIER 1",
+			absentTiers: []string{"TIER 2", "TIER 3"},
 		},
 		{
 			name: "only mcp",
 			descriptors: []tools.ToolDescriptor{
 				{Name: "mcp_tool", Description: "mcp desc", Source: "mcp"},
 			},
-			wantTier:    "TIER 3",
-			absentTiers: []string{"TIER 1", "TIER 2", "TIER 4"},
+			wantTier:    "TIER 2",
+			absentTiers: []string{"TIER 1", "TIER 3"},
 		},
 		{
 			name: "only fallback",
 			descriptors: []tools.ToolDescriptor{
 				{Name: "bash_exec", Description: "bash", Source: "core"},
 			},
-			wantTier:    "TIER 4",
-			absentTiers: []string{"TIER 1", "TIER 2", "TIER 3"},
+			wantTier:    "TIER 3",
+			absentTiers: []string{"TIER 1", "TIER 2"},
 		},
 	}
 
@@ -120,16 +101,16 @@ func TestBuildGroupedToolList_OnlyOneTier(t *testing.T) {
 }
 
 func TestBuildGroupedToolList_FallbackToolDetection(t *testing.T) {
-	// tool_creator should be classified as fallback (Tier 4), not built-in
+	// bash_exec should be classified as fallback (Tier 3), not built-in
 	descriptors := []tools.ToolDescriptor{
-		{Name: "tool_creator", Description: "creates tools dynamically", Source: "core"},
+		{Name: "bash_exec", Description: "run shell commands", Source: "core"},
 	}
 	result := agent.BuildGroupedToolList(descriptors)
 
 	if !strings.Contains(result, "Fallback") {
-		t.Error("tool_creator should be in Fallback tier")
+		t.Error("bash_exec should be in Fallback tier")
 	}
 	if strings.Contains(result, "Built-in") {
-		t.Error("tool_creator should NOT be in Built-in tier")
+		t.Error("bash_exec should NOT be in Built-in tier")
 	}
 }

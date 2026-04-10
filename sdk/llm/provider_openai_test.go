@@ -12,7 +12,7 @@ import (
 )
 
 func TestOpenAIProvider_ImplementsInterface(t *testing.T) {
-	var _ LLMProvider = (*OpenAIProvider)(nil)
+	var _ Provider = (*OpenAIProvider)(nil)
 }
 
 func TestOpenAIProvider_CustomBaseURL(t *testing.T) {
@@ -328,9 +328,9 @@ func TestOpenAIProvider_WrapError(t *testing.T) {
 			Message:        "rate limited",
 		}
 		result := p.wrapError(apiErr)
-		var llmErr *LLMError
+		var llmErr *Error
 		if !errors.As(result, &llmErr) {
-			t.Fatal("expected *LLMError")
+			t.Fatal("expected *Error")
 		}
 		if llmErr.StatusCode != 429 {
 			t.Errorf("expected status 429, got %d", llmErr.StatusCode)
@@ -346,9 +346,9 @@ func TestOpenAIProvider_WrapError(t *testing.T) {
 			Err:            errors.New("server error"),
 		}
 		result := p.wrapError(reqErr)
-		var llmErr *LLMError
+		var llmErr *Error
 		if !errors.As(result, &llmErr) {
-			t.Fatal("expected *LLMError")
+			t.Fatal("expected *Error")
 		}
 		if llmErr.StatusCode != 500 {
 			t.Errorf("expected status 500, got %d", llmErr.StatusCode)
@@ -357,9 +357,9 @@ func TestOpenAIProvider_WrapError(t *testing.T) {
 
 	t.Run("plain error", func(t *testing.T) {
 		result := p.wrapError(errors.New("connection failed"))
-		var llmErr *LLMError
+		var llmErr *Error
 		if !errors.As(result, &llmErr) {
-			t.Fatal("expected *LLMError")
+			t.Fatal("expected *Error")
 		}
 		if llmErr.StatusCode != 0 {
 			t.Errorf("expected status 0, got %d", llmErr.StatusCode)

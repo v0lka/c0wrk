@@ -597,3 +597,67 @@ func TestAddStepUpdatesTracker(t *testing.T) {
 		t.Errorf("Expected tracker total to increase after second step, got %d (was %d)", afterSecondStep, afterStepTotal)
 	}
 }
+
+// TestBuildStepMessages_EmptyThoughtNoAction verifies that assistant messages always have content or tool_calls.
+// OpenAI API rejects assistant messages with neither content nor tool_calls.
+func TestBuildStepMessages_EmptyThoughtNoAction(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil)
+
+	// Add a step with empty thought and no action (edge case that could cause API errors)
+	emptyStep := sdkagent.Step{
+		Thought:     "",
+		Action:      llm.ToolCall{}, // Empty action (no ID)
+		Observation: "",
+		TokensUsed:  100,
+	}
+	cw.AddStep(emptyStep)
+
+	// Add a normal step for comparison
+	normalStep := sdkagent.Step{
+		Thought: "Normal thought",
+		Action: llm.ToolCall{
+			ID:    "call_1",
+			Name:  "test_tool",
+			Input: json.RawMessage(`{}`),
+		},
+		Observation: "Tool result",
+		TokensUsed:  100,
+	}
+	cw.AddStep(normalStep)
+
+	messages := cw.BuildPrompt()
+
+	// Find the assistant message for the empty step (should be messages[1])
+	// It must have either content or tool_calls to satisfy OpenAI API requirements
+	if len(messages) < 2 {
+		t.Fatalf("Expected at least 2 messages, got %d", len(messages))
+	}
+
+	emptyStepMsg := messages[1]
+	if emptyStepMsg.Role != "assistant" {
+		t.Fatalf("Expected assistant message, got role=%s", emptyStepMsg.Role)
+	}
+
+	// The fix ensures that when both content and tool_calls would be empty,
+	// a placeholder content "(proceeding)" is added
+	if emptyStepMsg.Content == "" && len(emptyStepMsg.ToolCalls) == 0 {
+		t.Error("Assistant message must have either content or tool_calls to satisfy OpenAI API requirements")
+	}
+
+	// Verify the placeholder content was added for the empty step
+	if emptyStepMsg.Content != "(proceeding)" {
+		t.Errorf("Expected placeholder content '(proceeding)' for empty step, got %q", emptyStepMsg.Content)
+	}
+
+	// Verify normal step has its thought as content
+	// Message order: [0]system, [1]empty_step_assistant, [2]normal_step_assistant, [3]normal_step_tool
+	normalStepMsg := messages[2]
+	if normalStepMsg.Role != "assistant" {
+		t.Fatalf("Expected assistant message for normal step, got role=%s", normalStepMsg.Role)
+	}
+	if normalStepMsg.Content != "Normal thought" {
+		t.Errorf("Expected 'Normal thought' as content, got %q", normalStepMsg.Content)
+	}
+}

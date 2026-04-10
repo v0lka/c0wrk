@@ -1,16 +1,24 @@
-import { useChatStore, type DisplayItem } from '@/stores/chatStore'
+import { useMemo } from 'react'
+import { useChatStore, extractPendingActions, type DisplayItem, type ChatMessageUI } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
 import { ResumeActionPanel } from './ResumeActionPanel'
 
 type PendingActionItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'resume_action' }>
 
+const EMPTY_MESSAGES: ChatMessageUI[] = []
+
 function assertNever(x: never): never {
   throw new Error(`Unexpected action kind: ${JSON.stringify(x)}`)
 }
 
 export function PendingActionsBar() {
-  const pendingActions = useChatStore(s => s.pendingActions)
+  const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const messages = useChatStore(s =>
+    activeSessionId ? (s.messages[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
+  )
+  const pendingActions = useMemo(() => extractPendingActions(messages), [messages])
 
   if (pendingActions.length === 0) return null
 

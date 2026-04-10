@@ -115,10 +115,17 @@ func NewOrchestrator(
 		StepConfigurator: coreStepConfigurator(cfg),
 	}
 
-	// Configure state factory to use core's blackboard factory
+	// Configure state factory to use core's blackboard factory.
+	// If the factory produces a PersistentBlackboard, wire the emitter so
+	// persistence warnings are surfaced to the user instead of being silently logged.
 	if bbFactory != nil {
+		capturedEmitter := emitter // capture for closure
 		sdkCfg.StateFactory = func(taskID string) orchestration.Blackboard {
-			return bbFactory(taskID)
+			bb := bbFactory(taskID)
+			if pbb, ok := bb.(*PersistentBlackboard); ok {
+				pbb.SetEmitter(capturedEmitter)
+			}
+			return bb
 		}
 	}
 
@@ -215,40 +222,50 @@ func (o *Orchestrator) logWarn(msg string, args ...any) {
 // and delegates the Plan&Execute loop to the SDK engine.
 func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleResult, error) {
 	// 0. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
+	o.logDebug("orchestrator: handle started", "messageLength", len(userMessage))
 	o.emitInitialContextFill()
 
 	// 1. Get available tools
 	availableTools := o.toolRegistry.List()
 
 	// 2. Extract raw acceptance criteria (Phase 1 — before routing)
+	o.logDebug("orchestrator: starting raw AC extraction")
 	o.emitter.ServiceWithMeta("Extracting acceptance criteria...", map[string]any{"phase": "orchestration"})
 	rawCriteria, err := o.acExtractor.ExtractRaw(ctx, userMessage)
 	if err != nil {
 		// Non-fatal: proceed with empty criteria if extraction fails
+		o.logDebug("orchestrator: raw AC extraction failed", "error", err)
 		o.logWarn("raw AC extraction failed, proceeding without criteria", "error", err)
 		rawCriteria = nil
 	}
+	o.logDebug("orchestrator: raw AC extraction completed", "rawCriteriaCount", len(rawCriteria))
 
 	// 3. Route the request (with raw criteria for informed routing)
+	o.logDebug("orchestrator: starting routing")
 	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "orchestration"})
 	routing, err := o.router.Route(ctx, userMessage, rawCriteria, availableTools, o.conversationHistory)
 	if err != nil {
+		o.logDebug("orchestrator: routing failed", "error", err)
 		return nil, fmt.Errorf("routing failed: %w", err)
 	}
 
 	// Emit routing decision
+	o.logDebug("orchestrator: routing completed", "domain", routing.Domain, "complexity", routing.Complexity, "needsClarification", routing.NeedsClarification)
 	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
 	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
 
 	// 4. Enrich acceptance criteria with domain context (Phase 2 — after routing)
+	o.logDebug("orchestrator: starting AC enrichment", "rawCriteriaCount", len(rawCriteria), "domain", routing.Domain)
 	o.emitter.ServiceWithMeta("Enriching acceptance criteria...", map[string]any{"phase": "orchestration"})
 	var ac []AcceptanceCriterion
 	enrichedAC, enrichErr := o.acExtractor.Enrich(ctx, rawCriteria, routing)
 	if enrichErr != nil {
+		o.logDebug("orchestrator: AC enrichment failed", "error", enrichErr)
 		o.logWarn("AC enrichment failed, proceeding without criteria", "error", enrichErr)
 	} else {
 		ac = enrichedAC
 	}
+	o.logDebug("orchestrator: AC enrichment completed", "enrichedCount", len(ac))
 
 	// Emit AC extraction with criteria details
 	acEvents := make([]EvalCriterionEvent, len(ac))
@@ -261,6 +278,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 
 	// 5. Handle clarification
 	if routing.NeedsClarification {
+		o.logDebug("orchestrator: returning clarification request")
 		taskID := uuid.New().String()
 		var bb Blackboard
 		if o.bbFactory != nil {
@@ -277,12 +295,16 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	}
 
 	// 6. Delegate to SDK engine
+	o.logDebug("orchestrator: invoking SDK engine", "criteriaCount", len(ac))
 	execResult, err := o.engine.Execute(ctx, userMessage, ac)
 	if err != nil {
+		o.logDebug("orchestrator: SDK engine returned error", "error", err)
 		return nil, err
 	}
+	o.logDebug("orchestrator: SDK engine completed", "hasEvalResult", execResult.EvalResult != nil, "attemptCount", execResult.AttemptCount)
 
 	// 7. Persist routing decision on PersistentBlackboard (post-execution)
+	o.logDebug("orchestrator: persisting routing decision")
 	if pbb, ok := execResult.Blackboard.(*PersistentBlackboard); ok {
 		pbb.SetRouting(routing)
 		if execResult.EvalResult != nil && execResult.EvalResult.AllPassed {
@@ -303,6 +325,8 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 		Reflections:     execResult.Reflections,
 	}
 
+	o.logDebug("orchestrator: handle completed", "hasEvalResult", result.EvalResult != nil, "attemptCount", result.AttemptCount)
+
 	// 9. Accumulate conversation history for future routing context
 	o.conversationHistory = append(o.conversationHistory,
 		llm.Message{Role: "user", Content: userMessage},
@@ -319,8 +343,15 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 // Resume continues execution of a previously interrupted task from its checkpoint state.
 // The blackboard must be pre-loaded with the task's persisted state (via RestoreBlackboard).
 func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *RoutingDecision) (*HandleResult, error) {
+	o.logDebug("orchestrator: resume started")
+	// Wire emitter into restored PersistentBlackboard so persistence warnings
+	// are surfaced to the user (the backend creates the BB without an emitter).
+	if pbb, ok := bb.(*PersistentBlackboard); ok {
+		pbb.SetEmitter(o.emitter)
+	}
 	plan := bb.GetPlan()
 	if plan == nil {
+		o.logDebug("orchestrator: resume failed, no plan in blackboard")
 		return nil, errors.New("no plan found in restored blackboard")
 	}
 
@@ -343,13 +374,16 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	o.logInfo("resume_task", "plan_steps", len(plan.Steps), "reflections", len(bb.GetReflections()))
 
 	// Delegate to SDK engine
+	o.logDebug("orchestrator: invoking SDK engine for resume", "planSteps", len(plan.Steps))
 	execResult, err := o.engine.Resume(ctx, bb)
 	if err != nil {
+		o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
 		if pbb, ok := bb.(*PersistentBlackboard); ok {
 			pbb.FailTask()
 		}
 		return nil, err
 	}
+	o.logDebug("orchestrator: SDK engine resume completed", "hasEvalResult", execResult.EvalResult != nil, "attemptCount", execResult.AttemptCount)
 
 	result := &HandleResult{
 		Output:          execResult.Output,
@@ -368,6 +402,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 		}
 	}
 
+	o.logDebug("orchestrator: resume completed", "hasEvalResult", result.EvalResult != nil, "attemptCount", result.AttemptCount)
 	return result, nil
 }
 
@@ -408,6 +443,11 @@ func buildSystemPrompt(ctx context.Context, userMessage string, criteria []Accep
 	result := prompts.OrchestratorSystem
 	result = strings.ReplaceAll(result, "WORKSPACE-CONTEXT", workspaceCtxStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
+
+	// Append environment context if available.
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+		result += "\n\n" + envBlock
+	}
 
 	return result
 }

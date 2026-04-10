@@ -28,7 +28,7 @@ import { DAGGraph } from './DAGGraph'
 function PlanStatusIcon({ status }: { status: PlanItem['status'] }) {
   switch (status) {
     case 'pending':
-      return <CircleHelp className="h-3.5 w-3.5 text-zinc-500 flex-shrink-0" />
+      return <CircleHelp className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
     case 'running':
       return <CircleDot className="h-3.5 w-3.5 text-blue-400 animate-pulse flex-shrink-0" />
     case 'completed':
@@ -42,7 +42,7 @@ function PlanStatusIcon({ status }: { status: PlanItem['status'] }) {
 function EvalStatusIcon({ status }: { status: EvalItem['status'] }) {
   switch (status) {
     case 'pending':
-      return <CircleHelp className="h-3.5 w-3.5 text-zinc-500 flex-shrink-0" />
+      return <CircleHelp className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
     case 'pass':
       return <CircleCheck className="h-3.5 w-3.5 text-emerald-400 flex-shrink-0" />
     case 'fail':
@@ -67,16 +67,16 @@ function PanelHeader({ isOpen, onToggle, icon, title, completed, total, verb }: 
   return (
     <button
       onClick={onToggle}
-      className="flex items-center gap-2 w-full px-3 py-2 text-left text-zinc-300 hover:bg-zinc-800 transition-colors rounded-sm"
+      className="flex items-center gap-2 w-full px-3 py-2 text-left text-foreground hover:bg-muted transition-colors rounded-sm"
     >
       {isOpen ? (
-        <ChevronDown className="h-3.5 w-3.5 text-zinc-500" />
+        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
       ) : (
-        <ChevronRight className="h-3.5 w-3.5 text-zinc-500" />
+        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
       )}
       {icon}
       <span className="text-sm font-medium">{title}</span>
-      <span className="text-xs text-zinc-500">{completed}/{total} {verb}</span>
+      <span className="text-xs text-muted-foreground">{completed}/{total} {verb}</span>
     </button>
   )
 }
@@ -92,7 +92,7 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
     <div className="max-h-48 overflow-y-auto px-3 pb-2">
       {groups.map((group, groupIdx) => (
         <div key={group.id}>
-          {groupIdx > 0 && <div className="border-t border-zinc-800 my-2" />}
+          {groupIdx > 0 && <div className="border-t border-border my-2" />}
           <div className="flex items-start">
             <DAGGraph items={group.items} />
             <div className="flex-1 min-w-0">
@@ -100,10 +100,10 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
                 <button
                   key={`${group.id}-${item.id}`}
                   onClick={() => onStepClick?.(item.id)}
-                  className="flex items-center gap-2 h-[24px] px-1 -mx-1 w-full text-left rounded hover:bg-zinc-800/50 transition-colors cursor-pointer"
+                  className="flex items-center gap-2 h-[24px] px-1 -mx-1 w-full text-left rounded hover:bg-muted/50 transition-colors cursor-pointer"
                 >
                   <PlanStatusIcon status={item.status} />
-                  <span className="text-xs text-zinc-400 truncate">{item.title}</span>
+                  <span className="text-xs text-muted-foreground truncate">{item.title}</span>
                 </button>
               ))}
             </div>
@@ -124,16 +124,16 @@ function EvalContent({ groups }: EvalContentProps) {
     <div className="max-h-48 overflow-y-auto px-3 pb-2">
       {groups.map((group, groupIdx) => (
         <div key={group.id}>
-          {groupIdx > 0 && <div className="border-t border-zinc-800 my-2" />}
+          {groupIdx > 0 && <div className="border-t border-border my-2" />}
           <div className="space-y-1">
             {group.items.map((item) => (
               <div key={`${group.id}-${item.name}`} className="py-0.5">
                 <div className="flex items-center gap-2">
                   <EvalStatusIcon status={item.status} />
-                  <span className="text-xs text-zinc-400 truncate">{item.description}</span>
+                  <span className="text-xs text-muted-foreground truncate">{item.description}</span>
                 </div>
                 {item.diagnostic && (item.status === 'fail' || item.status === 'unclear') && (
-                  <p className="text-xs text-zinc-500 ml-[22px] mt-0.5 whitespace-pre-wrap">{item.diagnostic}</p>
+                  <p className="text-xs text-muted-foreground/60 ml-[22px] mt-0.5 whitespace-pre-wrap">{item.diagnostic}</p>
                 )}
               </div>
             ))}
@@ -167,14 +167,14 @@ export function ExecutionPanels() {
   }
 
   return (
-    <div className="border-t border-zinc-700 bg-zinc-900">
+    <div className="border-t border-border bg-card">
       {/* Execution plan panel */}
       {hasPlan && (
         <div>
           <PanelHeader
             isOpen={planOpen}
             onToggle={() => setPlanOpen(!planOpen)}
-            icon={<ListChecks className="h-3.5 w-3.5 text-zinc-400" />}
+            icon={<ListChecks className="h-3.5 w-3.5 text-muted-foreground" />}
             title="Execution plan"
             completed={planCompleted}
             total={planTotal}
@@ -186,11 +186,11 @@ export function ExecutionPanels() {
 
       {/* Acceptance criteria panel */}
       {hasEval && (
-        <div className={hasPlan ? 'border-t border-zinc-800' : ''}>
+        <div className={hasPlan ? 'border-t border-border' : ''}>
           <PanelHeader
             isOpen={evalOpen}
             onToggle={() => setEvalOpen(!evalOpen)}
-            icon={<ClipboardCheck className="h-3.5 w-3.5 text-zinc-400" />}
+            icon={<ClipboardCheck className="h-3.5 w-3.5 text-muted-foreground" />}
             title="Acceptance criteria"
             completed={evalCompleted}
             total={evalTotal}

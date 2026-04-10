@@ -10,20 +10,20 @@ import (
 	"github.com/user/agent/core/tools"
 )
 
-// Compile-time check that MCPTool implements tools.ToolJudger.
-var _ tools.ToolJudger = (*MCPTool)(nil)
+// Compile-time check that Tool implements tools.ToolJudger.
+var _ tools.ToolJudger = (*Tool)(nil)
 
-// MCPTool wraps an MCP server tool as a Tool interface implementation.
-type MCPTool struct {
-	server      *MCPServer
+// Tool wraps an MCP server tool as a tools.Tool interface implementation.
+type Tool struct {
+	server      *Server
 	name        string
 	description string
 	inputSchema json.RawMessage
 }
 
-// NewMCPTool creates a new MCPTool from the given server and tool info.
-func NewMCPTool(server *MCPServer, info MCPToolInfo) *MCPTool {
-	return &MCPTool{
+// NewTool creates a new Tool from the given server and tool info.
+func NewTool(server *Server, info ToolInfo) *Tool {
+	return &Tool{
 		server:      server,
 		name:        info.Name,
 		description: info.Description,
@@ -32,27 +32,27 @@ func NewMCPTool(server *MCPServer, info MCPToolInfo) *MCPTool {
 }
 
 // Name returns the tool's name.
-func (t *MCPTool) Name() string {
+func (t *Tool) Name() string {
 	return t.name
 }
 
 // Description returns the tool's description.
-func (t *MCPTool) Description() string {
+func (t *Tool) Description() string {
 	return t.description
 }
 
 // InputSchema returns the tool's JSON schema for input parameters.
-func (t *MCPTool) InputSchema() json.RawMessage {
+func (t *Tool) InputSchema() json.RawMessage {
 	return t.inputSchema
 }
 
 // DefaultPolicy returns PolicyAuto as a conservative default for MCP tools.
-func (t *MCPTool) DefaultPolicy() tools.ToolPolicy {
+func (t *Tool) DefaultPolicy() tools.ToolPolicy {
 	return tools.PolicyAuto
 }
 
 // Execute calls the MCP server's tools/call endpoint with the provided input.
-func (t *MCPTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	// Parse input JSON into a map for the MCP call
 	var arguments map[string]any
 	if len(input) > 0 {
@@ -132,12 +132,12 @@ func extractTextFromContent(content mcp.Content) string {
 }
 
 // ServerName returns the name of the MCP server this tool belongs to.
-func (t *MCPTool) ServerName() string {
+func (t *Tool) ServerName() string {
 	return t.server.Name()
 }
 
 // Judge implements tools.ToolJudger for MCP tools.
 // MCP tools are remote and opaque, so we always defer to the LLM Judge.
-func (t *MCPTool) Judge(_ context.Context, _ json.RawMessage) (allowed bool, reason string) {
+func (t *Tool) Judge(_ context.Context, _ json.RawMessage) (allowed bool, reason string) {
 	return false, "" // defer to LLM Judge
 }

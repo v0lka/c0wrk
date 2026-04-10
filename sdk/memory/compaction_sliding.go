@@ -28,7 +28,7 @@ func (s *SlidingWindowStrategy) Compact(ctx context.Context, steps []sdkagent.St
 	_ = ctx // unused, for interface compliance
 	// If no compaction needed, convert all steps to messages
 	if len(steps) <= s.keepFirst+s.keepLast {
-		return s.stepsToMessages(steps)
+		return stepsToMessages(steps)
 	}
 
 	// Each step produces 2 messages (assistant + tool)
@@ -36,7 +36,7 @@ func (s *SlidingWindowStrategy) Compact(ctx context.Context, steps []sdkagent.St
 
 	// Keep first K steps
 	firstSteps := steps[:s.keepFirst]
-	messages = append(messages, s.stepsToMessages(firstSteps)...)
+	messages = append(messages, stepsToMessages(firstSteps)...)
 
 	// Insert summary message for omitted steps
 	omittedCount := len(steps) - s.keepFirst - s.keepLast
@@ -48,37 +48,7 @@ func (s *SlidingWindowStrategy) Compact(ctx context.Context, steps []sdkagent.St
 
 	// Keep last N steps
 	lastSteps := steps[len(steps)-s.keepLast:]
-	messages = append(messages, s.stepsToMessages(lastSteps)...)
+	messages = append(messages, stepsToMessages(lastSteps)...)
 
-	return messages
-}
-
-// stepsToMessages converts a slice of Steps to LLM messages.
-// Each step produces:
-// 1. An assistant message with Thought as content and Action as ToolCalls
-// 2. A tool message with Observation as content
-func (s *SlidingWindowStrategy) stepsToMessages(steps []sdkagent.Step) []llm.Message {
-	var messages []llm.Message
-	for _, step := range steps {
-		// Assistant message with thought and action
-		assistantMsg := llm.Message{
-			Role:    "assistant",
-			Content: step.Thought,
-		}
-		if step.Action.ID != "" {
-			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
-		}
-		messages = append(messages, assistantMsg)
-
-		// Tool response message with observation
-		if step.Action.ID != "" {
-			toolMsg := llm.Message{
-				Role:       "tool",
-				Content:    step.Observation,
-				ToolCallID: step.Action.ID,
-			}
-			messages = append(messages, toolMsg)
-		}
-	}
 	return messages
 }

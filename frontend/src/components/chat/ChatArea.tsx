@@ -21,7 +21,6 @@ export function ChatArea(): React.ReactNode {
   )
   const streamingText = useChatStore(s => s.streamingText)
   const setMessages = useChatStore(s => s.setMessages)
-  const setPendingActions = useChatStore(s => s.setPendingActions)
   const scrollRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerHeight, setContainerHeight] = useState(() =>
@@ -101,12 +100,7 @@ export function ChatArea(): React.ReactNode {
     })
   }, [activeSessionId, setMessages])
 
-  const { items: displayItems, pendingActions } = useMemo(() => groupMessages(messages), [messages])
-
-  // Sync pendingActions to the store so PendingActionsBar can read them
-  useEffect(() => {
-    setPendingActions(pendingActions)
-  }, [pendingActions, setPendingActions])
+  const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
 
   // Find the last user message for pinning at the top
   let lastUserMessage: Extract<typeof displayItems[number], { kind: 'user' }> | null = null

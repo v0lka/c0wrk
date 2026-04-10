@@ -189,6 +189,11 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 		if step.Action.ID != "" {
 			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
 		}
+		// OpenAI API requires assistant messages to have either content or tool_calls.
+		// If both are empty, add a placeholder to prevent 400 errors.
+		if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
+			assistantMsg.Content = "(proceeding)"
+		}
 		messages = append(messages, assistantMsg)
 
 		// Tool response message with observation

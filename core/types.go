@@ -2,6 +2,7 @@
 package core
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/user/agent/sdk/agent"
@@ -30,6 +31,9 @@ type SharedWorkspace = agent.SharedWorkspace
 
 // Artifact represents a named output produced by an agent step.
 type Artifact = agent.Artifact
+
+// FileChange represents a filesystem modification made by an agent step.
+type FileChange = agent.FileChange
 
 // ToolResultBudget — tool result truncation config.
 type ToolResultBudget = agent.ToolResultBudget
@@ -105,12 +109,28 @@ type Emitter interface {
 	// ServiceWithMeta emits a service message with metadata for frontend filtering.
 	// The meta map can contain arbitrary key-value pairs, e.g., {"phase": "orchestration"}.
 	ServiceWithMeta(content string, meta map[string]any)
+	// EvaluationError reports an evaluation-phase error.
+	EvaluationError(err error)
+	// ReplanFailed reports a failed replan attempt.
+	ReplanFailed(err error)
+	// FileRollbackError reports a file rollback failure for a plan step.
+	FileRollbackError(stepID string, err error)
+	// EvalStepStart emits an evaluation step start event for a criterion.
+	EvalStepStart(criterionID string, description string)
+	// EvalStepComplete emits an evaluation step completion event for a criterion.
+	EvalStepComplete(criterionID string, success bool, duration time.Duration)
 }
 
 // PlanStepScopable is an optional interface that Emitter implementations
 // can implement to support scoping events to a plan step.
 type PlanStepScopable interface {
 	WithPlanStepID(id string) Emitter
+}
+
+// CriterionScopable is an optional interface that Emitter implementations
+// can implement to support scoping events to an evaluation criterion.
+type CriterionScopable interface {
+	WithCriterionID(id string) Emitter
 }
 
 // scopeEmitterToStep returns a scoped emitter if the emitter supports it,
@@ -142,6 +162,11 @@ func (n *noopEmitter) StepRetry(_ string, _, _ int)                       {}
 func (n *noopEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (n *noopEmitter) Service(_ string)                                   {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
+func (n *noopEmitter) EvaluationError(_ error)                            {}
+func (n *noopEmitter) ReplanFailed(_ error)                               {}
+func (n *noopEmitter) FileRollbackError(_ string, _ error)                {}
+func (n *noopEmitter) EvalStepStart(_, _ string)                   {}
+func (n *noopEmitter) EvalStepComplete(_ string, _ bool, _ time.Duration) {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -182,6 +207,18 @@ func (a *emitterEventsAdapter) OnService(content string) {
 }
 func (a *emitterEventsAdapter) OnServiceMeta(content string, meta map[string]any) {
 	a.ServiceWithMeta(content, meta)
+}
+func (a *emitterEventsAdapter) OnEvaluationError(err error) {
+	slog.Debug("event adapter: evaluation error", "error", err)
+	a.EvaluationError(err)
+}
+func (a *emitterEventsAdapter) OnReplanFailed(err error) {
+	slog.Debug("event adapter: replan failed", "error", err)
+	a.ReplanFailed(err)
+}
+func (a *emitterEventsAdapter) OnFileRollbackError(stepID string, err error) {
+	slog.Debug("event adapter: file rollback error", "stepID", stepID, "error", err)
+	a.FileRollbackError(stepID, err)
 }
 
 // WithStepID implements orchestration.StepScopable.

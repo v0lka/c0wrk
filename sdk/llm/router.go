@@ -21,10 +21,10 @@ type RouterConfig struct {
 	MaxBackoff     time.Duration // Already parsed max backoff duration
 }
 
-// LLMRouter routes LLM calls to the active provider.
-type LLMRouter struct {
-	providers          map[string]LLMProvider
-	activeProvider     LLMProvider
+// Router routes LLM calls to the active provider.
+type Router struct {
+	providers          map[string]Provider
+	activeProvider     Provider
 	activeModel        string
 	activeProviderName string
 	// Retry configuration
@@ -36,11 +36,11 @@ type LLMRouter struct {
 	tokenCounter TokenCounter
 }
 
-// NewLLMRouter creates a new LLMRouter from the given configuration.
+// NewRouter creates a new Router from the given configuration.
 // The caller is responsible for resolving provider config, expanding env vars,
 // and parsing durations before calling this function.
 // If registry is provided, LM Studio providers will register their metadata sources.
-func NewLLMRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (*LLMRouter, error) {
+func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (*Router, error) {
 	if cfg.ProviderType == "" {
 		return nil, errors.New("no active provider configured")
 	}
@@ -67,8 +67,8 @@ func NewLLMRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry
 		maxBackoff = 30 * time.Second
 	}
 
-	return &LLMRouter{
-		providers: map[string]LLMProvider{
+	return &Router{
+		providers: map[string]Provider{
 			cfg.ActiveProvider: provider,
 		},
 		activeProvider:     provider,
@@ -82,9 +82,9 @@ func NewLLMRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry
 	}, nil
 }
 
-// createProviderFromConfig creates an LLMProvider based on the provider type.
+// createProviderFromConfig creates a Provider based on the provider type.
 // The caller must have already expanded environment variables.
-func createProviderFromConfig(ctx context.Context, provType, apiKey, baseURL string) (LLMProvider, error) {
+func createProviderFromConfig(ctx context.Context, provType, apiKey, baseURL string) (Provider, error) {
 	switch provType {
 	case "openai":
 		return NewOpenAIProvider(OpenAIProviderConfig{
@@ -136,7 +136,7 @@ const contextWindowSafetyMargin = 0.05
 // within the model's context window minus output reserve. Returns nil when
 // validation passes or should be skipped (unknown model, zero context window,
 // nil registry).
-func (r *LLMRouter) validateContextWindow(model string, msgs []Message) error {
+func (r *Router) validateContextWindow(model string, msgs []Message) error {
 	if r.registry == nil || r.tokenCounter == nil {
 		return nil
 	}
@@ -170,7 +170,7 @@ func (r *LLMRouter) validateContextWindow(model string, msgs []Message) error {
 }
 
 // Call sends a chat request to the active provider.
-func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Set model if not specified
 	if req.Model == "" {
 		req.Model = r.activeModel
@@ -222,7 +222,7 @@ func (r *LLMRouter) Call(ctx context.Context, req ChatRequest) (*ChatResponse, e
 
 // GetProvider returns a provider by name.
 // Returns nil if the provider is not found.
-func (r *LLMRouter) GetProvider(name string) LLMProvider {
+func (r *Router) GetProvider(name string) Provider {
 	provider, ok := r.providers[name]
 	if !ok {
 		return nil
@@ -232,12 +232,12 @@ func (r *LLMRouter) GetProvider(name string) LLMProvider {
 
 // GetDefaultProvider returns the active provider.
 // Returns nil if no provider is configured.
-func (r *LLMRouter) GetDefaultProvider() LLMProvider {
+func (r *Router) GetDefaultProvider() Provider {
 	return r.activeProvider
 }
 
 // Stream sends a streaming chat request to the active provider.
-func (r *LLMRouter) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
+func (r *Router) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
 	// Set model if not specified
 	if req.Model == "" {
 		req.Model = r.activeModel

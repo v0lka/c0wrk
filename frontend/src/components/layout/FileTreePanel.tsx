@@ -19,6 +19,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   const isExpanded = node.is_dir && expandedDirs.has(node.path)
   const isLoading = node.is_dir && loadingDirs.has(node.path)
   const children = entries[node.path]
+  const isHidden = node.name.startsWith('.')
 
   const handleClick = useCallback(() => {
     if (node.is_dir) {
@@ -29,7 +30,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
   return (
     <>
       <div
-        className="flex items-center gap-1 px-2 py-0.5 text-sm text-zinc-300 hover:bg-zinc-800/50 cursor-default select-none"
+        className={`flex items-center gap-1 px-2 py-0.5 text-sm hover:bg-zinc-800/50 cursor-default select-none ${isHidden ? 'text-zinc-500' : 'text-zinc-300'}`}
         style={{ paddingLeft: depth * 16 + 8 }}
         onClick={handleClick}
         role={node.is_dir ? 'treeitem' : undefined}
@@ -50,7 +51,11 @@ function TreeNode({ node, depth }: TreeNodeProps) {
           <span className="w-3.5 flex-shrink-0" />
         )}
 
-        <FileIcon name={node.name} isDir={node.is_dir} isOpen={isExpanded} />
+        {!node.is_dir && (
+          <span className={isHidden ? 'opacity-60' : undefined}>
+            <FileIcon name={node.name} isDir={node.is_dir} isOpen={isExpanded} />
+          </span>
+        )}
 
         <span className="truncate">{node.name}</span>
       </div>
@@ -115,7 +120,7 @@ export function FileTreePanel() {
   return (
     <div className="h-full bg-card flex flex-col">
       <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-border flex-shrink-0">
-        'WORKSPACE'
+        WORKSPACE
       </div>
       <ScrollArea className="flex-1">
         <div className="py-1" role="tree">

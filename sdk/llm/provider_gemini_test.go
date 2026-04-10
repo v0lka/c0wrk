@@ -12,7 +12,7 @@ import (
 )
 
 func TestGeminiProvider_ImplementsInterface(t *testing.T) {
-	var _ LLMProvider = (*GeminiProvider)(nil)
+	var _ Provider = (*GeminiProvider)(nil)
 }
 
 func TestGeminiProvider_Name(t *testing.T) {
@@ -586,9 +586,9 @@ func TestGeminiProvider_WrapError(t *testing.T) {
 			Status:  "RESOURCE_EXHAUSTED",
 		}
 		result := p.wrapError(apiErr)
-		var llmErr *LLMError
+		var llmErr *Error
 		if !errors.As(result, &llmErr) {
-			t.Fatal("expected *LLMError")
+			t.Fatal("expected *Error")
 		}
 		if llmErr.StatusCode != 429 {
 			t.Errorf("expected status 429, got %d", llmErr.StatusCode)
@@ -600,9 +600,9 @@ func TestGeminiProvider_WrapError(t *testing.T) {
 
 	t.Run("plain error", func(t *testing.T) {
 		result := p.wrapError(errors.New("connection failed"))
-		var llmErr *LLMError
+		var llmErr *Error
 		if !errors.As(result, &llmErr) {
-			t.Fatal("expected *LLMError")
+			t.Fatal("expected *Error")
 		}
 		if llmErr.StatusCode != 0 {
 			t.Errorf("expected status 0, got %d", llmErr.StatusCode)

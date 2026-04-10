@@ -53,6 +53,9 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 		// Set task context for tool execution
 		ctx = tools.WithTaskContext(ctx, taskDesc)
 
+		// Set step ID so file tracker and other context-aware tools know the current step
+		ctx = WithStepID(ctx, stepID)
+
 		result, err := executor.Run(ctx, taskTools, cm)
 
 		duration := time.Since(startTime)

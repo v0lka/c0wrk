@@ -130,6 +130,14 @@ func (s *SQLiteSessionStore) createTables() error {
 		created_at TIMESTAMP NOT NULL,
 		PRIMARY KEY (task_id, step_id)
 	);
+
+	CREATE TABLE IF NOT EXISTS task_step_file_changes (
+		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		step_id TEXT NOT NULL,
+		file_changes TEXT DEFAULT '[]',
+		created_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (task_id, step_id)
+	);
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
 	return err
@@ -417,11 +425,13 @@ type TaskStore interface {
 	UpdateTaskCriteria(taskID string, criteria json.RawMessage) error
 	UpdateTaskRouting(taskID string, routing json.RawMessage) error
 	SaveTaskStep(taskID string, step TaskStepRecord) error
+	SaveStepFileChanges(taskID, stepID string, fileChangesJSON json.RawMessage) error
 	AddTaskReflection(taskID string, reflectionJSON json.RawMessage) error
 	CompleteTask(taskID, finalOutput string, evalResult json.RawMessage, attemptCount int) error
 	FailTask(taskID string) error
 	LoadTask(taskID string) (*TaskRecord, error)
 	LoadTaskSteps(taskID string) ([]TaskStepRecord, error)
+	LoadStepFileChanges(taskID string) (map[string]json.RawMessage, error)
 	GetUnfinishedTask(sessionID string) (*TaskRecord, error)
 }
 
@@ -622,6 +632,55 @@ func (s *SQLiteSessionStore) LoadTaskSteps(taskID string) ([]TaskStepRecord, err
 	}
 
 	return steps, nil
+}
+
+// SaveStepFileChanges inserts or replaces file changes JSON for a task step.
+func (s *SQLiteSessionStore) SaveStepFileChanges(taskID, stepID string, fileChangesJSON json.RawMessage) error {
+	_, err := s.db.ExecContext(context.Background(), `
+		INSERT OR REPLACE INTO task_step_file_changes (task_id, step_id, file_changes, created_at)
+		VALUES (?, ?, ?, ?)`,
+		taskID, stepID, string(fileChangesJSON), time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save step file changes: %w", err)
+	}
+	return nil
+}
+
+// LoadStepFileChanges loads all file change records for a task, returning a map of stepID -> JSON.
+func (s *SQLiteSessionStore) LoadStepFileChanges(taskID string) (map[string]json.RawMessage, error) {
+	rows, err := s.db.QueryContext(context.Background(), `
+		SELECT step_id, file_changes
+		FROM task_step_file_changes
+		WHERE task_id = ?
+		ORDER BY created_at ASC`,
+		taskID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load step file changes: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("failed to close database rows", "error", err)
+		}
+	}()
+
+	result := make(map[string]json.RawMessage)
+	for rows.Next() {
+		var stepID, changesJSON string
+		if err := rows.Scan(&stepID, &changesJSON); err != nil {
+			return nil, fmt.Errorf("failed to scan step file changes: %w", err)
+		}
+		if changesJSON != "" && changesJSON != "[]" {
+			result[stepID] = json.RawMessage(changesJSON)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating step file changes: %w", err)
+	}
+
+	return result, nil
 }
 
 // GetUnfinishedTask returns the most recent unfinished (in-progress or failed) task for a session, or nil if none.

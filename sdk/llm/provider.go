@@ -3,9 +3,9 @@ package llm
 
 import "context"
 
-// LLMProvider — unified interface for all LLM providers.
+// Provider — unified interface for all LLM providers.
 // Implementations map ChatRequest/ChatResponse to SDK-specific types.
-type LLMProvider interface {
+type Provider interface {
 	// ChatCompletion sends a request and returns the full response.
 	ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 

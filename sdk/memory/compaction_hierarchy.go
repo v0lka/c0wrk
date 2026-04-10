@@ -65,7 +65,7 @@ func (h *HierarchicalStrategy) Compact(ctx context.Context, steps []sdkagent.Ste
 
 	// For very small step counts, just return all as messages
 	if n <= 5 {
-		return h.stepsToMessages(steps)
+		return stepsToMessages(steps)
 	}
 
 	// Calculate zone boundaries
@@ -100,7 +100,7 @@ func (h *HierarchicalStrategy) Compact(ctx context.Context, steps []sdkagent.Ste
 	messages = append(messages, h.summarizeZone(ctx, middleSteps, "middle", middleBlockSize)...)
 
 	// Recent zone: kept verbatim
-	messages = append(messages, h.stepsToMessages(recentSteps)...)
+	messages = append(messages, stepsToMessages(recentSteps)...)
 
 	return messages
 }
@@ -127,7 +127,7 @@ func (h *HierarchicalStrategy) summarizeZone(ctx context.Context, steps []sdkage
 		if h.tokenCounter != nil && h.maxSummarizeTokens > 0 {
 			tokenCount := h.tokenCounter.Count(blockText)
 			if tokenCount > h.maxSummarizeTokens {
-				blockText = h.truncateToTokenBudget(blockText)
+				blockText = truncateToTokenBudget(blockText, h.maxSummarizeTokens)
 			}
 		}
 
@@ -184,42 +184,4 @@ func (h *HierarchicalStrategy) buildBlockText(steps []sdkagent.Step, zoneName st
 		parts = append(parts, stepText)
 	}
 	return strings.Join(parts, "")
-}
-
-// truncateToTokenBudget truncates text to fit within the token budget.
-// Uses a conservative character approximation (3 chars per token).
-func (h *HierarchicalStrategy) truncateToTokenBudget(text string) string {
-	// Conservative estimate: ~3 chars per token to leave room for encoding variance
-	maxChars := h.maxSummarizeTokens * 3
-	if len(text) <= maxChars {
-		return text
-	}
-	return text[:maxChars] + "\n[... truncated for summarization ...]"
-}
-
-// stepsToMessages converts a slice of Steps to LLM messages.
-func (h *HierarchicalStrategy) stepsToMessages(steps []sdkagent.Step) []llm.Message {
-	var messages []llm.Message
-	for _, step := range steps {
-		// Assistant message with thought and action
-		assistantMsg := llm.Message{
-			Role:    "assistant",
-			Content: step.Thought,
-		}
-		if step.Action.ID != "" {
-			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
-		}
-		messages = append(messages, assistantMsg)
-
-		// Tool response message with observation
-		if step.Action.ID != "" {
-			toolMsg := llm.Message{
-				Role:       "tool",
-				Content:    step.Observation,
-				ToolCallID: step.Action.ID,
-			}
-			messages = append(messages, toolMsg)
-		}
-	}
-	return messages
 }

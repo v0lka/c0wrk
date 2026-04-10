@@ -20,7 +20,7 @@ type LMStudioProviderConfig struct {
 	APIKey  string // optional bearer token
 }
 
-// LMStudioProvider implements LLMProvider using LM Studio's native REST API v1.
+// LMStudioProvider implements Provider using LM Studio's native REST API v1.
 type LMStudioProvider struct {
 	client  *http.Client
 	baseURL string
@@ -619,7 +619,7 @@ func (p *LMStudioProvider) buildOpenAIRequest(req ChatRequest, stream bool) *lms
 // parseOpenAIResponse converts OpenAI-compatible response to ChatResponse.
 func (p *LMStudioProvider) parseOpenAIResponse(resp *lmsOpenAIResponse) (*ChatResponse, error) {
 	if len(resp.Choices) == 0 {
-		return nil, errors.New("lmstudio: no choices in OpenAI-compat response")
+		return nil, WrapProviderError("lmstudio", 0, errors.New("no choices in OpenAI-compat response"))
 	}
 
 	choice := resp.Choices[0]
@@ -748,7 +748,7 @@ func (p *LMStudioProvider) parseErrorResponse(resp *http.Response) error {
 	return fmt.Errorf("lmstudio: HTTP %d: %s", resp.StatusCode, string(body))
 }
 
-// wrapError wraps an error with the given HTTP status code into *LLMError.
+// wrapError wraps an error with the given HTTP status code into *Error.
 func (p *LMStudioProvider) wrapError(statusCode int, err error) error {
 	return WrapProviderError(p.name, statusCode, err)
 }

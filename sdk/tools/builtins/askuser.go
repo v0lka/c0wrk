@@ -9,7 +9,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolAskUserDescription = "Ask the user a question and present answer options. The user can select from predefined options or provide a custom text answer. Use this when you need user input to proceed."
+const toolAskUserDescription = `Ask the user a question and present selectable answer options. Use this when you need user input to proceed — for example, to choose between approaches, confirm a destructive action, or gather preferences. The user can pick from the predefined options or provide a custom free-text answer. Supports single-select (default) and multi-select modes. Not available in non-interactive (CLI) mode.`
 
 // AskUserTool asks the user a question and returns their answer.
 type AskUserTool struct {

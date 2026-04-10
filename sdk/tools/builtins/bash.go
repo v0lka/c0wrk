@@ -1,3 +1,5 @@
+//go:build !windows
+
 package builtins
 
 import (
@@ -6,12 +8,15 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strings"
+	"syscall"
 	"time"
 
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolBashDescription = "Execute bash commands in a shell"
+const toolBashDescription = `Execute shell commands via bash -c. Use this for build commands, running scripts, installing packages, git operations, and system tasks not covered by dedicated tools. Prefer file_ops for reading/writing files, glob for finding files by name, and ripgrep for searching file contents — only fall back to bash_exec when no higher-level tool fits. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). An optional working_directory can be set for the command's execution context.`
 
 // BashExecTool executes bash commands in a shell.
 type BashExecTool struct {
@@ -34,7 +39,7 @@ func NewBashExecTool(blacklist []string) *BashExecTool {
 		BaseTool: &tools.BaseTool{
 			ToolName:        "bash_exec",
 			ToolDescription: toolBashDescription,
-			Schema:          json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute"}, "timeout": {"type": "string", "description": "Timeout duration (default: 120s)"}, "working_directory": {"type": "string", "description": "Working directory for command execution"}}, "required": ["command"]}`),
+			Schema:          json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute. Supports pipes, redirects, and chained commands."}, "timeout": {"type": "string", "description": "Timeout as a Go duration string, e.g. \"30s\" or \"2m\". Default: 60s, maximum: 120s."}, "working_directory": {"type": "string", "description": "Absolute path to use as the working directory for command execution. If omitted, uses the current directory."}}, "required": ["command"]}`),
 			Policy:          tools.PolicyUserConfirm,
 		},
 		blacklist: blacklist,
@@ -73,10 +78,10 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ParseInputError(err)
 	}
 
-	// Parse timeout (default 120s)
+	// Parse timeout (default 60s, max 120s)
 	timeoutStr := params.Timeout
 	if timeoutStr == "" {
-		timeoutStr = "120s"
+		timeoutStr = "60s"
 	}
 	timeout, err := time.ParseDuration(timeoutStr)
 	if err != nil {
@@ -84,6 +89,18 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 			Content: fmt.Sprintf("invalid timeout duration: %v", err),
 			IsError: true,
 		}, nil
+	}
+	// Enforce maximum timeout of 120s
+	const maxTimeout = 120 * time.Second
+	if timeout > maxTimeout {
+		timeout = maxTimeout
+	}
+
+	// Pre-bash snapshot (if tracker available)
+	tracker := agent.FileTrackerFromContext(ctx)
+	var snapshot *agent.WorkspaceSnapshot
+	if tracker != nil {
+		snapshot = tracker.TakeSnapshot()
 	}
 
 	// Create context with timeout
@@ -93,6 +110,21 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	// Create command
 	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", params.Command)
 
+	// Put the command and all children in a new process group so we can
+	// kill the entire tree on timeout (exec.CommandContext only kills the
+	// parent, leaving orphaned children that hold pipes open).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// Cancel kills the entire process group instead of just the parent.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	// Grace period for pipe readers to drain after the process group is killed.
+	cmd.WaitDelay = 5 * time.Second
+
 	// Set working directory if specified
 	if params.WorkingDirectory != "" {
 		cmd.Dir = params.WorkingDirectory
@@ -100,9 +132,20 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	// Execute and capture combined output
 	output, err := cmd.CombinedOutput()
+
+	// Post-bash change detection
+	if tracker != nil && snapshot != nil {
+		tracker.DetectChangesFrom(ctx, snapshot)
+	}
+
 	if err != nil {
+		result := string(output) + "\n" + err.Error()
+		if timeoutCtx.Err() == context.DeadlineExceeded ||
+			strings.Contains(err.Error(), "signal: killed") {
+			result += "\n[Process killed: timeout exceeded]"
+		}
 		return tools.ToolResult{
-			Content: string(output) + "\n" + err.Error(),
+			Content: result,
 			IsError: true,
 		}, nil
 	}

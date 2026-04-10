@@ -15,7 +15,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolWebfetchDescription = "Fetch a web page and convert HTML to markdown. Optionally extract specific content using a prompt."
+const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. If a prompt is provided and a summarizer is configured, the fetched content is filtered or summarized by an LLM using that prompt; otherwise the full markdown is returned. Response bodies are limited to 100KB, requests time out after 30 seconds, and up to 10 redirects are followed.`
 
 // LLMSummarizer is a function type for optional LLM-based content extraction.
 // It allows the tool to use LLM summarization without importing internal/core or internal/llm.
@@ -35,11 +35,11 @@ func NewWebFetchTool(summarizer LLMSummarizer) *WebFetchTool {
 		"properties": {
 			"url": {
 				"type": "string",
-				"description": "URL to fetch"
+				"description": "The URL to fetch. Must be an HTTP or HTTPS URL."
 			},
 			"prompt": {
 				"type": "string",
-				"description": "Optional extraction prompt to filter/summarize the content"
+				"description": "Optional prompt to extract or summarize specific information from the fetched page. When provided, an LLM filters the content using this prompt instead of returning the full markdown."
 			}
 		},
 		"required": ["url"]

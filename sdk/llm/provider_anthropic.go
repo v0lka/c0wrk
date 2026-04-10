@@ -14,7 +14,7 @@ type AnthropicProviderConfig struct {
 	APIKey string
 }
 
-// AnthropicProvider implements LLMProvider using Anthropic's Claude API.
+// AnthropicProvider implements LLM Provider using Anthropic's Claude API.
 type AnthropicProvider struct {
 	client *anthropic.Client
 	name   string
@@ -62,7 +62,6 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 	}
 
 	chunks := make(chan ChatChunk)
-	errChan := make(chan error, 1)
 
 	// Track current tool use for accumulating input JSON
 	var currentToolID string
@@ -124,7 +123,10 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		},
 
 		OnError: func(errResp anthropic.ErrorResponse) {
-			errChan <- fmt.Errorf("anthropic stream error: %s", errResp.Error.Message)
+			select {
+			case chunks <- ChatChunk{StopReason: "error", Delta: errResp.Error.Message}:
+			default:
+			}
 		},
 	}
 
@@ -132,9 +134,8 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		defer close(chunks)
 		_, err := p.client.CreateMessagesStream(ctx, streamReq)
 		if err != nil {
-			// Channel might already be closed, ignore send errors
 			select {
-			case errChan <- err:
+			case chunks <- ChatChunk{StopReason: "error"}:
 			default:
 			}
 		}
@@ -278,12 +279,12 @@ func (p *AnthropicProvider) parseResponse(resp anthropic.MessagesResponse) (*Cha
 	}, nil
 }
 
-// wrapError maps Anthropic SDK error types to *LLMError.
+// wrapError maps Anthropic SDK error types to *Error.
 func (p *AnthropicProvider) wrapError(err error) error {
 	var apiErr *anthropic.APIError
 	if errors.As(err, &apiErr) {
 		retryable := apiErr.IsRateLimitErr() || apiErr.IsOverloadedErr() || apiErr.IsApiErr()
-		return NewLLMError(p.name, 0, retryable, err)
+		return NewError(p.name, 0, retryable, err)
 	}
 	var reqErr *anthropic.RequestError
 	if errors.As(err, &reqErr) {

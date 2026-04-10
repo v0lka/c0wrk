@@ -3,6 +3,7 @@ package workspace
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -74,11 +75,11 @@ func (w *Watcher) eventLoop() {
 				timer.Stop()
 			}
 			timer = time.AfterFunc(defaultDebounce, w.onChange)
-		case _, ok := <-w.watcher.Errors:
+		case watchErr, ok := <-w.watcher.Errors:
 			if !ok {
 				return
 			}
-			// Errors are silently ignored; callers rely on onChange notifications.
+			slog.Debug("fsnotify watcher error", "error", watchErr)
 		}
 	}
 }

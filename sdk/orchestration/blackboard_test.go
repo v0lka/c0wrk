@@ -423,3 +423,222 @@ func TestBlackboard_StepResult_StepsCopy(t *testing.T) {
 		t.Fatalf("step copy broken: got %q", r.Steps[0].Thought)
 	}
 }
+
+func TestBlackboard_SetAndGetStepFileChanges(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	// No changes initially.
+	if got := bb.GetStepFileChanges("step_1"); got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+
+	changes := []FileChange{
+		{Path: "main.go", Operation: "CREATE", SizeBytes: 100},
+		{Path: "util.go", Operation: "MODIFY", Diff: "@@ -1 +1 @@\n-old\n+new", SizeBytes: 200},
+	}
+	bb.SetStepFileChanges("step_1", changes)
+
+	got := bb.GetStepFileChanges("step_1")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 changes, got %d", len(got))
+	}
+	if got[0].Path != "main.go" || got[0].Operation != "CREATE" {
+		t.Fatalf("unexpected first change: %+v", got[0])
+	}
+	if got[1].Path != "util.go" || got[1].Operation != "MODIFY" {
+		t.Fatalf("unexpected second change: %+v", got[1])
+	}
+}
+
+func TestBlackboard_GetAllFileChanges(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.SetStepFileChanges("step_1", []FileChange{
+		{Path: "a.go", Operation: "CREATE"},
+	})
+	bb.SetStepFileChanges("step_2", []FileChange{
+		{Path: "b.go", Operation: "MODIFY", Diff: "diff"},
+		{Path: "c.go", Operation: "DELETE"},
+	})
+
+	all := bb.GetAllFileChanges()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 step entries, got %d", len(all))
+	}
+	if len(all["step_1"]) != 1 {
+		t.Fatalf("expected 1 change for step_1, got %d", len(all["step_1"]))
+	}
+	if len(all["step_2"]) != 2 {
+		t.Fatalf("expected 2 changes for step_2, got %d", len(all["step_2"]))
+	}
+}
+
+func TestBlackboard_GetSessionFileChanges_Aggregation(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	// Same file modified by two steps.
+	bb.SetStepFileChanges("step_1", []FileChange{
+		{Path: "main.go", Operation: "MODIFY", Diff: "diff1", SizeBytes: 100},
+	})
+	bb.SetStepFileChanges("step_2", []FileChange{
+		{Path: "main.go", Operation: "MODIFY", Diff: "diff2", SizeBytes: 150},
+	})
+
+	session := bb.GetSessionFileChanges()
+	if len(session) != 1 {
+		t.Fatalf("expected 1 aggregated entry, got %d", len(session))
+	}
+	if session[0].Path != "main.go" {
+		t.Fatalf("expected path main.go, got %q", session[0].Path)
+	}
+	if session[0].Operation != "MODIFY" {
+		t.Fatalf("expected MODIFY, got %q", session[0].Operation)
+	}
+	// Last diff wins (step_2 is processed after step_1 due to sort order).
+	if session[0].Diff != "diff2" {
+		t.Fatalf("expected diff2, got %q", session[0].Diff)
+	}
+	if session[0].SizeBytes != 150 {
+		t.Fatalf("expected 150, got %d", session[0].SizeBytes)
+	}
+}
+
+func TestBlackboard_GetSessionFileChanges_CreateThenDelete(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	// File created in step_1, deleted in step_2 → omitted.
+	bb.SetStepFileChanges("step_1", []FileChange{
+		{Path: "temp.go", Operation: "CREATE", SizeBytes: 50},
+		{Path: "keep.go", Operation: "CREATE", SizeBytes: 80},
+	})
+	bb.SetStepFileChanges("step_2", []FileChange{
+		{Path: "temp.go", Operation: "DELETE"},
+	})
+
+	session := bb.GetSessionFileChanges()
+	if len(session) != 1 {
+		t.Fatalf("expected 1 entry (temp.go omitted), got %d", len(session))
+	}
+	if session[0].Path != "keep.go" {
+		t.Fatalf("expected keep.go, got %q", session[0].Path)
+	}
+}
+
+func TestBlackboard_GetSessionFileChanges_Empty(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	session := bb.GetSessionFileChanges()
+	if len(session) != 0 {
+		t.Fatalf("expected empty, got %d entries", len(session))
+	}
+}
+
+func TestBlackboard_FileChanges_DefensiveCopy(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	changes := []FileChange{
+		{Path: "file.go", Operation: "CREATE", SizeBytes: 100},
+	}
+	bb.SetStepFileChanges("step_1", changes)
+
+	// Mutate original — should not affect blackboard.
+	changes[0].Path = "MUTATED"
+	got := bb.GetStepFileChanges("step_1")
+	if got[0].Path != "file.go" {
+		t.Fatalf("defensive copy broken on set: got %q", got[0].Path)
+	}
+
+	// Mutate returned slice — should not affect blackboard.
+	got[0].Path = "MUTATED"
+	got2 := bb.GetStepFileChanges("step_1")
+	if got2[0].Path != "file.go" {
+		t.Fatalf("defensive copy broken on get: got %q", got2[0].Path)
+	}
+}
+
+func TestBlackboard_SetStepFileChanges_UpdatesStepResult(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	// Set a step result first.
+	bb.SetStepResult("step_1", "output", nil, nil)
+
+	// Now set file changes — should also update the StepResult.
+	changes := []FileChange{
+		{Path: "main.go", Operation: "CREATE", SizeBytes: 100},
+	}
+	bb.SetStepFileChanges("step_1", changes)
+
+	r, ok := bb.GetStepResult("step_1")
+	if !ok {
+		t.Fatal("expected to find step result")
+	}
+	if len(r.FileChanges) != 1 {
+		t.Fatalf("expected 1 file change in step result, got %d", len(r.FileChanges))
+	}
+	if r.FileChanges[0].Path != "main.go" {
+		t.Fatalf("expected main.go, got %q", r.FileChanges[0].Path)
+	}
+}
+
+func TestMapBlackboard_SetGetEvalVerdicts(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	// Initially empty.
+	if got := bb.GetEvalVerdicts(); len(got) != 0 {
+		t.Fatalf("expected empty verdicts, got %d", len(got))
+	}
+
+	bb.SetEvalVerdict("ac_1", "YES", "code compiles")
+	bb.SetEvalVerdict("ac_2", "NO", "tests fail")
+
+	verdicts := bb.GetEvalVerdicts()
+	if len(verdicts) != 2 {
+		t.Fatalf("expected 2 verdicts, got %d", len(verdicts))
+	}
+	v1 := verdicts["ac_1"]
+	if v1.CriterionID != "ac_1" || v1.Verdict != "YES" || v1.Explanation != "code compiles" {
+		t.Fatalf("unexpected verdict for ac_1: %+v", v1)
+	}
+	v2 := verdicts["ac_2"]
+	if v2.CriterionID != "ac_2" || v2.Verdict != "NO" || v2.Explanation != "tests fail" {
+		t.Fatalf("unexpected verdict for ac_2: %+v", v2)
+	}
+}
+
+func TestMapBlackboard_EvalVerdictOverwrite(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.SetEvalVerdict("ac_1", "NO", "initially failing")
+	bb.SetEvalVerdict("ac_1", "YES", "now passing")
+
+	verdicts := bb.GetEvalVerdicts()
+	if len(verdicts) != 1 {
+		t.Fatalf("expected 1 verdict, got %d", len(verdicts))
+	}
+	v := verdicts["ac_1"]
+	if v.Verdict != "YES" || v.Explanation != "now passing" {
+		t.Fatalf("expected overwritten verdict, got %+v", v)
+	}
+}
+
+func TestMapBlackboard_GetEvalVerdicts_DefensiveCopy(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.SetEvalVerdict("ac_1", "YES", "ok")
+
+	// Mutate returned map — should not affect blackboard.
+	verdicts := bb.GetEvalVerdicts()
+	delete(verdicts, "ac_1")
+	verdicts["ac_99"] = EvalVerdict{CriterionID: "ac_99", Verdict: "NO"}
+
+	got := bb.GetEvalVerdicts()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 verdict after external mutation, got %d", len(got))
+	}
+	if _, ok := got["ac_1"]; !ok {
+		t.Fatal("expected ac_1 to still exist")
+	}
+	if _, ok := got["ac_99"]; ok {
+		t.Fatal("ac_99 should not exist in blackboard")
+	}
+}

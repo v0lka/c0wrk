@@ -12,12 +12,12 @@ import (
 // ExternalToolInfo holds metadata about a tool for ProceduralMemory.
 // This type is separate from tools to avoid import cycles.
 type ExternalToolInfo struct {
-	Name         string
-	Description  string
-	Version      string
-	Path         string // filesystem path to tool directory
-	Language     string
-	Capabilities []string
+	Name         string     `json:"name"`
+	Description  string     `json:"description"`
+	Version      string     `json:"version"`
+	Path         string     `json:"path"`         // filesystem path to tool directory
+	Language     string     `json:"language"`
+	Capabilities []string   `json:"capabilities"`
 	UsageCount   int        `json:"usage_count"`
 	LastUsed     *time.Time `json:"last_used,omitempty"`
 }

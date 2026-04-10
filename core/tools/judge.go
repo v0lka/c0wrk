@@ -40,14 +40,14 @@ type judgeResult struct {
 
 // ToolJudge evaluates whether a mutating tool call is safe to auto-approve.
 type ToolJudge struct {
-	provider llm.LLMProvider
+	provider llm.Provider
 	model    string
 	cache    map[string]judgeResult
 	mu       sync.RWMutex
 }
 
 // NewToolJudge creates a new ToolJudge with the given LLM provider and model.
-func NewToolJudge(provider llm.LLMProvider, model string) *ToolJudge {
+func NewToolJudge(provider llm.Provider, model string) *ToolJudge {
 	return &ToolJudge{
 		provider: provider,
 		model:    model,
@@ -97,6 +97,11 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 
 	userPrompt := "Task: " + taskContext + "\n\nTool: " + toolName + "\n\nInput: " + inputStr
 
+	// Append compact environment context for safety reasoning.
+	if envBlock := FormatCompactEnvBlock(EnvInfoFrom(ctx)); envBlock != "" {
+		userPrompt += "\n\n" + envBlock
+	}
+
 	req := llm.ChatRequest{
 		Model: j.model,
 		Messages: []llm.Message{
@@ -107,9 +112,9 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	}
 
 	// Create a dedicated context for the judge LLM call with its own timeout.
-	// The passed-in context may have a tight deadline from the executor, which would
-	// cause the judge to fail-safe to VerdictConfirm on timeout.
-	judgeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Uses the parent context so that application shutdown is respected.
+	// On timeout, the judge fail-safes to VerdictConfirm below.
+	judgeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	// Call LLM
@@ -245,7 +250,7 @@ type JudgeConfig struct {
 	Enabled      bool
 	Model        string // specific model for judge; if empty, uses DefaultModel
 	DefaultModel string // fallback model from active provider
-	Provider     llm.LLMProvider
+	Provider     llm.Provider
 }
 
 // NewToolJudgeFromConfig creates a ToolJudge if enabled and properly configured.

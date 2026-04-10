@@ -5,6 +5,7 @@ import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
 import { ToolBlock } from './ToolBlock'
 import { PlanStepBlock } from './PlanStepBlock'
+import { EvalStepBlock } from './EvalStepBlock'
 import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
 import { ResumeActionPanel } from './ResumeActionPanel'
@@ -39,6 +40,8 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
       return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} parsedArgs={item.parsedArgs} result={item.result} resultLen={item.resultLen} status={item.status} />
     case 'plan_step':
       return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} isRetry={item.isRetry} children={item.children} renderItem={(child) => renderDisplayItem(child, lastUserMessageId)} />
+    case 'eval_step':
+      return <EvalStepBlock key={item.id} criterionId={item.criterionId} title={item.title} status={item.status} duration={item.duration} children={item.children} renderItem={(child) => renderDisplayItem(child, lastUserMessageId)} />
     case 'tool_confirm':
       return <ToolConfirmation key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
     case 'ask_user':
@@ -60,7 +63,7 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
       return (
         <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <BookOpen className="h-3.5 w-3.5 text-violet-500" />
-          <span>Memory readed</span>
+          <span>Memory read</span>
         </div>
       )
     case 'action_placeholder':

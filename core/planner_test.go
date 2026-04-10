@@ -703,3 +703,46 @@ func TestReplanWithSessionReflections(t *testing.T) {
 		t.Error("system prompt should contain second reflection's root cause")
 	}
 }
+
+// TestBuildPlanSystemPrompt_WithEnvInfo verifies that buildPlanSystemPrompt includes
+// the full environment block when EnvInfo is present in context.
+func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	info := &tools.EnvInfo{
+		OS:   "macOS 15.4 (Darwin 24.4.0)",
+		Arch: "arm64",
+	}
+	ctx := tools.WithEnvInfo(context.Background(), info)
+
+	_, err := planner.Plan(ctx, "Build project", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	systemPrompt := capturedRequest.Messages[0].Content
+	if !strings.Contains(systemPrompt, "## Environment") {
+		t.Error("system prompt should contain environment block")
+	}
+	if !strings.Contains(systemPrompt, "macOS 15.4") {
+		t.Error("system prompt should contain OS info")
+	}
+	if !strings.Contains(systemPrompt, "arm64") {
+		t.Error("system prompt should contain architecture info")
+	}
+}

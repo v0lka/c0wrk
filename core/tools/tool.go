@@ -14,6 +14,7 @@ type ToolPolicy = sdktools.ToolPolicy
 type ToolResult = sdktools.ToolResult
 type ToolDescriptor = sdktools.ToolDescriptor
 type BaseTool = sdktools.BaseTool
+type EnvInfo = sdktools.EnvInfo
 
 // Re-export SDK constants.
 const (
@@ -30,8 +31,13 @@ var (
 	ParseToolPolicy   = sdktools.ParseToolPolicy
 	WithWorkspacePath = sdktools.WithWorkspacePath
 	WorkspacePathFrom = sdktools.WorkspacePathFrom
-	WithTaskContext   = sdktools.WithTaskContext
-	TaskContextFrom   = sdktools.TaskContextFrom
+	WithTaskContext    = sdktools.WithTaskContext
+	TaskContextFrom    = sdktools.TaskContextFrom
+	WithEnvInfo        = sdktools.WithEnvInfo
+	EnvInfoFrom        = sdktools.EnvInfoFrom
+	CollectEnvInfo        = sdktools.CollectEnvInfo
+	FormatFullEnvBlock    = sdktools.FormatFullEnvBlock
+	FormatCompactEnvBlock = sdktools.FormatCompactEnvBlock
 )
 
 // ToolJudger is an optional interface that tools can implement to provide

@@ -9,10 +9,10 @@ import (
 	"github.com/user/agent/core/tools"
 )
 
-func TestMCPTool_DefaultPolicy(t *testing.T) {
-	// Create a minimal MCPTool for testing
-	server := &MCPServer{} // We need a minimal server, but DefaultPolicy doesn't use it
-	tool := NewMCPTool(server, MCPToolInfo{
+func TestTool_DefaultPolicy(t *testing.T) {
+	// Create a minimal Tool for testing
+	server := &Server{} // We need a minimal server, but DefaultPolicy doesn't use it
+	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test MCP tool",
 		InputSchema: []byte(`{"type": "object"}`),
@@ -23,14 +23,14 @@ func TestMCPTool_DefaultPolicy(t *testing.T) {
 	}
 }
 
-func TestMCPTool_ImplementsToolInterface(t *testing.T) {
-	// Compile-time check that MCPTool implements Tool interface
-	var _ tools.Tool = (*MCPTool)(nil)
+func TestTool_ImplementsToolInterface(t *testing.T) {
+	// Compile-time check that Tool implements tools.Tool interface
+	var _ tools.Tool = (*Tool)(nil)
 }
 
-func TestMCPTool_Execute_InvalidJSON(t *testing.T) {
-	server := NewMCPServer("test")
-	tool := NewMCPTool(server, MCPToolInfo{
+func TestTool_Execute_InvalidJSON(t *testing.T) {
+	server := NewServer("test")
+	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
 		InputSchema: []byte(`{"type": "object"}`),
@@ -49,9 +49,9 @@ func TestMCPTool_Execute_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestMCPTool_Execute_NilClient(t *testing.T) {
-	server := NewMCPServer("test")
-	tool := NewMCPTool(server, MCPToolInfo{
+func TestTool_Execute_NilClient(t *testing.T) {
+	server := NewServer("test")
+	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
 		InputSchema: []byte(`{"type": "object"}`),
@@ -70,9 +70,9 @@ func TestMCPTool_Execute_NilClient(t *testing.T) {
 	}
 }
 
-func TestMCPTool_Execute_EmptyInput(t *testing.T) {
-	server := NewMCPServer("test")
-	tool := NewMCPTool(server, MCPToolInfo{
+func TestTool_Execute_EmptyInput(t *testing.T) {
+	server := NewServer("test")
+	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
 		InputSchema: []byte(`{"type": "object"}`),
@@ -88,9 +88,9 @@ func TestMCPTool_Execute_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestMCPTool_Execute_NilInput(t *testing.T) {
-	server := NewMCPServer("test")
-	tool := NewMCPTool(server, MCPToolInfo{
+func TestTool_Execute_NilInput(t *testing.T) {
+	server := NewServer("test")
+	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
 		InputSchema: []byte(`{"type": "object"}`),

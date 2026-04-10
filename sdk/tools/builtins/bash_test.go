@@ -1,3 +1,5 @@
+//go:build !windows
+
 package builtins
 
 import (
@@ -7,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -138,6 +142,180 @@ func TestBashExecTool_Judge_InvalidJSON(t *testing.T) {
 	}
 	if reasoning != "" {
 		t.Errorf("expected empty reasoning for invalid JSON, got: %s", reasoning)
+	}
+}
+
+func bashCtxWithTracker(t *testing.T, workspaceRoot string) (context.Context, *agent.FileChangeTracker) {
+	t.Helper()
+	tracker := agent.NewFileChangeTracker(workspaceRoot)
+	ctx := agent.WithFileTracker(context.Background(), tracker)
+	ctx = agent.WithStepID(ctx, "test-step")
+	return ctx, tracker
+}
+
+func findChange(changes []agent.FileChange, op string) *agent.FileChange {
+	for i := range changes {
+		if changes[i].Operation == op {
+			return &changes[i]
+		}
+	}
+	return nil
+}
+
+func TestBashExec_DetectsFileCreation(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx, tracker := bashCtxWithTracker(t, tmpDir)
+	tool := NewBashExecTool(nil)
+
+	newFile := filepath.Join(tmpDir, "created.txt")
+	input, _ := json.Marshal(map[string]string{
+		"command": `echo "hello" > ` + newFile,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	changes := tracker.GetStepChanges("test-step")
+	if len(changes) == 0 {
+		t.Fatal("expected at least one change, got none")
+	}
+
+	c := findChange(changes, "CREATE")
+	if c == nil {
+		t.Fatalf("expected CREATE operation, got: %+v", changes)
+	}
+	if c.Path != "created.txt" {
+		t.Errorf("expected path 'created.txt', got %q", c.Path)
+	}
+}
+
+func TestBashExec_DetectsFileModification(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create existing file before tracker snapshot
+	existingFile := filepath.Join(tmpDir, "existing.txt")
+	if err := os.WriteFile(existingFile, []byte("original"), 0o644); err != nil {
+		t.Fatalf("failed to create existing file: %v", err)
+	}
+
+	ctx, tracker := bashCtxWithTracker(t, tmpDir)
+	tool := NewBashExecTool(nil)
+
+	input, _ := json.Marshal(map[string]string{
+		"command": `echo "modified" > ` + existingFile,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	changes := tracker.GetStepChanges("test-step")
+	if len(changes) == 0 {
+		t.Fatal("expected at least one change, got none")
+	}
+
+	c := findChange(changes, "MODIFY")
+	if c == nil {
+		t.Fatalf("expected MODIFY operation, got: %+v", changes)
+	}
+	if c.Path != "existing.txt" {
+		t.Errorf("expected path 'existing.txt', got %q", c.Path)
+	}
+}
+
+func TestBashExec_DetectsFileDeletion(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a file to be deleted
+	victimFile := filepath.Join(tmpDir, "victim.txt")
+	if err := os.WriteFile(victimFile, []byte("doomed"), 0o644); err != nil {
+		t.Fatalf("failed to create victim file: %v", err)
+	}
+
+	ctx, tracker := bashCtxWithTracker(t, tmpDir)
+	tool := NewBashExecTool(nil)
+
+	input, _ := json.Marshal(map[string]string{
+		"command": "rm " + victimFile,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	changes := tracker.GetStepChanges("test-step")
+	if len(changes) == 0 {
+		t.Fatal("expected at least one change, got none")
+	}
+
+	c := findChange(changes, "DELETE")
+	if c == nil {
+		t.Fatalf("expected DELETE operation, got: %+v", changes)
+	}
+	if c.Path != "victim.txt" {
+		t.Errorf("expected path 'victim.txt', got %q", c.Path)
+	}
+}
+
+func TestBashExec_NoTracker_BackwardCompat(t *testing.T) {
+	tool := NewBashExecTool(nil)
+
+	input, _ := json.Marshal(map[string]string{
+		"command": "echo backward-compat",
+	})
+
+	// No tracker in context — should behave exactly as before
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got true. Content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "backward-compat") {
+		t.Errorf("expected output to contain 'backward-compat', got: %s", result.Content)
+	}
+}
+
+func TestBashExecTool_TimeoutKillsChildProcesses(t *testing.T) {
+	// This test verifies that timeout kills the entire process group,
+	// not just the parent bash process.
+	tool := NewBashExecTool(nil)
+
+	input, _ := json.Marshal(map[string]string{
+		"command": "bash -c 'sleep 300 & sleep 300 & wait'",
+		"timeout": "2s",
+	})
+
+	start := time.Now()
+	result, err := tool.Execute(context.Background(), input)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected Go-level error: %v", err)
+	}
+
+	// Should complete in roughly 2 seconds + grace period, not 300 seconds
+	if elapsed > 15*time.Second {
+		t.Fatalf("command took %v, expected to be killed by timeout within ~7s", elapsed)
+	}
+
+	// The result should indicate timeout
+	if !strings.Contains(strings.ToLower(result.Content), "timeout") {
+		t.Errorf("expected result to mention timeout, got: %s", result.Content)
 	}
 }
 

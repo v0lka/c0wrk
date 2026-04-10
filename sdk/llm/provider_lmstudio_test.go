@@ -19,9 +19,9 @@ func writeSSE(w http.ResponseWriter, event, data string) {
 	}
 }
 
-// TestLMStudioProvider_ImplementsInterface verifies that LMStudioProvider implements LLMProvider.
+// TestLMStudioProvider_ImplementsInterface verifies that LMStudioProvider implements Provider.
 func TestLMStudioProvider_ImplementsInterface(t *testing.T) {
-	var _ LLMProvider = (*LMStudioProvider)(nil)
+	var _ Provider = (*LMStudioProvider)(nil)
 }
 
 // TestLMStudioDefaultBaseURL verifies that an empty BaseURL defaults to localhost:1234.

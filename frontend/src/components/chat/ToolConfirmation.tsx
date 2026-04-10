@@ -104,8 +104,8 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
           <div className="flex items-start gap-2">
             <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
-              <p className="text-xs font-medium text-amber-300 mb-1">LLM Judge Verdict</p>
-              <p className="text-sm text-amber-100">{reasoning}</p>
+              <p className="text-xs font-medium text-amber-600 dark:text-amber-300 mb-1">LLM Judge Verdict</p>
+              <p className="text-sm text-amber-900 dark:text-amber-100">{reasoning}</p>
             </div>
           </div>
         </div>

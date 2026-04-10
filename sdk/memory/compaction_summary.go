@@ -51,7 +51,7 @@ func NewSummarizationStrategy(blockSize, keepLast int, summarizer func(ctx conte
 func (s *SummarizationStrategy) Compact(ctx context.Context, steps []sdkagent.Step, budgetTokens int) []llm.Message {
 	// If no compaction needed, convert all steps to messages
 	if len(steps) <= s.keepLast {
-		return s.stepsToMessages(steps)
+		return stepsToMessages(steps)
 	}
 
 	var messages []llm.Message
@@ -76,7 +76,7 @@ func (s *SummarizationStrategy) Compact(ctx context.Context, steps []sdkagent.St
 		if s.tokenCounter != nil && s.maxSummarizeTokens > 0 {
 			tokenCount := s.tokenCounter.Count(blockText)
 			if tokenCount > s.maxSummarizeTokens {
-				blockText = s.truncateToTokenBudget(blockText)
+				blockText = truncateToTokenBudget(blockText, s.maxSummarizeTokens)
 			}
 		}
 
@@ -103,7 +103,7 @@ func (s *SummarizationStrategy) Compact(ctx context.Context, steps []sdkagent.St
 	}
 
 	// Append the recent steps verbatim
-	messages = append(messages, s.stepsToMessages(stepsToKeep)...)
+	messages = append(messages, stepsToMessages(stepsToKeep)...)
 
 	return messages
 }
@@ -130,42 +130,4 @@ func (s *SummarizationStrategy) buildBlockText(steps []sdkagent.Step) string {
 		parts = append(parts, stepText)
 	}
 	return strings.Join(parts, "\n")
-}
-
-// truncateToTokenBudget truncates text to fit within the token budget.
-// Uses a conservative character approximation (3 chars per token).
-func (s *SummarizationStrategy) truncateToTokenBudget(text string) string {
-	// Conservative estimate: ~3 chars per token to leave room for encoding variance
-	maxChars := s.maxSummarizeTokens * 3
-	if len(text) <= maxChars {
-		return text
-	}
-	return text[:maxChars] + "\n[... truncated for summarization ...]"
-}
-
-// stepsToMessages converts a slice of Steps to LLM messages.
-func (s *SummarizationStrategy) stepsToMessages(steps []sdkagent.Step) []llm.Message {
-	var messages []llm.Message
-	for _, step := range steps {
-		// Assistant message with thought and action
-		assistantMsg := llm.Message{
-			Role:    "assistant",
-			Content: step.Thought,
-		}
-		if step.Action.ID != "" {
-			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
-		}
-		messages = append(messages, assistantMsg)
-
-		// Tool response message with observation
-		if step.Action.ID != "" {
-			toolMsg := llm.Message{
-				Role:       "tool",
-				Content:    step.Observation,
-				ToolCallID: step.Action.ID,
-			}
-			messages = append(messages, toolMsg)
-		}
-	}
-	return messages
 }

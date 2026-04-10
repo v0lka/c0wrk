@@ -30,9 +30,9 @@ func TestEventEmitterRouting(t *testing.T) {
 		t.Errorf("expected type 'routing', got %q", received.Type)
 	}
 
-	data, ok := received.Data.(map[string]string)
+	data, ok := received.Data.(map[string]any)
 	if !ok {
-		t.Fatalf("expected map[string]string data, got %T", received.Data)
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
 	}
 	if data["mode"] != "react" {
 		t.Errorf("expected mode 'react', got %q", data["mode"])
@@ -564,18 +564,19 @@ func TestEventEmitterWithPlanStepID_NonMapData(t *testing.T) {
 	base := NewEventEmitter("test-session", emit)
 	scoped := base.WithPlanStepID("step-99")
 
-	// Routing emits map[string]string — not map[string]any
+	// SubAgentLaunch emits map[string]string (not map[string]any),
+	// so plan_step_id injection should be skipped.
 	scopedEmitter, ok := scoped.(*EventEmitter)
 	if !ok {
 		t.Fatal("expected *EventEmitter from WithPlanStepID")
 	}
-	scopedEmitter.Routing("direct", "general", "1")
+	scopedEmitter.SubAgentLaunch("step_1", "Install dependencies")
 
 	data, ok := received.Data.(map[string]string)
 	if !ok {
 		t.Fatalf("expected map[string]string data, got %T", received.Data)
 	}
-	// plan_step_id should NOT be present in map[string]string
+	// plan_step_id should NOT be injected because data is map[string]string
 	if _, exists := data["plan_step_id"]; exists {
 		t.Error("plan_step_id should not be injected into map[string]string data")
 	}

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -61,9 +60,8 @@ type Executor struct {
 	tools                   ToolExecutor
 	tokenCounter            llm.TokenCounter
 	maxSteps                int
-	logger                  *slog.Logger // structured logger (nil-safe)
-	emitter                 AgentEvents  // event emitter (uses NoopEvents if nil)
-	suppressAssistantEvents bool         // if true, don't emit AssistantChunk/AssistantDone
+	emitter                 AgentEvents // event emitter (uses NoopEvents if nil)
+	suppressAssistantEvents bool        // if true, don't emit AssistantChunk/AssistantDone
 	toolResultBudget        ToolResultBudget
 
 	// Circuit breaker: detect repeated identical tool calls
@@ -85,10 +83,10 @@ type Executor struct {
 }
 
 // NewExecutor creates a new Executor.
-// logger and emitter are optional (nil-safe).
+// emitter is optional (nil-safe).
 // suppressAssistantEvents disables AssistantChunk/AssistantDone events; set to true for plan-step
 // executors to avoid duplicate assistant messages when the orchestrator handles final output.
-func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, logger *slog.Logger, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget) *Executor {
+func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget) *Executor {
 	// Use NoopEvents if nil to avoid nil checks throughout the code
 	if emitter == nil {
 		emitter = &NoopEvents{}
@@ -98,7 +96,6 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		tools:                   toolRegistry,
 		tokenCounter:            counter,
 		maxSteps:                maxSteps,
-		logger:                  logger,
 		emitter:                 emitter,
 		suppressAssistantEvents: suppressAssistantEvents,
 		toolResultBudget:        toolResultBudget,
@@ -111,27 +108,6 @@ func (e *Executor) SetPlanContext(stepID string, index, total int) {
 	e.planStepID = stepID
 	e.planStepIndex = index
 	e.planStepTotal = total
-}
-
-// logInfo logs an INFO level message if logger is not nil.
-func (e *Executor) logInfo(msg string, args ...any) {
-	if e.logger != nil {
-		e.logger.Info(msg, args...)
-	}
-}
-
-// logDebug logs a DEBUG level message if logger is not nil.
-func (e *Executor) logDebug(msg string, args ...any) {
-	if e.logger != nil {
-		e.logger.Debug(msg, args...)
-	}
-}
-
-// logWarn logs a WARN level message if logger is not nil.
-func (e *Executor) logWarn(msg string, args ...any) {
-	if e.logger != nil {
-		e.logger.Warn(msg, args...)
-	}
 }
 
 // applyToolResultBudget truncates a tool result if it exceeds the budget.
@@ -215,7 +191,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			if isContextExceededError(err) && !reactiveCompactAttempted {
 				reactiveCompactAttempted = true
 				cw.Compact(ctx)
-				e.logWarn("reactive_compaction_api_error", "step", stepNum, "error", err)
+				e.emitter.ExecutorDiagnostic(stepNum, "reactive_compaction_api_error", map[string]any{"error": err.Error()})
 				continue
 			}
 			return nil, err
@@ -227,7 +203,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		// Parse response
 		thought := resp.Message.Content
-		e.logDebug("llm_thought", "step", stepNum, "thought", thought)
 
 		// Always accumulate tokens regardless of suppressAssistantEvents
 		e.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens)
@@ -251,7 +226,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				}
 				allSteps = append(allSteps, nudgeStep)
 				cw.AddStep(nudgeStep)
-				e.logInfo("executor_nudge", "step", stepNum, "reason", "no_tools_used_on_step_1")
+				e.emitter.ExecutorDiagnostic(stepNum, "executor_nudge", map[string]any{"reason": "no_tools_used_on_step_1"})
 				continue // retry with nudge in context
 			}
 
@@ -261,7 +236,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 			allSteps = append(allSteps, step)
 
-			e.logInfo("executor_step", "step", stepNum, "thought", thought, "action", "implicit_finish", "observation_len", 0)
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
 
 			// Emit assistant response events (unless suppressed)
@@ -289,7 +263,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				}
 				allSteps = append(allSteps, nudgeStep)
 				cw.AddStep(nudgeStep)
-				e.logInfo("executor_nudge", "step", stepNum, "reason", "no_tools_no_end_turn_on_step_1")
+				e.emitter.ExecutorDiagnostic(stepNum, "executor_nudge", map[string]any{"reason": "no_tools_no_end_turn_on_step_1"})
 				continue
 			}
 
@@ -322,8 +296,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 			e.consecutiveTruncationCount++
 			if e.consecutiveTruncationCount >= truncationAbortThreshold {
-				e.logWarn("truncation_abort", "step", stepNum, "tool", truncAction.Name,
-					"consecutive_truncations", e.consecutiveTruncationCount)
+				e.emitter.ExecutorDiagnostic(stepNum, "truncation_abort", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
 				return &ExecutorResult{
 					Output:   fmt.Sprintf("Aborted: tool '%s' output was truncated %d times consecutively by max output token limit", truncAction.Name, e.consecutiveTruncationCount),
 					Steps:    allSteps,
@@ -332,8 +305,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 
 			truncObs := fmt.Sprintf(truncationMessage, truncAction.Name)
-			e.logWarn("truncation_detected", "step", stepNum, "tool", truncAction.Name,
-				"consecutive_truncations", e.consecutiveTruncationCount)
+			e.emitter.ExecutorDiagnostic(stepNum, "truncation_detected", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
 
 			step := Step{
 				Thought:     thought,
@@ -355,12 +327,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		// Emit tool call
 		e.emitter.ToolCall(stepNum, action.Name, string(action.Input))
-		if e.planStepID != "" {
-			e.logInfo("step_start", "step", stepNum, "tool", action.Name, "plan_step", e.planStepID, "plan_pos", fmt.Sprintf("%d/%d", e.planStepIndex, e.planStepTotal))
-		} else {
-			e.logInfo("step_start", "step", stepNum, "tool", action.Name)
-		}
-		e.logDebug("tool_call_args", "step", stepNum, "tool", action.Name, "args", string(action.Input))
 
 		// --- Circuit breaker: detect repeated identical tool calls ---
 		toolKey := action.Name + ":" + compactJSON(action.Input)
@@ -381,7 +347,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		}
 
 		if e.consecutiveRepeatCount >= abortThreshold {
-			e.logWarn("repeated_tool_call_abort", "step", stepNum, "tool", action.Name, "repeat_count", e.consecutiveRepeatCount)
+			e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
 			return &ExecutorResult{
 				Output:   fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount),
 				Steps:    allSteps,
@@ -394,7 +360,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			if e.lastToolResultIsError {
 				nudgeMsg = repeatErrorNudgeMessage
 			}
-			e.logWarn("repeated_tool_call_nudge", "step", stepNum, "tool", action.Name, "repeat_count", e.consecutiveRepeatCount)
+			e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_nudge", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
 			step := Step{
 				Thought:     thought,
 				Action:      action,
@@ -425,7 +391,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 			allSteps = append(allSteps, step)
 
-			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", 0)
 			e.emitter.ToolResult(stepNum, len(params.Answer), params.Answer)
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
 
@@ -460,8 +425,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 
 			if e.consecutiveParseErrorCount >= parseErrorAbortThreshold {
-				e.logWarn("parse_error_abort", "step", stepNum, "tool", action.Name,
-					"consecutive_parse_errors", e.consecutiveParseErrorCount)
+				e.emitter.ExecutorDiagnostic(stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
 				return &ExecutorResult{
 					Output:   fmt.Sprintf("Aborted: tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount),
 					Steps:    allSteps,
@@ -482,11 +446,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		// Emit tool result
 		e.emitter.ToolResult(stepNum, len(observation), observation)
-		observationPreview := observation
-		if len(observationPreview) > 500 {
-			observationPreview = observationPreview[:500] + "..."
-		}
-		e.logDebug("tool_observation", "step", stepNum, "tool", action.Name, "observation", observationPreview)
 
 		// Create step
 		step := Step{
@@ -500,11 +459,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		// Add step to context window
 		cw.AddStep(step)
 
-		if e.planStepID != "" {
-			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", len(observation), "plan_step", e.planStepID, "plan_pos", fmt.Sprintf("%d/%d", e.planStepIndex, e.planStepTotal))
-		} else {
-			e.logInfo("step_complete", "step", stepNum, "tool", action.Name, "observation_len", len(observation))
-		}
 		e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
 
 		// Wrap-up nudge: warn LLM when approaching budget limit
@@ -519,7 +473,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 			allSteps = append(allSteps, wrapUpStep)
 			cw.AddStep(wrapUpStep)
-			e.logInfo("executor_wrapup_nudge", "step", stepNum, "remaining", e.maxSteps-stepNum)
+			e.emitter.ExecutorDiagnostic(stepNum, "executor_wrapup_nudge", map[string]any{"remaining": e.maxSteps - stepNum})
 		}
 
 		// Correct token count with actual API usage
@@ -536,17 +490,14 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		switch fill.Status {
 		case "compact", "warning":
 			cw.Compact(ctx)
-			e.logDebug("compaction", "step", stepNum, "action", "context_compacted", "fill_percent", fill.Percent)
 			reactiveCompactAttempted = false
 		case "emergency":
 			cw.Compact(ctx)
-			e.logWarn("emergency_compaction", "step", stepNum, "fill_percent", fill.Percent)
 			reactiveCompactAttempted = false
 		case "reject":
 			if !reactiveCompactAttempted {
 				reactiveCompactAttempted = true
 				cw.Compact(ctx)
-				e.logWarn("reactive_compaction_reject", "step", stepNum, "fill_percent", fill.Percent)
 				continue
 			}
 			return nil, fmt.Errorf("context window full after reactive compaction (%.1f%% of %d tokens)", fill.Percent, fill.Max)

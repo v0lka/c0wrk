@@ -18,18 +18,17 @@ import (
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/tools/builtins"
+	websearch "github.com/user/agent/sdk/tools/builtins/web_search"
 
 	// Core layer
 	"github.com/user/agent/core"
 	toolcore "github.com/user/agent/core/coretools"
 	"github.com/user/agent/core/tools"
-	"github.com/user/agent/core/tools/external"
 	"github.com/user/agent/core/tools/mcp"
 
 	// Backend layer
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/backend/logger"
-	"github.com/user/agent/backend/memory"
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/session"
 
@@ -46,6 +45,9 @@ func (a *App) Startup(ctx context.Context) {
 	// On macOS, apps launched from Finder/Dock don't inherit shell env vars.
 	// This ensures ${OPENAI_API_KEY} and similar vars in config.yaml resolve correctly.
 	loadShellEnvironment()
+
+	// Collect environment info once for all sessions.
+	a.envInfo = tools.CollectEnvInfo()
 
 	// Initialize logger FIRST - before any other initialization
 	// This ensures all startup errors are written to log files
@@ -93,7 +95,11 @@ func (a *App) Startup(ctx context.Context) {
 		a.config = &config.Config{}
 		config.ApplyDefaults(a.config)
 		log.Warn("config load failed, check your config.yaml syntax")
-		a.configLoadErrors = []string{"Failed to load config: " + err.Error()}
+		errMsg := "Failed to load config"
+		if err != nil {
+			errMsg += ": " + err.Error()
+		}
+		a.configLoadErrors = []string{errMsg}
 	} else {
 		a.config = result.Config
 		a.configMigrated = result.Migrated
@@ -160,8 +166,10 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Create emit function that bridges to Wails events
 	emitFunc := func(evt session.Event) {
+		slog.Debug("desktop: event received", "type", evt.Type, "sessionID", evt.SessionID)
 		eventName := fmt.Sprintf("session:%s:%s", evt.SessionID, evt.Type)
 		wailsRuntime.EventsEmit(a.ctx, eventName, evt.Data)
+		slog.Debug("desktop: Wails EventsEmit called", "eventName", eventName)
 
 		// Persist chat-visible events to SQLite
 		if a.store == nil {
@@ -224,8 +232,10 @@ func (a *App) Startup(ctx context.Context) {
 		case "step_complete":
 			role = "step_done"
 		case "plan_step_start":
+			slog.Debug("desktop: routing plan_step_start event", "sessionID", evt.SessionID)
 			role = "plan_step_start"
 		case "plan_step_complete":
+			slog.Debug("desktop: routing plan_step_complete event", "sessionID", evt.SessionID)
 			role = "plan_step_complete"
 		case "retry":
 			role = "retry"
@@ -239,6 +249,21 @@ func (a *App) Startup(ctx context.Context) {
 			role = "task_failed_resumable"
 		case "task_resumed":
 			role = "task_resumed"
+		case "tool_confirm":
+			role = "tool_confirm"
+		case "ask_user":
+			role = "ask_user"
+		case "task_cancelled":
+			role = "task_cancelled"
+		case "step_retry":
+			role = "step_retry"
+		case "service":
+			// Only persist orchestration phase service events
+			if data, ok := evt.Data.(map[string]any); ok {
+				if phase, _ := data["phase"].(string); phase == "orchestration" {
+					role = "status"
+				}
+			}
 		case "session_tokens":
 			return // Transient event: already emitted via Wails above, no persistence needed
 		default:
@@ -275,6 +300,8 @@ func (a *App) Startup(ctx context.Context) {
 			CreatedAt: time.Now().Format(time.RFC3339),
 		}); err != nil {
 			slog.Error("failed to persist event message", "type", evt.Type, "session", evt.SessionID, "error", err)
+		} else {
+			slog.Debug("desktop: event persisted to SQLite", "type", evt.Type, "sessionID", evt.SessionID, "role", role)
 		}
 	}
 
@@ -290,7 +317,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Build LLM Router + ModelRegistry at startup for validation (fail-fast).
 	// These are also needed for the ToolJudge and WebFetch summarizer initialization.
 	// The factory closure will rebuild them per-session from current config.
-	llmRouter, modelRegistry, err := a.buildLLMRouter(a.config)
+	llmRouter, modelRegistry, err := a.buildRouter(a.config)
 	if err != nil {
 		emitStartupError("failed to initialize LLM router", err)
 		// Don't set llmRouter - it will remain nil and orchestrator creation will fail
@@ -339,10 +366,11 @@ func (a *App) Startup(ctx context.Context) {
 	webFetchTool := builtins.NewWebFetchTool(summarizer)
 	registry.Register(webFetchTool)
 
-	// WebSearch tool (requires Tavily API key)
+	// WebSearch tool
 	searchAPIKey := config.ExpandEnvVars(a.config.Search.APIKey)
-	if searchAPIKey != "" {
-		webSearchTool := toolcore.NewWebSearchTool(searchAPIKey)
+	searchProvider := a.createSearchProvider(a.config.Search.Provider, searchAPIKey)
+	if searchProvider != nil {
+		webSearchTool := websearch.NewWebSearchTool(searchProvider)
 		registry.Register(webSearchTool)
 	}
 
@@ -359,36 +387,11 @@ func (a *App) Startup(ctx context.Context) {
 			Env:     cfg.Env,
 		}
 	}
-	gateway, _ := mcp.StartGateway(context.Background(), mcp.GatewayConfig{Servers: mcpEntries}, registry, config.ExpandEnvVars, log)
+	gateway, mcpErr := mcp.StartGateway(context.Background(), mcp.GatewayConfig{Servers: mcpEntries}, registry, config.ExpandEnvVars, log)
+	if mcpErr != nil {
+		slog.Warn("MCP gateway startup failed", "error", mcpErr)
+	}
 	a.mcpGateway = gateway
-
-	// Initialize external tools directory
-	toolsDir := a.config.ExternalTools.Directory
-	if toolsDir == "" {
-		toolsDir = filepath.Join(agentDir, "tools")
-	}
-	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
-		log.Warn("failed to create tools directory", "error", err)
-	}
-
-	// Register existing external tools from tools directory
-	procMem := memory.NewProceduralMemory(toolsDir)
-	if err := procMem.Scan(); err != nil {
-		log.Warn("failed to scan tools directory", "error", err)
-	}
-	for _, info := range procMem.ListTools() {
-		manifest, err := external.ParseManifest(filepath.Join(info.Path, "tool.json"))
-		if err != nil {
-			log.Warn("failed to parse tool manifest", "tool", info.Name, "error", err)
-			continue
-		}
-		extTool := external.NewExternalTool(manifest, info.Path)
-		registry.RegisterWithSource(extTool, "external")
-	}
-
-	// Register ToolCreatorTool for dynamic tool creation
-	toolCreator := toolcore.NewToolCreatorTool(toolsDir, registry.ToolRegistry)
-	registry.Register(toolCreator)
 
 	// Configure per-tool security policies from config
 	policyOverrides := make(map[string]tools.ToolPolicy)
@@ -417,6 +420,10 @@ func (a *App) Startup(ctx context.Context) {
 	listStepOutputsTool := builtins.NewListStepOutputsTool()
 	registry.Register(listStepOutputsTool)
 
+	// Batch tool (executes multiple tool calls in one request)
+	batchTool := builtins.NewBatchTool(registry)
+	registry.Register(batchTool)
+
 	// Ask User tool (interactive question panel)
 	askUserTool := builtins.NewAskUserTool(func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
 		if a.ctx == nil {
@@ -440,8 +447,7 @@ func (a *App) Startup(ctx context.Context) {
 			Recommended: req.Recommended,
 		}
 
-		eventName := fmt.Sprintf("session:%s:ask_user", sessionID)
-		wailsRuntime.EventsEmit(a.ctx, eventName, payload)
+		emitFunc(session.Event{SessionID: sessionID, Type: "ask_user", Data: payload})
 
 		select {
 		case resp := <-ch:
@@ -494,12 +500,15 @@ func (a *App) Startup(ctx context.Context) {
 		}
 
 		// Emit session-scoped event: session:{sessionId}:tool_confirm
-		eventName := fmt.Sprintf("session:%s:tool_confirm", sessionID)
-		wailsRuntime.EventsEmit(a.ctx, eventName, payload)
+		emitFunc(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
 
 		select {
 		case resp := <-ch:
 			return resp, nil
+		case <-ctx.Done():
+			// Task was cancelled (e.g. user pressed Stop)
+			a.pendingConfirmations.Delete(requestID)
+			return tools.ConfirmDenyAndStop, ctx.Err()
 		case <-a.ctx.Done():
 			// App is shutting down, cancel the confirmation
 			a.pendingConfirmations.Delete(requestID)
@@ -513,7 +522,10 @@ func (a *App) Startup(ctx context.Context) {
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error) {
 		cfg := a.currentConfig()
 
-		newLLMRouter, newModelRegistry, err := a.buildLLMRouter(cfg)
+		// Wrap emitter with logging so all execution events are logged to the session file.
+		emitter = core.NewLoggingEmitter(emitter, logger)
+
+		newLLMRouter, newModelRegistry, err := a.buildRouter(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build LLM router: %w", err)
 		}
@@ -547,12 +559,15 @@ func (a *App) Startup(ctx context.Context) {
 			toolResultBudget,
 		)
 
+		// Wrap the LLM caller for step-execution so those calls are also logged.
+		loggedLLM := core.NewLoggingCaller(newLLMRouter, cfg.LLM.ActiveProvider, logger)
+
 		return core.NewOrchestrator(
 			newRouter,             // Router
 			newACExtractor,        // ACExtractor
 			newPlanner,            // Planner
 			newEvaluator,          // Evaluator
-			newLLMRouter,          // LLMCaller
+			loggedLLM,             // LLMCaller
 			registry,              // ToolExecutor (shared)
 			registry.ToolRegistry, // ToolRegistry (SDK base, shared)
 			tokenCounter,          // TokenCounter
@@ -580,6 +595,11 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	a.manager = session.NewManager(factory, emitFunc, logDir)
+
+	// Pass environment info to session manager for context injection.
+	if a.envInfo != nil {
+		a.manager.SetEnvInfo(a.envInfo)
+	}
 
 	// File watcher is NOT initialized at startup — it's created per-project in SwitchProject.
 
@@ -732,7 +752,11 @@ func (a *App) Startup(ctx context.Context) {
 			return
 		}
 
-		ch <- resp
+		select {
+		case ch <- resp:
+		default:
+			// Channel already has a value or receiver gone; drop
+		}
 		a.pendingAskUser.Delete(requestID)
 	})
 }
@@ -778,5 +802,30 @@ func (a *App) Shutdown(ctx context.Context) {
 		if err := a.sessionLogger.Close(); err != nil {
 			slog.Error("failed to close session logger", "error", err)
 		}
+	}
+}
+
+// createSearchProvider creates a search provider based on the configured provider name.
+// Returns nil if the provider requires an API key but none is configured.
+func (a *App) createSearchProvider(providerName, apiKey string) websearch.SearchProvider {
+	switch providerName {
+	case "brave":
+		if apiKey == "" {
+			return nil
+		}
+		return websearch.NewBraveProvider(apiKey)
+	case "exa":
+		if apiKey == "" {
+			return nil
+		}
+		return websearch.NewExaProvider(apiKey)
+	case "duckduckgo":
+		// DuckDuckGo does not require an API key
+		return websearch.NewDuckDuckGoProvider()
+	default: // "tavily" or empty
+		if apiKey == "" {
+			return nil
+		}
+		return websearch.NewTavilyProvider(apiKey)
 	}
 }

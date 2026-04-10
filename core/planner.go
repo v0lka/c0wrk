@@ -129,6 +129,11 @@ func (p *Planner) buildPlanSystemPrompt(
 	result = strings.ReplaceAll(result, "REFLECTIONS", reflectionsStr)
 	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
 
+	// Append environment context if available.
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+		result += "\n\n" + envBlock
+	}
+
 	return result
 }
 
@@ -206,6 +211,11 @@ func (p *Planner) buildReplanSystemPrompt(
 	result = strings.ReplaceAll(result, "REFLECTION", reflectionStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
+
+	// Append environment context if available.
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+		result += "\n\n" + envBlock
+	}
 
 	return result
 }

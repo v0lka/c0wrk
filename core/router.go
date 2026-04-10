@@ -10,7 +10,7 @@ import (
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
-	tools "github.com/user/agent/sdk/tools"
+	"github.com/user/agent/sdk/tools"
 )
 
 var (
@@ -20,7 +20,7 @@ var (
 
 // Router classifies user requests by complexity and determines execution strategy.
 type Router struct {
-	llm           LLMCaller // reuse the interface from executor.go
+	llm           LLMCaller
 	historyWindow int       // number of recent messages to include
 }
 

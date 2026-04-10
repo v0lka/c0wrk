@@ -16,6 +16,18 @@ import (
 	"github.com/user/agent/sdk/llm"
 )
 
+// maskedAPIKey is the placeholder returned for configured API keys in the UI.
+const maskedAPIKey = "***configured***"
+
+// validProviders is the set of known LLM provider names accepted by UpdateSettings.
+var validProviders = map[string]bool{
+	"anthropic":         true,
+	"gemini":            true,
+	"lmstudio":          true,
+	"openai_compatible": true,
+	"chatgpt":           true,
+}
+
 // ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
 type ConfigResponse struct {
 	Loaded             bool              `json:"loaded"`
@@ -151,14 +163,6 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 
 	// Update active provider
 	if settings.ActiveProvider != "" {
-		// Validate the provider is one of the known providers
-		validProviders := map[string]bool{
-			"anthropic":         true,
-			"gemini":            true,
-			"lmstudio":          true,
-			"openai_compatible": true,
-			"chatgpt":           true,
-		}
 		if !validProviders[settings.ActiveProvider] {
 			return fmt.Errorf("active_provider %q is not a valid provider", settings.ActiveProvider)
 		}
@@ -172,21 +176,21 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 			if settings.Model != "" {
 				a.config.LLM.Anthropic.Model = settings.Model
 			}
-			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
 				a.config.LLM.Anthropic.APIKey = settings.APIKey
 			}
 		case "gemini":
 			if settings.Model != "" {
 				a.config.LLM.Gemini.Model = settings.Model
 			}
-			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
 				a.config.LLM.Gemini.APIKey = settings.APIKey
 			}
 		case "lmstudio":
 			if settings.Model != "" {
 				a.config.LLM.LMStudio.Model = settings.Model
 			}
-			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
 				a.config.LLM.LMStudio.APIKey = settings.APIKey
 			}
 			if settings.BaseURL != "" {
@@ -196,7 +200,7 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 			if settings.Model != "" {
 				a.config.LLM.OpenAICompatible.Model = settings.Model
 			}
-			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
 				a.config.LLM.OpenAICompatible.APIKey = settings.APIKey
 			}
 			if settings.BaseURL != "" {
@@ -206,7 +210,7 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 			if settings.Model != "" {
 				a.config.LLM.ChatGPT.Model = settings.Model
 			}
-			if settings.APIKey != "" && settings.APIKey != "***configured***" {
+			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
 				a.config.LLM.ChatGPT.APIKey = settings.APIKey
 			}
 		}
@@ -237,7 +241,7 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 
 	a.config.Search.Provider = settings.Provider
 	// Only update API key if it's not the masked placeholder
-	if settings.APIKey != "" && settings.APIKey != "***configured***" {
+	if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
 		a.config.Search.APIKey = settings.APIKey
 	}
 
@@ -311,6 +315,8 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 
 // GetLogLevel returns the current log level.
 func (a *App) GetLogLevel() string {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
 	return a.logLevel
 }
 
@@ -463,7 +469,7 @@ func maskAPIKey(key string) string {
 	if strings.HasPrefix(key, "${") && strings.HasSuffix(key, "}") {
 		return key
 	}
-	return "***configured***"
+	return maskedAPIKey
 }
 
 // nonNilStringSlice returns an empty slice if the input is nil,

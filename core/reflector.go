@@ -10,6 +10,7 @@ import (
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
+	"github.com/user/agent/sdk/tools"
 )
 
 // compile-time check: Reflector implements orchestration.Reflector.
@@ -40,6 +41,12 @@ func (r *Reflector) Reflect(
 	prevReflections []Reflection,
 ) (reflection *Reflection, err error) {
 	systemPrompt := r.buildSystemPrompt()
+
+	// Append compact environment context for reflection analysis.
+	if envBlock := tools.FormatCompactEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+		systemPrompt += "\n\n" + envBlock
+	}
+
 	userMessage := r.buildUserMessage(trajectory, evalResult, plan, prevReflections)
 
 	messages := []llm.Message{

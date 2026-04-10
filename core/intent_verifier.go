@@ -15,10 +15,10 @@ import (
 // compile-time check: IntentVerifier implements orchestration.Verifier.
 var _ orchestration.Verifier = (*IntentVerifier)(nil)
 
-// readOnlyToolWhitelist defines the tools that the intent verifier is allowed to use.
+// readOnlyToolAllowlist defines the tools that the intent verifier is allowed to use.
 // file_ops is included because the verifier's system prompt restricts it to read-only
 // operations, and the file_ops Judge already enforces workspace boundaries for writes.
-var readOnlyToolWhitelist = map[string]bool{
+var readOnlyToolAllowlist = map[string]bool{
 	"file_ops": true,
 	"ripgrep":  true,
 	"glob":     true,
@@ -103,7 +103,6 @@ func (v *IntentVerifier) Verify(ctx context.Context, userMessage, finalOutput, c
 		v.toolRegistry,
 		v.tokenCounter,
 		v.maxSteps,
-		v.logger,
 		(*agent.NoopEvents)(nil),
 		true, // suppressAssistantEvents
 		v.toolResultBudget,
@@ -125,11 +124,11 @@ func (v *IntentVerifier) Verify(ctx context.Context, userMessage, finalOutput, c
 	}, nil
 }
 
-// filterReadOnlyTools returns only tool descriptors whose Name is in the read-only whitelist.
+// filterReadOnlyTools returns only tool descriptors whose Name is in the read-only allowlist.
 func filterReadOnlyTools(allTools []tools.ToolDescriptor) []tools.ToolDescriptor {
-	filtered := make([]tools.ToolDescriptor, 0, len(readOnlyToolWhitelist))
+	filtered := make([]tools.ToolDescriptor, 0, len(readOnlyToolAllowlist))
 	for _, td := range allTools {
-		if readOnlyToolWhitelist[td.Name] {
+		if readOnlyToolAllowlist[td.Name] {
 			filtered = append(filtered, td)
 		}
 	}

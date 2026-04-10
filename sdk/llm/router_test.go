@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// mockProvider implements LLMProvider for testing.
+// mockProvider implements Provider for testing.
 type mockProvider struct {
 	name           string
 	lastReq        ChatRequest
@@ -54,16 +54,16 @@ func (m *mockProvider) StreamChatCompletion(ctx context.Context, req ChatRequest
 }
 
 // newTestRouter creates a router with mock providers for testing.
-func newTestRouter(providers map[string]*mockProvider, activeProviderName, activeModel string) *LLMRouter {
-	providerMap := make(map[string]LLMProvider)
+func newTestRouter(providers map[string]*mockProvider, activeProviderName, activeModel string) *Router {
+	providerMap := make(map[string]Provider)
 	for name, p := range providers {
 		providerMap[name] = p
 	}
-	var activeProvider LLMProvider
+	var activeProvider Provider
 	if p, ok := providerMap[activeProviderName]; ok {
 		activeProvider = p
 	}
-	return &LLMRouter{
+	return &Router{
 		providers:          providerMap,
 		activeProvider:     activeProvider,
 		activeModel:        activeModel,
@@ -146,7 +146,7 @@ func TestRouter_Call_RetriesOnRetryableError(t *testing.T) {
 			Message:    Message{Role: "assistant", Content: "OK"},
 			StopReason: "end_turn",
 		},
-		err:      NewLLMError("test", 429, true, errors.New("rate limited")),
+		err:      NewError("test", 429, true, errors.New("rate limited")),
 		errUntil: 1,
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
@@ -166,7 +166,7 @@ func TestRouter_Call_RetriesOnRetryableError(t *testing.T) {
 func TestRouter_Call_NoRetryOnNonRetryableError(t *testing.T) {
 	mock := &mockProvider{
 		name: "test",
-		err:  NewLLMError("test", 401, false, errors.New("unauthorized")),
+		err:  NewError("test", 401, false, errors.New("unauthorized")),
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
 
@@ -182,7 +182,7 @@ func TestRouter_Call_NoRetryOnNonRetryableError(t *testing.T) {
 func TestRouter_Call_ExhaustsRetries(t *testing.T) {
 	mock := &mockProvider{
 		name: "test",
-		err:  NewLLMError("test", 503, true, errors.New("service unavailable")),
+		err:  NewError("test", 503, true, errors.New("service unavailable")),
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
 
@@ -199,7 +199,7 @@ func TestRouter_Call_ExhaustsRetries(t *testing.T) {
 func TestRouter_Call_RespectsContextCancellation(t *testing.T) {
 	mock := &mockProvider{
 		name: "test",
-		err:  NewLLMError("test", 429, true, errors.New("rate limited")),
+		err:  NewError("test", 429, true, errors.New("rate limited")),
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
 
@@ -221,7 +221,7 @@ func TestRouter_Stream_RetriesOnRetryableError(t *testing.T) {
 	mock := &mockProvider{
 		name:           "test",
 		streamResponse: []ChatChunk{{Delta: "Hello"}, {StopReason: "end_turn"}},
-		err:            NewLLMError("test", 502, true, errors.New("bad gateway")),
+		err:            NewError("test", 502, true, errors.New("bad gateway")),
 		errUntil:       1,
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
@@ -291,7 +291,7 @@ func TestRouter_GetDefaultProvider(t *testing.T) {
 func TestRouter_Stream_NoRetryOnNonRetryableError(t *testing.T) {
 	mock := &mockProvider{
 		name: "test",
-		err:  NewLLMError("test", 401, false, errors.New("unauthorized")),
+		err:  NewError("test", 401, false, errors.New("unauthorized")),
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
 
@@ -307,7 +307,7 @@ func TestRouter_Stream_NoRetryOnNonRetryableError(t *testing.T) {
 func TestRouter_Stream_ExhaustsRetries(t *testing.T) {
 	mock := &mockProvider{
 		name: "test",
-		err:  NewLLMError("test", 503, true, errors.New("service unavailable")),
+		err:  NewError("test", 503, true, errors.New("service unavailable")),
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
 
@@ -323,7 +323,7 @@ func TestRouter_Stream_ExhaustsRetries(t *testing.T) {
 func TestRouter_Stream_RespectsContextCancellation(t *testing.T) {
 	mock := &mockProvider{
 		name: "test",
-		err:  NewLLMError("test", 429, true, errors.New("rate limited")),
+		err:  NewError("test", 429, true, errors.New("rate limited")),
 	}
 	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
 
@@ -386,7 +386,7 @@ func TestRouter_Call_PreservesExistingTemperature(t *testing.T) {
 	}
 }
 
-func TestNewLLMRouter(t *testing.T) {
+func TestNewRouter(t *testing.T) {
 	// Test with lmstudio provider (doesn't require external services)
 	t.Run("lmstudio provider", func(t *testing.T) {
 		cfg := RouterConfig{
@@ -399,7 +399,7 @@ func TestNewLLMRouter(t *testing.T) {
 			MaxBackoff:     1 * time.Second,
 		}
 
-		router, err := NewLLMRouter(context.Background(), cfg, nil)
+		router, err := NewRouter(context.Background(), cfg, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -433,7 +433,7 @@ func TestNewLLMRouter(t *testing.T) {
 		}
 
 		registry := NewModelRegistry(nil)
-		router, err := NewLLMRouter(context.Background(), cfg, registry)
+		router, err := NewRouter(context.Background(), cfg, registry)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -449,7 +449,7 @@ func TestNewLLMRouter(t *testing.T) {
 	// Test with no active provider
 	t.Run("no active provider", func(t *testing.T) {
 		cfg := RouterConfig{}
-		_, err := NewLLMRouter(context.Background(), cfg, nil)
+		_, err := NewRouter(context.Background(), cfg, nil)
 		if err == nil {
 			t.Fatal("expected error for no active provider")
 		}
@@ -466,7 +466,7 @@ func TestNewLLMRouter(t *testing.T) {
 			MaxBackoff:     0,
 		}
 
-		router, err := NewLLMRouter(context.Background(), cfg, nil)
+		router, err := NewRouter(context.Background(), cfg, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -488,7 +488,7 @@ func TestNewLLMRouter(t *testing.T) {
 			Model:          "claude-3-sonnet",
 		}
 
-		_, err := NewLLMRouter(context.Background(), cfg, nil)
+		_, err := NewRouter(context.Background(), cfg, nil)
 		if err == nil {
 			t.Fatal("expected error for anthropic without API key")
 		}
@@ -601,9 +601,9 @@ func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
 }
 
 // newTestRouterWithRegistry creates a router with mock provider, model registry and token counter.
-func newTestRouterWithRegistry(mock *mockProvider, activeModel string, registry *ModelRegistry) *LLMRouter {
-	return &LLMRouter{
-		providers:          map[string]LLMProvider{"primary": mock},
+func newTestRouterWithRegistry(mock *mockProvider, activeModel string, registry *ModelRegistry) *Router {
+	return &Router{
+		providers:          map[string]Provider{"primary": mock},
 		activeProvider:     mock,
 		activeModel:        activeModel,
 		activeProviderName: "primary",

@@ -17,7 +17,7 @@ type OpenAIProviderConfig struct {
 	BaseURL string // empty = default OpenAI; otherwise custom endpoint
 }
 
-// OpenAIProvider implements LLMProvider for OpenAI and compatible APIs.
+// OpenAIProvider implements Provider for OpenAI and compatible APIs.
 type OpenAIProvider struct {
 	client *openai.Client
 	name   string
@@ -58,7 +58,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 	}
 
 	if len(resp.Choices) == 0 {
-		return nil, errors.New("openai: no choices in response")
+		return nil, WrapProviderError("openai", 0, errors.New("no choices in response"))
 	}
 
 	choice := resp.Choices[0]

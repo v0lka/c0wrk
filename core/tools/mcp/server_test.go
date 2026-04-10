@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestNewMCPServer_Initialization(t *testing.T) {
+func TestNewServer_Initialization(t *testing.T) {
 	tests := []struct {
 		name       string
 		serverName string
@@ -18,9 +18,9 @@ func TestNewMCPServer_Initialization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := NewMCPServer(tt.serverName)
+			s := NewServer(tt.serverName)
 			if s == nil {
-				t.Fatal("NewMCPServer returned nil")
+				t.Fatal("NewServer returned nil")
 			}
 			if s.Name() != tt.serverName {
 				t.Errorf("Name() = %q, want %q", s.Name(), tt.serverName)
@@ -35,8 +35,8 @@ func TestNewMCPServer_Initialization(t *testing.T) {
 	}
 }
 
-func TestMCPServer_CallTool_NilClient(t *testing.T) {
-	s := NewMCPServer("test")
+func TestServer_CallTool_NilClient(t *testing.T) {
+	s := NewServer("test")
 
 	_, err := s.CallTool(context.Background(), "some_tool", nil)
 	if err == nil {
@@ -49,8 +49,8 @@ func TestMCPServer_CallTool_NilClient(t *testing.T) {
 	}
 }
 
-func TestMCPServer_CallTool_NilClientWithArgs(t *testing.T) {
-	s := NewMCPServer("my-server")
+func TestServer_CallTool_NilClientWithArgs(t *testing.T) {
+	s := NewServer("my-server")
 
 	args := map[string]any{
 		"path": "/tmp",
@@ -66,8 +66,8 @@ func TestMCPServer_CallTool_NilClientWithArgs(t *testing.T) {
 	}
 }
 
-func TestMCPServer_DiscoverTools_NilClient(t *testing.T) {
-	s := NewMCPServer("test")
+func TestServer_DiscoverTools_NilClient(t *testing.T) {
+	s := NewServer("test")
 
 	err := s.DiscoverTools(context.Background())
 	if err == nil {
@@ -80,8 +80,8 @@ func TestMCPServer_DiscoverTools_NilClient(t *testing.T) {
 	}
 }
 
-func TestMCPServer_Close_NilClient(t *testing.T) {
-	s := NewMCPServer("test")
+func TestServer_Close_NilClient(t *testing.T) {
+	s := NewServer("test")
 
 	// Closing a server with no client should return nil
 	err := s.Close()
@@ -90,10 +90,10 @@ func TestMCPServer_Close_NilClient(t *testing.T) {
 	}
 }
 
-func TestMCPServer_Close_NilClient_ClearsState(t *testing.T) {
-	s := NewMCPServer("test")
+func TestServer_Close_NilClient_ClearsState(t *testing.T) {
+	s := NewServer("test")
 	// Manually set some tools
-	s.tools = []MCPToolInfo{
+	s.tools = []ToolInfo{
 		{Name: "tool1", Description: "desc", InputSchema: json.RawMessage(`{}`)},
 	}
 
@@ -111,8 +111,8 @@ func TestMCPServer_Close_NilClient_ClearsState(t *testing.T) {
 	}
 }
 
-func TestMCPServer_Close_MultipleTimes(t *testing.T) {
-	s := NewMCPServer("test")
+func TestServer_Close_MultipleTimes(t *testing.T) {
+	s := NewServer("test")
 
 	// Multiple closes should be safe
 	for i := 0; i < 3; i++ {
@@ -123,9 +123,9 @@ func TestMCPServer_Close_MultipleTimes(t *testing.T) {
 	}
 }
 
-func TestMCPServer_Tools_ReturnsCopy(t *testing.T) {
-	s := NewMCPServer("test")
-	s.tools = []MCPToolInfo{
+func TestServer_Tools_ReturnsCopy(t *testing.T) {
+	s := NewServer("test")
+	s.tools = []ToolInfo{
 		{Name: "tool1", Description: "desc1", InputSchema: json.RawMessage(`{}`)},
 		{Name: "tool2", Description: "desc2", InputSchema: json.RawMessage(`{}`)},
 	}
@@ -151,8 +151,8 @@ func TestMCPServer_Tools_ReturnsCopy(t *testing.T) {
 	}
 }
 
-func TestMCPServer_IsConnected(t *testing.T) {
-	s := NewMCPServer("test")
+func TestServer_IsConnected(t *testing.T) {
+	s := NewServer("test")
 
 	if s.IsConnected() {
 		t.Error("new server should not be connected")
@@ -161,7 +161,7 @@ func TestMCPServer_IsConnected(t *testing.T) {
 	// We can't easily set a real client, but we verified the nil path
 }
 
-func TestMCPServer_Name(t *testing.T) {
+func TestServer_Name(t *testing.T) {
 	tests := []struct {
 		name     string
 		expected string
@@ -174,7 +174,7 @@ func TestMCPServer_Name(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := NewMCPServer(tt.expected)
+			s := NewServer(tt.expected)
 			if got := s.Name(); got != tt.expected {
 				t.Errorf("Name() = %q, want %q", got, tt.expected)
 			}

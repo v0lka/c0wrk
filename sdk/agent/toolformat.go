@@ -8,21 +8,18 @@ import (
 )
 
 // BuildGroupedToolList formats tool descriptors into a tiered, priority-labeled
-// text block for inclusion in LLM prompts. Tools are grouped into 4 tiers:
-//   - Tier 1 (External): Source == "external"
-//   - Tier 2 (Built-in): Source == "core" and not bash_exec/tool_creator
-//   - Tier 3 (MCP): Source == "mcp"
-//   - Tier 4 (Fallback): bash_exec and tool_creator
+// text block for inclusion in LLM prompts. Tools are grouped into 3 tiers:
+//   - Tier 1 (Built-in): Source == "core" and not bash_exec
+//   - Tier 2 (MCP): Source == "mcp"
+//   - Tier 3 (Fallback): bash_exec
 //
 // Empty tiers are omitted from the output.
 func BuildGroupedToolList(descriptors []tools.ToolDescriptor) string {
-	var externalTools, builtinTools, mcpTools, fallbackTools []tools.ToolDescriptor
+	var builtinTools, mcpTools, fallbackTools []tools.ToolDescriptor
 
 	for _, t := range descriptors {
 		switch {
-		case t.Source == "external":
-			externalTools = append(externalTools, t)
-		case t.Name == "bash_exec" || t.Name == "tool_creator":
+		case t.Name == "bash_exec":
 			fallbackTools = append(fallbackTools, t)
 		case t.Source == "mcp":
 			mcpTools = append(mcpTools, t)
@@ -44,10 +41,9 @@ func BuildGroupedToolList(descriptors []tools.ToolDescriptor) string {
 		}
 	}
 
-	writeGroup("External tools (TIER 1 — highest priority, use when applicable):", externalTools)
-	writeGroup("Built-in tools (TIER 2):", builtinTools)
-	writeGroup("MCP tools (TIER 3):", mcpTools)
-	writeGroup("Fallback tools (TIER 4 — use only when no higher-tier tool fits):", fallbackTools)
+	writeGroup("Built-in tools (TIER 1):", builtinTools)
+	writeGroup("MCP tools (TIER 2):", mcpTools)
+	writeGroup("Fallback tools (TIER 3 — use only when no higher-tier tool fits):", fallbackTools)
 
 	return b.String()
 }

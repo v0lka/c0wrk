@@ -25,7 +25,7 @@ type GeminiProviderConfig struct {
 	Location  string // optional, for Vertex AI
 }
 
-// GeminiProvider implements LLMProvider using Google's Gen AI SDK.
+// GeminiProvider implements LLM Provider using Google's Gen AI SDK.
 type GeminiProvider struct {
 	client *genai.Client
 	name   string

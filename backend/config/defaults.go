@@ -121,4 +121,9 @@ func ApplyDefaults(cfg *Config) {
 			Policy: "always_allow",
 		}
 	}
+
+	// Search defaults
+	if cfg.Search.Provider == "" {
+		cfg.Search.Provider = "tavily"
+	}
 }

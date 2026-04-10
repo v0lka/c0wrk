@@ -100,26 +100,26 @@ func TestIsRetryable_NilError(t *testing.T) {
 	}
 }
 
-func TestIsRetryable_WrappedLLMError(t *testing.T) {
-	llmErr := NewLLMError("openai", 429, true, errors.New("rate limited"))
+func TestIsRetryable_WrappedError(t *testing.T) {
+	llmErr := NewError("openai", 429, true, errors.New("rate limited"))
 	wrapped := fmt.Errorf("context: %w", llmErr)
 
 	if !IsRetryable(wrapped) {
-		t.Error("IsRetryable() for wrapped LLMError = false, want true")
+		t.Error("IsRetryable() for wrapped Error = false, want true")
 	}
 }
 
-func TestLLMError_ErrorString(t *testing.T) {
-	err := NewLLMError("anthropic", 529, true, errors.New("overloaded"))
+func TestError_ErrorString(t *testing.T) {
+	err := NewError("anthropic", 529, true, errors.New("overloaded"))
 	expected := "llm [anthropic] error (HTTP 529, retryable=true): overloaded"
 	if err.Error() != expected {
 		t.Errorf("Error() = %q, want %q", err.Error(), expected)
 	}
 }
 
-func TestLLMError_Unwrap(t *testing.T) {
+func TestError_Unwrap(t *testing.T) {
 	orig := errors.New("original")
-	llmErr := NewLLMError("gemini", 500, false, orig)
+	llmErr := NewError("gemini", 500, false, orig)
 
 	if !errors.Is(llmErr.Unwrap(), orig) {
 		t.Error("Unwrap() did not return the original error")

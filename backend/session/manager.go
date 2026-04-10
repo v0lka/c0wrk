@@ -49,6 +49,7 @@ type Session struct {
 	logFile       *os.File           // session log file handle, closed on deletion
 	cancel        context.CancelFunc // cancel for current task
 	active        bool               // is currently processing
+	done          chan struct{}       // closed when task goroutine finishes
 	mu            sync.Mutex
 }
 
@@ -73,7 +74,9 @@ type Manager struct {
 	logDir              string      // base directory for session logs
 	logLevel            string      // current log level for session loggers
 	tokenPersist        TokenPersistFunc
-	taskStore           TaskStore // optional persistent task store
+	taskStore           TaskStore    // optional persistent task store
+	envInfo             *tools.EnvInfo // environment info for context injection
+	stopTimeout         time.Duration  // how long to wait for goroutine on cancel/delete
 }
 
 // NewManager creates a new session Manager.
@@ -84,6 +87,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir string
 		emitFunc:            emitFunc,
 		logDir:              logDir,
 		logLevel:            "DEBUG",
+		stopTimeout:         10 * time.Second,
 	}
 }
 
@@ -101,6 +105,13 @@ func (m *Manager) SetTaskStore(store TaskStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.taskStore = store
+}
+
+// SetEnvInfo sets the environment info that will be injected into task contexts.
+func (m *Manager) SetEnvInfo(info *tools.EnvInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.envInfo = info
 }
 
 // CreateSession creates a new session with a fresh orchestrator.
@@ -240,11 +251,28 @@ func (m *Manager) DeleteSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
-	// Cancel any active task
+	// Cancel any active task and grab the done channel for waiting.
 	session.mu.Lock()
+	var doneCh chan struct{}
 	if session.active && session.cancel != nil {
 		session.cancel()
+		doneCh = session.done
 	}
+	session.mu.Unlock()
+	m.mu.Unlock()
+
+	// Wait for the task goroutine to finish so events are fully flushed.
+	if doneCh != nil {
+		select {
+		case <-doneCh:
+		case <-time.After(m.stopTimeout):
+			slog.Warn("timed out waiting for task goroutine to stop", "session_id", id)
+		}
+	}
+
+	// Now safely remove the session from the map.
+	m.mu.Lock()
+	session.mu.Lock()
 	// Close log file if it exists
 	if session.logFile != nil {
 		if err := session.logFile.Close(); err != nil {
@@ -252,8 +280,6 @@ func (m *Manager) DeleteSession(id string) error {
 		}
 	}
 	session.mu.Unlock()
-
-	// Remove from map
 	delete(m.sessions, id)
 	m.mu.Unlock()
 
@@ -398,9 +424,14 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 
 	// Set active and create cancellable context with session ID
 	session.active = true
+	doneCh := make(chan struct{})
+	session.done = doneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	// Enrich context with session workspace path for tool security heuristics
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	if m.envInfo != nil {
+		taskCtx = tools.WithEnvInfo(taskCtx, m.envInfo)
+	}
 	session.cancel = cancel
 	session.mu.Unlock()
 
@@ -416,10 +447,12 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 
 	// Launch goroutine to handle the message
 	go func(ctx context.Context, msg string) {
+		defer close(doneCh)
 		defer func() {
 			session.mu.Lock()
 			session.active = false
 			session.cancel = nil
+			session.done = nil
 			session.mu.Unlock()
 		}()
 
@@ -443,7 +476,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				if ts != nil {
 					adapter := NewTaskStoreAdapter(ts)
 					if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
-						_ = adapter.PersistCompletion(tid, "", nil, 0)
+						if pErr := adapter.PersistCompletion(tid, "", nil, 0); pErr != nil {
+							slog.Warn("failed to persist completion on session done", "task", tid, "error", pErr)
+						}
 					}
 				}
 				return
@@ -538,8 +573,13 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		return errors.New("session is already processing a task")
 	}
 	session.active = true
+	resumedoneCh := make(chan struct{})
+	session.done = resumedoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	if m.envInfo != nil {
+		taskCtx = tools.WithEnvInfo(taskCtx, m.envInfo)
+	}
 	session.cancel = cancel
 	session.mu.Unlock()
 
@@ -555,10 +595,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 
 	// Launch goroutine (same pattern as SendMessage).
 	go func() {
+		defer close(resumedoneCh)
 		defer func() {
 			session.mu.Lock()
 			session.active = false
 			session.cancel = nil
+			session.done = nil
 			session.mu.Unlock()
 		}()
 
@@ -621,7 +663,10 @@ func (m *Manager) emitResumableIfUnfinished(sessionID string) {
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
-	taskID, _ := adapter.GetUnfinishedTaskID(sessionID)
+	taskID, err := adapter.GetUnfinishedTaskID(sessionID)
+	if err != nil {
+		slog.Debug("failed to get unfinished task ID", "session", sessionID, "error", err)
+	}
 	if taskID == "" {
 		return
 	}
@@ -636,6 +681,7 @@ func (m *Manager) emitResumableIfUnfinished(sessionID string) {
 }
 
 // CancelTask cancels the currently running task in a session.
+// It signals cancellation and waits (with timeout) for the task goroutine to finish.
 func (m *Manager) CancelTask(id string) error {
 	m.mu.RLock()
 	session, exists := m.sessions[id]
@@ -646,14 +692,25 @@ func (m *Manager) CancelTask(id string) error {
 	}
 
 	session.mu.Lock()
-	defer session.mu.Unlock()
-
 	if !session.active {
+		session.mu.Unlock()
 		return errors.New("no active task to cancel")
 	}
 
+	doneCh := session.done
 	if session.cancel != nil {
 		session.cancel()
+	}
+	session.mu.Unlock()
+
+	// Wait for the goroutine to finish so the task_cancelled event is emitted
+	// before this method returns to the frontend.
+	if doneCh != nil {
+		select {
+		case <-doneCh:
+		case <-time.After(m.stopTimeout):
+			slog.Warn("timed out waiting for task goroutine to stop on cancel", "session_id", id)
+		}
 	}
 
 	return nil

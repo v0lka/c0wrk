@@ -745,9 +745,9 @@ func TestToolRegistry_RegisterWithSource(t *testing.T) {
 	tool1 := newMockTool("mcp_tool", "An MCP tool")
 	registry.RegisterWithSource(tool1, "mcp")
 
-	// Register another tool with source "external"
-	tool2 := newMockTool("external_tool", "An external tool")
-	registry.RegisterWithSource(tool2, "external")
+	// Register another tool with source "core"
+	tool2 := newMockTool("core_tool", "A core tool")
+	registry.RegisterWithSource(tool2, "core")
 
 	// List and verify sources
 	descriptors := registry.List()
@@ -768,11 +768,11 @@ func TestToolRegistry_RegisterWithSource(t *testing.T) {
 		t.Errorf("expected 'mcp_tool' source 'mcp', got %q", desc.Source)
 	}
 
-	// Verify external_tool has source "external"
-	if desc, ok := descMap["external_tool"]; !ok {
-		t.Error("expected to find 'external_tool' in descriptors")
-	} else if desc.Source != "external" {
-		t.Errorf("expected 'external_tool' source 'external', got %q", desc.Source)
+	// Verify core_tool has source "core"
+	if desc, ok := descMap["core_tool"]; !ok {
+		t.Error("expected to find 'core_tool' in descriptors")
+	} else if desc.Source != "core" {
+		t.Errorf("expected 'core_tool' source 'core', got %q", desc.Source)
 	}
 }
 
@@ -907,14 +907,14 @@ func TestSetDefaultPolicy(t *testing.T) {
 }
 
 // TestPolicyUniformity_AllToolFamilies verifies that the PolicyAuto execution
-// pipeline works identically for all three tool families (core, external, MCP).
+// pipeline works identically for all tool families (core, MCP).
 // Each family implements both Tool and ToolJudger, returning false/"" to defer
 // to the LLM Judge. Two scenarios are tested per family:
 //   - Scenario A: No judge, no confirmFunc → tool executes directly (CLI fallback)
 //   - Scenario B: No judge, with confirmFunc → confirmFunc is called with
 //     "no judge available" reasoning
 func TestPolicyUniformity_AllToolFamilies(t *testing.T) {
-	families := []string{"core", "external", "mcp"}
+	families := []string{"core", "mcp"}
 
 	// Build one mock tool per family. Each implements Tool + ToolJudger and
 	// defers to the LLM Judge (Judge returns false, "").

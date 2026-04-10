@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/user/agent/sdk/orchestration"
 )
@@ -23,6 +25,7 @@ type TaskPersistence interface {
 	PersistReflection(taskID string, r Reflection) error
 	PersistCompletion(taskID, finalOutput string, evalResult *EvalResult, attemptCount int) error
 	PersistFailure(taskID string) error
+	PersistStepFileChanges(taskID, stepID string, changes []FileChange) error
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
 	GetUnfinishedTaskID(sessionID string) (string, error) // returns "" if none
@@ -43,7 +46,8 @@ type TaskState struct {
 	StepResults     map[string]StepResult
 	Reflections     []Reflection
 	FinalOutput     string
-	Status          string // "in_progress", "completed", "failed"
+	FileChanges     map[string][]FileChange // stepID -> file changes
+	Status          string                  // "in_progress", "completed", "failed"
 }
 
 // ---------------------------------------------------------------------------
@@ -53,15 +57,22 @@ type TaskState struct {
 // compile-time check
 var _ Blackboard = (*PersistentBlackboard)(nil)
 
+// persistenceTimeout is the maximum time allowed for a single persistence operation.
+// If exceeded, the operation is abandoned and execution continues.
+const persistenceTimeout = 5 * time.Second
+
 // PersistentBlackboard wraps a MapBlackboard and persists write operations to a TaskPersistence store.
 // Read methods delegate to the embedded MapBlackboard. Write methods delegate AND persist.
 // All persistence calls are best-effort: errors are logged but do not propagate to callers.
+// Persistence operations are guarded by a timeout and panic recovery to prevent hangs.
 type PersistentBlackboard struct {
 	*MapBlackboard
 	taskID    string
 	sessionID string
 	store     TaskPersistence
 	logger    *slog.Logger
+	emitterMu sync.RWMutex
+	emitter   Emitter // optional, nil-safe; used to surface persistence warnings to the user
 }
 
 // NewPersistentBlackboard creates a PersistentBlackboard that wraps a fresh MapBlackboard.
@@ -76,6 +87,52 @@ func NewPersistentBlackboard(taskID, sessionID string, store TaskPersistence, lo
 	}
 }
 
+// SetEmitter sets the optional emitter for surfacing persistence warnings to the user.
+func (pb *PersistentBlackboard) SetEmitter(emitter Emitter) {
+	pb.emitterMu.Lock()
+	pb.emitter = emitter
+	pb.emitterMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Persistence safety wrapper
+// ---------------------------------------------------------------------------
+
+// persistSafe runs a persistence operation with a timeout and panic recovery.
+// This ensures that persistence failures (including panics and blocking DB operations)
+// never halt the orchestration loop. Errors are logged and optionally emitted to the user.
+func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("panic in persistence: %v", r)
+			}
+		}()
+		done <- fn()
+	}()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(persistenceTimeout):
+		err = fmt.Errorf("persistence timeout after %s", persistenceTimeout)
+	}
+
+	if err != nil {
+		pb.logWarn("persistence failure: "+operation, "task_id", pb.taskID, "error", err)
+		pb.emitterMu.RLock()
+		em := pb.emitter
+		pb.emitterMu.RUnlock()
+		if em != nil {
+			em.ServiceWithMeta(
+				fmt.Sprintf("Warning: failed to persist %s (execution continues)", operation),
+				map[string]any{"phase": "persistence", "error": err.Error()},
+			)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Write method overrides
 // ---------------------------------------------------------------------------
@@ -83,25 +140,25 @@ func NewPersistentBlackboard(taskID, sessionID string, store TaskPersistence, lo
 // SetOriginalRequest sets the original user request and persists a new task record.
 func (pb *PersistentBlackboard) SetOriginalRequest(req string) {
 	pb.MapBlackboard.SetOriginalRequest(req)
-	if err := pb.store.PersistNewTask(pb.taskID, pb.sessionID, req); err != nil {
-		pb.logWarn("failed to persist new task", "task_id", pb.taskID, "error", err)
-	}
+	pb.persistSafe("new task", func() error {
+		return pb.store.PersistNewTask(pb.taskID, pb.sessionID, req)
+	})
 }
 
 // SetCriteria stores criteria and persists them.
 func (pb *PersistentBlackboard) SetCriteria(criteria []AcceptanceCriterion) {
 	pb.MapBlackboard.SetCriteria(criteria)
-	if err := pb.store.PersistCriteria(pb.taskID, criteria); err != nil {
-		pb.logWarn("failed to persist criteria", "task_id", pb.taskID, "error", err)
-	}
+	pb.persistSafe("criteria", func() error {
+		return pb.store.PersistCriteria(pb.taskID, criteria)
+	})
 }
 
 // SetPlan stores a plan and persists it.
 func (pb *PersistentBlackboard) SetPlan(plan *Plan) {
 	pb.MapBlackboard.SetPlan(plan)
-	if err := pb.store.PersistPlan(pb.taskID, plan); err != nil {
-		pb.logWarn("failed to persist plan", "task_id", pb.taskID, "error", err)
-	}
+	pb.persistSafe("plan", func() error {
+		return pb.store.PersistPlan(pb.taskID, plan)
+	})
 }
 
 // SetStepResult records a step result and persists it.
@@ -123,17 +180,25 @@ func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, 
 		errText = err.Error()
 	}
 
-	if pErr := pb.store.PersistStepResult(pb.taskID, stepID, summary, output, errText, steps); pErr != nil {
-		pb.logWarn("failed to persist step result", "task_id", pb.taskID, "step_id", stepID, "error", pErr)
-	}
+	pb.persistSafe("step result ("+stepID+")", func() error {
+		return pb.store.PersistStepResult(pb.taskID, stepID, summary, output, errText, steps)
+	})
 }
 
 // AddReflection appends a reflection and persists it.
 func (pb *PersistentBlackboard) AddReflection(r Reflection) {
 	pb.MapBlackboard.AddReflection(r)
-	if err := pb.store.PersistReflection(pb.taskID, r); err != nil {
-		pb.logWarn("failed to persist reflection", "task_id", pb.taskID, "error", err)
-	}
+	pb.persistSafe("reflection", func() error {
+		return pb.store.PersistReflection(pb.taskID, r)
+	})
+}
+
+// SetStepFileChanges stores file changes for a step and persists them.
+func (pb *PersistentBlackboard) SetStepFileChanges(stepID string, changes []FileChange) {
+	pb.MapBlackboard.SetStepFileChanges(stepID, changes)
+	pb.persistSafe("step file changes ("+stepID+")", func() error {
+		return pb.store.PersistStepFileChanges(pb.taskID, stepID, changes)
+	})
 }
 
 // SetFinalResult sets the final result string.
@@ -145,9 +210,9 @@ func (pb *PersistentBlackboard) SetFinalResult(result string) {
 
 // SetRouting persists the routing decision for the task.
 func (pb *PersistentBlackboard) SetRouting(routing *RoutingDecision) {
-	if err := pb.store.PersistRouting(pb.taskID, routing); err != nil {
-		pb.logWarn("failed to persist routing", "task_id", pb.taskID, "error", err)
-	}
+	pb.persistSafe("routing", func() error {
+		return pb.store.PersistRouting(pb.taskID, routing)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -158,16 +223,16 @@ func (pb *PersistentBlackboard) SetRouting(routing *RoutingDecision) {
 // Called by the orchestrator after Handle() succeeds.
 func (pb *PersistentBlackboard) CompleteTask(evalResult *EvalResult, attemptCount int) {
 	finalOutput := pb.GetFinalResult()
-	if err := pb.store.PersistCompletion(pb.taskID, finalOutput, evalResult, attemptCount); err != nil {
-		pb.logWarn("failed to persist task completion", "task_id", pb.taskID, "error", err)
-	}
+	pb.persistSafe("task completion", func() error {
+		return pb.store.PersistCompletion(pb.taskID, finalOutput, evalResult, attemptCount)
+	})
 }
 
 // FailTask marks the task as failed.
 func (pb *PersistentBlackboard) FailTask() {
-	if err := pb.store.PersistFailure(pb.taskID); err != nil {
-		pb.logWarn("failed to persist task failure", "task_id", pb.taskID, "error", err)
-	}
+	pb.persistSafe("task failure", func() error {
+		return pb.store.PersistFailure(pb.taskID)
+	})
 }
 
 // TaskID returns the task ID.
@@ -207,6 +272,9 @@ func RestoreBlackboard(taskID, sessionID string, store TaskPersistence, logger *
 	}
 	for _, r := range state.Reflections {
 		mb.AddReflection(r)
+	}
+	for stepID, changes := range state.FileChanges {
+		mb.SetStepFileChanges(stepID, changes)
 	}
 	if state.FinalOutput != "" {
 		mb.SetFinalResult(state.FinalOutput)

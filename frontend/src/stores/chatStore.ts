@@ -5,6 +5,9 @@ export type MessageType =
   | 'tool_confirm' | 'ask_user' | 'routing' | 'eval' | 'reflection' | 'plan' | 'error' | 'thought'
   | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry' | 'ac_extracted' | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable'
+  | 'task_resumed'
+  | 'eval_step_start'
+  | 'eval_step_complete'
 
 export interface ChatMessageUI {
   id: string
@@ -27,6 +30,7 @@ export type DisplayItem =
   | { kind: 'error'; message: ChatMessageUI }
   | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'ac_extracted' | 'status'; content: string; metadata?: Record<string, unknown> }
   | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'eval_step'; id: string; criterionId: string; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; children: DisplayItem[] }
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'memory_read'; id: string }
   | { kind: 'action_placeholder'; id: string; label: string }
@@ -72,13 +76,23 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const items: DisplayItem[] = []
   const pendingActions: DisplayItem[] = []
   const openSteps = new Map<string, DisplayItem & { kind: 'plan_step' }>()
+  const openEvalSteps = new Map<string, DisplayItem & { kind: 'eval_step' }>()
   const stepIdCounts = new Map<string, number>()
   const stepIndexMap = new Map<string, { num: number; title: string }>()
   const toolItemsByStep = new Map<string, DisplayItem & { kind: 'tool' }>()
   const makeToolKey = (planStepId: string | undefined, step: number | string): string =>
     `${planStepId ?? ''}:${step}`
 
-  const pushItem = (item: DisplayItem, planStepId?: string) => {
+  const pushItem = (item: DisplayItem, planStepId?: string, evalCriterionId?: string) => {
+    // First check if we should put this in an eval step container
+    if (evalCriterionId) {
+      const evalContainer = openEvalSteps.get(evalCriterionId)
+      if (evalContainer) {
+        evalContainer.children.push(item)
+        return
+      }
+    }
+    // Then check plan step container
     const container = planStepId ? openSteps.get(planStepId) : null
     if (container) {
       container.children.push(item)
@@ -133,18 +147,47 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       continue
     }
 
+    // Handle eval step lifecycle
+    if (msg.type === 'eval_step_start') {
+      const criterionId = (meta?.criterion_id as string) || ''
+      const description = (meta?.description as string) || criterionId
+      const evalItem: DisplayItem & { kind: 'eval_step' } = {
+        kind: 'eval_step',
+        id: msg.id,
+        criterionId,
+        title: description,
+        status: 'running',
+        children: [],
+      }
+      openEvalSteps.set(criterionId, evalItem)
+      items.push(evalItem)
+      continue
+    }
+
+    if (msg.type === 'eval_step_complete') {
+      const criterionId = (meta?.criterion_id as string) || ''
+      const evalStep = openEvalSteps.get(criterionId)
+      if (evalStep) {
+        evalStep.status = (meta?.success as boolean) ? 'completed' : 'failed'
+        if (meta?.duration !== undefined) evalStep.duration = meta.duration as number
+        openEvalSteps.delete(criterionId)
+      }
+      continue
+    }
+
     // Skip orchestration events handled elsewhere
     if (['eval', 'reflection'].includes(msg.type)) continue
 
     const planStepId = meta?.plan_step_id as string | undefined
+    const evalCriterionId = meta?.criterion_id as string | undefined
 
     switch (msg.type) {
       case 'user':
-        pushItem({ kind: 'user', message: msg }, planStepId)
+        pushItem({ kind: 'user', message: msg }, planStepId, evalCriterionId)
         break
 
       case 'assistant':
-        pushItem({ kind: 'assistant', message: msg }, planStepId)
+        pushItem({ kind: 'assistant', message: msg }, planStepId, evalCriterionId)
         break
 
       case 'thought':
@@ -154,7 +197,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           stepNum: (meta?.step_num as number) ?? 0,
           content: msg.content,
           reasoning: meta?.reasoning as string | undefined,
-        }, planStepId)
+        }, planStepId, evalCriterionId)
         break
 
       case 'tool_call': {
@@ -164,12 +207,12 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         // Render finish tool as a compact "Finished step N" message
         if (toolName === 'finish') {
           const planStepNum = planStepId ? stepIndexMap.get(planStepId)?.num : undefined
-          pushItem({ kind: 'step_finish', id: msg.id, stepNum: planStepNum }, planStepId)
+          pushItem({ kind: 'step_finish', id: msg.id, stepNum: planStepNum }, planStepId, evalCriterionId)
           break
         }
         // Render memory/blackboard read tools as compact "Memory readed" message
         if (['read_evidence', 'read_step_output', 'list_step_outputs'].includes(toolName)) {
-          pushItem({ kind: 'memory_read', id: msg.id }, planStepId)
+          pushItem({ kind: 'memory_read', id: msg.id }, planStepId, evalCriterionId)
           break
         }
         const isAwaiting = meta?.awaiting_confirmation === true
@@ -186,7 +229,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         }
         const stepNum = meta?.step as number | string
         if (stepNum !== undefined) toolItemsByStep.set(makeToolKey(planStepId, stepNum), toolItem)
-        pushItem(toolItem, planStepId)
+        pushItem(toolItem, planStepId, evalCriterionId)
         break
       }
 
@@ -212,7 +255,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           break
         }
         pendingActions.push({ kind: 'tool_confirm', message: msg })
-        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting confirmation...' }, planStepId)
+        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting confirmation...' }, planStepId, evalCriterionId)
         break
       }
 
@@ -224,7 +267,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           break
         }
         pendingActions.push({ kind: 'ask_user', message: msg })
-        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting your answer...' }, planStepId)
+        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting your answer...' }, planStepId, evalCriterionId)
         break
       }
 
@@ -238,7 +281,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       }
 
       case 'error':
-        pushItem({ kind: 'error', message: msg }, planStepId)
+        pushItem({ kind: 'error', message: msg }, planStepId, evalCriterionId)
         break
 
       case 'routing':
@@ -250,7 +293,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           variant: msg.type as 'routing' | 'retry' | 'step_retry',
           content: msg.content,
           metadata: meta,
-        }, planStepId)
+        }, planStepId, evalCriterionId)
         break
       }
 
@@ -261,7 +304,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           variant: 'ac_extracted',
           content: msg.content,
           metadata: meta,
-        }, planStepId)
+        }, planStepId, evalCriterionId)
         break
       }
 
@@ -272,7 +315,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           variant: 'status',
           content: msg.content,
           metadata: meta,
-        }, planStepId)
+        }, planStepId, evalCriterionId)
         break
       }
 
@@ -281,6 +324,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       case 'thinking':
       case 'subagent_launch':
       case 'subagent_complete':
+      case 'task_resumed':
         break
 
       default:
@@ -288,12 +332,13 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     }
   }
 
-  // Collapse thoughts inside plan step children
+  // Collapse thoughts inside plan step and eval step children
   for (const item of items) {
     if (item.kind === 'plan_step') {
-      (item as DisplayItem & { kind: 'plan_step' }).children = collapseThoughts(
-        (item as DisplayItem & { kind: 'plan_step' }).children
-      )
+      item.children = collapseThoughts(item.children)
+    }
+    if (item.kind === 'eval_step') {
+      item.children = collapseThoughts(item.children)
     }
   }
 
@@ -301,6 +346,25 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const collapsed = collapseThoughts(items)
 
   return { items: collapsed, pendingActions }
+}
+
+const EMPTY_PENDING: DisplayItem[] = []
+
+/** Lightweight extraction of pending actions from messages (avoids full groupMessages). */
+export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] {
+  const actions: DisplayItem[] = []
+  for (const msg of messages) {
+    const resolved = msg.metadata?.resolved === true
+    if (resolved) continue
+    if (msg.type === 'tool_confirm') {
+      actions.push({ kind: 'tool_confirm', message: msg })
+    } else if (msg.type === 'ask_user') {
+      actions.push({ kind: 'ask_user', message: msg })
+    } else if (msg.type === 'task_failed_resumable') {
+      actions.push({ kind: 'resume_action', message: msg })
+    }
+  }
+  return actions.length > 0 ? actions : EMPTY_PENDING
 }
 
 export interface ContextFillState {
@@ -330,8 +394,6 @@ interface ChatState {
   clearStepContextFill: (stepId: string) => void
   setSessionTokens: (inputTokens: number, outputTokens: number) => void
   setActivityStatus: (status: string | null) => void
-  pendingActions: DisplayItem[]
-  setPendingActions: (actions: DisplayItem[]) => void
   resolveAction: (sessionId: string, messageId: string, metadataUpdates?: Record<string, unknown>) => void
   resolveResumeMessage: (sessionId: string) => void
   setTaskActive: (active: boolean) => void
@@ -383,42 +445,28 @@ export const useChatStore = create<ChatState>((set) => ({
   setStepContextFill: (stepId, data) => set((s) => ({
     stepContextFill: { ...s.stepContextFill, [stepId]: data },
   })),
-  clearStepContextFill: (stepId) => set((s) => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { [stepId]: _, ...rest } = s.stepContextFill
-    return { stepContextFill: rest }
-  }),
+  clearStepContextFill: (stepId) => set((s) => ({
+    stepContextFill: Object.fromEntries(
+      Object.entries(s.stepContextFill).filter(([k]) => k !== stepId)
+    ),
+  })),
   setSessionTokens: (inputTokens, outputTokens) => set({
     sessionInputTokens: inputTokens,
     sessionOutputTokens: outputTokens,
   }),
   setActivityStatus: (status) => set({ activityStatus: status }),
-  pendingActions: [],
-  setPendingActions: (actions) => set({ pendingActions: actions }),
   resolveAction: (sessionId, messageId, metadataUpdates) => set((s) => {
-    // 1. Update the message metadata (mark resolved)
     const msgs = s.messages[sessionId]
-    let newMessages = s.messages
-    if (msgs) {
-      const idx = msgs.findIndex(m => m.id === messageId)
-      if (idx !== -1) {
-        const updated = [...msgs]
-        const existing = updated[idx]!
-        updated[idx] = {
-          ...existing,
-          metadata: { ...existing.metadata, resolved: true, ...metadataUpdates },
-        }
-        newMessages = { ...s.messages, [sessionId]: updated }
-      }
+    if (!msgs) return s
+    const idx = msgs.findIndex(m => m.id === messageId)
+    if (idx === -1) return s
+    const updated = [...msgs]
+    const existing = updated[idx]!
+    updated[idx] = {
+      ...existing,
+      metadata: { ...existing.metadata, resolved: true, ...metadataUpdates },
     }
-    // 2. Remove from pendingActions immediately
-    const newPending = s.pendingActions.filter(a => {
-      if (a.kind === 'tool_confirm' || a.kind === 'ask_user' || a.kind === 'resume_action') {
-        return a.message.id !== messageId
-      }
-      return true
-    })
-    return { messages: newMessages, pendingActions: newPending }
+    return { messages: { ...s.messages, [sessionId]: updated } }
   }),
   resolveResumeMessage: (sessionId) => set((s) => {
     const msgs = s.messages[sessionId]
@@ -433,14 +481,7 @@ export const useChatStore = create<ChatState>((set) => ({
           ...m,
           metadata: { ...m.metadata, resolved: true },
         }
-        // Also remove from pendingActions
-        const newPending = s.pendingActions.filter(a => {
-          if (a.kind === 'tool_confirm' || a.kind === 'ask_user' || a.kind === 'resume_action') {
-            return a.message.id !== m.id
-          }
-          return true
-        })
-        return { messages: { ...s.messages, [sessionId]: updated }, pendingActions: newPending }
+        return { messages: { ...s.messages, [sessionId]: updated } }
       }
     }
     return s
@@ -450,6 +491,7 @@ export const useChatStore = create<ChatState>((set) => ({
     activityStatus: null,
     streamingText: null,
     isThinking: false,
+    isTaskActive: false,
     stepContextFill: {},
     sessionInputTokens: 0,
     sessionOutputTokens: 0,

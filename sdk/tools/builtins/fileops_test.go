@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -20,7 +21,7 @@ func TestFileOpsTool_Name(t *testing.T) {
 
 func TestFileOpsTool_Description(t *testing.T) {
 	tool := NewFileOpsTool()
-	if tool.Description() != "File system operations: read, write, edit, list, search, create/delete directories, delete files" {
+	if tool.Description() != toolFileopsDescription {
 		t.Errorf("unexpected description: %s", tool.Description())
 	}
 }
@@ -890,5 +891,172 @@ func TestFileOpsTool_Judge_DeleteFileInsideWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(reasoning, "workspace") {
 		t.Errorf("expected reasoning to mention 'workspace', got: %s", reasoning)
+	}
+}
+
+// --- FileChangeTracker integration tests ---
+
+func trackerCtx(t *testing.T, workspaceRoot string) (context.Context, *agent.FileChangeTracker) {
+	t.Helper()
+	tracker := agent.NewFileChangeTracker(workspaceRoot)
+	ctx := agent.WithFileTracker(context.Background(), tracker)
+	ctx = agent.WithStepID(ctx, "test_step")
+	return ctx, tracker
+}
+
+func TestFileOps_WriteFile_TracksChanges(t *testing.T) {
+	tool := NewFileOpsTool()
+	tmpDir := t.TempDir()
+	ctx, tracker := trackerCtx(t, tmpDir)
+
+	testFile := filepath.Join(tmpDir, "new.txt")
+	input, _ := json.Marshal(map[string]string{
+		"action":  "write_file",
+		"path":    testFile,
+		"content": "hello",
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	changes := tracker.GetStepChanges("test_step")
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if changes[0].Operation != "CREATE" {
+		t.Errorf("expected CREATE operation, got %s", changes[0].Operation)
+	}
+}
+
+func TestFileOps_WriteFile_TracksModify(t *testing.T) {
+	tool := NewFileOpsTool()
+	tmpDir := t.TempDir()
+	ctx, tracker := trackerCtx(t, tmpDir)
+
+	testFile := filepath.Join(tmpDir, "existing.txt")
+	if err := os.WriteFile(testFile, []byte("old content"), 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	input, _ := json.Marshal(map[string]string{
+		"action":  "write_file",
+		"path":    testFile,
+		"content": "new content",
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	changes := tracker.GetStepChanges("test_step")
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if changes[0].Operation != "MODIFY" {
+		t.Errorf("expected MODIFY operation, got %s", changes[0].Operation)
+	}
+}
+
+func TestFileOps_EditFile_TracksChanges(t *testing.T) {
+	tool := NewFileOpsTool()
+	tmpDir := t.TempDir()
+	ctx, tracker := trackerCtx(t, tmpDir)
+
+	testFile := filepath.Join(tmpDir, "edit.txt")
+	if err := os.WriteFile(testFile, []byte("Hello World"), 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	input, _ := json.Marshal(map[string]string{
+		"action":     "edit_file",
+		"path":       testFile,
+		"old_string": "World",
+		"new_string": "Universe",
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	changes := tracker.GetStepChanges("test_step")
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if changes[0].Operation != "MODIFY" {
+		t.Errorf("expected MODIFY operation, got %s", changes[0].Operation)
+	}
+}
+
+func TestFileOps_DeleteFile_TracksChanges(t *testing.T) {
+	tool := NewFileOpsTool()
+	tmpDir := t.TempDir()
+	ctx, tracker := trackerCtx(t, tmpDir)
+
+	testFile := filepath.Join(tmpDir, "todelete.txt")
+	if err := os.WriteFile(testFile, []byte("delete me"), 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	input, _ := json.Marshal(map[string]string{
+		"action": "delete_file",
+		"path":   testFile,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	changes := tracker.GetStepChanges("test_step")
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if changes[0].Operation != "DELETE" {
+		t.Errorf("expected DELETE operation, got %s", changes[0].Operation)
+	}
+}
+
+func TestFileOps_WriteFile_NoTracker(t *testing.T) {
+	tool := NewFileOpsTool()
+	tmpDir := t.TempDir()
+	ctx := context.Background() // no tracker in context
+
+	testFile := filepath.Join(tmpDir, "notracker.txt")
+	input, _ := json.Marshal(map[string]string{
+		"action":  "write_file",
+		"path":    testFile,
+		"content": "works without tracker",
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("failed to read written file: %v", err)
+	}
+	if string(data) != "works without tracker" {
+		t.Errorf("expected 'works without tracker', got '%s'", string(data))
 	}
 }

@@ -24,17 +24,26 @@ export function useThemeEffect() {
   const theme = useUIStore(s => s.theme)
   useEffect(() => {
     const root = document.documentElement
-    if (theme === 'dark') {
-      root.classList.remove('light')
-      root.classList.add('dark')
-    } else if (theme === 'light') {
-      root.classList.remove('dark')
-      root.classList.add('light')
-    } else {
-      // system preference
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-      root.classList.toggle('dark', prefersDark)
-      root.classList.toggle('light', !prefersDark)
+    const applyTheme = (prefersDark: boolean) => {
+      if (theme === 'dark') {
+        root.classList.remove('light')
+        root.classList.add('dark')
+      } else if (theme === 'light') {
+        root.classList.remove('dark')
+        root.classList.add('light')
+      } else {
+        root.classList.toggle('dark', prefersDark)
+        root.classList.toggle('light', !prefersDark)
+      }
+    }
+
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    applyTheme(mq.matches)
+
+    if (theme === 'system') {
+      const handler = (e: MediaQueryListEvent) => applyTheme(e.matches)
+      mq.addEventListener('change', handler)
+      return () => mq.removeEventListener('change', handler)
     }
   }, [theme])
 }

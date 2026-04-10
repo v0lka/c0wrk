@@ -21,7 +21,7 @@ const (
 	PolicyAuto
 )
 
-// Tool — unified interface for all tools (Core, MCP, External).
+// Tool — unified interface for all tools (Core, MCP).
 type Tool interface {
 	Name() string
 	Description() string
@@ -41,7 +41,7 @@ type ToolDescriptor struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
-	Source      string          `json:"source"` // "core" | "mcp" | "external"
+	Source      string          `json:"source"` // "core" | "mcp"
 }
 
 // ParseToolPolicy converts a policy string to a ToolPolicy constant.

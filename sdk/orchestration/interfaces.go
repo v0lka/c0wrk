@@ -48,6 +48,9 @@ type Events interface {
 	OnCriteriaExtracted(count int, criteria []EvalCriterionEvent)
 	OnService(content string)
 	OnServiceMeta(content string, meta map[string]any)
+	OnEvaluationError(err error)
+	OnReplanFailed(err error)
+	OnFileRollbackError(stepID string, err error)
 }
 
 // StepScopable is an optional interface that Events implementations
@@ -85,4 +88,14 @@ type Blackboard interface {
 	AddReflection(r Reflection)
 	SetFinalResult(result string)
 	Search(query string) []BlackboardEntry
+
+	// File change tracking
+	SetStepFileChanges(stepID string, changes []FileChange)
+	GetStepFileChanges(stepID string) []FileChange
+	GetAllFileChanges() map[string][]FileChange  // stepID -> changes
+	GetSessionFileChanges() []FileChange          // aggregated: one entry per unique path
+
+	// Eval verdict tracking
+	SetEvalVerdict(criterionID, verdict, explanation string)
+	GetEvalVerdicts() map[string]EvalVerdict
 }

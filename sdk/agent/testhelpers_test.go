@@ -231,6 +231,8 @@ func (r *recordingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens
 	r.record("ContextFill:" + status)
 }
 
+func (r *recordingEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
+
 // --- Helper to build LLM responses ---
 
 func llmResponseWithToolCall(thought, toolName string, toolInput json.RawMessage) *llm.ChatResponse {

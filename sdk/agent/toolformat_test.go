@@ -10,33 +10,25 @@ import (
 
 func TestBuildGroupedToolList_AllTiers(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
-		{Name: "ext_tool", Description: "external tool", Source: "external"},
 		{Name: "read_file", Description: "reads a file", Source: "core"},
 		{Name: "mcp_search", Description: "MCP search", Source: "mcp"},
 		{Name: "bash_exec", Description: "run bash", Source: "core"},
-		{Name: "tool_creator", Description: "create tool", Source: "core"},
 	}
 
 	result := BuildGroupedToolList(descriptors)
 
 	// Check all tier labels are present
 	if !strings.Contains(result, "TIER 1") {
-		t.Error("expected TIER 1 label for external tools")
+		t.Error("expected TIER 1 label for built-in tools")
 	}
 	if !strings.Contains(result, "TIER 2") {
-		t.Error("expected TIER 2 label for built-in tools")
+		t.Error("expected TIER 2 label for MCP tools")
 	}
 	if !strings.Contains(result, "TIER 3") {
-		t.Error("expected TIER 3 label for MCP tools")
-	}
-	if !strings.Contains(result, "TIER 4") {
-		t.Error("expected TIER 4 label for fallback tools")
+		t.Error("expected TIER 3 label for fallback tools")
 	}
 
 	// Check tool names are present
-	if !strings.Contains(result, "ext_tool") {
-		t.Error("expected ext_tool in output")
-	}
 	if !strings.Contains(result, "read_file") {
 		t.Error("expected read_file in output")
 	}
@@ -62,7 +54,7 @@ func TestBuildGroupedToolList_Empty(t *testing.T) {
 
 func TestBuildGroupedToolList_SingleTier(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
-		{Name: "my_tool", Description: "does stuff", Source: "external"},
+		{Name: "my_tool", Description: "does stuff", Source: "core"},
 	}
 
 	result := BuildGroupedToolList(descriptors)
@@ -71,7 +63,7 @@ func TestBuildGroupedToolList_SingleTier(t *testing.T) {
 	}
 	// Other tiers should not appear
 	if strings.Contains(result, "TIER 2") {
-		t.Error("TIER 2 should not appear with no built-in tools")
+		t.Error("TIER 2 should not appear with no MCP tools")
 	}
 }
 

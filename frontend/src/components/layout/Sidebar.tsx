@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useChatStore } from '@/stores/chatStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionAPI } from '@/hooks/useSession'
 import { useProjectAPI } from '@/hooks/useProject'
@@ -274,10 +275,7 @@ export function Sidebar() {
       }
     }
     load()
-  // Intentionally omit projectAPI/setProjects/setActiveProject — they are stable store selectors/API hooks;
-  // we only want to load projects once on initial mount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [projectAPI, setProjects, setActiveProject])
 
   // ── Load sessions when active project changes ──
   const sessionFetchIdRef = useRef(0)
@@ -303,10 +301,7 @@ export function Sidebar() {
       }
     }
     load()
-  // Intentionally omit sessionAPI/setSessions/setActiveSession — they are stable store selectors/API hooks;
-  // we only want to re-fetch sessions when the active project changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProjectId])
+  }, [activeProjectId, sessionAPI, setSessions, setActiveSession])
 
   // ── Subscribe to backend project events ──
   useEffect(() => {
@@ -397,8 +392,15 @@ export function Sidebar() {
   }, [sessionAPI, updateSession])
 
   const handleDeleteSession = useCallback(async (id: string) => {
-    try { await sessionAPI.deleteSession(id); removeSession(id) }
-    catch (err) { logger.error('Failed to delete session:', err) }
+    try {
+      // Backend DeleteSession will cancel any active task and wait for it to stop.
+      await sessionAPI.deleteSession(id)
+      removeSession(id)
+      // If the deleted session was active, reset the UI task state so input is re-enabled.
+      if (useSessionStore.getState().activeSessionId === null) {
+        useChatStore.getState().clearSessionUIState()
+      }
+    } catch (err) { logger.error('Failed to delete session:', err) }
   }, [sessionAPI, removeSession])
 
   const [activeSessions, archivedSessions] = useMemo(() => [

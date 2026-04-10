@@ -11,9 +11,15 @@ interface SearchConfig {
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   tavily: 'Tavily',
+  brave: 'Brave Search',
+  exa: 'Exa AI',
+  duckduckgo: 'DuckDuckGo',
 }
 
-const PROVIDER_KEYS = ['tavily']
+const PROVIDER_KEYS = ['tavily', 'brave', 'exa', 'duckduckgo']
+
+// Providers that don't require an API key
+const NO_API_KEY_PROVIDERS = ['duckduckgo']
 
 export function SearchSettings() {
   const [config, setConfig] = useState<SearchConfig>({
@@ -149,14 +155,15 @@ export function SearchSettings() {
       </div>
 
       {/* Warning if API key not configured */}
-      {config.api_key !== '***configured***' && apiKeyInput.trim() === '' && (
+      {config.api_key !== '***configured***' && apiKeyInput.trim() === '' && !NO_API_KEY_PROVIDERS.includes(config.provider) && (
         <div className="flex items-start gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm">
           <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
           <p>Search provider API key is not configured. Web search will not function without it.</p>
         </div>
       )}
 
-      {/* API Key */}
+      {/* API Key - hide for providers that don't require it */}
+      {!NO_API_KEY_PROVIDERS.includes(config.provider) && (
       <div className="flex flex-col gap-2">
         <label className="text-xs text-muted-foreground">API Key</label>
         <div className="flex items-center gap-3">
@@ -176,6 +183,7 @@ export function SearchSettings() {
             : 'Enter your API key for the search provider.'}
         </p>
       </div>
+      )}
       {saveError && <p className="text-sm text-red-500 mt-2">{saveError}</p>}
     </div>
   )

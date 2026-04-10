@@ -199,6 +199,103 @@ func TestEvidence_ContextHelpers(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// File-change tests
+// ---------------------------------------------------------------------------
+
+func TestEvidence_FileChanges_ListAll(t *testing.T) {
+	bb := core.NewMapBlackboard()
+	bb.SetStepFileChanges("step_1", []core.FileChange{
+		{Path: "cmd/main.go", Operation: "CREATE", SizeBytes: 512},
+		{Path: "pkg/util.go", Operation: "MODIFY", Diff: "--- a/pkg/util.go\n+++ b/pkg/util.go\n@@ -1,3 +1,4 @@\n package util\n+\n+func Helper() {}\n-func Old() {}", SizeBytes: 200},
+		{Path: "tmp.txt", Operation: "DELETE"},
+	})
+	ctx := WithBlackboard(context.Background(), bb)
+	content, isErr := execEvidence(ctx, t, map[string]any{"file_changes": true})
+	if isErr {
+		t.Fatalf("expected no error, got IsError=true: %s", content)
+	}
+	if !contains(content, "File Changes Summary") {
+		t.Errorf("missing header in output:\n%s", content)
+	}
+	if !contains(content, "CREATE") || !contains(content, "cmd/main.go") {
+		t.Errorf("missing CREATE entry:\n%s", content)
+	}
+	if !contains(content, "MODIFY") || !contains(content, "pkg/util.go") {
+		t.Errorf("missing MODIFY entry:\n%s", content)
+	}
+	if !contains(content, "DELETE") || !contains(content, "tmp.txt") {
+		t.Errorf("missing DELETE entry:\n%s", content)
+	}
+	if !contains(content, "1 created") || !contains(content, "1 modified") || !contains(content, "1 deleted") {
+		t.Errorf("missing totals in output:\n%s", content)
+	}
+}
+
+func TestEvidence_FileChanges_Empty(t *testing.T) {
+	bb := core.NewMapBlackboard()
+	ctx := WithBlackboard(context.Background(), bb)
+	content, isErr := execEvidence(ctx, t, map[string]any{"file_changes": true})
+	if isErr {
+		t.Fatalf("expected no error, got IsError=true: %s", content)
+	}
+	if !contains(content, "No file changes recorded") {
+		t.Errorf("expected empty message, got:\n%s", content)
+	}
+}
+
+func TestEvidence_FileDiff_Found(t *testing.T) {
+	bb := core.NewMapBlackboard()
+	diff := "--- a/pkg/util.go\n+++ b/pkg/util.go\n@@ -1,2 +1,3 @@\n package util\n+func New() {}"
+	bb.SetStepFileChanges("step_1", []core.FileChange{
+		{Path: "pkg/util.go", Operation: "MODIFY", Diff: diff, SizeBytes: 100},
+	})
+	ctx := WithBlackboard(context.Background(), bb)
+	content, isErr := execEvidence(ctx, t, map[string]any{"file_diff": "pkg/util.go"})
+	if isErr {
+		t.Fatalf("expected no error, got IsError=true: %s", content)
+	}
+	if !contains(content, "Diff: pkg/util.go") {
+		t.Errorf("missing diff header:\n%s", content)
+	}
+	if !contains(content, "```diff") {
+		t.Errorf("missing diff code block:\n%s", content)
+	}
+	if !contains(content, "func New()") {
+		t.Errorf("missing diff content:\n%s", content)
+	}
+}
+
+func TestEvidence_FileDiff_NotFound(t *testing.T) {
+	bb := core.NewMapBlackboard()
+	ctx := WithBlackboard(context.Background(), bb)
+	content, isErr := execEvidence(ctx, t, map[string]any{"file_diff": "nonexistent.go"})
+	if !isErr {
+		t.Fatalf("expected IsError=true for not-found file, got false: %s", content)
+	}
+	if !contains(content, "No changes found for file") {
+		t.Errorf("expected not-found message, got:\n%s", content)
+	}
+}
+
+func TestEvidence_FileDiff_Create(t *testing.T) {
+	bb := core.NewMapBlackboard()
+	bb.SetStepFileChanges("step_1", []core.FileChange{
+		{Path: "new_file.go", Operation: "CREATE", SizeBytes: 256},
+	})
+	ctx := WithBlackboard(context.Background(), bb)
+	content, isErr := execEvidence(ctx, t, map[string]any{"file_diff": "new_file.go"})
+	if isErr {
+		t.Fatalf("expected no error, got IsError=true: %s", content)
+	}
+	if !contains(content, "New file created") {
+		t.Errorf("expected create message, got:\n%s", content)
+	}
+	if !contains(content, "256 bytes") {
+		t.Errorf("expected size info, got:\n%s", content)
+	}
+}
+
 // contains is a test helper for substring matching.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)

@@ -11,7 +11,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolRipgrepDescription = "Search file contents using regex patterns with gitignore support, context lines, and concurrent processing."
+const toolRipgrepDescription = `Search file contents using regex or literal patterns. Returns matches in "file:line: content" format with optional surrounding context lines. Automatically respects .gitignore rules and skips binary files. Use this when you need to find code patterns, function definitions, or text within files. Returns up to 200 matches by default. For finding files by name or path pattern, use glob instead.`
 
 // RipgrepTool searches file contents using regex patterns via goripgrep.
 type RipgrepTool struct {
@@ -28,31 +28,31 @@ func NewRipgrepTool() *RipgrepTool {
 		"properties": {
 			"pattern": {
 				"type": "string",
-				"description": "Regex or literal search pattern"
+				"description": "Regex or literal search pattern, e.g. \"func main\" or \"TODO.*fix\""
 			},
 			"path": {
 				"type": "string",
-				"description": "Directory to search"
+				"description": "Absolute path to the directory to search recursively"
 			},
 			"file_pattern": {
 				"type": "string",
-				"description": "File glob filter, e.g. *.go"
+				"description": "Glob filter to restrict which files are searched, e.g. *.go, *.ts"
 			},
 			"ignore_case": {
 				"type": "boolean",
-				"description": "Case-insensitive search"
+				"description": "Perform case-insensitive matching. Default: false."
 			},
 			"context_lines": {
 				"type": "integer",
-				"description": "Lines of context around matches (default 0)"
+				"description": "Number of lines to show before and after each match. Default: 0."
 			},
 			"max_results": {
 				"type": "integer",
-				"description": "Maximum matches to return (default 200)"
+				"description": "Maximum number of matches to return. Default: 200."
 			},
 			"include_hidden": {
 				"type": "boolean",
-				"description": "Include hidden files (default false)"
+				"description": "Include hidden files and directories in the search. Default: false."
 			}
 		},
 		"required": ["pattern", "path"]

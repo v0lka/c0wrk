@@ -43,11 +43,12 @@ type CompletedStep struct {
 
 // StepResult holds both a summary and the full output of a completed step.
 type StepResult struct {
-	StepID     string
-	Summary    string
-	FullOutput string
-	Error      error
-	Steps      []agent.Step
+	StepID      string
+	Summary     string
+	FullOutput  string
+	Error       error
+	Steps       []agent.Step
+	FileChanges []FileChange // file changes made by this step
 }
 
 // BlackboardEntry represents a search result from the blackboard.
@@ -86,6 +87,13 @@ type EvalDetail struct {
 	OriginalDiagnostic string    `json:"original_diagnostic,omitempty"`
 }
 
+// EvalVerdict holds a single criterion verdict recorded by an evaluator agent.
+type EvalVerdict struct {
+	CriterionID string `json:"criterion_id"`
+	Verdict     string `json:"verdict"`     // "YES" | "NO"
+	Explanation string `json:"explanation"`
+}
+
 // VerificationResult holds the result of intent-based verification.
 type VerificationResult struct {
 	Passed   bool         `json:"passed"`
@@ -119,3 +127,6 @@ type EvalCriterionEvent struct {
 	Status      string `json:"status"`
 	Diagnostic  string `json:"diagnostic,omitempty"`
 }
+
+// FileChange is an alias for the canonical type in the agent package.
+type FileChange = agent.FileChange

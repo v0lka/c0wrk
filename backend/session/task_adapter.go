@@ -112,6 +112,15 @@ func (a *TaskStoreAdapter) PersistFailure(taskID string) error {
 	return a.store.FailTask(taskID)
 }
 
+// PersistStepFileChanges JSON-marshals file changes and stores them for a step.
+func (a *TaskStoreAdapter) PersistStepFileChanges(taskID, stepID string, changes []core.FileChange) error {
+	data, err := json.Marshal(changes)
+	if err != nil {
+		return fmt.Errorf("marshal file changes: %w", err)
+	}
+	return a.store.SaveStepFileChanges(taskID, stepID, data)
+}
+
 // LoadTaskState loads a task and its steps from the store, deserializes JSON back
 // to core types, and returns a populated *core.TaskState.
 // Returns nil, nil if the task is not found.
@@ -192,6 +201,22 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		}
 
 		state.StepResults[sr.StepID] = result
+	}
+
+	// Load file changes
+	fileChangesMap, err := a.store.LoadStepFileChanges(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load step file changes: %w", err)
+	}
+	if len(fileChangesMap) > 0 {
+		state.FileChanges = make(map[string][]core.FileChange, len(fileChangesMap))
+		for stepID, raw := range fileChangesMap {
+			var changes []core.FileChange
+			if err := json.Unmarshal(raw, &changes); err != nil {
+				return nil, fmt.Errorf("unmarshal file changes for %s: %w", stepID, err)
+			}
+			state.FileChanges[stepID] = changes
+		}
 	}
 
 	return state, nil

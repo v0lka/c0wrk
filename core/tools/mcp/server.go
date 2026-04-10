@@ -14,44 +14,44 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// MCPServerConfig defines how to launch an MCP server.
+// ServerConfig defines how to launch an MCP server.
 // This is a local copy to avoid importing backend/config.
-type MCPServerConfig struct {
+type ServerConfig struct {
 	Command string
 	Args    []string
 	Env     map[string]string
 }
 
-// MCPServer represents a connection to an external MCP server process.
-type MCPServer struct {
+// Server represents a connection to an external MCP server process.
+type Server struct {
 	name   string
 	client *mcpclient.Client
-	tools  []MCPToolInfo
+	tools  []ToolInfo
 	mu     sync.RWMutex
 }
 
-// MCPToolInfo holds metadata about a tool discovered from an MCP server.
-type MCPToolInfo struct {
+// ToolInfo holds metadata about a tool discovered from an MCP server.
+type ToolInfo struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
 }
 
-// NewMCPServer creates a new MCPServer instance with the given name.
-func NewMCPServer(name string) *MCPServer {
-	return &MCPServer{
+// NewServer creates a new Server instance with the given name.
+func NewServer(name string) *Server {
+	return &Server{
 		name:  name,
-		tools: make([]MCPToolInfo, 0),
+		tools: make([]ToolInfo, 0),
 	}
 }
 
 // Name returns the server's configured name.
-func (s *MCPServer) Name() string {
+func (s *Server) Name() string {
 	return s.name
 }
 
 // Connect spawns the MCP server process and initializes the connection.
-func (s *MCPServer) Connect(ctx context.Context, cfg MCPServerConfig) error {
+func (s *Server) Connect(ctx context.Context, cfg ServerConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -95,7 +95,7 @@ func (s *MCPServer) Connect(ctx context.Context, cfg MCPServerConfig) error {
 }
 
 // DiscoverTools calls tools/list on the MCP server and stores the discovered tools.
-func (s *MCPServer) DiscoverTools(ctx context.Context) error {
+func (s *Server) DiscoverTools(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -110,7 +110,7 @@ func (s *MCPServer) DiscoverTools(ctx context.Context) error {
 	}
 
 	// Convert MCP tools to our internal format
-	s.tools = make([]MCPToolInfo, 0, len(result.Tools))
+	s.tools = make([]ToolInfo, 0, len(result.Tools))
 	for _, tool := range result.Tools {
 		// Marshal the input schema to json.RawMessage
 		schema, err := json.Marshal(tool.InputSchema)
@@ -123,7 +123,7 @@ func (s *MCPServer) DiscoverTools(ctx context.Context) error {
 			}
 		}
 
-		s.tools = append(s.tools, MCPToolInfo{
+		s.tools = append(s.tools, ToolInfo{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: schema,
@@ -134,18 +134,18 @@ func (s *MCPServer) DiscoverTools(ctx context.Context) error {
 }
 
 // Tools returns the list of discovered tools.
-func (s *MCPServer) Tools() []MCPToolInfo {
+func (s *Server) Tools() []ToolInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	// Return a copy to prevent external modification
-	tools := make([]MCPToolInfo, len(s.tools))
+	tools := make([]ToolInfo, len(s.tools))
 	copy(tools, s.tools)
 	return tools
 }
 
 // CallTool invokes a tool on the MCP server and returns the result.
-func (s *MCPServer) CallTool(ctx context.Context, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
+func (s *Server) CallTool(ctx context.Context, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
 	s.mu.RLock()
 	client := s.client
 	s.mu.RUnlock()
@@ -165,7 +165,7 @@ func (s *MCPServer) CallTool(ctx context.Context, name string, arguments map[str
 }
 
 // Close shuts down the MCP server connection.
-func (s *MCPServer) Close() error {
+func (s *Server) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -180,7 +180,7 @@ func (s *MCPServer) Close() error {
 }
 
 // IsConnected returns whether the server is currently connected.
-func (s *MCPServer) IsConnected() bool {
+func (s *Server) IsConnected() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.client != nil

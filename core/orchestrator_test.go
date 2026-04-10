@@ -44,7 +44,60 @@ func createTestRegistry() *tools.ToolRegistry {
 		description: "File operations",
 		result:      tools.ToolResult{Content: "File written", IsError: false},
 	})
+	// Register evaluator ReAct agent tools (from evaluator_test.go, same package)
+	reg.Register(newTestVerdictTool())
+	reg.Register(newTestEvidenceTool())
 	return reg
+}
+
+// createTestEvaluator creates an Evaluator with correct parameters for orchestrator tests.
+// It provides tokenCounter and contextFactory so the evaluator can run ReAct agents.
+func createTestEvaluator(toolExec ToolExecutor, llmCaller LLMCaller) *Evaluator {
+	reg := createTestRegistry()
+	counter, _ := llm.NewTokenCounter("approximate")
+	return NewEvaluator(
+		toolExec,
+		llmCaller,
+		reg,
+		counter,
+		testContextFactory,
+		nil, // logger
+		nil, // emitter
+		ToolResultBudget{},
+	)
+}
+
+// evalVerdictResponse returns a report_verdict tool call response for evaluator ReAct agent mock.
+func evalVerdictResponse(criterionID, verdict, explanation string) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:    "eval_call",
+				Name:  "report_verdict",
+				Input: json.RawMessage(fmt.Sprintf(`{"criterion_id":%q,"verdict":%q,"explanation":%q}`, criterionID, verdict, explanation)),
+			}},
+		},
+		StopReason: "tool_use",
+	}, nil
+}
+
+// evalEndTurnResp is a standard end_turn response for evaluator ReAct agent mock.
+var evalEndTurnResp = &llm.ChatResponse{
+	Message:    llm.Message{Role: "assistant", Content: "Evaluation complete."},
+	StopReason: "end_turn",
+}
+
+// evalCriterionFromReq extracts the criterion ID from an evaluator ReAct agent's LLM request.
+func evalCriterionFromReq(req llm.ChatRequest) string {
+	for _, msg := range req.Messages {
+		for _, id := range []string{"ac_3", "ac_2", "ac_1"} {
+			if strings.Contains(msg.Content, "ID: "+id) {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // Helper to create a context factory for tests
@@ -170,7 +223,7 @@ func TestOrchestrator_ReactMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	acExtractor := NewACExtractor(mockLLM)
 	planner := NewPlanner(mockLLM)
-	evaluator := NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
+	evaluator := createTestEvaluator(registry, mockLLM)
 
 	orchestrator := NewOrchestrator(
 		router,
@@ -303,7 +356,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	acExtractor := NewACExtractor(mockLLM)
 	planner := NewPlanner(mockLLM)
-	evaluator := NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
+	evaluator := createTestEvaluator(registry, mockLLM)
 
 	orchestrator := NewOrchestrator(
 		router,
@@ -390,7 +443,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	acExtractor := NewACExtractor(mockLLM)
 	planner := NewPlanner(mockLLM)
-	evaluator := NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{})
+	evaluator := createTestEvaluator(registry, mockLLM)
 
 	orchestrator := NewOrchestrator(
 		router,
@@ -505,7 +558,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 				NewRouter(mockLLM, 5),
 				NewACExtractor(mockLLM),
 				NewPlanner(mockLLM),
-				NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+				createTestEvaluator(registry, mockLLM),
 				mockLLM,
 				registry,
 				registry,
@@ -576,7 +629,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -666,18 +719,14 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 			}
 			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
-				if evalCallCount == 1 {
-					// First eval - fail
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"test did not pass"}]`},
-						StopReason: "end_turn",
-					}, nil
+				if (evalCallCount-1)%3 != 0 {
+					return evalEndTurnResp, nil
 				}
-				// Second eval - pass
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"test passed"}]`},
-					StopReason: "end_turn",
-				}, nil
+				evalRound := (evalCallCount-1)/3 + 1
+				if evalRound == 1 {
+					return evalVerdictResponse("ac_1", "NO", "test did not pass")
+				}
+				return evalVerdictResponse("ac_1", "YES", "test passed")
 			}
 			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
@@ -703,7 +752,7 @@ func TestReactMode_RetryOnFailedEval(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -799,11 +848,10 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 			}
 			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
-				// Always fail
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"test did not pass"}]`},
-					StopReason: "end_turn",
-				}, nil
+				if (evalCallCount-1)%3 != 0 {
+					return evalEndTurnResp, nil
+				}
+				return evalVerdictResponse("ac_1", "NO", "test did not pass")
 			}
 			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
@@ -831,7 +879,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -880,6 +928,7 @@ func TestReactMode_MaxRetriesExhausted(t *testing.T) {
 // TestReactMode_ReflectorCalled tests that reflector is called on evaluation failure.
 func TestReactMode_ReflectorCalled(t *testing.T) {
 	reflectorCalled := false
+	evalCallCount := 0
 	var tracker routerCallTracker
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -933,11 +982,11 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 				}, nil
 			}
 			if detectCallType(req) == "evaluator_judge" {
-				// Always fail
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"test did not pass"}]`},
-					StopReason: "end_turn",
-				}, nil
+				evalCallCount++
+				if (evalCallCount-1)%3 != 0 {
+					return evalEndTurnResp, nil
+				}
+				return evalVerdictResponse("ac_1", "NO", "test did not pass")
 			}
 			if detectCallType(req) == "reflector" {
 				reflectorCalled = true
@@ -964,7 +1013,7 @@ func TestReactMode_ReflectorCalled(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -1062,16 +1111,14 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 			}
 			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
-				if evalCallCount == 1 {
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"needs more work"}]`},
-						StopReason: "end_turn",
-					}, nil
+				if (evalCallCount-1)%3 != 0 {
+					return evalEndTurnResp, nil
 				}
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"looks good"}]`},
-					StopReason: "end_turn",
-				}, nil
+				evalRound := (evalCallCount-1)/3 + 1
+				if evalRound == 1 {
+					return evalVerdictResponse("ac_1", "NO", "needs more work")
+				}
+				return evalVerdictResponse("ac_1", "YES", "looks good")
 			}
 			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
@@ -1097,7 +1144,7 @@ func TestPlanExecute_ReplanOnFailure(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -1236,7 +1283,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(reg, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(reg, mockLLM),
 		mockLLM,
 		reg,
 		reg,
@@ -1341,7 +1388,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 			}
 			if detectCallType(req) == "evaluator_judge" {
 				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "YES - task complete"},
+					Message:    llm.Message{Role: "assistant", Content: "Done evaluating."},
 					StopReason: "end_turn",
 				}, nil
 			}
@@ -1359,7 +1406,7 @@ func TestHandleReact_CallsSetTaskWithUserMessage(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -1452,6 +1499,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 	reflectorCalled := false
 	replanCalled := false
 	attemptCount := 0
+	evalCallCount := 0
 	var tracker routerCallTracker
 
 	mockLLM := &mockLLMCaller{
@@ -1521,17 +1569,14 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 				}, nil
 			}
 			if detectCallType(req) == "evaluator_judge" {
-				// Fail first eval, pass second
-				if attemptCount <= 1 {
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"task not complete"}]`},
-						StopReason: "end_turn",
-					}, nil
+				evalCallCount++
+				if (evalCallCount-1)%3 != 0 {
+					return evalEndTurnResp, nil
 				}
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"task complete"}]`},
-					StopReason: "end_turn",
-				}, nil
+				if attemptCount <= 1 {
+					return evalVerdictResponse("ac_1", "NO", "task not complete")
+				}
+				return evalVerdictResponse("ac_1", "YES", "task complete")
 			}
 			if detectCallType(req) == "reflector" {
 				reflectorCalled = true
@@ -1558,7 +1603,7 @@ func TestPlanExecute_StepFailureTriggersReflection(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -1661,7 +1706,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -1838,20 +1883,16 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 				}, nil
 			}
 			if detectCallType(req) == "evaluator_judge" {
-				// Batch evaluator: all criteria in one call
-				currentEval := atomic.AddInt32(&evalCallCount, 1)
-				if currentEval == 1 {
-					// First batch eval: ac_1 passes, ac_2 fails
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"step 1 passed"},{"criterion_id":"ac_2","verdict":"NO","explanation":"step 2 failed"}]`},
-						StopReason: "end_turn",
-					}, nil
+				n := atomic.AddInt32(&evalCallCount, 1)
+				if (n-1)%3 != 0 {
+					return evalEndTurnResp, nil
 				}
-				// Second batch eval: all pass
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"step 1 passed"},{"criterion_id":"ac_2","verdict":"YES","explanation":"step 2 passed"}]`},
-					StopReason: "end_turn",
-				}, nil
+				cid := evalCriterionFromReq(req)
+				evalRound := int((n-1)/6) + 1 // 2 criteria × 3 calls = 6 per round
+				if evalRound == 1 && cid == "ac_2" {
+					return evalVerdictResponse("ac_2", "NO", "step 2 failed")
+				}
+				return evalVerdictResponse(cid, "YES", cid+" passed")
 			}
 			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
@@ -1877,7 +1918,7 @@ func TestPlanExecute_StepLevelRetry(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -2079,20 +2120,16 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 				}, nil
 			}
 			if detectCallType(req) == "evaluator_judge" {
-				// Batch evaluator: all criteria in one call
-				currentEval := atomic.AddInt32(&evalCallCount, 1)
-				if currentEval == 1 {
-					// First batch eval: ac_1 passes, ac_2 fails, ac_3 passes
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"passed"},{"criterion_id":"ac_2","verdict":"NO","explanation":"step 2 failed"},{"criterion_id":"ac_3","verdict":"YES","explanation":"passed"}]`},
-						StopReason: "end_turn",
-					}, nil
+				n := atomic.AddInt32(&evalCallCount, 1)
+				if (n-1)%3 != 0 {
+					return evalEndTurnResp, nil
 				}
-				// Second batch eval: all pass
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"passed"},{"criterion_id":"ac_2","verdict":"YES","explanation":"step 2 passed"},{"criterion_id":"ac_3","verdict":"YES","explanation":"passed"}]`},
-					StopReason: "end_turn",
-				}, nil
+				cid := evalCriterionFromReq(req)
+				evalRound := int((n-1)/9) + 1 // 3 criteria × 3 calls = 9 per round
+				if evalRound == 1 && cid == "ac_2" {
+					return evalVerdictResponse("ac_2", "NO", "step 2 failed")
+				}
+				return evalVerdictResponse(cid, "YES", cid+" passed")
 			}
 			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
@@ -2118,7 +2155,7 @@ func TestPlanExecute_StepLevelRetry_WithDependents(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -2300,18 +2337,13 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 			}
 			if detectCallType(req) == "evaluator_judge" {
 				evalCallCount++
-				if evalCallCount == 1 {
-					// First eval - fails
-					return &llm.ChatResponse{
-						Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"NO","explanation":"task failed"}]`},
-						StopReason: "end_turn",
-					}, nil
+				if (evalCallCount-1)%3 != 0 {
+					return evalEndTurnResp, nil
 				}
-				// Second eval - passes
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: `[{"criterion_id":"ac_1","verdict":"YES","explanation":"task passed"}]`},
-					StopReason: "end_turn",
-				}, nil
+				if evalCallCount <= 3 {
+					return evalVerdictResponse("ac_1", "NO", "task failed")
+				}
+				return evalVerdictResponse("ac_1", "YES", "task passed")
 			}
 			if detectCallType(req) == "reflector" {
 				return &llm.ChatResponse{
@@ -2337,7 +2369,7 @@ func TestPlanExecute_StepLevelRetry_FallbackToFull(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -2447,8 +2479,8 @@ func TestIsRecoverableAPIError(t *testing.T) {
 		{"400 status code", errors.New("status code: 400 bad request"), true},
 		{"missing field content", errors.New("missing field `content`"), true},
 		{"failed to deserialize", errors.New("Failed to deserialize response"), true},
-		{"retryable LLM error", llm.NewLLMError("test", 429, true, errors.New("rate limited")), true},
-		{"non-retryable LLM error", llm.NewLLMError("test", 401, false, errors.New("unauthorized")), false},
+		{"retryable LLM error", llm.NewError("test", 429, true, errors.New("rate limited")), true},
+		{"non-retryable LLM error", llm.NewError("test", 401, false, errors.New("unauthorized")), false},
 		{"404 error", errors.New("status code: 404"), false},
 		{"500 generic", errors.New("internal server error"), false},
 	}
@@ -2593,7 +2625,7 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 		NewRouter(mockLLM, 5),
 		NewACExtractor(mockLLM),
 		NewPlanner(mockLLM),
-		NewEvaluator(registry, mockLLM, nil, nil, nil, nil, nil, ToolResultBudget{}),
+		createTestEvaluator(registry, mockLLM),
 		mockLLM,
 		registry,
 		registry,
@@ -2656,5 +2688,35 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 	// Final result
 	if got := bb.GetFinalResult(); got == "" {
 		t.Error("blackboard final result should not be empty")
+	}
+}
+
+// TestBuildSystemPrompt_WithEnvInfo verifies that buildSystemPrompt includes
+// the full environment block when EnvInfo is present in context.
+func TestBuildSystemPrompt_WithEnvInfo(t *testing.T) {
+	info := &tools.EnvInfo{
+		OS:            "macOS 15.4 (Darwin 24.4.0)",
+		Arch:          "arm64",
+		Shell:         "/bin/zsh",
+		HomeDir:       "/Users/testuser",
+		GoVersion:     "1.23.1",
+		NodeVersion:   "22.5.0",
+		PythonVersion: "3.12.4",
+	}
+	ctx := tools.WithEnvInfo(context.Background(), info)
+	prompt := buildSystemPrompt(ctx, "test task", nil)
+
+	// Full env block should be present
+	if !strings.Contains(prompt, "## Environment") {
+		t.Error("expected environment block in executor prompt")
+	}
+	if !strings.Contains(prompt, "macOS 15.4") {
+		t.Error("expected OS info in executor prompt")
+	}
+	if !strings.Contains(prompt, "arm64") {
+		t.Error("expected architecture in executor prompt")
+	}
+	if !strings.Contains(prompt, "Go: 1.23.1") {
+		t.Error("expected Go version in executor prompt")
 	}
 }

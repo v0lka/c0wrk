@@ -261,7 +261,7 @@ func TestIntentVerifierToolFiltering(t *testing.T) {
 	}
 
 	for _, td := range filtered {
-		if !readOnlyToolWhitelist[td.Name] {
+		if !readOnlyToolAllowlist[td.Name] {
 			t.Errorf("tool %q should not be in filtered list", td.Name)
 		}
 	}

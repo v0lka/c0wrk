@@ -21,9 +21,9 @@ import (
 	"github.com/user/agent/backend/config"
 )
 
-// buildLLMRouter creates a new LLMRouter and ModelRegistry from the given config.
+// buildRouter creates a new Router and ModelRegistry from the given config.
 // This is extracted from Startup() so it can be called per-session in the factory closure.
-func (a *App) buildLLMRouter(cfg *config.Config) (*llm.LLMRouter, *llm.ModelRegistry, error) {
+func (a *App) buildRouter(cfg *config.Config) (*llm.Router, *llm.ModelRegistry, error) {
 	// Create ModelRegistry from config overrides
 	overrides := make(map[string]llm.ModelMetadata)
 	for name, override := range cfg.LLM.Models {
@@ -37,8 +37,14 @@ func (a *App) buildLLMRouter(cfg *config.Config) (*llm.LLMRouter, *llm.ModelRegi
 
 	// Initialize LLM Router
 	provType, apiKey, baseURL, model := cfg.LLM.GetActiveProviderConfig()
-	initialBackoff, _ := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
-	maxBackoff, _ := time.ParseDuration(cfg.LLM.Retry.MaxBackoff)
+	initialBackoff, err := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
+	if err != nil && cfg.LLM.Retry.InitialBackoff != "" {
+		slog.Warn("invalid initial_backoff, using default", "value", cfg.LLM.Retry.InitialBackoff, "error", err)
+	}
+	maxBackoff, err := time.ParseDuration(cfg.LLM.Retry.MaxBackoff)
+	if err != nil && cfg.LLM.Retry.MaxBackoff != "" {
+		slog.Warn("invalid max_backoff, using default", "value", cfg.LLM.Retry.MaxBackoff, "error", err)
+	}
 	routerCfg := llm.RouterConfig{
 		ActiveProvider: cfg.LLM.ActiveProvider,
 		ProviderType:   provType,
@@ -49,7 +55,7 @@ func (a *App) buildLLMRouter(cfg *config.Config) (*llm.LLMRouter, *llm.ModelRegi
 		InitialBackoff: initialBackoff,
 		MaxBackoff:     maxBackoff,
 	}
-	llmRouter, err := llm.NewLLMRouter(context.Background(), routerCfg, modelRegistry)
+	llmRouter, err := llm.NewRouter(context.Background(), routerCfg, modelRegistry)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -60,11 +66,12 @@ func (a *App) buildLLMRouter(cfg *config.Config) (*llm.LLMRouter, *llm.ModelRegi
 // from the given LLM router and config. Returns nil values if llmRouter is nil.
 // When emitter is non-nil, each component receives a token-tracking wrapper so
 // that service-level LLM calls are accumulated in session totals.
-func (a *App) buildCoreAgents(llmRouter *llm.LLMRouter, registry *tools.ToolRegistry, cfg *config.Config, emitter core.Emitter, logger *slog.Logger) (*core.Router, *core.ACExtractor, *core.Planner, *core.Evaluator, *core.Reflector) {
+func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistry, cfg *config.Config, emitter core.Emitter, logger *slog.Logger) (*core.Router, *core.ACExtractor, *core.Planner, *core.Evaluator, *core.Reflector) {
 	if llmRouter == nil {
 		return nil, nil, nil, nil, nil
 	}
 	caller := orchestration.NewTokenTrackingCaller(llmRouter, emitter)
+	caller = core.NewLoggingCaller(caller, cfg.LLM.ActiveProvider, logger)
 	router := core.NewRouter(caller, cfg.Router.HistoryWindow)
 	acExtractor := core.NewACExtractor(caller)
 	planner := core.NewPlanner(caller)
@@ -99,7 +106,7 @@ func (a *App) buildOrchestratorConfig(cfg *config.Config) core.OrchestratorConfi
 // rebuildJudge recreates the ToolJudge from current config and sets it on the registry.
 // If the judge cannot be created (disabled, no provider, no model), it keeps the existing judge.
 // router is optional; if nil, a new router is built from config.
-func (a *App) rebuildJudge(cfg *config.Config, router *llm.LLMRouter, logger *slog.Logger) {
+func (a *App) rebuildJudge(cfg *config.Config, router *llm.Router, logger *slog.Logger) {
 	if a.toolRegistry == nil {
 		return
 	}
@@ -114,12 +121,12 @@ func (a *App) rebuildJudge(cfg *config.Config, router *llm.LLMRouter, logger *sl
 
 	_, _, _, defaultModel := cfg.LLM.GetActiveProviderConfig()
 
-	var judgeProvider llm.LLMProvider
+	var judgeProvider llm.Provider
 	if router != nil {
 		judgeProvider = router.GetDefaultProvider()
 	} else {
 		// Try building a new router from current config
-		newRouter, _, err := a.buildLLMRouter(cfg)
+		newRouter, _, err := a.buildRouter(cfg)
 		if err == nil && newRouter != nil {
 			judgeProvider = newRouter.GetDefaultProvider()
 		} else if logger != nil {
@@ -145,11 +152,12 @@ func (a *App) rebuildJudge(cfg *config.Config, router *llm.LLMRouter, logger *sl
 }
 
 // buildContextFactory creates a ContextManagerFactory from the given LLM router and config.
-func (a *App) buildContextFactory(llmRouter *llm.LLMRouter, cfg *config.Config) core.ContextManagerFactory {
+func (a *App) buildContextFactory(llmRouter *llm.Router, cfg *config.Config) core.ContextManagerFactory {
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) core.ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
 		if err != nil {
 			slog.Warn("token counter fallback", "tokenizer", modelMeta.TokenizerType, "error", err)
+			counter = llm.NewSimpleTokenCounter()
 		}
 		tracker := llm.NewContextTokenTracker(counter)
 

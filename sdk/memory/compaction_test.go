@@ -439,10 +439,8 @@ func TestSummarizationStrategy_TruncatesLargeBlocks(t *testing.T) {
 }
 
 func TestHierarchicalStrategy_TruncateToTokenBudget(t *testing.T) {
-	// Create strategy with small token budget
-	strategy := &HierarchicalStrategy{
-		maxSummarizeTokens: 10, // 10 tokens * 3 chars = 30 chars max
-	}
+	// Test with small token budget: 10 tokens * 3 chars = 30 chars max
+	maxTokens := 10
 
 	tests := []struct {
 		name        string
@@ -456,7 +454,7 @@ func TestHierarchicalStrategy_TruncateToTokenBudget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := strategy.truncateToTokenBudget(tt.input)
+			result := truncateToTokenBudget(tt.input, maxTokens)
 			if tt.shouldTrunc {
 				if !strings.Contains(result, "truncated") {
 					t.Error("expected truncation marker")

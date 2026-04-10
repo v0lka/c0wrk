@@ -24,3 +24,6 @@ func (*NoopEvents) OnStepRetry(_ string, _, _ int)                    {}
 func (*NoopEvents) OnCriteriaExtracted(_ int, _ []EvalCriterionEvent) {}
 func (*NoopEvents) OnService(_ string)                                {}
 func (*NoopEvents) OnServiceMeta(_ string, _ map[string]any)          {}
+func (*NoopEvents) OnEvaluationError(_ error)                          {}
+func (*NoopEvents) OnReplanFailed(_ error)                             {}
+func (*NoopEvents) OnFileRollbackError(_ string, _ error)              {}

@@ -36,7 +36,7 @@ func (c *CoreContextManager) SetTask(task string, criteria []AcceptanceCriterion
 	c.ContextWindow.SetTask(b.String())
 }
 
-// SetPlan sets the plan, formatting it into a system message.
+// SetPlanFromPlan sets the plan, formatting it into a system message.
 func (c *CoreContextManager) SetPlanFromPlan(plan *Plan) {
 	if plan == nil || len(plan.Steps) == 0 {
 		return

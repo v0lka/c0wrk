@@ -19,7 +19,7 @@ type Config struct {
 	Theme         string              `yaml:"theme"`
 	LLM           LLMConfig           `yaml:"llm"`
 	MCP           MCPConfig           `yaml:"mcp"`
-	ExternalTools ExternalToolsConfig `yaml:"external_tools"`
+
 	Memory        MemoryConfig        `yaml:"memory"`
 	Router        RouterConfig        `yaml:"router"`
 	Executor      ExecutorConfig      `yaml:"executor"`
@@ -94,11 +94,6 @@ type MCPServerConfig struct {
 	Command string            `yaml:"command"`
 	Args    []string          `yaml:"args"`
 	Env     map[string]string `yaml:"env"`
-}
-
-// ExternalToolsConfig configures external (user-created) tools.
-type ExternalToolsConfig struct {
-	Directory string `yaml:"directory"`
 }
 
 // MemoryConfig holds memory system configuration.
