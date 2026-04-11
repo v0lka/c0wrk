@@ -53,5 +53,6 @@ type StepConfig struct {
 	MaxSteps           int
 	AllowedTools       []tools.ToolDescriptor // filtered tool set (empty = use all)
 	SystemPrompt       string                 // custom prompt override (empty = use factory)
+	SystemPromptSuffix string                 // appended to system prompt (empty = no suffix)
 	CompactionStrategy string                 // compaction strategy name (empty = default)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 	tools "github.com/user/agent/sdk/tools"
 )
 
@@ -720,5 +721,96 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 	// Final result
 	if got := bb.GetFinalResult(); got == "" {
 		t.Error("blackboard final result should not be empty")
+	}
+}
+
+// TestCoreStepConfigurator_RoleSuffixInjection verifies that coreStepConfigurator
+// injects role-specific suffixes correctly based on the AgentProfile.
+func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
+	tests := []struct {
+		name           string
+		profile        AgentProfile
+		wantSuffix     bool
+		suffixContains string // substring to check in suffix
+	}{
+		{
+			name:           "researcher role gets researcher suffix",
+			profile:        AgentProfile{Role: "researcher"},
+			wantSuffix:     true,
+			suffixContains: "Role: Researcher",
+		},
+		{
+			name:           "coder role gets coder suffix",
+			profile:        AgentProfile{Role: "coder"},
+			wantSuffix:     true,
+			suffixContains: "Role: Coder",
+		},
+		{
+			name:           "tester role gets tester suffix",
+			profile:        AgentProfile{Role: "tester"},
+			wantSuffix:     true,
+			suffixContains: "Role: Tester",
+		},
+		{
+			name:       "executor role gets no suffix",
+			profile:    AgentProfile{Role: "executor"},
+			wantSuffix: false,
+		},
+		{
+			name:       "unknown role gets no suffix",
+			profile:    AgentProfile{Role: "unknown"},
+			wantSuffix: false,
+		},
+		{
+			name:       "empty role gets no suffix",
+			profile:    AgentProfile{Role: ""},
+			wantSuffix: false,
+		},
+		{
+			name:       "researcher with explicit SystemPrompt gets no suffix",
+			profile:    AgentProfile{Role: "researcher", SystemPrompt: "custom prompt"},
+			wantSuffix: false,
+		},
+		{
+			name:       "coder with explicit SystemPrompt gets no suffix",
+			profile:    AgentProfile{Role: "coder", SystemPrompt: "custom prompt"},
+			wantSuffix: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := OrchestratorConfig{MaxSteps: 30}
+			configurator := coreStepConfigurator(cfg)
+
+			step := orchestration.PlanStep{
+				ID:          "test_step",
+				Description: "Test step",
+				Profile:     &tt.profile,
+			}
+
+			defaults := orchestration.StepDefaults{
+				MaxSteps: 30,
+				AllTools: nil,
+			}
+
+			stepCfg := configurator(step, defaults)
+
+			if tt.wantSuffix {
+				if stepCfg.SystemPromptSuffix == "" {
+					t.Error("expected non-empty SystemPromptSuffix")
+				}
+				if !strings.Contains(stepCfg.SystemPromptSuffix, tt.suffixContains) {
+					t.Errorf("expected suffix to contain %q, got %q", tt.suffixContains, stepCfg.SystemPromptSuffix)
+				}
+			} else if stepCfg.SystemPromptSuffix != "" {
+				t.Errorf("expected empty SystemPromptSuffix, got %q", stepCfg.SystemPromptSuffix)
+			}
+
+			// Verify SystemPrompt is passed through correctly
+			if stepCfg.SystemPrompt != tt.profile.SystemPrompt {
+				t.Errorf("SystemPrompt = %q, want %q", stepCfg.SystemPrompt, tt.profile.SystemPrompt)
+			}
+		})
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/user/agent/core"
-	"github.com/user/agent/core/tools"
+	sdktools "github.com/user/agent/sdk/tools"
 )
 
 // --- Session lifecycle event data ---
@@ -81,13 +81,10 @@ type ToolConfirmPayload struct {
 
 // --- Ask-user payloads ---
 
-// AskUserPayload is sent to the frontend when the agent asks the user a question.
+// AskUserPayload is sent to the frontend when the agent asks the user questions.
 type AskUserPayload struct {
-	RequestID   string                `json:"request_id"`
-	Question    string                `json:"question"`
-	Options     []tools.AskUserOption `json:"options"`
-	MultiSelect bool                  `json:"multi_select"`
-	Recommended []string              `json:"recommended,omitempty"`
+	RequestID string                    `json:"request_id"`
+	Questions []sdktools.AskUserQuestion `json:"questions"`
 }
 
 // --- Emitter event data types (typed Data field payloads) ---

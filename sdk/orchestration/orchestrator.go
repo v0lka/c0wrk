@@ -359,6 +359,9 @@ func (o *Orchestrator) executePlanWithSteps(
 			default:
 				systemPrompt = defaultSystemPrompt(ctx, step.Description)
 			}
+			if stepCfg.SystemPromptSuffix != "" {
+				systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
+			}
 
 			// Resolve model metadata
 			var modelMeta llm.ModelMetadata
@@ -512,7 +515,10 @@ func (o *Orchestrator) executePlanWithSteps(
 					default:
 						systemPrompt = defaultSystemPrompt(ctx, failedPlanStep.Description)
 					}
-
+					if stepCfg.SystemPromptSuffix != "" {
+						systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
+					}
+					
 					// Resolve model metadata
 					var modelMeta llm.ModelMetadata
 					if o.cfg.ModelRegistry != nil {

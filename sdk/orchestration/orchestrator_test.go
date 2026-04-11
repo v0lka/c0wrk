@@ -289,6 +289,29 @@ func TestResolveStepConfig_CustomConfigurator(t *testing.T) {
 	}
 }
 
+func TestResolveStepConfig_SystemPromptSuffix(t *testing.T) {
+	o := New(Config{
+		MaxSteps: 15,
+		StepConfigurator: func(step PlanStep, defaults StepDefaults) StepConfig {
+			return StepConfig{
+				MaxSteps:           5,
+				SystemPrompt:       "base prompt",
+				SystemPromptSuffix: "## Role: Coder\nBe awesome.",
+			}
+		},
+	})
+	cfg := o.resolveStepConfig(PlanStep{ID: "s1"}, nil)
+	if cfg.MaxSteps != 5 {
+		t.Errorf("expected MaxSteps=5, got %d", cfg.MaxSteps)
+	}
+	if cfg.SystemPrompt != "base prompt" {
+		t.Errorf("expected base system prompt")
+	}
+	if cfg.SystemPromptSuffix != "## Role: Coder\nBe awesome." {
+		t.Errorf("expected role suffix, got %q", cfg.SystemPromptSuffix)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // defaultSystemPrompt
 // ---------------------------------------------------------------------------

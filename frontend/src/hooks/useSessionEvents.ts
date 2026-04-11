@@ -33,7 +33,7 @@ function isToolConfirmData(data: unknown): data is ToolConfirmData {
 }
 
 function isAskUserData(data: unknown): data is AskUserData {
-  return typeof data === 'object' && data !== null && 'request_id' in data && 'question' in data
+  return typeof data === 'object' && data !== null && 'request_id' in data && 'questions' in data
 }
 
 function isPlanData(data: unknown): data is PlanData {
@@ -255,13 +255,10 @@ export function useSessionEvents(sessionId: string | null) {
         id: `ask-user-${askData.request_id}`,
         sessionId,
         type: 'ask_user',
-        content: askData.question,
+        content: askData.questions.map(q => q.question).join('; '),
         metadata: {
           request_id: askData.request_id,
-          question: askData.question,
-          options: askData.options,
-          multi_select: askData.multi_select,
-          recommended: askData.recommended,
+          questions: askData.questions,
         } as Record<string, unknown>,
         timestamp: Date.now(),
       })

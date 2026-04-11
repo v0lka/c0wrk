@@ -17,6 +17,7 @@ import (
 	// SDK layer
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	sdktools "github.com/user/agent/sdk/tools"
 	"github.com/user/agent/sdk/tools/builtins"
 	websearch "github.com/user/agent/sdk/tools/builtins/web_search"
 
@@ -421,26 +422,23 @@ func (a *App) Startup(ctx context.Context) {
 	registry.Register(batchTool)
 
 	// Ask User tool (interactive question panel)
-	askUserTool := builtins.NewAskUserTool(func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
+	askUserTool := builtins.NewAskUserTool(func(ctx context.Context, req sdktools.AskUserRequest) (sdktools.AskUserResponse, error) {
 		if a.ctx == nil {
-			return tools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
+			return sdktools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
 		}
 
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
-			return tools.AskUserResponse{}, errors.New("ask_user not available: no session context")
+			return sdktools.AskUserResponse{}, errors.New("ask_user not available: no session context")
 		}
 
 		requestID := uuid.New().String()
-		ch := make(chan tools.AskUserResponse, 1)
+		ch := make(chan sdktools.AskUserResponse, 1)
 		a.pendingAskUser.Store(requestID, ch)
 
 		payload := session.AskUserPayload{
-			RequestID:   requestID,
-			Question:    req.Question,
-			Options:     req.Options,
-			MultiSelect: req.MultiSelect,
-			Recommended: req.Recommended,
+			RequestID: requestID,
+			Questions: req.Questions,
 		}
 
 		emitFunc(session.Event{SessionID: sessionID, Type: "ask_user", Data: payload})
@@ -450,10 +448,10 @@ func (a *App) Startup(ctx context.Context) {
 			return resp, nil
 		case <-ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return tools.AskUserResponse{}, ctx.Err()
+			return sdktools.AskUserResponse{}, ctx.Err()
 		case <-a.ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return tools.AskUserResponse{}, a.ctx.Err()
+			return sdktools.AskUserResponse{}, a.ctx.Err()
 		}
 	})
 	registry.Register(askUserTool)
@@ -701,23 +699,34 @@ func (a *App) Startup(ctx context.Context) {
 		}
 
 		// Build response
-		var resp tools.AskUserResponse
+		var resp sdktools.AskUserResponse
 
-		// Parse selected options
-		if selectedVal, ok := payload["selected"]; ok {
-			if selectedArr, ok := selectedVal.([]any); ok {
-				for _, v := range selectedArr {
-					if s, ok := v.(string); ok {
-						resp.Selected = append(resp.Selected, s)
+		// Parse answers array
+		if answersVal, ok := payload["answers"]; ok {
+			if answersArr, ok := answersVal.([]any); ok {
+				for _, item := range answersArr {
+					answerMap, ok := item.(map[string]any)
+					if !ok {
+						continue
 					}
+					var answer sdktools.AskUserAnswer
+					if id, ok := answerMap["id"].(string); ok {
+						answer.ID = id
+					}
+					if selectedVal, ok := answerMap["selected"]; ok {
+						if selectedArr, ok := selectedVal.([]any); ok {
+							for _, v := range selectedArr {
+								if s, ok := v.(string); ok {
+									answer.Selected = append(answer.Selected, s)
+								}
+							}
+						}
+					}
+					if ct, ok := answerMap["custom_text"].(string); ok {
+						answer.CustomText = ct
+					}
+					resp.Answers = append(resp.Answers, answer)
 				}
-			}
-		}
-
-		// Parse custom text
-		if customVal, ok := payload["custom_text"]; ok {
-			if s, ok := customVal.(string); ok {
-				resp.CustomText = s
 			}
 		}
 
@@ -726,7 +735,7 @@ func (a *App) Startup(ctx context.Context) {
 			log.Warn("no pending ask_user for request_id", "request_id", requestID)
 			return
 		}
-		ch, ok := chVal.(chan tools.AskUserResponse)
+		ch, ok := chVal.(chan sdktools.AskUserResponse)
 		if !ok {
 			log.Warn("pending ask_user channel has wrong type", "request_id", requestID)
 			a.pendingAskUser.Delete(requestID)

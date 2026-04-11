@@ -160,15 +160,15 @@ export function isSessionTokensData(data: unknown): data is SessionTokensData {
   return typeof data === 'object' && data !== null && 'session_input_tokens' in data && 'session_output_tokens' in data
 }
 
-export interface AskUserOption {
-  label: string
-  value: string
+export interface AskUserQuestion {
+  id: string
+  question: string
+  options: Array<{ label: string; value: string }>
+  multi_select?: boolean
+  recommended?: string[]
 }
 
 export interface AskUserData {
   request_id: string
-  question: string
-  options: AskUserOption[]
-  multi_select: boolean
-  recommended?: string[]
+  questions: AskUserQuestion[]
 }

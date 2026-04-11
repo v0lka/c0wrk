@@ -7,11 +7,33 @@ Steps can depend on other steps (DependsOn) and can be parallelizable.
 
 Prefer fewer, broader steps over many granular ones. Each step should represent meaningful progress, not a single tool call.
 
-- Simple tasks (complexity 1-2): 1 step
+- Simple tasks (complexity 1-2): 1-2 steps
 - Medium tasks (complexity 3): 2-4 steps
 - Complex tasks (complexity 4-5): 3-7 steps
 
 Never exceed 10 steps. If a task seems to require more, combine related work into broader steps.
+
+## Domain Assignment
+
+Domain controls how the agent's context window is compacted during long executions:
+
+- "code" → sliding window (keeps recent file edits visible)
+- "research" → summarization (condenses findings into key points)
+- "general" → sliding window; switches to hierarchical if plan complexity ≥ 4
+
+Choose the domain that matches the **primary activity** of the step, not its subject matter:
+
+- A step that _reads and analyzes_ source code to produce a report is "research" (primary activity: information gathering).
+- A step that _modifies_ source files or runs build/test commands is "code" (primary activity: file mutation).
+- Use "general" only when a step genuinely mixes activities and cannot be split further.
+
+**Wrong domain → wrong compaction → degraded context quality.** A research step with domain "code" will lose synthesized findings to sliding window eviction. A coding step with domain "research" will lose recent edits to summarization.
+
+Do NOT:
+
+- Default every step to "code" — reading docs, searching the web, or analyzing logs is "research".
+- Copy a domain from a similar-looking step without considering what this specific step actually does.
+- Use "general" as a lazy default — prefer a specific domain when the step's activity is clear.
 
 ## Anti-patterns — Do NOT:
 
@@ -29,14 +51,6 @@ Prefer higher-tier tools over bash_exec in all profiles:
 - "coder": implementation, file operations (tools: file_ops, ripgrep, glob; bash_exec for build/run/test)
 - "tester": test execution, verification (tools: bash_exec, ripgrep, glob, file_ops)
 - "executor": general purpose (default, all tools — follow tool priority tiers)
-
-## Domain Assignment
-
-- "code": file operations, implementation, tests, build commands
-- "research": web search, documentation, analysis, information retrieval
-- "general": mixed or unclear (default if omitted)
-
-Domain affects compaction strategy (code = sliding window, research = summarization) and evaluation method (code = programmatic checks when possible, research = LLM judge).
 
 ## Output Expectations
 

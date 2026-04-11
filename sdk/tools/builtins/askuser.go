@@ -9,7 +9,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolAskUserDescription = `Ask the user a question and present selectable answer options. Use this when you need user input to proceed — for example, to choose between approaches, confirm a destructive action, or gather preferences. The user can pick from the predefined options or provide a custom free-text answer. Supports single-select (default) and multi-select modes. Not available in non-interactive (CLI) mode.`
+const toolAskUserDescription = `Ask the user one or more questions and present selectable answer options for each. This tool is the ONLY permitted way to request input from the user during task execution. NEVER write questions as plain text in your output — always use this tool. Supports single-select (default) and multi-select modes per question. The user can pick from predefined options or provide a custom free-text answer for each question. Not available in non-interactive (CLI) mode.`
 
 // AskUserTool asks the user a question and returns their answer.
 type AskUserTool struct {
@@ -26,33 +26,41 @@ func NewAskUserTool(fn tools.AskUserFunc) *AskUserTool {
 			Schema: json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"question": {
-				"type": "string",
-				"description": "The question to ask the user"
-			},
-			"options": {
+			"questions": {
 				"type": "array",
 				"items": {
 					"type": "object",
 					"properties": {
-						"label": {"type": "string", "description": "Display label for the option"},
-						"value": {"type": "string", "description": "Value identifier for the option"}
+						"id": {"type": "string", "description": "Unique identifier for this question (e.g. q1, q2)"},
+						"question": {"type": "string", "description": "The question text"},
+						"options": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {
+									"label": {"type": "string", "description": "Display label for the option"},
+									"value": {"type": "string", "description": "Value identifier for the option"}
+								},
+								"required": ["label", "value"]
+							},
+							"description": "Answer options to present to the user"
+						},
+						"multi_select": {
+							"type": "boolean",
+							"description": "Whether multiple options can be selected (default false = exclusive/radio)"
+						},
+						"recommended": {
+							"type": "array",
+							"items": {"type": "string"},
+							"description": "Values of options to mark as recommended"
+						}
 					},
-					"required": ["label", "value"]
+					"required": ["id", "question", "options"]
 				},
-				"description": "Answer options to present to the user"
-			},
-			"multi_select": {
-				"type": "boolean",
-				"description": "Whether multiple options can be selected (default false = exclusive/radio)"
-			},
-			"recommended": {
-				"type": "array",
-				"items": {"type": "string"},
-				"description": "Values of options to mark as recommended"
+				"description": "One or more questions to present to the user"
 			}
 		},
-		"required": ["question", "options"]
+		"required": ["questions"]
 	}`),
 			Policy: tools.PolicyAlwaysAllow,
 		},
@@ -60,33 +68,36 @@ func NewAskUserTool(fn tools.AskUserFunc) *AskUserTool {
 	}
 }
 
-// askUserInput represents the input parameters for the ask_user tool.
 type askUserInput struct {
-	Question    string                `json:"question"`
-	Options     []tools.AskUserOption `json:"options"`
-	MultiSelect bool                  `json:"multi_select"`
-	Recommended []string              `json:"recommended"`
+	Questions []tools.AskUserQuestion `json:"questions"`
 }
 
-// Execute asks the user a question and returns the response.
 func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params askUserInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)
 	}
 
-	if strings.TrimSpace(params.Question) == "" {
+	if len(params.Questions) == 0 {
 		return tools.ToolResult{
-			Content: "validation error: question must not be empty",
+			Content: "validation error: questions array must not be empty",
 			IsError: true,
 		}, nil
 	}
 
-	if len(params.Options) == 0 {
-		return tools.ToolResult{
-			Content: "validation error: options must have at least one entry",
-			IsError: true,
-		}, nil
+	for _, q := range params.Questions {
+		if strings.TrimSpace(q.Question) == "" {
+			return tools.ToolResult{
+				Content: fmt.Sprintf("validation error: question %q has empty text", q.ID),
+				IsError: true,
+			}, nil
+		}
+		if len(q.Options) == 0 {
+			return tools.ToolResult{
+				Content: fmt.Sprintf("validation error: question %q must have at least one option", q.ID),
+				IsError: true,
+			}, nil
+		}
 	}
 
 	if t.askFunc == nil {
@@ -97,10 +108,7 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	}
 
 	req := tools.AskUserRequest{
-		Question:    params.Question,
-		Options:     params.Options,
-		MultiSelect: params.MultiSelect,
-		Recommended: params.Recommended,
+		Questions: params.Questions,
 	}
 
 	resp, err := t.askFunc(ctx, req)
@@ -111,20 +119,34 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		}, nil
 	}
 
-	hasSelected := len(resp.Selected) > 0
-	hasCustom := resp.CustomText != ""
+	// Format response
+	var lines []string
+	for _, a := range resp.Answers {
+		// Find the question text for this answer
+		qText := a.ID
+		for _, q := range params.Questions {
+			if q.ID == a.ID {
+				qText = q.Question
+				break
+			}
+		}
 
-	var content string
-	switch {
-	case hasSelected && hasCustom:
-		content = fmt.Sprintf("User selected: %s. Additional input: %s", strings.Join(resp.Selected, ", "), resp.CustomText)
-	case hasSelected:
-		content = "User selected: " + strings.Join(resp.Selected, ", ")
-	case hasCustom:
-		content = "User answered: " + resp.CustomText
-	default:
-		content = "User provided no answer"
+		hasSelected := len(a.Selected) > 0
+		hasCustom := a.CustomText != ""
+
+		var line string
+		switch {
+		case hasSelected && hasCustom:
+			line = fmt.Sprintf("Q %q → User selected: %s. Additional input: %s", qText, strings.Join(a.Selected, ", "), a.CustomText)
+		case hasSelected:
+			line = fmt.Sprintf("Q %q → User selected: %s", qText, strings.Join(a.Selected, ", "))
+		case hasCustom:
+			line = fmt.Sprintf("Q %q → User answered: %s", qText, a.CustomText)
+		default:
+			line = fmt.Sprintf("Q %q → User provided no answer", qText)
+		}
+		lines = append(lines, line)
 	}
 
-	return tools.ToolResult{Content: content, IsError: false}, nil
+	return tools.ToolResult{Content: strings.Join(lines, "\n"), IsError: false}, nil
 }

@@ -129,20 +129,32 @@ type AskUserOption struct {
 	Value string `json:"value"`
 }
 
-// AskUserRequest describes a question to ask the user via the UI.
-type AskUserRequest struct {
+// AskUserQuestion represents a single question in a multi-question request.
+type AskUserQuestion struct {
+	ID          string          `json:"id"`
 	Question    string          `json:"question"`
 	Options     []AskUserOption `json:"options"`
-	MultiSelect bool            `json:"multi_select"`
+	MultiSelect bool            `json:"multi_select,omitempty"`
 	Recommended []string        `json:"recommended,omitempty"`
 }
 
-// AskUserResponse represents the user's answer.
-type AskUserResponse struct {
+// AskUserRequest describes one or more questions to ask the user via the UI.
+type AskUserRequest struct {
+	Questions []AskUserQuestion `json:"questions"`
+}
+
+// AskUserAnswer is the user's response to a single question.
+type AskUserAnswer struct {
+	ID         string   `json:"id"`
 	Selected   []string `json:"selected"`
 	CustomText string   `json:"custom_text,omitempty"`
 }
 
-// AskUserFunc is called when the ask_user tool needs to display a question to the user.
+// AskUserResponse represents the user's answers to all questions.
+type AskUserResponse struct {
+	Answers []AskUserAnswer `json:"answers"`
+}
+
+// AskUserFunc is called when the ask_user tool needs to display questions to the user.
 // If nil, ask_user is not available (CLI mode).
 type AskUserFunc func(ctx context.Context, req AskUserRequest) (AskUserResponse, error)

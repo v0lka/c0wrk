@@ -220,12 +220,12 @@ type Reflection = orchestration.Reflection
 
 // AgentProfile defines a specialized agent role for plan step execution.
 type AgentProfile struct {
-	// TODO: implement role-based behavior (prompt customization, tool filtering, strategy selection)
+	// Role controls system prompt customization; tool filtering uses AllowedTools; strategy uses Domain.
 	Role         string   `json:"role"`                    // "researcher", "coder", "tester", "executor" (default)
 	SystemPrompt string   `json:"system_prompt,omitempty"` // role-specific prompt override (optional)
 	AllowedTools []string `json:"allowed_tools,omitempty"` // subset of available tools (empty = all)
 	MaxSteps     int      `json:"max_steps,omitempty"`     // budget per agent (0 = use default)
-	Domain       string   `json:"domain,omitempty"`        // "code" | "research" | "general" - affects compaction and AC handling
+	Domain       string   `json:"domain,omitempty"`        // "code" | "research" | "general" - affects compaction strategy
 }
 
 // DefaultAgentProfile returns the default executor profile.

@@ -144,6 +144,14 @@ func NewOrchestrator(
 	}
 }
 
+// roleSuffixes defines role-specific system prompt suffixes.
+// These are appended to the base system prompt when no explicit SystemPrompt is set.
+var roleSuffixes = map[string]string{
+	"researcher": "## Role: Researcher\nYour primary function is information gathering and analysis. Synthesize findings clearly and pass all results through the finish tool. Do NOT create or modify project files.",
+	"coder":     "## Role: Coder\nYour primary function is code implementation. Write clean, well-structured code. Verify your changes compile and work before finishing.",
+	"tester":    "## Role: Tester\nYour primary function is verification and testing. Run tests, check builds, and report results clearly. Do NOT modify source code — only test infrastructure if necessary.",
+}
+
 // coreStepConfigurator resolves AgentProfile from PlanStep.Profile.
 func coreStepConfigurator(cfg OrchestratorConfig) orchestration.StepConfigurator {
 	return func(step orchestration.PlanStep, defaults orchestration.StepDefaults) orchestration.StepConfig {
@@ -160,10 +168,19 @@ func coreStepConfigurator(cfg OrchestratorConfig) orchestration.StepConfigurator
 				}
 			}
 		}
+
+		// Only inject role suffix when there's no explicit SystemPrompt override.
+		// If someone explicitly set SystemPrompt, they're taking full control.
+		var suffix string
+		if profile.SystemPrompt == "" {
+			suffix = roleSuffixes[profile.Role]
+		}
+
 		return orchestration.StepConfig{
 			MaxSteps:           profile.MaxSteps,
 			AllowedTools:       allowed,
 			SystemPrompt:       profile.SystemPrompt,
+			SystemPromptSuffix: suffix,
 			CompactionStrategy: applyCompactionStrategy(profile.Domain, 3),
 		}
 	}
