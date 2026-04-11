@@ -16,9 +16,9 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 	// Mock returns 3-step plan with dependencies: step_2 depends on step_1, step_3 depends on step_1
 	mockResponse := `{
 		"steps": [
-			{"id": "step_1", "description": "Initialize project", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]},
-			{"id": "step_2", "description": "Create main module", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"], "relevant_ac": ["ac_2"]},
-			{"id": "step_3", "description": "Create tests", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"], "relevant_ac": ["ac_3"]}
+			{"id": "step_1", "description": "Initialize project", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash"]},
+			{"id": "step_2", "description": "Create main module", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"]},
+			{"id": "step_3", "description": "Create tests", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"]}
 		]
 	}`
 
@@ -36,18 +36,12 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	criteria := []AcceptanceCriterion{
-		{ID: "ac_1", Description: "Project initialized"},
-		{ID: "ac_2", Description: "Main module created"},
-		{ID: "ac_3", Description: "Tests created"},
-	}
-
 	availableTools := []tools.ToolDescriptor{
 		{Name: "bash", Description: "Execute shell commands"},
 		{Name: "file_write", Description: "Write content to a file"},
 	}
 
-	plan, err := planner.Plan(context.Background(), "Create a new Go project", criteria, availableTools, nil)
+	plan, err := planner.Plan(context.Background(), "Create a new Go project", availableTools, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -87,7 +81,7 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 	}
 }
 
-func TestPlan_IncludesToolsAndCriteria(t *testing.T) {
+func TestPlan_IncludesToolsInPrompt(t *testing.T) {
 	var capturedRequest llm.ChatRequest
 
 	mock := &mockLLMCaller{
@@ -96,7 +90,7 @@ func TestPlan_IncludesToolsAndCriteria(t *testing.T) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
-					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
 				},
 				StopReason: "end_turn",
 			}, nil
@@ -105,17 +99,12 @@ func TestPlan_IncludesToolsAndCriteria(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	criteria := []AcceptanceCriterion{
-		{ID: "ac_1", Description: "Tests must pass"},
-		{ID: "ac_2", Description: "Code must compile"},
-	}
-
 	availableTools := []tools.ToolDescriptor{
 		{Name: "bash", Description: "Execute shell commands"},
 		{Name: "file_read", Description: "Read file contents"},
 	}
 
-	_, err := planner.Plan(context.Background(), "Build project", criteria, availableTools, nil)
+	_, err := planner.Plan(context.Background(), "Build project", availableTools, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -131,25 +120,14 @@ func TestPlan_IncludesToolsAndCriteria(t *testing.T) {
 	if !strings.Contains(systemPrompt, "Execute shell commands") {
 		t.Error("System prompt should contain tool description")
 	}
-
-	// Verify system prompt contains AC descriptions
-	if !strings.Contains(systemPrompt, "ac_1") {
-		t.Error("System prompt should contain AC ID 'ac_1'")
-	}
-	if !strings.Contains(systemPrompt, "Tests must pass") {
-		t.Error("System prompt should contain AC description 'Tests must pass'")
-	}
-	if !strings.Contains(systemPrompt, "Code must compile") {
-		t.Error("System prompt should contain AC description 'Code must compile'")
-	}
 }
 
 func TestReplan_ReturnsUpdatedPlan(t *testing.T) {
 	// Mock returns modified plan with only remaining steps
 	mockResponse := `{
 		"steps": [
-			{"id": "step_2_retry", "description": "Retry creating main module with fix", "depends_on": [], "parallelizable": false, "estimated_tools": ["file_write"], "relevant_ac": ["ac_2"]},
-			{"id": "step_3", "description": "Create tests", "depends_on": ["step_2_retry"], "parallelizable": false, "estimated_tools": ["file_write"], "relevant_ac": ["ac_3"]}
+			{"id": "step_2_retry", "description": "Retry creating main module with fix", "depends_on": [], "parallelizable": false, "estimated_tools": ["file_write"]},
+			{"id": "step_3", "description": "Create tests", "depends_on": ["step_2_retry"], "parallelizable": false, "estimated_tools": ["file_write"]}
 		]
 	}`
 
@@ -191,12 +169,7 @@ func TestReplan_ReturnsUpdatedPlan(t *testing.T) {
 		ActionPlan:      "Fix the import path and retry",
 	}
 
-	criteria := []AcceptanceCriterion{
-		{ID: "ac_2", Description: "Main module created"},
-		{ID: "ac_3", Description: "Tests created"},
-	}
-
-	plan, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, criteria, nil)
+	plan, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, nil)
 	if err != nil {
 		t.Fatalf("Replan() returned error: %v", err)
 	}
@@ -226,7 +199,7 @@ func TestPlan_WithReflections(t *testing.T) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
-					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
 				},
 				StopReason: "end_turn",
 			}, nil
@@ -248,7 +221,7 @@ func TestPlan_WithReflections(t *testing.T) {
 		},
 	}
 
-	_, err := planner.Plan(context.Background(), "Deploy application", nil, nil, reflections)
+	_, err := planner.Plan(context.Background(), "Deploy application", nil, reflections)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -276,7 +249,7 @@ func TestPlan_WithReflections(t *testing.T) {
 }
 
 func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
-	mockResponse := "```json\n{\"steps\": [{\"id\": \"step_1\", \"description\": \"Test\", \"depends_on\": [], \"parallelizable\": true, \"estimated_tools\": [], \"relevant_ac\": []}]}\n```"
+	mockResponse := "```json\n{\"steps\": [{\"id\": \"step_1\", \"description\": \"Test\", \"depends_on\": [], \"parallelizable\": true, \"estimated_tools\": []}]}\n```"
 
 	mock := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -292,7 +265,7 @@ func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Test task", nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Test task", nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() should parse markdown code block, got error: %v", err)
 	}
@@ -344,7 +317,7 @@ func TestReplan_IncludesOriginalPlanAndFailureDetails(t *testing.T) {
 		ActionPlan:      "Test action plan",
 	}
 
-	_, _ = planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, nil, nil)
+	_, _ = planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, nil)
 
 	systemPrompt := capturedRequest.Messages[0].Content
 
@@ -390,7 +363,6 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 				"depends_on": [],
 				"parallelizable": true,
 				"estimated_tools": ["web_search", "file_read"],
-				"relevant_ac": ["ac_1"],
 				"profile": {
 					"role": "researcher",
 					"allowed_tools": ["web_search", "web_fetch", "bash_exec"]
@@ -413,7 +385,7 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Research task", nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Research task", nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -454,8 +426,7 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 				"description": "Do something",
 				"depends_on": [],
 				"parallelizable": true,
-				"estimated_tools": ["bash"],
-				"relevant_ac": ["ac_1"]
+				"estimated_tools": ["bash"]
 			}
 		]
 	}`
@@ -474,7 +445,7 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Simple task", nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Simple task", nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -500,7 +471,7 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
-					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
 				},
 				StopReason: "end_turn",
 			}, nil
@@ -511,7 +482,7 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 
 	// With workspace path
 	ctx := tools.WithWorkspacePath(context.Background(), "/my/project")
-	_, err := planner.Plan(ctx, "Build project", nil, nil, nil)
+	_, err := planner.Plan(ctx, "Build project", nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -528,7 +499,7 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 	}
 
 	// Without workspace path
-	_, err = planner.Plan(context.Background(), "Build project", nil, nil, nil)
+	_, err = planner.Plan(context.Background(), "Build project", nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -565,7 +536,7 @@ func TestReplan_WorkspacePathSubstitution(t *testing.T) {
 	failedStep := CompletedStep{StepID: "step_1", Output: "Failed"}
 
 	ctx := tools.WithWorkspacePath(context.Background(), "/replan/workspace")
-	_, _ = planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil, nil)
+	_, _ = planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil)
 
 	systemPrompt := capturedRequest.Messages[0].Content
 	if strings.Contains(systemPrompt, "WORKSPACE-PATH") {
@@ -644,7 +615,7 @@ func TestReplanWithSessionReflections(t *testing.T) {
 			capturedMessages = req.Messages
 			return &llm.ChatResponse{
 				Message: llm.Message{
-					Content: `{"steps": [{"id": "step_1", "description": "Retry with fix", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash_exec"], "relevant_ac": ["ac_1"]}]}`,
+					Content: `{"steps": [{"id": "step_1", "description": "Retry with fix", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash_exec"]}]}`,
 				},
 			}, nil
 		},
@@ -665,9 +636,6 @@ func TestReplanWithSessionReflections(t *testing.T) {
 		Summary:   "Step failed due to timeout",
 		RootCause: "API rate limiting",
 	}
-	criteria := []AcceptanceCriterion{
-		{ID: "ac_1", Description: "Must complete"},
-	}
 	sessionReflections := []Reflection{
 		{
 			Summary:         "First attempt failed",
@@ -683,7 +651,7 @@ func TestReplanWithSessionReflections(t *testing.T) {
 		},
 	}
 
-	_, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, criteria, sessionReflections)
+	_, err := planner.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, sessionReflections)
 	if err != nil {
 		t.Fatalf("Replan failed: %v", err)
 	}
@@ -715,7 +683,7 @@ func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
-					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"], "relevant_ac": ["ac_1"]}]}`,
+					Content: `{"steps": [{"id": "step_1", "description": "Do something", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
 				},
 				StopReason: "end_turn",
 			}, nil
@@ -730,7 +698,7 @@ func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
 	}
 	ctx := tools.WithEnvInfo(context.Background(), info)
 
-	_, err := planner.Plan(ctx, "Build project", nil, nil, nil)
+	_, err := planner.Plan(ctx, "Build project", nil, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}

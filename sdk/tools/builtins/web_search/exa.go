@@ -38,10 +38,10 @@ func (p *ExaProvider) SetBaseURL(url string) { p.baseURL = url }
 
 // exaRequest represents the request body for Exa API.
 type exaRequest struct {
-	Query       string          `json:"query"`
-	NumResults  int             `json:"numResults"`
-	Type        string          `json:"type"`
-	Contents    exaContents     `json:"contents"`
+	Query      string      `json:"query"`
+	NumResults int         `json:"numResults"`
+	Type       string      `json:"type"`
+	Contents   exaContents `json:"contents"`
 }
 
 // exaContents specifies content extraction options.
@@ -61,10 +61,10 @@ type exaResponse struct {
 
 // exaResult represents a single search result from Exa.
 type exaResult struct {
-	Title     string   `json:"title"`
-	URL       string   `json:"url"`
+	Title      string   `json:"title"`
+	URL        string   `json:"url"`
 	Highlights []string `json:"highlights"`
-	Text      string   `json:"text"`
+	Text       string   `json:"text"`
 }
 
 // Search performs a web search using the Exa API.

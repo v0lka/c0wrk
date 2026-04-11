@@ -8,8 +8,8 @@ import (
 )
 
 // tokenTrackingCaller wraps an LLMCaller to report token usage after every call.
-// This ensures that service-level LLM calls (Router, ACExtractor, Planner,
-// Evaluator, Reflector) have their token consumption accumulated in session totals,
+// This ensures that service-level LLM calls (Router, Planner, Reflector)
+// have their token consumption accumulated in session totals,
 // not just the Executor calls.
 type tokenTrackingCaller struct {
 	inner   agent.LLMCaller

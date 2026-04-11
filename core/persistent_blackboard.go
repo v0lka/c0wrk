@@ -19,11 +19,10 @@ import (
 type TaskPersistence interface {
 	PersistNewTask(taskID, sessionID, originalRequest string) error
 	PersistPlan(taskID string, plan *Plan) error
-	PersistCriteria(taskID string, criteria []AcceptanceCriterion) error
 	PersistRouting(taskID string, routing *RoutingDecision) error
 	PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []Step) error
 	PersistReflection(taskID string, r Reflection) error
-	PersistCompletion(taskID, finalOutput string, evalResult *EvalResult, attemptCount int) error
+	PersistCompletion(taskID, finalOutput string, attemptCount int) error
 	PersistFailure(taskID string) error
 	PersistStepFileChanges(taskID, stepID string, changes []FileChange) error
 	// Restoration
@@ -42,7 +41,6 @@ type TaskState struct {
 	OriginalRequest string
 	RoutingDecision *RoutingDecision
 	Plan            *Plan
-	Criteria        []AcceptanceCriterion
 	StepResults     map[string]StepResult
 	Reflections     []Reflection
 	FinalOutput     string
@@ -145,14 +143,6 @@ func (pb *PersistentBlackboard) SetOriginalRequest(req string) {
 	})
 }
 
-// SetCriteria stores criteria and persists them.
-func (pb *PersistentBlackboard) SetCriteria(criteria []AcceptanceCriterion) {
-	pb.MapBlackboard.SetCriteria(criteria)
-	pb.persistSafe("criteria", func() error {
-		return pb.store.PersistCriteria(pb.taskID, criteria)
-	})
-}
-
 // SetPlan stores a plan and persists it.
 func (pb *PersistentBlackboard) SetPlan(plan *Plan) {
 	pb.MapBlackboard.SetPlan(plan)
@@ -202,8 +192,7 @@ func (pb *PersistentBlackboard) SetStepFileChanges(stepID string, changes []File
 }
 
 // SetFinalResult sets the final result string.
-// Does NOT call PersistCompletion — the orchestrator calls CompleteTask() separately
-// with the full data (eval result + attempt count).
+// Does NOT call PersistCompletion — the orchestrator calls CompleteTask() separately.
 func (pb *PersistentBlackboard) SetFinalResult(result string) {
 	pb.MapBlackboard.SetFinalResult(result)
 }
@@ -219,12 +208,12 @@ func (pb *PersistentBlackboard) SetRouting(routing *RoutingDecision) {
 // Additional methods (not part of Blackboard interface)
 // ---------------------------------------------------------------------------
 
-// CompleteTask marks the task as completed with evaluation results.
+// CompleteTask marks the task as completed.
 // Called by the orchestrator after Handle() succeeds.
-func (pb *PersistentBlackboard) CompleteTask(evalResult *EvalResult, attemptCount int) {
+func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 	finalOutput := pb.GetFinalResult()
 	pb.persistSafe("task completion", func() error {
-		return pb.store.PersistCompletion(pb.taskID, finalOutput, evalResult, attemptCount)
+		return pb.store.PersistCompletion(pb.taskID, finalOutput, attemptCount)
 	})
 }
 
@@ -261,9 +250,6 @@ func RestoreBlackboard(taskID, sessionID string, store TaskPersistence, logger *
 	mb.SetOriginalRequest(state.OriginalRequest)
 	if state.Plan != nil {
 		mb.SetPlan(state.Plan)
-	}
-	if state.Criteria != nil {
-		mb.SetCriteria(state.Criteria)
 	}
 	for stepID, sr := range state.StepResults {
 		// Re-use the raw data; SetStepResult would regenerate the summary,

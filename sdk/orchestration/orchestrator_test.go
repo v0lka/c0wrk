@@ -16,34 +16,32 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockPlanner struct {
-	planFn   func(ctx context.Context, task string, criteria []Criterion, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
-	replanFn func(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, criteria []Criterion, reflections []Reflection) (*Plan, error)
+	planFn   func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
+	replanFn func(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
 }
 
-func (m *mockPlanner) Plan(ctx context.Context, task string, criteria []Criterion, t []tools.ToolDescriptor, r []Reflection) (*Plan, error) {
+func (m *mockPlanner) Plan(ctx context.Context, task string, t []tools.ToolDescriptor, r []Reflection) (*Plan, error) {
 	if m.planFn != nil {
-		return m.planFn(ctx, task, criteria, t, r)
+		return m.planFn(ctx, task, t, r)
 	}
 	return &Plan{Steps: []PlanStep{{ID: "s1", Description: "default step"}}}, nil
 }
 
-func (m *mockPlanner) Replan(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, criteria []Criterion, reflections []Reflection) (*Plan, error) {
+func (m *mockPlanner) Replan(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error) {
 	if m.replanFn != nil {
-		return m.replanFn(ctx, plan, completed, failedStep, reflection, criteria, reflections)
+		return m.replanFn(ctx, plan, completed, failedStep, reflection, reflections)
 	}
 	return plan, nil
 }
 
 type recordingEvents struct {
 	NoopEvents
-	planGenerated     int
-	stepStarted       int
-	stepCompleted     int
-	evaluated         int
-	reflected         int
-	retried           int
-	stepRetried       int
-	criteriaExtracted int
+	planGenerated int
+	stepStarted   int
+	stepCompleted int
+	reflected     int
+	retried       int
+	stepRetried   int
 }
 
 func (r *recordingEvents) OnPlanGenerated(stepCount int, steps []PlanStepEvent) { r.planGenerated++ }
@@ -51,20 +49,13 @@ func (r *recordingEvents) OnStepStarted(stepID, description string)             
 func (r *recordingEvents) OnStepCompleted(stepID string, success bool, duration time.Duration) {
 	r.stepCompleted++
 }
-func (r *recordingEvents) OnEvaluated(passed, total int, criteria []EvalCriterionEvent) {
-	r.evaluated++
-}
 func (r *recordingEvents) OnReflected(summary string, insights []string, attempt, maxAttempts int) {
 	r.reflected++
 }
-func (r *recordingEvents) OnRetry(attempt, maxAttempts int)                       { r.retried++ }
-func (r *recordingEvents) OnStepRetry(stepID string, attempt, maxAttempts int)    { r.stepRetried++ }
-func (r *recordingEvents) OnCriteriaExtracted(count int, criteria []EvalCriterionEvent) {
-	r.criteriaExtracted++
-}
-func (r *recordingEvents) OnEvaluationError(_ error)            {}
-func (r *recordingEvents) OnReplanFailed(_ error)                {}
-func (r *recordingEvents) OnFileRollbackError(_ string, _ error) {}
+func (r *recordingEvents) OnRetry(attempt, maxAttempts int)                    { r.retried++ }
+func (r *recordingEvents) OnStepRetry(stepID string, attempt, maxAttempts int) { r.stepRetried++ }
+func (r *recordingEvents) OnReplanFailed(_ error)                              {}
+func (r *recordingEvents) OnFileRollbackError(_ string, _ error)               {}
 
 // ---------------------------------------------------------------------------
 // New() defaults
@@ -113,13 +104,13 @@ func TestNew_CustomValues(t *testing.T) {
 func TestExecute_PlanningFailure(t *testing.T) {
 	o := New(Config{
 		Planner: &mockPlanner{
-			planFn: func(_ context.Context, _ string, _ []Criterion, _ []tools.ToolDescriptor, _ []Reflection) (*Plan, error) {
+			planFn: func(_ context.Context, _ string, _ []tools.ToolDescriptor, _ []Reflection) (*Plan, error) {
 				return nil, errors.New("plan failed")
 			},
 		},
 	})
 
-	_, err := o.Execute(context.Background(), "do something", nil)
+	_, err := o.Execute(context.Background(), "do something")
 	if err == nil {
 		t.Fatal("expected error from planning failure")
 	}
@@ -225,8 +216,8 @@ func TestIsLastTerminalStep(t *testing.T) {
 		expected bool
 	}{
 		{
-			name: "single step is terminal",
-			plan: Plan{Steps: []PlanStep{{ID: "s1"}}},
+			name:     "single step is terminal",
+			plan:     Plan{Steps: []PlanStep{{ID: "s1"}}},
 			stepIdx:  0,
 			expected: true,
 		},
@@ -303,8 +294,8 @@ func TestResolveStepConfig_CustomConfigurator(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDefaultSystemPrompt(t *testing.T) {
-	t.Run("without criteria", func(t *testing.T) {
-		prompt := defaultSystemPrompt(context.Background(), "do stuff", nil)
+	t.Run("basic prompt", func(t *testing.T) {
+		prompt := defaultSystemPrompt(context.Background(), "do stuff")
 		if prompt == "" {
 			t.Fatal("expected non-empty prompt")
 		}
@@ -312,62 +303,6 @@ func TestDefaultSystemPrompt(t *testing.T) {
 			t.Error("expected step description in prompt")
 		}
 	})
-
-	t.Run("with criteria", func(t *testing.T) {
-		criteria := []Criterion{{ID: "ac1", Description: "must work"}}
-		prompt := defaultSystemPrompt(context.Background(), "do stuff", criteria)
-		if !containsStr(prompt, "ac1") || !containsStr(prompt, "must work") {
-			t.Error("expected criteria in prompt")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// buildEvalCriterionEvents
-// ---------------------------------------------------------------------------
-
-func TestBuildEvalCriterionEvents(t *testing.T) {
-	er := &EvalResult{
-		Passed:  []EvalDetail{{Criterion: Criterion{ID: "ac1"}, Diagnostic: "ok"}},
-		Failed:  []EvalDetail{{Criterion: Criterion{ID: "ac2"}, Diagnostic: "bad"}},
-		Unclear: []EvalDetail{{Criterion: Criterion{ID: "ac3"}, Diagnostic: "?"}},
-	}
-
-	events := buildEvalCriterionEvents(er)
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events, got %d", len(events))
-	}
-
-	statusMap := make(map[string]string)
-	for _, e := range events {
-		statusMap[e.Name] = e.Status
-	}
-	if statusMap["ac1"] != "pass" {
-		t.Error("ac1 should be pass")
-	}
-	if statusMap["ac2"] != "fail" {
-		t.Error("ac2 should be fail")
-	}
-	if statusMap["ac3"] != "unclear" {
-		t.Error("ac3 should be unclear")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// formatFailedCriteria
-// ---------------------------------------------------------------------------
-
-func TestFormatFailedCriteria(t *testing.T) {
-	er := &EvalResult{
-		Failed: []EvalDetail{
-			{Criterion: Criterion{Description: "first"}},
-			{Criterion: Criterion{Description: "second"}},
-		},
-	}
-	got := formatFailedCriteria(er)
-	if got != "first, second" {
-		t.Errorf("expected 'first, second', got %q", got)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +318,7 @@ func TestPerStepRetry_EventEmitted(t *testing.T) {
 	// We need to track if OnStepRetry was called
 	o := New(Config{
 		Planner: &mockPlanner{
-			planFn: func(_ context.Context, _ string, _ []Criterion, _ []tools.ToolDescriptor, _ []Reflection) (*Plan, error) {
+			planFn: func(_ context.Context, _ string, _ []tools.ToolDescriptor, _ []Reflection) (*Plan, error) {
 				return &Plan{Steps: []PlanStep{
 					{ID: "step1", Description: "Test step"},
 				}}, nil

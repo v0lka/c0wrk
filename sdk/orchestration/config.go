@@ -23,14 +23,11 @@ type Config struct {
 	SystemPrompt   SystemPromptFactory // optional, nil = default minimal prompt
 
 	// Optional strategies
-	Criteria     CriteriaExtractor // optional, nil = skip criteria extraction
-	Evaluation   Evaluator         // optional, nil = accept all results
-	Reflection   Reflector         // optional, nil = replan without insights
-	Verification Verifier          // optional, nil = skip Tier 2 verification
+	Reflection Reflector // optional, nil = replan without insights
 
 	// ContextSetup is called after ContextFactory creates a CM and before the executor runs.
 	// Allows consumers to inject task-specific context (e.g., SetTask) into the CM.
-	ContextSetup func(cm agent.ContextManager, taskDesc string, criteria []Criterion)
+	ContextSetup func(cm agent.ContextManager, taskDesc string)
 
 	// Tuning
 	MaxRetries       int

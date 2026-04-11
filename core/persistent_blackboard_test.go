@@ -22,11 +22,6 @@ type planCall struct {
 	plan   *Plan
 }
 
-type criteriaCall struct {
-	taskID   string
-	criteria []AcceptanceCriterion
-}
-
 type routingCall struct {
 	taskID  string
 	routing *RoutingDecision
@@ -44,7 +39,6 @@ type reflectionCall struct {
 
 type completionCall struct {
 	taskID, finalOutput string
-	evalResult          *EvalResult
 	attemptCount        int
 }
 
@@ -60,14 +54,13 @@ type stepFileChangesCall struct {
 type mockTaskPersistence struct {
 	mu sync.Mutex
 
-	newTaskCalls    []newTaskCall
-	planCalls       []planCall
-	criteriaCalls   []criteriaCall
-	routingCalls    []routingCall
-	stepResultCalls []stepResultCall
-	reflectionCalls []reflectionCall
-	completionCalls []completionCall
-	failureCalls    []failureCall
+	newTaskCalls         []newTaskCall
+	planCalls            []planCall
+	routingCalls         []routingCall
+	stepResultCalls      []stepResultCall
+	reflectionCalls      []reflectionCall
+	completionCalls      []completionCall
+	failureCalls         []failureCall
 	stepFileChangesCalls []stepFileChangesCall
 
 	// Control error behavior
@@ -92,13 +85,6 @@ func (m *mockTaskPersistence) PersistPlan(taskID string, plan *Plan) error {
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistCriteria(taskID string, criteria []AcceptanceCriterion) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.criteriaCalls = append(m.criteriaCalls, criteriaCall{taskID, criteria})
-	return m.persistError
-}
-
 func (m *mockTaskPersistence) PersistRouting(taskID string, routing *RoutingDecision) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -120,10 +106,10 @@ func (m *mockTaskPersistence) PersistReflection(taskID string, r Reflection) err
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistCompletion(taskID, finalOutput string, evalResult *EvalResult, attemptCount int) error {
+func (m *mockTaskPersistence) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.completionCalls = append(m.completionCalls, completionCall{taskID, finalOutput, evalResult, attemptCount})
+	m.completionCalls = append(m.completionCalls, completionCall{taskID, finalOutput, attemptCount})
 	return m.persistError
 }
 
@@ -179,32 +165,6 @@ func TestPersistentBlackboard_SetOriginalRequest(t *testing.T) {
 	c := mock.newTaskCalls[0]
 	if c.taskID != "t1" || c.sessionID != "s1" || c.originalRequest != "build a CLI tool" {
 		t.Errorf("PersistNewTask args: got %+v", c)
-	}
-}
-
-func TestPersistentBlackboard_SetCriteria(t *testing.T) {
-	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
-
-	criteria := []AcceptanceCriterion{
-		{ID: "ac_1", Description: "must compile"},
-	}
-	pb.SetCriteria(criteria)
-
-	// Verify delegation
-	got := pb.GetCriteria()
-	if len(got) != 1 || got[0].ID != "ac_1" {
-		t.Errorf("GetCriteria mismatch: %v", got)
-	}
-
-	// Verify persistence
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.criteriaCalls) != 1 {
-		t.Fatalf("expected 1 PersistCriteria call, got %d", len(mock.criteriaCalls))
-	}
-	if mock.criteriaCalls[0].taskID != "t1" {
-		t.Errorf("PersistCriteria taskID: got %q", mock.criteriaCalls[0].taskID)
 	}
 }
 
@@ -296,7 +256,7 @@ func TestPersistentBlackboard_SetFinalResult(t *testing.T) {
 
 	// Verify delegation
 	if got := pb.GetFinalResult(); got != "task completed" {
-		t.Errorf("GetFinalResult: got %q", got)
+		t.Errorf("GetFinalResult: got %q, got", got)
 	}
 
 	// SetFinalResult does NOT call persistence — verify no completion calls
@@ -312,8 +272,7 @@ func TestPersistentBlackboard_CompleteTask(t *testing.T) {
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
 	pb.SetFinalResult("all done")
-	evalResult := &EvalResult{AllPassed: true}
-	pb.CompleteTask(evalResult, 3)
+	pb.CompleteTask(3)
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -329,9 +288,6 @@ func TestPersistentBlackboard_CompleteTask(t *testing.T) {
 	}
 	if cc.attemptCount != 3 {
 		t.Errorf("attemptCount: got %d", cc.attemptCount)
-	}
-	if cc.evalResult == nil || !cc.evalResult.AllPassed {
-		t.Error("evalResult mismatch")
 	}
 }
 
@@ -357,8 +313,7 @@ func TestPersistentBlackboard_ReadDelegation(t *testing.T) {
 
 	// Populate via MapBlackboard-level writes
 	pb.SetOriginalRequest("req")
-	pb.SetCriteria([]AcceptanceCriterion{{ID: "ac_1"}})
-	pb.SetPlan(&Plan{Steps: []PlanStep{{ID: "s1", RelevantAC: []string{"ac_1"}}}})
+	pb.SetPlan(&Plan{Steps: []PlanStep{{ID: "s1"}}})
 	pb.SetStepResult("s1", "output", nil, nil)
 	pb.AddReflection(Reflection{Summary: "r1"})
 	pb.SetFinalResult("done")
@@ -366,9 +321,6 @@ func TestPersistentBlackboard_ReadDelegation(t *testing.T) {
 	// All reads should delegate to MapBlackboard
 	if pb.GetOriginalRequest() != "req" {
 		t.Error("GetOriginalRequest delegation failed")
-	}
-	if len(pb.GetCriteria()) != 1 {
-		t.Error("GetCriteria delegation failed")
 	}
 	if pb.GetPlan() == nil {
 		t.Error("GetPlan delegation failed")
@@ -388,10 +340,6 @@ func TestPersistentBlackboard_ReadDelegation(t *testing.T) {
 	if pb.GetFinalResult() != "done" {
 		t.Error("GetFinalResult delegation failed")
 	}
-	results := pb.GetStepsByAC("ac_1")
-	if len(results) != 1 {
-		t.Errorf("GetStepsByAC delegation failed: got %d", len(results))
-	}
 }
 
 func TestPersistentBlackboard_BestEffortErrors(t *testing.T) {
@@ -400,12 +348,11 @@ func TestPersistentBlackboard_BestEffortErrors(t *testing.T) {
 
 	// All write methods should NOT panic even though persistence fails
 	pb.SetOriginalRequest("req")
-	pb.SetCriteria([]AcceptanceCriterion{{ID: "ac_1"}})
 	pb.SetPlan(&Plan{Steps: []PlanStep{{ID: "s1"}}})
 	pb.SetStepResult("s1", "output", nil, nil)
 	pb.AddReflection(Reflection{Summary: "r"})
 	pb.SetRouting(&RoutingDecision{Domain: "code"})
-	pb.CompleteTask(&EvalResult{}, 1)
+	pb.CompleteTask(1)
 	pb.FailTask()
 
 	// Verify the in-memory state still works
@@ -420,12 +367,11 @@ func TestPersistentBlackboard_NilLogger(t *testing.T) {
 
 	// Should not panic
 	pb.SetOriginalRequest("req")
-	pb.SetCriteria(nil)
 	pb.SetPlan(nil)
 	pb.SetStepResult("s1", "out", nil, nil)
 	pb.AddReflection(Reflection{})
 	pb.SetRouting(&RoutingDecision{})
-	pb.CompleteTask(nil, 0)
+	pb.CompleteTask(0)
 	pb.FailTask()
 }
 
@@ -462,7 +408,6 @@ func TestRestoreBlackboard(t *testing.T) {
 			SessionID:       "s1",
 			OriginalRequest: "build CLI",
 			Plan:            &Plan{Steps: []PlanStep{{ID: "step_1", Description: "write code"}}},
-			Criteria:        []AcceptanceCriterion{{ID: "ac_1", Description: "must compile"}},
 			StepResults: map[string]StepResult{
 				"step_1": {StepID: "step_1", Summary: "wrote code", FullOutput: "full output"},
 			},
@@ -486,9 +431,6 @@ func TestRestoreBlackboard(t *testing.T) {
 	}
 	if pb.GetPlan() == nil || len(pb.GetPlan().Steps) != 1 {
 		t.Error("Plan not restored correctly")
-	}
-	if len(pb.GetCriteria()) != 1 {
-		t.Error("Criteria not restored correctly")
 	}
 	sr, ok := pb.GetStepResult("step_1")
 	if !ok {

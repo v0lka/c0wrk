@@ -20,14 +20,12 @@ var _ Blackboard = (*MapBlackboard)(nil)
 type MapBlackboard struct {
 	mu               sync.RWMutex
 	request          string
-	criteria         []Criterion
 	plan             *Plan
 	stepResults      map[string]StepResult
 	reflections      []Reflection
 	finalResult      string
-	maxSummaryTokens int // token-based limit for summaries (0 = use char-based default)
+	maxSummaryTokens int                     // token-based limit for summaries (0 = use char-based default)
 	fileChanges      map[string][]FileChange // keyed by stepID
-	evalVerdicts     map[string]EvalVerdict
 }
 
 // MapBlackboardOption configures a MapBlackboard.
@@ -45,9 +43,8 @@ func WithMaxSummaryTokens(n int) MapBlackboardOption {
 // NewMapBlackboard creates a new empty MapBlackboard.
 func NewMapBlackboard(opts ...MapBlackboardOption) *MapBlackboard {
 	b := &MapBlackboard{
-		stepResults:  make(map[string]StepResult),
-		fileChanges:  make(map[string][]FileChange),
-		evalVerdicts: make(map[string]EvalVerdict),
+		stepResults: make(map[string]StepResult),
+		fileChanges: make(map[string][]FileChange),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -64,18 +61,6 @@ func (b *MapBlackboard) GetOriginalRequest() string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.request
-}
-
-// GetCriteria returns a defensive copy of the acceptance criteria.
-func (b *MapBlackboard) GetCriteria() []Criterion {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if b.criteria == nil {
-		return nil
-	}
-	out := make([]Criterion, len(b.criteria))
-	copy(out, b.criteria)
-	return out
 }
 
 // GetPlan returns a deep copy of the plan, or nil if not set.
@@ -108,28 +93,6 @@ func (b *MapBlackboard) GetStepSummary(stepID string) string {
 		return ""
 	}
 	return r.Summary
-}
-
-// GetStepsByAC returns step results related to the given criterion ID,
-// as determined by the plan's RelevantAC mapping.
-func (b *MapBlackboard) GetStepsByAC(criterionID string) []StepResult {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if b.plan == nil {
-		return nil
-	}
-	var results []StepResult
-	for _, ps := range b.plan.Steps {
-		for _, ac := range ps.RelevantAC {
-			if ac == criterionID {
-				if r, ok := b.stepResults[ps.ID]; ok {
-					results = append(results, copyStepResult(r))
-				}
-				break
-			}
-		}
-	}
-	return results
 }
 
 // GetAllStepResults returns a defensive copy of all step results.
@@ -171,18 +134,6 @@ func (b *MapBlackboard) SetOriginalRequest(req string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.request = req
-}
-
-// SetCriteria stores a defensive copy of the criteria.
-func (b *MapBlackboard) SetCriteria(criteria []Criterion) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if criteria == nil {
-		b.criteria = nil
-		return
-	}
-	b.criteria = make([]Criterion, len(criteria))
-	copy(b.criteria, criteria)
 }
 
 // SetPlan stores a deep copy of the plan.
@@ -366,32 +317,6 @@ func (b *MapBlackboard) GetSessionFileChanges() []FileChange {
 	return result
 }
 
-// ---------------------------------------------------------------------------
-// Eval verdict tracking
-// ---------------------------------------------------------------------------
-
-// SetEvalVerdict records an evaluator verdict for a criterion.
-func (b *MapBlackboard) SetEvalVerdict(criterionID, verdict, explanation string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.evalVerdicts[criterionID] = EvalVerdict{
-		CriterionID: criterionID,
-		Verdict:     verdict,
-		Explanation: explanation,
-	}
-}
-
-// GetEvalVerdicts returns a defensive copy of all recorded verdicts.
-func (b *MapBlackboard) GetEvalVerdicts() map[string]EvalVerdict {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	out := make(map[string]EvalVerdict, len(b.evalVerdicts))
-	for k, v := range b.evalVerdicts {
-		out[k] = v
-	}
-	return out
-}
-
 // SetStepResultRaw stores a pre-built StepResult without regenerating the summary.
 // Used by persistence restoration to hydrate the blackboard with stored data.
 func (b *MapBlackboard) SetStepResultRaw(stepID string, sr StepResult) {
@@ -405,7 +330,7 @@ func (b *MapBlackboard) SetStepResultRaw(stepID string, sr StepResult) {
 // ---------------------------------------------------------------------------
 
 // Search performs a case-insensitive substring match across step summaries,
-// step full outputs, criterion descriptions, and reflection summaries.
+// step full outputs, and reflection summaries.
 func (b *MapBlackboard) Search(query string) []BlackboardEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -421,17 +346,6 @@ func (b *MapBlackboard) Search(query string) []BlackboardEntry {
 				Type:    "step_result",
 				Key:     id,
 				Summary: sr.Summary,
-			})
-		}
-	}
-
-	// Search criteria
-	for _, c := range b.criteria {
-		if strings.Contains(strings.ToLower(c.Description), q) {
-			entries = append(entries, BlackboardEntry{
-				Type:    "criterion",
-				Key:     c.ID,
-				Summary: c.Description,
 			})
 		}
 	}
@@ -515,10 +429,6 @@ func copyPlan(p *Plan) *Plan {
 		if s.EstimatedTools != nil {
 			out.Steps[i].EstimatedTools = make([]string, len(s.EstimatedTools))
 			copy(out.Steps[i].EstimatedTools, s.EstimatedTools)
-		}
-		if s.RelevantAC != nil {
-			out.Steps[i].RelevantAC = make([]string, len(s.RelevantAC))
-			copy(out.Steps[i].RelevantAC, s.RelevantAC)
 		}
 	}
 	return out

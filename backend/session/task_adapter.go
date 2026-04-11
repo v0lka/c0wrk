@@ -31,8 +31,6 @@ func (a *TaskStoreAdapter) PersistNewTask(taskID, sessionID, originalRequest str
 		OriginalRequest: originalRequest,
 		RoutingDecision: json.RawMessage("{}"),
 		Plan:            json.RawMessage("{}"),
-		Criteria:        json.RawMessage("[]"),
-		EvalResult:      json.RawMessage("{}"),
 		Reflections:     json.RawMessage("[]"),
 		Status:          "in_progress",
 		CreatedAt:       time.Now(),
@@ -46,15 +44,6 @@ func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *core.Plan) error {
 		return fmt.Errorf("marshal plan: %w", err)
 	}
 	return a.store.UpdateTaskPlan(taskID, data)
-}
-
-// PersistCriteria JSON-marshals the criteria and updates the task record.
-func (a *TaskStoreAdapter) PersistCriteria(taskID string, criteria []core.AcceptanceCriterion) error {
-	data, err := json.Marshal(criteria)
-	if err != nil {
-		return fmt.Errorf("marshal criteria: %w", err)
-	}
-	return a.store.UpdateTaskCriteria(taskID, data)
 }
 
 // PersistRouting JSON-marshals the routing decision and updates the task record.
@@ -92,19 +81,9 @@ func (a *TaskStoreAdapter) PersistReflection(taskID string, r core.Reflection) e
 	return a.store.AddTaskReflection(taskID, data)
 }
 
-// PersistCompletion JSON-marshals the eval result and marks the task as completed.
-func (a *TaskStoreAdapter) PersistCompletion(taskID, finalOutput string, evalResult *core.EvalResult, attemptCount int) error {
-	var evalData json.RawMessage
-	if evalResult != nil {
-		var err error
-		evalData, err = json.Marshal(evalResult)
-		if err != nil {
-			return fmt.Errorf("marshal eval result: %w", err)
-		}
-	} else {
-		evalData = json.RawMessage("{}")
-	}
-	return a.store.CompleteTask(taskID, finalOutput, evalData, attemptCount)
+// PersistCompletion marks the task as completed.
+func (a *TaskStoreAdapter) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
+	return a.store.CompleteTask(taskID, finalOutput, attemptCount)
 }
 
 // PersistFailure marks the task as failed.
@@ -157,13 +136,6 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 			return nil, fmt.Errorf("unmarshal plan: %w", err)
 		}
 		state.Plan = &plan
-	}
-
-	// Unmarshal criteria
-	if len(rec.Criteria) > 0 && string(rec.Criteria) != "[]" {
-		if err := json.Unmarshal(rec.Criteria, &state.Criteria); err != nil {
-			return nil, fmt.Errorf("unmarshal criteria: %w", err)
-		}
 	}
 
 	// Unmarshal reflections

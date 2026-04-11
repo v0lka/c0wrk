@@ -109,8 +109,6 @@ func (s *SQLiteSessionStore) createTables() error {
 		original_request TEXT NOT NULL,
 		routing_decision TEXT DEFAULT '{}',
 		plan TEXT DEFAULT '{}',
-		criteria TEXT DEFAULT '[]',
-		eval_result TEXT DEFAULT '{}',
 		reflections TEXT DEFAULT '[]',
 		final_output TEXT DEFAULT '',
 		attempt_count INTEGER DEFAULT 0,
@@ -387,14 +385,13 @@ func (s *SQLiteSessionStore) Close() error {
 // ---------------------------------------------------------------------------
 
 // TaskRecord represents a persisted task (one per Orchestrator.Handle call).
+//
 type TaskRecord struct {
 	ID              string          `json:"id"`
 	SessionID       string          `json:"session_id"`
 	OriginalRequest string          `json:"original_request"`
 	RoutingDecision json.RawMessage `json:"routing_decision"`
 	Plan            json.RawMessage `json:"plan"`
-	Criteria        json.RawMessage `json:"criteria"`
-	EvalResult      json.RawMessage `json:"eval_result"`
 	Reflections     json.RawMessage `json:"reflections"`
 	FinalOutput     string          `json:"final_output"`
 	AttemptCount    int             `json:"attempt_count"`
@@ -422,12 +419,11 @@ type TaskStepRecord struct {
 type TaskStore interface {
 	SaveTask(task TaskRecord) error
 	UpdateTaskPlan(taskID string, plan json.RawMessage) error
-	UpdateTaskCriteria(taskID string, criteria json.RawMessage) error
 	UpdateTaskRouting(taskID string, routing json.RawMessage) error
 	SaveTaskStep(taskID string, step TaskStepRecord) error
 	SaveStepFileChanges(taskID, stepID string, fileChangesJSON json.RawMessage) error
 	AddTaskReflection(taskID string, reflectionJSON json.RawMessage) error
-	CompleteTask(taskID, finalOutput string, evalResult json.RawMessage, attemptCount int) error
+	CompleteTask(taskID, finalOutput string, attemptCount int) error
 	FailTask(taskID string) error
 	LoadTask(taskID string) (*TaskRecord, error)
 	LoadTaskSteps(taskID string) ([]TaskStepRecord, error)
@@ -445,11 +441,11 @@ var _ TaskStore = (*SQLiteSessionStore)(nil)
 // SaveTask inserts a new task record.
 func (s *SQLiteSessionStore) SaveTask(task TaskRecord) error {
 	_, err := s.db.ExecContext(context.Background(), `
-		INSERT INTO tasks (id, session_id, original_request, routing_decision, plan, criteria, eval_result, reflections, final_output, attempt_count, status, created_at, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO tasks (id, session_id, original_request, routing_decision, plan, reflections, final_output, attempt_count, status, created_at, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SessionID, task.OriginalRequest,
-		string(task.RoutingDecision), string(task.Plan), string(task.Criteria),
-		string(task.EvalResult), string(task.Reflections),
+		string(task.RoutingDecision), string(task.Plan),
+		string(task.Reflections),
 		task.FinalOutput, task.AttemptCount, task.Status,
 		task.CreatedAt, task.CompletedAt,
 	)
@@ -464,15 +460,6 @@ func (s *SQLiteSessionStore) UpdateTaskPlan(taskID string, plan json.RawMessage)
 	_, err := s.db.ExecContext(context.Background(), `UPDATE tasks SET plan = ? WHERE id = ?`, string(plan), taskID)
 	if err != nil {
 		return fmt.Errorf("failed to update task plan: %w", err)
-	}
-	return nil
-}
-
-// UpdateTaskCriteria updates the criteria JSON for a task.
-func (s *SQLiteSessionStore) UpdateTaskCriteria(taskID string, criteria json.RawMessage) error {
-	_, err := s.db.ExecContext(context.Background(), `UPDATE tasks SET criteria = ? WHERE id = ?`, string(criteria), taskID)
-	if err != nil {
-		return fmt.Errorf("failed to update task criteria: %w", err)
 	}
 	return nil
 }
@@ -529,12 +516,12 @@ func (s *SQLiteSessionStore) AddTaskReflection(taskID string, reflectionJSON jso
 	return nil
 }
 
-// CompleteTask marks a task as completed with final output and evaluation result.
-func (s *SQLiteSessionStore) CompleteTask(taskID, finalOutput string, evalResult json.RawMessage, attemptCount int) error {
+// CompleteTask marks a task as completed with final output.
+func (s *SQLiteSessionStore) CompleteTask(taskID, finalOutput string, attemptCount int) error {
 	now := time.Now()
 	_, err := s.db.ExecContext(context.Background(), `
-		UPDATE tasks SET status = 'completed', final_output = ?, eval_result = ?, attempt_count = ?, completed_at = ? WHERE id = ?`,
-		finalOutput, string(evalResult), attemptCount, now, taskID,
+		UPDATE tasks SET status = 'completed', final_output = ?, attempt_count = ?, completed_at = ? WHERE id = ?`,
+		finalOutput, attemptCount, now, taskID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to complete task: %w", err)
@@ -558,15 +545,15 @@ func (s *SQLiteSessionStore) FailTask(taskID string) error {
 // LoadTask loads a task by ID. Returns nil, nil if not found.
 func (s *SQLiteSessionStore) LoadTask(taskID string) (*TaskRecord, error) {
 	var task TaskRecord
-	var routingDec, plan, criteria, evalResult, reflections string
+	var routingDec, plan, reflections string
 	var completedAt sql.NullTime
 
 	err := s.db.QueryRowContext(context.Background(), `
-		SELECT id, session_id, original_request, routing_decision, plan, criteria, eval_result, reflections, final_output, attempt_count, status, created_at, completed_at
+		SELECT id, session_id, original_request, routing_decision, plan, reflections, final_output, attempt_count, status, created_at, completed_at
 		FROM tasks WHERE id = ?`,
 		taskID,
 	).Scan(&task.ID, &task.SessionID, &task.OriginalRequest,
-		&routingDec, &plan, &criteria, &evalResult, &reflections,
+		&routingDec, &plan, &reflections,
 		&task.FinalOutput, &task.AttemptCount, &task.Status,
 		&task.CreatedAt, &completedAt,
 	)
@@ -580,8 +567,6 @@ func (s *SQLiteSessionStore) LoadTask(taskID string) (*TaskRecord, error) {
 
 	task.RoutingDecision = json.RawMessage(routingDec)
 	task.Plan = json.RawMessage(plan)
-	task.Criteria = json.RawMessage(criteria)
-	task.EvalResult = json.RawMessage(evalResult)
 	task.Reflections = json.RawMessage(reflections)
 	if completedAt.Valid {
 		task.CompletedAt = &completedAt.Time
@@ -686,17 +671,17 @@ func (s *SQLiteSessionStore) LoadStepFileChanges(taskID string) (map[string]json
 // GetUnfinishedTask returns the most recent unfinished (in-progress or failed) task for a session, or nil if none.
 func (s *SQLiteSessionStore) GetUnfinishedTask(sessionID string) (*TaskRecord, error) {
 	var task TaskRecord
-	var routingDec, plan, criteria, evalResult, reflections string
+	var routingDec, plan, reflections string
 	var completedAt sql.NullTime
 
 	err := s.db.QueryRowContext(context.Background(), `
-		SELECT id, session_id, original_request, routing_decision, plan, criteria, eval_result, reflections, final_output, attempt_count, status, created_at, completed_at
+		SELECT id, session_id, original_request, routing_decision, plan, reflections, final_output, attempt_count, status, created_at, completed_at
 		FROM tasks
 		WHERE session_id = ? AND status IN ('in_progress', 'failed')
 		ORDER BY created_at DESC LIMIT 1`,
 		sessionID,
 	).Scan(&task.ID, &task.SessionID, &task.OriginalRequest,
-		&routingDec, &plan, &criteria, &evalResult, &reflections,
+		&routingDec, &plan, &reflections,
 		&task.FinalOutput, &task.AttemptCount, &task.Status,
 		&task.CreatedAt, &completedAt,
 	)
@@ -710,8 +695,6 @@ func (s *SQLiteSessionStore) GetUnfinishedTask(sessionID string) (*TaskRecord, e
 
 	task.RoutingDecision = json.RawMessage(routingDec)
 	task.Plan = json.RawMessage(plan)
-	task.Criteria = json.RawMessage(criteria)
-	task.EvalResult = json.RawMessage(evalResult)
 	task.Reflections = json.RawMessage(reflections)
 	if completedAt.Valid {
 		task.CompletedAt = &completedAt.Time

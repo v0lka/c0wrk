@@ -15,16 +15,16 @@ const DefaultAgentDir = ".c0wrk"
 
 // Config is the top-level configuration structure.
 type Config struct {
-	LogLevel      string              `yaml:"log_level"`
-	Theme         string              `yaml:"theme"`
-	LLM           LLMConfig           `yaml:"llm"`
-	MCP           MCPConfig           `yaml:"mcp"`
+	LogLevel string    `yaml:"log_level"`
+	Theme    string    `yaml:"theme"`
+	LLM      LLMConfig `yaml:"llm"`
+	MCP      MCPConfig `yaml:"mcp"`
 
-	Memory        MemoryConfig        `yaml:"memory"`
-	Router        RouterConfig        `yaml:"router"`
-	Executor      ExecutorConfig      `yaml:"executor"`
-	Security      SecurityConfig      `yaml:"security"`
-	Search        SearchConfig        `yaml:"search"`
+	Memory   MemoryConfig   `yaml:"memory"`
+	Router   RouterConfig   `yaml:"router"`
+	Executor ExecutorConfig `yaml:"executor"`
+	Security SecurityConfig `yaml:"security"`
+	Search   SearchConfig   `yaml:"search"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.

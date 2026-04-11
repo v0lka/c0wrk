@@ -15,7 +15,7 @@ type ExternalToolInfo struct {
 	Name         string     `json:"name"`
 	Description  string     `json:"description"`
 	Version      string     `json:"version"`
-	Path         string     `json:"path"`         // filesystem path to tool directory
+	Path         string     `json:"path"` // filesystem path to tool directory
 	Language     string     `json:"language"`
 	Capabilities []string   `json:"capabilities"`
 	UsageCount   int        `json:"usage_count"`

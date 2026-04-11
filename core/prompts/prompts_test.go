@@ -15,9 +15,6 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"OrchestratorSystem", OrchestratorSystem},
 		{"ReflectorSystem", ReflectorSystem},
 		{"RouterSystem", RouterSystem},
-		{"RawACExtractorSystem", RawACExtractorSystem},
-		{"ACEnricherSystem", ACEnricherSystem},
-		{"EvaluatorJudge", EvaluatorJudge},
 	}
 
 	for _, tt := range tests {
@@ -44,7 +41,6 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 		{"OrchestratorSystem", OrchestratorSystem, []string{"task"}},
 		{"ReflectorSystem", ReflectorSystem, []string{"reflect"}},
 		{"RouterSystem", RouterSystem, []string{"classif"}},
-		{"EvaluatorJudge", EvaluatorJudge, []string{"evaluat"}},
 	}
 
 	for _, tt := range tests {
@@ -61,14 +57,11 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 
 func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 	prompts := map[string]string{
-		"PlannerPlan":          PlannerPlan,
-		"PlannerReplan":        PlannerReplan,
-		"OrchestratorSystem":   OrchestratorSystem,
-		"ReflectorSystem":      ReflectorSystem,
-		"RouterSystem":         RouterSystem,
-		"RawACExtractorSystem": RawACExtractorSystem,
-		"ACEnricherSystem":     ACEnricherSystem,
-		"EvaluatorJudge":       EvaluatorJudge,
+		"PlannerPlan":        PlannerPlan,
+		"PlannerReplan":      PlannerReplan,
+		"OrchestratorSystem": OrchestratorSystem,
+		"ReflectorSystem":    ReflectorSystem,
+		"RouterSystem":       RouterSystem,
 	}
 
 	seen := make(map[string]string) // content -> name

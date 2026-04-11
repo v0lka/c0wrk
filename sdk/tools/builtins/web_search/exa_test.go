@@ -46,13 +46,13 @@ func TestExaProvider_Search(t *testing.T) {
 		response := exaResponse{
 			Results: []exaResult{
 				{
-					Title:     "Go Testing",
-					URL:       "https://go.dev/doc/testing",
+					Title:      "Go Testing",
+					URL:        "https://go.dev/doc/testing",
 					Highlights: []string{"Go has built-in support for testing."},
 				},
 				{
-					Title:     "Testing Best Practices",
-					URL:       "https://example.com/testing",
+					Title:      "Testing Best Practices",
+					URL:        "https://example.com/testing",
 					Highlights: []string{"Learn about testing in Go."},
 				},
 			},

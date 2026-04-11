@@ -2,12 +2,10 @@ import { create } from 'zustand'
 
 export type MessageType =
   | 'user' | 'assistant' | 'thinking' | 'step_done' | 'tool_call' | 'tool_result'
-  | 'tool_confirm' | 'ask_user' | 'routing' | 'eval' | 'reflection' | 'plan' | 'error' | 'thought'
-  | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry' | 'ac_extracted' | 'subagent_launch' | 'subagent_complete' | 'status'
+  | 'tool_confirm' | 'ask_user' | 'routing' | 'reflection' | 'plan' | 'error' | 'thought'
+  | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry' | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable'
   | 'task_resumed'
-  | 'eval_step_start'
-  | 'eval_step_complete'
 
 export interface ChatMessageUI {
   id: string
@@ -28,9 +26,8 @@ export type DisplayItem =
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
-  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'ac_extracted' | 'status'; content: string; metadata?: Record<string, unknown> }
+  | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'status'; content: string; metadata?: Record<string, unknown> }
   | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; isRetry?: boolean; children: DisplayItem[] }
-  | { kind: 'eval_step'; id: string; criterionId: string; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; children: DisplayItem[] }
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'memory_read'; id: string }
   | { kind: 'action_placeholder'; id: string; label: string }
@@ -76,23 +73,14 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const items: DisplayItem[] = []
   const pendingActions: DisplayItem[] = []
   const openSteps = new Map<string, DisplayItem & { kind: 'plan_step' }>()
-  const openEvalSteps = new Map<string, DisplayItem & { kind: 'eval_step' }>()
   const stepIdCounts = new Map<string, number>()
   const stepIndexMap = new Map<string, { num: number; title: string }>()
   const toolItemsByStep = new Map<string, DisplayItem & { kind: 'tool' }>()
   const makeToolKey = (planStepId: string | undefined, step: number | string): string =>
     `${planStepId ?? ''}:${step}`
 
-  const pushItem = (item: DisplayItem, planStepId?: string, evalCriterionId?: string) => {
-    // First check if we should put this in an eval step container
-    if (evalCriterionId) {
-      const evalContainer = openEvalSteps.get(evalCriterionId)
-      if (evalContainer) {
-        evalContainer.children.push(item)
-        return
-      }
-    }
-    // Then check plan step container
+  const pushItem = (item: DisplayItem, planStepId?: string) => {
+    // Check plan step container
     const container = planStepId ? openSteps.get(planStepId) : null
     if (container) {
       container.children.push(item)
@@ -147,47 +135,18 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       continue
     }
 
-    // Handle eval step lifecycle
-    if (msg.type === 'eval_step_start') {
-      const criterionId = (meta?.criterion_id as string) || ''
-      const description = (meta?.description as string) || criterionId
-      const evalItem: DisplayItem & { kind: 'eval_step' } = {
-        kind: 'eval_step',
-        id: msg.id,
-        criterionId,
-        title: description,
-        status: 'running',
-        children: [],
-      }
-      openEvalSteps.set(criterionId, evalItem)
-      items.push(evalItem)
-      continue
-    }
-
-    if (msg.type === 'eval_step_complete') {
-      const criterionId = (meta?.criterion_id as string) || ''
-      const evalStep = openEvalSteps.get(criterionId)
-      if (evalStep) {
-        evalStep.status = (meta?.success as boolean) ? 'completed' : 'failed'
-        if (meta?.duration !== undefined) evalStep.duration = meta.duration as number
-        openEvalSteps.delete(criterionId)
-      }
-      continue
-    }
-
     // Skip orchestration events handled elsewhere
-    if (['eval', 'reflection'].includes(msg.type)) continue
+    if (msg.type === 'reflection') continue
 
     const planStepId = meta?.plan_step_id as string | undefined
-    const evalCriterionId = meta?.criterion_id as string | undefined
 
     switch (msg.type) {
       case 'user':
-        pushItem({ kind: 'user', message: msg }, planStepId, evalCriterionId)
+        pushItem({ kind: 'user', message: msg }, planStepId)
         break
 
       case 'assistant':
-        pushItem({ kind: 'assistant', message: msg }, planStepId, evalCriterionId)
+        pushItem({ kind: 'assistant', message: msg }, planStepId)
         break
 
       case 'thought':
@@ -197,7 +156,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           stepNum: (meta?.step_num as number) ?? 0,
           content: msg.content,
           reasoning: meta?.reasoning as string | undefined,
-        }, planStepId, evalCriterionId)
+        }, planStepId)
         break
 
       case 'tool_call': {
@@ -207,12 +166,12 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         // Render finish tool as a compact "Finished step N" message
         if (toolName === 'finish') {
           const planStepNum = planStepId ? stepIndexMap.get(planStepId)?.num : undefined
-          pushItem({ kind: 'step_finish', id: msg.id, stepNum: planStepNum }, planStepId, evalCriterionId)
+          pushItem({ kind: 'step_finish', id: msg.id, stepNum: planStepNum }, planStepId)
           break
         }
         // Render memory/blackboard read tools as compact "Memory readed" message
         if (['read_evidence', 'read_step_output', 'list_step_outputs'].includes(toolName)) {
-          pushItem({ kind: 'memory_read', id: msg.id }, planStepId, evalCriterionId)
+          pushItem({ kind: 'memory_read', id: msg.id }, planStepId)
           break
         }
         const isAwaiting = meta?.awaiting_confirmation === true
@@ -229,7 +188,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         }
         const stepNum = meta?.step as number | string
         if (stepNum !== undefined) toolItemsByStep.set(makeToolKey(planStepId, stepNum), toolItem)
-        pushItem(toolItem, planStepId, evalCriterionId)
+        pushItem(toolItem, planStepId)
         break
       }
 
@@ -255,7 +214,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           break
         }
         pendingActions.push({ kind: 'tool_confirm', message: msg })
-        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting confirmation...' }, planStepId, evalCriterionId)
+        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting confirmation...' }, planStepId)
         break
       }
 
@@ -267,7 +226,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           break
         }
         pendingActions.push({ kind: 'ask_user', message: msg })
-        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting your answer...' }, planStepId, evalCriterionId)
+        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting your answer...' }, planStepId)
         break
       }
 
@@ -281,7 +240,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       }
 
       case 'error':
-        pushItem({ kind: 'error', message: msg }, planStepId, evalCriterionId)
+        pushItem({ kind: 'error', message: msg }, planStepId)
         break
 
       case 'routing':
@@ -293,18 +252,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           variant: msg.type as 'routing' | 'retry' | 'step_retry',
           content: msg.content,
           metadata: meta,
-        }, planStepId, evalCriterionId)
-        break
-      }
-
-      case 'ac_extracted': {
-        pushItem({
-          kind: 'service',
-          id: msg.id,
-          variant: 'ac_extracted',
-          content: msg.content,
-          metadata: meta,
-        }, planStepId, evalCriterionId)
+        }, planStepId)
         break
       }
 
@@ -315,7 +263,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           variant: 'status',
           content: msg.content,
           metadata: meta,
-        }, planStepId, evalCriterionId)
+        }, planStepId)
         break
       }
 
@@ -332,12 +280,9 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     }
   }
 
-  // Collapse thoughts inside plan step and eval step children
+  // Collapse thoughts inside plan step children
   for (const item of items) {
     if (item.kind === 'plan_step') {
-      item.children = collapseThoughts(item.children)
-    }
-    if (item.kind === 'eval_step') {
       item.children = collapseThoughts(item.children)
     }
   }

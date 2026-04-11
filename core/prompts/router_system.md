@@ -1,16 +1,4 @@
-You are a request classifier. Analyze the user's request and pre-extracted acceptance criteria to determine the best execution strategy.
-
-Pre-extracted acceptance criteria (from a prior analysis step):
-RAW-CRITERIA
-
-Use criteria to inform routing:
-
-- Criteria count: more criteria suggest higher complexity
-- Nature distribution: mostly "objective" → code domain; mostly "subjective" → research/general
-- Weight distribution: many "must" criteria → reliable execution strategy needed
-- Implicit criteria: many implicit criteria → task is more complex than it appears
-- "(extraction failed — complexity unknown, rely on tool-availability heuristic)": AC extractor could not determine requirements. This does NOT mean the task is trivial. Assess complexity based on available tools.
-- "(none — task appears trivial)": extraction succeeded but found no requirements. Likely a greeting or simple question.
+You are a request classifier. Analyze the user's request to determine the best execution strategy.
 
 ## Complexity Scale
 

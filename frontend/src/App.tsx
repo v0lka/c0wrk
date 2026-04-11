@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
-import { useUIStore, useThemeEffect } from '@/stores/uiStore'
+import { useThemeEffect } from '@/stores/uiStore'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useWails } from '@/hooks/useWails'
 import { AlertCircle, X } from 'lucide-react'
@@ -11,15 +11,9 @@ interface StartupError {
 }
 
 function App() {
-  const setTheme = useUIStore(s => s.setTheme)
   useThemeEffect()
   const { runtime } = useWails()
   const [startupError, setStartupError] = useState<StartupError | null>(null)
-
-  useEffect(() => {
-    // Apply default dark theme
-    setTheme('dark')
-  }, [setTheme])
 
   // Listen for startup errors from the backend
   useEffect(() => {

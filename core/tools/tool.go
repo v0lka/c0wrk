@@ -26,15 +26,15 @@ const (
 
 // Re-export SDK functions.
 var (
-	ErrorResult       = sdktools.ErrorResult
-	ParseInputError   = sdktools.ParseInputError
-	ParseToolPolicy   = sdktools.ParseToolPolicy
-	WithWorkspacePath = sdktools.WithWorkspacePath
-	WorkspacePathFrom = sdktools.WorkspacePathFrom
-	WithTaskContext    = sdktools.WithTaskContext
-	TaskContextFrom    = sdktools.TaskContextFrom
-	WithEnvInfo        = sdktools.WithEnvInfo
-	EnvInfoFrom        = sdktools.EnvInfoFrom
+	ErrorResult           = sdktools.ErrorResult
+	ParseInputError       = sdktools.ParseInputError
+	ParseToolPolicy       = sdktools.ParseToolPolicy
+	WithWorkspacePath     = sdktools.WithWorkspacePath
+	WorkspacePathFrom     = sdktools.WorkspacePathFrom
+	WithTaskContext       = sdktools.WithTaskContext
+	TaskContextFrom       = sdktools.TaskContextFrom
+	WithEnvInfo           = sdktools.WithEnvInfo
+	EnvInfoFrom           = sdktools.EnvInfoFrom
 	CollectEnvInfo        = sdktools.CollectEnvInfo
 	FormatFullEnvBlock    = sdktools.FormatFullEnvBlock
 	FormatCompactEnvBlock = sdktools.FormatCompactEnvBlock

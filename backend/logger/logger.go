@@ -4,12 +4,11 @@ package logger
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"log/slog"
 )
 
 // baseLogDir is the base directory for log files.

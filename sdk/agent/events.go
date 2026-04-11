@@ -39,4 +39,4 @@ func (n *NoopEvents) AssistantChunk(_ string)                            {}
 func (n *NoopEvents) AssistantDone(_ string, _, _ int)                   {}
 func (n *NoopEvents) TokensUsed(_, _ int)                                {}
 func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)       {}
-func (*NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any)  {}
+func (*NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}

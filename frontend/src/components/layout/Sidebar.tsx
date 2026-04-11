@@ -257,10 +257,13 @@ export function Sidebar() {
   )
 
   // ── Load projects on mount ──
+  const projectFetchIdRef = useRef(0)
   useEffect(() => {
+    const myId = ++projectFetchIdRef.current
     const load = async () => {
       try {
         const list = await projectAPI.listProjects()
+        if (myId !== projectFetchIdRef.current) return // stale response
         if (list && list.length > 0) {
           setProjects(list)
           // Auto-select the most recent project
@@ -271,6 +274,7 @@ export function Sidebar() {
           }
         }
       } catch (err) {
+        if (myId !== projectFetchIdRef.current) return
         logger.error('Failed to load projects:', err)
       }
     }
@@ -308,21 +312,21 @@ export function Sidebar() {
     if (!window?.runtime) return
     const unsubs = [
       window.runtime.EventsOn('project:created', (data: unknown) => {
-        const p = data as import('@/lib/wails').ProjectInfo
-        addProject(p)
+        if (typeof data !== 'object' || data === null || !('id' in data) || !('name' in data)) return
+        addProject(data as import('@/lib/wails').ProjectInfo)
       }),
       window.runtime.EventsOn('project:deleted', (data: unknown) => {
-        // Backend emits a bare string ID
-        const id = data as string
-        removeProject(id)
+        if (typeof data !== 'string') return
+        removeProject(data)
       }),
       window.runtime.EventsOn('project:renamed', (data: unknown) => {
+        if (typeof data !== 'object' || data === null || !('id' in data) || !('name' in data)) return
         const d = data as { id: string; name: string }
         updateProject(d.id, { name: d.name })
       }),
       window.runtime.EventsOn('project:switched', (data: unknown) => {
-        // Backend emits a full ProjectInfo object
-        const p = data as import('@/lib/wails').ProjectInfo
+        if (typeof data !== 'object' || data === null || !('id' in data)) return
+        const p = data as { id: string }
         setActiveProject(p.id)
       }),
     ]

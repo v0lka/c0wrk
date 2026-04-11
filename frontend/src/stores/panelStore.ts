@@ -10,13 +10,6 @@ export interface PlanItem {
   dependsOn: string[] // DAG dependency IDs
 }
 
-export interface EvalItem {
-  name: string        // criterion name/ID
-  description: string // criterion description
-  status: 'pending' | 'pass' | 'fail' | 'unclear'
-  diagnostic?: string
-}
-
 export interface PlanGroup {
   id: number
   items: PlanItem[]
@@ -24,11 +17,6 @@ export interface PlanGroup {
   progress?: number          // 0.0–1.0
   completedCount?: number
   totalCount?: number
-}
-
-export interface EvalGroup {
-  id: number
-  items: EvalItem[]
 }
 
 interface SessionStats {
@@ -47,19 +35,14 @@ const defaultStats: SessionStats = {
 
 interface PanelState {
   planGroups: PlanGroup[]  // newest first
-  evalGroups: EvalGroup[]  // newest first
   sessionStats: SessionStats
   _planGroupCounter: number
-  _evalGroupCounter: number
   
   // Actions
   addPlanGroup: (steps: Array<{ description: string; status?: string }>, progress?: { progress?: number; completed_count?: number; total_count?: number }) => void
   updatePlanItemStatus: (stepId: string, status: PlanItem['status'], duration?: number) => void
-  addEvalGroup: (criteria: Array<{ name: string; description?: string; passed?: boolean; status?: 'pass' | 'fail' | 'unclear'; diagnostic?: string }>) => void
-  updateEvalGroupStatuses: (criteria: Array<{ name: string; description?: string; passed?: boolean; status?: 'pass' | 'fail' | 'unclear'; diagnostic?: string }>) => void
   updateStats: (update: Partial<SessionStats>) => void
   resetPanels: () => void
-  resetEvalStatuses: () => void
   resetPlanStatuses: () => void
   rebuildFromEvents: (messages: ChatMessageUI[]) => void
 }
@@ -73,10 +56,8 @@ function toValidStatus(s: unknown): ValidPlanStatus {
 
 export const usePanelStore = create<PanelState>((set) => ({
   planGroups: [],
-  evalGroups: [],
   sessionStats: { ...defaultStats },
   _planGroupCounter: 0,
-  _evalGroupCounter: 0,
 
   addPlanGroup: (steps, progress) => {
     if (!steps) return  // Guard against null/undefined from backend nil slices
@@ -129,83 +110,12 @@ export const usePanelStore = create<PanelState>((set) => ({
     })
   },
 
-  addEvalGroup: (criteria) => {
-    if (!criteria) return  // Guard against null/undefined from backend nil slices
-    set((state) => {
-      const counter = state._evalGroupCounter + 1
-      const newGroup: EvalGroup = {
-        id: counter,
-        items: criteria.map((c) => ({
-          name: c.name,
-          description: c.description || c.name,
-          status: c.status ?? (c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const),
-          ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
-        })),
-      }
-      return {
-        _evalGroupCounter: counter,
-        evalGroups: [newGroup, ...state.evalGroups],
-      }
-    })
-  },
-
-  updateEvalGroupStatuses: (criteria) => {
-    if (!criteria) return  // Guard against null/undefined from backend nil slices
-    set((state) => {
-      if (state.evalGroups.length === 0) {
-        // No existing group, create one
-        const counter = state._evalGroupCounter + 1
-        const newGroup: EvalGroup = {
-          id: counter,
-          items: criteria.map((c) => ({
-            name: c.name,
-            description: c.description || c.name,
-            status: c.status ?? (c.passed === undefined ? 'pending' as const : c.passed ? 'pass' as const : 'fail' as const),
-            ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
-          })),
-        }
-        return { _evalGroupCounter: counter, evalGroups: [newGroup] }
-      }
-      // Update the latest group (index 0)
-      const latest = state.evalGroups[0]! // Safe: length > 0 checked above
-      const rest = state.evalGroups.slice(1)
-      const updatedItems = latest.items.map((item) => {
-        const match = criteria.find((c) => c.name === item.name)
-        if (match) {
-          return {
-            ...item,
-            status: match.status ?? (match.passed === undefined ? 'pending' as const : match.passed ? 'pass' as const : 'fail' as const),
-            ...(match.diagnostic !== undefined ? { diagnostic: match.diagnostic } : {}),
-          }
-        }
-        return item
-      })
-      return {
-        evalGroups: [{ ...latest, items: updatedItems }, ...rest],
-      }
-    })
-  },
-
   updateStats: (update) => set((s) => ({
     sessionStats: { ...s.sessionStats, ...update },
   })),
 
   resetPanels: () => {
-    set({ planGroups: [], evalGroups: [], sessionStats: { ...defaultStats }, _planGroupCounter: 0, _evalGroupCounter: 0 })
-  },
-
-  resetEvalStatuses: () => {
-    set((state) => {
-      if (state.evalGroups.length === 0) return state
-      const latest = state.evalGroups[0]! // Safe: length > 0 checked above
-      const rest = state.evalGroups.slice(1)
-      return {
-        evalGroups: [{
-          ...latest,
-          items: latest.items.map(item => ({ ...item, status: 'pending' as const })),
-        }, ...rest],
-      }
-    })
+    set({ planGroups: [], sessionStats: { ...defaultStats }, _planGroupCounter: 0 })
   },
 
   resetPlanStatuses: () => {
@@ -224,10 +134,8 @@ export const usePanelStore = create<PanelState>((set) => ({
 
   rebuildFromEvents: (messages) => {
     let planCounter = 0
-    let evalCounter = 0
     
     let planGroups: PlanGroup[] = []
-    let evalGroups: EvalGroup[] = []
     
     // Iterate chronologically to rebuild state
     for (const msg of messages) {
@@ -286,50 +194,6 @@ export const usePanelStore = create<PanelState>((set) => ({
           break
         }
 
-        case 'eval': {
-          const meta = msg.metadata as Record<string, unknown> | undefined
-          const rawCriteria = (meta?.criteria as Array<{ name: string; description?: string; passed: boolean; status?: 'pass' | 'fail' | 'unclear'; diagnostic?: string }>) || []
-          // Check if latest group has matching criteria names - update instead of creating new
-          if (evalGroups.length > 0) {
-            const latestGroup = evalGroups[evalGroups.length - 1]! // Safe: length > 0 checked
-            const latestNames = new Set(latestGroup.items.map((i) => i.name))
-            const incomingNames = new Set(rawCriteria.map((c) => c.name))
-            const isMatch = rawCriteria.length > 0 && 
-              rawCriteria.every((c) => latestNames.has(c.name)) &&
-              latestGroup.items.every((i) => incomingNames.has(i.name))
-            if (isMatch) {
-              // Update existing group's statuses immutably
-              const updatedItems = latestGroup.items.map((item) => {
-                const match = rawCriteria.find((c) => c.name === item.name)
-                if (match) {
-                  return {
-                    ...item,
-                    status: match.status ?? (match.passed ? 'pass' as const : 'fail' as const),
-                    ...(match.diagnostic !== undefined ? { diagnostic: match.diagnostic } : {}),
-                  }
-                }
-                return item
-              })
-              evalGroups = evalGroups.map((g, i) =>
-                i === evalGroups.length - 1 ? { ...latestGroup, items: updatedItems } : g
-              )
-              break
-            }
-          }
-          // No matching group found, create new one
-          const group: EvalGroup = {
-            id: ++evalCounter,
-            items: rawCriteria.map((c) => ({
-              name: c.name,
-              description: c.description || c.name,
-              status: c.status ?? (c.passed ? 'pass' as const : 'fail' as const),
-              ...(c.diagnostic !== undefined ? { diagnostic: c.diagnostic } : {}),
-            })),
-          }
-          evalGroups.push(group)
-          break
-        }
-
         default:
           break
       }
@@ -338,9 +202,7 @@ export const usePanelStore = create<PanelState>((set) => ({
     // Store newest first
     set({
       planGroups: planGroups.reverse(),
-      evalGroups: evalGroups.reverse(),
       _planGroupCounter: planCounter,
-      _evalGroupCounter: evalCounter,
     })
   },
 }))
@@ -383,38 +245,10 @@ const selectPlanTotal = (state: PanelState): number => {
   return count
 }
 
-const selectEvalCompleted = (state: PanelState): number => {
-  let count = 0
-  for (const group of state.evalGroups) {
-    for (const item of group.items) {
-      if (item.status === 'pass' || item.status === 'fail' || item.status === 'unclear') {
-        count++
-      }
-    }
-  }
-  return count
-}
-
-const selectEvalTotal = (state: PanelState): number => {
-  let count = 0
-  for (const group of state.evalGroups) {
-    count += group.items.length
-  }
-  return count
-}
-
 export function usePlanCompleted(): number {
   return usePanelStore(selectPlanCompleted)
 }
 
 export function usePlanTotal(): number {
   return usePanelStore(selectPlanTotal)
-}
-
-export function useEvalCompleted(): number {
-  return usePanelStore(selectEvalCompleted)
-}
-
-export function useEvalTotal(): number {
-  return usePanelStore(selectEvalTotal)
 }

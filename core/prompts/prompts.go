@@ -26,31 +26,6 @@ var ReflectorSystem string
 //go:embed router_system.md
 var RouterSystem string
 
-// Raw AC Extractor prompt (Phase 1 — domain-agnostic)
-
-//go:embed raw_ac_extractor_system.md
-var RawACExtractorSystem string
-
-// AC Enricher prompt (Phase 2 — domain-specific)
-
-//go:embed ac_enricher_system.md
-var ACEnricherSystem string
-
-// Evaluator prompts
-
-//go:embed evaluator_judge.md
-var EvaluatorJudge string
-
-// Intent Verifier prompt
-
-//go:embed intent_verifier_system.md
-var IntentVerifierSystem string
-
-// AC Fallback prompt (single criterion when raw extraction is empty)
-
-//go:embed ac_fallback_system.md
-var ACFallbackSystem string
-
 // Compaction summarize prompt
 
 //go:embed compaction_summarize.md

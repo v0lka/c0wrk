@@ -267,34 +267,6 @@ func TestEventEmitterSubAgentComplete(t *testing.T) {
 	}
 }
 
-// TestEventEmitterEvaluation verifies Evaluation emits correct event.
-func TestEventEmitterEvaluation(t *testing.T) {
-	var received Event
-	emit := func(e Event) {
-		received = e
-	}
-
-	emitter := NewEventEmitter("test-session", emit)
-	emitter.Evaluation(3, 5, []core.EvalCriterionEvent{
-		{Name: "ac_1", Description: "Test criterion", Passed: true},
-	})
-
-	if received.Type != "evaluation" {
-		t.Errorf("expected type 'evaluation', got %q", received.Type)
-	}
-
-	data, ok := received.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
-	}
-	if data["passed"] != 3 {
-		t.Errorf("expected passed 3, got %v", data["passed"])
-	}
-	if data["total"] != 5 {
-		t.Errorf("expected total 5, got %v", data["total"])
-	}
-}
-
 // TestEventEmitterReflection verifies Reflection emits correct event.
 func TestEventEmitterReflection(t *testing.T) {
 	var received Event
@@ -341,46 +313,6 @@ func TestEventEmitterRetry(t *testing.T) {
 	}
 	if data["max_attempts"] != 3 {
 		t.Errorf("expected max_attempts 3, got %d", data["max_attempts"])
-	}
-}
-
-// TestEventEmitterACExtracted verifies ACExtracted emits correct event.
-func TestEventEmitterACExtracted(t *testing.T) {
-	var received Event
-	emit := func(e Event) {
-		received = e
-	}
-
-	emitter := NewEventEmitter("test-session", emit)
-	criteria := []core.EvalCriterionEvent{
-		{Name: "ac_1", Description: "First criterion"},
-		{Name: "ac_2", Description: "Second criterion"},
-		{Name: "ac_3", Description: "Third criterion"},
-		{Name: "ac_4", Description: "Fourth criterion"},
-	}
-	emitter.ACExtracted(4, criteria)
-
-	if received.Type != "ac_extracted" {
-		t.Errorf("expected type 'ac_extracted', got %q", received.Type)
-	}
-
-	data, ok := received.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
-	}
-	count, ok := data["count"].(int)
-	if !ok || count != 4 {
-		t.Errorf("expected count 4, got %v", data["count"])
-	}
-	receivedCriteria, ok := data["criteria"].([]core.EvalCriterionEvent)
-	if !ok {
-		t.Fatalf("expected criteria slice, got %T", data["criteria"])
-	}
-	if len(receivedCriteria) != 4 {
-		t.Errorf("expected 4 criteria, got %d", len(receivedCriteria))
-	}
-	if receivedCriteria[0].Name != "ac_1" || receivedCriteria[0].Description != "First criterion" {
-		t.Errorf("first criterion mismatch: %+v", receivedCriteria[0])
 	}
 }
 
@@ -475,15 +407,13 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.StepComplete(1, time.Second)
 	emitter.SubAgentLaunch("step_1", "Do something")
 	emitter.SubAgentComplete("step_1", true, time.Second)
-	emitter.Evaluation(3, 5, []core.EvalCriterionEvent{{Name: "ac_1", Description: "Test", Passed: true}})
 	emitter.Reflection("Something went wrong", []string{"Issue found"}, 1, 3)
 	emitter.Retry(2, 3)
-	emitter.ACExtracted(4, []core.EvalCriterionEvent{{Name: "ac_1", Description: "Test"}})
 	emitter.ContextFill(75.5, 75500, 100000, "compact", "step_1")
 
 	mu.Lock()
-	if len(events) != 14 {
-		t.Errorf("expected 14 events, got %d", len(events))
+	if len(events) != 12 {
+		t.Errorf("expected 12 events, got %d", len(events))
 	}
 
 	// Verify all event types
@@ -497,10 +427,8 @@ func TestEventEmitterAllMethods(t *testing.T) {
 		"step_complete":     false,
 		"subagent_launch":   false,
 		"subagent_complete": false,
-		"evaluation":        false,
 		"reflection":        false,
 		"retry":             false,
-		"ac_extracted":      false,
 		"context_fill":      false,
 	}
 

@@ -49,7 +49,7 @@ type Session struct {
 	logFile       *os.File           // session log file handle, closed on deletion
 	cancel        context.CancelFunc // cancel for current task
 	active        bool               // is currently processing
-	done          chan struct{}       // closed when task goroutine finishes
+	done          chan struct{}      // closed when task goroutine finishes
 	mu            sync.Mutex
 }
 
@@ -74,7 +74,7 @@ type Manager struct {
 	logDir              string      // base directory for session logs
 	logLevel            string      // current log level for session loggers
 	tokenPersist        TokenPersistFunc
-	taskStore           TaskStore    // optional persistent task store
+	taskStore           TaskStore      // optional persistent task store
 	envInfo             *tools.EnvInfo // environment info for context injection
 	stopTimeout         time.Duration  // how long to wait for goroutine on cancel/delete
 }
@@ -476,7 +476,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				if ts != nil {
 					adapter := NewTaskStoreAdapter(ts)
 					if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
-						if pErr := adapter.PersistCompletion(tid, "", nil, 0); pErr != nil {
+						if pErr := adapter.PersistCompletion(tid, "", 0); pErr != nil {
 							slog.Warn("failed to persist completion on session done", "task", tid, "error", pErr)
 						}
 					}
@@ -506,7 +506,6 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				Output:          result.Output,
 				RoutingDecision: result.RoutingDecision,
 				Plan:            result.Plan,
-				EvalResult:      result.EvalResult,
 				AttemptCount:    result.AttemptCount,
 				Reflections:     result.Reflections,
 			},
@@ -573,8 +572,8 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		return errors.New("session is already processing a task")
 	}
 	session.active = true
-	resumedoneCh := make(chan struct{})
-	session.done = resumedoneCh
+	resumeDoneCh := make(chan struct{})
+	session.done = resumeDoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
 	if m.envInfo != nil {
@@ -595,7 +594,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 
 	// Launch goroutine (same pattern as SendMessage).
 	go func() {
-		defer close(resumedoneCh)
+		defer close(resumeDoneCh)
 		defer func() {
 			session.mu.Lock()
 			session.active = false
@@ -616,7 +615,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 					},
 				})
 				// Mark the restored task as completed so it's not left resumable.
-				bb.CompleteTask(nil, 0)
+				bb.CompleteTask(0)
 				return
 			}
 
@@ -640,7 +639,6 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 				Output:          result.Output,
 				RoutingDecision: result.RoutingDecision,
 				Plan:            result.Plan,
-				EvalResult:      result.EvalResult,
 				AttemptCount:    result.AttemptCount,
 				Reflections:     result.Reflections,
 			},

@@ -18,7 +18,7 @@ var _ orchestration.Reflector = (*Reflector)(nil)
 
 const reflectorAnalyzeFooter = "Please analyze this execution and provide a structured reflection."
 
-// Reflector analyzes execution trajectory and evaluation results to produce
+// Reflector analyzes execution trajectory to produce
 // structured self-correction insights per AD 4.6.
 type Reflector struct {
 	llm LLMCaller
@@ -29,14 +29,12 @@ func NewReflector(caller LLMCaller) *Reflector {
 	return &Reflector{llm: caller}
 }
 
-// Reflect analyzes execution trajectory and evaluation results to produce
-// structured self-correction insights.
-// trajectory = the steps executed, evalResult = what passed/failed,
+// Reflect analyzes execution trajectory to produce structured self-correction insights.
+// trajectory = the steps executed,
 // plan = the plan (if plan_execute mode), prevReflections = past reflections for this task
 func (r *Reflector) Reflect(
 	ctx context.Context,
 	trajectory []Step,
-	evalResult *EvalResult,
 	plan *Plan,
 	prevReflections []Reflection,
 ) (reflection *Reflection, err error) {
@@ -47,7 +45,7 @@ func (r *Reflector) Reflect(
 		systemPrompt += "\n\n" + envBlock
 	}
 
-	userMessage := r.buildUserMessage(trajectory, evalResult, plan, prevReflections)
+	userMessage := r.buildUserMessage(trajectory, plan, prevReflections)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -82,7 +80,6 @@ func (r *Reflector) buildSystemPrompt() string {
 // buildUserMessage constructs the user message containing all context for reflection.
 func (r *Reflector) buildUserMessage(
 	trajectory []Step,
-	evalResult *EvalResult,
 	plan *Plan,
 	prevReflections []Reflection,
 ) string {
@@ -109,45 +106,6 @@ func (r *Reflector) buildUserMessage(
 		}
 	}
 
-	// Add evaluation result
-	sb.WriteString("## Evaluation Result\n\n")
-	if evalResult != nil {
-		if len(evalResult.Passed) > 0 {
-			sb.WriteString("### Passed Criteria\n")
-			for _, detail := range evalResult.Passed {
-				fmt.Fprintf(&sb, "- %s: %s\n", detail.Criterion.ID, detail.Criterion.Description)
-				if detail.Diagnostic != "" {
-					fmt.Fprintf(&sb, "  Diagnostic: %s\n", detail.Diagnostic)
-				}
-			}
-			sb.WriteString("\n")
-		}
-
-		if len(evalResult.Failed) > 0 {
-			sb.WriteString("### Failed Criteria\n")
-			for _, detail := range evalResult.Failed {
-				fmt.Fprintf(&sb, "- %s: %s\n", detail.Criterion.ID, detail.Criterion.Description)
-				if detail.Diagnostic != "" {
-					fmt.Fprintf(&sb, "  Diagnostic: %s\n", detail.Diagnostic)
-				}
-			}
-			sb.WriteString("\n")
-		}
-
-		if len(evalResult.Unclear) > 0 {
-			sb.WriteString("### Unclear Criteria\n")
-			for _, detail := range evalResult.Unclear {
-				fmt.Fprintf(&sb, "- %s: %s\n", detail.Criterion.ID, detail.Criterion.Description)
-				if detail.Diagnostic != "" {
-					fmt.Fprintf(&sb, "  Diagnostic: %s\n", detail.Diagnostic)
-				}
-			}
-			sb.WriteString("\n")
-		}
-	} else {
-		sb.WriteString("No evaluation result available.\n\n")
-	}
-
 	// Add plan if available
 	if plan != nil && len(plan.Steps) > 0 {
 		sb.WriteString("## Plan\n\n")
@@ -155,9 +113,6 @@ func (r *Reflector) buildUserMessage(
 			fmt.Fprintf(&sb, "- %s: %s\n", step.ID, step.Description)
 			if len(step.DependsOn) > 0 {
 				fmt.Fprintf(&sb, "  Depends on: %v\n", step.DependsOn)
-			}
-			if len(step.RelevantAC) > 0 {
-				fmt.Fprintf(&sb, "  Relevant AC: %v\n", step.RelevantAC)
 			}
 		}
 		sb.WriteString("\n")

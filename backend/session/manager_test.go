@@ -824,9 +824,6 @@ type mockTaskStoreForResumable struct {
 
 func (m *mockTaskStoreForResumable) SaveTask(_ TaskRecord) error                      { return nil }
 func (m *mockTaskStoreForResumable) UpdateTaskPlan(_ string, _ json.RawMessage) error { return nil }
-func (m *mockTaskStoreForResumable) UpdateTaskCriteria(_ string, _ json.RawMessage) error {
-	return nil
-}
 func (m *mockTaskStoreForResumable) UpdateTaskRouting(_ string, _ json.RawMessage) error {
 	return nil
 }
@@ -837,7 +834,7 @@ func (m *mockTaskStoreForResumable) SaveStepFileChanges(_, _ string, _ json.RawM
 func (m *mockTaskStoreForResumable) AddTaskReflection(_ string, _ json.RawMessage) error {
 	return nil
 }
-func (m *mockTaskStoreForResumable) CompleteTask(_, _ string, _ json.RawMessage, _ int) error {
+func (m *mockTaskStoreForResumable) CompleteTask(_, _ string, _ int) error {
 	return nil
 }
 func (m *mockTaskStoreForResumable) FailTask(_ string) error                { return nil }

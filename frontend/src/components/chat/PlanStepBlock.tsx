@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight } from 'lucide-react'
 import {
   Collapsible,
@@ -39,14 +39,16 @@ export function PlanStepBlock({ stepId, stepNum, title, status, duration, isRetr
   const [isOpen, setIsOpen] = useState(status === 'running')
   const stepContextFill = useChatStore(s => s.stepContextFill[stepId])
 
-  // Auto-collapse when status transitions to completed/failed
-  useEffect(() => {
+  // Adjust isOpen during render when status changes (avoids extra render cycle from useEffect)
+  const [prevStatus, setPrevStatus] = useState(status)
+  if (status !== prevStatus) {
+    setPrevStatus(status)
     if (status === 'completed' || status === 'failed') {
       setIsOpen(false)
     } else if (status === 'running') {
       setIsOpen(true)
     }
-  }, [status])
+  }
 
   const borderColor = status === 'running'
     ? 'border-blue-500'

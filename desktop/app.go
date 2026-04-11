@@ -103,8 +103,6 @@ func loadShellEnvironment() {
 	}
 }
 
-// App struct holds the Wails application state and exposes methods to the frontend.
-
 // llmTitleCaller adapts the LLM router to the session.LLMTitleCaller interface.
 type llmTitleCaller struct {
 	router *llm.Router

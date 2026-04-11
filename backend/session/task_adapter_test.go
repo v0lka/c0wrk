@@ -23,7 +23,7 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 	// 2. PersistPlan
 	plan := &core.Plan{
 		Steps: []core.PlanStep{
-			{ID: "step_1", Description: "write code", RelevantAC: []string{"ac_1"}},
+			{ID: "step_1", Description: "write code"},
 			{ID: "step_2", Description: "run tests", DependsOn: []string{"step_1"}},
 		},
 	}
@@ -31,16 +31,7 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 		t.Fatalf("PersistPlan failed: %v", err)
 	}
 
-	// 3. PersistCriteria
-	criteria := []core.AcceptanceCriterion{
-		{ID: "ac_1", Description: "must compile", CheckType: "programmatic"},
-		{ID: "ac_2", Description: "must pass tests", CheckType: "llm_judge"},
-	}
-	if err := adapter.PersistCriteria(taskID, criteria); err != nil {
-		t.Fatalf("PersistCriteria failed: %v", err)
-	}
-
-	// 4. PersistRouting
+	// 3. PersistRouting
 	routing := &core.RoutingDecision{
 		Domain:     "code",
 		Complexity: 3,
@@ -50,35 +41,28 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 		t.Fatalf("PersistRouting failed: %v", err)
 	}
 
-	// 5. PersistStepResult
+	// 4. PersistStepResult
 	steps := []core.Step{{Thought: "thinking about code"}}
 	if err := adapter.PersistStepResult(taskID, "step_1", "wrote code", "full output of step 1", "", steps); err != nil {
 		t.Fatalf("PersistStepResult failed: %v", err)
 	}
 
-	// 6. PersistReflection
+	// 5. PersistReflection
 	reflection := core.Reflection{
 		Summary:         "first attempt analysis",
 		SuggestedAction: "retry",
-		FailedCriteria:  []string{"ac_2"},
 		Timestamp:       time.Now().Truncate(time.Second),
 	}
 	if err := adapter.PersistReflection(taskID, reflection); err != nil {
 		t.Fatalf("PersistReflection failed: %v", err)
 	}
 
-	// 7. PersistCompletion
-	evalResult := &core.EvalResult{
-		AllPassed: true,
-		Passed: []core.EvalDetail{
-			{Criterion: core.AcceptanceCriterion{ID: "ac_1"}, Diagnostic: "compiles"},
-		},
-	}
-	if err := adapter.PersistCompletion(taskID, "task done", evalResult, 2); err != nil {
+	// 6. PersistCompletion
+	if err := adapter.PersistCompletion(taskID, "task done", 2); err != nil {
 		t.Fatalf("PersistCompletion failed: %v", err)
 	}
 
-	// 8. LoadTaskState — verify full round-trip
+	// 7. LoadTaskState — verify full round-trip
 	state, err := adapter.LoadTaskState(taskID)
 	if err != nil {
 		t.Fatalf("LoadTaskState failed: %v", err)
@@ -123,11 +107,6 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 		t.Errorf("Plan.Steps: got %d, want 2", len(state.Plan.Steps))
 	}
 
-	// Criteria
-	if len(state.Criteria) != 2 {
-		t.Errorf("Criteria: got %d, want 2", len(state.Criteria))
-	}
-
 	// StepResults
 	if len(state.StepResults) != 1 {
 		t.Fatalf("StepResults: got %d, want 1", len(state.StepResults))
@@ -168,7 +147,6 @@ func TestTaskStoreAdapter_GetUnfinishedTaskID(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "done-task", SessionID: sessionID, OriginalRequest: "old",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -178,7 +156,6 @@ func TestTaskStoreAdapter_GetUnfinishedTaskID(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "active-task", SessionID: sessionID, OriginalRequest: "current",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress",
 		CreatedAt: time.Now().Add(time.Second),
 	}); err != nil {
@@ -204,7 +181,6 @@ func TestTaskStoreAdapter_GetUnfinishedTaskID_None(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "done-task", SessionID: sessionID, OriginalRequest: "old",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -258,31 +234,6 @@ func TestTaskStoreAdapter_LoadTaskState_NotFound(t *testing.T) {
 	}
 	if state != nil {
 		t.Error("expected nil state for missing task")
-	}
-}
-
-func TestTaskStoreAdapter_PersistCompletion_NilEval(t *testing.T) {
-	store, sessionID, cleanup := setupTestStoreWithSession(t)
-	defer cleanup()
-
-	adapter := NewTaskStoreAdapter(store)
-	taskID := "adapter-nil-eval"
-
-	if err := adapter.PersistNewTask(taskID, sessionID, "test"); err != nil {
-		t.Fatalf("PersistNewTask failed: %v", err)
-	}
-
-	// PersistCompletion with nil evalResult should not error
-	if err := adapter.PersistCompletion(taskID, "done", nil, 1); err != nil {
-		t.Fatalf("PersistCompletion failed: %v", err)
-	}
-
-	state, err := adapter.LoadTaskState(taskID)
-	if err != nil {
-		t.Fatalf("LoadTaskState failed: %v", err)
-	}
-	if state.Status != "completed" {
-		t.Errorf("Status: got %q", state.Status)
 	}
 }
 

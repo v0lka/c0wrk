@@ -85,7 +85,7 @@ export function ChatArea(): React.ReactNode {
     if (!activeSessionId) return
 
     // Always fetch full history from backend for panel reconstruction.
-    // Backend persists plan/eval events that aren't kept in the frontend
+    // Backend persists plan events that aren't kept in the frontend
     // message cache, so we must use the complete history to rebuild panels.
     GetSessionHistory(activeSessionId).then((history) => {
       setHistoryError(null)

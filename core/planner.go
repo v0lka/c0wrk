@@ -31,11 +31,10 @@ func NewPlanner(caller LLMCaller) *Planner {
 func (p *Planner) Plan(
 	ctx context.Context,
 	task string,
-	criteria []AcceptanceCriterion,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
 ) (*Plan, error) {
-	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, criteria, reflections)
+	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, reflections)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -66,10 +65,9 @@ func (p *Planner) Replan(
 	completedSteps []CompletedStep,
 	failedStep CompletedStep,
 	reflection *Reflection,
-	criteria []AcceptanceCriterion,
 	sessionReflections []Reflection,
 ) (*Plan, error) {
-	systemPrompt := p.buildReplanSystemPrompt(ctx, originalPlan, completedSteps, failedStep, reflection, criteria, sessionReflections)
+	systemPrompt := p.buildReplanSystemPrompt(ctx, originalPlan, completedSteps, failedStep, reflection, sessionReflections)
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -97,18 +95,10 @@ func (p *Planner) Replan(
 func (p *Planner) buildPlanSystemPrompt(
 	ctx context.Context,
 	availableTools []tools.ToolDescriptor,
-	criteria []AcceptanceCriterion,
 	reflections []Reflection,
 ) string {
 	// Build available tools string (grouped by priority tier)
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
-
-	// Build acceptance criteria string
-	var criteriaBuilder strings.Builder
-	for _, ac := range criteria {
-		fmt.Fprintf(&criteriaBuilder, "- %s: %s\n", ac.ID, ac.Description)
-	}
-	criteriaStr := criteriaBuilder.String()
 
 	// Build reflections string
 	var reflectionsStr string
@@ -125,7 +115,6 @@ func (p *Planner) buildPlanSystemPrompt(
 	// Apply template substitutions
 	result := prompts.PlannerPlan
 	result = strings.ReplaceAll(result, "AVAILABLE-TOOLS", availableToolsStr)
-	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 	result = strings.ReplaceAll(result, "REFLECTIONS", reflectionsStr)
 	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
 
@@ -144,7 +133,6 @@ func (p *Planner) buildReplanSystemPrompt(
 	completedSteps []CompletedStep,
 	failedStep CompletedStep,
 	reflection *Reflection,
-	criteria []AcceptanceCriterion,
 	sessionReflections []Reflection,
 ) string {
 	// Build original plan string
@@ -195,13 +183,6 @@ func (p *Planner) buildReplanSystemPrompt(
 		prevReflectionsStr = prb.String()
 	}
 
-	// Build acceptance criteria string
-	var criteriaBuilder strings.Builder
-	for _, ac := range criteria {
-		fmt.Fprintf(&criteriaBuilder, "- %s: %s\n", ac.ID, ac.Description)
-	}
-	criteriaStr := criteriaBuilder.String()
-
 	// Apply template substitutions.
 	// PREVIOUS-SESSION-REFLECTIONS must be replaced before CURRENT-REFLECTION
 	// to avoid substring collision.
@@ -211,7 +192,6 @@ func (p *Planner) buildReplanSystemPrompt(
 	result = strings.ReplaceAll(result, "FAILED-STEP", failedStepStr)
 	result = strings.ReplaceAll(result, "PREVIOUS-SESSION-REFLECTIONS", prevReflectionsStr)
 	result = strings.ReplaceAll(result, "CURRENT-REFLECTION", reflectionStr)
-	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
 
 	// Append environment context if available.

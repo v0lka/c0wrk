@@ -37,7 +37,6 @@ type EventEmitter struct {
 	emit       func(Event)
 	mu         sync.Mutex
 	planStepID string // if set, injected into event Data for plan-step scoping
-	criterionID string // if set, injected into event Data for eval-step scoping
 
 	// Plan progress tracking (guarded by mu)
 	planTotalSteps    int
@@ -74,44 +73,26 @@ func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int)) {
 func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 	slog.Debug("emitter: creating plan-step-scoped emitter", "sessionID", e.sessionID, "planStepID", id)
 	return &EventEmitter{
-		sessionID:   e.sessionID,
-		emit:        e.emit,
-		planStepID:  id,
-		criterionID: e.criterionID, // preserve criterion scoping if set
-		tokens:      e.tokens, // share token accumulation state across copies
+		sessionID:  e.sessionID,
+		emit:       e.emit,
+		planStepID: id,
+		tokens:     e.tokens, // share token accumulation state across copies
 	}
 }
 
-// WithCriterionID returns a shallow copy of the emitter with criterionID set.
-// Events emitted by the copy will include "criterion_id" in their Data map.
-func (e *EventEmitter) WithCriterionID(id string) core.Emitter {
-	slog.Debug("emitter: creating criterion-scoped emitter", "sessionID", e.sessionID, "criterionID", id)
-	return &EventEmitter{
-		sessionID:   e.sessionID,
-		emit:        e.emit,
-		planStepID:  e.planStepID, // preserve plan step scoping if set
-		criterionID: id,
-		tokens:      e.tokens, // share token accumulation state across copies
-	}
-}
+// ensure EventEmitter implements core.Emitter and core.PlanStepScopable at compile time.
+var (
+	_ core.Emitter          = (*EventEmitter)(nil)
+	_ core.PlanStepScopable = (*EventEmitter)(nil)
+)
 
-// ensure EventEmitter implements core.Emitter, core.PlanStepScopable, and core.CriterionScopable at compile time.
-var _ core.Emitter = (*EventEmitter)(nil)
-var _ core.PlanStepScopable = (*EventEmitter)(nil)
-var _ core.CriterionScopable = (*EventEmitter)(nil)
-
-// emitEvent is a helper that emits an event, injecting plan_step_id and criterion_id if set.
+// emitEvent is a helper that emits an event, injecting plan_step_id if set.
 func (e *EventEmitter) emitEvent(evt Event) {
-	slog.Debug("emitter: dispatching event", "type", evt.Type, "sessionID", e.sessionID, "planStepID", e.planStepID, "criterionID", e.criterionID)
-	if e.planStepID != "" || e.criterionID != "" {
-		// Inject IDs into Data if it's a map[string]any
+	slog.Debug("emitter: dispatching event", "type", evt.Type, "sessionID", e.sessionID, "planStepID", e.planStepID)
+	if e.planStepID != "" {
+		// Inject plan_step_id into Data if it's a map[string]any
 		if data, ok := evt.Data.(map[string]any); ok {
-			if e.planStepID != "" {
-				data["plan_step_id"] = e.planStepID
-			}
-			if e.criterionID != "" {
-				data["criterion_id"] = e.criterionID
-			}
+			data["plan_step_id"] = e.planStepID
 		}
 	}
 	e.emit(evt)
@@ -327,22 +308,6 @@ func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration ti
 	})
 }
 
-// Evaluation emits an evaluation event.
-func (e *EventEmitter) Evaluation(passed, total int, criteria []core.EvalCriterionEvent) {
-	slog.Debug("emitter: evaluation", "sessionID", e.sessionID, "passed", passed, "total", total)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.emitEvent(Event{
-		SessionID: e.sessionID,
-		Type:      "evaluation",
-		Data: map[string]any{
-			"passed":   passed,
-			"total":    total,
-			"criteria": criteria,
-		},
-	})
-}
-
 // Reflection emits a reflection event.
 func (e *EventEmitter) Reflection(summary string, insights []string, attempt, maxAttempts int) {
 	e.mu.Lock()
@@ -384,21 +349,6 @@ func (e *EventEmitter) StepRetry(stepID string, attempt, maxAttempts int) {
 			"step_id":      stepID,
 			"attempt":      attempt,
 			"max_attempts": maxAttempts,
-		},
-	})
-}
-
-// ACExtracted emits an acceptance criteria extraction event.
-func (e *EventEmitter) ACExtracted(count int, criteria []core.EvalCriterionEvent) {
-	slog.Debug("emitter: AC extracted", "sessionID", e.sessionID, "count", count)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.emitEvent(Event{
-		SessionID: e.sessionID,
-		Type:      "ac_extracted",
-		Data: map[string]any{
-			"count":    count,
-			"criteria": criteria,
 		},
 	})
 }
@@ -557,20 +507,6 @@ func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map
 	)
 }
 
-// EvaluationError emits an evaluation-phase error event.
-func (e *EventEmitter) EvaluationError(err error) {
-	slog.Warn("emitter: evaluation error", "sessionID", e.sessionID, "error", err)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.emitEvent(Event{
-		SessionID: e.sessionID,
-		Type:      "evaluation_error",
-		Data: map[string]any{
-			"error": err.Error(),
-		},
-	})
-}
-
 // ReplanFailed logs a failed replan attempt.
 func (e *EventEmitter) ReplanFailed(err error) {
 	slog.Debug("emitter: replan failed", "sessionID", e.sessionID, "error", err)
@@ -586,35 +522,4 @@ func (e *EventEmitter) SessionTokenTotals() (inputTokens, outputTokens int) {
 	e.tokens.mu.Lock()
 	defer e.tokens.mu.Unlock()
 	return e.tokens.sessionInputTokens, e.tokens.sessionOutputTokens
-}
-
-// EvalStepStart emits an evaluation step start event for a criterion.
-func (e *EventEmitter) EvalStepStart(criterionID, description string) {
-	slog.Debug("emitter: eval step start", "sessionID", e.sessionID, "criterionID", criterionID)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.emitEvent(Event{
-		SessionID: e.sessionID,
-		Type:      "eval_step_start",
-		Data: map[string]any{
-			"criterion_id": criterionID,
-			"description":  description,
-		},
-	})
-}
-
-// EvalStepComplete emits an evaluation step completion event for a criterion.
-func (e *EventEmitter) EvalStepComplete(criterionID string, success bool, duration time.Duration) {
-	slog.Debug("emitter: eval step complete", "sessionID", e.sessionID, "criterionID", criterionID, "success", success, "duration", duration)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.emitEvent(Event{
-		SessionID: e.sessionID,
-		Type:      "eval_step_complete",
-		Data: map[string]any{
-			"criterion_id": criterionID,
-			"success":      success,
-			"duration":     duration.Milliseconds(),
-		},
-	})
 }

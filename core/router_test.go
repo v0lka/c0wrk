@@ -25,7 +25,7 @@ func TestRoute_ReturnsValidRoutingDecision(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "read the config file", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "read the config file", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestRoute_PassesToolsInPrompt(t *testing.T) {
 		{Name: "file_read", Description: "Read file contents"},
 	}
 
-	_, err := router.Route(context.Background(), "run a command", nil, availableTools, nil)
+	_, err := router.Route(context.Background(), "run a command", availableTools, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestRoute_PassesHistory(t *testing.T) {
 		{Role: "assistant", Content: "previous response 2"},
 	}
 
-	_, err := router.Route(context.Background(), "current request", nil, nil, history)
+	_, err := router.Route(context.Background(), "current request", nil, history)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestRoute_PlanExecuteMode(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "refactor the entire codebase", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "refactor the entire codebase", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestRoute_HandlesJSONInCodeBlocks(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "what is 2+2?", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "what is 2+2?", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestRoute_AppliesCompactionStrategyForCode(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "read a file", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "read a file", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestRoute_AppliesCompactionStrategyForResearch(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "research topic", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "research topic", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestRoute_AppliesCompactionStrategyForMixedHighComplexity(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "complex mixed task", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "complex mixed task", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestRoute_UsesRouterRole(t *testing.T) {
 	}
 
 	router := NewRouter(mock, 5)
-	_, _ = router.Route(context.Background(), "test request", nil, nil, nil)
+	_, _ = router.Route(context.Background(), "test request", nil, nil)
 
 	// We can verify through the mock that the role was passed
 	// Since mockLLMCaller doesn't store role, we'd need to extend it
@@ -338,7 +338,7 @@ func TestRoute_ConfidenceField(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "implement a feature", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "implement a feature", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestRoute_ConfidenceFieldDefaultsToZero(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "simple question", nil, nil, nil)
+	decision, err := router.Route(context.Background(), "simple question", nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -379,129 +379,6 @@ func TestRoute_ConfidenceFieldDefaultsToZero(t *testing.T) {
 	// Confidence should default to 0 when not provided
 	if decision.Confidence != 0 {
 		t.Errorf("expected confidence 0 (default), got %f", decision.Confidence)
-	}
-}
-
-// TestRoute_NilRawCriteriaFormatsExtractionFailed tests that Router formats the
-// "extraction failed" message when rawCriteria is nil.
-func TestRoute_NilRawCriteriaFormatsExtractionFailed(t *testing.T) {
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"react","domain":"code","complexity":3}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	// Pass nil rawCriteria (extraction failed scenario)
-	_, err := router.Route(context.Background(), "test request", nil, nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	// Check that system prompt contains the extraction failed message as the RAW-CRITERIA value
-	// The template has this string in docs + it's the actual replacement = 2 occurrences
-	systemMessage := mock.lastCall().Messages[0]
-	if systemMessage.Role != "system" {
-		t.Fatalf("expected first message to be system, got '%s'", systemMessage.Role)
-	}
-	extractFailedCount := strings.Count(systemMessage.Content, "extraction failed")
-	if extractFailedCount != 2 {
-		t.Errorf("expected 'extraction failed' to appear twice (docs + value), got %d occurrences", extractFailedCount)
-	}
-	// The trivial task message should only appear once (in docs)
-	trivialCount := strings.Count(systemMessage.Content, "task appears trivial")
-	if trivialCount != 1 {
-		t.Errorf("expected 'task appears trivial' to appear once (docs only), got %d occurrences", trivialCount)
-	}
-}
-
-// TestRoute_EmptyRawCriteriaFormatsTrivialTask tests that Router formats the
-// "task appears trivial" message when rawCriteria is an empty slice.
-func TestRoute_EmptyRawCriteriaFormatsTrivialTask(t *testing.T) {
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"direct","domain":"general","complexity":1}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	// Pass empty slice rawCriteria (trivial task scenario)
-	_, err := router.Route(context.Background(), "what is 2+2?", []RawCriterion{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	// Check that system prompt contains the trivial task message as the RAW-CRITERIA value
-	// The template has this string in docs + it's the actual replacement = 2 occurrences
-	systemMessage := mock.lastCall().Messages[0]
-	if systemMessage.Role != "system" {
-		t.Fatalf("expected first message to be system, got '%s'", systemMessage.Role)
-	}
-	trivialCount := strings.Count(systemMessage.Content, "task appears trivial")
-	if trivialCount != 2 {
-		t.Errorf("expected 'task appears trivial' to appear twice (docs + value), got %d occurrences", trivialCount)
-	}
-	// The extraction failed message should only appear once (in docs)
-	extractFailedCount := strings.Count(systemMessage.Content, "extraction failed")
-	if extractFailedCount != 1 {
-		t.Errorf("expected 'extraction failed' to appear once (docs only), got %d occurrences", extractFailedCount)
-	}
-}
-
-// TestRoute_NonEmptyRawCriteriaFormatsCriteriaList tests that Router formats
-// criteria as a list when rawCriteria has items.
-func TestRoute_NonEmptyRawCriteriaFormatsCriteriaList(t *testing.T) {
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"react","domain":"code","complexity":2}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	rawCriteria := []RawCriterion{
-		{ID: "rc_1", Description: "test criterion one", Nature: "objective", Weight: "must"},
-		{ID: "rc_2", Description: "test criterion two", Nature: "quality", Weight: "should", Implicit: true},
-	}
-
-	_, err := router.Route(context.Background(), "implement feature", rawCriteria, nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	// Check that system prompt contains the formatted criteria
-	systemMessage := mock.lastCall().Messages[0]
-	if systemMessage.Role != "system" {
-		t.Fatalf("expected first message to be system, got '%s'", systemMessage.Role)
-	}
-	if !strings.Contains(systemMessage.Content, "rc_1") {
-		t.Error("system prompt should contain criterion ID 'rc_1'")
-	}
-	if !strings.Contains(systemMessage.Content, "test criterion one") {
-		t.Error("system prompt should contain criterion description")
-	}
-	if !strings.Contains(systemMessage.Content, "[implicit]") {
-		t.Error("system prompt should contain '[implicit]' marker for rc_2")
-	}
-	// When criteria provided, the placeholder messages should only appear once (in docs)
-	extractFailedCount := strings.Count(systemMessage.Content, "extraction failed")
-	if extractFailedCount != 1 {
-		t.Errorf("expected 'extraction failed' to appear once (docs only), got %d occurrences", extractFailedCount)
-	}
-	trivialCount := strings.Count(systemMessage.Content, "task appears trivial")
-	if trivialCount != 1 {
-		t.Errorf("expected 'task appears trivial' to appear once (docs only), got %d occurrences", trivialCount)
 	}
 }
 

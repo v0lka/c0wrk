@@ -1111,8 +1111,6 @@ func TestSaveTask(t *testing.T) {
 		OriginalRequest: "build a CLI tool",
 		RoutingDecision: json.RawMessage(`{"domain":"code"}`),
 		Plan:            json.RawMessage(`{"steps":[{"id":"step_1"}]}`),
-		Criteria:        json.RawMessage(`[{"id":"ac_1"}]`),
-		EvalResult:      json.RawMessage(`{}`),
 		Reflections:     json.RawMessage(`[]`),
 		FinalOutput:     "",
 		AttemptCount:    0,
@@ -1163,8 +1161,6 @@ func TestUpdateTaskPlan(t *testing.T) {
 		OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`),
 		Plan:            json.RawMessage(`{}`),
-		Criteria:        json.RawMessage(`[]`),
-		EvalResult:      json.RawMessage(`{}`),
 		Reflections:     json.RawMessage(`[]`),
 		Status:          "in_progress",
 		CreatedAt:       time.Now(),
@@ -1186,33 +1182,6 @@ func TestUpdateTaskPlan(t *testing.T) {
 	}
 }
 
-func TestUpdateTaskCriteria(t *testing.T) {
-	store, sessionID, cleanup := setupTestStoreWithSession(t)
-	defer cleanup()
-
-	if err := store.SaveTask(TaskRecord{
-		ID: "task-criteria", SessionID: sessionID, OriginalRequest: "test",
-		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
-		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("SaveTask failed: %v", err)
-	}
-
-	newCriteria := json.RawMessage(`[{"id":"ac_1","description":"must compile"}]`)
-	if err := store.UpdateTaskCriteria("task-criteria", newCriteria); err != nil {
-		t.Fatalf("UpdateTaskCriteria failed: %v", err)
-	}
-
-	loaded, err := store.LoadTask("task-criteria")
-	if err != nil {
-		t.Fatalf("LoadTask failed: %v", err)
-	}
-	if string(loaded.Criteria) != string(newCriteria) {
-		t.Errorf("Criteria mismatch: got %s, want %s", loaded.Criteria, newCriteria)
-	}
-}
-
 func TestUpdateTaskRouting(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
@@ -1220,7 +1189,6 @@ func TestUpdateTaskRouting(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-routing", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1247,7 +1215,6 @@ func TestSaveTaskStep(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-step", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1296,7 +1263,6 @@ func TestSaveTaskStep_Multiple(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-multi-step", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1340,7 +1306,6 @@ func TestAddTaskReflection(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-reflect", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1385,14 +1350,12 @@ func TestCompleteTask(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-complete", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	evalResult := json.RawMessage(`{"all_passed":true,"passed":[{"criterion":{"id":"ac_1"}}]}`)
-	if err := store.CompleteTask("task-complete", "task done", evalResult, 2); err != nil {
+	if err := store.CompleteTask("task-complete", "task done", 2); err != nil {
 		t.Fatalf("CompleteTask failed: %v", err)
 	}
 
@@ -1412,9 +1375,6 @@ func TestCompleteTask(t *testing.T) {
 	if loaded.CompletedAt == nil {
 		t.Error("CompletedAt should not be nil")
 	}
-	if string(loaded.EvalResult) != string(evalResult) {
-		t.Errorf("EvalResult mismatch: got %s", loaded.EvalResult)
-	}
 }
 
 func TestFailTask(t *testing.T) {
@@ -1424,7 +1384,6 @@ func TestFailTask(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-fail", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1456,7 +1415,6 @@ func TestGetUnfinishedTask(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-done", SessionID: sessionID, OriginalRequest: "old",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: base,
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1466,7 +1424,6 @@ func TestGetUnfinishedTask(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-active", SessionID: sessionID, OriginalRequest: "current",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: base.Add(time.Second),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1492,7 +1449,6 @@ func TestGetUnfinishedTask_None(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-done-1", SessionID: sessionID, OriginalRequest: "done",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1515,7 +1471,6 @@ func TestTaskCascadeDelete(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-cascade", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
@@ -1572,7 +1527,6 @@ func TestLoadTaskSteps_Empty(t *testing.T) {
 	if err := store.SaveTask(TaskRecord{
 		ID: "task-empty-steps", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
-		Criteria: json.RawMessage(`[]`), EvalResult: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)

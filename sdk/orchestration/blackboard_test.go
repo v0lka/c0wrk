@@ -22,39 +22,7 @@ func TestBlackboard_OriginalRequest(t *testing.T) {
 	}
 }
 
-func TestBlackboard_Criteria_DefensiveCopy(t *testing.T) {
-	bb := NewMapBlackboard()
-
-	if got := bb.GetCriteria(); got != nil {
-		t.Fatalf("expected nil, got %v", got)
-	}
-
-	criteria := []Criterion{
-		{ID: "ac_1", Description: "must compile"},
-		{ID: "ac_2", Description: "must pass tests"},
-	}
-	bb.SetCriteria(criteria)
-
-	// Mutate original — should not affect blackboard.
-	criteria[0].Description = "MUTATED"
-
-	got := bb.GetCriteria()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 criteria, got %d", len(got))
-	}
-	if got[0].Description != "must compile" {
-		t.Fatalf("defensive copy broken on set: got %q", got[0].Description)
-	}
-
-	// Mutate returned slice — should not affect blackboard.
-	got[1].Description = "MUTATED"
-	got2 := bb.GetCriteria()
-	if got2[1].Description != "must pass tests" {
-		t.Fatalf("defensive copy broken on get: got %q", got2[1].Description)
-	}
-}
-
-func TestBlackboard_Plan_And_GetStepsByAC(t *testing.T) {
+func TestBlackboard_Plan_DefensiveCopy(t *testing.T) {
 	bb := NewMapBlackboard()
 
 	if got := bb.GetPlan(); got != nil {
@@ -63,9 +31,9 @@ func TestBlackboard_Plan_And_GetStepsByAC(t *testing.T) {
 
 	plan := &Plan{
 		Steps: []PlanStep{
-			{ID: "step_1", Description: "write code", RelevantAC: []string{"ac_1", "ac_2"}},
-			{ID: "step_2", Description: "run tests", RelevantAC: []string{"ac_2"}},
-			{ID: "step_3", Description: "deploy", RelevantAC: []string{"ac_3"}},
+			{ID: "step_1", Description: "write code"},
+			{ID: "step_2", Description: "run tests"},
+			{ID: "step_3", Description: "deploy"},
 		},
 	}
 	bb.SetPlan(plan)
@@ -75,34 +43,6 @@ func TestBlackboard_Plan_And_GetStepsByAC(t *testing.T) {
 	got := bb.GetPlan()
 	if got.Steps[0].Description != "write code" {
 		t.Fatalf("plan defensive copy broken: got %q", got.Steps[0].Description)
-	}
-
-	// Set step results.
-	bb.SetStepResult("step_1", "code written", nil, nil)
-	bb.SetStepResult("step_2", "tests passed", nil, nil)
-
-	// GetStepsByAC for ac_2 should return step_1 and step_2.
-	results := bb.GetStepsByAC("ac_2")
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results for ac_2, got %d", len(results))
-	}
-	ids := map[string]bool{}
-	for _, r := range results {
-		ids[r.StepID] = true
-	}
-	if !ids["step_1"] || !ids["step_2"] {
-		t.Fatalf("unexpected step IDs: %v", ids)
-	}
-
-	// ac_3 has no completed step result.
-	if results := bb.GetStepsByAC("ac_3"); len(results) != 0 {
-		t.Fatalf("expected 0 results for ac_3, got %d", len(results))
-	}
-
-	// No plan → nil results.
-	bb2 := NewMapBlackboard()
-	if results := bb2.GetStepsByAC("ac_1"); results != nil {
-		t.Fatalf("expected nil, got %v", results)
 	}
 }
 
@@ -246,23 +186,20 @@ func TestBlackboard_GetAllStepResults_DefensiveCopy(t *testing.T) {
 func TestBlackboard_Search_CaseInsensitive(t *testing.T) {
 	bb := NewMapBlackboard()
 
-	bb.SetCriteria([]Criterion{
-		{ID: "ac_1", Description: "Must compile without errors"},
-	})
 	bb.SetStepResult("s1", "Compiled the project successfully", nil, nil)
 	bb.AddReflection(Reflection{Summary: "The compilation step went well"})
 
-	// Case-insensitive search for "compil" should match all three.
+	// Case-insensitive search for "compil" should match both.
 	results := bb.Search("COMPIL")
-	if len(results) != 3 {
-		t.Fatalf("expected 3 matches, got %d: %v", len(results), results)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 matches, got %d: %v", len(results), results)
 	}
 
 	typeCount := map[string]int{}
 	for _, e := range results {
 		typeCount[e.Type]++
 	}
-	if typeCount["step_result"] != 1 || typeCount["criterion"] != 1 || typeCount["reflection"] != 1 {
+	if typeCount["step_result"] != 1 || typeCount["reflection"] != 1 {
 		t.Fatalf("unexpected type distribution: %v", typeCount)
 	}
 }
@@ -271,7 +208,6 @@ func TestBlackboard_Search_NoResults(t *testing.T) {
 	bb := NewMapBlackboard()
 
 	bb.SetStepResult("s1", "hello world", nil, nil)
-	bb.SetCriteria([]Criterion{{ID: "ac_1", Description: "must pass"}})
 
 	results := bb.Search("zzzznonexistentzzzz")
 	if len(results) != 0 {
@@ -295,7 +231,6 @@ func TestBlackboard_ConcurrentReadWrite(t *testing.T) {
 				stepID := "step"
 				bb.SetStepResult(stepID, "output", nil, nil)
 				bb.SetOriginalRequest("request")
-				bb.SetCriteria([]Criterion{{ID: "ac_1"}})
 				bb.SetPlan(&Plan{Steps: []PlanStep{{ID: "s1"}}})
 				bb.AddReflection(Reflection{Summary: "r"})
 				bb.SetFinalResult("done")
@@ -309,7 +244,6 @@ func TestBlackboard_ConcurrentReadWrite(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
 				_ = bb.GetOriginalRequest()
-				_ = bb.GetCriteria()
 				_ = bb.GetPlan()
 				_, _ = bb.GetStepResult("step")
 				_ = bb.GetStepSummary("step")
@@ -577,68 +511,5 @@ func TestBlackboard_SetStepFileChanges_UpdatesStepResult(t *testing.T) {
 	}
 	if r.FileChanges[0].Path != "main.go" {
 		t.Fatalf("expected main.go, got %q", r.FileChanges[0].Path)
-	}
-}
-
-func TestMapBlackboard_SetGetEvalVerdicts(t *testing.T) {
-	bb := NewMapBlackboard()
-
-	// Initially empty.
-	if got := bb.GetEvalVerdicts(); len(got) != 0 {
-		t.Fatalf("expected empty verdicts, got %d", len(got))
-	}
-
-	bb.SetEvalVerdict("ac_1", "YES", "code compiles")
-	bb.SetEvalVerdict("ac_2", "NO", "tests fail")
-
-	verdicts := bb.GetEvalVerdicts()
-	if len(verdicts) != 2 {
-		t.Fatalf("expected 2 verdicts, got %d", len(verdicts))
-	}
-	v1 := verdicts["ac_1"]
-	if v1.CriterionID != "ac_1" || v1.Verdict != "YES" || v1.Explanation != "code compiles" {
-		t.Fatalf("unexpected verdict for ac_1: %+v", v1)
-	}
-	v2 := verdicts["ac_2"]
-	if v2.CriterionID != "ac_2" || v2.Verdict != "NO" || v2.Explanation != "tests fail" {
-		t.Fatalf("unexpected verdict for ac_2: %+v", v2)
-	}
-}
-
-func TestMapBlackboard_EvalVerdictOverwrite(t *testing.T) {
-	bb := NewMapBlackboard()
-
-	bb.SetEvalVerdict("ac_1", "NO", "initially failing")
-	bb.SetEvalVerdict("ac_1", "YES", "now passing")
-
-	verdicts := bb.GetEvalVerdicts()
-	if len(verdicts) != 1 {
-		t.Fatalf("expected 1 verdict, got %d", len(verdicts))
-	}
-	v := verdicts["ac_1"]
-	if v.Verdict != "YES" || v.Explanation != "now passing" {
-		t.Fatalf("expected overwritten verdict, got %+v", v)
-	}
-}
-
-func TestMapBlackboard_GetEvalVerdicts_DefensiveCopy(t *testing.T) {
-	bb := NewMapBlackboard()
-
-	bb.SetEvalVerdict("ac_1", "YES", "ok")
-
-	// Mutate returned map — should not affect blackboard.
-	verdicts := bb.GetEvalVerdicts()
-	delete(verdicts, "ac_1")
-	verdicts["ac_99"] = EvalVerdict{CriterionID: "ac_99", Verdict: "NO"}
-
-	got := bb.GetEvalVerdicts()
-	if len(got) != 1 {
-		t.Fatalf("expected 1 verdict after external mutation, got %d", len(got))
-	}
-	if _, ok := got["ac_1"]; !ok {
-		t.Fatal("expected ac_1 to still exist")
-	}
-	if _, ok := got["ac_99"]; ok {
-		t.Fatal("ac_99 should not exist in blackboard")
 	}
 }

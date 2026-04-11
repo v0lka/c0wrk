@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
+import { useRef, useState, useLayoutEffect, useCallback } from 'react'
 
 interface UserMessageProps {
   content: string
@@ -38,11 +38,12 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
 
   const isOverflowing = isPinned && maxHeight !== undefined && maxHeight > 0 && naturalHeight > maxHeight
 
+  // Clamp expanded to false when content no longer overflows (computed during render, no effect needed)
+  const effectiveExpanded = isOverflowing ? expanded : false
+
   const handleClick = useCallback(() => {
     if (isOverflowing) {
       setExpanded(prev => !prev)
-    } else {
-      setExpanded(false)
     }
   }, [isOverflowing])
 
@@ -52,13 +53,6 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
       setExpanded(false)
     }
   }, [])
-
-  // Reset expanded state when maxHeight changes and content no longer overflows
-  useEffect(() => {
-    if (!isOverflowing && expanded) {
-      setExpanded(false)
-    }
-  }, [isOverflowing, expanded])
 
   // Non-pinned messages render as before
   if (!isPinned) {
@@ -73,12 +67,12 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
   }
 
   // Pinned message with collapsible behavior
-  const shouldClip = isOverflowing && !expanded
+  const shouldClip = isOverflowing && !effectiveExpanded
 
   return (
     <div
       className={`relative transition-all duration-200 ${
-        isOverflowing || expanded ? 'cursor-pointer' : ''
+        isOverflowing || effectiveExpanded ? 'cursor-pointer' : ''
       }`}
       style={{
         maxHeight: shouldClip ? maxHeight : undefined,
@@ -88,7 +82,7 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
       onBlur={handleBlur}
       tabIndex={isOverflowing ? 0 : undefined}
       role={isOverflowing ? 'button' : undefined}
-      aria-expanded={isOverflowing ? expanded : undefined}
+      aria-expanded={isOverflowing ? effectiveExpanded : undefined}
     >
       <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto">
         <div className="bg-muted text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5">

@@ -8,7 +8,6 @@ export const roleToType: Record<string, MessageType> = {
   tool_call: 'tool_call',
   tool_result: 'tool_result',
   routing: 'routing',
-  eval: 'eval',
   reflection: 'reflection',
   plan: 'plan',
   error: 'error',
@@ -17,11 +16,8 @@ export const roleToType: Record<string, MessageType> = {
   step_done: 'step_done',
   plan_step_start: 'plan_step_start',
   plan_step_complete: 'plan_step_complete',
-  eval_step_start: 'eval_step_start',
-  eval_step_complete: 'eval_step_complete',
   retry: 'retry',
   step_retry: 'step_retry',
-  ac_extracted: 'ac_extracted',
   subagent_launch: 'subagent_launch',
   subagent_complete: 'subagent_complete',
   tool_confirm: 'tool_confirm',
@@ -77,14 +73,6 @@ function reconstructContent(
       // Live path uses empty content
       return ''
     }
-    case 'eval_step_start': {
-      const desc = meta.description as string | undefined
-      return desc || ''
-    }
-    case 'eval_step_complete': {
-      // Live path uses empty content
-      return ''
-    }
     case 'plan': {
       // Live path uses empty content
       return ''
@@ -102,17 +90,6 @@ function reconstructContent(
       const maxAttempts = meta.max_attempts as number | undefined
       if (attempt !== undefined && maxAttempts !== undefined) {
         return `Retrying step (attempt ${attempt}/${maxAttempts})`
-      }
-      return rawContent
-    }
-    case 'ac_extracted': {
-      const criteria = meta.criteria as Array<unknown> | undefined
-      if (criteria) {
-        return `${criteria.length} acceptance criteria extracted`
-      }
-      const count = meta.count as number | undefined
-      if (count !== undefined) {
-        return `${count} acceptance criteria extracted`
       }
       return rawContent
     }
@@ -143,7 +120,7 @@ function reconstructContent(
       return rawContent
     }
     // For these types, rawContent from DB is fine as-is:
-    // 'user', 'assistant', 'eval', 'reflection', 'step_done',
+    // 'user', 'assistant', 'reflection', 'step_done',
     // 'tool_result', 'subagent_complete'
     default:
       return rawContent
@@ -197,20 +174,10 @@ function buildHistoryId(
       const stepId = meta.step_id as string | undefined
       return stepId ? `plan-step-complete-${stepId}-${timestamp}` : `history-${dbId}`
     }
-    case 'eval_step_start': {
-      const criterionId = meta.criterion_id as string | undefined
-      return criterionId ? `eval-step-start-${criterionId}-${timestamp}` : `history-${dbId}`
-    }
-    case 'eval_step_complete': {
-      const criterionId = meta.criterion_id as string | undefined
-      return criterionId ? `eval-step-complete-${criterionId}-${timestamp}` : `history-${dbId}`
-    }
     case 'retry':
       return `retry-${timestamp}`
     case 'step_retry':
       return `step-retry-${timestamp}`
-    case 'ac_extracted':
-      return `ac-extracted-${timestamp}`
     case 'subagent_launch': {
       const stepId = meta.step_id as string | undefined
       return stepId ? `subagent-${stepId}-launch` : `history-${dbId}`

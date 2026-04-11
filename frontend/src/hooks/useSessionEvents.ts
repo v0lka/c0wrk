@@ -3,7 +3,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { usePanelStore } from '@/stores/panelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
-import type { RoutingData, ToolCallData, ToolResultData, EvalData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData } from '@/lib/wails'
+import type { RoutingData, ToolCallData, ToolResultData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData } from '@/lib/wails'
 import { isSessionTokensData } from '@/lib/wails'
 import { GetSessionTokens } from '../../wailsjs/go/desktop/App'
 
@@ -36,10 +36,6 @@ function isAskUserData(data: unknown): data is AskUserData {
   return typeof data === 'object' && data !== null && 'request_id' in data && 'question' in data
 }
 
-function isEvalData(data: unknown): data is EvalData {
-  return typeof data === 'object' && data !== null && 'passed' in data && 'total' in data
-}
-
 function isPlanData(data: unknown): data is PlanData {
   return typeof data === 'object' && data !== null && 'step_count' in data
 }
@@ -50,14 +46,6 @@ function isPlanStepStartData(data: unknown): data is PlanStepStartData {
 
 function isPlanStepCompleteData(data: unknown): data is PlanStepCompleteData {
   return typeof data === 'object' && data !== null && 'step_id' in data && 'success' in data
-}
-
-function isEvalStepStartData(data: unknown): data is { criterion_id: string; description: string } {
-  return typeof data === 'object' && data !== null && 'criterion_id' in data
-}
-
-function isEvalStepCompleteData(data: unknown): data is { criterion_id: string; success: boolean; duration: number } {
-  return typeof data === 'object' && data !== null && 'criterion_id' in data && 'success' in data
 }
 
 function isAssistantChunkData(data: unknown): data is AssistantChunkData {
@@ -82,10 +70,6 @@ function isStepRetryData(data: unknown): data is { step_id: string; attempt: num
 
 function isServiceData(data: unknown): data is { content: string } {
   return typeof data === 'object' && data !== null && 'content' in data
-}
-
-function isACExtractedData(data: unknown): data is { count?: number; criteria?: Array<{ name: string; description: string }> } {
-  return typeof data === 'object' && data !== null && ('count' in data || 'criteria' in data)
 }
 
 function isSubAgentLaunchData(data: unknown): data is { step_id: string; description: string; plan_step_id?: string } {
@@ -176,7 +160,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'thought',
         content: thought.content,
-        metadata: { step_num: thought.step_num, reasoning: thought.reasoning, plan_step_id: thought.plan_step_id, criterion_id: thought.criterion_id },
+        metadata: { step_num: thought.step_num, reasoning: thought.reasoning, plan_step_id: thought.plan_step_id },
         timestamp: Date.now(),
       })
     })
@@ -195,7 +179,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'tool_call',
         content: `${toolCall.tool}(${toolCall.args})`,
-        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id, criterion_id: toolCall.criterion_id },
+        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id },
         timestamp: Date.now(),
       })
     })
@@ -215,7 +199,6 @@ export function useSessionEvents(sessionId: string | null) {
           result_preview: toolResult.result_preview,
           result_len: toolResult.result_len,
           plan_step_id: toolResult.plan_step_id,
-          criterion_id: toolResult.criterion_id,
         },
       })
     })
@@ -297,17 +280,6 @@ export function useSessionEvents(sessionId: string | null) {
       })
     })
 
-    on('evaluation', (data: unknown) => {
-      if (!mounted) return
-      if (!isEvalData(data)) return
-      if (isActiveSession()) useChatStore.getState().setActivityStatus('Evaluating results...')
-      const evalData = data
-      // Route to panelStore - update existing group instead of creating new
-      if (evalData.criteria) {
-        panelStore.updateEvalGroupStatuses(evalData.criteria)
-      }
-    })
-
     on('reflection', () => {
       if (!mounted) return
       if (isActiveSession()) useChatStore.getState().setActivityStatus('Reflecting on results...')
@@ -378,53 +350,6 @@ export function useSessionEvents(sessionId: string | null) {
         type: 'plan_step_complete',
         content: '',
         metadata: { step_id: stepData.step_id, success: stepData.success, duration: stepData.duration },
-        timestamp: Date.now(),
-      })
-    })
-
-    on('eval_step_start', (data: unknown) => {
-      if (!mounted) return
-      if (!isEvalStepStartData(data)) return
-      const evalData = data
-      if (isActiveSession()) useChatStore.getState().setActivityStatus(`Evaluating: ${evalData.description || 'criterion'}...`)
-      // Add to chat messages for eval step containers
-      useChatStore.getState().addMessage(sessionId, {
-        id: `eval-step-start-${evalData.criterion_id}-${Date.now()}`,
-        sessionId,
-        type: 'eval_step_start',
-        content: evalData.description || '',
-        metadata: { criterion_id: evalData.criterion_id, description: evalData.description },
-        timestamp: Date.now(),
-      })
-    })
-
-    on('eval_step_complete', (data: unknown) => {
-      if (!mounted) return
-      if (!isEvalStepCompleteData(data)) return
-      const evalData = data
-      // Add to chat messages for eval step lifecycle
-      useChatStore.getState().addMessage(sessionId, {
-        id: `eval-step-complete-${evalData.criterion_id}-${Date.now()}`,
-        sessionId,
-        type: 'eval_step_complete',
-        content: '',
-        metadata: { criterion_id: evalData.criterion_id, success: evalData.success, duration: evalData.duration },
-        timestamp: Date.now(),
-      })
-    })
-
-    on('evaluation_error', (data: unknown) => {
-      if (!mounted) return
-      if (!isErrorData(data)) return
-      if (isActiveSession()) {
-        useChatStore.getState().setActivityStatus(null)
-        useChatStore.getState().setThinking(false)
-      }
-      useChatStore.getState().addMessage(sessionId, {
-        id: `error-${Date.now()}`,
-        sessionId,
-        type: 'error',
-        content: data.error || 'Evaluation failed',
         timestamp: Date.now(),
       })
     })
@@ -523,7 +448,6 @@ export function useSessionEvents(sessionId: string | null) {
       if (!isRetryData(data)) return
       const retry = data
       if (isActiveSession()) useChatStore.getState().setActivityStatus(`Retrying (attempt ${retry.attempt}/${retry.max_attempts})...`)
-      panelStore.resetEvalStatuses()  // Reset criteria to pending on retry
       useChatStore.getState().addMessage(sessionId, {
         id: `retry-${Date.now()}`,
         sessionId,
@@ -567,33 +491,6 @@ export function useSessionEvents(sessionId: string | null) {
           content: service.content,
           timestamp: Date.now(),
         })
-      }
-    })
-
-    on('ac_extracted', (data: unknown) => {
-      if (!mounted) return
-      if (!isACExtractedData(data)) return
-      // Display extracted acceptance criteria as pending eval items
-      const acData = data
-      if (acData.criteria && acData.criteria.length > 0) {
-        // Map to eval format with pending status (passed: undefined means pending)
-        const pendingCriteria = acData.criteria.map(c => ({
-          name: c.name,
-          description: c.description,
-        }))
-        panelStore.addEvalGroup(pendingCriteria)
-
-        // Also add to chat timeline
-        if (isActiveSession()) {
-          useChatStore.getState().addMessage(sessionId, {
-            id: `ac-extracted-${Date.now()}`,
-            sessionId,
-            type: 'ac_extracted',
-            content: `${acData.criteria.length} acceptance criteria extracted`,
-            metadata: { count: acData.criteria.length, criteria: acData.criteria },
-            timestamp: Date.now(),
-          })
-        }
       }
     })
 

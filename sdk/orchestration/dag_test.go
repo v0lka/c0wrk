@@ -19,8 +19,8 @@ func TestFindReadySteps(t *testing.T) {
 		wantIDs   []string
 	}{
 		{
-			name: "empty plan",
-			plan: &Plan{Steps: []PlanStep{}},
+			name:      "empty plan",
+			plan:      &Plan{Steps: []PlanStep{}},
 			completed: map[string]CompletedStep{},
 			wantIDs:   []string{},
 		},
@@ -108,149 +108,6 @@ func TestFindReadySteps(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BuildCriteriaToStepsMap
-// ---------------------------------------------------------------------------
-
-func TestBuildCriteriaToStepsMap(t *testing.T) {
-	tests := []struct {
-		name    string
-		plan    *Plan
-		wantMap map[string][]string
-	}{
-		{
-			name:    "empty plan",
-			plan:    &Plan{Steps: []PlanStep{}},
-			wantMap: map[string][]string{},
-		},
-		{
-			name: "single step single AC",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1"}},
-			}},
-			wantMap: map[string][]string{"ac1": {"s1"}},
-		},
-		{
-			name: "multiple steps same AC",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1"}},
-				{ID: "s2", RelevantAC: []string{"ac1"}},
-			}},
-			wantMap: map[string][]string{"ac1": {"s1", "s2"}},
-		},
-		{
-			name: "step with multiple ACs",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1", "ac2"}},
-			}},
-			wantMap: map[string][]string{"ac1": {"s1"}, "ac2": {"s1"}},
-		},
-		{
-			name: "step with no ACs",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{}},
-			}},
-			wantMap: map[string][]string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := BuildCriteriaToStepsMap(tt.plan)
-			if len(got) != len(tt.wantMap) {
-				t.Fatalf("got %d keys, want %d", len(got), len(tt.wantMap))
-			}
-			for key, wantSteps := range tt.wantMap {
-				gotSteps := got[key]
-				if len(gotSteps) != len(wantSteps) {
-					t.Errorf("key %q: got %v, want %v", key, gotSteps, wantSteps)
-				}
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ComputeRetrySteps
-// ---------------------------------------------------------------------------
-
-func TestComputeRetrySteps(t *testing.T) {
-	tests := []struct {
-		name              string
-		plan              *Plan
-		failedCriteriaIDs []string
-		wantNil           bool
-		wantSet           map[string]bool
-	}{
-		{
-			name: "maps failed AC to owning step",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1"}},
-				{ID: "s2", RelevantAC: []string{"ac2"}},
-			}},
-			failedCriteriaIDs: []string{"ac1"},
-			wantSet:           map[string]bool{"s1": true},
-		},
-		{
-			name: "no mapping returns nil (full retry fallback)",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{}},
-			}},
-			failedCriteriaIDs: []string{"ac1"},
-			wantNil:           true,
-		},
-		{
-			name: "empty failed criteria returns nil",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1"}},
-			}},
-			failedCriteriaIDs: []string{},
-			wantNil:           true,
-		},
-		{
-			name: "multiple failed criteria same step",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1", "ac2"}},
-				{ID: "s2", RelevantAC: []string{"ac3"}},
-			}},
-			failedCriteriaIDs: []string{"ac1", "ac2"},
-			wantSet:           map[string]bool{"s1": true},
-		},
-		{
-			name: "all steps need retry",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1"}},
-				{ID: "s2", RelevantAC: []string{"ac2"}},
-			}},
-			failedCriteriaIDs: []string{"ac1", "ac2"},
-			wantSet:           map[string]bool{"s1": true, "s2": true},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ComputeRetrySteps(tt.plan, tt.failedCriteriaIDs)
-			if tt.wantNil {
-				if got != nil {
-					t.Fatalf("expected nil, got %v", got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatal("expected non-nil result")
-			}
-			if len(got) != len(tt.wantSet) {
-				t.Fatalf("got %v, want %v", got, tt.wantSet)
-			}
-			for id := range tt.wantSet {
-				if !got[id] {
-					t.Errorf("expected %q in retry set", id)
-				}
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // FindFailedStep
 // ---------------------------------------------------------------------------
 
@@ -307,11 +164,11 @@ func TestFindFailedStep(t *testing.T) {
 
 func TestBuildCarryForward(t *testing.T) {
 	tests := []struct {
-		name     string
+		name      string
 		completed []CompletedStep
-		newPlan  *Plan
-		wantNil  bool
-		wantIDs  map[string]bool
+		newPlan   *Plan
+		wantNil   bool
+		wantIDs   map[string]bool
 	}{
 		{
 			name:      "no completed steps",
@@ -363,7 +220,7 @@ func TestBuildCarryForward(t *testing.T) {
 				{StepID: "s2", Output: "done"},
 			},
 			newPlan: &Plan{Steps: []PlanStep{
-				{ID: "s1"},                             // new step, not in completed
+				{ID: "s1"},                            // new step, not in completed
 				{ID: "s2", DependsOn: []string{"s1"}}, // s2 depends on s1 which is not carried
 			}},
 			// s1 not carried → s2 depends on s1 → s2 removed
@@ -452,68 +309,6 @@ func TestBuildPlanExecutionSteps(t *testing.T) {
 			t.Errorf("expected 0 steps, got %d", len(got))
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// ValidateACMapping
-// ---------------------------------------------------------------------------
-
-func TestValidateACMapping(t *testing.T) {
-	tests := []struct {
-		name         string
-		plan         *Plan
-		criteria     []Criterion
-		wantUnmapped []string
-	}{
-		{
-			name: "all criteria mapped",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1", "ac2"}},
-			}},
-			criteria:     []Criterion{{ID: "ac1"}, {ID: "ac2"}},
-			wantUnmapped: nil,
-		},
-		{
-			name: "one criterion unmapped",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1"}},
-			}},
-			criteria:     []Criterion{{ID: "ac1"}, {ID: "ac2"}},
-			wantUnmapped: []string{"ac2"},
-		},
-		{
-			name:         "empty plan - all unmapped",
-			plan:         &Plan{Steps: []PlanStep{}},
-			criteria:     []Criterion{{ID: "ac1"}},
-			wantUnmapped: []string{"ac1"},
-		},
-		{
-			name: "empty criteria - none unmapped",
-			plan: &Plan{Steps: []PlanStep{
-				{ID: "s1", RelevantAC: []string{"ac1"}},
-			}},
-			criteria:     nil,
-			wantUnmapped: nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ValidateACMapping(tt.plan, tt.criteria)
-			if len(got) != len(tt.wantUnmapped) {
-				t.Fatalf("got %v unmapped, want %v", got, tt.wantUnmapped)
-			}
-			unmappedSet := make(map[string]bool)
-			for _, id := range got {
-				unmappedSet[id] = true
-			}
-			for _, id := range tt.wantUnmapped {
-				if !unmappedSet[id] {
-					t.Errorf("expected %q to be unmapped", id)
-				}
-			}
-		})
-	}
 }
 
 // ---------------------------------------------------------------------------

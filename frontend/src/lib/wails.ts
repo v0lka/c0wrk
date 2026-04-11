@@ -23,7 +23,7 @@ export interface SessionInfo {
 export interface ChatMessage {
   id: number
   session_id: string
-  role: string // "user" | "assistant" | "tool_call" | "tool_result" | "routing" | "eval" | "reflection" | "error"
+  role: string // "user" | "assistant" | "tool_call" | "tool_result" | "routing" | "reflection" | "error"
   content: string
   metadata: string // JSON
   created_at: string
@@ -41,7 +41,6 @@ export interface ToolCallData {
   args: string
   parsed_args?: Record<string, unknown>  // pre-parsed by backend
   plan_step_id?: string
-  criterion_id?: string
 }
 
 export interface ToolResultData {
@@ -50,7 +49,6 @@ export interface ToolResultData {
   result: string
   result_preview?: string // legacy backward compat
   plan_step_id?: string
-  criterion_id?: string
 }
 
 export interface ThoughtData {
@@ -58,7 +56,6 @@ export interface ThoughtData {
   content: string
   reasoning?: string
   plan_step_id?: string
-  criterion_id?: string
 }
 
 export interface StepData {
@@ -81,20 +78,6 @@ export interface PlanData {
   total_count?: number
 }
 
-export interface EvalCriterionData {
-  name: string
-  description: string
-  passed: boolean
-  status?: 'pass' | 'fail' | 'unclear'
-  diagnostic?: string
-}
-
-export interface EvalData {
-  passed: number
-  total: number
-  criteria?: EvalCriterionData[]
-}
-
 export interface ReflectionData {
   summary: string
   insights?: string[]
@@ -112,10 +95,6 @@ export interface StepRetryData {
   step_id: string
   attempt: number
   max_attempts: number
-}
-
-export interface ACExtractedData {
-  count: number
 }
 
 export interface SubAgentData {

@@ -49,7 +49,6 @@ When previous reflections are provided:
 Respond ONLY with a JSON object:
 {
 "summary": "Brief summary of what happened",
-"failed_criteria": ["ac_1", "ac_2"],
 "hypotheses": ["Possible reason 1", "Possible reason 2"],
 "suggested_action": "retry|replan|abort",
 "reasoning": "Why this action is suggested",

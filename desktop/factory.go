@@ -62,35 +62,20 @@ func (a *App) buildRouter(cfg *config.Config) (*llm.Router, *llm.ModelRegistry, 
 	return llmRouter, modelRegistry, nil
 }
 
-// buildCoreAgents creates the Phase 2 components (router, acExtractor, planner, evaluator, reflector)
+// buildCoreAgents creates the Phase 2 components (router, planner, reflector)
 // from the given LLM router and config. Returns nil values if llmRouter is nil.
 // When emitter is non-nil, each component receives a token-tracking wrapper so
 // that service-level LLM calls are accumulated in session totals.
-func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistry, cfg *config.Config, emitter core.Emitter, logger *slog.Logger) (*core.Router, *core.ACExtractor, *core.Planner, *core.Evaluator, *core.Reflector) {
+func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistry, cfg *config.Config, emitter core.Emitter, logger *slog.Logger) (*core.Router, *core.Planner, *core.Reflector) {
 	if llmRouter == nil {
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil
 	}
 	caller := orchestration.NewTokenTrackingCaller(llmRouter, emitter)
 	caller = core.NewLoggingCaller(caller, cfg.LLM.ActiveProvider, logger)
 	router := core.NewRouter(caller, cfg.Router.HistoryWindow)
-	acExtractor := core.NewACExtractor(caller)
 	planner := core.NewPlanner(caller)
-	evaluatorCounter, _ := llm.NewTokenCounter("approximate") // "approximate" always succeeds
-	evaluator := core.NewEvaluator(
-		registry,                              // ToolExecutor (for programmatic/bash_exec)
-		caller,                                // LLMCaller
-		registry.ToolRegistry,                 // *sdktools.ToolRegistry (for tool filtering)
-		evaluatorCounter,                      // llm.TokenCounter
-		a.buildContextFactory(llmRouter, cfg), // ContextManagerFactory
-		logger,                                // *slog.Logger
-		emitter,                               // Emitter
-		core.ToolResultBudget{
-			HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
-			MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
-		},
-	)
 	reflector := core.NewReflector(caller)
-	return router, acExtractor, planner, evaluator, reflector
+	return router, planner, reflector
 }
 
 // buildOrchestratorConfig creates an OrchestratorConfig from the given config.

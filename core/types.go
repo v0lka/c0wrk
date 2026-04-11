@@ -57,31 +57,19 @@ var NewSharedWorkspace = agent.NewSharedWorkspace
 // CompletedStep — result of an executed plan step (AD 4.7).
 type CompletedStep = orchestration.CompletedStep
 
-// EvalResult — result of Evaluator checking AC (AD 4.5).
-type EvalResult = orchestration.EvalResult
-
-// EvalDetail — detail for a single AC evaluation (AD 4.5).
-type EvalDetail = orchestration.EvalDetail
-
-// IntentVerification holds the result of Tier 2 intent-based verification.
-type IntentVerification = orchestration.VerificationResult
-
 // PlanStepEvent represents a single step in a plan for event emission.
 type PlanStepEvent = orchestration.PlanStepEvent
-
-// EvalCriterionEvent represents a single evaluation criterion for event emission.
-type EvalCriterionEvent = orchestration.EvalCriterionEvent
 
 // ---------------------------------------------------------------------------
 // ContextManager — extends sdk/agent.ContextManager with c0wrk-specific SetTask
 // ---------------------------------------------------------------------------
 
 // ContextManager is the interface Executor and Orchestrator need for context window management.
-// It extends sdk/agent.ContextManager with SetTask for c0wrk-specific task/criteria support.
+// It extends sdk/agent.ContextManager with SetTask for c0wrk-specific task support.
 type ContextManager interface {
 	agent.ContextManager
-	// SetTask sets the user's task and acceptance criteria into the context window.
-	SetTask(task string, criteria []AcceptanceCriterion)
+	// SetTask sets the user's task into the context window.
+	SetTask(task string)
 }
 
 // ---------------------------------------------------------------------------
@@ -99,47 +87,24 @@ type Emitter interface {
 	PlanGenerated(stepCount int, steps []PlanStepEvent)
 	PlanStepStart(stepID string, description string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration)
-	Evaluation(passed, total int, criteria []EvalCriterionEvent)
 	Reflection(summary string, insights []string, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
 	StepRetry(stepID string, attempt, maxAttempts int)
-	ACExtracted(count int, criteria []EvalCriterionEvent)
 	// Service emits a general service message without metadata.
 	Service(content string)
 	// ServiceWithMeta emits a service message with metadata for frontend filtering.
 	// The meta map can contain arbitrary key-value pairs, e.g., {"phase": "orchestration"}.
 	ServiceWithMeta(content string, meta map[string]any)
-	// EvaluationError reports an evaluation-phase error.
-	EvaluationError(err error)
 	// ReplanFailed reports a failed replan attempt.
 	ReplanFailed(err error)
 	// FileRollbackError reports a file rollback failure for a plan step.
 	FileRollbackError(stepID string, err error)
-	// EvalStepStart emits an evaluation step start event for a criterion.
-	EvalStepStart(criterionID string, description string)
-	// EvalStepComplete emits an evaluation step completion event for a criterion.
-	EvalStepComplete(criterionID string, success bool, duration time.Duration)
 }
 
 // PlanStepScopable is an optional interface that Emitter implementations
 // can implement to support scoping events to a plan step.
 type PlanStepScopable interface {
 	WithPlanStepID(id string) Emitter
-}
-
-// CriterionScopable is an optional interface that Emitter implementations
-// can implement to support scoping events to an evaluation criterion.
-type CriterionScopable interface {
-	WithCriterionID(id string) Emitter
-}
-
-// scopeEmitterToStep returns a scoped emitter if the emitter supports it,
-// otherwise returns the original emitter unchanged.
-func scopeEmitterToStep(emitter Emitter, stepID string) Emitter {
-	if s, ok := emitter.(PlanStepScopable); ok {
-		return s.WithPlanStepID(stepID)
-	}
-	return emitter
 }
 
 // noopEmitter is a no-op implementation of Emitter.
@@ -155,18 +120,13 @@ func (n *noopEmitter) Routing(_, _, _ string)                             {}
 func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)             {}
 func (n *noopEmitter) PlanStepStart(_, _ string)                          {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
-func (n *noopEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
 func (n *noopEmitter) Reflection(_ string, _ []string, _, _ int)          {}
 func (n *noopEmitter) Retry(_, _ int)                                     {}
 func (n *noopEmitter) StepRetry(_ string, _, _ int)                       {}
-func (n *noopEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (n *noopEmitter) Service(_ string)                                   {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
-func (n *noopEmitter) EvaluationError(_ error)                            {}
 func (n *noopEmitter) ReplanFailed(_ error)                               {}
 func (n *noopEmitter) FileRollbackError(_ string, _ error)                {}
-func (n *noopEmitter) EvalStepStart(_, _ string)                   {}
-func (n *noopEmitter) EvalStepComplete(_ string, _ bool, _ time.Duration) {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -187,9 +147,6 @@ func (a *emitterEventsAdapter) OnStepStarted(id, desc string) {
 func (a *emitterEventsAdapter) OnStepCompleted(id string, ok bool, d time.Duration) {
 	a.PlanStepComplete(id, ok, d)
 }
-func (a *emitterEventsAdapter) OnEvaluated(p, t int, c []EvalCriterionEvent) {
-	a.Evaluation(p, t, c)
-}
 func (a *emitterEventsAdapter) OnReflected(s string, insights []string, attempt, maxAttempts int) {
 	a.Reflection(s, insights, attempt, maxAttempts)
 }
@@ -199,18 +156,11 @@ func (a *emitterEventsAdapter) OnRetry(attempt, maxAttempts int) {
 func (a *emitterEventsAdapter) OnStepRetry(stepID string, attempt, maxAttempts int) {
 	a.StepRetry(stepID, attempt, maxAttempts)
 }
-func (a *emitterEventsAdapter) OnCriteriaExtracted(n int, c []EvalCriterionEvent) {
-	a.ACExtracted(n, c)
-}
 func (a *emitterEventsAdapter) OnService(content string) {
 	a.Service(content)
 }
 func (a *emitterEventsAdapter) OnServiceMeta(content string, meta map[string]any) {
 	a.ServiceWithMeta(content, meta)
-}
-func (a *emitterEventsAdapter) OnEvaluationError(err error) {
-	slog.Debug("event adapter: evaluation error", "error", err)
-	a.EvaluationError(err)
 }
 func (a *emitterEventsAdapter) OnReplanFailed(err error) {
 	slog.Debug("event adapter: replan failed", "error", err)
@@ -243,20 +193,6 @@ type RoutingDecision struct {
 	Confidence         float64  `json:"confidence"` // 0.0-1.0, routing confidence
 }
 
-// AcceptanceCriterion — criterion for evaluating task completion (AD 4.2).
-// Type alias for sdk/orchestration.Criterion.
-type AcceptanceCriterion = orchestration.Criterion
-
-// RawCriterion — domain-agnostic criterion extracted before routing (Phase 1 of two-phase AC).
-type RawCriterion struct {
-	ID          string `json:"id"`          // "rc_1", "rc_2"
-	Description string `json:"description"` // What must be satisfied
-	Nature      string `json:"nature"`      // "objective" | "subjective"
-	Implicit    bool   `json:"implicit"`    // Inferred from context, not explicitly stated
-	Weight      string `json:"weight"`      // "must" | "should" | "nice_to_have"
-	StepHint    string `json:"step_hint"`   // Optional hint for planner
-}
-
 // Plan — DAG of execution steps (AD 4.3).
 // Type alias for sdk/orchestration.Plan.
 type Plan = orchestration.Plan
@@ -274,9 +210,8 @@ type ExecutorConfig struct {
 
 // TaskDefinition — defines a task for the Executor.
 type TaskDefinition struct {
-	Task     string                 `json:"task"`
-	Criteria []AcceptanceCriterion  `json:"criteria"`
-	Tools    []tools.ToolDescriptor `json:"tools"`
+	Task  string                 `json:"task"`
+	Tools []tools.ToolDescriptor `json:"tools"`
 }
 
 // Reflection — result of Reflector analysis (AD 4.6).
@@ -299,12 +234,11 @@ func DefaultAgentProfile() AgentProfile {
 }
 
 // HandleResult — result of Orchestrator.Handle (Phase 2).
-// Provides rich output for CLI display including routing, plan, and evaluation info.
+// Provides rich output for CLI display including routing and plan info.
 type HandleResult struct {
 	Output          string           `json:"output"`
 	RoutingDecision *RoutingDecision `json:"routing_decision"`
 	Plan            *Plan            `json:"plan,omitempty"`
-	EvalResult      *EvalResult      `json:"eval_result,omitempty"`
 	Blackboard      Blackboard       `json:"-"` // shared state for downstream consumers (not serialized)
 	// Retry-loop fields (Phase 3)
 	AttemptCount int          `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)

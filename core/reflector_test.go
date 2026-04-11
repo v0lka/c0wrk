@@ -2,32 +2,32 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 )
 
-func TestReflect_ProducesReflection(t *testing.T) {
-	// Setup mock LLM that returns valid JSON reflection
+// TestReflector_Reflect_Success tests successful reflection generation.
+func TestReflector_Reflect_Success(t *testing.T) {
 	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role: "assistant",
-					Content: `{
-						"summary": "Task failed due to missing file",
-						"failed_criteria": ["ac_1", "ac_2"],
-						"hypotheses": ["File was not created", "Wrong path specified"],
+					Content: `{"summary": "Test failed due to syntax error", 
+						"hypotheses": ["Missing semicolon"], 
 						"suggested_action": "retry",
-						"reasoning": "The file operation can be retried with correct path",
-						"failure_analysis": "The step attempted to read a file that does not exist",
-						"root_cause": "Incorrect file path in the action",
-						"action_plan": "Verify file path before reading"
-					}`,
+						"reasoning": "The syntax error is fixable",
+						"failure_analysis": "Parse error on line 5",
+						"root_cause": "Syntax error",
+						"action_plan": "Add missing semicolon"}`,
 				},
 				StopReason: "end_turn",
-			},
+			}, nil
 		},
 	}
 
@@ -35,451 +35,296 @@ func TestReflect_ProducesReflection(t *testing.T) {
 
 	trajectory := []Step{
 		{
-			Thought:     "I need to read the config file",
-			Action:      llm.ToolCall{Name: "read_file", Input: []byte(`{"path": "/tmp/config.json"}`)},
-			Observation: "Error: file not found",
+			Thought:     "I need to run the tests",
+			Action:      llm.ToolCall{ID: "call_1", Name: "bash_exec", Input: json.RawMessage(`{"command": "go test"}`)},
+			Observation: "FAIL: syntax error",
 		},
 	}
 
-	evalResult := &EvalResult{
-		Failed: []EvalDetail{
-			{Criterion: AcceptanceCriterion{ID: "ac_1", Description: "Config loaded"}, Diagnostic: "File not found"},
-			{Criterion: AcceptanceCriterion{ID: "ac_2", Description: "App runs"}, Diagnostic: "Dependency failure"},
+	plan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "Run tests"},
 		},
-		AllPassed: false,
 	}
 
-	reflection, err := reflector.Reflect(context.Background(), trajectory, evalResult, nil, nil)
+	reflection, err := reflector.Reflect(context.Background(), trajectory, plan, nil)
 	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
+		t.Fatalf("Reflect failed: %v", err)
 	}
 
-	// Verify all fields are populated
-	if reflection.Summary != "Task failed due to missing file" {
-		t.Errorf("Summary = %q, want %q", reflection.Summary, "Task failed due to missing file")
+	if reflection == nil {
+		t.Fatal("expected non-nil reflection")
 	}
-	if len(reflection.FailedCriteria) != 2 {
-		t.Errorf("FailedCriteria len = %d, want 2", len(reflection.FailedCriteria))
+
+	if reflection.Summary == "" {
+		t.Error("expected non-empty summary")
 	}
-	if len(reflection.Hypotheses) != 2 {
-		t.Errorf("Hypotheses len = %d, want 2", len(reflection.Hypotheses))
-	}
+
 	if reflection.SuggestedAction != "retry" {
-		t.Errorf("SuggestedAction = %q, want %q", reflection.SuggestedAction, "retry")
-	}
-	if reflection.Reasoning == "" {
-		t.Error("Reasoning should not be empty")
-	}
-	if reflection.FailureAnalysis == "" {
-		t.Error("FailureAnalysis should not be empty")
-	}
-	if reflection.RootCause == "" {
-		t.Error("RootCause should not be empty")
-	}
-	if reflection.ActionPlan == "" {
-		t.Error("ActionPlan should not be empty")
-	}
-	if reflection.Timestamp.IsZero() {
-		t.Error("Timestamp should be set")
+		t.Errorf("expected suggested_action='retry', got '%s'", reflection.SuggestedAction)
 	}
 }
 
-func TestReflect_IncludesTrajectoryInPrompt(t *testing.T) {
+// TestReflector_Reflect_DefaultAction tests that empty suggested_action defaults to retry.
+func TestReflector_Reflect_DefaultAction(t *testing.T) {
 	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
 				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"summary": "test", "failed_criteria": [], "hypotheses": [], "suggested_action": "retry", "reasoning": "test", "failure_analysis": "test", "root_cause": "test", "action_plan": "test"}`,
+					Role: "assistant",
+					Content: `{"summary": "Analysis complete", 
+						"hypotheses": [], 
+						"reasoning": "All good"}`,
 				},
 				StopReason: "end_turn",
-			},
+			}, nil
 		},
 	}
 
 	reflector := NewReflector(mockLLM)
 
-	trajectory := []Step{
-		{
-			Thought:     "First I need to analyze the code",
-			Action:      llm.ToolCall{Name: "read_file", Input: []byte(`{"path": "/src/main.go"}`)},
-			Observation: "package main\n\nfunc main() {}",
-		},
-		{
-			Thought:     "Now I will modify the code",
-			Action:      llm.ToolCall{Name: "write_file", Input: []byte(`{"path": "/src/main.go", "content": "updated"}`)},
-			Observation: "File written successfully",
-		},
-	}
-
-	_, err := reflector.Reflect(context.Background(), trajectory, &EvalResult{}, nil, nil)
+	reflection, err := reflector.Reflect(context.Background(), nil, nil, nil)
 	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
+		t.Fatalf("Reflect failed: %v", err)
 	}
 
-	// Check that trajectory appears in the prompt
-	lastCall := mockLLM.lastCall()
-	if len(lastCall.Messages) < 2 {
-		t.Fatal("Expected at least 2 messages (system + user)")
-	}
-
-	userMessage := lastCall.Messages[1].Content
-
-	// Verify trajectory steps appear in prompt
-	if !strings.Contains(userMessage, "First I need to analyze the code") {
-		t.Error("User message should contain first thought")
-	}
-	if !strings.Contains(userMessage, "Now I will modify the code") {
-		t.Error("User message should contain second thought")
-	}
-	if !strings.Contains(userMessage, "read_file") {
-		t.Error("User message should contain action names")
-	}
-	if !strings.Contains(userMessage, "Execution Trajectory") {
-		t.Error("User message should contain trajectory section header")
+	if reflection.SuggestedAction != "retry" {
+		t.Errorf("expected default suggested_action='retry', got '%s'", reflection.SuggestedAction)
 	}
 }
 
-func TestReflect_IncludesEvalResultInPrompt(t *testing.T) {
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"summary": "test", "failed_criteria": ["ac_1"], "hypotheses": [], "suggested_action": "retry", "reasoning": "test", "failure_analysis": "test", "root_cause": "test", "action_plan": "test"}`,
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	evalResult := &EvalResult{
-		Passed: []EvalDetail{
-			{Criterion: AcceptanceCriterion{ID: "ac_passed", Description: "Build succeeds"}, Diagnostic: "Exit code 0"},
-		},
-		Failed: []EvalDetail{
-			{Criterion: AcceptanceCriterion{ID: "ac_failed", Description: "Tests pass"}, Diagnostic: "3 tests failed"},
-		},
-		AllPassed: false,
-	}
-
-	_, err := reflector.Reflect(context.Background(), []Step{}, evalResult, nil, nil)
-	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
-	}
-
-	lastCall := mockLLM.lastCall()
-	userMessage := lastCall.Messages[1].Content
-
-	// Verify eval result appears in prompt
-	if !strings.Contains(userMessage, "Failed Criteria") {
-		t.Error("User message should contain 'Failed Criteria' section")
-	}
-	if !strings.Contains(userMessage, "ac_failed") {
-		t.Error("User message should contain failed criterion ID")
-	}
-	if !strings.Contains(userMessage, "Tests pass") {
-		t.Error("User message should contain failed criterion description")
-	}
-	if !strings.Contains(userMessage, "3 tests failed") {
-		t.Error("User message should contain diagnostic")
-	}
-	if !strings.Contains(userMessage, "Passed Criteria") {
-		t.Error("User message should contain 'Passed Criteria' section")
-	}
-	if !strings.Contains(userMessage, "ac_passed") {
-		t.Error("User message should contain passed criterion ID")
-	}
-}
-
-func TestReflect_IncludesPreviousReflections(t *testing.T) {
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"summary": "test", "failed_criteria": [], "hypotheses": [], "suggested_action": "abort", "reasoning": "test", "failure_analysis": "test", "root_cause": "test", "action_plan": "test"}`,
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	prevReflections := []Reflection{
+// TestReflector_Reflect_ValidActions tests valid suggested actions.
+func TestReflector_Reflect_ValidActions(t *testing.T) {
+	tests := []struct {
+		name           string
+		response       string
+		expectedAction string
+	}{
 		{
-			Summary:         "Previous attempt failed due to permissions",
-			RootCause:       "Insufficient file permissions",
-			ActionPlan:      "Request elevated permissions",
+			name:           "retry action",
+			response:       `{"summary": "Test", "suggested_action": "retry"}`,
+			expectedAction: "retry",
+		},
+		{
+			name:           "replan action",
+			response:       `{"summary": "Test", "suggested_action": "replan"}`,
+			expectedAction: "replan",
+		},
+		{
+			name:           "abort action",
+			response:       `{"summary": "Test", "suggested_action": "abort"}`,
+			expectedAction: "abort",
+		},
+		{
+			name:           "unknown action preserved",
+			response:       `{"summary": "Test", "suggested_action": "custom"}`,
+			expectedAction: "custom",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockLLM := &mockLLMCaller{
+				callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+					return &llm.ChatResponse{
+						Message:    llm.Message{Role: "assistant", Content: tt.response},
+						StopReason: "end_turn",
+					}, nil
+				},
+			}
+
+			reflector := NewReflector(mockLLM)
+			reflection, err := reflector.Reflect(context.Background(), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Reflect failed: %v", err)
+			}
+
+			if reflection.SuggestedAction != tt.expectedAction {
+				t.Errorf("expected suggested_action='%s', got '%s'", tt.expectedAction, reflection.SuggestedAction)
+			}
+		})
+	}
+}
+
+// TestReflector_Reflect_LLMError tests error handling when LLM call fails.
+func TestReflector_Reflect_LLMError(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return nil, errors.New("llm connection failed")
+		},
+	}
+
+	reflector := NewReflector(mockLLM)
+
+	_, err := reflector.Reflect(context.Background(), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error when LLM fails")
+	}
+
+	if !errors.Is(err, context.Canceled) && err.Error() != "reflector LLM call failed: llm connection failed" {
+		// Error should wrap the LLM error
+		if err.Error() != "reflector LLM call failed: llm connection failed" {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	}
+}
+
+// TestReflector_Reflect_InvalidJSON tests error handling for invalid JSON response.
+func TestReflector_Reflect_InvalidJSON(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: "not valid json"},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reflector := NewReflector(mockLLM)
+
+	_, err := reflector.Reflect(context.Background(), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON response")
+	}
+}
+
+// TestReflector_Reflect_WithPreviousReflections tests reflection with history.
+func TestReflector_Reflect_WithPreviousReflections(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Verify that previous reflections are included in the prompt
+			if len(req.Messages) < 2 {
+				t.Error("expected at least 2 messages (system + user)")
+			}
+			userMsg := req.Messages[len(req.Messages)-1]
+			if userMsg.Role != "user" {
+				t.Error("expected last message to be user message")
+			}
+			// Check that "Previous Reflections" section is included
+			if !strings.Contains(userMsg.Content, "Previous Reflections") {
+				t.Error("expected user message to contain 'Previous Reflections' section")
+			}
+
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"summary": "Analysis", "suggested_action": "retry"}`},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reflector := NewReflector(mockLLM)
+
+	prevReflections := []orchestration.Reflection{
+		{
+			Summary:         "First attempt failed",
 			SuggestedAction: "retry",
+			RootCause:       "Network error",
 		},
+	}
+
+	_, err := reflector.Reflect(context.Background(), nil, nil, prevReflections)
+	if err != nil {
+		t.Fatalf("Reflect failed: %v", err)
+	}
+}
+
+// TestReflector_Reflect_WithPlan tests reflection includes plan information.
+func TestReflector_Reflect_WithPlan(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Verify that plan is included in the prompt
+			userMsg := req.Messages[len(req.Messages)-1]
+			if !strings.Contains(userMsg.Content, "## Plan") {
+				t.Error("expected user message to contain '## Plan' section")
+			}
+			if !strings.Contains(userMsg.Content, "step_1") {
+				t.Error("expected user message to contain step ID")
+			}
+
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"summary": "Analysis", "suggested_action": "retry"}`},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reflector := NewReflector(mockLLM)
+
+	plan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "Run tests", DependsOn: []string{}},
+			{ID: "step_2", Description: "Deploy", DependsOn: []string{"step_1"}},
+		},
+	}
+
+	_, err := reflector.Reflect(context.Background(), nil, plan, nil)
+	if err != nil {
+		t.Fatalf("Reflect failed: %v", err)
+	}
+}
+
+// TestReflector_Reflect_WithTrajectory tests reflection includes trajectory.
+func TestReflector_Reflect_WithTrajectory(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Verify that trajectory is included in the prompt
+			userMsg := req.Messages[len(req.Messages)-1]
+			if !strings.Contains(userMsg.Content, "## Execution Trajectory") {
+				t.Error("expected user message to contain '## Execution Trajectory' section")
+			}
+			if !strings.Contains(userMsg.Content, "Step 1") {
+				t.Error("expected user message to contain step information")
+			}
+
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"summary": "Analysis", "suggested_action": "retry"}`},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reflector := NewReflector(mockLLM)
+
+	trajectory := []Step{
 		{
-			Summary:         "Second attempt also failed",
-			RootCause:       "Directory does not exist",
-			ActionPlan:      "Create directory first",
-			SuggestedAction: "replan",
+			Thought:     "I need to test the code",
+			Action:      llm.ToolCall{ID: "call_1", Name: "bash_exec", Input: json.RawMessage(`{"command": "go test"}`)},
+			Observation: "PASS",
 		},
 	}
 
-	_, err := reflector.Reflect(context.Background(), []Step{}, &EvalResult{}, nil, prevReflections)
+	_, err := reflector.Reflect(context.Background(), trajectory, nil, nil)
 	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
-	}
-
-	lastCall := mockLLM.lastCall()
-	userMessage := lastCall.Messages[1].Content
-
-	// Verify previous reflections appear in prompt
-	if !strings.Contains(userMessage, "Previous Reflections") {
-		t.Error("User message should contain 'Previous Reflections' section")
-	}
-	if !strings.Contains(userMessage, "Previous attempt failed due to permissions") {
-		t.Error("User message should contain first reflection summary")
-	}
-	if !strings.Contains(userMessage, "Insufficient file permissions") {
-		t.Error("User message should contain first reflection root cause")
-	}
-	if !strings.Contains(userMessage, "Second attempt also failed") {
-		t.Error("User message should contain second reflection summary")
-	}
-	if !strings.Contains(userMessage, "avoid repeating the same mistakes") {
-		t.Error("User message should contain instruction about learning from previous reflections")
+		t.Fatalf("Reflect failed: %v", err)
 	}
 }
 
-func TestReflect_SuggestsRetryOnPartialFailure(t *testing.T) {
-	// LLM response suggesting retry for partial failure
+// TestReflector_Reflect_EmptyTrajectory tests reflection with no trajectory.
+func TestReflector_Reflect_EmptyTrajectory(t *testing.T) {
 	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"summary": "Partial success", "failed_criteria": ["ac_2"], "hypotheses": ["Minor issue"], "suggested_action": "retry", "reasoning": "Some criteria passed, failure seems recoverable", "failure_analysis": "One test failed", "root_cause": "Edge case not handled", "action_plan": "Fix edge case"}`,
-				},
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Verify that empty trajectory is handled
+			userMsg := req.Messages[len(req.Messages)-1]
+			if !strings.Contains(userMsg.Content, "No steps executed") {
+				t.Error("expected user message to indicate no steps executed")
+			}
+
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"summary": "Analysis", "suggested_action": "retry"}`},
 				StopReason: "end_turn",
-			},
+			}, nil
 		},
 	}
 
 	reflector := NewReflector(mockLLM)
 
-	evalResult := &EvalResult{
-		Passed: []EvalDetail{
-			{Criterion: AcceptanceCriterion{ID: "ac_1", Description: "Build passes"}},
-		},
-		Failed: []EvalDetail{
-			{Criterion: AcceptanceCriterion{ID: "ac_2", Description: "Tests pass"}},
-		},
-		AllPassed: false,
-	}
-
-	reflection, err := reflector.Reflect(context.Background(), []Step{}, evalResult, nil, nil)
+	_, err := reflector.Reflect(context.Background(), []Step{}, nil, nil)
 	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
-	}
-
-	if reflection.SuggestedAction != "retry" {
-		t.Errorf("SuggestedAction = %q, want %q for partial failure", reflection.SuggestedAction, "retry")
+		t.Fatalf("Reflect failed: %v", err)
 	}
 }
 
-func TestReflect_SuggestsAbortOnFullFailure(t *testing.T) {
-	// LLM response suggesting abort for total failure
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"summary": "Complete failure", "failed_criteria": ["ac_1", "ac_2", "ac_3"], "hypotheses": ["Task is impossible"], "suggested_action": "abort", "reasoning": "All criteria failed, no progress made after multiple attempts", "failure_analysis": "Every step failed", "root_cause": "Missing required dependencies", "action_plan": "Cannot proceed without external intervention"}`,
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	evalResult := &EvalResult{
-		Failed: []EvalDetail{
-			{Criterion: AcceptanceCriterion{ID: "ac_1", Description: "Build passes"}, Diagnostic: "Compilation error"},
-			{Criterion: AcceptanceCriterion{ID: "ac_2", Description: "Tests pass"}, Diagnostic: "No tests run"},
-			{Criterion: AcceptanceCriterion{ID: "ac_3", Description: "Lint passes"}, Diagnostic: "Linter crashed"},
-		},
-		AllPassed: false,
-	}
-
-	// Include previous reflections to indicate repeated failure
-	prevReflections := []Reflection{
-		{Summary: "First attempt failed", SuggestedAction: "retry"},
-		{Summary: "Second attempt failed", SuggestedAction: "retry"},
-	}
-
-	reflection, err := reflector.Reflect(context.Background(), []Step{}, evalResult, nil, prevReflections)
-	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
-	}
-
-	if reflection.SuggestedAction != "abort" {
-		t.Errorf("SuggestedAction = %q, want %q for full failure", reflection.SuggestedAction, "abort")
-	}
-}
-
-func TestReflect_IncludesPlanInPrompt(t *testing.T) {
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"summary": "test", "failed_criteria": [], "hypotheses": [], "suggested_action": "replan", "reasoning": "test", "failure_analysis": "test", "root_cause": "test", "action_plan": "test"}`,
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	plan := &Plan{
-		Steps: []PlanStep{
-			{ID: "step_1", Description: "Read the source file", DependsOn: []string{}, RelevantAC: []string{"ac_1"}},
-			{ID: "step_2", Description: "Modify the code", DependsOn: []string{"step_1"}, RelevantAC: []string{"ac_2"}},
-		},
-	}
-
-	_, err := reflector.Reflect(context.Background(), []Step{}, &EvalResult{}, plan, nil)
-	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
-	}
-
-	lastCall := mockLLM.lastCall()
-	userMessage := lastCall.Messages[1].Content
-
-	// Verify plan appears in prompt
-	if !strings.Contains(userMessage, "## Plan") {
-		t.Error("User message should contain '## Plan' section")
-	}
-	if !strings.Contains(userMessage, "step_1") {
-		t.Error("User message should contain step_1")
-	}
-	if !strings.Contains(userMessage, "Read the source file") {
-		t.Error("User message should contain step description")
-	}
-	if !strings.Contains(userMessage, "step_2") {
-		t.Error("User message should contain step_2")
-	}
-}
-
-func TestReflect_HandlesMarkdownCodeBlock(t *testing.T) {
-	// LLM returns JSON wrapped in markdown code block
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role: "assistant",
-					Content: "```json\n" + `{
-						"summary": "Wrapped in markdown",
-						"failed_criteria": [],
-						"hypotheses": [],
-						"suggested_action": "retry",
-						"reasoning": "test",
-						"failure_analysis": "test",
-						"root_cause": "test",
-						"action_plan": "test"
-					}` + "\n```",
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	reflection, err := reflector.Reflect(context.Background(), []Step{}, &EvalResult{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Reflect() error = %v, should handle markdown code blocks", err)
-	}
-
-	if reflection.Summary != "Wrapped in markdown" {
-		t.Errorf("Summary = %q, want %q", reflection.Summary, "Wrapped in markdown")
-	}
-}
-
-func TestReflect_DefaultsToRetryWhenActionMissing(t *testing.T) {
-	// LLM returns JSON without suggested_action
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role: "assistant",
-					Content: `{
-						"summary": "test",
-						"failed_criteria": [],
-						"hypotheses": [],
-						"reasoning": "test",
-						"failure_analysis": "test",
-						"root_cause": "test",
-						"action_plan": "test"
-					}`,
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	reflection, err := reflector.Reflect(context.Background(), []Step{}, &EvalResult{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Reflect() error = %v", err)
-	}
-
-	// Should default to "retry" when suggested_action is missing
-	if reflection.SuggestedAction != "retry" {
-		t.Errorf("SuggestedAction = %q, want %q (default)", reflection.SuggestedAction, "retry")
-	}
-}
-
-func TestReflect_LLMError(t *testing.T) {
-	mockLLM := &mockLLMCaller{
-		err: context.DeadlineExceeded,
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	_, err := reflector.Reflect(context.Background(), []Step{}, &EvalResult{}, nil, nil)
-	if err == nil {
-		t.Fatal("Reflect() should return error when LLM fails")
-	}
-
-	if !strings.Contains(err.Error(), "reflector LLM call failed") {
-		t.Errorf("Error message = %q, should contain 'reflector LLM call failed'", err.Error())
-	}
-}
-
-func TestReflect_InvalidJSON(t *testing.T) {
-	mockLLM := &mockLLMCaller{
-		responses: []*llm.ChatResponse{
-			{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: "This is not valid JSON at all",
-				},
-				StopReason: "end_turn",
-			},
-		},
-	}
-
-	reflector := NewReflector(mockLLM)
-
-	_, err := reflector.Reflect(context.Background(), []Step{}, &EvalResult{}, nil, nil)
-	if err == nil {
-		t.Fatal("Reflect() should return error for invalid JSON")
-	}
-
-	if !strings.Contains(err.Error(), "failed to parse reflection response") {
-		t.Errorf("Error message = %q, should contain 'failed to parse reflection response'", err.Error())
-	}
+// TestReflector_ImplementsInterface verifies Reflector implements orchestration.Reflector.
+func TestReflector_ImplementsInterface(t *testing.T) {
+	var _ orchestration.Reflector = (*Reflector)(nil)
 }

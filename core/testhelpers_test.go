@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"time"
 
@@ -113,9 +112,6 @@ type mockContextManager struct {
 	// steps records all steps added
 	steps []Step
 
-	// criteria set via SetTask
-	criteria []AcceptanceCriterion
-
 	// strategy set via SetStrategy
 	strategy CompactionStrategy
 
@@ -161,9 +157,8 @@ func (m *mockContextManager) Compact(ctx context.Context) {
 	m.compactCalled = true
 }
 
-func (m *mockContextManager) SetTask(task string, criteria []AcceptanceCriterion) {
+func (m *mockContextManager) SetTask(task string) {
 	m.taskDefinition = task
-	m.criteria = criteria
 }
 
 func (m *mockContextManager) SetStrategy(s CompactionStrategy) {
@@ -227,11 +222,9 @@ func (m *mockEmitter) ToolResult(_, _ int, _ string)                      {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
 func (m *mockEmitter) SubAgentLaunch(_, _ string)                         {}
 func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
-func (m *mockEmitter) Evaluation(_, _ int, _ []EvalCriterionEvent)        {}
 func (m *mockEmitter) Reflection(_ string, _ []string, _, _ int)          {}
 func (m *mockEmitter) Retry(_, _ int)                                     {}
 func (m *mockEmitter) StepRetry(_ string, _, _ int)                       {}
-func (m *mockEmitter) ACExtracted(_ int, _ []EvalCriterionEvent)          {}
 func (m *mockEmitter) AssistantChunk(content string) {
 	m.assistantChunks = append(m.assistantChunks, content)
 }
@@ -246,94 +239,7 @@ func (m *mockEmitter) TokensUsed(_, _ int)                          {}
 func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string) {}
 func (m *mockEmitter) Service(_ string)                             {}
 func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
-func (m *mockEmitter) EvaluationError(_ error)                      {}
-func (m *mockEmitter) ReplanFailed(_ error)                         {}
-func (m *mockEmitter) FileRollbackError(_ string, _ error)                {}
+
+func (m *mockEmitter) ReplanFailed(_ error)                                 {}
+func (m *mockEmitter) FileRollbackError(_ string, _ error)                  {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
-func (m *mockEmitter) EvalStepStart(_, _ string)                   {}
-func (m *mockEmitter) EvalStepComplete(_ string, _ bool, _ time.Duration) {}
-
-// routerCallTracker helps track the three-phase AC extraction flow in tests.
-// It distinguishes between:
-//  1. ExtractRaw (Phase 1) - first call, returns []RawCriterion
-//  2. Route - second call, returns RoutingDecision
-//  3. Enrich (Phase 2) - subsequent calls with "Domain:", returns []AcceptanceCriterion
-type routerCallTracker struct {
-	callCount int
-}
-
-// nextCall determines what type of router call this is based on call count and message content.
-// Returns one of: "extract_raw", "route", "enrich"
-func (t *routerCallTracker) nextCall(req llm.ChatRequest) string {
-	t.callCount++
-
-	// First call is always ExtractRaw
-	if t.callCount == 1 {
-		return "extract_raw"
-	}
-
-	// Check if this has "Domain:" in message (indicates Enrich)
-	hasDomain := false
-	for _, msg := range req.Messages {
-		if strings.Contains(msg.Content, "Domain:") {
-			hasDomain = true
-			break
-		}
-	}
-
-	if hasDomain {
-		return "enrich"
-	}
-
-	// Otherwise it's Route
-	return "route"
-}
-
-// detectCallType inspects a request to determine what component is calling the LLM.
-// Returns one of: "extract_raw", "route", "enrich", "planner", "evaluator_judge", "reflector", "executor"
-func detectCallType(req llm.ChatRequest) string {
-	if len(req.Messages) == 0 {
-		return "executor"
-	}
-
-	// Check system prompt content - order matters!
-	// Check for specific role phrases first before checking for general content
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			// Check specific role identifiers first (most specific to least specific)
-			if strings.Contains(msg.Content, "task planner") || strings.Contains(msg.Content, "Revise the plan") {
-				return "planner"
-			}
-			if strings.Contains(msg.Content, "self-correction analyst") {
-				return "reflector"
-			}
-			if strings.Contains(msg.Content, "request classifier") {
-				return "route"
-			}
-			if strings.Contains(msg.Content, "requirements analyst") {
-				return "extract_raw"
-			}
-			if strings.Contains(msg.Content, "enricher") || strings.Contains(msg.Content, "Domain:") {
-				return "enrich"
-			}
-			// Batch evaluator uses "acceptance-criteria evaluation agent" in system prompt
-			if strings.Contains(msg.Content, "acceptance-criteria evaluation agent") || strings.Contains(msg.Content, "acceptance-criterion evaluation agent") {
-				return "evaluator_judge"
-			}
-		}
-		if msg.Role == "user" {
-			// Evaluator judge calls have specific format (legacy per-criterion)
-			if strings.Contains(msg.Content, "Criterion:") && strings.Contains(msg.Content, "Result:") {
-				return "evaluator_judge"
-			}
-			if strings.Contains(msg.Content, "Domain:") {
-				return "enrich"
-			}
-			if strings.Contains(msg.Content, "Classify this request:") {
-				return "route"
-			}
-		}
-	}
-
-	return "executor"
-}

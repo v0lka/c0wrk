@@ -48,7 +48,6 @@ type TaskCompleteData struct {
 	Output          string                `json:"output"`
 	RoutingDecision *core.RoutingDecision `json:"routing_decision"`
 	Plan            *core.Plan            `json:"plan,omitempty"`
-	EvalResult      *core.EvalResult      `json:"eval_result,omitempty"`
 	AttemptCount    int                   `json:"attempt_count,omitempty"`
 	Reflections     []core.Reflection     `json:"reflections,omitempty"`
 }

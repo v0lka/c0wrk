@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,13 +17,11 @@ import (
 	// SDK layer
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/tools/builtins"
 	websearch "github.com/user/agent/sdk/tools/builtins/web_search"
 
 	// Core layer
 	"github.com/user/agent/core"
-	toolcore "github.com/user/agent/core/coretools"
 	"github.com/user/agent/core/tools"
 	"github.com/user/agent/core/tools/mcp"
 
@@ -31,8 +30,6 @@ import (
 	"github.com/user/agent/backend/logger"
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/session"
-
-	"database/sql"
 
 	_ "modernc.org/sqlite" // register SQLite driver
 )
@@ -239,8 +236,6 @@ func (a *App) Startup(ctx context.Context) {
 			role = "plan_step_complete"
 		case "retry":
 			role = "retry"
-		case "ac_extracted":
-			role = "ac_extracted"
 		case "subagent_launch":
 			role = "subagent_launch"
 		case "subagent_complete":
@@ -379,14 +374,6 @@ func (a *App) Startup(ctx context.Context) {
 		registry.Register(webSearchTool)
 	}
 
-	// Evidence tool (read_evidence) — allows evaluator ReAct agents to read blackboard evidence
-	evidenceTool := toolcore.NewEvidenceTool()
-	registry.Register(evidenceTool)
-
-	// Verdict tool (report_verdict) — allows evaluator ReAct agents to record verdicts
-	verdictTool := toolcore.NewVerdictTool()
-	registry.Register(verdictTool)
-
 	// Initialize MCP Gateway (optional)
 	mcpEntries := make(map[string]mcp.ServerEntry, len(a.config.MCP.Servers))
 	for name, cfg := range a.config.MCP.Servers {
@@ -474,7 +461,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Validate LLM-dependent objects at startup (fail-fast).
 	// The factory closure will rebuild these per-session from current config.
 	if llmRouter != nil {
-		_, _, _, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil, nil)
+		_, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil, nil)
 	}
 	_ = a.buildOrchestratorConfig(a.config)
 	_ = a.buildContextFactory(llmRouter, a.config)
@@ -542,9 +529,9 @@ func (a *App) Startup(ctx context.Context) {
 			return nil, errors.New("no active LLM provider configured - check your config.yaml")
 		}
 
-		newRouter, newACExtractor, newPlanner, newEvaluator, newReflector := a.buildCoreAgents(newLLMRouter, registry, cfg, emitter, logger)
-		if newRouter == nil || newACExtractor == nil || newPlanner == nil || newEvaluator == nil {
-			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, AC extractor, planner, or evaluator is nil")
+		newRouter, newPlanner, newReflector := a.buildCoreAgents(newLLMRouter, registry, cfg, emitter, logger)
+		if newRouter == nil || newPlanner == nil {
+			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
 		}
 
 		orchConfig := a.buildOrchestratorConfig(cfg)
@@ -556,26 +543,12 @@ func (a *App) Startup(ctx context.Context) {
 			MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
 		}
 
-		// Create IntentVerifier (Tier 2 intent-based evaluation)
-		caller := orchestration.NewTokenTrackingCaller(newLLMRouter, emitter)
-		intentVerifier := core.NewIntentVerifier(
-			caller,
-			registry.ToolRegistry,
-			tokenCounter,
-			contextFactory,
-			logger,
-			emitter,
-			toolResultBudget,
-		)
-
 		// Wrap the LLM caller for step-execution so those calls are also logged.
 		loggedLLM := core.NewLoggingCaller(newLLMRouter, cfg.LLM.ActiveProvider, logger)
 
 		return core.NewOrchestrator(
 			newRouter,             // Router
-			newACExtractor,        // ACExtractor
 			newPlanner,            // Planner
-			newEvaluator,          // Evaluator
 			loggedLLM,             // LLMCaller
 			registry,              // ToolExecutor (shared)
 			registry.ToolRegistry, // ToolRegistry (SDK base, shared)
@@ -587,8 +560,7 @@ func (a *App) Startup(ctx context.Context) {
 			emitter,          // Emitter
 			newModelRegistry, // ModelRegistry for resolving model metadata
 			toolResultBudget,
-			intentVerifier, // IntentVerifier (Tier 2)
-			bbFactory,      // BlackboardFactory (nil = default MapBlackboard)
+			bbFactory, // BlackboardFactory (nil = default MapBlackboard)
 		), nil
 	}
 

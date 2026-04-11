@@ -42,5 +42,3 @@ Before destructive file operations (delete, overwrite), verify you are targeting
 Reason in English. Your final answer (via finish) MUST match the user's language.
 
 WORKSPACE-CONTEXT
-
-ACCEPTANCE-CRITERIA

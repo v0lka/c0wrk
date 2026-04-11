@@ -6,16 +6,17 @@ import (
 )
 
 // loggingEmitter wraps an Emitter to log all events via a session-specific logger.
-// It implements Emitter, PlanStepScopable, and CriterionScopable.
+// It implements Emitter and PlanStepScopable.
 type loggingEmitter struct {
 	inner  Emitter
 	logger *slog.Logger
 }
 
-// ensure loggingEmitter implements Emitter, PlanStepScopable, and CriterionScopable.
-var _ Emitter = (*loggingEmitter)(nil)
-var _ PlanStepScopable = (*loggingEmitter)(nil)
-var _ CriterionScopable = (*loggingEmitter)(nil)
+// ensure loggingEmitter implements Emitter and PlanStepScopable.
+var (
+	_ Emitter          = (*loggingEmitter)(nil)
+	_ PlanStepScopable = (*loggingEmitter)(nil)
+)
 
 // NewLoggingEmitter wraps an Emitter to log all events via the given logger.
 // If logger is nil, returns inner unchanged.
@@ -36,19 +37,6 @@ func (l *loggingEmitter) WithPlanStepID(id string) Emitter {
 	return &loggingEmitter{
 		inner:  scoped,
 		logger: l.logger.With("planStepID", id),
-	}
-}
-
-// WithCriterionID returns a new loggingEmitter wrapping the scoped inner emitter,
-// with the criterionID added to the logger context.
-func (l *loggingEmitter) WithCriterionID(id string) Emitter {
-	scoped := l.inner
-	if s, ok := l.inner.(CriterionScopable); ok {
-		scoped = s.WithCriterionID(id)
-	}
-	return &loggingEmitter{
-		inner:  scoped,
-		logger: l.logger.With("criterionID", id),
 	}
 }
 
@@ -140,11 +128,6 @@ func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration 
 	l.inner.PlanStepComplete(stepID, success, duration)
 }
 
-func (l *loggingEmitter) Evaluation(passed, total int, criteria []EvalCriterionEvent) {
-	l.logger.Info("evaluation", "passed", passed, "total", total)
-	l.inner.Evaluation(passed, total, criteria)
-}
-
 func (l *loggingEmitter) Reflection(summary string, insights []string, attempt, maxAttempts int) {
 	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts, "insightCount", len(insights))
 	l.inner.Reflection(summary, insights, attempt, maxAttempts)
@@ -160,11 +143,6 @@ func (l *loggingEmitter) StepRetry(stepID string, attempt, maxAttempts int) {
 	l.inner.StepRetry(stepID, attempt, maxAttempts)
 }
 
-func (l *loggingEmitter) ACExtracted(count int, criteria []EvalCriterionEvent) {
-	l.logger.Info("AC extracted", "count", count)
-	l.inner.ACExtracted(count, criteria)
-}
-
 func (l *loggingEmitter) Service(content string) {
 	l.logger.Debug("service", "content", content)
 	l.inner.Service(content)
@@ -175,11 +153,6 @@ func (l *loggingEmitter) ServiceWithMeta(content string, meta map[string]any) {
 	l.inner.ServiceWithMeta(content, meta)
 }
 
-func (l *loggingEmitter) EvaluationError(err error) {
-	l.logger.Warn("evaluation error", "error", err)
-	l.inner.EvaluationError(err)
-}
-
 func (l *loggingEmitter) ReplanFailed(err error) {
 	l.logger.Warn("replan failed", "error", err)
 	l.inner.ReplanFailed(err)
@@ -188,14 +161,4 @@ func (l *loggingEmitter) ReplanFailed(err error) {
 func (l *loggingEmitter) FileRollbackError(stepID string, err error) {
 	l.logger.Warn("file rollback error", "stepID", stepID, "error", err)
 	l.inner.FileRollbackError(stepID, err)
-}
-
-func (l *loggingEmitter) EvalStepStart(criterionID, description string) {
-	l.logger.Debug("eval step start", "criterionID", criterionID, "description", description)
-	l.inner.EvalStepStart(criterionID, description)
-}
-
-func (l *loggingEmitter) EvalStepComplete(criterionID string, success bool, duration time.Duration) {
-	l.logger.Debug("eval step complete", "criterionID", criterionID, "success", success, "durationMs", duration.Milliseconds())
-	l.inner.EvalStepComplete(criterionID, success, duration)
 }

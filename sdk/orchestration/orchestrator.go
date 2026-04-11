@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -51,7 +50,7 @@ func New(cfg Config) *Orchestrator {
 }
 
 // Execute runs the full Plan&Execute loop for a user request.
-func (o *Orchestrator) Execute(ctx context.Context, userMessage string, criteria []Criterion) (*ExecutionResult, error) {
+func (o *Orchestrator) Execute(ctx context.Context, userMessage string) (*ExecutionResult, error) {
 	// 1. Create blackboard
 	var bb Blackboard
 	if o.cfg.StateFactory != nil {
@@ -60,26 +59,12 @@ func (o *Orchestrator) Execute(ctx context.Context, userMessage string, criteria
 		bb = NewMapBlackboard()
 	}
 	bb.SetOriginalRequest(userMessage)
-	bb.SetCriteria(criteria)
-
-	// 2. Extract criteria (optional)
-	o.events.OnServiceMeta("extracting criteria", map[string]any{"hasCriteriaExtractor": o.cfg.Criteria != nil, "existingCriteria": len(criteria)})
-	if o.cfg.Criteria != nil && len(criteria) == 0 {
-		extracted, err := o.cfg.Criteria.Extract(ctx, userMessage)
-		if err != nil {
-			return nil, fmt.Errorf("criteria extraction failed: %w", err)
-		}
-		criteria = extracted
-		bb.SetCriteria(criteria)
-		o.events.OnCriteriaExtracted(len(criteria), buildEvalCriterionEventsFromCriteria(criteria))
-	}
-	o.events.OnServiceMeta("criteria ready", map[string]any{"count": len(criteria)})
 
 	// Get available tools
 	availableTools := o.availableTools()
 
 	o.events.OnServiceMeta("starting plan-execute loop", map[string]any{"tools": len(availableTools)})
-	return o.runPlanExecute(ctx, userMessage, criteria, availableTools, nil, bb, nil, nil)
+	return o.runPlanExecute(ctx, userMessage, availableTools, nil, bb, nil, nil)
 }
 
 // Resume continues execution from a previously persisted blackboard state.
@@ -88,7 +73,6 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard) (*ExecutionRes
 	if plan == nil {
 		return nil, errors.New("blackboard has no plan to resume")
 	}
-	criteria := bb.GetCriteria()
 	userMessage := bb.GetOriginalRequest()
 	reflections := bb.GetReflections()
 	availableTools := o.availableTools()
@@ -122,19 +106,13 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard) (*ExecutionRes
 	}
 	o.events.OnPlanGenerated(len(plan.Steps), planStepEvents)
 
-	// Emit criteria if available
-	if len(criteria) > 0 {
-		o.events.OnCriteriaExtracted(len(criteria), buildEvalCriterionEventsFromCriteria(criteria))
-	}
-
-	return o.runPlanExecute(ctx, userMessage, criteria, availableTools, reflections, bb, plan, preCompleted)
+	return o.runPlanExecute(ctx, userMessage, availableTools, reflections, bb, plan, preCompleted)
 }
 
-// runPlanExecute is the core plan-execute-evaluate-reflect loop shared by Execute and Resume.
+// runPlanExecute is the core plan-execute-reflect loop shared by Execute and Resume.
 func (o *Orchestrator) runPlanExecute(
 	ctx context.Context,
 	userMessage string,
-	criteria []Criterion,
 	availableTools []tools.ToolDescriptor,
 	sessionReflections []Reflection,
 	bb Blackboard,
@@ -152,7 +130,7 @@ func (o *Orchestrator) runPlanExecute(
 		// Generate a new plan
 		o.events.OnServiceMeta("creating new plan", nil)
 		o.events.OnServiceMeta("Creating execution plan...", map[string]any{"phase": "orchestration"})
-		plan, err := o.cfg.Planner.Plan(ctx, userMessage, criteria, availableTools, sessionReflections)
+		plan, err := o.cfg.Planner.Plan(ctx, userMessage, availableTools, sessionReflections)
 		if err != nil {
 			return nil, fmt.Errorf("planning failed: %w", err)
 		}
@@ -166,11 +144,7 @@ func (o *Orchestrator) runPlanExecute(
 		currentPlan = plan
 	}
 
-	// Validate AC mapping (informational only)
-	_ = ValidateACMapping(currentPlan, criteria)
-
 	var lastOutput string
-	var lastEvalResult *EvalResult
 	var stepRetryContext string
 
 	sharedWS := agent.NewSharedWorkspace()
@@ -189,7 +163,7 @@ func (o *Orchestrator) runPlanExecute(
 
 		// Execute the current plan
 		o.events.OnServiceMeta("executing plan", map[string]any{"steps": len(currentPlan.Steps), "preCompleted": len(preCompleted)})
-		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, criteria, availableTools, preCompleted, sharedWS, tracker, userMessage, stepRetryContext, bb, sessionReflections)
+		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, availableTools, preCompleted, sharedWS, tracker, userMessage, stepRetryContext, bb, sessionReflections)
 		o.events.OnServiceMeta("plan execution finished", map[string]any{"completedSteps": len(completedSteps), "hasError": execErr != nil})
 		sessionReflections = updatedReflections
 		lastOutput = finalOutput
@@ -211,7 +185,7 @@ func (o *Orchestrator) runPlanExecute(
 					Reflections:  sessionReflections,
 				}, nil
 			}
-			// All steps executed but some had errors — continue to evaluation
+			// All steps executed but some had errors — check if we should retry or reflect
 		}
 
 		// Set final result in blackboard
@@ -225,64 +199,28 @@ func (o *Orchestrator) runPlanExecute(
 			Reflections:  sessionReflections,
 		}
 
-		// Evaluate (optional)
-		o.events.OnServiceMeta("starting evaluation", map[string]any{"hasCriteria": len(criteria) > 0, "hasEvaluator": o.cfg.Evaluation != nil})
-		var evalResult *EvalResult
-		switch {
-		case o.cfg.Evaluation != nil && len(criteria) > 0:
-			o.events.OnServiceMeta("Evaluating acceptance criteria...", map[string]any{"phase": "orchestration"})
-			er, evalErr := o.cfg.Evaluation.Evaluate(ctx, finalOutput, criteria, bb)
-			if evalErr != nil {
-				o.events.OnEvaluationError(evalErr)
-				return result, nil //nolint:nilerr // evaluation failure is non-fatal
-			}
-			evalResult = er
-			result.EvalResult = evalResult
-			lastEvalResult = evalResult
-		case len(criteria) == 0:
-			evalResult = &EvalResult{AllPassed: true}
-			result.EvalResult = evalResult
-			lastEvalResult = evalResult
-		default:
-			// No evaluator, accept result
-			return result, nil
-		}
-
-		// Verify (optional): Tier 2 intent verification
-		if evalResult.AllPassed && o.cfg.Verification != nil {
-			completedMap := make(map[string]CompletedStep, len(completedSteps))
-			for _, cs := range completedSteps {
-				completedMap[cs.StepID] = cs
-			}
-			changeSummary := BuildChangeSummary(completedMap, currentPlan)
-			verifyResult, verifyErr := o.cfg.Verification.Verify(ctx, userMessage, finalOutput, changeSummary)
-			if verifyErr == nil && !verifyResult.Passed {
-				evalResult.AllPassed = false
-				evalResult.Failed = append(evalResult.Failed, EvalDetail{
-					Criterion:  Criterion{ID: "ac_intent", Description: "Implementation matches the user's original intent"},
-					Diagnostic: "FAILED:" + verifyResult.Feedback,
-				})
+		// Check for step execution errors
+		var hasStepErrors bool
+		for _, cs := range completedSteps {
+			if cs.Error != nil {
+				hasStepErrors = true
+				break
 			}
 		}
 
-		// Emit evaluation
-		passed := len(evalResult.Passed)
-		total := passed + len(evalResult.Failed) + len(evalResult.Unclear)
-		o.events.OnEvaluated(passed, total, buildEvalCriterionEvents(evalResult))
-
-		// Success
-		if evalResult.AllPassed {
-			o.events.OnServiceMeta("all criteria passed", nil)
+		// Success - no step errors
+		if !hasStepErrors {
+			o.events.OnServiceMeta("plan execution completed successfully", nil)
 			return result, nil
 		}
 
 		// Failure with retries remaining
-		o.events.OnServiceMeta("criteria not met", map[string]any{"attempt": attempt + 1, "retriesRemaining": o.maxRetries - attempt})
+		o.events.OnServiceMeta("steps failed", map[string]any{"attempt": attempt + 1, "retriesRemaining": o.maxRetries - attempt})
 		if attempt < o.maxRetries {
 			if o.cfg.Reflection != nil {
 				syntheticSteps := BuildPlanExecutionSteps(completedSteps, currentPlan)
-				o.events.OnServiceMeta("Some acceptance criteria not met, reflecting...", map[string]any{"phase": "orchestration"})
-				reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, evalResult, currentPlan, sessionReflections)
+				o.events.OnServiceMeta("Some steps failed, reflecting...", map[string]any{"phase": "orchestration"})
+				reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, currentPlan, sessionReflections)
 				if reflectErr != nil {
 					continue // retry without reflection guidance
 				}
@@ -290,7 +228,7 @@ func (o *Orchestrator) runPlanExecute(
 					sessionReflections = append(sessionReflections, *reflection)
 					bb.AddReflection(*reflection)
 					result.Reflections = sessionReflections
-					result.Output = finalOutput + "\n\n[Evaluation: some criteria not met: " + formatFailedCriteria(evalResult) + ". Reflector suggests abort.]"
+					result.Output = finalOutput + "\n\n[Execution: some steps failed. Reflector suggests abort.]"
 					return result, nil
 				}
 
@@ -304,7 +242,7 @@ func (o *Orchestrator) runPlanExecute(
 					if len(completedSteps) > 0 {
 						failedStep = completedSteps[len(completedSteps)-1]
 					}
-					newPlan, replanErr := o.cfg.Planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, criteria, sessionReflections)
+					newPlan, replanErr := o.cfg.Planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, sessionReflections)
 					if replanErr != nil {
 						o.events.OnReplanFailed(replanErr)
 						continue
@@ -317,21 +255,12 @@ func (o *Orchestrator) runPlanExecute(
 					sharedWS.Clear()
 					o.emitPlanWithStatuses(currentPlan, preCompleted)
 				} else {
-					// Step-level retry
-					var failedIDs []string
-					for _, f := range evalResult.Failed {
-						failedIDs = append(failedIDs, f.Criterion.ID)
-					}
-					retrySet := ComputeRetrySteps(currentPlan, failedIDs)
-					if retrySet != nil {
-						preCompleted = make(map[string]CompletedStep)
-						for _, cs := range prevCompletedSteps {
-							if !retrySet[cs.StepID] {
-								preCompleted[cs.StepID] = cs
-							}
+					// Step-level retry - retry all failed steps
+					preCompleted = make(map[string]CompletedStep)
+					for _, cs := range prevCompletedSteps {
+						if cs.Error == nil {
+							preCompleted[cs.StepID] = cs
 						}
-					} else {
-						preCompleted = nil
 					}
 				}
 			}
@@ -348,13 +277,9 @@ func (o *Orchestrator) runPlanExecute(
 	result := &ExecutionResult{
 		Output:       lastOutput,
 		Plan:         currentPlan,
-		EvalResult:   lastEvalResult,
 		Blackboard:   bb,
 		AttemptCount: o.maxRetries + 1,
 		Reflections:  sessionReflections,
-	}
-	if lastEvalResult != nil && !lastEvalResult.AllPassed {
-		result.Output = lastOutput + "\n\n[Evaluation: some criteria not met after " + strconv.Itoa(o.maxRetries+1) + " attempts: " + formatFailedCriteria(lastEvalResult) + "]"
 	}
 	return result, nil
 }
@@ -364,7 +289,6 @@ func (o *Orchestrator) runPlanExecute(
 func (o *Orchestrator) executePlanWithSteps(
 	ctx context.Context,
 	plan *Plan,
-	criteria []Criterion,
 	availableTools []tools.ToolDescriptor,
 	preCompleted map[string]CompletedStep,
 	sharedWS *agent.SharedWorkspace,
@@ -423,7 +347,7 @@ func (o *Orchestrator) executePlanWithSteps(
 				maxSteps = o.maxSteps
 			}
 
-			taskDef := o.buildStepTask(step, stepIndex, *plan, criteria, completedSteps, stepTools, bb, userMessage, retryContext, maxSteps)
+			taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, retryContext, maxSteps)
 
 			// Build system prompt
 			var systemPrompt string
@@ -431,9 +355,9 @@ func (o *Orchestrator) executePlanWithSteps(
 			case stepCfg.SystemPrompt != "":
 				systemPrompt = stepCfg.SystemPrompt
 			case o.cfg.SystemPrompt != nil:
-				systemPrompt = o.cfg.SystemPrompt(ctx, step.Description, taskDef.criteria)
+				systemPrompt = o.cfg.SystemPrompt(ctx, step.Description)
 			default:
-				systemPrompt = defaultSystemPrompt(ctx, step.Description, taskDef.criteria)
+				systemPrompt = defaultSystemPrompt(ctx, step.Description)
 			}
 
 			// Resolve model metadata
@@ -449,12 +373,12 @@ func (o *Orchestrator) executePlanWithSteps(
 			} else {
 				return "", completedList, sessionReflections, errors.New("ContextFactory is required but not configured")
 			}
-			
+
 			// Allow consumer to inject task-specific context
 			if o.cfg.ContextSetup != nil {
-				o.cfg.ContextSetup(cm, taskDef.task, taskDef.criteria)
+				o.cfg.ContextSetup(cm, taskDef.task)
 			}
-			
+
 			scopedEvents := o.scopeEvents(step.ID)
 			executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
@@ -468,7 +392,7 @@ func (o *Orchestrator) executePlanWithSteps(
 				Emitter:   scopedEvents,
 			})
 		}
-		
+
 		// Inject SharedWorkspace into context so tools can access step outputs
 		ctx = agent.WithSharedWorkspace(ctx, sharedWS)
 
@@ -531,21 +455,11 @@ func (o *Orchestrator) executePlanWithSteps(
 					scopedEvents := o.scopeEvents(failedStepID)
 					scopedEvents.OnStepRetry(failedStepID, retryAttempt, o.maxRetries+1)
 
-					// Build synthetic EvalResult for reflection
-					syntheticEval := &EvalResult{
-						AllPassed: false,
-						Failed: []EvalDetail{{
-							Criterion:  Criterion{ID: "step_failure", Description: "Step execution failed"},
-							Diagnostic: fmt.Sprintf("Step %s failed: %s", failedStepID, completedSteps[failedStepID].Error),
-						}},
-					}
-					o.events.OnEvaluated(0, 1, buildEvalCriterionEvents(syntheticEval))
-
 					// Reflect on failure if reflector is configured
 					if o.cfg.Reflection != nil {
 						o.events.OnServiceMeta(fmt.Sprintf("Step %s failed, reflecting...", failedStepID), map[string]any{"phase": "orchestration"})
 						syntheticSteps := BuildPlanExecutionSteps(completedList, plan)
-						reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, syntheticEval, plan, sessionReflections)
+						reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, plan, sessionReflections)
 						if reflectErr == nil {
 							if reflection.SuggestedAction == "abort" {
 								sessionReflections = append(sessionReflections, *reflection)
@@ -573,7 +487,7 @@ func (o *Orchestrator) executePlanWithSteps(
 							o.events.OnFileRollbackError(failedStepID, rbErr)
 						}
 					}
-					
+
 					// Re-execute the failed step
 					stepIndex := o.findStepIndex(plan, failedStepID)
 					stepCfg := o.resolveStepConfig(failedPlanStep, availableTools)
@@ -586,7 +500,7 @@ func (o *Orchestrator) executePlanWithSteps(
 						maxSteps = o.maxSteps
 					}
 
-					taskDef := o.buildStepTask(failedPlanStep, stepIndex, *plan, criteria, completedSteps, stepTools, bb, userMessage, stepRetryContext, maxSteps)
+					taskDef := o.buildStepTask(failedPlanStep, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, stepRetryContext, maxSteps)
 
 					// Build system prompt
 					var systemPrompt string
@@ -594,9 +508,9 @@ func (o *Orchestrator) executePlanWithSteps(
 					case stepCfg.SystemPrompt != "":
 						systemPrompt = stepCfg.SystemPrompt
 					case o.cfg.SystemPrompt != nil:
-						systemPrompt = o.cfg.SystemPrompt(ctx, failedPlanStep.Description, taskDef.criteria)
+						systemPrompt = o.cfg.SystemPrompt(ctx, failedPlanStep.Description)
 					default:
-						systemPrompt = defaultSystemPrompt(ctx, failedPlanStep.Description, taskDef.criteria)
+						systemPrompt = defaultSystemPrompt(ctx, failedPlanStep.Description)
 					}
 
 					// Resolve model metadata
@@ -615,7 +529,7 @@ func (o *Orchestrator) executePlanWithSteps(
 
 					// Allow consumer to inject task-specific context
 					if o.cfg.ContextSetup != nil {
-						o.cfg.ContextSetup(cm, taskDef.task, taskDef.criteria)
+						o.cfg.ContextSetup(cm, taskDef.task)
 					}
 
 					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
@@ -661,7 +575,7 @@ func (o *Orchestrator) executePlanWithSteps(
 								}
 							}
 							bb.SetStepResult(rr.StepID, rr.Output, nil, rr.Steps)
-							
+
 							// Collect file changes from retry
 							if tracker != nil {
 								retryChanges := tracker.GetStepChanges(rr.StepID)
@@ -669,7 +583,7 @@ func (o *Orchestrator) executePlanWithSteps(
 									bb.SetStepFileChanges(rr.StepID, retryChanges)
 								}
 							}
-							
+
 							break stepRetryLoop // success, continue to next ready steps
 						}
 						// Step still failed, update the completedSteps with new error
@@ -733,15 +647,13 @@ func (o *Orchestrator) executePlanWithSteps(
 
 // stepTaskDef holds the result of buildStepTask.
 type stepTaskDef struct {
-	task     string
-	criteria []Criterion
-	tools    []tools.ToolDescriptor
+	task  string
+	tools []tools.ToolDescriptor
 }
 
-// buildStepTask creates the task description and criteria for a plan step executor.
+// buildStepTask creates the task description for a plan step executor.
 func (o *Orchestrator) buildStepTask(
 	step PlanStep, stepIndex int, plan Plan,
-	allCriteria []Criterion,
 	completedSteps map[string]CompletedStep,
 	stepTools []tools.ToolDescriptor,
 	bb Blackboard,
@@ -796,7 +708,7 @@ func (o *Orchestrator) buildStepTask(
 		depContext := depBuf.String()
 		if len(depContext) > maxDependencyContextChars {
 			depContext = depContext[len(depContext)-maxDependencyContextChars:]
-			if idx := strings.Index(depContext, "\n- ["); idx >= 0 {
+			if idx := strings.Index(depContext, "\n-["); idx >= 0 {
 				depContext = depContext[idx:]
 			}
 		}
@@ -806,47 +718,14 @@ func (o *Orchestrator) buildStepTask(
 		}
 	}
 
-	// Build step criteria from RelevantAC
-	var stepCriteria []Criterion
-	if len(step.RelevantAC) > 0 && len(allCriteria) > 0 {
-		acMap := make(map[string]Criterion)
-		for _, c := range allCriteria {
-			acMap[c.ID] = c
-		}
-		for _, acID := range step.RelevantAC {
-			if c, ok := acMap[acID]; ok {
-				stepCriteria = append(stepCriteria, c)
-			}
-		}
-	}
-
-	// For the last terminal step, inject unmapped ACs
-	if o.isLastTerminalStep(step, stepIndex, plan) && len(allCriteria) > 0 {
-		unmapped := ValidateACMapping(&plan, allCriteria)
-		if len(unmapped) > 0 && len(unmapped) < len(allCriteria) {
-			fmt.Fprintf(&b, "\n\nIMPORTANT: The following acceptance criteria are not explicitly assigned to any plan step. As the final step, ensure these are also addressed if possible:\n")
-			acMap := make(map[string]Criterion)
-			for _, c := range allCriteria {
-				acMap[c.ID] = c
-			}
-			for _, id := range unmapped {
-				if c, ok := acMap[id]; ok {
-					fmt.Fprintf(&b, "- %s: %s\n", c.ID, c.Description)
-					stepCriteria = append(stepCriteria, c)
-				}
-			}
-		}
-	}
-
 	// Retry context
 	if retryContext != "" {
 		fmt.Fprintf(&b, "\n\n## Existing Files From Previous Attempt\n%s\nIMPORTANT: Fix these files IN PLACE. Do NOT create new files with different names.\n", retryContext)
 	}
 
 	return stepTaskDef{
-		task:     b.String(),
-		criteria: stepCriteria,
-		tools:    stepTools,
+		task:  b.String(),
+		tools: stepTools,
 	}
 }
 
@@ -947,48 +826,9 @@ func (o *Orchestrator) emitPlanWithStatuses(plan *Plan, preCompleted map[string]
 }
 
 // defaultSystemPrompt creates a minimal system prompt when no factory is provided.
-func defaultSystemPrompt(_ context.Context, stepDescription string, criteria []Criterion) string {
+func defaultSystemPrompt(_ context.Context, stepDescription string) string {
 	var b strings.Builder
 	b.WriteString("You are an AI assistant executing a task step.\n\n")
 	b.WriteString("Your task: " + stepDescription + "\n")
-	if len(criteria) > 0 {
-		b.WriteString("\nAcceptance Criteria:\n")
-		for _, c := range criteria {
-			fmt.Fprintf(&b, "- %s: %s\n", c.ID, c.Description)
-		}
-	}
 	return b.String()
-}
-
-// buildEvalCriterionEvents converts an EvalResult to a slice of EvalCriterionEvent.
-func buildEvalCriterionEvents(evalResult *EvalResult) []EvalCriterionEvent {
-	events := make([]EvalCriterionEvent, 0, len(evalResult.Passed)+len(evalResult.Failed)+len(evalResult.Unclear))
-	for _, d := range evalResult.Passed {
-		events = append(events, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: true, Status: "pass", Diagnostic: d.Diagnostic})
-	}
-	for _, d := range evalResult.Failed {
-		events = append(events, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: false, Status: "fail", Diagnostic: d.Diagnostic})
-	}
-	for _, d := range evalResult.Unclear {
-		events = append(events, EvalCriterionEvent{Name: d.Criterion.ID, Description: d.Criterion.Description, Passed: false, Status: "unclear", Diagnostic: d.Diagnostic})
-	}
-	return events
-}
-
-// buildEvalCriterionEventsFromCriteria converts criteria to EvalCriterionEvent for emission.
-func buildEvalCriterionEventsFromCriteria(criteria []Criterion) []EvalCriterionEvent {
-	events := make([]EvalCriterionEvent, len(criteria))
-	for i, c := range criteria {
-		events[i] = EvalCriterionEvent{Name: c.ID, Description: c.Description}
-	}
-	return events
-}
-
-// formatFailedCriteria extracts failed criteria descriptions.
-func formatFailedCriteria(evalResult *EvalResult) string {
-	failed := make([]string, 0, len(evalResult.Failed))
-	for _, f := range evalResult.Failed {
-		failed = append(failed, f.Criterion.Description)
-	}
-	return strings.Join(failed, ", ")
 }

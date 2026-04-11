@@ -34,40 +34,6 @@ func FindReadySteps(plan *Plan, completed map[string]CompletedStep) []PlanStep {
 	return ready
 }
 
-// BuildCriteriaToStepsMap builds a reverse mapping from Criterion ID to the
-// plan step IDs that declared that criterion in their RelevantAC field.
-func BuildCriteriaToStepsMap(plan *Plan) map[string][]string {
-	m := make(map[string][]string)
-	for _, step := range plan.Steps {
-		for _, acID := range step.RelevantAC {
-			m[acID] = append(m[acID], step.ID)
-		}
-	}
-	return m
-}
-
-// ComputeRetrySteps determines the minimal set of step IDs that need re-execution
-// given a list of failed acceptance-criteria IDs. It maps failed criteria back to
-// their responsible steps (via PlanStep.RelevantAC). Returns nil if no criteria
-// map to any step, signaling the caller should fall back to full plan retry.
-func ComputeRetrySteps(plan *Plan, failedCriteriaIDs []string) map[string]bool {
-	acMap := BuildCriteriaToStepsMap(plan)
-
-	retrySet := make(map[string]bool)
-	for _, acID := range failedCriteriaIDs {
-		for _, stepID := range acMap[acID] {
-			retrySet[stepID] = true
-		}
-	}
-
-	// No mapping found — caller should fall back to full retry
-	if len(retrySet) == 0 {
-		return nil
-	}
-
-	return retrySet
-}
-
 // FindFailedStep returns the first CompletedStep with an error from the list.
 // If no step has an error, it returns a zero-value CompletedStep.
 func FindFailedStep(completedSteps []CompletedStep) CompletedStep {
@@ -158,25 +124,6 @@ func BuildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []agent.
 		}
 	}
 	return steps
-}
-
-// ValidateACMapping checks that every acceptance criterion is covered by at least
-// one plan step's RelevantAC field. Returns the list of unmapped criterion IDs.
-func ValidateACMapping(plan *Plan, criteria []Criterion) []string {
-	covered := make(map[string]bool)
-	for _, step := range plan.Steps {
-		for _, acID := range step.RelevantAC {
-			covered[acID] = true
-		}
-	}
-
-	var unmapped []string
-	for _, criterion := range criteria {
-		if !covered[criterion.ID] {
-			unmapped = append(unmapped, criterion.ID)
-		}
-	}
-	return unmapped
 }
 
 // BuildChangeSummary creates a markdown summary of what was done at each step.
