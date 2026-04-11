@@ -1543,3 +1543,56 @@ func TestLoadTaskSteps_Empty(t *testing.T) {
 		t.Error("steps should not be nil")
 	}
 }
+
+// TestReactivateTask verifies that ReactivateTask changes status to in_progress
+// and clears the completed_at timestamp.
+func TestReactivateTask(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// Create a completed task
+	now := time.Now().Truncate(time.Second)
+	completedAt := now.Add(5 * time.Minute)
+	if err := store.SaveTask(TaskRecord{
+		ID:           "task-reactivate",
+		SessionID:    sessionID,
+		OriginalRequest: "test task",
+		RoutingDecision: json.RawMessage(`{}`),
+		Plan:            json.RawMessage(`{}`),
+		Reflections:     json.RawMessage(`[]`),
+		Status:          "completed",
+		CreatedAt:       now,
+		CompletedAt:     &completedAt,
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+
+	// Verify task is completed
+	loaded, err := store.LoadTask("task-reactivate")
+	if err != nil {
+		t.Fatalf("LoadTask failed: %v", err)
+	}
+	if loaded.Status != "completed" {
+		t.Fatalf("expected status 'completed', got %q", loaded.Status)
+	}
+	if loaded.CompletedAt == nil {
+		t.Fatal("expected CompletedAt to be set before reactivation")
+	}
+
+	// Reactivate the task
+	if err := store.ReactivateTask("task-reactivate"); err != nil {
+		t.Fatalf("ReactivateTask failed: %v", err)
+	}
+
+	// Verify task is now in_progress and completed_at is cleared
+	reactivated, err := store.LoadTask("task-reactivate")
+	if err != nil {
+		t.Fatalf("LoadTask after reactivation failed: %v", err)
+	}
+	if reactivated.Status != "in_progress" {
+		t.Errorf("expected status 'in_progress', got %q", reactivated.Status)
+	}
+	if reactivated.CompletedAt != nil {
+		t.Errorf("expected CompletedAt to be nil after reactivation, got %v", reactivated.CompletedAt)
+	}
+}

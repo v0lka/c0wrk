@@ -39,6 +39,7 @@ type BlackboardFactory func(taskID string) Blackboard
 // conversation history) and delegates the Plan&Execute loop to the SDK engine.
 type Orchestrator struct {
 	engine              *orchestration.Orchestrator // SDK P&E engine
+	planner             *Planner                    // for PlanContinuation in P&E continuations
 	router              *Router
 	llm                 LLMCaller
 	toolRegistry        *tools.ToolRegistry
@@ -49,6 +50,7 @@ type Orchestrator struct {
 	modelRegistry       *llm.ModelRegistry
 	bbFactory           BlackboardFactory
 	conversationHistory []llm.Message
+	taskStore           TaskPersistence // optional, for ContinueTask blackboard restoration
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -132,6 +134,7 @@ func NewOrchestrator(
 
 	return &Orchestrator{
 		engine:         engine,
+		planner:        planner,
 		router:         router,
 		llm:            llmCaller,
 		toolRegistry:   toolReg,
@@ -215,87 +218,10 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 }
 
 // Handle executes the agent reasoning cycle for the given user message.
-// This is the main entry point. It handles routing and delegates the
-// Plan&Execute loop to the SDK engine.
+// This is a backwards-compatible wrapper around HandleMessage that uses
+// Plan&Execute mode for first messages.
 func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleResult, error) {
-	// 0. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
-	o.logDebug("orchestrator: handle started", "messageLength", len(userMessage))
-	o.emitInitialContextFill()
-
-	// 1. Get available tools
-	availableTools := o.toolRegistry.List()
-
-	// 2. Route the request
-	o.logDebug("orchestrator: starting routing")
-	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "orchestration"})
-	routing, err := o.router.Route(ctx, userMessage, availableTools, o.conversationHistory)
-	if err != nil {
-		o.logDebug("orchestrator: routing failed", "error", err)
-		return nil, fmt.Errorf("routing failed: %w", err)
-	}
-
-	// Emit routing decision
-	o.logDebug("orchestrator: routing completed", "domain", routing.Domain, "complexity", routing.Complexity, "needsClarification", routing.NeedsClarification)
-	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
-	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
-
-	// 3. Handle clarification
-	if routing.NeedsClarification {
-		o.logDebug("orchestrator: returning clarification request")
-		taskID := uuid.New().String()
-		var bb Blackboard
-		if o.bbFactory != nil {
-			bb = o.bbFactory(taskID)
-		} else {
-			bb = NewMapBlackboard()
-		}
-		bb.SetOriginalRequest(userMessage)
-		return &HandleResult{
-			Output:          "I need more information to help you. Could you please clarify your request?",
-			RoutingDecision: routing,
-			Blackboard:      bb,
-		}, nil
-	}
-
-	// 4. Delegate to SDK engine
-	o.logDebug("orchestrator: invoking SDK engine")
-	execResult, err := o.engine.Execute(ctx, userMessage)
-	if err != nil {
-		o.logDebug("orchestrator: SDK engine returned error", "error", err)
-		return nil, err
-	}
-	o.logDebug("orchestrator: SDK engine completed", "attemptCount", execResult.AttemptCount)
-
-	// 5. Persist routing decision on PersistentBlackboard (post-execution)
-	o.logDebug("orchestrator: persisting routing decision")
-	if pbb, ok := execResult.Blackboard.(*PersistentBlackboard); ok {
-		pbb.SetRouting(routing)
-		pbb.CompleteTask(execResult.AttemptCount)
-	}
-
-	// 6. Build HandleResult
-	result := &HandleResult{
-		Output:          execResult.Output,
-		RoutingDecision: routing,
-		Plan:            execResult.Plan,
-		Blackboard:      execResult.Blackboard,
-		AttemptCount:    execResult.AttemptCount,
-		Reflections:     execResult.Reflections,
-	}
-
-	o.logDebug("orchestrator: handle completed", "attemptCount", result.AttemptCount)
-
-	// 9. Accumulate conversation history for future routing context
-	o.conversationHistory = append(o.conversationHistory,
-		llm.Message{Role: "user", Content: userMessage},
-		llm.Message{Role: "assistant", Content: result.Output},
-	)
-	const maxHistoryMessages = 20
-	if len(o.conversationHistory) > maxHistoryMessages {
-		o.conversationHistory = o.conversationHistory[len(o.conversationHistory)-maxHistoryMessages:]
-	}
-
-	return result, nil
+	return o.HandleMessage(ctx, userMessage, "", HandleOptions{PlanFirst: true})
 }
 
 // Resume continues execution of a previously interrupted task from its checkpoint state.
@@ -384,10 +310,305 @@ func buildSystemPrompt(ctx context.Context, userMessage string) string {
 	return result
 }
 
+// SetTaskStore sets the TaskPersistence store for blackboard restoration.
+// This is used by HandleMessage continuations to restore a completed task's blackboard.
+func (o *Orchestrator) SetTaskStore(store TaskPersistence) {
+	o.taskStore = store
+}
+
+// terminalSteps returns the IDs of steps that have no dependents in the plan.
+// These are the leaf nodes of the DAG - steps that no other step depends on.
+func terminalSteps(plan *Plan) []string {
+	if plan == nil || len(plan.Steps) == 0 {
+		return nil
+	}
+
+	// Build set of all steps that are dependencies of other steps
+	dependedOn := make(map[string]bool)
+	for _, step := range plan.Steps {
+		for _, depID := range step.DependsOn {
+			dependedOn[depID] = true
+		}
+	}
+
+	// Terminal steps are those not depended on by any other step
+	var terminals []string
+	for _, step := range plan.Steps {
+		if !dependedOn[step.ID] {
+			terminals = append(terminals, step.ID)
+		}
+	}
+	return terminals
+}
+
+// domainToAgentProfile maps a routing domain to an AgentProfile with appropriate role.
+func domainToAgentProfile(domain string, maxSteps int) AgentProfile {
+	var role string
+	switch domain {
+	case "code":
+		role = "coder"
+	case "research":
+		role = "researcher"
+	default:
+		role = "executor"
+	}
+	return AgentProfile{
+		Role:     role,
+		MaxSteps: maxSteps,
+		Domain:   domain,
+	}
+}
+
 // Run is a backwards-compatible method that calls Handle.
 // Kept for compatibility with Phase 1 code.
 func (o *Orchestrator) Run(ctx context.Context, userMessage string) (*HandleResult, error) {
 	return o.Handle(ctx, userMessage)
+}
+
+// HandleMessage is the unified entry point for processing user messages.
+// It supports all 4 flows: {ReAct, Plan&Execute} x {first message, continuation}.
+// The opts parameter controls the behavior:
+//   - PlanFirst=true: Use Plan&Execute mode (full planning, multi-step)
+//   - PlanFirst=false: Use ReAct mode (single step)
+//   - TaskID="": First message (create new blackboard)
+//   - TaskID!="": Continuation (restore existing blackboard)
+func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID string, opts HandleOptions) (*HandleResult, error) {
+	// 0. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
+	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "planFirst", opts.PlanFirst, "taskID", opts.TaskID)
+	o.emitInitialContextFill()
+
+	var bb Blackboard
+
+	// 1. Blackboard lifecycle
+	if opts.TaskID == "" {
+		// First message: create clean BB
+		taskID := uuid.New().String()
+		if o.bbFactory != nil {
+			bb = o.bbFactory(taskID)
+		} else {
+			bb = NewMapBlackboard()
+		}
+		bb.SetOriginalRequest(message)
+
+		// Wire emitter if PersistentBlackboard
+		if pbb, ok := bb.(*PersistentBlackboard); ok {
+			pbb.SetEmitter(o.emitter)
+		}
+	} else {
+		// Continuation: restore existing BB
+		if o.taskStore == nil {
+			return nil, errors.New("task persistence not configured")
+		}
+
+		o.logDebug("orchestrator: restoring blackboard", "taskID", opts.TaskID)
+		pbb, err := RestoreBlackboard(opts.TaskID, sessionID, o.taskStore, o.logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to restore blackboard: %w", err)
+		}
+		if pbb == nil {
+			return nil, fmt.Errorf("task not found: %s", opts.TaskID)
+		}
+
+		// Wire emitter
+		pbb.SetEmitter(o.emitter)
+
+		// Reactivate task
+		pbb.ReactivateTask()
+
+		bb = pbb
+	}
+
+	// 2. Get available tools
+	availableTools := o.toolRegistry.List()
+
+	// 3. Route the message
+	o.logDebug("orchestrator: starting routing")
+	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "orchestration"})
+	routing, err := o.router.Route(ctx, message, availableTools, o.conversationHistory)
+	if err != nil {
+		o.logDebug("orchestrator: routing failed", "error", err)
+		return nil, fmt.Errorf("routing failed: %w", err)
+	}
+
+	// Emit routing decision
+	o.logDebug("orchestrator: routing completed", "domain", routing.Domain, "complexity", routing.Complexity, "needsClarification", routing.NeedsClarification)
+	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
+	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
+
+	// 4. Handle clarification
+	if routing.NeedsClarification {
+		o.logDebug("orchestrator: returning clarification request")
+		return &HandleResult{
+			Output:          "I need more information to help you. Could you please clarify your request?",
+			RoutingDecision: routing,
+			Blackboard:      bb,
+		}, nil
+	}
+
+	var output string
+	var execResult *orchestration.ExecutionResult
+	var attemptCount int
+	var reflections []Reflection
+
+	// 5. Branch on PlanFirst
+	switch {
+	case !opts.PlanFirst:
+		// === ReAct mode (single step) ===
+		o.logDebug("orchestrator: executing in ReAct mode (single step)")
+
+		// Build synthetic 1-step plan
+		plan := bb.GetPlan()
+		stepN := 0
+		if plan != nil {
+			for _, step := range plan.Steps {
+				if strings.HasPrefix(step.ID, "continuation_") {
+					stepN++
+				}
+			}
+		}
+		stepN++ // increment for the new step
+
+		var stepID string
+		var dependsOn []string
+		if opts.TaskID == "" {
+			// First message
+			stepID = "step_1"
+		} else {
+			// Continuation
+			stepID = fmt.Sprintf("continuation_%d", stepN)
+			if plan != nil {
+				dependsOn = terminalSteps(plan)
+			}
+		}
+
+		// Build AgentProfile from routing domain
+		profile := domainToAgentProfile(routing.Domain, o.config.MaxSteps)
+
+		step := orchestration.PlanStep{
+			ID:          stepID,
+			Description: message,
+			DependsOn:   dependsOn,
+			Profile:     &profile,
+		}
+
+		// Execute ad-hoc step
+		o.logDebug("orchestrator: executing ReAct step", "stepID", stepID)
+		stepResult, err := o.engine.ExecuteAdHocStep(ctx, bb, step, bb.GetOriginalRequest(), true /* streaming */)
+		if err != nil {
+			o.logDebug("orchestrator: ReAct step failed", "error", err)
+			return nil, fmt.Errorf("step execution failed: %w", err)
+		}
+
+		o.logDebug("orchestrator: ReAct step completed", "stepID", stepID, "hasError", stepResult.Error != nil)
+
+		// Build output from step result
+		if stepResult.Error != nil {
+			output = "Step failed: " + stepResult.Error.Error()
+		} else {
+			output = stepResult.FullOutput
+		}
+		attemptCount = 1
+		reflections = bb.GetReflections()
+
+	case opts.TaskID == "":
+		// === Plan&Execute, first message ===
+		o.logDebug("orchestrator: executing in Plan&Execute mode (first message)")
+		execResult, err = o.engine.ExecuteWithBlackboard(ctx, message, bb)
+		if err != nil {
+			o.logDebug("orchestrator: SDK engine returned error", "error", err)
+			return nil, err
+		}
+		o.logDebug("orchestrator: SDK engine completed", "attemptCount", execResult.AttemptCount)
+		output = execResult.Output
+		attemptCount = execResult.AttemptCount
+		reflections = execResult.Reflections
+
+	default:
+		// === Plan&Execute, continuation ===
+		o.logDebug("orchestrator: executing in Plan&Execute mode (continuation)")
+
+		// Build completedSteps from BB's step results for PlanContinuation
+		allResults := bb.GetAllStepResults()
+		completedSteps := make([]orchestration.CompletedStep, 0, len(allResults))
+		for stepID, sr := range allResults {
+			completedSteps = append(completedSteps, orchestration.CompletedStep{
+				StepID: stepID,
+				Output: sr.FullOutput,
+				Steps:  sr.Steps,
+			})
+		}
+
+		// Get existing plan
+		existingPlan := bb.GetPlan()
+		if existingPlan == nil {
+			return nil, errors.New("no existing plan found for continuation")
+		}
+
+		// Call planner's PlanContinuation
+		o.logDebug("orchestrator: calling PlanContinuation")
+		continuationPlan, err := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools)
+		if err != nil {
+			o.logDebug("orchestrator: PlanContinuation failed", "error", err)
+			return nil, fmt.Errorf("continuation planning failed: %w", err)
+		}
+
+		// Merge continuation plan's steps into existing plan
+		mergedPlan := &orchestration.Plan{
+			Steps: append(existingPlan.Steps, continuationPlan.Steps...),
+		}
+		bb.SetPlan(mergedPlan)
+
+		o.logDebug("orchestrator: merged continuation plan", "newSteps", len(continuationPlan.Steps), "totalSteps", len(mergedPlan.Steps))
+
+		// Resume execution with the merged plan (picks up un-completed steps)
+		execResult, err = o.engine.Resume(ctx, bb)
+		if err != nil {
+			o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
+			if pbb, ok := bb.(*PersistentBlackboard); ok {
+				pbb.FailTask()
+			}
+			return nil, err
+		}
+		o.logDebug("orchestrator: SDK engine resume completed", "attemptCount", execResult.AttemptCount)
+		output = execResult.Output
+		attemptCount = execResult.AttemptCount
+		reflections = execResult.Reflections
+	}
+
+	// 6. Persist routing decision on PersistentBlackboard (post-execution)
+	o.logDebug("orchestrator: persisting routing decision")
+	if pbb, ok := bb.(*PersistentBlackboard); ok {
+		pbb.SetRouting(routing)
+		pbb.CompleteTask(attemptCount)
+	}
+
+	// 7. Build HandleResult
+	result := &HandleResult{
+		Output:          output,
+		RoutingDecision: routing,
+		Blackboard:      bb,
+		AttemptCount:    attemptCount,
+		Reflections:     reflections,
+	}
+
+	// Get plan from blackboard if available
+	if plan := bb.GetPlan(); plan != nil {
+		result.Plan = plan
+	}
+
+	o.logDebug("orchestrator: handle_message completed", "attemptCount", result.AttemptCount)
+
+	// 8. Accumulate conversation history for future routing context
+	o.conversationHistory = append(o.conversationHistory,
+		llm.Message{Role: "user", Content: message},
+		llm.Message{Role: "assistant", Content: result.Output},
+	)
+	const maxHistoryMessages = 20
+	if len(o.conversationHistory) > maxHistoryMessages {
+		o.conversationHistory = o.conversationHistory[len(o.conversationHistory)-maxHistoryMessages:]
+	}
+
+	return result, nil
 }
 
 // RunSubAgent is a backward-compatible wrapper around agent.RunSubAgent.

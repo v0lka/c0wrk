@@ -244,3 +244,9 @@ type HandleResult struct {
 	AttemptCount int          `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
 	Reflections  []Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
 }
+
+// HandleOptions controls how a message is processed by HandleMessage.
+type HandleOptions struct {
+	PlanFirst bool   // true = Plan&Execute, false = ReAct (single step)
+	TaskID    string // non-empty = continuation of existing task
+}

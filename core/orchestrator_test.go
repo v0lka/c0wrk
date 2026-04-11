@@ -814,3 +814,878 @@ func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ContinueTask Tests
+// ---------------------------------------------------------------------------
+
+// mockTaskStore is a mock implementation of TaskPersistence for testing ContinueTask.
+type mockTaskStore struct {
+	taskState *TaskState
+	loadErr   error
+}
+
+func (m *mockTaskStore) PersistNewTask(taskID, sessionID, originalRequest string) error {
+	return nil
+}
+
+func (m *mockTaskStore) PersistPlan(taskID string, plan *Plan) error { return nil }
+func (m *mockTaskStore) PersistRouting(taskID string, routing *RoutingDecision) error {
+	return nil
+}
+func (m *mockTaskStore) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []Step) error {
+	return nil
+}
+func (m *mockTaskStore) PersistReflection(taskID string, r Reflection) error { return nil }
+func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
+	return nil
+}
+func (m *mockTaskStore) PersistFailure(taskID string) error { return nil }
+func (m *mockTaskStore) PersistStepFileChanges(taskID, stepID string, changes []FileChange) error {
+	return nil
+}
+func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
+	if m.loadErr != nil {
+		return nil, m.loadErr
+	}
+	return m.taskState, nil
+}
+func (m *mockTaskStore) GetUnfinishedTaskID(sessionID string) (string, error) {
+	return "", nil
+}
+func (m *mockTaskStore) ReactivateTask(taskID string) error { return nil }
+
+// TestHandleMessage_ReActContinuation tests the ReAct continuation flow with mocks.
+func TestHandleMessage_ReActContinuation(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router - returns code domain
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor for continuation step - finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Continuation step completed",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "Done"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // bbFactory
+	)
+
+	// Set up mock task persistence with a stored task
+	mockStore := &mockTaskStore{
+		taskState: &TaskState{
+			TaskID:          "task-123",
+			SessionID:       "session-456",
+			OriginalRequest: "original task",
+			Status:          "completed",
+			Plan: &Plan{
+				Steps: []orchestration.PlanStep{
+					{ID: "step_1", Description: "First step"},
+					{ID: "step_2", Description: "Second step", DependsOn: []string{"step_1"}},
+				},
+			},
+			StepResults: map[string]orchestration.StepResult{
+				"step_1": {StepID: "step_1", FullOutput: "output 1"},
+				"step_2": {StepID: "step_2", FullOutput: "output 2"},
+			},
+		},
+	}
+	orchestrator.SetTaskStore(mockStore)
+
+	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify routing decision is present
+	if result.RoutingDecision == nil {
+		t.Error("expected RoutingDecision in result")
+	}
+
+	// Verify output is present
+	if result.Output == "" {
+		t.Error("expected non-empty output")
+	}
+
+	// Verify plan was extended with continuation step
+	if result.Plan == nil {
+		t.Fatal("expected plan in result")
+	}
+
+	if len(result.Plan.Steps) != 3 {
+		t.Errorf("expected 3 steps (2 original + 1 continuation), got %d", len(result.Plan.Steps))
+	}
+
+	// Verify the continuation step was added
+	lastStep := result.Plan.Steps[len(result.Plan.Steps)-1]
+	if lastStep.ID != "continuation_1" {
+		t.Errorf("expected continuation step ID 'continuation_1', got %q", lastStep.ID)
+	}
+
+	// Verify continuation step depends on terminal steps
+	// In the plan: step_1 -> step_2, so step_2 is terminal
+	if len(lastStep.DependsOn) != 1 || lastStep.DependsOn[0] != "step_2" {
+		t.Errorf("expected continuation to depend on ['step_2'], got %v", lastStep.DependsOn)
+	}
+}
+
+// TestHandleMessage_ReActContinuation_ClarificationBypass tests that when router returns NeedsClarification,
+// HandleMessage returns early with the clarification request.
+func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Router returns needs_clarification
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": true}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // bbFactory
+	)
+
+	// Set up mock task persistence with a stored task
+	mockStore := &mockTaskStore{
+		taskState: &TaskState{
+			TaskID:          "task-123",
+			SessionID:       "session-456",
+			OriginalRequest: "original task",
+			Status:          "completed",
+			Plan: &Plan{
+				Steps: []orchestration.PlanStep{
+					{ID: "step_1", Description: "First step"},
+				},
+			},
+		},
+	}
+	orchestrator.SetTaskStore(mockStore)
+
+	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Should return clarification message
+	expectedMsg := "I need more information to help you. Could you please clarify your request?"
+	if result.Output != expectedMsg {
+		t.Errorf("expected clarification message, got: %s", result.Output)
+	}
+
+	// Should have routing decision with NeedsClarification=true
+	if result.RoutingDecision == nil {
+		t.Fatal("expected RoutingDecision in result")
+	}
+	if !result.RoutingDecision.NeedsClarification {
+		t.Error("expected NeedsClarification to be true")
+	}
+
+	// Should still have blackboard restored
+	if result.Blackboard == nil {
+		t.Error("expected blackboard in result even for clarification")
+	}
+}
+
+// TestHandleMessage_Continuation_NoTaskStore tests that HandleMessage continuation returns error when task store is not configured.
+func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	orchestrator := NewOrchestrator(
+		NewRouter(&mockLLMCaller{}, 5),
+		NewPlanner(&mockLLMCaller{}),
+		&mockLLMCaller{},
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // bbFactory
+	)
+	// Note: taskStore is nil by default
+
+	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
+	if err == nil {
+		t.Fatal("expected error when task store is not configured")
+	}
+
+	if !strings.Contains(err.Error(), "task persistence not configured") {
+		t.Errorf("expected 'task persistence not configured' error, got: %v", err)
+	}
+}
+
+// TestHandleMessage_Continuation_TaskNotFound tests that HandleMessage continuation returns error when task is not found.
+func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Router returns normal response
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // bbFactory
+	)
+
+	// Set up mock task persistence that returns nil (task not found)
+	mockStore := &mockTaskStore{
+		taskState: nil, // task not found
+	}
+	orchestrator.SetTaskStore(mockStore)
+
+	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{PlanFirst: false, TaskID: "non-existent-task"})
+	if err == nil {
+		t.Fatal("expected error when task is not found")
+	}
+
+	if !strings.Contains(err.Error(), "task not found") {
+		t.Errorf("expected 'task not found' error, got: %v", err)
+	}
+}
+
+// TestHandleMessage_ReActFirstMessage tests the ReAct mode first message flow.
+// PlanFirst=false, TaskID="" should create a clean BB, build synthetic 1-step plan,
+// execute single step via ExecuteAdHocStep.
+func TestHandleMessage_ReActFirstMessage(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router - returns code domain
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor for single step - finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Step completed",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "Done"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // bbFactory
+	)
+
+	result, err := orchestrator.HandleMessage(context.Background(), "Write a hello world program", "session-test", HandleOptions{PlanFirst: false, TaskID: ""})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify routing decision is present
+	if result.RoutingDecision == nil {
+		t.Error("expected RoutingDecision in result")
+	}
+
+	// Verify output is present
+	if result.Output == "" {
+		t.Error("expected non-empty output")
+	}
+
+	// Verify plan was created with single step
+	if result.Plan == nil {
+		t.Fatal("expected plan in result")
+	}
+
+	if len(result.Plan.Steps) != 1 {
+		t.Errorf("expected 1 step in synthetic plan, got %d", len(result.Plan.Steps))
+	}
+
+	// Verify the step ID is "step_1" for first message
+	if result.Plan.Steps[0].ID != "step_1" {
+		t.Errorf("expected step ID 'step_1', got %q", result.Plan.Steps[0].ID)
+	}
+
+	// Verify blackboard is present
+	if result.Blackboard == nil {
+		t.Error("expected blackboard in result")
+	}
+
+	// Verify attempt count
+	if result.AttemptCount != 1 {
+		t.Errorf("expected attempt count 1, got %d", result.AttemptCount)
+	}
+}
+
+// TestHandleMessage_PlanExecuteFirstMessage tests the Plan&Execute mode first message flow.
+// PlanFirst=true, TaskID="" should create clean BB, run full P&E via ExecuteWithBlackboard.
+func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router - returns code domain
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Planner - creates multi-step plan
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Plan step 1", "depends_on": [], "parallelizable": true, "estimated_tools": []}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor - finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Plan executed",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "Done"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // bbFactory
+	)
+
+	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{PlanFirst: true, TaskID: ""})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify routing decision is present
+	if result.RoutingDecision == nil {
+		t.Error("expected RoutingDecision in result")
+	}
+
+	// Verify output is present
+	if result.Output == "" {
+		t.Error("expected non-empty output")
+	}
+
+	// Verify plan was created by planner (multi-step)
+	if result.Plan == nil {
+		t.Fatal("expected plan in result")
+	}
+
+	// Verify blackboard is present
+	if result.Blackboard == nil {
+		t.Error("expected blackboard in result")
+	}
+
+	// Verify attempt count
+	if result.AttemptCount < 1 {
+		t.Errorf("expected attempt count >= 1, got %d", result.AttemptCount)
+	}
+}
+
+// TestHandleMessage_PlanExecuteContinuation tests the Plan&Execute continuation flow.
+// PlanFirst=true, TaskID set should restore BB, call PlanContinuation, execute new steps.
+func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router - returns code domain
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // PlanContinuation - creates continuation step
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "continuation_1", "description": "Continuation step", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": []}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor - finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Continuation executed",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "Done"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		nil, // bbFactory
+	)
+
+	// Set up mock task persistence with a stored task
+	mockStore := &mockTaskStore{
+		taskState: &TaskState{
+			TaskID:          "task-123",
+			SessionID:       "session-456",
+			OriginalRequest: "original task",
+			Status:          "completed",
+			Plan: &Plan{
+				Steps: []orchestration.PlanStep{
+					{ID: "step_1", Description: "First step"},
+				},
+			},
+			StepResults: map[string]orchestration.StepResult{
+				"step_1": {StepID: "step_1", FullOutput: "output 1"},
+			},
+		},
+	}
+	orchestrator.SetTaskStore(mockStore)
+
+	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{PlanFirst: true, TaskID: "task-123"})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify routing decision is present
+	if result.RoutingDecision == nil {
+		t.Error("expected RoutingDecision in result")
+	}
+
+	// Verify output is present
+	if result.Output == "" {
+		t.Error("expected non-empty output")
+	}
+
+	// Verify plan was merged (original + continuation)
+	if result.Plan == nil {
+		t.Fatal("expected plan in result")
+	}
+
+	// Should have original step + continuation step
+	if len(result.Plan.Steps) < 2 {
+		t.Errorf("expected at least 2 steps (original + continuation), got %d", len(result.Plan.Steps))
+	}
+
+	// Verify blackboard is present
+	if result.Blackboard == nil {
+		t.Error("expected blackboard in result")
+	}
+}
+
+// TestHandleMessage_ReactivatesTask verifies that ReactivateTask is called on any continuation.
+func TestHandleMessage_ReactivatesTask(t *testing.T) {
+	tests := []struct {
+		name      string
+		planFirst bool
+	}{
+		{"ReAct continuation", false},
+		{"Plan&Execute continuation", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callIdx := 0
+			reactivateCalled := false
+
+			mockLLM := &mockLLMCaller{
+				callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+					callIdx++
+					switch callIdx {
+					case 1: // Router
+						return &llm.ChatResponse{
+							Message: llm.Message{
+								Role:    "assistant",
+								Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+							},
+							StopReason: "end_turn",
+						}, nil
+					case 2:
+						if tt.planFirst {
+							// PlanContinuation
+							return &llm.ChatResponse{
+								Message: llm.Message{
+									Role:    "assistant",
+									Content: `{"steps": [{"id": "cont_1", "description": "cont", "depends_on": [], "parallelizable": true}]}`,
+								},
+								StopReason: "end_turn",
+							}, nil
+						}
+						fallthrough
+					default: // Executor
+						return &llm.ChatResponse{
+							Message: llm.Message{
+								Role:    "assistant",
+								Content: "Done",
+								ToolCalls: []llm.ToolCall{{
+									ID:    "call_1",
+									Name:  "finish",
+									Input: json.RawMessage(`{"answer": "done"}`),
+								}},
+							},
+							StopReason: "tool_use",
+						}, nil
+					}
+				},
+			}
+
+			registry := createTestRegistry()
+			counter := llm.NewSimpleTokenCounter()
+
+			router := NewRouter(mockLLM, 5)
+			planner := NewPlanner(mockLLM)
+
+			orchestrator := NewOrchestrator(
+				router,
+				planner,
+				mockLLM,
+				registry,
+				registry,
+				counter,
+				OrchestratorConfig{MaxSteps: 10},
+				testContextFactory,
+				nil, // reflector
+				nil, // logger
+				nil, // emitter
+				nil, // modelRegistry
+				ToolResultBudget{},
+				nil, // bbFactory
+			)
+
+			// Create mock store that tracks ReactivateTask calls
+			mockStore := &mockTaskStoreWithReactivate{
+				taskState: &TaskState{
+					TaskID:          "task-123",
+					SessionID:       "session-456",
+					OriginalRequest: "original task",
+					Status:          "completed",
+					Plan: &Plan{
+						Steps: []orchestration.PlanStep{
+							{ID: "step_1", Description: "First step"},
+						},
+					},
+					StepResults: map[string]orchestration.StepResult{
+						"step_1": {StepID: "step_1", FullOutput: "output 1"},
+					},
+				},
+				reactivateFn: func(taskID string) error {
+					reactivateCalled = true
+					return nil
+				},
+			}
+			orchestrator.SetTaskStore(mockStore)
+
+			_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{PlanFirst: tt.planFirst, TaskID: "task-123"})
+			if err != nil {
+				t.Fatalf("HandleMessage failed: %v", err)
+			}
+
+			if !reactivateCalled {
+				t.Error("expected ReactivateTask to be called for continuation")
+			}
+		})
+	}
+}
+
+// mockTaskStoreWithReactivate is a mock TaskPersistence that tracks ReactivateTask calls.
+type mockTaskStoreWithReactivate struct {
+	taskState     *TaskState
+	loadErr       error
+	reactivateFn  func(taskID string) error
+}
+
+func (m *mockTaskStoreWithReactivate) PersistNewTask(taskID, sessionID, originalRequest string) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) PersistPlan(taskID string, plan *Plan) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistRouting(taskID string, routing *RoutingDecision) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []Step) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r Reflection) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistStepFileChanges(taskID, stepID string, changes []FileChange) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {
+	if m.loadErr != nil {
+		return nil, m.loadErr
+	}
+	return m.taskState, nil
+}
+func (m *mockTaskStoreWithReactivate) GetUnfinishedTaskID(sessionID string) (string, error) {
+	return "", nil
+}
+func (m *mockTaskStoreWithReactivate) ReactivateTask(taskID string) error {
+	if m.reactivateFn != nil {
+		return m.reactivateFn(taskID)
+	}
+	return nil
+}
+
+// TestHandleMessage_Clarification tests that clarification early return works for both modes.
+func TestHandleMessage_Clarification(t *testing.T) {
+	tests := []struct {
+		name      string
+		planFirst bool
+	}{
+		{"ReAct mode", false},
+		{"Plan&Execute mode", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockLLM := &mockLLMCaller{
+				callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+					// Router returns needs_clarification
+					return &llm.ChatResponse{
+						Message: llm.Message{
+							Role:    "assistant",
+							Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": true}`,
+						},
+						StopReason: "end_turn",
+					}, nil
+				},
+			}
+
+			registry := createTestRegistry()
+			counter := llm.NewSimpleTokenCounter()
+
+			router := NewRouter(mockLLM, 5)
+			planner := NewPlanner(mockLLM)
+
+			orchestrator := NewOrchestrator(
+				router,
+				planner,
+				mockLLM,
+				registry,
+				registry,
+				counter,
+				OrchestratorConfig{MaxSteps: 10},
+				testContextFactory,
+				nil, // reflector
+				nil, // logger
+				nil, // emitter
+				nil, // modelRegistry
+				ToolResultBudget{},
+				nil, // bbFactory
+			)
+
+			result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{PlanFirst: tt.planFirst, TaskID: ""})
+			if err != nil {
+				t.Fatalf("HandleMessage failed: %v", err)
+			}
+
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+
+			// Should return clarification message
+			expectedMsg := "I need more information to help you. Could you please clarify your request?"
+			if result.Output != expectedMsg {
+				t.Errorf("expected clarification message, got: %s", result.Output)
+			}
+
+			// Should have routing decision with NeedsClarification=true
+			if result.RoutingDecision == nil {
+				t.Fatal("expected RoutingDecision in result")
+			}
+			if !result.RoutingDecision.NeedsClarification {
+				t.Error("expected NeedsClarification to be true")
+			}
+		})
+	}
+}

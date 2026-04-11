@@ -429,6 +429,7 @@ type TaskStore interface {
 	LoadTaskSteps(taskID string) ([]TaskStepRecord, error)
 	LoadStepFileChanges(taskID string) (map[string]json.RawMessage, error)
 	GetUnfinishedTask(sessionID string) (*TaskRecord, error)
+	ReactivateTask(taskID string) error
 }
 
 // compile-time check
@@ -538,6 +539,18 @@ func (s *SQLiteSessionStore) FailTask(taskID string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("failed to fail task: %w", err)
+	}
+	return nil
+}
+
+// ReactivateTask reactivates a completed task back to in_progress.
+func (s *SQLiteSessionStore) ReactivateTask(taskID string) error {
+	_, err := s.db.ExecContext(context.Background(),
+		`UPDATE tasks SET status = 'in_progress', completed_at = NULL WHERE id = ?`,
+		taskID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to reactivate task: %w", err)
 	}
 	return nil
 }

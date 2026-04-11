@@ -39,18 +39,19 @@ func SessionIDFromContext(ctx context.Context) string {
 
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
-	ID            string
-	ProjectID     string
-	Name          string
-	CreatedAt     time.Time
-	Archived      bool
-	WorkspacePath string // workspace directory (from project)
-	orchestrator  *core.Orchestrator
-	logFile       *os.File           // session log file handle, closed on deletion
-	cancel        context.CancelFunc // cancel for current task
-	active        bool               // is currently processing
-	done          chan struct{}      // closed when task goroutine finishes
-	mu            sync.Mutex
+	ID                  string
+	ProjectID           string
+	Name                string
+	CreatedAt           time.Time
+	Archived            bool
+	WorkspacePath       string // workspace directory (from project)
+	orchestrator        *core.Orchestrator
+	logFile             *os.File           // session log file handle, closed on deletion
+	cancel              context.CancelFunc // cancel for current task
+	active              bool               // is currently processing
+	done                chan struct{}      // closed when task goroutine finishes
+	lastCompletedTaskID string             // tracks last completed task for continuations
+	mu                  sync.Mutex
 }
 
 // OrchestratorFactory creates a new Orchestrator with the given emitter, logger, workspace path,
@@ -139,11 +140,12 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 
 	// Build BlackboardFactory if task persistence is configured
 	var bbFactory core.BlackboardFactory
+	var adapter *TaskStoreAdapter
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
 	if ts != nil {
-		adapter := NewTaskStoreAdapter(ts)
+		adapter = NewTaskStoreAdapter(ts)
 		sessionID := id // capture for closure
 		bbFactory = func(taskID string) core.Blackboard {
 			return core.NewPersistentBlackboard(taskID, sessionID, adapter, logger)
@@ -158,6 +160,11 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 			_ = logFile.Close()
 		}
 		return nil, fmt.Errorf("failed to create orchestrator: %w", err)
+	}
+
+	// Wire task persistence into core orchestrator for continuations
+	if adapter != nil {
+		orchestrator.SetTaskStore(adapter)
 	}
 
 	// Create session
@@ -405,7 +412,8 @@ func (m *Manager) ArchiveSession(id string) error {
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
+// planFirst controls whether to use Plan&Execute mode (true) or ReAct mode (false).
+func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bool) error {
 	m.mu.RLock()
 	session, exists := m.sessions[id]
 	if !exists {
@@ -456,8 +464,27 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 			session.mu.Unlock()
 		}()
 
-		// Call orchestrator
-		result, err := session.orchestrator.Handle(ctx, msg)
+			// Get last completed task ID for continuation
+		session.mu.Lock()
+		lastTaskID := session.lastCompletedTaskID
+		session.mu.Unlock()
+
+		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
+			PlanFirst: planFirst,
+			TaskID:    lastTaskID,
+		})
+
+		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh
+		if err != nil && lastTaskID != "" {
+			slog.Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
+			session.mu.Lock()
+			session.lastCompletedTaskID = "" // clear to avoid repeated failures
+			session.mu.Unlock()
+			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
+				PlanFirst: planFirst,
+				TaskID:    "",
+			})
+		}
 
 		if err != nil {
 			// Check if it was a cancellation
@@ -495,6 +522,13 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 			})
 			m.emitResumableIfUnfinished(id)
 			return
+		}
+
+		// Store the task ID for potential continuations
+		if pbb, ok := result.Blackboard.(*core.PersistentBlackboard); ok {
+			session.mu.Lock()
+			session.lastCompletedTaskID = pbb.TaskID()
+			session.mu.Unlock()
 		}
 
 		// Emit done event with result
@@ -629,6 +663,13 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 			})
 			m.emitResumableIfUnfinished(id)
 			return
+		}
+
+		// Store the task ID for potential continuations
+		if pbb, ok := result.Blackboard.(*core.PersistentBlackboard); ok {
+			session.mu.Lock()
+			session.lastCompletedTaskID = pbb.TaskID()
+			session.mu.Unlock()
 		}
 
 		m.emitFunc(Event{

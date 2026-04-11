@@ -28,6 +28,8 @@ type TaskPersistence interface {
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
 	GetUnfinishedTaskID(sessionID string) (string, error) // returns "" if none
+	// Task lifecycle
+	ReactivateTask(taskID string) error
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +223,13 @@ func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 func (pb *PersistentBlackboard) FailTask() {
 	pb.persistSafe("task failure", func() error {
 		return pb.store.PersistFailure(pb.taskID)
+	})
+}
+
+// ReactivateTask reactivates a completed task back to in_progress.
+func (pb *PersistentBlackboard) ReactivateTask() {
+	pb.persistSafe("task reactivation", func() error {
+		return pb.store.ReactivateTask(pb.taskID)
 	})
 }
 

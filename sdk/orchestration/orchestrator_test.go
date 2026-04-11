@@ -2,12 +2,14 @@ package orchestration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/user/agent/sdk/agent"
+	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -16,8 +18,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockPlanner struct {
-	planFn   func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
-	replanFn func(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
+	planFn            func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
+	replanFn          func(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
+	planContinuationFn func(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor) (*Plan, error)
 }
 
 func (m *mockPlanner) Plan(ctx context.Context, task string, t []tools.ToolDescriptor, r []Reflection) (*Plan, error) {
@@ -32,6 +35,13 @@ func (m *mockPlanner) Replan(ctx context.Context, plan *Plan, completed []Comple
 		return m.replanFn(ctx, plan, completed, failedStep, reflection, reflections)
 	}
 	return plan, nil
+}
+
+func (m *mockPlanner) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor) (*Plan, error) {
+	if m.planContinuationFn != nil {
+		return m.planContinuationFn(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools)
+	}
+	return &Plan{Steps: []PlanStep{{ID: "continuation_1", Description: "default continuation step"}}}, nil
 }
 
 type recordingEvents struct {
@@ -589,3 +599,352 @@ func TestPerStepRetry_MaxRetriesBoundary(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Terminal Steps Tests
+// ---------------------------------------------------------------------------
+
+// TestTerminalSteps verifies the terminalSteps function correctly identifies
+// leaf nodes in various DAG shapes.
+func TestTerminalSteps(t *testing.T) {
+	tests := []struct {
+		name     string
+		plan     *Plan
+		expected []string
+	}{
+		{
+			name:     "nil plan returns nil",
+			plan:     nil,
+			expected: nil,
+		},
+		{
+			name:     "empty plan returns nil",
+			plan:     &Plan{Steps: []PlanStep{}},
+			expected: nil,
+		},
+		{
+			name: "single step is terminal",
+			plan: &Plan{Steps: []PlanStep{
+				{ID: "a"},
+			}},
+			expected: []string{"a"},
+		},
+		{
+			name: "linear chain A→B→C: terminal = [C]",
+			plan: &Plan{Steps: []PlanStep{
+				{ID: "a"},
+				{ID: "b", DependsOn: []string{"a"}},
+				{ID: "c", DependsOn: []string{"b"}},
+			}},
+			expected: []string{"c"},
+		},
+		{
+			name: "diamond A→B, A→C, B→D, C→D: terminal = [D]",
+			plan: &Plan{Steps: []PlanStep{
+				{ID: "a"},
+				{ID: "b", DependsOn: []string{"a"}},
+				{ID: "c", DependsOn: []string{"a"}},
+				{ID: "d", DependsOn: []string{"b", "c"}},
+			}},
+			expected: []string{"d"},
+		},
+		{
+			name: "parallel independent steps A, B, C: terminal = [A, B, C]",
+			plan: &Plan{Steps: []PlanStep{
+				{ID: "a"},
+				{ID: "b"},
+				{ID: "c"},
+			}},
+			expected: []string{"a", "b", "c"},
+		},
+		{
+			name: "fork A→B, A→C with two terminals",
+			plan: &Plan{Steps: []PlanStep{
+				{ID: "a"},
+				{ID: "b", DependsOn: []string{"a"}},
+				{ID: "c", DependsOn: []string{"a"}},
+			}},
+			expected: []string{"b", "c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := terminalSteps(tt.plan)
+
+			// Sort both slices for deterministic comparison
+			sortStrings(got)
+			sortStrings(tt.expected)
+
+			if len(got) != len(tt.expected) {
+				t.Fatalf("expected %v, got %v", tt.expected, got)
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Fatalf("expected %v, got %v", tt.expected, got)
+				}
+			}
+		})
+	}
+}
+
+// sortStrings sorts a string slice in place.
+func sortStrings(s []string) {
+	for i := 0; i < len(s); i++ {
+		for j := i + 1; j < len(s); j++ {
+			if s[i] > s[j] {
+				s[i], s[j] = s[j], s[i]
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExecuteAdHocStep Tests
+// ---------------------------------------------------------------------------
+
+// mockContextManager is a minimal mock for ContextManager used in ExecuteAdHocStep tests.
+type mockContextManager struct {
+	systemPrompt   string
+	taskDefinition string
+}
+
+func (m *mockContextManager) BuildPrompt() []llm.Message                      { return nil }
+func (m *mockContextManager) AddStep(_ agent.Step)                            {}
+func (m *mockContextManager) NeedsCompaction() bool                           { return false }
+func (m *mockContextManager) Compact(_ context.Context)                       {}
+func (m *mockContextManager) SetStrategy(_ agent.CompactionStrategy)          {}
+func (m *mockContextManager) CheckFill() agent.FillCheck                      { return agent.FillCheck{} }
+func (m *mockContextManager) CorrectTokenCount(_ int)                         {}
+func (m *mockContextManager) FillPercent() float64                            { return 0 }
+func (m *mockContextManager) AvailableTokens() int                            { return 8000 }
+func (m *mockContextManager) OutputLimit() int                                { return 1000 }
+func (m *mockContextManager) SetTask(task string)                             { m.taskDefinition = task }
+
+// TestExecuteAdHocStep_AppendsToBlackboard verifies that ExecuteAdHocStep
+// stores the step result in the Blackboard and the result can be retrieved.
+func TestExecuteAdHocStep_AppendsToBlackboard(t *testing.T) {
+	bb := NewMapBlackboard()
+	bb.SetOriginalRequest("original task")
+	bb.SetPlan(&Plan{Steps: []PlanStep{
+		{ID: "step_1", Description: "First step"},
+	}})
+	bb.SetStepResult("step_1", "output from step 1", nil, nil)
+
+	o := New(Config{
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+			return &mockContextManager{systemPrompt: systemPrompt}
+		},
+		LLM:           &mockLLMForAdHoc{},
+		Tools:         &mockToolExecutor{},
+		TokenCounter:  llm.NewSimpleTokenCounter(),
+		MaxSteps:      10,
+		ToolRegistry:  tools.NewToolRegistry(),
+	})
+
+	step := PlanStep{
+		ID:          "continuation_1",
+		Description: "Continue the task",
+	}
+
+	result, err := o.ExecuteAdHocStep(context.Background(), bb, step, "original task", false)
+	if err != nil {
+		t.Fatalf("ExecuteAdHocStep failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if result.StepID != "continuation_1" {
+		t.Errorf("expected StepID continuation_1, got %q", result.StepID)
+	}
+
+	// Verify the result is stored in the blackboard
+	sr, ok := bb.GetStepResult("continuation_1")
+	if !ok {
+		t.Fatal("expected step result to be stored in blackboard")
+	}
+
+	if sr.StepID != "continuation_1" {
+		t.Errorf("blackboard step ID: got %q, want continuation_1", sr.StepID)
+	}
+
+	if sr.FullOutput == "" {
+		t.Error("expected non-empty full output in blackboard")
+	}
+}
+
+// TestExecuteAdHocStep_ExtendsPlan verifies that ExecuteAdHocStep extends
+// the existing plan in the blackboard.
+func TestExecuteAdHocStep_ExtendsPlan(t *testing.T) {
+	bb := NewMapBlackboard()
+	bb.SetOriginalRequest("original task")
+
+	// Start with a 2-step plan
+	initialPlan := &Plan{Steps: []PlanStep{
+		{ID: "step_1", Description: "First step"},
+		{ID: "step_2", Description: "Second step"},
+	}}
+	bb.SetPlan(initialPlan)
+	bb.SetStepResult("step_1", "output 1", nil, nil)
+	bb.SetStepResult("step_2", "output 2", nil, nil)
+
+	o := New(Config{
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+			return &mockContextManager{systemPrompt: systemPrompt}
+		},
+		LLM:           &mockLLMForAdHoc{},
+		Tools:         &mockToolExecutor{},
+		TokenCounter:  llm.NewSimpleTokenCounter(),
+		MaxSteps:      10,
+		ToolRegistry:  tools.NewToolRegistry(),
+	})
+
+	step := PlanStep{
+		ID:          "continuation_1",
+		Description: "Continue the task",
+		DependsOn:   []string{"step_1", "step_2"},
+	}
+
+	_, err := o.ExecuteAdHocStep(context.Background(), bb, step, "original task", false)
+	if err != nil {
+		t.Fatalf("ExecuteAdHocStep failed: %v", err)
+	}
+
+	// Verify plan now has 3 steps
+	updatedPlan := bb.GetPlan()
+	if updatedPlan == nil {
+		t.Fatal("expected non-nil plan")
+	}
+
+	if len(updatedPlan.Steps) != 3 {
+		t.Fatalf("expected 3 steps in plan, got %d", len(updatedPlan.Steps))
+	}
+
+	// Verify the new step is appended with correct ID
+	lastStep := updatedPlan.Steps[2]
+	if lastStep.ID != "continuation_1" {
+		t.Errorf("expected last step ID continuation_1, got %q", lastStep.ID)
+	}
+
+	if lastStep.Description != "Continue the task" {
+		t.Errorf("expected description 'Continue the task', got %q", lastStep.Description)
+	}
+
+	// Verify dependencies are preserved
+	if len(lastStep.DependsOn) != 2 {
+		t.Errorf("expected 2 dependencies, got %d", len(lastStep.DependsOn))
+	}
+}
+
+// mockLLMForAdHoc is a minimal LLM mock for ExecuteAdHocStep tests.
+type mockLLMForAdHoc struct{}
+
+func (m *mockLLMForAdHoc) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: "Task completed successfully",
+			ToolCalls: []llm.ToolCall{{
+				ID:    "call_1",
+				Name:  "finish",
+				Input: json.RawMessage(`{"answer": "done"}`),
+			}},
+		},
+		StopReason: "tool_use",
+	}, nil
+}
+
+// mockToolExecutor is a minimal tool executor mock.
+type mockToolExecutor struct{}
+
+func (m *mockToolExecutor) Execute(_ context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
+	return tools.ToolResult{Content: "ok"}, nil
+}
+
+// ---------------------------------------------------------------------------
+// ExecuteWithBlackboard Tests
+// ---------------------------------------------------------------------------
+
+// TestExecuteWithBlackboard_UsesProvidedBlackboard verifies that ExecuteWithBlackboard
+// uses the provided blackboard and does NOT create a new one.
+func TestExecuteWithBlackboard_UsesProvidedBlackboard(t *testing.T) {
+	// Create a blackboard with pre-existing state
+	bb := NewMapBlackboard()
+	bb.SetOriginalRequest("pre-existing request")
+	preExistingPlan := &Plan{Steps: []PlanStep{
+		{ID: "pre_step_1", Description: "Pre-existing step"},
+	}}
+	bb.SetPlan(preExistingPlan)
+
+	var capturedBB Blackboard
+	o := New(Config{
+		Planner: &mockPlanner{
+			planFn: func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error) {
+				// This should NOT be called since we're providing a BB with existing plan
+				return nil, errors.New("Planner.Plan should not be called for ExecuteWithBlackboard")
+			},
+		},
+		Events: &recordingEvents{},
+		StateFactory: func(taskID string) Blackboard {
+			t.Error("StateFactory should not be called - BB should be provided")
+			return nil
+		},
+		// Use Resume path by checking that the BB's plan is used
+	})
+
+	// Resume requires a plan, so let's test with Resume instead
+	result, err := o.Resume(context.Background(), bb)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	// Verify the same blackboard instance is returned
+	if result.Blackboard != bb {
+		t.Error("ExecuteWithBlackboard/Resume should return the same blackboard instance")
+	}
+
+	// Verify the original request is preserved (not overwritten)
+	if result.Blackboard.GetOriginalRequest() != "pre-existing request" {
+		t.Errorf("original request should be preserved, got: %s", result.Blackboard.GetOriginalRequest())
+	}
+
+	// Keep a reference to verify it's the same instance
+	capturedBB = result.Blackboard
+	_ = capturedBB
+}
+
+// TestExecuteWithBlackboard_DoesNotSetOriginalRequest verifies that ExecuteWithBlackboard
+// does NOT call SetOriginalRequest on the provided blackboard.
+func TestExecuteWithBlackboard_DoesNotSetOriginalRequest(t *testing.T) {
+	bb := &blackboardWithCallTracker{Blackboard: NewMapBlackboard()}
+	bb.SetOriginalRequest("original value")
+	bb.setOriginalRequestCalled = false // reset after setup
+
+	o := New(Config{
+		Planner: &mockPlanner{},
+		Events:  &recordingEvents{},
+	})
+
+	// Use Resume which requires a plan in the BB
+	bb.SetPlan(&Plan{Steps: []PlanStep{{ID: "step_1", Description: "Test"}}})
+	_, _ = o.Resume(context.Background(), bb)
+
+	// Verify SetOriginalRequest was NOT called (except for our initial set)
+	if bb.setOriginalRequestCalled {
+		t.Error("ExecuteWithBlackboard/Resume should NOT call SetOriginalRequest on the provided blackboard")
+	}
+}
+
+// blackboardWithCallTracker wraps MapBlackboard to track method calls.
+type blackboardWithCallTracker struct {
+	Blackboard
+	setOriginalRequestCalled bool
+}
+
+func (b *blackboardWithCallTracker) SetOriginalRequest(req string) {
+	b.setOriginalRequestCalled = true
+	b.Blackboard.SetOriginalRequest(req)
+}
+

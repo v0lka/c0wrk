@@ -11,7 +11,7 @@ export function useSessionAPI() {
     listSessions: () => api?.ListSessions(),
     renameSession: (id: string, name: string) => api?.RenameSession(id, name),
     archiveSession: (id: string) => api?.ArchiveSession(id),
-    sendMessage: (id: string, text: string) => api?.SendMessage(id, text),
+    sendMessage: (id: string, text: string, planFirst: boolean) => api?.SendMessage(id, text, planFirst),
     cancelTask: (id: string) => api?.CancelTask(id),
     getHistory: (id: string) => api?.GetSessionHistory(id),
     getConfig: () => api?.GetConfig(),

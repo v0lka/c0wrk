@@ -15,7 +15,7 @@ declare global {
           ListSessions(): Promise<SessionInfo[]>
           RenameSession(id: string, name: string): Promise<void>
           ArchiveSession(id: string): Promise<void>
-          SendMessage(id: string, text: string): Promise<void>
+          SendMessage(id: string, text: string, planFirst: boolean): Promise<void>
           CancelTask(id: string): Promise<void>
           GetSessionHistory(id: string): Promise<ChatMessage[]>
           GetConfig(): Promise<desktop.ConfigResponse>

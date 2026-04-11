@@ -137,6 +137,12 @@ func (m *mockTaskPersistence) GetUnfinishedTaskID(sessionID string) (string, err
 	return "", nil
 }
 
+func (m *mockTaskPersistence) ReactivateTask(taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistError
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

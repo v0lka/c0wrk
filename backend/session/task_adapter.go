@@ -91,6 +91,11 @@ func (a *TaskStoreAdapter) PersistFailure(taskID string) error {
 	return a.store.FailTask(taskID)
 }
 
+// ReactivateTask reactivates a completed task back to in_progress.
+func (a *TaskStoreAdapter) ReactivateTask(taskID string) error {
+	return a.store.ReactivateTask(taskID)
+}
+
 // PersistStepFileChanges JSON-marshals file changes and stores them for a step.
 func (a *TaskStoreAdapter) PersistStepFileChanges(taskID, stepID string, changes []core.FileChange) error {
 	data, err := json.Marshal(changes)

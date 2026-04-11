@@ -11,6 +11,9 @@ var PlannerPlan string
 //go:embed planner_replan.md
 var PlannerReplan string
 
+//go:embed planner_continue.md
+var PlannerContinue string
+
 // Orchestrator prompt
 
 //go:embed orchestrator_system.md

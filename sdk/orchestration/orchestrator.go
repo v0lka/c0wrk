@@ -67,6 +67,17 @@ func (o *Orchestrator) Execute(ctx context.Context, userMessage string) (*Execut
 	return o.runPlanExecute(ctx, userMessage, availableTools, nil, bb, nil, nil)
 }
 
+// ExecuteWithBlackboard runs the full Plan&Execute loop with a pre-existing blackboard.
+// This is used for continuations where the blackboard has been restored from persistence.
+// The blackboard must already have its OriginalRequest set.
+func (o *Orchestrator) ExecuteWithBlackboard(ctx context.Context, userMessage string, bb Blackboard) (*ExecutionResult, error) {
+	// Get available tools
+	availableTools := o.availableTools()
+
+	o.events.OnServiceMeta("starting plan-execute loop with existing blackboard", map[string]any{"tools": len(availableTools)})
+	return o.runPlanExecute(ctx, userMessage, availableTools, nil, bb, nil, nil)
+}
+
 // Resume continues execution from a previously persisted blackboard state.
 func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard) (*ExecutionResult, error) {
 	plan := bb.GetPlan()
@@ -837,4 +848,176 @@ func defaultSystemPrompt(_ context.Context, stepDescription string) string {
 	b.WriteString("You are an AI assistant executing a task step.\n\n")
 	b.WriteString("Your task: " + stepDescription + "\n")
 	return b.String()
+}
+
+// terminalSteps returns the IDs of steps that are "terminal" in the plan -
+// i.e., no other step in the plan lists them in its DependsOn.
+// These are the leaf nodes of the DAG.
+func terminalSteps(plan *Plan) []string {
+	if plan == nil || len(plan.Steps) == 0 {
+		return nil
+	}
+
+	// Build set of all steps that are dependencies of other steps
+	dependedOn := make(map[string]bool)
+	for _, step := range plan.Steps {
+		for _, depID := range step.DependsOn {
+			dependedOn[depID] = true
+		}
+	}
+
+	// Terminal steps are those not depended on by any other step
+	var terminals []string
+	for _, step := range plan.Steps {
+		if !dependedOn[step.ID] {
+			terminals = append(terminals, step.ID)
+		}
+	}
+	return terminals
+}
+
+// ExecuteAdHocStep executes a single ad-hoc step on an existing Blackboard,
+// using the same machinery as regular plan step execution.
+// This is useful for continuation steps that need to run after the main plan completes.
+func (o *Orchestrator) ExecuteAdHocStep(
+	ctx context.Context,
+	bb Blackboard,
+	step PlanStep,
+	userMessage string,
+	streaming bool,
+) (*StepResult, error) {
+	// 1. Extend the plan with the new step
+	plan := bb.GetPlan()
+	if plan == nil {
+		plan = &Plan{Steps: []PlanStep{step}}
+	} else {
+		plan.Steps = append(plan.Steps, step)
+	}
+	bb.SetPlan(plan)
+
+	// Get available tools
+	availableTools := o.availableTools()
+
+	// 2. Resolve step config and build step task
+	stepIndex := len(plan.Steps) - 1 // New step is at the end
+	stepCfg := o.resolveStepConfig(step, availableTools)
+	stepTools := stepCfg.AllowedTools
+	if len(stepTools) == 0 {
+		stepTools = availableTools
+	}
+	maxSteps := stepCfg.MaxSteps
+	if maxSteps == 0 {
+		maxSteps = o.maxSteps
+	}
+
+	// Build completedSteps from existing blackboard results for dependency context
+	allResults := bb.GetAllStepResults()
+	completedSteps := make(map[string]CompletedStep, len(allResults))
+	for stepID, sr := range allResults {
+		completedSteps[stepID] = CompletedStep{
+			StepID: stepID,
+			Output: sr.FullOutput,
+			Steps:  sr.Steps,
+		}
+	}
+
+	taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, "", maxSteps)
+
+	// 3. Build system prompt with role suffix from step's profile (if present)
+	var systemPrompt string
+	switch {
+	case stepCfg.SystemPrompt != "":
+		systemPrompt = stepCfg.SystemPrompt
+	case o.cfg.SystemPrompt != nil:
+		systemPrompt = o.cfg.SystemPrompt(ctx, step.Description)
+	default:
+		systemPrompt = defaultSystemPrompt(ctx, step.Description)
+	}
+	if stepCfg.SystemPromptSuffix != "" {
+		systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
+	}
+
+	// Resolve model metadata
+	var modelMeta llm.ModelMetadata
+	if o.cfg.ModelRegistry != nil {
+		modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
+	}
+
+	// Create context manager
+	var cm agent.ContextManager
+	if o.cfg.ContextFactory != nil {
+		cm = o.cfg.ContextFactory(systemPrompt, modelMeta, stepCfg.CompactionStrategy)
+	} else {
+		return nil, errors.New("ContextFactory is required but not configured")
+	}
+
+	// Allow consumer to inject task-specific context
+	if o.cfg.ContextSetup != nil {
+		o.cfg.ContextSetup(cm, taskDef.task)
+	}
+
+	// 4. Create executor infrastructure
+	scopedEvents := o.scopeEvents(step.ID)
+	executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget)
+	executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
+
+	// 5. Set up SharedWorkspace for inter-step communication
+	sharedWS := agent.NewSharedWorkspace()
+	ctx = agent.WithSharedWorkspace(ctx, sharedWS)
+
+	// 6. Set up file change tracker if workspace path is available
+	var tracker *agent.FileChangeTracker
+	if workspaceRoot := tools.WorkspacePathFrom(ctx); workspaceRoot != "" {
+		tracker = agent.NewFileChangeTracker(workspaceRoot)
+		ctx = agent.WithFileTracker(ctx, tracker)
+	}
+
+	// 7. Build and execute the task
+	o.events.OnStepStarted(step.ID, step.Description)
+	stepStartTime := time.Now()
+
+	tasks := []agent.SubAgentTask{{
+		StepID:    step.ID,
+		Executor:  executor,
+		CM:        cm,
+		TaskTools: taskDef.tools,
+		TaskDesc:  taskDef.task,
+		Emitter:   scopedEvents,
+	}}
+
+	results := agent.RunSubAgentsParallel(ctx, tasks)
+
+	// 8. Process results
+	if len(results) == 0 {
+		return nil, errors.New("no results returned from step execution")
+	}
+
+	r := results[0]
+	duration := time.Since(stepStartTime)
+	o.events.OnStepCompleted(step.ID, r.Error == nil, duration)
+
+	// Store step output in SharedWorkspace
+	if r.Error == nil {
+		sharedWS.Store(r.StepID+"/output", r.Output, r.StepID)
+	}
+
+	// 9. Store results in Blackboard
+	bb.SetStepResult(r.StepID, r.Output, r.Error, r.Steps)
+
+	// Collect file changes from tracker
+	if tracker != nil {
+		fileChanges := tracker.GetStepChanges(r.StepID)
+		if len(fileChanges) > 0 {
+			bb.SetStepFileChanges(r.StepID, fileChanges)
+		}
+	}
+
+	// 10. Return StepResult
+	return &StepResult{
+		StepID:      r.StepID,
+		FullOutput:  r.Output,
+		Error:       r.Error,
+		Steps:       r.Steps,
+		FileChanges: bb.GetStepFileChanges(r.StepID),
+	}, nil
 }

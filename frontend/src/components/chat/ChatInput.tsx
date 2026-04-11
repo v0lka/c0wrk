@@ -13,6 +13,7 @@ const MAX_LINES = 6
 export function ChatInput() {
   const [text, setText] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
+  const [planFirst, setPlanFirst] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const touchSession = useSessionStore(s => s.touchSession)
@@ -91,7 +92,7 @@ export function ChatInput() {
     useChatStore.getState().setActivityStatus('Processing...')
 
     try {
-      await api.SendMessage(sessionId, messageText)
+      await api.SendMessage(sessionId, messageText, planFirst)
     } catch (error) {
       logger.error('Failed to send message:', error)
       // Display the error in the chat UI so the user can see it
@@ -108,7 +109,7 @@ export function ChatInput() {
     } finally {
       setIsProcessing(false)
     }
-  }, [text, api, addMessage, addSession, setActiveSession, touchSession, setTaskActive])
+  }, [text, api, addMessage, addSession, setActiveSession, touchSession, setTaskActive, planFirst])
 
   const handleCancel = useCallback(async () => {
     if (!activeSessionId || !api) return
@@ -161,7 +162,20 @@ export function ChatInput() {
           <p className="px-3 text-xs italic text-muted-foreground">{blockingMessage}</p>
         )}
 
-        <div className="flex items-center justify-end pt-2 min-h-[40px]">
+        <div className="flex items-center justify-between pt-2 min-h-[40px]">
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={planFirst}
+              onChange={(e) => setPlanFirst(e.target.checked)}
+              disabled={isInputDisabled}
+              className="h-3.5 w-3.5 rounded border-border accent-emerald-500"
+            />
+            <span className={`text-xs ${isInputDisabled ? 'text-muted-foreground/50' : 'text-muted-foreground'}`}>
+              Plan first
+            </span>
+          </label>
+          
           {showCancel ? (
             <Button
               variant="destructive"

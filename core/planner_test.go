@@ -714,3 +714,58 @@ func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
 		t.Error("system prompt should contain architecture info")
 	}
 }
+
+// TestPlanContinuation verifies that PlanContinuation generates a valid plan
+// for follow-up requests after task completion.
+func TestPlanContinuation(t *testing.T) {
+	mockResponse := `{
+		"steps": [
+			{"id": "continuation_1", "description": "Address follow-up request", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash"]}
+		]
+	}`
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: mockResponse,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	originalRequest := "Build a CLI tool"
+	existingPlan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "Create main.go"},
+			{ID: "step_2", Description: "Add tests"},
+		},
+	}
+	completedSteps := []CompletedStep{
+		{StepID: "step_1", Output: "Created main.go with basic CLI structure"},
+		{StepID: "step_2", Output: "Added unit tests for all functions"},
+	}
+	newMessage := "Now add a version flag"
+
+	plan, err := planner.PlanContinuation(context.Background(), originalRequest, existingPlan, completedSteps, newMessage, nil)
+	if err != nil {
+		t.Fatalf("PlanContinuation() returned error: %v", err)
+	}
+
+	// Verify plan structure
+	if len(plan.Steps) != 1 {
+		t.Errorf("Expected 1 step, got %d", len(plan.Steps))
+	}
+
+	if plan.Steps[0].ID != "continuation_1" {
+		t.Errorf("Expected step ID 'continuation_1', got %q", plan.Steps[0].ID)
+	}
+
+	if plan.Steps[0].Description != "Address follow-up request" {
+		t.Errorf("Expected description 'Address follow-up request', got %q", plan.Steps[0].Description)
+	}
+}
