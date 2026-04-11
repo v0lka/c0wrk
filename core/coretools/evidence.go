@@ -115,6 +115,18 @@ func (t *evidenceTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	}
 }
 
+// maxTraceFieldLen is the maximum length for Input/Observation fields in tool
+// call traces before truncation.
+const maxTraceFieldLen = 500
+
+// truncateTrace truncates s to maxLen characters, appending a suffix if trimmed.
+func truncateTrace(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
+}
+
 // fetchStep returns the full output and formatted steps for a specific step ID.
 func (t *evidenceTool) fetchStep(bb core.Blackboard, stepID string) (tools.ToolResult, error) {
 	result, ok := bb.GetStepResult(stepID)
@@ -132,7 +144,25 @@ func (t *evidenceTool) fetchStep(bb core.Blackboard, stepID string) (tools.ToolR
 		fmt.Fprintf(&sb, "**Error:** %v\n\n", result.Error)
 	}
 
-	fmt.Fprintf(&sb, "### Output\n%s\n", result.FullOutput)
+	// Include tool call trace when steps are available.
+	if len(result.Steps) > 0 {
+		fmt.Fprintf(&sb, "### Execution Trace (%d tool calls)\n\n", len(result.Steps))
+		for i, step := range result.Steps {
+			fmt.Fprintf(&sb, "**%d.** Thought: %s\n", i+1, step.Thought)
+			if step.Action.Name != "" {
+				fmt.Fprintf(&sb, "- Tool: %s\n", step.Action.Name)
+				if len(step.Action.Input) > 0 {
+					fmt.Fprintf(&sb, "- Input: %s\n", truncateTrace(string(step.Action.Input), maxTraceFieldLen))
+				}
+			}
+			if step.Observation != "" {
+				fmt.Fprintf(&sb, "- Result: %s\n", truncateTrace(step.Observation, maxTraceFieldLen))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	fmt.Fprintf(&sb, "### Final Output\n%s\n", result.FullOutput)
 
 	return tools.ToolResult{Content: sb.String(), IsError: false}, nil
 }

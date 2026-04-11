@@ -202,13 +202,15 @@ func (p *Planner) buildReplanSystemPrompt(
 	}
 	criteriaStr := criteriaBuilder.String()
 
-	// Apply template substitutions
+	// Apply template substitutions.
+	// PREVIOUS-SESSION-REFLECTIONS must be replaced before CURRENT-REFLECTION
+	// to avoid substring collision.
 	result := prompts.PlannerReplan
 	result = strings.ReplaceAll(result, "ORIGINAL-PLAN", originalPlanStr)
 	result = strings.ReplaceAll(result, "COMPLETED-STEPS", completedStepsStr)
 	result = strings.ReplaceAll(result, "FAILED-STEP", failedStepStr)
-	result = strings.ReplaceAll(result, "PREVIOUS-REFLECTIONS", prevReflectionsStr)
-	result = strings.ReplaceAll(result, "REFLECTION", reflectionStr)
+	result = strings.ReplaceAll(result, "PREVIOUS-SESSION-REFLECTIONS", prevReflectionsStr)
+	result = strings.ReplaceAll(result, "CURRENT-REFLECTION", reflectionStr)
 	result = strings.ReplaceAll(result, "ACCEPTANCE-CRITERIA", criteriaStr)
 	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
 

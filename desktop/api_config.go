@@ -14,6 +14,7 @@ import (
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/llm"
+	websearch "github.com/user/agent/sdk/tools/builtins/web_search"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
@@ -227,6 +228,12 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 	// the new provider for safety evaluation.
 	a.rebuildJudge(a.config, nil, slog.Default())
 
+	// Rebuild shared LLM router so tools using it (e.g. WebFetch summarizer)
+	// pick up the new provider immediately.
+	if newRouter, _, err := a.buildRouter(a.config); err == nil && newRouter != nil {
+		a.llmRouter = newRouter
+	}
+
 	return nil
 }
 
@@ -248,6 +255,18 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 	if err := a.persistConfig(); err != nil {
 		slog.Warn("failed to persist search settings", "error", err)
 	}
+
+	// Rebuild web search tool so new sessions use updated settings immediately.
+	if a.toolRegistry != nil {
+		searchAPIKey := config.ExpandEnvVars(a.config.Search.APIKey)
+		searchProvider := a.createSearchProvider(a.config.Search.Provider, searchAPIKey)
+		if searchProvider != nil {
+			a.toolRegistry.Register(websearch.NewWebSearchTool(searchProvider))
+		} else {
+			a.toolRegistry.Unregister("web_search")
+		}
+	}
+
 	return nil
 }
 

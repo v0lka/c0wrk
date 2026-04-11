@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/user/agent/core"
@@ -63,11 +64,25 @@ func TestEvidence_FetchByStepID(t *testing.T) {
 	if !contains(content, "full output of step 1") {
 		t.Errorf("missing full output in result:\n%s", content)
 	}
-	// Must NOT contain ReAct trace
-	for _, banned := range []string{"ReAct Steps", "Thought:", "Action:", "Observation:"} {
-		if contains(content, banned) {
-			t.Errorf("fetchStep output should not contain %q, got:\n%s", banned, content)
+	// Must NOT contain the legacy "ReAct Steps" header.
+	// NOTE: The old assertions also banned "Thought:", "Action:", and
+	// "Observation:". Those are removed because fetchStep now intentionally
+	// includes an execution trace section with "Thought:" and tool details.
+	if contains(content, "ReAct Steps") {
+		t.Errorf("fetchStep output should not contain %q, got:\n%s", "ReAct Steps", content)
+	}
+
+	// --- New: verify tool call trace is present ---
+	if !contains(content, "Execution Trace") {
+		t.Errorf("expected Execution Trace header, got:\n%s", content)
+	}
+	for _, want := range []string{"read_file", "bash_exec", "file contents here", "build succeeded"} {
+		if !contains(content, want) {
+			t.Errorf("expected %q in trace output, got:\n%s", want, content)
 		}
+	}
+	if !contains(content, "Final Output") {
+		t.Errorf("expected Final Output header, got:\n%s", content)
 	}
 }
 
@@ -167,6 +182,49 @@ func TestEvidence_FetchStepWithError(t *testing.T) {
 	}
 	if !contains(content, "exec failed") {
 		t.Errorf("expected error info in output, got:\n%s", content)
+	}
+}
+
+// TestEvidence_FetchStep_NoSteps verifies that when Steps is empty the output
+// falls back to just showing Final Output without a trace section.
+func TestEvidence_FetchStep_NoSteps(t *testing.T) {
+	ctx, _ := bbCtx(t)
+	// step_2 was created with nil Steps.
+	content, isErr := execEvidence(ctx, t, map[string]any{"step_id": "step_2"})
+	if isErr {
+		t.Fatalf("expected no error, got IsError=true: %s", content)
+	}
+	if contains(content, "Execution Trace") {
+		t.Errorf("step with no Steps should not have Execution Trace section:\n%s", content)
+	}
+	if !contains(content, "Final Output") {
+		t.Errorf("expected Final Output header, got:\n%s", content)
+	}
+	if !contains(content, "full output of step 2") {
+		t.Errorf("expected full output, got:\n%s", content)
+	}
+}
+
+// TestEvidence_FetchStep_Truncation verifies that very long Input/Observation
+// values are truncated in the trace output.
+func TestEvidence_FetchStep_Truncation(t *testing.T) {
+	bb := core.NewMapBlackboard()
+	longInput := strings.Repeat("x", 600)
+	longObs := strings.Repeat("y", 600)
+	bb.SetStepResult("step_long", "done", nil, []core.Step{
+		{
+			Thought:     "check",
+			Action:      llm.ToolCall{Name: "my_tool", Input: json.RawMessage(`"` + longInput + `"`)},
+			Observation: longObs,
+		},
+	})
+	ctx := WithBlackboard(context.Background(), bb)
+	content, isErr := execEvidence(ctx, t, map[string]any{"step_id": "step_long"})
+	if isErr {
+		t.Fatalf("expected no error, got IsError=true: %s", content)
+	}
+	if !contains(content, "...(truncated)") {
+		t.Errorf("expected truncation marker in output:\n%s", content)
 	}
 }
 

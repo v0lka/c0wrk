@@ -176,7 +176,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'thought',
         content: thought.content,
-        metadata: { step_num: thought.step_num, reasoning: thought.reasoning, plan_step_id: thought.plan_step_id },
+        metadata: { step_num: thought.step_num, reasoning: thought.reasoning, plan_step_id: thought.plan_step_id, criterion_id: thought.criterion_id },
         timestamp: Date.now(),
       })
     })
@@ -195,7 +195,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'tool_call',
         content: `${toolCall.tool}(${toolCall.args})`,
-        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id },
+        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id, criterion_id: toolCall.criterion_id },
         timestamp: Date.now(),
       })
     })
@@ -215,6 +215,7 @@ export function useSessionEvents(sessionId: string | null) {
           result_preview: toolResult.result_preview,
           result_len: toolResult.result_len,
           plan_step_id: toolResult.plan_step_id,
+          criterion_id: toolResult.criterion_id,
         },
       })
     })
@@ -408,6 +409,22 @@ export function useSessionEvents(sessionId: string | null) {
         type: 'eval_step_complete',
         content: '',
         metadata: { criterion_id: evalData.criterion_id, success: evalData.success, duration: evalData.duration },
+        timestamp: Date.now(),
+      })
+    })
+
+    on('evaluation_error', (data: unknown) => {
+      if (!mounted) return
+      if (!isErrorData(data)) return
+      if (isActiveSession()) {
+        useChatStore.getState().setActivityStatus(null)
+        useChatStore.getState().setThinking(false)
+      }
+      useChatStore.getState().addMessage(sessionId, {
+        id: `error-${Date.now()}`,
+        sessionId,
+        type: 'error',
+        content: data.error || 'Evaluation failed',
         timestamp: Date.now(),
       })
     })

@@ -100,9 +100,9 @@ Description: CRITERION_DESCRIPTION
 RESULT_SUMMARY
 
 ## Available Evidence
-Use the read_evidence tool to list and inspect step results from the execution.
-Use file_ops, ripgrep, glob to inspect the actual workspace state.
-Start by listing available evidence, then fetch relevant steps to evaluate this criterion.
+Start by listing available evidence with read_evidence to see what execution steps produced.
+Inspect relevant steps to evaluate this criterion.
+Only use file_ops, ripgrep, glob to inspect the workspace if step evidence is inconclusive.
 When done, call report_verdict with your determination.`
 
 // Evaluate checks the result against all acceptance criteria.
@@ -305,6 +305,9 @@ func (e *Evaluator) evaluateLLMJudge(ctx context.Context, criteria []AcceptanceC
 		
 		if err != nil {
 			e.log("evaluator agent failed for criterion %s: %v", criterion.ID, err)
+			if e.emitter != nil {
+				e.emitter.EvaluationError(fmt.Errorf("criterion %s: %w", criterion.ID, err))
+			}
 			// Non-fatal: continue evaluating remaining criteria.
 			continue
 		}

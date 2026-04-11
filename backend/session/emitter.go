@@ -95,9 +95,10 @@ func (e *EventEmitter) WithCriterionID(id string) core.Emitter {
 	}
 }
 
-// ensure EventEmitter implements core.Emitter and core.PlanStepScopable at compile time.
+// ensure EventEmitter implements core.Emitter, core.PlanStepScopable, and core.CriterionScopable at compile time.
 var _ core.Emitter = (*EventEmitter)(nil)
 var _ core.PlanStepScopable = (*EventEmitter)(nil)
+var _ core.CriterionScopable = (*EventEmitter)(nil)
 
 // emitEvent is a helper that emits an event, injecting plan_step_id and criterion_id if set.
 func (e *EventEmitter) emitEvent(evt Event) {
@@ -556,9 +557,18 @@ func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map
 	)
 }
 
-// EvaluationError logs an evaluation-phase error.
+// EvaluationError emits an evaluation-phase error event.
 func (e *EventEmitter) EvaluationError(err error) {
-	slog.Debug("emitter: evaluation error", "sessionID", e.sessionID, "error", err)
+	slog.Warn("emitter: evaluation error", "sessionID", e.sessionID, "error", err)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "evaluation_error",
+		Data: map[string]any{
+			"error": err.Error(),
+		},
+	})
 }
 
 // ReplanFailed logs a failed replan attempt.

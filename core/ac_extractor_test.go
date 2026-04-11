@@ -47,12 +47,16 @@ func TestParseACJSON_CodeBlockWithLanguage(t *testing.T) {
 	}
 }
 
-// TestEnrich_EmptyRawCriteriaReturnsReactFallback tests that Enrich returns fallback
-// criteria for react mode when rawCriteria is empty.
+// TestEnrich_EmptyRawCriteriaReturnsReactFallback tests that Enrich calls the LLM
+// to formulate a single fallback criterion when rawCriteria is empty.
 func TestEnrich_EmptyRawCriteriaReturnsReactFallback(t *testing.T) {
-	// Use a mock that would fail if called - proving early return works
 	mock := &mockLLMCaller{
-		err: errors.New("LLM should not be called"),
+		responses: []*llm.ChatResponse{{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: `{"id": "ac_fallback_1", "description": "The code task objective has been addressed"}`,
+			},
+		}},
 	}
 
 	extractor := NewACExtractor(mock)
@@ -60,13 +64,11 @@ func TestEnrich_EmptyRawCriteriaReturnsReactFallback(t *testing.T) {
 		Domain: "code",
 	}
 
-	// Empty slice should trigger fallback
-	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing)
+	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing, "fix the bug")
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
 
-	// Should return 1 fallback criterion for react/code
 	if len(criteria) != 1 {
 		t.Fatalf("expected 1 fallback criterion, got %d", len(criteria))
 	}
@@ -77,18 +79,22 @@ func TestEnrich_EmptyRawCriteriaReturnsReactFallback(t *testing.T) {
 		t.Errorf("expected CheckType 'llm_judge', got '%s'", criteria[0].CheckType)
 	}
 
-	// LLM should NOT have been called
-	if len(mock.calls) != 0 {
-		t.Error("LLM should not have been called for empty rawCriteria")
+	// LLM SHOULD have been called for fallback
+	if len(mock.calls) != 1 {
+		t.Errorf("expected 1 LLM call for fallback, got %d", len(mock.calls))
 	}
 }
 
-// TestEnrich_NilRawCriteriaReturnsResearchFallback tests that Enrich returns fallback
-// criteria including Markdown for research domain when rawCriteria is nil.
+// TestEnrich_NilRawCriteriaReturnsResearchFallback tests that Enrich calls the LLM
+// to formulate a single fallback criterion when rawCriteria is nil (research domain).
 func TestEnrich_NilRawCriteriaReturnsResearchFallback(t *testing.T) {
-	// Use a mock that would fail if called
 	mock := &mockLLMCaller{
-		err: errors.New("LLM should not be called"),
+		responses: []*llm.ChatResponse{{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: `{"id": "ac_fallback_1", "description": "A comprehensive research summary must be provided"}`,
+			},
+		}},
 	}
 
 	extractor := NewACExtractor(mock)
@@ -96,42 +102,38 @@ func TestEnrich_NilRawCriteriaReturnsResearchFallback(t *testing.T) {
 		Domain: "research",
 	}
 
-	// nil should trigger fallback (len(nil) == 0)
-	criteria, err := extractor.Enrich(context.Background(), nil, routing)
+	criteria, err := extractor.Enrich(context.Background(), nil, routing, "research quantum computing")
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
 
-	// Should return 2 fallback criteria for react/research (includes Markdown criterion)
-	if len(criteria) != 2 {
-		t.Fatalf("expected 2 fallback criteria for research domain, got %d", len(criteria))
+	// Should return exactly 1 LLM-generated fallback criterion
+	if len(criteria) != 1 {
+		t.Fatalf("expected 1 fallback criterion for research domain, got %d", len(criteria))
 	}
-
-	// Verify first criterion
 	if criteria[0].ID != "ac_fallback_1" {
-		t.Errorf("expected first ID 'ac_fallback_1', got '%s'", criteria[0].ID)
+		t.Errorf("expected ID 'ac_fallback_1', got '%s'", criteria[0].ID)
+	}
+	if criteria[0].CheckType != "llm_judge" {
+		t.Errorf("expected CheckType 'llm_judge', got '%s'", criteria[0].CheckType)
 	}
 
-	// Verify second criterion (Markdown formatting)
-	if criteria[1].ID != "ac_fallback_2" {
-		t.Errorf("expected second ID 'ac_fallback_2', got '%s'", criteria[1].ID)
-	}
-	if !strings.Contains(criteria[1].Description, "Markdown") {
-		t.Errorf("expected second criterion to mention 'Markdown', got '%s'", criteria[1].Description)
-	}
-
-	// LLM should NOT have been called
-	if len(mock.calls) != 0 {
-		t.Error("LLM should not have been called for nil rawCriteria")
+	// LLM SHOULD have been called
+	if len(mock.calls) != 1 {
+		t.Errorf("expected 1 LLM call for fallback, got %d", len(mock.calls))
 	}
 }
 
-// TestEnrich_EmptyRawCriteriaReturnsFallbackForGeneral tests that Enrich returns
-// fallback criteria for general domain when rawCriteria is an empty slice.
+// TestEnrich_EmptyRawCriteriaReturnsFallbackForGeneral tests that Enrich calls the LLM
+// to formulate a single fallback criterion for general domain.
 func TestEnrich_EmptyRawCriteriaReturnsFallbackForGeneral(t *testing.T) {
-	// Use a mock that would fail if called
 	mock := &mockLLMCaller{
-		err: errors.New("LLM should not be called"),
+		responses: []*llm.ChatResponse{{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: `{"id": "ac_fallback_1", "description": "The general request must be fulfilled"}`,
+			},
+		}},
 	}
 
 	extractor := NewACExtractor(mock)
@@ -139,20 +141,19 @@ func TestEnrich_EmptyRawCriteriaReturnsFallbackForGeneral(t *testing.T) {
 		Domain: "general",
 	}
 
-	// Empty slice should trigger fallback
-	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing)
+	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing, "hello world")
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
 
-	// Should return 2 fallback criteria for general domain (includes Markdown criterion)
-	if len(criteria) != 2 {
-		t.Fatalf("expected 2 fallback criteria for general domain, got %d", len(criteria))
+	// Should return exactly 1 LLM-generated fallback criterion
+	if len(criteria) != 1 {
+		t.Fatalf("expected 1 fallback criterion for general domain, got %d", len(criteria))
 	}
 
-	// LLM should NOT have been called
-	if len(mock.calls) != 0 {
-		t.Error("LLM should not have been called for empty rawCriteria fallback")
+	// LLM SHOULD have been called
+	if len(mock.calls) != 1 {
+		t.Errorf("expected 1 LLM call for fallback, got %d", len(mock.calls))
 	}
 }
 
@@ -178,7 +179,7 @@ func TestEnrich_NonEmptyRawCriteriaCallsLLM(t *testing.T) {
 		{ID: "rc_1", Description: "raw criterion", Nature: "objective", Weight: "must"},
 	}
 
-	criteria, err := extractor.Enrich(context.Background(), rawCriteria, routing)
+	criteria, err := extractor.Enrich(context.Background(), rawCriteria, routing, "enrich this")
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
@@ -200,11 +201,16 @@ func TestEnrich_NonEmptyRawCriteriaCallsLLM(t *testing.T) {
 	}
 }
 
-// TestEnrich_GeneralDomainAlsoGetsMarkdownCriterion tests that general domain
-// also gets the Markdown formatting fallback criterion like research.
-func TestEnrich_GeneralDomainAlsoGetsMarkdownCriterion(t *testing.T) {
+// TestEnrich_GeneralDomainAlsoGetsSingleFallback tests that general domain
+// gets exactly 1 LLM-generated fallback criterion.
+func TestEnrich_GeneralDomainAlsoGetsSingleFallback(t *testing.T) {
 	mock := &mockLLMCaller{
-		err: errors.New("LLM should not be called"),
+		responses: []*llm.ChatResponse{{
+			Message: llm.Message{
+				Role:    "assistant",
+				Content: `{"id": "ac_fallback_1", "description": "The general question must be answered"}`,
+			},
+		}},
 	}
 
 	extractor := NewACExtractor(mock)
@@ -212,17 +218,16 @@ func TestEnrich_GeneralDomainAlsoGetsMarkdownCriterion(t *testing.T) {
 		Domain: "general",
 	}
 
-	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing)
+	criteria, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing, "what is Go?")
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
 
-	// Should return 2 fallback criteria for general domain (includes Markdown criterion)
-	if len(criteria) != 2 {
-		t.Fatalf("expected 2 fallback criteria for general domain, got %d", len(criteria))
+	if len(criteria) != 1 {
+		t.Fatalf("expected 1 fallback criterion for general domain, got %d", len(criteria))
 	}
-	if criteria[1].ID != "ac_fallback_2" {
-		t.Errorf("expected second ID 'ac_fallback_2', got '%s'", criteria[1].ID)
+	if criteria[0].ID != "ac_fallback_1" {
+		t.Errorf("expected ID 'ac_fallback_1', got '%s'", criteria[0].ID)
 	}
 }
 
@@ -251,7 +256,7 @@ func TestEnrich_WorkspacePathIncludedInContext(t *testing.T) {
 
 	// With workspace path
 	ctx := tools.WithWorkspacePath(context.Background(), "/ws/path")
-	_, err := extractor.Enrich(ctx, rawCriteria, routing)
+	_, err := extractor.Enrich(ctx, rawCriteria, routing, "enrich with workspace")
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
@@ -262,7 +267,7 @@ func TestEnrich_WorkspacePathIncludedInContext(t *testing.T) {
 	}
 
 	// Without workspace path
-	_, err = extractor.Enrich(context.Background(), rawCriteria, routing)
+	_, err = extractor.Enrich(context.Background(), rawCriteria, routing, "enrich without workspace")
 	if err != nil {
 		t.Fatalf("Enrich returned error: %v", err)
 	}
@@ -270,6 +275,27 @@ func TestEnrich_WorkspacePathIncludedInContext(t *testing.T) {
 	userMsgNoWS := capturedRequest.Messages[1].Content
 	if strings.Contains(userMsgNoWS, "Workspace:") {
 		t.Errorf("expected user message to NOT contain 'Workspace:' when no workspace path, got:\n%s", userMsgNoWS)
+	}
+}
+
+// TestEnrich_FallbackLLMFailureReturnsError tests that when raw criteria are empty
+// and the fallback LLM call fails, Enrich returns an error.
+func TestEnrich_FallbackLLMFailureReturnsError(t *testing.T) {
+	mock := &mockLLMCaller{
+		err: errors.New("LLM unavailable"),
+	}
+
+	extractor := NewACExtractor(mock)
+	routing := &RoutingDecision{
+		Domain: "code",
+	}
+
+	_, err := extractor.Enrich(context.Background(), []RawCriterion{}, routing, "fix the bug")
+	if err == nil {
+		t.Fatal("expected error when fallback LLM call fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "fallback AC LLM call failed") {
+		t.Errorf("expected error to contain 'fallback AC LLM call failed', got: %v", err)
 	}
 }
 

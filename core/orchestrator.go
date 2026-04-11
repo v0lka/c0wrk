@@ -258,7 +258,7 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 	o.logDebug("orchestrator: starting AC enrichment", "rawCriteriaCount", len(rawCriteria), "domain", routing.Domain)
 	o.emitter.ServiceWithMeta("Enriching acceptance criteria...", map[string]any{"phase": "orchestration"})
 	var ac []AcceptanceCriterion
-	enrichedAC, enrichErr := o.acExtractor.Enrich(ctx, rawCriteria, routing)
+	enrichedAC, enrichErr := o.acExtractor.Enrich(ctx, rawCriteria, routing, userMessage)
 	if enrichErr != nil {
 		o.logDebug("orchestrator: AC enrichment failed", "error", enrichErr)
 		o.logWarn("AC enrichment failed, proceeding without criteria", "error", enrichErr)

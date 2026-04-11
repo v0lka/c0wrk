@@ -41,6 +41,7 @@ export interface ToolCallData {
   args: string
   parsed_args?: Record<string, unknown>  // pre-parsed by backend
   plan_step_id?: string
+  criterion_id?: string
 }
 
 export interface ToolResultData {
@@ -49,6 +50,7 @@ export interface ToolResultData {
   result: string
   result_preview?: string // legacy backward compat
   plan_step_id?: string
+  criterion_id?: string
 }
 
 export interface ThoughtData {
@@ -56,6 +58,7 @@ export interface ThoughtData {
   content: string
   reasoning?: string
   plan_step_id?: string
+  criterion_id?: string
 }
 
 export interface StepData {

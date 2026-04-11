@@ -41,8 +41,8 @@ const (
 	truncationMessage = "[System] Your tool call to '%s' was NOT executed because your output " +
 		"was cut off by the model's maximum output token limit. The tool call arguments are " +
 		"incomplete/truncated. You MUST use a different approach that produces smaller output — " +
-		"for example, break large file writes into multiple smaller append operations, or reduce " +
-		"the content size."
+		"for example, break large file writes into multiple smaller operations, use file_ops read_file " +
+		"with line ranges instead of reading entire files, or reduce the content size."
 
 	// parseErrorAbortThreshold is the number of consecutive parse errors on the
 	// same tool before aborting.

@@ -4,35 +4,55 @@ Each step should be atomic and executable by a single agent with access to tools
 Steps can depend on other steps (DependsOn) and can be parallelizable.
 Map relevant acceptance criteria to steps (RelevantAC).
 
-For complex tasks, assign specialized agent profiles to steps.
-Prefer high-level tools over bash_exec — use bash_exec only when no built-in tool covers the operation:
+## Granularity
 
-- "researcher": information gathering, code analysis, web search (tools: web_search, web_fetch, ripgrep, glob)
-- "coder": code generation, file operations, implementation (tools: file_ops, ripgrep, glob; bash_exec only for build/run commands)
-- "tester": test execution, verification (tools: bash_exec for running test commands)
-- "executor": general purpose (default if omitted, all tools available — follow tool priority tiers)
+Prefer fewer, broader steps over many granular ones. Each step should represent meaningful progress, not a single tool call.
 
-Only include profile when specialization adds value. Omit it for simple tasks.
+- Simple tasks (complexity 1-2): 1 step
+- Medium tasks (complexity 3): 2-4 steps
+- Complex tasks (complexity 4-5): 3-7 steps
 
-Domain assignment for each step:
+Never exceed 10 steps. If a task seems to require more, combine related work into broader steps.
+
+## Anti-patterns — Do NOT:
+
+- Create separate "research" steps before "implement" steps when the executor can research inline
+- Create separate "verify" steps for each implementation step — let the coder verify as they go
+- Create steps that merely "summarize" or "review" intermediate work
+- Create 1:1 mapping between acceptance criteria and steps — multiple criteria can be addressed in one step
+
+## Agent Profiles
+
+Assign specialized profiles when it adds clear value. Omit profile for simple tasks.
+Prefer higher-tier tools over bash_exec in all profiles:
+
+- "researcher": information gathering, analysis (tools: web_search, web_fetch, ripgrep, glob, file_ops)
+- "coder": implementation, file operations (tools: file_ops, ripgrep, glob; bash_exec for build/run/test)
+- "tester": test execution, verification (tools: bash_exec, ripgrep, glob, file_ops)
+- "executor": general purpose (default, all tools — follow tool priority tiers)
+
+## Domain Assignment
 
 - "code": file operations, implementation, tests, build commands
-- "research": web search, documentation gathering, analysis, information retrieval
+- "research": web search, documentation, analysis, information retrieval
 - "general": mixed or unclear (default if omitted)
 
-Domain affects:
+Domain affects compaction strategy (code = sliding window, research = summarization) and evaluation method (code = programmatic checks when possible, research = LLM judge).
 
-- Compaction strategy: code uses sliding window, research uses summarization
-- Evaluation method: code uses programmatic checks when possible, research uses LLM judge
+## Output Expectations
 
-Output expectations per role:
+- "researcher" / "tester": Pass all results through the finish tool. Do NOT write files.
+- "coder": Write code/config files as needed. Summarize what was done through finish.
+- "executor": Files only when the file IS the deliverable.
 
-- "researcher": Pass findings through finish tool. Do NOT write research notes to files.
-- "coder": Write code/config files as needed. Summarize what was done through finish tool.
-- "tester": Pass test results through finish tool. Do NOT write test reports to files.
-- "executor": Follow the same rule — files only when the file is the deliverable.
+## Parallelization
 
-Specify domain in profile when the step clearly falls into one category.
+Steps are parallelizable when they have NO data dependencies — step B can run in parallel with step A only if B does not need A's output. If B needs A's output, B MUST list A in depends_on.
+
+## Fields
+
+- `estimated_tools`: Informational hint about likely tools. Not a constraint — the executor may use any available tool.
+- `relevant_ac`: Which acceptance criteria this step addresses. A criterion can appear in multiple steps.
 
 Available tools:
 AVAILABLE-TOOLS
@@ -44,4 +64,4 @@ WORKSPACE-PATH
 REFLECTIONS
 
 Respond ONLY with a JSON object:
-{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "relevant_ac": ["ac_1"], "profile": {"role": "researcher", "allowed_tools": ["web_search", "web_fetch"], "domain": "research"}}]}
+{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "relevant_ac": ["ac_1"], "profile": {"role": "coder", "allowed_tools": ["file_ops", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}

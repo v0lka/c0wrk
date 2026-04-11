@@ -46,6 +46,11 @@ var EvaluatorJudge string
 //go:embed intent_verifier_system.md
 var IntentVerifierSystem string
 
+// AC Fallback prompt (single criterion when raw extraction is empty)
+
+//go:embed ac_fallback_system.md
+var ACFallbackSystem string
+
 // Compaction summarize prompt
 
 //go:embed compaction_summarize.md

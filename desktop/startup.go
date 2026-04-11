@@ -347,22 +347,27 @@ func (a *App) Startup(ctx context.Context) {
 	finishTool := agent.NewFinishTool()
 	registry.Register(finishTool)
 
-	// Web tools: WebFetch with optional LLM summarizer
-	var summarizer builtins.LLMSummarizer
-	if llmRouter != nil {
-		summarizer = func(ctx context.Context, content string, prompt string) (string, error) {
-			req := llm.ChatRequest{
-				Messages: []llm.Message{
-					{Role: "user", Content: content + "\n\n" + prompt},
-				},
-			}
-			resp, err := llmRouter.Call(ctx, req)
-			if err != nil {
-				return "", err
-			}
-			return resp.Message.Content, nil
+	// Web tools: WebFetch with LLM summarizer.
+	// The summarizer reads a.llmRouter dynamically so that LLM config
+	// changes via the UI take effect without an application restart.
+	summarizer := builtins.LLMSummarizer(func(ctx context.Context, content string, prompt string) (string, error) {
+		a.configMu.RLock()
+		router := a.llmRouter
+		a.configMu.RUnlock()
+		if router == nil {
+			return "", errors.New("LLM router not configured")
 		}
-	}
+		req := llm.ChatRequest{
+			Messages: []llm.Message{
+				{Role: "user", Content: content + "\n\n" + prompt},
+			},
+		}
+		resp, err := router.Call(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		return resp.Message.Content, nil
+	})
 	webFetchTool := builtins.NewWebFetchTool(summarizer)
 	registry.Register(webFetchTool)
 
@@ -377,6 +382,10 @@ func (a *App) Startup(ctx context.Context) {
 	// Evidence tool (read_evidence) — allows evaluator ReAct agents to read blackboard evidence
 	evidenceTool := toolcore.NewEvidenceTool()
 	registry.Register(evidenceTool)
+
+	// Verdict tool (report_verdict) — allows evaluator ReAct agents to record verdicts
+	verdictTool := toolcore.NewVerdictTool()
+	registry.Register(verdictTool)
 
 	// Initialize MCP Gateway (optional)
 	mcpEntries := make(map[string]mcp.ServerEntry, len(a.config.MCP.Servers))

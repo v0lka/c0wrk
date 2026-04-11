@@ -97,10 +97,13 @@ func (v *IntentVerifier) Verify(ctx context.Context, userMessage, finalOutput, c
 	// 6. Set task (no acceptance criteria for intent verifier)
 	cm.SetTask(taskDescription, nil)
 
-	// 7. Create executor — suppress assistant events, use noop emitter
+	// 7. Create executor — suppress assistant events, use noop emitter.
+	// Use readOnlyToolExecutor to enforce read-only access at runtime,
+	// matching the evaluator's safety pattern.
+	readOnlyExec := &readOnlyToolExecutor{inner: v.toolRegistry}
 	exec := agent.NewExecutor(
 		v.llm,
-		v.toolRegistry,
+		readOnlyExec,
 		v.tokenCounter,
 		v.maxSteps,
 		(*agent.NoopEvents)(nil),
