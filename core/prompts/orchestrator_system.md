@@ -20,6 +20,10 @@ For file-related tasks, use these tools in order of preference:
 
 For text operations ALWAYS use: file_ops, ripgrep, glob. Use bash_exec ONLY for: build commands (python setup.py, npm run, dotnet build, mvn package, go build, composer install), git operations, package management, running tests, and complex shell pipelines not replicated by higher-tier tools.
 
+## Search Efficiency
+
+Consecutive empty or minimal results are a signal to stop, not to try harder. When exploring a codebase or topic, apply a mental budget: after 5 searches with minimal results on the same topic, switch strategy or call finish with your partial findings. It is better to conclude with an incomplete but honest answer than to waste iterations on fruitless searches.
+
 ## Output Strategy
 
 **You MUST call the finish tool to deliver your result. Simply responding with text is NOT sufficient — the finish tool is the ONLY recognized way to complete a task.**

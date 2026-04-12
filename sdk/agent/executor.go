@@ -39,6 +39,10 @@ const (
 		"The arguments you are generating are malformed. Try a completely different approach: " +
 		"reduce the size of your arguments, use a different tool, or break the operation into " +
 		"smaller steps."
+
+	executorFruitlessNudge = "[System] Your last %d tool calls returned empty or minimal results. Continuing to search with different parameters is unlikely to yield new information. Summarize what you have found so far and call the finish tool."
+
+	executorSameToolRepeatNudge = "[System] You have called '%s' %d times in a row with different arguments but consistently similar results. This suggests the information you are looking for may not exist or requires a fundamentally different approach. Summarize your findings and call the finish tool."
 )
 
 // Executor runs the ReAct loop: Thought → Action → Observation.
@@ -64,6 +68,16 @@ type Executor struct {
 	// Parse error tracker: detect consecutive parse failures on the same tool
 	consecutiveParseErrorTool  string
 	consecutiveParseErrorCount int
+
+	// Fruitless result tracker: detect consecutive minimal-result calls
+	consecutiveFruitlessCount int
+	fruitlessNudgeAttempted   bool
+
+	// Same-tool repetition tracker: detect same tool with varied args but similar results
+	sameToolConsecutiveCount int
+	sameToolLastName         string
+	sameToolLastResultLen    int
+	sameToolNudgeAttempted   bool
 
 	// Finish nudge tracker: ensure explicit finish tool call before accepting implicit finish
 	finishNudgeAttempted bool
@@ -503,6 +517,88 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		observation := result.Content
 		e.lastToolResultIsError = result.IsError
+
+		// --- Fruitless result detector: consecutive minimal-result calls ---
+		// A result is "fruitless" if it's small AND not an error (errors have their own tracking)
+		fruitlessMaxLen := e.circuitBreaker.FruitlessMaxResultLen
+		if fruitlessMaxLen == 0 {
+			fruitlessMaxLen = 32 // default
+		}
+		isFruitless := !result.IsError && len(result.Content) <= fruitlessMaxLen
+		if isFruitless {
+			e.consecutiveFruitlessCount++
+		} else if !result.IsError {
+			// Reset on non-fruitless, non-error result
+			e.consecutiveFruitlessCount = 0
+		}
+
+		// Check fruitless thresholds (skip if threshold is 0 = disabled)
+		if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
+			e.emitter.ExecutorDiagnostic(stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
+			return &ExecutorResult{
+				Output:   fmt.Sprintf("Aborted: %d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount),
+				Steps:    allSteps,
+				Finished: false,
+			}, nil
+		}
+
+		if e.circuitBreaker.FruitlessNudgeThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessNudgeThreshold && !e.fruitlessNudgeAttempted {
+			e.fruitlessNudgeAttempted = true
+			e.emitter.ExecutorDiagnostic(stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
+			nudgeStep := Step{
+				Observation: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
+			}
+			allSteps = append(allSteps, nudgeStep)
+			cw.AddStep(nudgeStep)
+			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
+			continue
+		}
+		// --- End fruitless result detector ---
+
+		// --- Same-tool repetition detector: same tool, varied args, similar results ---
+		resultLen := len(result.Content)
+		sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
+		if sizeDelta == 0 {
+			sizeDelta = 64 // default
+		}
+		// Calculate absolute difference without importing math
+		lenDiff := resultLen - e.sameToolLastResultLen
+		if lenDiff < 0 {
+			lenDiff = -lenDiff
+		}
+
+		if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
+			e.sameToolConsecutiveCount++
+			e.sameToolLastResultLen = resultLen
+		} else {
+			e.sameToolConsecutiveCount = 1
+			e.sameToolLastName = action.Name
+			e.sameToolLastResultLen = resultLen
+		}
+
+		// Check same-tool thresholds (skip if threshold is 0 = disabled)
+		if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
+			e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+			return &ExecutorResult{
+				Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
+				Steps:    allSteps,
+				Finished: false,
+			}, nil
+		}
+
+		if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
+			e.sameToolNudgeAttempted = true
+			e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+			nudgeStep := Step{
+				Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
+			}
+			allSteps = append(allSteps, nudgeStep)
+			cw.AddStep(nudgeStep)
+			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
+			continue
+		}
+		// --- End same-tool repetition detector ---
+
 		// Ensure non-empty observation for tool messages (OpenAI API requirement)
 		if observation == "" {
 			observation = "(no output)"

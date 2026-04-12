@@ -283,3 +283,28 @@ func llmResponseEndTurn(content string) *llm.ChatResponse {
 		Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
 	}
 }
+
+// --- Counting ToolExecutor for tests that need varying results ---
+
+// countingToolExecutor returns different results based on call count.
+type countingToolExecutor struct {
+	mu        sync.Mutex
+	callCount int
+	results   map[int]tools.ToolResult // callCount -> result
+	calls     []toolExecCall
+}
+
+func (m *countingToolExecutor) Execute(_ context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	m.calls = append(m.calls, toolExecCall{Name: name, Input: input})
+	if r, ok := m.results[m.callCount]; ok {
+		return r, nil
+	}
+	return tools.ToolResult{Content: "ok"}, nil
+}
+
+func (m *countingToolExecutor) GetToolSource(name string) string {
+	return "core"
+}

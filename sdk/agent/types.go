@@ -62,6 +62,16 @@ type CircuitBreakerConfig struct {
 	RepeatAbortThreshold     int // consecutive identical tool calls before abort
 	TruncationAbortThreshold int // consecutive truncated responses before abort
 	ParseErrorAbortThreshold int // consecutive parse errors on same tool before abort
+
+	// Fruitless result detector: catches consecutive minimal-result calls
+	FruitlessNudgeThreshold int // consecutive minimal-result calls before nudge (default: 5)
+	FruitlessAbortThreshold int // consecutive minimal-result calls before abort (default: 8)
+	FruitlessMaxResultLen   int // result length at or below which a call is "fruitless" (default: 32)
+
+	// Same-tool repetition detector: catches same tool with varied args but similar results
+	SameToolRepeatNudgeThreshold int // same tool with varied args, similar results (default: 8)
+	SameToolRepeatAbortThreshold int // abort threshold (default: 12)
+	SameToolResultSizeDelta      int // max result length difference to consider "similar" (default: 64)
 }
 
 // LLMCaller is the interface Executor needs from the LLM layer.

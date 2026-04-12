@@ -13,11 +13,19 @@ import (
 )
 
 // defaultCircuitBreakerConfig provides the standard circuit breaker thresholds for tests.
+// Note: Fruitless and SameTool thresholds are set high to avoid triggering in typical test scenarios.
+// Production defaults are: FruitlessNudge=5, FruitlessAbort=8, SameToolNudge=8, SameToolAbort=12.
 var defaultCircuitBreakerConfig = CircuitBreakerConfig{
-	RepeatNudgeThreshold:     3,
-	RepeatAbortThreshold:     4,
-	TruncationAbortThreshold: 3,
-	ParseErrorAbortThreshold: 3,
+	RepeatNudgeThreshold:          3,
+	RepeatAbortThreshold:          4,
+	TruncationAbortThreshold:      3,
+	ParseErrorAbortThreshold:      3,
+	FruitlessNudgeThreshold:       50, // high to avoid triggering in tests
+	FruitlessAbortThreshold:       60,
+	FruitlessMaxResultLen:         32,
+	SameToolRepeatNudgeThreshold:  50, // high to avoid triggering in tests
+	SameToolRepeatAbortThreshold:  60,
+	SameToolResultSizeDelta:       64,
 }
 
 // --- NewExecutor tests ---
@@ -1444,5 +1452,495 @@ func TestStepLimit_AllowAlways(t *testing.T) {
 	}
 	if !foundNudge {
 		t.Error("expected allow_always nudge to be injected")
+	}
+}
+
+// --- Fruitless Result Detector tests ---
+
+func TestExecutor_Run_FruitlessDetector_Nudge(t *testing.T) {
+	// 5 consecutive tool calls returning minimal results (<= 32 chars) trigger a nudge.
+	// Use custom config with lower thresholds.
+	fruitlessConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       5,
+		FruitlessAbortThreshold:       8,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  50,
+		SameToolRepeatAbortThreshold:  60,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 5 tool calls with minimal results, then finish
+	responses := make([]*llm.ChatResponse, 6)
+	for i := 0; i < 5; i++ {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("search %d", i+1),
+			"search",
+			json.RawMessage(fmt.Sprintf(`{"q":"test%d"}`, i+1)),
+		)
+	}
+	responses[5] = llmResponseFinish("done", "completed")
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	// Return minimal results (empty string)
+	mockTools.results["search"] = tools.ToolResult{Content: "", IsError: false}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished=true after fruitless nudge + finish")
+	}
+
+	// Verify the nudge step appears
+	foundNudge := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "tool calls returned empty or minimal results") {
+			foundNudge = true
+			break
+		}
+	}
+	if !foundNudge {
+		t.Error("expected fruitless nudge message in steps")
+	}
+}
+
+func TestExecutor_Run_FruitlessDetector_Abort(t *testing.T) {
+	// 8 consecutive minimal-result calls trigger abort.
+	fruitlessConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       5,
+		FruitlessAbortThreshold:       8,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  50,
+		SameToolRepeatAbortThreshold:  60,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 8 tool calls with minimal results (should abort at 8)
+	responses := make([]*llm.ChatResponse, 10)
+	for i := 0; i < 10; i++ {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("search %d", i+1),
+			"search",
+			json.RawMessage(fmt.Sprintf(`{"q":"test%d"}`, i+1)),
+		)
+	}
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	// Return short results (within 32 char limit)
+	mockTools.results["search"] = tools.ToolResult{Content: "not found", IsError: false}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Finished {
+		t.Error("expected Finished=false on fruitless abort")
+	}
+	if !strings.Contains(result.Output, "Aborted") {
+		t.Errorf("expected abort message in output, got %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "empty or minimal results") {
+		t.Errorf("expected fruitless abort message, got %q", result.Output)
+	}
+}
+
+func TestExecutor_Run_FruitlessDetector_Reset(t *testing.T) {
+	// After some minimal results, a substantial result (> 32 chars) resets the counter.
+	fruitlessConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       5,
+		FruitlessAbortThreshold:       8,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  50,
+		SameToolRepeatAbortThreshold:  60,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 3 minimal results -> 1 substantial result -> 4 more minimal results -> finish
+	// Should NOT trigger nudge (counter resets at substantial result)
+	responses := []*llm.ChatResponse{
+		llmResponseWithToolCall("search 1", "search", json.RawMessage(`{"q":"test1"}`)),
+		llmResponseWithToolCall("search 2", "search", json.RawMessage(`{"q":"test2"}`)),
+		llmResponseWithToolCall("search 3", "search", json.RawMessage(`{"q":"test3"}`)),
+		llmResponseWithToolCall("search 4", "search", json.RawMessage(`{"q":"test4"}`)),
+		llmResponseWithToolCall("search 5", "search", json.RawMessage(`{"q":"test5"}`)),
+		llmResponseWithToolCall("search 6", "search", json.RawMessage(`{"q":"test6"}`)),
+		llmResponseWithToolCall("search 7", "search", json.RawMessage(`{"q":"test7"}`)),
+		llmResponseFinish("done", "completed"),
+	}
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := &countingToolExecutor{
+		results: map[int]tools.ToolResult{
+			1: {Content: "no", IsError: false},           // minimal
+			2: {Content: "no", IsError: false},           // minimal
+			3: {Content: "no", IsError: false},           // minimal
+			4: {Content: strings.Repeat("x", 100), IsError: false}, // substantial - resets counter
+			5: {Content: "no", IsError: false},           // minimal
+			6: {Content: "no", IsError: false},           // minimal
+			7: {Content: "no", IsError: false},           // minimal
+		},
+	}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished=true (counter should have reset)")
+	}
+
+	// Should NOT have triggered nudge (only 4 consecutive minimal results after reset)
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "tool calls returned empty or minimal results") {
+			t.Error("should NOT have fruitless nudge (counter reset at substantial result)")
+			break
+		}
+	}
+}
+
+func TestExecutor_Run_FruitlessDetector_IgnoresErrors(t *testing.T) {
+	// Error results (IsError=true) should NOT count toward the fruitless counter.
+	fruitlessConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       5,
+		FruitlessAbortThreshold:       8,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  50,
+		SameToolRepeatAbortThreshold:  60,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 6 error results -> 4 minimal non-error results -> finish
+	// Should NOT trigger nudge (errors don't count, only 4 minimal results)
+	responses := []*llm.ChatResponse{
+		llmResponseWithToolCall("search 1", "search", json.RawMessage(`{"q":"test1"}`)),
+		llmResponseWithToolCall("search 2", "search", json.RawMessage(`{"q":"test2"}`)),
+		llmResponseWithToolCall("search 3", "search", json.RawMessage(`{"q":"test3"}`)),
+		llmResponseWithToolCall("search 4", "search", json.RawMessage(`{"q":"test4"}`)),
+		llmResponseWithToolCall("search 5", "search", json.RawMessage(`{"q":"test5"}`)),
+		llmResponseWithToolCall("search 6", "search", json.RawMessage(`{"q":"test6"}`)),
+		llmResponseWithToolCall("search 7", "search", json.RawMessage(`{"q":"test7"}`)),
+		llmResponseWithToolCall("search 8", "search", json.RawMessage(`{"q":"test8"}`)),
+		llmResponseWithToolCall("search 9", "search", json.RawMessage(`{"q":"test9"}`)),
+		llmResponseWithToolCall("search 10", "search", json.RawMessage(`{"q":"test10"}`)),
+		llmResponseFinish("done", "completed"),
+	}
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := &countingToolExecutor{
+		results: map[int]tools.ToolResult{
+			1:  {Content: "error", IsError: true},
+			2:  {Content: "error", IsError: true},
+			3:  {Content: "error", IsError: true},
+			4:  {Content: "error", IsError: true},
+			5:  {Content: "error", IsError: true},
+			6:  {Content: "error", IsError: true},
+			7:  {Content: "no", IsError: false},  // minimal non-error
+			8:  {Content: "no", IsError: false},  // minimal non-error
+			9:  {Content: "no", IsError: false},  // minimal non-error
+			10: {Content: "no", IsError: false},  // minimal non-error
+		},
+	}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished=true (errors should not count toward fruitless)")
+	}
+
+	// Should NOT have triggered nudge (only 4 consecutive non-error minimal results)
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "tool calls returned empty or minimal results") {
+			t.Error("should NOT have fruitless nudge (errors don't count)")
+			break
+		}
+	}
+}
+
+// --- Same-Tool Repetition Detector tests ---
+
+func TestExecutor_Run_SameToolRepeat_Nudge(t *testing.T) {
+	// 8 calls to the same tool with different arguments but similar result sizes trigger nudge.
+	sameToolConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       50,
+		FruitlessAbortThreshold:       60,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  8,
+		SameToolRepeatAbortThreshold:  12,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 8 tool calls with different args but similar result sizes, then finish
+	responses := make([]*llm.ChatResponse, 9)
+	for i := 0; i < 8; i++ {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("search %d", i+1),
+			"search",
+			json.RawMessage(fmt.Sprintf(`{"q":"query%d"}`, i+1)),
+		)
+	}
+	responses[8] = llmResponseFinish("done", "completed")
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	// Return results with similar sizes (all around 50 chars, within 64 delta)
+	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished=true after same-tool nudge + finish")
+	}
+
+	// Verify the nudge step appears
+	foundNudge := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "consistently similar results") {
+			foundNudge = true
+			break
+		}
+	}
+	if !foundNudge {
+		t.Error("expected same-tool repeat nudge message in steps")
+	}
+}
+
+func TestExecutor_Run_SameToolRepeat_Abort(t *testing.T) {
+	// 12 calls to the same tool with different arguments but similar result sizes trigger abort.
+	sameToolConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       50,
+		FruitlessAbortThreshold:       60,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  8,
+		SameToolRepeatAbortThreshold:  12,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 12+ tool calls with different args but similar result sizes
+	responses := make([]*llm.ChatResponse, 15)
+	for i := 0; i < 15; i++ {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("search %d", i+1),
+			"search",
+			json.RawMessage(fmt.Sprintf(`{"q":"query%d"}`, i+1)),
+		)
+	}
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	// Return results with similar sizes
+	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Finished {
+		t.Error("expected Finished=false on same-tool repeat abort")
+	}
+	if !strings.Contains(result.Output, "Aborted") {
+		t.Errorf("expected abort message in output, got %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "similar results") {
+		t.Errorf("expected same-tool abort message, got %q", result.Output)
+	}
+}
+
+func TestExecutor_Run_SameToolRepeat_ResetOnToolChange(t *testing.T) {
+	// Switching to a different tool resets the counter.
+	sameToolConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       50,
+		FruitlessAbortThreshold:       60,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  8,
+		SameToolRepeatAbortThreshold:  12,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 5 calls to search -> 1 call to other_tool -> 5 more calls to search -> finish
+	// Should NOT trigger nudge (counter resets when tool changes)
+	responses := []*llm.ChatResponse{
+		llmResponseWithToolCall("search 1", "search", json.RawMessage(`{"q":"test1"}`)),
+		llmResponseWithToolCall("search 2", "search", json.RawMessage(`{"q":"test2"}`)),
+		llmResponseWithToolCall("search 3", "search", json.RawMessage(`{"q":"test3"}`)),
+		llmResponseWithToolCall("search 4", "search", json.RawMessage(`{"q":"test4"}`)),
+		llmResponseWithToolCall("search 5", "search", json.RawMessage(`{"q":"test5"}`)),
+		llmResponseWithToolCall("other", "other_tool", json.RawMessage(`{"x":"y"}`)),
+		llmResponseWithToolCall("search 6", "search", json.RawMessage(`{"q":"test6"}`)),
+		llmResponseWithToolCall("search 7", "search", json.RawMessage(`{"q":"test7"}`)),
+		llmResponseWithToolCall("search 8", "search", json.RawMessage(`{"q":"test8"}`)),
+		llmResponseWithToolCall("search 9", "search", json.RawMessage(`{"q":"test9"}`)),
+		llmResponseWithToolCall("search 10", "search", json.RawMessage(`{"q":"test10"}`)),
+		llmResponseFinish("done", "completed"),
+	}
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
+	mockTools.results["other_tool"] = tools.ToolResult{Content: strings.Repeat("y", 50), IsError: false}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+		{Name: "other_tool", Description: "other", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished=true (counter should reset on tool change)")
+	}
+
+	// Should NOT have triggered nudge
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "consistently similar results") {
+			t.Error("should NOT have same-tool repeat nudge (counter reset on tool change)")
+			break
+		}
+	}
+}
+
+func TestExecutor_Run_SameToolRepeat_ResetOnSizeChange(t *testing.T) {
+	// A result with significantly different size (> SameToolResultSizeDelta) resets the counter.
+	sameToolConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:          3,
+		RepeatAbortThreshold:          4,
+		TruncationAbortThreshold:      3,
+		ParseErrorAbortThreshold:      3,
+		FruitlessNudgeThreshold:       50,
+		FruitlessAbortThreshold:       60,
+		FruitlessMaxResultLen:         32,
+		SameToolRepeatNudgeThreshold:  8,
+		SameToolRepeatAbortThreshold:  12,
+		SameToolResultSizeDelta:       64,
+	}
+
+	// 5 calls with ~50 char results -> 1 call with 200 char result -> 5 more calls with ~50 char results -> finish
+	// Should NOT trigger nudge (counter resets when size differs significantly)
+	responses := []*llm.ChatResponse{
+		llmResponseWithToolCall("search 1", "search", json.RawMessage(`{"q":"test1"}`)),
+		llmResponseWithToolCall("search 2", "search", json.RawMessage(`{"q":"test2"}`)),
+		llmResponseWithToolCall("search 3", "search", json.RawMessage(`{"q":"test3"}`)),
+		llmResponseWithToolCall("search 4", "search", json.RawMessage(`{"q":"test4"}`)),
+		llmResponseWithToolCall("search 5", "search", json.RawMessage(`{"q":"test5"}`)),
+		llmResponseWithToolCall("search 6", "search", json.RawMessage(`{"q":"test6"}`)),
+		llmResponseWithToolCall("search 7", "search", json.RawMessage(`{"q":"test7"}`)),
+		llmResponseWithToolCall("search 8", "search", json.RawMessage(`{"q":"test8"}`)),
+		llmResponseWithToolCall("search 9", "search", json.RawMessage(`{"q":"test9"}`)),
+		llmResponseWithToolCall("search 10", "search", json.RawMessage(`{"q":"test10"}`)),
+		llmResponseWithToolCall("search 11", "search", json.RawMessage(`{"q":"test11"}`)),
+		llmResponseFinish("done", "completed"),
+	}
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := &countingToolExecutor{
+		results: map[int]tools.ToolResult{
+			1:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			2:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			3:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			4:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			5:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			6:  {Content: strings.Repeat("x", 200), IsError: false}, // 200 chars - resets counter (delta > 64)
+			7:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			8:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			9:  {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			10: {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+			11: {Content: strings.Repeat("x", 50), IsError: false},  // ~50 chars
+		},
+	}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished=true (counter should reset on size change)")
+	}
+
+	// Should NOT have triggered nudge
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "consistently similar results") {
+			t.Error("should NOT have same-tool repeat nudge (counter reset on size change)")
+			break
+		}
 	}
 }
