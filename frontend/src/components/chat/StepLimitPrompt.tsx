@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertOctagon, Check, X, Infinity } from 'lucide-react'
+import { AlertOctagon, Check, X, Infinity as InfinityIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useWails } from '@/hooks/useWails'
 import { useChatStore } from '@/stores/chatStore'
@@ -57,7 +57,7 @@ export function StepLimitPrompt({ sessionId, metadata }: StepLimitPromptProps) {
   if (resolved === 'allow_always') {
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
-        <Infinity className="h-3.5 w-3.5 text-blue-500" />
+        <InfinityIcon className="h-3.5 w-3.5 text-blue-500" />
         <span className="text-sm">Allowed always — unlimited execution</span>
       </div>
     )

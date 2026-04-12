@@ -41,7 +41,7 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
       const next = new Map(prev)
       const question = questions.find(q => q.id === questionId)
       const multiSelect = question?.multi_select ?? false
-      let current = next.get(questionId) || new Set()
+      const current = next.get(questionId) || new Set()
       const newSet = new Set(current)
       if (multiSelect) {
         if (newSet.has(value)) {
