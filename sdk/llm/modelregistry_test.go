@@ -265,6 +265,243 @@ func TestModelRegistry_RegisteredSource(t *testing.T) {
 	}
 }
 
+// TestResolveTier_BuiltinModels verifies that known built-in models get the correct tier.
+func TestResolveTier_BuiltinModels(t *testing.T) {
+	registry := NewModelRegistry(nil)
+
+	tests := []struct {
+		model        string
+		expectedTier string
+	}{
+		// OpenAI models - all should be large
+		{"gpt-5.4", "large"},
+		{"gpt-5.4-mini", "large"},
+		{"gpt-5", "large"},
+		{"gpt-4.1", "large"},
+		{"gpt-4o", "large"},
+		{"gpt-4o-mini", "large"},
+		{"o4-mini", "large"},
+		{"o3", "large"},
+		{"o3-mini", "large"},
+		{"o1", "large"},
+		{"o1-mini", "large"},
+
+		// Anthropic models - all should be large
+		{"claude-opus-4.6", "large"},
+		{"claude-sonnet-4.5", "large"},
+		{"claude-haiku-4.5", "large"},
+		{"claude-3.5-sonnet", "large"},
+		{"claude-3.5-haiku", "large"},
+
+		// Gemini models - all should be large (>= 1.5)
+		{"gemini-3.1-pro", "large"},
+		{"gemini-3.1-flash-lite", "large"},
+		{"gemini-2.5-pro", "large"},
+		{"gemini-2.5-flash", "large"},
+		{"gemini-2.0-flash", "large"},
+
+		// DeepSeek models - should be large
+		{"deepseek-chat", "large"},
+		{"deepseek-reasoner", "large"},
+
+		// Grok models - all should be large
+		{"grok-4.20", "large"},
+		{"grok-4", "large"},
+		{"grok-3", "large"},
+		{"grok-3-mini", "large"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			meta, _ := registry.Resolve(tt.model)
+			if meta.Tier != tt.expectedTier {
+				t.Errorf("expected Tier %q, got %q", tt.expectedTier, meta.Tier)
+			}
+		})
+	}
+}
+
+// TestResolveTier_PatternMatching verifies pattern-based detection for unknown model IDs.
+func TestResolveTier_PatternMatching(t *testing.T) {
+	registry := NewModelRegistry(nil)
+
+	tests := []struct {
+		model        string
+		expectedTier string
+	}{
+		// Large model patterns
+		{"gpt-4-turbo-custom", "large"},
+		{"gpt-5-preview", "large"},
+		{"o1-preview-custom", "large"},
+		{"o3-mini-custom", "large"},
+		{"o4-model", "large"},
+		{"claude-custom-model", "large"},
+		{"gemini-custom-pro", "large"},
+		{"deepseek-v3-custom", "large"},
+		{"deepseek-reasoner-v2", "large"},
+		{"grok-custom-model", "large"},
+		{"command-r-plus-custom", "large"},
+
+		// Small model patterns
+		{"llama-3.1-70b", "small"},
+		{"llama-3.2-1b", "small"},
+		{"qwen-2.5-72b", "small"},
+		{"phi-3-mini", "small"},
+		{"gemma-2-27b", "small"},
+		{"mistral-small-latest", "small"},
+		{"mistral-7b-instruct", "small"},
+		{"codellama-34b", "small"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			// These are unknown models, so ok will be false but tier should still be set
+			meta, _ := registry.Resolve(tt.model)
+			if meta.Tier != tt.expectedTier {
+				t.Errorf("expected Tier %q for model %q, got %q", tt.expectedTier, tt.model, meta.Tier)
+			}
+		})
+	}
+}
+
+// TestResolveTier_Fallback verifies heuristic fallback based on capabilities.
+func TestResolveTier_Fallback(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		contextWin   int
+		outputLimit  int
+		expectedTier string
+	}{
+		{
+			name:         "large context and output should be large",
+			model:        "unknown-large-model",
+			contextWin:   128000,
+			outputLimit:  8192,
+			expectedTier: "large",
+		},
+		{
+			name:         "large context but small output should be small",
+			model:        "unknown-mid-model-1",
+			contextWin:   128000,
+			outputLimit:  4096,
+			expectedTier: "small",
+		},
+		{
+			name:         "small context but large output should be small",
+			model:        "unknown-mid-model-2",
+			contextWin:   64000,
+			outputLimit:  8192,
+			expectedTier: "small",
+		},
+		{
+			name:         "small context and output should be small",
+			model:        "unknown-small-model",
+			contextWin:   32000,
+			outputLimit:  2048,
+			expectedTier: "small",
+		},
+		{
+			name:         "exactly at large threshold should be large",
+			model:        "threshold-model",
+			contextWin:   128000,
+			outputLimit:  8192,
+			expectedTier: "large",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := NewModelRegistry(nil)
+
+			// Register a source that returns metadata without tier set
+			registry.RegisterSource(func(model string) (ModelMetadata, bool) {
+				if model == tt.model {
+					return ModelMetadata{
+						ContextWindow: tt.contextWin,
+						OutputLimit:   tt.outputLimit,
+						TokenizerType: "test",
+					}, true
+				}
+				return ModelMetadata{}, false
+			})
+
+			meta, _ := registry.Resolve(tt.model)
+			if meta.Tier != tt.expectedTier {
+				t.Errorf("expected Tier %q, got %q", tt.expectedTier, meta.Tier)
+			}
+		})
+	}
+}
+
+// TestResolveTier_UserOverride verifies that user override takes precedence.
+func TestResolveTier_UserOverride(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		overrideTier string
+		expectedTier string
+	}{
+		{
+			name:         "override with large tier",
+			model:        "custom-model",
+			overrideTier: "large",
+			expectedTier: "large",
+		},
+		{
+			name:         "override with small tier",
+			model:        "custom-model",
+			overrideTier: "small",
+			expectedTier: "small",
+		},
+		{
+			name:         "override without tier should get pattern-based tier",
+			model:        "llama-custom", // matches small pattern
+			overrideTier: "",
+			expectedTier: "small",
+		},
+		{
+			name:         "override builtin model with different tier",
+			model:        "gpt-4o", // normally large
+			overrideTier: "small",  // overridden to small
+			expectedTier: "small",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			overrideMeta := ModelMetadata{
+				ContextWindow: 100000,
+				OutputLimit:   5000,
+				TokenizerType: "override",
+			}
+			if tt.overrideTier != "" {
+				overrideMeta.Tier = tt.overrideTier
+			}
+
+			registry := NewModelRegistry(map[string]ModelMetadata{
+				tt.model: overrideMeta,
+			})
+
+			meta, _ := registry.Resolve(tt.model)
+			if meta.Tier != tt.expectedTier {
+				t.Errorf("expected Tier %q, got %q", tt.expectedTier, meta.Tier)
+			}
+		})
+	}
+}
+
+// TestResolveTier_EmptyModelID verifies that Resolve("") returns "large" tier.
+// This is important because core components call Resolve("") when model ID
+// isn't threaded through, and we want to preserve rich prompt behavior.
+func TestResolveTier_EmptyModelID(t *testing.T) {
+	reg := NewModelRegistry(nil)
+	meta, _ := reg.Resolve("")
+	if meta.Tier != "large" {
+		t.Errorf("expected Tier 'large' for empty model ID, got %q", meta.Tier)
+	}
+}
+
 func TestModelRegistry_SourcePriority(t *testing.T) {
 	// Create registry with both a source and an override for the same model
 	testModel := "priority-test-model"

@@ -49,8 +49,8 @@ type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata
 type BlackboardFactory func(taskID string) Blackboard
 
 // SystemPromptFactory creates system prompts for step executors.
-// ctx carries workspace path; stepDescription is the step's task.
-type SystemPromptFactory func(ctx context.Context, stepDescription string) string
+// ctx carries workspace path; stepDescription is the step's task; modelMeta provides model capabilities.
+type SystemPromptFactory func(ctx context.Context, stepDescription string, modelMeta llm.ModelMetadata) string
 
 // Blackboard provides structured access to shared task state.
 // All methods are safe for concurrent use.

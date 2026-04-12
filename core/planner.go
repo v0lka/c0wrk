@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
+	"github.com/user/agent/sdk/prompt"
 	tools "github.com/user/agent/sdk/tools"
 )
 
@@ -140,12 +142,35 @@ var _ orchestration.Planner = (*Planner)(nil)
 
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {
-	llm LLMCaller
+	llm           LLMCaller
+	modelRegistry *llm.ModelRegistry
 }
 
 // NewPlanner creates a new Planner with the given LLM caller.
 func NewPlanner(caller LLMCaller) *Planner {
 	return &Planner{llm: caller}
+}
+
+// SetModelRegistry sets the model registry for tier resolution.
+// If not set, the planner defaults to "large" tier.
+func (p *Planner) SetModelRegistry(registry *llm.ModelRegistry) {
+	p.modelRegistry = registry
+}
+
+// getTier resolves the model tier, defaulting to "large" if not configured.
+func (p *Planner) getTier() prompt.ModelTier {
+	if p.modelRegistry == nil {
+		slog.Debug("planner: model tier resolved", "tier", prompt.TierLarge)
+		return prompt.TierLarge
+	}
+	meta, _ := p.modelRegistry.Resolve("")
+	tier := prompt.ModelTier(meta.Tier)
+	if tier == "" {
+		slog.Debug("planner: model tier resolved", "tier", prompt.TierLarge)
+		return prompt.TierLarge
+	}
+	slog.Debug("planner: model tier resolved", "tier", tier)
+	return tier
 }
 
 // Plan generates a DAG execution plan for the given task.
@@ -266,17 +291,29 @@ func (p *Planner) buildPlanSystemPrompt(
 		reflectionsStr = rb.String()
 	}
 
-	// Apply template substitutions using base template
-	result := prompts.PlannerBase
-	result = strings.ReplaceAll(result, "MODE-PREAMBLE", planModePreamble)
-	result = strings.ReplaceAll(result, "DOMAIN-ASSIGNMENT", planModeDomainAssignment)
-	result = strings.ReplaceAll(result, "AGENT-PROFILES", planModeAgentProfiles)
-	result = strings.ReplaceAll(result, "MODE-EXTRA-SECTIONS", planModeExtraSections)
-	result = strings.ReplaceAll(result, "MODE-TAIL", planModeTail)
-	result = strings.ReplaceAll(result, "MODE-JSON-EXAMPLE", planModeJSONExample)
-	result = strings.ReplaceAll(result, "AVAILABLE-TOOLS", availableToolsStr)
-	result = strings.ReplaceAll(result, "REFLECTIONS", reflectionsStr)
-	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
+	// Resolve MODE-TAIL: it contains the REFLECTIONS placeholder, so pre-substitute
+	// to avoid order-dependent substitution issues in the builder.
+	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", reflectionsStr)
+
+	// Build substitutions for template placeholders
+	substitutions := map[string]string{
+		"MODE-PREAMBLE":       planModePreamble,
+		"DOMAIN-ASSIGNMENT":   planModeDomainAssignment,
+		"AGENT-PROFILES":      planModeAgentProfiles,
+		"MODE-EXTRA-SECTIONS": planModeExtraSections,
+		"MODE-TAIL":           resolvedTail,
+		"MODE-JSON-EXAMPLE":   planModeJSONExample,
+		"AVAILABLE-TOOLS":     availableToolsStr,
+		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
+	}
+
+	// Use prompt builder with tier-specific adapters
+	result := prompt.New(p.getTier()).
+		Core(prompts.PlannerBase).
+		ForLarge(prompts.PlannerLarge).
+		ForSmall(prompts.PlannerSmall).
+		ReplaceAll(substitutions).
+		Build()
 
 	// Append environment context if available.
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
@@ -343,16 +380,26 @@ func (p *Planner) buildReplanSystemPrompt(
 		prevReflectionsStr = prb.String()
 	}
 
-	// Apply template substitutions.
+	// Build substitutions for template placeholders.
 	// PREVIOUS-SESSION-REFLECTIONS must be replaced before CURRENT-REFLECTION
-	// to avoid substring collision.
-	result := prompts.PlannerReplan
-	result = strings.ReplaceAll(result, "ORIGINAL-PLAN", originalPlanStr)
-	result = strings.ReplaceAll(result, "COMPLETED-STEPS", completedStepsStr)
-	result = strings.ReplaceAll(result, "FAILED-STEP", failedStepStr)
-	result = strings.ReplaceAll(result, "PREVIOUS-SESSION-REFLECTIONS", prevReflectionsStr)
-	result = strings.ReplaceAll(result, "CURRENT-REFLECTION", reflectionStr)
-	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
+	// to avoid substring collision, but the builder handles all substitutions
+	// at once, so we use the full placeholder names which are distinct.
+	substitutions := map[string]string{
+		"ORIGINAL-PLAN":               originalPlanStr,
+		"COMPLETED-STEPS":             completedStepsStr,
+		"FAILED-STEP":                 failedStepStr,
+		"PREVIOUS-SESSION-REFLECTIONS": prevReflectionsStr,
+		"CURRENT-REFLECTION":          reflectionStr,
+		"WORKSPACE-PATH":              formatWorkspacePath(ctx),
+	}
+
+	// Use prompt builder with tier-specific adapters
+	result := prompt.New(p.getTier()).
+		Core(prompts.PlannerReplan).
+		ForLarge(prompts.PlannerLarge).
+		ForSmall(prompts.PlannerSmall).
+		ReplaceAll(substitutions).
+		Build()
 
 	// Append environment context if available.
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
@@ -398,19 +445,28 @@ func (p *Planner) buildContinuationSystemPrompt(
 	// Build available tools string (grouped by priority tier)
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
 
-	// Apply template substitutions using base template
-	result := prompts.PlannerBase
-	result = strings.ReplaceAll(result, "MODE-PREAMBLE", continuationModePreamble)
-	result = strings.ReplaceAll(result, "DOMAIN-ASSIGNMENT", continuationModeDomainAssignment)
-	result = strings.ReplaceAll(result, "AGENT-PROFILES", continuationModeAgentProfiles)
-	result = strings.ReplaceAll(result, "MODE-EXTRA-SECTIONS", continuationModeExtraSections)
-	result = strings.ReplaceAll(result, "MODE-TAIL", continuationModeTail)
-	result = strings.ReplaceAll(result, "MODE-JSON-EXAMPLE", continuationModeJSONExample)
-	result = strings.ReplaceAll(result, "ORIGINAL-REQUEST", originalRequest)
-	result = strings.ReplaceAll(result, "COMPLETED-PLAN-SUMMARY", completedPlanSummary)
-	result = strings.ReplaceAll(result, "TERMINAL-STEPS", terminalStepsStr)
-	result = strings.ReplaceAll(result, "AVAILABLE-TOOLS", availableToolsStr)
-	result = strings.ReplaceAll(result, "WORKSPACE-PATH", formatWorkspacePath(ctx))
+	// Build substitutions for template placeholders
+	substitutions := map[string]string{
+		"MODE-PREAMBLE":          continuationModePreamble,
+		"DOMAIN-ASSIGNMENT":      continuationModeDomainAssignment,
+		"AGENT-PROFILES":         continuationModeAgentProfiles,
+		"MODE-EXTRA-SECTIONS":    continuationModeExtraSections,
+		"MODE-TAIL":              continuationModeTail,
+		"MODE-JSON-EXAMPLE":      continuationModeJSONExample,
+		"ORIGINAL-REQUEST":       originalRequest,
+		"COMPLETED-PLAN-SUMMARY": completedPlanSummary,
+		"TERMINAL-STEPS":         terminalStepsStr,
+		"AVAILABLE-TOOLS":        availableToolsStr,
+		"WORKSPACE-PATH":         formatWorkspacePath(ctx),
+	}
+
+	// Use prompt builder with tier-specific adapters
+	result := prompt.New(p.getTier()).
+		Core(prompts.PlannerBase).
+		ForLarge(prompts.PlannerLarge).
+		ForSmall(prompts.PlannerSmall).
+		ReplaceAll(substitutions).
+		Build()
 
 	// Append environment context if available.
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {

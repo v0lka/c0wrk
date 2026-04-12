@@ -360,26 +360,26 @@ func (o *Orchestrator) executePlanWithSteps(
 
 			taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, retryContext, maxSteps)
 
+			// Resolve model metadata
+			var modelMeta llm.ModelMetadata
+			if o.cfg.ModelRegistry != nil {
+				modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
+			}
+			
 			// Build system prompt
 			var systemPrompt string
 			switch {
 			case stepCfg.SystemPrompt != "":
 				systemPrompt = stepCfg.SystemPrompt
 			case o.cfg.SystemPrompt != nil:
-				systemPrompt = o.cfg.SystemPrompt(ctx, step.Description)
+				systemPrompt = o.cfg.SystemPrompt(ctx, step.Description, modelMeta)
 			default:
 				systemPrompt = defaultSystemPrompt(ctx, step.Description)
 			}
 			if stepCfg.SystemPromptSuffix != "" {
 				systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
 			}
-
-			// Resolve model metadata
-			var modelMeta llm.ModelMetadata
-			if o.cfg.ModelRegistry != nil {
-				modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
-			}
-
+			
 			// Create context manager
 			var cm agent.ContextManager
 			if o.cfg.ContextFactory != nil {
@@ -519,26 +519,26 @@ func (o *Orchestrator) executePlanWithSteps(
 
 					taskDef := o.buildStepTask(failedPlanStep, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, stepRetryContext, maxSteps)
 
+					// Resolve model metadata
+					var modelMeta llm.ModelMetadata
+					if o.cfg.ModelRegistry != nil {
+						modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
+					}
+					
 					// Build system prompt
 					var systemPrompt string
 					switch {
 					case stepCfg.SystemPrompt != "":
 						systemPrompt = stepCfg.SystemPrompt
 					case o.cfg.SystemPrompt != nil:
-						systemPrompt = o.cfg.SystemPrompt(ctx, failedPlanStep.Description)
+						systemPrompt = o.cfg.SystemPrompt(ctx, failedPlanStep.Description, modelMeta)
 					default:
 						systemPrompt = defaultSystemPrompt(ctx, failedPlanStep.Description)
 					}
 					if stepCfg.SystemPromptSuffix != "" {
 						systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
 					}
-
-					// Resolve model metadata
-					var modelMeta llm.ModelMetadata
-					if o.cfg.ModelRegistry != nil {
-						modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
-					}
-
+					
 					// Create context manager
 					var cm agent.ContextManager
 					if o.cfg.ContextFactory != nil {
@@ -930,24 +930,24 @@ func (o *Orchestrator) ExecuteAdHocStep(
 
 	taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, "", maxSteps)
 
+	// Resolve model metadata
+	var modelMeta llm.ModelMetadata
+	if o.cfg.ModelRegistry != nil {
+		modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
+	}
+
 	// 3. Build system prompt with role suffix from step's profile (if present)
 	var systemPrompt string
 	switch {
 	case stepCfg.SystemPrompt != "":
 		systemPrompt = stepCfg.SystemPrompt
 	case o.cfg.SystemPrompt != nil:
-		systemPrompt = o.cfg.SystemPrompt(ctx, step.Description)
+		systemPrompt = o.cfg.SystemPrompt(ctx, step.Description, modelMeta)
 	default:
 		systemPrompt = defaultSystemPrompt(ctx, step.Description)
 	}
 	if stepCfg.SystemPromptSuffix != "" {
 		systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
-	}
-
-	// Resolve model metadata
-	var modelMeta llm.ModelMetadata
-	if o.cfg.ModelRegistry != nil {
-		modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
 	}
 
 	// Create context manager

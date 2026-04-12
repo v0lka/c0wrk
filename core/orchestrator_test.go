@@ -781,7 +781,7 @@ func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := OrchestratorConfig{MaxSteps: 30}
-			configurator := coreStepConfigurator(cfg)
+			configurator := coreStepConfigurator(cfg, nil, nil) // nil modelRegistry and logger defaults to TierLarge
 
 			step := orchestration.PlanStep{
 				ID:          "test_step",
@@ -810,6 +810,102 @@ func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
 			// Verify SystemPrompt is passed through correctly
 			if stepCfg.SystemPrompt != tt.profile.SystemPrompt {
 				t.Errorf("SystemPrompt = %q, want %q", stepCfg.SystemPrompt, tt.profile.SystemPrompt)
+			}
+		})
+	}
+}
+
+// TestCoreStepConfigurator_TierAwareSuffixes verifies that coreStepConfigurator
+// selects the appropriate role suffixes based on model tier.
+func TestCoreStepConfigurator_TierAwareSuffixes(t *testing.T) {
+	// Create a mock model registry with large tier
+	// We need to set an override for "" (empty model name) to control the fallback tier
+	largeRegistry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
+		"": {
+			ContextWindow: 200000,
+			OutputLimit:   8192,
+			Tier:          "large",
+		},
+	})
+
+	// Also test with explicit tier set
+	explicitSmallRegistry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
+		"": {
+			Tier: "small",
+		},
+	})
+
+	tests := []struct {
+		name           string
+		registry       *llm.ModelRegistry
+		role           string
+		wantContains   string // substring expected in suffix
+		notWantContain string // substring NOT expected in suffix
+	}{
+		{
+			name:         "small tier researcher gets explicit rules",
+			registry:     explicitSmallRegistry,
+			role:         "researcher",
+			wantContains: "Follow these rules",
+		},
+		{
+			name:           "large tier researcher gets standard suffix",
+			registry:       largeRegistry,
+			role:           "researcher",
+			wantContains:   "Role: Researcher",
+			notWantContain: "Follow these rules",
+		},
+		{
+			name:         "small tier coder gets explicit rules",
+			registry:     explicitSmallRegistry,
+			role:         "coder",
+			wantContains: "Follow these rules",
+		},
+		{
+			name:           "large tier coder gets standard suffix",
+			registry:       largeRegistry,
+			role:         "coder",
+			wantContains:   "Role: Coder",
+			notWantContain: "Follow these rules",
+		},
+		{
+			name:         "nil registry defaults to large tier",
+			registry:     nil,
+			role:         "tester",
+			wantContains: "Role: Tester",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := OrchestratorConfig{MaxSteps: 30}
+			configurator := coreStepConfigurator(cfg, tt.registry, nil)
+
+			profile := AgentProfile{Role: tt.role}
+			step := orchestration.PlanStep{
+				ID:          "test_step",
+				Description: "Test step",
+				Profile:     &profile,
+			}
+
+			defaults := orchestration.StepDefaults{
+				MaxSteps: 30,
+				AllTools: nil,
+			}
+
+			stepCfg := configurator(step, defaults)
+
+			if stepCfg.SystemPromptSuffix == "" {
+				t.Error("expected non-empty SystemPromptSuffix")
+				return
+			}
+
+			if !strings.Contains(stepCfg.SystemPromptSuffix, tt.wantContains) {
+				t.Errorf("expected suffix to contain %q, got %q", tt.wantContains, stepCfg.SystemPromptSuffix)
+			}
+
+			if tt.notWantContain != "" && strings.Contains(stepCfg.SystemPromptSuffix, tt.notWantContain) {
+				t.Errorf("expected suffix NOT to contain %q, but it did: %q", tt.notWantContain, stepCfg.SystemPromptSuffix)
 			}
 		})
 	}
@@ -1698,7 +1794,8 @@ func TestBuildSystemPrompt_PlanMode(t *testing.T) {
 	ctx := context.WithValue(context.Background(), PlanModeKey, true)
 	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
 
-	result := buildSystemPrompt(ctx, "test message")
+	modelMeta := llm.ModelMetadata{Tier: "large"}
+	result := buildSystemPrompt(ctx, "test message", modelMeta)
 
 	if !strings.Contains(result, "Plan Context") {
 		t.Error("plan mode prompt should contain Plan Context section")
@@ -1717,7 +1814,8 @@ func TestBuildSystemPrompt_ReactMode(t *testing.T) {
 	ctx := context.Background()
 	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
 
-	result := buildSystemPrompt(ctx, "test message")
+	modelMeta := llm.ModelMetadata{Tier: "large"}
+	result := buildSystemPrompt(ctx, "test message", modelMeta)
 
 	if strings.Contains(result, "Plan Context") {
 		t.Error("react mode prompt should NOT contain Plan Context section")

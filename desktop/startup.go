@@ -444,7 +444,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Validate LLM-dependent objects at startup (fail-fast).
 	// The factory closure will rebuild these per-session from current config.
 	if llmRouter != nil {
-		_, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil, nil)
+		_, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil, nil, modelRegistry)
 	}
 	_ = a.buildOrchestratorConfig(a.config, nil)
 	_ = a.buildContextFactory(llmRouter, a.config)
@@ -512,7 +512,7 @@ func (a *App) Startup(ctx context.Context) {
 			return nil, errors.New("no active LLM provider configured - check your config.yaml")
 		}
 
-		newRouter, newPlanner, newReflector := a.buildCoreAgents(newLLMRouter, registry, cfg, emitter, logger)
+		newRouter, newPlanner, newReflector := a.buildCoreAgents(newLLMRouter, registry, cfg, emitter, logger, newModelRegistry)
 		if newRouter == nil || newPlanner == nil {
 			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
 		}

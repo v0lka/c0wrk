@@ -17,6 +17,8 @@ const executorNudge = "[System] You have tools available that can help answer th
 
 const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Wrap up your work NOW: summarize your findings and finish. Do not start new explorations."
 
+const executorFinishNudge = "[System] You must call the finish tool to complete your task. Simply responding with text does not count as completion. Call the finish tool now with your final answer."
+
 const (
 	// repeatNudgeThreshold is the number of consecutive identical tool calls
 	// before injecting a system message to try a different approach.
@@ -76,6 +78,9 @@ type Executor struct {
 	// Parse error tracker: detect consecutive parse failures on the same tool
 	consecutiveParseErrorTool  string
 	consecutiveParseErrorCount int
+
+	// Finish nudge tracker: ensure explicit finish tool call before accepting implicit finish
+	finishNudgeAttempted bool
 
 	// Plan-step context for structured logging
 	planStepID    string // e.g. "step_3" (empty if not plan mode)
@@ -281,6 +286,21 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				continue // retry with nudge in context
 			}
 
+			// Finish nudge: require explicit finish tool call before accepting completion
+			// Only needed in plan-step execution where output needs structured capture
+			if e.suppressAssistantEvents && !e.finishNudgeAttempted {
+				e.finishNudgeAttempted = true
+				nudgeStep := Step{
+					Thought:     thought,
+					Observation: executorFinishNudge,
+					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				}
+				allSteps = append(allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				e.emitter.ExecutorDiagnostic(stepNum, "executor_finish_nudge", map[string]any{"reason": "implicit_finish_without_tool"})
+				continue // retry — LLM should now call finish explicitly
+			}
+
 			step := Step{
 				Thought:    thought,
 				TokensUsed: resp.Usage.InputTokens + resp.Usage.OutputTokens,
@@ -316,6 +336,21 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				cw.AddStep(nudgeStep)
 				e.emitter.ExecutorDiagnostic(stepNum, "executor_nudge", map[string]any{"reason": "no_tools_no_end_turn_on_step_1"})
 				continue
+			}
+
+			// Finish nudge: require explicit finish tool call before accepting completion
+			// Only needed in plan-step execution where output needs structured capture
+			if e.suppressAssistantEvents && !e.finishNudgeAttempted {
+				e.finishNudgeAttempted = true
+				nudgeStep := Step{
+					Thought:     thought,
+					Observation: executorFinishNudge,
+					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				}
+				allSteps = append(allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				e.emitter.ExecutorDiagnostic(stepNum, "executor_finish_nudge", map[string]any{"reason": "implicit_finish_without_tool"})
+				continue // retry — LLM should now call finish explicitly
 			}
 
 			// No tool calls but not end_turn — treat as implicit finish anyway

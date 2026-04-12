@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/prompt"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -22,6 +24,7 @@ var (
 type Router struct {
 	llm           LLMCaller
 	historyWindow int // number of recent messages to include
+	modelRegistry *llm.ModelRegistry
 }
 
 // NewRouter creates a new Router.
@@ -35,13 +38,40 @@ func NewRouter(caller LLMCaller, historyWindow int) *Router {
 	}
 }
 
+// SetModelRegistry sets the model registry for tier resolution.
+// If not set, the router defaults to "large" tier.
+func (r *Router) SetModelRegistry(registry *llm.ModelRegistry) {
+	r.modelRegistry = registry
+}
+
+// getTier resolves the model tier, defaulting to "large" if not configured.
+func (r *Router) getTier() prompt.ModelTier {
+	if r.modelRegistry == nil {
+		slog.Debug("router: model tier resolved", "tier", prompt.TierLarge)
+		return prompt.TierLarge
+	}
+	meta, _ := r.modelRegistry.Resolve("")
+	tier := prompt.ModelTier(meta.Tier)
+	if tier == "" {
+		slog.Debug("router: model tier resolved", "tier", prompt.TierLarge)
+		return prompt.TierLarge
+	}
+	slog.Debug("router: model tier resolved", "tier", tier)
+	return tier
+}
+
 // Route analyzes the user's request and determines the best execution strategy.
 func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message) (decision *RoutingDecision, err error) {
 	// Build tool list for the prompt (grouped by priority tier)
 	toolListStr := agent.BuildGroupedToolList(availableTools)
 
-	// Build system prompt
-	systemPrompt := strings.ReplaceAll(prompts.RouterSystem, "AVAILABLE-TOOLS", toolListStr)
+	// Build system prompt using prompt builder with tier-specific adapters
+	systemPrompt := prompt.New(r.getTier()).
+		Core(prompts.RouterSystem).
+		ForLarge(prompts.RouterLarge).
+		ForSmall(prompts.RouterSmall).
+		Replace("AVAILABLE-TOOLS", toolListStr).
+		Build()
 
 	// Build messages for the request
 	messages := make([]llm.Message, 0, len(history)+2)

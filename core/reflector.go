@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
+	"github.com/user/agent/sdk/prompt"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -21,12 +23,35 @@ const reflectorAnalyzeFooter = "Please analyze this execution and provide a stru
 // Reflector analyzes execution trajectory to produce
 // structured self-correction insights per AD 4.6.
 type Reflector struct {
-	llm LLMCaller
+	llm           LLMCaller
+	modelRegistry *llm.ModelRegistry
 }
 
 // NewReflector creates a new Reflector with the given LLM caller.
 func NewReflector(caller LLMCaller) *Reflector {
 	return &Reflector{llm: caller}
+}
+
+// SetModelRegistry sets the model registry for tier resolution.
+// If not set, the reflector defaults to "large" tier.
+func (r *Reflector) SetModelRegistry(registry *llm.ModelRegistry) {
+	r.modelRegistry = registry
+}
+
+// getTier resolves the model tier, defaulting to "large" if not configured.
+func (r *Reflector) getTier() prompt.ModelTier {
+	if r.modelRegistry == nil {
+		slog.Debug("reflector: model tier resolved", "tier", prompt.TierLarge)
+		return prompt.TierLarge
+	}
+	meta, _ := r.modelRegistry.Resolve("")
+	tier := prompt.ModelTier(meta.Tier)
+	if tier == "" {
+		slog.Debug("reflector: model tier resolved", "tier", prompt.TierLarge)
+		return prompt.TierLarge
+	}
+	slog.Debug("reflector: model tier resolved", "tier", tier)
+	return tier
 }
 
 // Reflect analyzes execution trajectory to produce structured self-correction insights.
@@ -74,7 +99,11 @@ func (r *Reflector) Reflect(
 
 // buildSystemPrompt constructs the system prompt for the reflector role.
 func (r *Reflector) buildSystemPrompt() string {
-	return prompts.ReflectorSystem
+	return prompt.New(r.getTier()).
+		Core(prompts.ReflectorSystem).
+		ForLarge(prompts.ReflectorLarge).
+		ForSmall(prompts.ReflectorSmall).
+		Build()
 }
 
 // buildUserMessage constructs the user message containing all context for reflection.

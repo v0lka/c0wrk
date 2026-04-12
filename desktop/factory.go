@@ -67,7 +67,8 @@ func (a *App) buildRouter(cfg *config.Config) (*llm.Router, *llm.ModelRegistry, 
 // from the given LLM router and config. Returns nil values if llmRouter is nil.
 // When emitter is non-nil, each component receives a token-tracking wrapper so
 // that service-level LLM calls are accumulated in session totals.
-func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistry, cfg *config.Config, emitter core.Emitter, logger *slog.Logger) (*core.Router, *core.Planner, *core.Reflector) {
+// modelRegistry is wired to all components for tier resolution.
+func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistry, cfg *config.Config, emitter core.Emitter, logger *slog.Logger, modelRegistry *llm.ModelRegistry) (*core.Router, *core.Planner, *core.Reflector) {
 	if llmRouter == nil {
 		return nil, nil, nil
 	}
@@ -76,6 +77,14 @@ func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistr
 	router := core.NewRouter(caller, cfg.Router.HistoryWindow)
 	planner := core.NewPlanner(caller)
 	reflector := core.NewReflector(caller)
+
+	// Wire model registry to all components for tier resolution
+	if modelRegistry != nil {
+		router.SetModelRegistry(modelRegistry)
+		planner.SetModelRegistry(modelRegistry)
+		reflector.SetModelRegistry(modelRegistry)
+	}
+
 	return router, planner, reflector
 }
 
