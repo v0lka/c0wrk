@@ -7,6 +7,7 @@ After forming a conclusion or plan, briefly verify its internal consistency. If 
 ## Uncertainty Handling
 
 If information is insufficient for a definitive conclusion:
+
 - When you can form a reasoned hypothesis, proceed with it and note what additional data would confirm it.
 - When evidence is contradictory, present alternative interpretations with your assessment of each.
 - When data is critically insufficient, state what is missing and why it matters.

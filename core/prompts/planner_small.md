@@ -12,6 +12,7 @@ Follow these steps to create a plan:
 5. Output the plan in the exact JSON format specified below.
 
 IMPORTANT:
+
 - Do NOT add steps that are not directly needed for the goal.
 - Do NOT create more than 5 steps unless absolutely necessary.
 - Do NOT include explanatory text outside the JSON output.

@@ -1,6 +1,7 @@
 ## Execution Rules
 
 Follow these steps for EVERY action:
+
 1. State what you need to do in one sentence.
 2. Choose exactly ONE tool to use.
 3. Execute the tool.
