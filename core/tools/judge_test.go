@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/user/agent/sdk/llm"
+	tools "github.com/user/agent/sdk/tools"
 )
 
 // mockLLMProvider is a mock implementation of llm.Provider for testing.
@@ -608,6 +609,97 @@ func TestJudge_WorkspacePreCheck_RelativePaths(t *testing.T) {
 	}
 }
 
+func TestAllPathsInDir(t *testing.T) {
+	tests := []struct {
+		name string
+		dir  string
+		input string
+		want bool
+	}{
+		{
+			name:  "single path inside dir",
+			dir:   "/tmp/session-temp",
+			input: `{"file":"/tmp/session-temp/cache/data.txt"}`,
+			want:  true,
+		},
+		{
+			name:  "dir path itself",
+			dir:   "/tmp/session-temp",
+			input: `{"path":"/tmp/session-temp"}`,
+			want:  true,
+		},
+		{
+			name:  "path outside dir",
+			dir:   "/tmp/session-temp",
+			input: `{"file":"/etc/passwd"}`,
+			want:  false,
+		},
+		{
+			name:  "mixed paths",
+			dir:   "/tmp/session-temp",
+			input: `{"src":"/tmp/session-temp/a.txt","dst":"/tmp/other/b.txt"}`,
+			want:  false,
+		},
+		{
+			name:  "no paths in input",
+			dir:   "/tmp/session-temp",
+			input: `{"query":"hello world"}`,
+			want:  false,
+		},
+		{
+			name:  "empty dir",
+			dir:   "",
+			input: `{"file":"/tmp/session-temp/main.go"}`,
+			want:  false,
+		},
+		{
+			name:  "nested JSON with paths",
+			dir:   "/tmp/session-temp",
+			input: `{"args":{"file":"/tmp/session-temp/data.json"}}`,
+			want:  true,
+		},
+		{
+			name:  "array of paths inside dir",
+			dir:   "/tmp/session-temp",
+			input: `{"files":["/tmp/session-temp/a.txt","/tmp/session-temp/b.txt"]}`,
+			want:  true,
+		},
+		{
+			name:  "path traversal attempt",
+			dir:   "/tmp/session-temp",
+			input: `{"file":"/tmp/session-temp/../../../etc/passwd"}`,
+			want:  false,
+		},
+		{
+			name:  "bash command with dir path",
+			dir:   "/tmp/session-temp",
+			input: `{"command":"rm -rf /tmp/session-temp/cache"}`,
+			want:  true,
+		},
+		{
+			name:  "bash command with external path",
+			dir:   "/tmp/session-temp",
+			input: `{"command":"cat /etc/hosts"}`,
+			want:  false,
+		},
+		{
+			name:  "invalid JSON",
+			dir:   "/tmp/session-temp",
+			input: `not json`,
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := allPathsInDir(json.RawMessage(tt.input), tt.dir)
+			if got != tt.want {
+				t.Errorf("allPathsInDir() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAllPathsInWorkspace(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -705,6 +797,130 @@ func TestAllPathsInWorkspace(t *testing.T) {
 
 // TestJudgeEvaluate_WithEnvInfo verifies that the judge's user prompt includes
 // the compact environment block when EnvInfo is present in context.
+func TestJudge_TempDirPreCheck_AllowsInternalPaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	input := json.RawMessage(`{"path":"/tmp/session-temp/cache/data.json"}`)
+
+	verdict, reason, err := judge.Judge(ctx, "file_write", input, "write file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+	if reason != "all paths are within the session temp directory" {
+		t.Errorf("unexpected reason: %q", reason)
+	}
+	if mockProvider.callCount != 0 {
+		t.Errorf("expected 0 LLM calls (short-circuited), got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_TempDirPreCheck_DeniesExternalPaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: External path"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	input := json.RawMessage(`{"path":"/etc/passwd"}`)
+
+	verdict, _, err := judge.Judge(ctx, "file_read", input, "read file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictConfirm {
+		t.Errorf("expected VerdictConfirm (fell through to LLM), got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_TempDirPreCheck_MixedPaths(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Mixed paths"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	input := json.RawMessage(`{"src":"/tmp/session-temp/file.txt","dest":"/tmp/other/file.txt"}`)
+
+	verdict, _, err := judge.Judge(ctx, "file_copy", input, "copy file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictConfirm {
+		t.Errorf("expected VerdictConfirm (fell through to LLM), got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_TempDirPreCheck_NoTempDir(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	ctx := context.Background() // no temp dir
+	input := json.RawMessage(`{"path":"/tmp/session-temp/file.txt"}`)
+
+	verdict, _, err := judge.Judge(ctx, "file_write", input, "write file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow from LLM, got %d", verdict)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call (no temp dir shortcut), got %d", mockProvider.callCount)
+	}
+}
+
+func TestJudge_TempDirPreCheck_TakesPrecedenceOverWorkspace(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model")
+
+	// Both temp dir and workspace are set, but path is only in temp dir
+	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	ctx = WithWorkspacePath(ctx, "/home/user/project")
+	input := json.RawMessage(`{"path":"/tmp/session-temp/cache/data.json"}`)
+
+	verdict, reason, err := judge.Judge(ctx, "file_write", input, "write file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+	// Should use temp dir reason, not workspace reason
+	if reason != "all paths are within the session temp directory" {
+		t.Errorf("expected temp dir reason, got %q", reason)
+	}
+	if mockProvider.callCount != 0 {
+		t.Errorf("expected 0 LLM calls (short-circuited), got %d", mockProvider.callCount)
+	}
+}
+
 func TestJudgeEvaluate_WithEnvInfo(t *testing.T) {
 	mockProvider := &mockLLMProvider{
 		response: &llm.ChatResponse{

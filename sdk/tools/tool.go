@@ -106,6 +106,23 @@ func WorkspacePathFrom(ctx context.Context) string {
 	return ""
 }
 
+// tempDirKey is the context key for the temporary directory path.
+type tempDirKey struct{}
+
+// WithTempDir returns a new context with the temporary directory path attached.
+func WithTempDir(ctx context.Context, path string) context.Context {
+	return context.WithValue(ctx, tempDirKey{}, path)
+}
+
+// TempDirFrom extracts the temporary directory path from the context.
+// Returns an empty string if not found.
+func TempDirFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(tempDirKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // taskContextKey is the context key for passing task context through Go's context.Context.
 type taskContextKey struct{}
 

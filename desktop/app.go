@@ -153,6 +153,7 @@ type App struct {
 
 	pendingConfirmations sync.Map
 	pendingAskUser       sync.Map
+	pendingStepLimit     sync.Map
 
 	envInfo *tools.EnvInfo
 

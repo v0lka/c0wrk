@@ -1121,3 +1121,230 @@ func TestExecutor_WrapUpNudge_OnlyOnce(t *testing.T) {
 		t.Errorf("expected exactly 1 wrap-up nudge, got %d", nudgeCount)
 	}
 }
+
+// --- StepLimit tests ---
+
+func TestStepLimit_NilCallback(t *testing.T) {
+	// Create executor with maxSteps=2, NO StepLimitFunc set
+	// Mock LLM to always request a tool call
+	toolInput := json.RawMessage(`{"q":"test"}`)
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithToolCall("searching 1", "search", toolInput),
+			llmResponseWithToolCall("searching 2", "search", toolInput),
+			llmResponseWithToolCall("searching 3", "search", toolInput),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{})
+	// NO StepLimitFunc set - testing backward compat
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert: result.Finished == false (exhausted without prompting)
+	if result.Finished {
+		t.Error("expected Finished=false when max steps exhausted with nil callback")
+	}
+
+	// Assert: exactly 2 steps were executed
+	if len(result.Steps) != 2 {
+		t.Errorf("expected exactly 2 steps, got %d", len(result.Steps))
+	}
+}
+
+func TestStepLimit_Deny(t *testing.T) {
+	// Create executor with maxSteps=2
+	// Set StepLimitFunc that returns StepLimitDeny
+	// Mock LLM to always request a tool call
+	toolInput := json.RawMessage(`{"q":"test"}`)
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithToolCall("searching 1", "search", toolInput),
+			llmResponseWithToolCall("searching 2", "search", toolInput),
+			llmResponseWithToolCall("searching 3", "search", toolInput),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	callbackCallCount := 0
+	var receivedCurrentStep, receivedMaxSteps int
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{})
+	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error) {
+		callbackCallCount++
+		receivedCurrentStep = currentStep
+		receivedMaxSteps = maxSteps
+		return StepLimitDeny, nil
+	})
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert: result.Finished == false
+	if result.Finished {
+		t.Error("expected Finished=false when step limit callback returns deny")
+	}
+
+	// Assert: the callback was called exactly once
+	if callbackCallCount != 1 {
+		t.Errorf("expected callback to be called exactly once, got %d", callbackCallCount)
+	}
+
+	// Assert: callback received correct currentStep and maxSteps args
+	// currentStep should be 3 (we're at step 3 when limit is reached with maxSteps=2)
+	if receivedCurrentStep != 3 {
+		t.Errorf("expected currentStep=3, got %d", receivedCurrentStep)
+	}
+	if receivedMaxSteps != 2 {
+		t.Errorf("expected maxSteps=2, got %d", receivedMaxSteps)
+	}
+}
+
+func TestStepLimit_AllowOnce(t *testing.T) {
+	// Create executor with maxSteps=2
+	// Set StepLimitFunc that returns StepLimitAllowOnce on first call, then StepLimitDeny on second
+	// Mock LLM to always request a tool call
+	toolInput := json.RawMessage(`{"q":"test"}`)
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithToolCall("searching 1", "search", toolInput),
+			llmResponseWithToolCall("searching 2", "search", toolInput),
+			llmResponseWithToolCall("searching 3", "search", toolInput),
+			llmResponseWithToolCall("searching 4", "search", toolInput),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	callbackCallCount := 0
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{})
+	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error) {
+		callbackCallCount++
+		if callbackCallCount == 1 {
+			return StepLimitAllowOnce, nil
+		}
+		return StepLimitDeny, nil
+	})
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert: the callback was called exactly twice (once at step 3, once at step 4)
+	if callbackCallCount != 2 {
+		t.Errorf("expected callback to be called exactly twice, got %d", callbackCallCount)
+	}
+
+	// Assert: result.Finished == false (denied on second call)
+	if result.Finished {
+		t.Error("expected Finished=false when step limit callback returns deny on second call")
+	}
+
+	// Assert: 3 total steps executed (2 original + 1 extension)
+	// The steps include the 2 tool calls + 1 nudge step for allow_once
+	toolCallSteps := 0
+	for _, s := range result.Steps {
+		if s.Action.Name != "" {
+			toolCallSteps++
+		}
+	}
+	if toolCallSteps != 3 {
+		t.Errorf("expected 3 tool call steps, got %d", toolCallSteps)
+	}
+
+	// Verify the allow_once nudge was injected
+	foundNudge := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.UserNudge, "ONE additional tool call iteration") {
+			foundNudge = true
+			break
+		}
+	}
+	if !foundNudge {
+		t.Error("expected allow_once nudge to be injected")
+	}
+}
+
+func TestStepLimit_AllowAlways(t *testing.T) {
+	// Create executor with maxSteps=2
+	// Set StepLimitFunc that returns StepLimitAllowAlways
+	// Mock LLM to request tool calls for 5 iterations, then return a final text response (finish)
+	// Use different tool inputs to avoid triggering the circuit breaker
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithToolCall("searching 1", "search", json.RawMessage(`{"q":"test1"}`)),
+			llmResponseWithToolCall("searching 2", "search", json.RawMessage(`{"q":"test2"}`)),
+			llmResponseWithToolCall("searching 3", "search", json.RawMessage(`{"q":"test3"}`)),
+			llmResponseWithToolCall("searching 4", "search", json.RawMessage(`{"q":"test4"}`)),
+			llmResponseWithToolCall("searching 5", "search", json.RawMessage(`{"q":"test5"}`)),
+			llmResponseEndTurn("final answer"),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	callbackCallCount := 0
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{})
+	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error) {
+		callbackCallCount++
+		return StepLimitAllowAlways, nil
+	})
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert: the callback was called exactly once
+	if callbackCallCount != 1 {
+		t.Errorf("expected callback to be called exactly once, got %d", callbackCallCount)
+	}
+
+	// Assert: result.Finished == true
+	if !result.Finished {
+		t.Error("expected Finished=true when execution completes after allow_always")
+	}
+
+	// Assert: all steps executed without re-prompting (5 tool calls + 1 finish)
+	// Plus 1 nudge step for allow_always
+	toolCallSteps := 0
+	for _, s := range result.Steps {
+		if s.Action.Name != "" && s.Action.Name != "finish" {
+			toolCallSteps++
+		}
+	}
+	if toolCallSteps != 5 {
+		t.Errorf("expected 5 tool call steps, got %d", toolCallSteps)
+	}
+
+	// Verify the allow_always nudge was injected
+	foundNudge := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.UserNudge, "unlimited tool call iterations") {
+			foundNudge = true
+			break
+		}
+	}
+	if !foundNudge {
+		t.Error("expected allow_always nudge to be injected")
+	}
+}

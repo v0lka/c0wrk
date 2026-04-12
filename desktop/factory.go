@@ -8,6 +8,7 @@ import (
 	"time"
 
 	// SDK layer
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	sdkmemory "github.com/user/agent/sdk/memory"
 	"github.com/user/agent/sdk/orchestration"
@@ -79,12 +80,14 @@ func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistr
 }
 
 // buildOrchestratorConfig creates an OrchestratorConfig from the given config.
-func (a *App) buildOrchestratorConfig(cfg *config.Config) core.OrchestratorConfig {
+// stepLimitFunc is optional; if provided, it will be called when an executor reaches its step limit.
+func (a *App) buildOrchestratorConfig(cfg *config.Config, stepLimitFunc agent.StepLimitFunc) core.OrchestratorConfig {
 	return core.OrchestratorConfig{
-		MaxSteps:   cfg.Executor.MaxReactSteps,
-		KeepFirst:  cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:   cfg.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries: cfg.Executor.MaxRetries,
+		MaxSteps:      cfg.Executor.MaxReactSteps,
+		KeepFirst:     cfg.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:      cfg.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxRetries:    cfg.Executor.MaxRetries,
+		StepLimitFunc: stepLimitFunc,
 	}
 }
 

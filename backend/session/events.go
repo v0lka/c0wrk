@@ -9,6 +9,12 @@ import (
 	sdktools "github.com/user/agent/sdk/tools"
 )
 
+// Event type constants for backend-to-frontend communication.
+const (
+	EventStepLimit         = "step_limit"
+	EventStepLimitResponse = "step_limit_response"
+)
+
 // --- Session lifecycle event data ---
 
 // SessionCreatedData is the payload for "session_created" events.
@@ -83,8 +89,25 @@ type ToolConfirmPayload struct {
 
 // AskUserPayload is sent to the frontend when the agent asks the user questions.
 type AskUserPayload struct {
-	RequestID string                    `json:"request_id"`
+	RequestID string                     `json:"request_id"`
 	Questions []sdktools.AskUserQuestion `json:"questions"`
+}
+
+// --- Step limit payloads ---
+
+// StepLimitPayload is emitted when an agent reaches its tool call step limit,
+// prompting the user for a decision on whether to continue.
+type StepLimitPayload struct {
+	RequestID   string `json:"request_id"`
+	CurrentStep int    `json:"current_step"`
+	MaxSteps    int    `json:"max_steps"`
+}
+
+// StepLimitResponsePayload carries the user's decision about continuing
+// past the step limit.
+type StepLimitResponsePayload struct {
+	RequestID string `json:"request_id"`
+	Response  string `json:"response"` // "allow_once", "allow_always", or "deny"
 }
 
 // --- Emitter event data types (typed Data field payloads) ---

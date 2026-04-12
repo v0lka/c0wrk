@@ -3,16 +3,13 @@ package prompts
 
 import _ "embed"
 
-// Planner prompts (merged templates)
+// Planner prompts
 
-//go:embed planner_plan.md
-var PlannerPlan string
+//go:embed planner_base.md
+var PlannerBase string
 
 //go:embed planner_replan.md
 var PlannerReplan string
-
-//go:embed planner_continue.md
-var PlannerContinue string
 
 // Orchestrator prompt
 

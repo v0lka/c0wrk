@@ -13,7 +13,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically. Returns up to 1000 results by default. For searching within file contents, use ripgrep instead.`
+const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically. Returns up to 1000 results by default. For searching within file contents, use ripgrep instead.`
 
 // GlobTool finds files and directories matching doublestar glob patterns.
 type GlobTool struct {
@@ -30,7 +30,7 @@ func NewGlobTool() *GlobTool {
 		"properties": {
 			"pattern": {
 				"type": "string",
-				"description": "Glob pattern to match against file paths, e.g. **/*.go, src/**/*.ts, *.json"
+				"description": "Glob pattern to match against file paths, e.g. **/*.java, src/**/*.ts, **/*.cs, *.json"
 			},
 			"path": {
 				"type": "string",

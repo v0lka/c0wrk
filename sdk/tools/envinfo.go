@@ -22,6 +22,9 @@ type EnvInfo struct {
 	GoVersion     string // e.g., "1.23.1" or "" if not installed
 	NodeVersion   string // e.g., "22.5.0" or "" if not installed
 	PythonVersion string // e.g., "3.12.4" or "" if not installed
+	DotNetVersion string // e.g., "8.0.100" or "" if not installed
+	JavaVersion   string // e.g., "21.0.1" or "" if not installed
+	PhpVersion    string // e.g., "8.2.10" or "" if not installed
 }
 
 // CollectEnvInfo detects the current environment and returns a populated EnvInfo.
@@ -62,6 +65,9 @@ func CollectEnvInfo() *EnvInfo {
 	info.GoVersion = detectGoVersion()
 	info.NodeVersion = detectNodeVersion()
 	info.PythonVersion = detectPythonVersion()
+	info.DotNetVersion = detectDotNetVersion()
+	info.JavaVersion = detectJavaVersion()
+	info.PhpVersion = detectPhpVersion()
 
 	return info
 }
@@ -124,6 +130,58 @@ func detectPythonVersion() string {
 	return ""
 }
 
+// detectDotNetVersion parses "8.0.100" from "dotnet --version" output.
+func detectDotNetVersion() string {
+	out := runVersionCmd("dotnet", "--version")
+	if out == "" {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// detectJavaVersion parses "21.0.1" from "java -version" output (first line).
+// Example: "openjdk version \"21.0.1\" 2023-10-17" or "java version \"1.8.0_391\""
+func detectJavaVersion() string {
+	out := runVersionCmd("java", "-version")
+	if out == "" {
+		return ""
+	}
+	// Take first line
+	lines := strings.Split(out, "\n")
+	firstLine := strings.TrimSpace(lines[0])
+	// Look for version in quotes
+	start := strings.Index(firstLine, "\"")
+	if start == -1 {
+		return ""
+	}
+	end := strings.Index(firstLine[start+1:], "\"")
+	if end == -1 {
+		return ""
+	}
+	version := firstLine[start+1 : start+1+end]
+	// Strip leading "1." from legacy Java versions (e.g., 1.8.0_391 → 8.0_391)
+	version = strings.TrimPrefix(version, "1.")
+	return version
+}
+
+// detectPhpVersion parses "8.2.10" from "php --version" output (first line).
+// Example: "PHP 8.2.10 (cli) (built: Aug 29 2023) ..."
+func detectPhpVersion() string {
+	out := runVersionCmd("php", "--version")
+	if out == "" {
+		return ""
+	}
+	// Take first line
+	lines := strings.Split(out, "\n")
+	firstLine := strings.TrimSpace(lines[0])
+	// Expected: "PHP 8.2.10 ..."
+	parts := strings.Fields(firstLine)
+	if len(parts) >= 2 && strings.EqualFold(parts[0], "php") {
+		return parts[1]
+	}
+	return ""
+}
+
 // runVersionCmd executes a command with a 2-second timeout and returns trimmed stdout.
 // Returns "" on any error (not found, timeout, non-zero exit, etc.).
 func runVersionCmd(name string, args ...string) string {
@@ -177,9 +235,12 @@ func FormatFullEnvBlock(info *EnvInfo) string {
 	fmt.Fprintf(&b, "- Home directory: %s\n", info.HomeDir)
 	fmt.Fprintf(&b, "- Current time: %s\n", now.Format(time.RFC3339))
 	fmt.Fprintf(&b, "- Timezone: %s\n", tzLabel)
-	fmt.Fprintf(&b, "- Go: %s\n", runtimeOrNotInstalled(info.GoVersion))
 	fmt.Fprintf(&b, "- Node.js: %s\n", runtimeOrNotInstalled(info.NodeVersion))
 	fmt.Fprintf(&b, "- Python: %s\n", runtimeOrNotInstalled(info.PythonVersion))
+	fmt.Fprintf(&b, "- Go: %s\n", runtimeOrNotInstalled(info.GoVersion))
+	fmt.Fprintf(&b, "- .NET: %s\n", runtimeOrNotInstalled(info.DotNetVersion))
+	fmt.Fprintf(&b, "- Java: %s\n", runtimeOrNotInstalled(info.JavaVersion))
+	fmt.Fprintf(&b, "- PHP: %s\n", runtimeOrNotInstalled(info.PhpVersion))
 
 	return b.String()
 }

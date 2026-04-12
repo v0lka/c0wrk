@@ -50,7 +50,7 @@ func NewFileOpsTool() *FileOpsTool {
 			},
 			"pattern": {
 				"type": "string",
-				"description": "Glob pattern to match file names, e.g. *.go (used with search_files)"
+				"description": "Glob pattern to match file names, e.g. *.cs, *.ts, *.py, *.java (used with search_files)"
 			},
 			"regex": {
 				"type": "string",

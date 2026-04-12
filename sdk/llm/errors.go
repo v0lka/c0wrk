@@ -68,8 +68,8 @@ func classifyNetError(err error) bool {
 		return true
 	}
 
-	// Check for syscall errors (ECONNREFUSED, ECONNRESET)
-	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+	// Check for syscall errors (ECONNREFUSED, ECONNRESET, EHOSTUNREACH)
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EHOSTUNREACH) {
 		return true
 	}
 

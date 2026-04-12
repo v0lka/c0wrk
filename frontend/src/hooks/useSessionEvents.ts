@@ -3,7 +3,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { usePanelStore } from '@/stores/panelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
-import type { RoutingData, ToolCallData, ToolResultData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData } from '@/lib/wails'
+import type { RoutingData, ToolCallData, ToolResultData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData, StepLimitData } from '@/lib/wails'
 import { isSessionTokensData } from '@/lib/wails'
 import { GetSessionTokens } from '../../wailsjs/go/desktop/App'
 
@@ -34,6 +34,10 @@ function isToolConfirmData(data: unknown): data is ToolConfirmData {
 
 function isAskUserData(data: unknown): data is AskUserData {
   return typeof data === 'object' && data !== null && 'request_id' in data && 'questions' in data
+}
+
+function isStepLimitData(data: unknown): data is StepLimitData {
+  return typeof data === 'object' && data !== null && 'request_id' in data && 'current_step' in data && 'max_steps' in data
 }
 
 function isPlanData(data: unknown): data is PlanData {
@@ -265,6 +269,28 @@ export function useSessionEvents(sessionId: string | null) {
       if (isActiveSession()) {
         useChatStore.getState().setThinking(false)
         useChatStore.getState().setActivityStatus('Waiting for your answer...')
+      }
+    })
+
+    on('step_limit', (data: unknown) => {
+      if (!mounted) return
+      if (!isStepLimitData(data)) return
+      const stepLimitData = data
+      useChatStore.getState().addMessage(sessionId, {
+        id: `step-limit-${stepLimitData.request_id}`,
+        sessionId,
+        type: 'step_limit',
+        content: `Step limit reached: ${stepLimitData.current_step} of ${stepLimitData.max_steps}`,
+        metadata: {
+          request_id: stepLimitData.request_id,
+          current_step: stepLimitData.current_step,
+          max_steps: stepLimitData.max_steps,
+        } as Record<string, unknown>,
+        timestamp: Date.now(),
+      })
+      if (isActiveSession()) {
+        useChatStore.getState().setThinking(false)
+        useChatStore.getState().setActivityStatus('Step limit reached — awaiting decision...')
       }
     })
 

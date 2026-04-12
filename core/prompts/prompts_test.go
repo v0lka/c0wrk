@@ -10,7 +10,7 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		name  string
 		value string
 	}{
-		{"PlannerPlan", PlannerPlan},
+		{"PlannerBase", PlannerBase},
 		{"PlannerReplan", PlannerReplan},
 		{"OrchestratorSystem", OrchestratorSystem},
 		{"ReflectorSystem", ReflectorSystem},
@@ -36,7 +36,7 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 		value    string
 		keywords []string
 	}{
-		{"PlannerPlan", PlannerPlan, []string{"plan", "step"}},
+		{"PlannerBase", PlannerBase, []string{"step", "agent"}},
 		{"PlannerReplan", PlannerReplan, []string{"plan"}},
 		{"OrchestratorSystem", OrchestratorSystem, []string{"task"}},
 		{"ReflectorSystem", ReflectorSystem, []string{"reflect"}},
@@ -57,7 +57,7 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 
 func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 	prompts := map[string]string{
-		"PlannerPlan":        PlannerPlan,
+		"PlannerBase":        PlannerBase,
 		"PlannerReplan":      PlannerReplan,
 		"OrchestratorSystem": OrchestratorSystem,
 		"ReflectorSystem":    ReflectorSystem,

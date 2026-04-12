@@ -8,6 +8,7 @@ import { PlanStepBlock } from './PlanStepBlock'
 import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
 import { ResumeActionPanel } from './ResumeActionPanel'
+import { StepLimitPrompt } from './StepLimitPrompt'
 import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
 import { ActionPlaceholder } from './ActionPlaceholder'
@@ -45,6 +46,8 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
       return <AskUserPanel key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
     case 'resume_action':
       return <ResumeActionPanel key={item.message.id} sessionId={item.message.sessionId} content={item.message.content} metadata={item.message.metadata} />
+    case 'step_limit':
+      return <StepLimitPrompt key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
     case 'error':
       return <ErrorBlock key={item.message.id} content={item.message.content} />
     case 'service':

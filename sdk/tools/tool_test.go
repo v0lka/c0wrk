@@ -86,6 +86,17 @@ func TestWithWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestWithTempDir(t *testing.T) {
+	ctx := context.Background()
+	if got := TempDirFrom(ctx); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	ctx = WithTempDir(ctx, "/tmp/temp")
+	if got := TempDirFrom(ctx); got != "/tmp/temp" {
+		t.Fatalf("expected /tmp/temp, got %q", got)
+	}
+}
+
 func TestWithTaskContext(t *testing.T) {
 	ctx := context.Background()
 	if got := TaskContextFrom(ctx); got != "" {

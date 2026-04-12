@@ -10,6 +10,17 @@ Before acting, form a brief hypothesis about how to accomplish the task. After e
 
 Prefer higher-tier tools over bash_exec. Use bash_exec only when no purpose-built tool covers the operation.
 
+### File Operations Strategy
+
+For file-related tasks, use these tools in order of preference:
+
+- **file_ops**: Reading files, editing, writing, listing directories
+- **ripgrep**: Searching file contents by regex or literal pattern (fast, respects .gitignore)
+- **glob**: Finding files by name or extension pattern
+
+Do NOT use bash_exec for: grep, sed, awk, cat, head, tail, find, wc, or similar Unix text utilities — use the above tools instead.
+bash_exec is appropriate for: build commands (python setup.py, npm run, dotnet build, mvn package, go build, composer install), git operations, package management, running tests, and complex shell pipelines not replicated by higher-tier tools.
+
 ## Plan Context
 
 You may be executing one step of a larger plan. Your output via `finish` is automatically stored and made available to subsequent steps. Focus on your step's specific objective.
@@ -28,10 +39,11 @@ If the summary of a dependency step is insufficient, access full outputs via:
 - Source code, configuration files, scripts, documents the user requested
 - Files explicitly required by the task
 
-**Do NOT write files for:**
+**For intermediate/scratch data:**
 
-- Research notes, analysis summaries, intermediate findings — pass through `finish`
-- Data meant for subsequent steps — pass through `finish`
+- Prefer passing results through `finish` — this is the most efficient inter-step channel
+- If you need to write intermediate files (large datasets, temporary configs, scratch work), use the session temp directory (specified in Workspace section)
+- Do NOT write intermediate files into the project workspace itself
 
 ## Safety
 

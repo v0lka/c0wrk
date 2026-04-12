@@ -15,31 +15,22 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. If a prompt is provided and a summarizer is configured, the fetched content is filtered or summarized by an LLM using that prompt; otherwise the full markdown is returned. Response bodies are limited to 100KB, requests time out after 30 seconds, and up to 10 redirects are followed.`
-
-// LLMSummarizer is a function type for optional LLM-based content extraction.
-// It allows the tool to use LLM summarization without importing internal/core or internal/llm.
-type LLMSummarizer func(ctx context.Context, content string, prompt string) (string, error)
+const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. Response bodies are limited to 100KB, requests time out after 30 seconds, and up to 10 redirects are followed.`
 
 // WebFetchTool fetches web pages and converts HTML to markdown.
 type WebFetchTool struct {
 	*tools.BaseTool
-	summarizer LLMSummarizer
-	client     *http.Client
+	client *http.Client
 }
 
-// NewWebFetchTool creates a new WebFetchTool with an optional summarizer.
-func NewWebFetchTool(summarizer LLMSummarizer) *WebFetchTool {
+// NewWebFetchTool creates a new WebFetchTool.
+func NewWebFetchTool() *WebFetchTool {
 	schema := `{
 		"type": "object",
 		"properties": {
 			"url": {
 				"type": "string",
 				"description": "The URL to fetch. Must be an HTTP or HTTPS URL."
-			},
-			"prompt": {
-				"type": "string",
-				"description": "Optional prompt to extract or summarize specific information from the fetched page. When provided, an LLM filters the content using this prompt instead of returning the full markdown."
 			}
 		},
 		"required": ["url"]
@@ -51,7 +42,6 @@ func NewWebFetchTool(summarizer LLMSummarizer) *WebFetchTool {
 			Schema:          json.RawMessage(schema),
 			Policy:          tools.PolicyAlwaysAllow,
 		},
-		summarizer: summarizer,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -66,8 +56,7 @@ func NewWebFetchTool(summarizer LLMSummarizer) *WebFetchTool {
 
 // webFetchInput represents the input parameters for web fetch.
 type webFetchInput struct {
-	URL    string `json:"url"`
-	Prompt string `json:"prompt"`
+	URL string `json:"url"`
 }
 
 // Execute fetches the URL and returns markdown content.
@@ -102,19 +91,6 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	markdown, err := t.htmlToMarkdown(content)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to convert HTML to markdown: %v", err), IsError: true}, nil
-	}
-
-	// If prompt is provided and summarizer is available, use it for extraction
-	if params.Prompt != "" && t.summarizer != nil {
-		extracted, err := t.summarizer(ctx, markdown, params.Prompt)
-		if err != nil {
-			// Return the markdown content but note the extraction failure
-			return tools.ToolResult{
-				Content: fmt.Sprintf("Note: Extraction failed (%v). Full content:\n\n%s", err, markdown),
-				IsError: false,
-			}, nil
-		}
-		return tools.ToolResult{Content: extracted, IsError: false}, nil
 	}
 
 	return tools.ToolResult{Content: markdown, IsError: false}, nil

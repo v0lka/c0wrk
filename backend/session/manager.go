@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/user/agent/core"
 	"github.com/user/agent/core/tools"
+	sdktools "github.com/user/agent/sdk/tools"
 )
 
 // contextKey is a type for context keys in the session package.
@@ -45,6 +46,7 @@ type Session struct {
 	CreatedAt           time.Time
 	Archived            bool
 	WorkspacePath       string // workspace directory (from project)
+	TempDir             string // session-specific temp directory
 	orchestrator        *core.Orchestrator
 	logFile             *os.File           // session log file handle, closed on deletion
 	cancel              context.CancelFunc // cancel for current task
@@ -52,6 +54,11 @@ type Session struct {
 	done                chan struct{}      // closed when task goroutine finishes
 	lastCompletedTaskID string             // tracks last completed task for continuations
 	mu                  sync.Mutex
+}
+
+// sessionTempDir returns the temp directory path for a session.
+func sessionTempDir(projectsDir, projectID, sessionID string) string {
+	return filepath.Join(projectsDir, projectID, "Temp", sessionID)
 }
 
 // OrchestratorFactory creates a new Orchestrator with the given emitter, logger, workspace path,
@@ -74,6 +81,7 @@ type Manager struct {
 	emitFunc            func(Event) // shared event emission callback
 	logDir              string      // base directory for session logs
 	logLevel            string      // current log level for session loggers
+	projectsDir         string      // base directory for project temp dirs (~/.c0wrk/Projects)
 	tokenPersist        TokenPersistFunc
 	taskStore           TaskStore      // optional persistent task store
 	envInfo             *tools.EnvInfo // environment info for context injection
@@ -81,13 +89,14 @@ type Manager struct {
 }
 
 // NewManager creates a new session Manager.
-func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir string) *Manager {
+func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir, projectsDir string) *Manager {
 	return &Manager{
 		sessions:            make(map[string]*Session),
 		orchestratorFactory: factory,
 		emitFunc:            emitFunc,
 		logDir:              logDir,
 		logLevel:            "DEBUG",
+		projectsDir:         projectsDir,
 		stopTimeout:         10 * time.Second,
 	}
 }
@@ -167,6 +176,12 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		orchestrator.SetTaskStore(adapter)
 	}
 
+	// Create session temp directory
+	tempDir := sessionTempDir(m.projectsDir, projectID, id)
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		slog.Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", err)
+	}
+
 	// Create session
 	session := &Session{
 		ID:            id,
@@ -175,6 +190,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		CreatedAt:     time.Now(),
 		Archived:      false,
 		WorkspacePath: workspacePath,
+		TempDir:       tempDir,
 		orchestrator:  orchestrator,
 		logFile:       logFile,
 		active:        false,
@@ -290,6 +306,13 @@ func (m *Manager) DeleteSession(id string) error {
 	delete(m.sessions, id)
 	m.mu.Unlock()
 
+	// Clean up temp directory
+	if session.TempDir != "" {
+		if err := os.RemoveAll(session.TempDir); err != nil {
+			slog.Warn("failed to remove session temp directory", "session_id", id, "temp_dir", session.TempDir, "error", err)
+		}
+	}
+
 	// Emit session deleted event
 	m.emitFunc(Event{
 		SessionID: id,
@@ -393,6 +416,13 @@ func (m *Manager) ArchiveSession(id string) error {
 	archived := session.Archived
 	session.mu.Unlock()
 
+	// If archiving, clean up temp directory
+	if archived && session.TempDir != "" {
+		if err := os.RemoveAll(session.TempDir); err != nil {
+			slog.Warn("failed to remove session temp directory on archive", "session_id", id, "temp_dir", session.TempDir, "error", err)
+		}
+	}
+
 	// Emit session archived/unarchived event
 	eventType := "session_unarchived"
 	if archived {
@@ -437,6 +467,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	// Enrich context with session workspace path for tool security heuristics
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	if m.envInfo != nil {
 		taskCtx = tools.WithEnvInfo(taskCtx, m.envInfo)
 	}
@@ -610,6 +641,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	session.done = resumeDoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	if m.envInfo != nil {
 		taskCtx = tools.WithEnvInfo(taskCtx, m.envInfo)
 	}

@@ -22,6 +22,9 @@ type Step struct {
 	Action      llm.ToolCall `json:"action"`
 	Observation string       `json:"observation"`
 	TokensUsed  int          `json:"tokens_used"`
+	// UserNudge is an optional user message injected into the context (e.g., step limit nudges).
+	// When set, this is added as a user message after the step's normal messages.
+	UserNudge string `json:"user_nudge,omitempty"`
 }
 
 // ExecutorResult — result of Executor.Run.
@@ -82,3 +85,19 @@ type ContextManager interface {
 	AvailableTokens() int
 	OutputLimit() int
 }
+
+// StepLimitResponse represents the user's decision when the agent's step limit is reached.
+type StepLimitResponse string
+
+const (
+	// StepLimitAllowOnce grants exactly one additional iteration.
+	StepLimitAllowOnce StepLimitResponse = "allow_once"
+	// StepLimitAllowAlways removes the step limit for the remainder of this execution.
+	StepLimitAllowAlways StepLimitResponse = "allow_always"
+	// StepLimitDeny terminates execution (current behavior).
+	StepLimitDeny StepLimitResponse = "deny"
+)
+
+// StepLimitFunc is called when the agent exhausts its step limit.
+// It blocks until the user responds with a decision.
+type StepLimitFunc func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error)

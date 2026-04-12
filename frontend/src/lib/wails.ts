@@ -172,3 +172,9 @@ export interface AskUserData {
   request_id: string
   questions: AskUserQuestion[]
 }
+
+export interface StepLimitData {
+  request_id: string
+  current_step: number
+  max_steps: number
+}

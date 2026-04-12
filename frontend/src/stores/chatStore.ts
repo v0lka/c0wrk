@@ -6,6 +6,7 @@ export type MessageType =
   | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry' | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable'
   | 'task_resumed'
+  | 'step_limit'
 
 export interface ChatMessageUI {
   id: string
@@ -33,6 +34,7 @@ export type DisplayItem =
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
   | { kind: 'resume_action'; message: ChatMessageUI }
+  | { kind: 'step_limit'; message: ChatMessageUI }
 
 export interface GroupedMessages {
   items: DisplayItem[]
@@ -239,6 +241,16 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         break
       }
 
+      case 'step_limit': {
+        const resolved = meta?.resolved === true
+        if (resolved) {
+          break
+        }
+        pendingActions.push({ kind: 'step_limit', message: msg })
+        pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Step limit reached — awaiting decision...' }, planStepId)
+        break
+      }
+
       case 'error':
         pushItem({ kind: 'error', message: msg }, planStepId)
         break
@@ -307,6 +319,8 @@ export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] 
       actions.push({ kind: 'ask_user', message: msg })
     } else if (msg.type === 'task_failed_resumable') {
       actions.push({ kind: 'resume_action', message: msg })
+    } else if (msg.type === 'step_limit') {
+      actions.push({ kind: 'step_limit', message: msg })
     }
   }
   return actions.length > 0 ? actions : EMPTY_PENDING

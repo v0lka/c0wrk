@@ -36,7 +36,7 @@ func NewRipgrepTool() *RipgrepTool {
 			},
 			"file_pattern": {
 				"type": "string",
-				"description": "Glob filter to restrict which files are searched, e.g. *.go, *.ts"
+				"description": "Glob filter to restrict which files are searched, e.g. *.php, *.java, *.ts"
 			},
 			"ignore_case": {
 				"type": "boolean",

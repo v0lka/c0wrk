@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
@@ -163,18 +164,26 @@ export function ChatInput() {
         )}
 
         <div className="flex items-center justify-between pt-2 min-h-[40px]">
-          <label className="flex items-center gap-1.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={planFirst}
-              onChange={(e) => setPlanFirst(e.target.checked)}
-              disabled={isInputDisabled}
-              className="h-3.5 w-3.5 rounded border-border accent-emerald-500"
-            />
-            <span className={`text-xs ${isInputDisabled ? 'text-muted-foreground/50' : 'text-muted-foreground'}`}>
-              Plan first
-            </span>
-          </label>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={planFirst}
+                  onChange={(e) => setPlanFirst(e.target.checked)}
+                  disabled={isInputDisabled}
+                  className="h-3.5 w-3.5 rounded border-border accent-emerald-500"
+                />
+                <span className={`text-xs ${isInputDisabled ? 'text-muted-foreground/50' : 'text-muted-foreground'}`}>
+                  Plan first
+                </span>
+              </label>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs text-xs">
+              <p>When enabled, the agent creates a full plan before taking action — better for complex, multi-step tasks.</p>
+              <p className="mt-1">When disabled, the agent thinks and acts one step at a time — faster for simple requests.</p>
+            </TooltipContent>
+          </Tooltip>
           
           {showCancel ? (
             <Button

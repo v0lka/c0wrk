@@ -4,8 +4,9 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
 import { ResumeActionPanel } from './ResumeActionPanel'
+import { StepLimitPrompt } from './StepLimitPrompt'
 
-type PendingActionItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'resume_action' }>
+type PendingActionItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'resume_action' | 'step_limit' }>
 
 const EMPTY_MESSAGES: ChatMessageUI[] = []
 
@@ -50,6 +51,14 @@ export function PendingActionsBar() {
                   key={item.message.id}
                   sessionId={item.message.sessionId}
                   content={item.message.content}
+                  metadata={item.message.metadata}
+                />
+              )
+            case 'step_limit':
+              return (
+                <StepLimitPrompt
+                  key={item.message.id}
+                  sessionId={item.message.sessionId}
                   metadata={item.message.metadata}
                 />
               )

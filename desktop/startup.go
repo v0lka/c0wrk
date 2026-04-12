@@ -249,6 +249,8 @@ func (a *App) Startup(ctx context.Context) {
 			role = "tool_confirm"
 		case "ask_user":
 			role = "ask_user"
+		case "step_limit":
+			role = "step_limit"
 		case "task_cancelled":
 			role = "task_cancelled"
 		case "step_retry":
@@ -311,7 +313,7 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// Build LLM Router + ModelRegistry at startup for validation (fail-fast).
-	// These are also needed for the ToolJudge and WebFetch summarizer initialization.
+	// These are also needed for the ToolJudge initialization.
 	// The factory closure will rebuild them per-session from current config.
 	llmRouter, modelRegistry, err := a.buildRouter(a.config)
 	if err != nil {
@@ -343,28 +345,8 @@ func (a *App) Startup(ctx context.Context) {
 	finishTool := agent.NewFinishTool()
 	registry.Register(finishTool)
 
-	// Web tools: WebFetch with LLM summarizer.
-	// The summarizer reads a.llmRouter dynamically so that LLM config
-	// changes via the UI take effect without an application restart.
-	summarizer := builtins.LLMSummarizer(func(ctx context.Context, content string, prompt string) (string, error) {
-		a.configMu.RLock()
-		router := a.llmRouter
-		a.configMu.RUnlock()
-		if router == nil {
-			return "", errors.New("LLM router not configured")
-		}
-		req := llm.ChatRequest{
-			Messages: []llm.Message{
-				{Role: "user", Content: content + "\n\n" + prompt},
-			},
-		}
-		resp, err := router.Call(ctx, req)
-		if err != nil {
-			return "", err
-		}
-		return resp.Message.Content, nil
-	})
-	webFetchTool := builtins.NewWebFetchTool(summarizer)
+	// WebFetch tool
+	webFetchTool := builtins.NewWebFetchTool()
 	registry.Register(webFetchTool)
 
 	// WebSearch tool
@@ -461,7 +443,7 @@ func (a *App) Startup(ctx context.Context) {
 	if llmRouter != nil {
 		_, _, _ = a.buildCoreAgents(llmRouter, registry, a.config, nil, nil)
 	}
-	_ = a.buildOrchestratorConfig(a.config)
+	_ = a.buildOrchestratorConfig(a.config, nil)
 	_ = a.buildContextFactory(llmRouter, a.config)
 
 	// Initialize ToolJudge (also called on LLM settings update to keep judge in sync)
@@ -532,7 +514,48 @@ func (a *App) Startup(ctx context.Context) {
 			return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
 		}
 
-		orchConfig := a.buildOrchestratorConfig(cfg)
+		// Create the step limit function that will be called when an executor reaches its step limit
+		stepLimitFunc := func(ctx context.Context, currentStep int, maxSteps int) (agent.StepLimitResponse, error) {
+			// If no UI context, deny to avoid deadlock
+			if a.ctx == nil {
+				return agent.StepLimitDeny, nil
+			}
+
+			// Extract session ID from context for session-scoped event emission
+			sessionID := session.SessionIDFromContext(ctx)
+			if sessionID == "" {
+				// No session context, deny (shouldn't happen in normal desktop use)
+				return agent.StepLimitDeny, nil
+			}
+
+			requestID := uuid.New().String()
+			ch := make(chan agent.StepLimitResponse, 1)
+			a.pendingStepLimit.Store(requestID, ch)
+
+			payload := session.StepLimitPayload{
+				RequestID:   requestID,
+				CurrentStep: currentStep,
+				MaxSteps:    maxSteps,
+			}
+
+			// Emit session-scoped event: session:{sessionId}:step_limit
+			emitFunc(session.Event{SessionID: sessionID, Type: "step_limit", Data: payload})
+
+			select {
+			case resp := <-ch:
+				return resp, nil
+			case <-ctx.Done():
+				// Task was cancelled (e.g. user pressed Stop)
+				a.pendingStepLimit.Delete(requestID)
+				return agent.StepLimitDeny, ctx.Err()
+			case <-a.ctx.Done():
+				// App is shutting down, cancel the request
+				a.pendingStepLimit.Delete(requestID)
+				return agent.StepLimitDeny, a.ctx.Err()
+			}
+		}
+
+		orchConfig := a.buildOrchestratorConfig(cfg, stepLimitFunc)
 		contextFactory := a.buildContextFactory(newLLMRouter, cfg)
 
 		tokenCounter := llm.NewSimpleTokenCounter()
@@ -573,7 +596,7 @@ func (a *App) Startup(ctx context.Context) {
 		a.projectManager = project.NewManager(a.projStore, a.projectsDir)
 	}
 
-	a.manager = session.NewManager(factory, emitFunc, logDir)
+	a.manager = session.NewManager(factory, emitFunc, logDir, a.projectsDir)
 
 	// Pass environment info to session manager for context injection.
 	if a.envInfo != nil {
@@ -748,6 +771,65 @@ func (a *App) Startup(ctx context.Context) {
 			// Channel already has a value or receiver gone; drop
 		}
 		a.pendingAskUser.Delete(requestID)
+	})
+
+	// Listen for step_limit responses from frontend
+	wailsRuntime.EventsOn(a.ctx, "step_limit_response", func(data ...any) {
+		if len(data) == 0 {
+			log.Warn("step_limit response missing payload")
+			return
+		}
+
+		payload, ok := data[0].(map[string]any)
+		if !ok {
+			log.Warn("step_limit response has unexpected type", "data", data)
+			return
+		}
+
+		requestIDVal, ok := payload["request_id"]
+		if !ok {
+			log.Warn("step_limit response missing request_id")
+			return
+		}
+		requestID, ok := requestIDVal.(string)
+		if !ok {
+			log.Warn("step_limit request_id is not string")
+			return
+		}
+
+		responseVal, ok := payload["response"]
+		if !ok {
+			log.Warn("step_limit response missing response field")
+			return
+		}
+
+		var resp agent.StepLimitResponse
+		switch v := responseVal.(type) {
+		case string:
+			resp = agent.StepLimitResponse(v)
+		default:
+			log.Warn("step_limit response has unsupported type", "type", fmt.Sprintf("%T", responseVal))
+			return
+		}
+
+		chVal, ok := a.pendingStepLimit.Load(requestID)
+		if !ok {
+			log.Warn("no pending step_limit for request_id", "request_id", requestID)
+			return
+		}
+		ch, ok := chVal.(chan agent.StepLimitResponse)
+		if !ok {
+			log.Warn("pending step_limit channel has wrong type", "request_id", requestID)
+			a.pendingStepLimit.Delete(requestID)
+			return
+		}
+
+		select {
+		case ch <- resp:
+		default:
+			// Channel already has a value or receiver gone; drop
+		}
+		a.pendingStepLimit.Delete(requestID)
 	})
 }
 

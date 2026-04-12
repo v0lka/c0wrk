@@ -396,6 +396,9 @@ func (o *Orchestrator) executePlanWithSteps(
 			scopedEvents := o.scopeEvents(step.ID)
 			executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
+			if o.cfg.StepLimitFunc != nil {
+				executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
+			}
 
 			tasks = append(tasks, agent.SubAgentTask{
 				StepID:    step.ID,
@@ -551,6 +554,9 @@ func (o *Orchestrator) executePlanWithSteps(
 
 					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
 					executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
+					if o.cfg.StepLimitFunc != nil {
+						executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
+					}
 
 					retryTask := agent.SubAgentTask{
 						StepID:    failedStepID,
@@ -732,6 +738,7 @@ func (o *Orchestrator) buildStepTask(
 		if depContext != "" {
 			b.WriteString("\nContext from previous steps:")
 			b.WriteString(depContext)
+			b.WriteString("\n\nIf the above summaries are insufficient, use `read_step_output` with the step ID to access the full output, or `list_step_outputs` to see all available outputs.")
 		}
 	}
 
@@ -960,6 +967,9 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	scopedEvents := o.scopeEvents(step.ID)
 	executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget)
 	executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
+	if o.cfg.StepLimitFunc != nil {
+		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
+	}
 
 	// 5. Set up SharedWorkspace for inter-step communication
 	sharedWS := agent.NewSharedWorkspace()

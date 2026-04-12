@@ -29,6 +29,10 @@ type Config struct {
 	// Allows consumers to inject task-specific context (e.g., SetTask) into the CM.
 	ContextSetup func(cm agent.ContextManager, taskDesc string)
 
+	// StepLimitFunc is called when an executor reaches its step limit.
+	// If nil, the executor will stop with a budget exhausted error.
+	StepLimitFunc agent.StepLimitFunc
+
 	// Tuning
 	MaxRetries       int
 	MaxSteps         int

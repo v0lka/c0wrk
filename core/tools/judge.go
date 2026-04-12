@@ -14,6 +14,7 @@ import (
 
 	"github.com/user/agent/core/tools/prompts"
 	"github.com/user/agent/sdk/llm"
+	tools "github.com/user/agent/sdk/tools"
 )
 
 // pathRegex matches absolute path-like substrings in command strings.
@@ -69,6 +70,11 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	// Use context-based task context as fallback
 	if taskContext == "" {
 		taskContext = TaskContextFrom(ctx)
+	}
+
+	// Unconditionally allow operations inside session temp directory
+	if tempDir := tools.TempDirFrom(ctx); tempDir != "" && allPathsInDir(input, tempDir) {
+		return VerdictAllow, "all paths are within the session temp directory", nil
 	}
 
 	// Short-circuit for workspace-internal operations
@@ -172,11 +178,10 @@ func extractPaths(s string) []string {
 	return pathRegex.FindAllString(s, -1)
 }
 
-// allPathsInWorkspace returns true if the JSON input contains at least one absolute
-// path and every such path is within the workspace directory.
-func allPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
-	workspacePath := WorkspacePathFrom(ctx)
-	if workspacePath == "" {
+// allPathsInDir returns true if the JSON input contains at least one absolute
+// path and every such path is within the specified directory.
+func allPathsInDir(input json.RawMessage, dir string) bool {
+	if dir == "" {
 		return false
 	}
 
@@ -197,11 +202,21 @@ func allPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
 
 	for _, p := range allPaths {
 		cleaned := filepath.Clean(p)
-		if !isPathInWorkspace(cleaned, workspacePath) {
+		if !isPathInWorkspace(cleaned, dir) {
 			return false
 		}
 	}
 	return true
+}
+
+// allPathsInWorkspace returns true if the JSON input contains at least one absolute
+// path and every such path is within the workspace directory.
+func allPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
+	workspacePath := WorkspacePathFrom(ctx)
+	if workspacePath == "" {
+		return false
+	}
+	return allPathsInDir(input, workspacePath)
 }
 
 // ResetCache clears all cached verdicts.

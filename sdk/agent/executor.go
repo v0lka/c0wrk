@@ -63,6 +63,7 @@ type Executor struct {
 	emitter                 AgentEvents // event emitter (uses NoopEvents if nil)
 	suppressAssistantEvents bool        // if true, don't emit AssistantChunk/AssistantDone
 	toolResultBudget        ToolResultBudget
+	stepLimitFunc           StepLimitFunc // callback when step limit is reached
 
 	// Circuit breaker: detect repeated identical tool calls
 	consecutiveRepeatCount int
@@ -108,6 +109,11 @@ func (e *Executor) SetPlanContext(stepID string, index, total int) {
 	e.planStepID = stepID
 	e.planStepIndex = index
 	e.planStepTotal = total
+}
+
+// SetStepLimitFunc sets the callback invoked when the executor reaches its step limit.
+func (e *Executor) SetStepLimitFunc(fn StepLimitFunc) {
+	e.stepLimitFunc = fn
 }
 
 // applyToolResultBudget truncates a tool result if it exceeds the budget.
@@ -164,8 +170,53 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 	nudgeAttempted := false
 	wrapUpNudgeAttempted := false
 	reactiveCompactAttempted := false
+	unlimitedSteps := false
 
-	for stepNum := 1; stepNum <= e.maxSteps; stepNum++ {
+	for stepNum := 1; unlimitedSteps || stepNum <= e.maxSteps+1; stepNum++ {
+		// At the boundary: when we've just exceeded maxSteps
+		if !unlimitedSteps && stepNum > e.maxSteps {
+			if e.stepLimitFunc == nil {
+				break // backward compat: no callback means silent exit
+			}
+			resp, err := e.stepLimitFunc(ctx, stepNum, e.maxSteps)
+			if err != nil {
+				// Treat callback errors as deny - exit cleanly without propagating the error
+				return &ExecutorResult{ //nolint:nilerr // intentional: callback error means stop, not fatal
+					Output:   "",
+					Steps:    allSteps,
+					Finished: false,
+				}, nil
+			}
+			switch resp {
+			case StepLimitAllowOnce:
+				e.maxSteps++ // allow exactly one more
+				// Inject nudge for LLM
+				nudgeStep := Step{
+					UserNudge: "[System] The user granted you exactly ONE additional tool call iteration. " +
+						"Use it wisely to wrap up your work. The user may deny further extensions.",
+				}
+				allSteps = append(allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+			case StepLimitAllowAlways:
+				unlimitedSteps = true
+				// Inject nudge for LLM
+				nudgeStep := Step{
+					UserNudge: "[System] The user granted you unlimited tool call iterations for this step. " +
+						"You have the freedom to make as many tool calls as needed to complete your work.",
+				}
+				allSteps = append(allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+			case StepLimitDeny:
+				break // will fall through to the post-loop return
+			default:
+				break
+			}
+			// If deny, we need to actually exit the loop
+			if resp == StepLimitDeny || resp == "" {
+				break
+			}
+		}
+
 		// Emit step start
 		e.emitter.StepStart(stepNum)
 		stepStartTime := time.Now()

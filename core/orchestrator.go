@@ -23,6 +23,10 @@ type OrchestratorConfig struct {
 	KeepFirst  int // for sliding window compaction
 	KeepLast   int // for sliding window compaction
 	MaxRetries int // max retry attempts after failed evaluation (default: 3)
+
+	// StepLimitFunc is called when an executor reaches its step limit.
+	// If nil, the executor will stop with a budget exhausted error.
+	StepLimitFunc agent.StepLimitFunc
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -109,6 +113,7 @@ func NewOrchestrator(
 		MaxSteps:         cfg.MaxSteps,
 		ToolResultBudget: toolResultBudget,
 		StepConfigurator: coreStepConfigurator(cfg),
+		StepLimitFunc:    cfg.StepLimitFunc,
 	}
 
 	// Configure state factory to use core's blackboard factory.
@@ -296,6 +301,9 @@ func buildSystemPrompt(ctx context.Context, userMessage string) string {
 	var workspaceCtxStr string
 	if wsPath := tools.WorkspacePathFrom(ctx); wsPath != "" {
 		workspaceCtxStr = "## Workspace\nYour session workspace is: " + wsPath + "\nAll artifacts you create (files, directories, temporary files) MUST be placed strictly inside this workspace directory, unless the task explicitly requires creating artifacts at a specific external location."
+		if tempDir := tools.TempDirFrom(ctx); tempDir != "" {
+			workspaceCtxStr += "\nYour session temp directory is: " + tempDir + "\nUse this directory for ANY intermediate files — drafts, partial results, scratch data, inter-step artifacts. These files are NOT part of the final deliverable and will be cleaned up when the session ends."
+		}
 	}
 
 	// Apply template substitutions

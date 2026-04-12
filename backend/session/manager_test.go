@@ -20,8 +20,9 @@ import (
 func testManager(t *testing.T) (manager *Manager, events chan Event, dir string) {
 	t.Helper()
 
-	// Create temp directory for logs
+	// Create temp directories for logs and projects
 	logDir := t.TempDir()
+	projectsDir := t.TempDir()
 
 	// Create event channel to capture events
 	eventChan := make(chan Event, 100)
@@ -38,7 +39,7 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, dir string)
 		return nil, nil
 	}
 
-	manager = NewManager(factory, emitFunc, logDir)
+	manager = NewManager(factory, emitFunc, logDir, projectsDir)
 	events = eventChan
 	dir = logDir
 	return
@@ -738,7 +739,7 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 		return nil, errors.New("factory error")
 	}
 
-	manager := NewManager(factory, emitFunc, logDir)
+	manager := NewManager(factory, emitFunc, logDir, t.TempDir())
 
 	_, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	if err == nil {
@@ -958,7 +959,7 @@ func TestSendMessage_StoresTaskIDForContinuation(t *testing.T) {
 		return nil, nil
 	}
 
-	manager := NewManager(factory, emitFunc, logDir)
+	manager := NewManager(factory, emitFunc, logDir, t.TempDir())
 
 	// Create a session
 	wsPath := testWorkspacePath(t)
@@ -1007,7 +1008,7 @@ func TestSendMessage_LastTaskIDClearedOnContinuationError(t *testing.T) {
 		return nil, nil
 	}
 
-	manager := NewManager(factory, emitFunc, logDir)
+	manager := NewManager(factory, emitFunc, logDir, t.TempDir())
 
 	// Create a session
 	wsPath := testWorkspacePath(t)

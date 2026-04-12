@@ -211,6 +211,14 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 			}
 			messages = append(messages, toolMsg)
 		}
+
+		// User nudge message (e.g., step limit extension notifications)
+		if step.UserNudge != "" {
+			messages = append(messages, llm.Message{
+				Role:    "user",
+				Content: step.UserNudge,
+			})
+		}
 	}
 	return messages
 }
