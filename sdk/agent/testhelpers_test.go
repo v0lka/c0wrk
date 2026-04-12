@@ -77,6 +77,15 @@ func (m *mockToolExecutor) Execute(_ context.Context, name string, input json.Ra
 	return tools.ToolResult{Content: "ok"}, nil
 }
 
+func (m *mockToolExecutor) GetToolSource(name string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.results[name]; ok {
+		return "mock"
+	}
+	return "core"
+}
+
 // --- Mock ContextManager ---
 
 type mockContextManager struct {
@@ -195,8 +204,8 @@ func (r *recordingEvents) Thought(stepNum int, content, reasoning string) {
 	r.record(fmt.Sprintf("Thought:%d", stepNum))
 }
 
-func (r *recordingEvents) ToolCall(stepNum int, toolName, argsPreview string) {
-	r.record(fmt.Sprintf("ToolCall:%d:%s", stepNum, toolName))
+func (r *recordingEvents) ToolCall(stepNum int, toolName, argsPreview, source string) {
+	r.record(fmt.Sprintf("ToolCall:%d:%s:%s", stepNum, toolName, source))
 }
 
 func (r *recordingEvents) ToolResult(stepNum, resultLen int, preview string) {

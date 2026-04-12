@@ -611,10 +611,10 @@ func TestJudge_WorkspacePreCheck_RelativePaths(t *testing.T) {
 
 func TestAllPathsInDir(t *testing.T) {
 	tests := []struct {
-		name string
-		dir  string
+		name  string
+		dir   string
 		input string
-		want bool
+		want  bool
 	}{
 		{
 			name:  "single path inside dir",

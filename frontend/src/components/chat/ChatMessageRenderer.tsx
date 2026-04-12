@@ -37,7 +37,7 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
     case 'thought':
       return <ThoughtBlock key={item.id} content={item.content} reasoning={item.reasoning} />
     case 'tool':
-      return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} parsedArgs={item.parsedArgs} result={item.result} resultLen={item.resultLen} status={item.status} />
+      return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} parsedArgs={item.parsedArgs} result={item.result} resultLen={item.resultLen} status={item.status} source={item.source} />
     case 'plan_step':
       return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} isRetry={item.isRetry} children={item.children} renderItem={(child) => renderDisplayItem(child, lastUserMessageId)} />
     case 'tool_confirm':

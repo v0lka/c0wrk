@@ -532,7 +532,7 @@ func (o *Orchestrator) executePlanWithSteps(
 					if stepCfg.SystemPromptSuffix != "" {
 						systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
 					}
-					
+
 					// Resolve model metadata
 					var modelMeta llm.ModelMetadata
 					if o.cfg.ModelRegistry != nil {

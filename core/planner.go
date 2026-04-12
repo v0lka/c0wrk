@@ -131,8 +131,8 @@ Assign specialized profiles when it adds clear value. Omit profile for simple ta
 - "executor": general purpose (default, all tools)`
 
 	continuationModeExtraSections = ""
-	continuationModeTail           = ""
-	continuationModeJSONExample    = `{"steps": [{"id": "continuation_1", "description": "...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["file_ops", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
+	continuationModeTail          = ""
+	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "description": "...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["file_ops", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
 )
 
 // compile-time check: Planner implements orchestration.Planner.

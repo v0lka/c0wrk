@@ -183,7 +183,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'tool_call',
         content: `${toolCall.tool}(${toolCall.args})`,
-        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id },
+        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id, source: toolCall.source },
         timestamp: Date.now(),
       })
     })

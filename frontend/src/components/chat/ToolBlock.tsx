@@ -13,6 +13,7 @@ interface ToolBlockProps {
   result?: string
   resultLen?: number
   status: 'running' | 'success' | 'error' | 'awaiting_confirmation'
+  source?: string
 }
 
 function formatResultLen(len: number): string {
@@ -22,7 +23,7 @@ function formatResultLen(len: number): string {
   return len + ' chars'
 }
 
-export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedArgs, result, resultLen, status }: ToolBlockProps) {
+export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedArgs, result, resultLen, status, source }: ToolBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [showFullArgs, setShowFullArgs] = useState(false)
   const [showFullResult, setShowFullResult] = useState(false)
@@ -67,6 +68,11 @@ export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedA
         <StatusIcon className={`h-3.5 w-3.5 ${statusClass}`} />
         <Wrench className="h-3.5 w-3.5" />
         <span className="text-sm">Tool called: {toolName}</span>
+        {source !== undefined && source !== '' && source !== 'core' && (
+          <span className="text-[10px] font-medium bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
+            MCP
+          </span>
+        )}
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="mt-2 border-l-2 border-border bg-muted/30 rounded p-3 space-y-3 min-w-0">

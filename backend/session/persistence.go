@@ -385,7 +385,6 @@ func (s *SQLiteSessionStore) Close() error {
 // ---------------------------------------------------------------------------
 
 // TaskRecord represents a persisted task (one per Orchestrator.Handle call).
-//
 type TaskRecord struct {
 	ID              string          `json:"id"`
 	SessionID       string          `json:"session_id"`

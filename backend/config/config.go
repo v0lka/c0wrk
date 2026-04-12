@@ -91,9 +91,16 @@ type MCPConfig struct {
 
 // MCPServerConfig defines how to launch an MCP server.
 type MCPServerConfig struct {
-	Command string            `yaml:"command"`
-	Args    []string          `yaml:"args"`
-	Env     map[string]string `yaml:"env"`
+	Transport string `yaml:"transport,omitempty"` // "stdio" | "http"; default "stdio"
+
+	// stdio fields (existing)
+	Command string            `yaml:"command,omitempty"`
+	Args    []string          `yaml:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+
+	// http fields (new)
+	URL     string            `yaml:"url,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty"`
 }
 
 // MemoryConfig holds memory system configuration.

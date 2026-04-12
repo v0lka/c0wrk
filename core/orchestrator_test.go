@@ -1577,9 +1577,9 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 
 // mockTaskStoreWithReactivate is a mock TaskPersistence that tracks ReactivateTask calls.
 type mockTaskStoreWithReactivate struct {
-	taskState     *TaskState
-	loadErr       error
-	reactivateFn  func(taskID string) error
+	taskState    *TaskState
+	loadErr      error
+	reactivateFn func(taskID string) error
 }
 
 func (m *mockTaskStoreWithReactivate) PersistNewTask(taskID, sessionID, originalRequest string) error {
@@ -1592,7 +1592,9 @@ func (m *mockTaskStoreWithReactivate) PersistRouting(taskID string, routing *Rou
 func (m *mockTaskStoreWithReactivate) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []Step) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r Reflection) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r Reflection) error {
+	return nil
+}
 func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }

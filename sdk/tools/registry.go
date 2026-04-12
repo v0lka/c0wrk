@@ -46,6 +46,18 @@ func (r *ToolRegistry) Unregister(name string) {
 	delete(r.toolSources, name)
 }
 
+// UnregisterBySource removes all tools that were registered with the given source.
+func (r *ToolRegistry) UnregisterBySource(source string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name, s := range r.toolSources {
+		if s == source {
+			delete(r.tools, name)
+			delete(r.toolSources, name)
+		}
+	}
+}
+
 // Get returns a tool by name and a boolean indicating if it was found.
 func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
@@ -84,4 +96,21 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		return ToolResult{}, fmt.Errorf("tool not found: %s", name)
 	}
 	return tool.Execute(ctx, input)
+}
+
+// GetToolSource returns the source of a tool (e.g., "core", "mcp:<server>").
+// Returns "core" for built-in tools, or the source tag for tools registered via RegisterWithSource.
+// Returns empty string if the tool is not found.
+func (r *ToolRegistry) GetToolSource(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if _, ok := r.tools[name]; !ok {
+		return ""
+	}
+
+	if source, ok := r.toolSources[name]; ok {
+		return source
+	}
+	return "core"
 }

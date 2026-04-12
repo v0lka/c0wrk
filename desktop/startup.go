@@ -361,9 +361,12 @@ func (a *App) Startup(ctx context.Context) {
 	mcpEntries := make(map[string]mcp.ServerEntry, len(a.config.MCP.Servers))
 	for name, cfg := range a.config.MCP.Servers {
 		mcpEntries[name] = mcp.ServerEntry{
-			Command: cfg.Command,
-			Args:    cfg.Args,
-			Env:     cfg.Env,
+			Transport: cfg.Transport,
+			Command:   cfg.Command,
+			Args:      cfg.Args,
+			Env:       cfg.Env,
+			URL:       cfg.URL,
+			Headers:   cfg.Headers,
 		}
 	}
 	gateway, mcpErr := mcp.StartGateway(context.Background(), mcp.GatewayConfig{Servers: mcpEntries}, registry, config.ExpandEnvVars, log)

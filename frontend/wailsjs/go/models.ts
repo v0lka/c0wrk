@@ -253,6 +253,51 @@ export namespace desktop {
 	        this.total_output_tokens = source["total_output_tokens"];
 	    }
 	}
+	export class ToolInfo {
+	    name: string;
+	    description: string;
+	    source: string;
+	    policy: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.source = source["source"];
+	        this.policy = source["policy"];
+	    }
+	}
+
+}
+
+export namespace mcp {
+	
+	export class ServerStatus {
+	    name: string;
+	    transport: string;
+	    connected: boolean;
+	    tool_count: number;
+	    tools: string[];
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServerStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.transport = source["transport"];
+	        this.connected = source["connected"];
+	        this.tool_count = source["tool_count"];
+	        this.tools = source["tools"];
+	        this.error = source["error"];
+	    }
+	}
 
 }
 

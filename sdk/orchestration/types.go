@@ -49,7 +49,6 @@ type BlackboardEntry struct {
 }
 
 // Reflection is the result of failure analysis.
-//
 type Reflection struct {
 	Summary         string    `json:"summary"`
 	Hypotheses      []string  `json:"hypotheses"`

@@ -64,6 +64,9 @@ type LLMCaller interface {
 // ToolExecutor is the interface Executor needs from the tools layer.
 type ToolExecutor interface {
 	Execute(ctx context.Context, name string, input json.RawMessage) (result tools.ToolResult, err error)
+	// GetToolSource returns the source of a tool (e.g., "core", "mcp:<server>").
+	// Returns empty string if the tool is not found.
+	GetToolSource(name string) string
 }
 
 // CompactionStrategy defines an algorithm for compressing step history.

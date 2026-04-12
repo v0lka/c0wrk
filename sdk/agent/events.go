@@ -7,7 +7,7 @@ import "time"
 type AgentEvents interface {
 	StepStart(stepNum int)
 	Thought(stepNum int, content, reasoning string)
-	ToolCall(stepNum int, toolName, argsPreview string)
+	ToolCall(stepNum int, toolName, argsPreview, source string)
 	ToolResult(stepNum int, resultLen int, preview string)
 	StepComplete(stepNum int, duration time.Duration)
 	SubAgentLaunch(stepID, description string)
@@ -30,7 +30,7 @@ var _ AgentEvents = (*NoopEvents)(nil)
 
 func (n *NoopEvents) StepStart(_ int)                                    {}
 func (n *NoopEvents) Thought(_ int, _, _ string)                         {}
-func (n *NoopEvents) ToolCall(_ int, _, _ string)                        {}
+func (n *NoopEvents) ToolCall(_ int, _, _, _ string)                     {}
 func (n *NoopEvents) ToolResult(_, _ int, _ string)                      {}
 func (n *NoopEvents) StepComplete(_ int, _ time.Duration)                {}
 func (n *NoopEvents) SubAgentLaunch(_, _ string)                         {}

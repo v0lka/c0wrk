@@ -11,23 +11,30 @@ import (
 	"sync"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // ServerConfig defines how to launch an MCP server.
 // This is a local copy to avoid importing backend/config.
 type ServerConfig struct {
-	Command string
-	Args    []string
-	Env     map[string]string
+	Transport string            // "stdio" | "http"; default "stdio"
+	Command   string            // stdio: command to execute
+	Args      []string          // stdio: command arguments
+	Env       map[string]string // stdio: environment variables
+	URL       string            // http: server URL
+	Headers   map[string]string // http: custom headers
 }
 
 // Server represents a connection to an external MCP server process.
 type Server struct {
-	name   string
-	client *mcpclient.Client
-	tools  []ToolInfo
-	mu     sync.RWMutex
+	name          string
+	client        *mcpclient.Client
+	tools         []ToolInfo
+	connected     bool
+	lastError     string
+	transportType string
+	mu            sync.RWMutex
 }
 
 // ToolInfo holds metadata about a tool discovered from an MCP server.
@@ -51,10 +58,44 @@ func (s *Server) Name() string {
 }
 
 // Connect spawns the MCP server process and initializes the connection.
+// Supports both stdio and HTTP transports based on cfg.Transport.
 func (s *Server) Connect(ctx context.Context, cfg ServerConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Determine transport type (default to stdio for backward compatibility)
+	transportType := cfg.Transport
+	if transportType == "" {
+		transportType = "stdio"
+	}
+
+	var client *mcpclient.Client
+	var err error
+
+	switch transportType {
+	case "stdio":
+		client, err = s.connectStdio(ctx, cfg)
+	case "http":
+		client, err = s.connectHTTP(ctx, cfg)
+	default:
+		s.lastError = fmt.Sprintf("unsupported transport type %q", transportType)
+		return fmt.Errorf("unsupported transport type %q for MCP server %s", transportType, s.name)
+	}
+
+	if err != nil {
+		s.lastError = err.Error()
+		return err
+	}
+
+	s.client = client
+	s.transportType = transportType
+	s.connected = true
+	s.lastError = ""
+	return nil
+}
+
+// connectStdio creates a stdio MCP client.
+func (s *Server) connectStdio(ctx context.Context, cfg ServerConfig) (*mcpclient.Client, error) {
 	// Build environment variables slice
 	env := os.Environ()
 	for key, value := range cfg.Env {
@@ -64,12 +105,62 @@ func (s *Server) Connect(ctx context.Context, cfg ServerConfig) error {
 	// Create stdio MCP client
 	client, err := mcpclient.NewStdioMCPClient(cfg.Command, env, cfg.Args...)
 	if err != nil {
-		return fmt.Errorf("failed to create MCP client for %s: %w", s.name, err)
+		return nil, fmt.Errorf("failed to create stdio MCP client for %s: %w", s.name, err)
 	}
-	s.client = client
 
+	if err := s.initializeClient(ctx, client); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+
+	return client, nil
+}
+
+// connectHTTP creates an HTTP MCP client with fallback from Streamable HTTP to SSE.
+func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.Client, error) {
+	if cfg.URL == "" {
+		return nil, fmt.Errorf("HTTP transport requires URL for MCP server %s", s.name)
+	}
+
+	// Prepare headers option
+	var opts []transport.StreamableHTTPCOption
+	if len(cfg.Headers) > 0 {
+		opts = append(opts, transport.WithHTTPHeaders(cfg.Headers))
+	}
+
+	// Try Streamable HTTP first
+	client, err := mcpclient.NewStreamableHttpClient(cfg.URL, opts...)
+	if err == nil {
+		if initErr := s.initializeClient(ctx, client); initErr == nil {
+			return client, nil
+		}
+		// Initialization failed, close and try SSE fallback
+		_ = client.Close()
+	}
+
+	// Fallback to SSE
+	var sseOpts []transport.ClientOption
+	if len(cfg.Headers) > 0 {
+		sseOpts = append(sseOpts, transport.WithHeaders(cfg.Headers))
+	}
+
+	client, err = mcpclient.NewSSEMCPClient(cfg.URL, sseOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP MCP client for %s (tried Streamable HTTP and SSE): %w", s.name, err)
+	}
+
+	if err := s.initializeClient(ctx, client); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+
+	return client, nil
+}
+
+// initializeClient initializes the MCP connection for the given client.
+func (s *Server) initializeClient(ctx context.Context, client *mcpclient.Client) error {
 	// Start the client transport
-	if err := s.client.Start(ctx); err != nil {
+	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start MCP client for %s: %w", s.name, err)
 	}
 
@@ -85,9 +176,8 @@ func (s *Server) Connect(ctx context.Context, cfg ServerConfig) error {
 		},
 	}
 
-	_, err = s.client.Initialize(ctx, initReq)
+	_, err := client.Initialize(ctx, initReq)
 	if err != nil {
-		_ = s.client.Close()
 		return fmt.Errorf("failed to initialize MCP server %s: %w", s.name, err)
 	}
 
@@ -176,6 +266,10 @@ func (s *Server) Close() error {
 	err := s.client.Close()
 	s.client = nil
 	s.tools = nil
+	s.connected = false
+	if err != nil {
+		s.lastError = err.Error()
+	}
 	return err
 }
 
@@ -184,4 +278,25 @@ func (s *Server) IsConnected() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.client != nil
+}
+
+// Status returns the current status of the server.
+func (s *Server) Status() ServerStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Collect tool names
+	toolNames := make([]string, len(s.tools))
+	for i, tool := range s.tools {
+		toolNames[i] = tool.Name
+	}
+
+	return ServerStatus{
+		Name:      s.name,
+		Transport: s.transportType,
+		Connected: s.connected,
+		ToolCount: len(s.tools),
+		Tools:     toolNames,
+		Error:     s.lastError,
+	}
 }

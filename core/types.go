@@ -185,8 +185,8 @@ func (a *emitterEventsAdapter) WithStepID(id string) orchestration.Events {
 
 // RoutingDecision — result of Router classification (AD 4.1).
 type RoutingDecision struct {
-	Domain             string `json:"domain"`              // "code" | "research" | "general" | "mixed"
-	Complexity         int    `json:"complexity"`          // 1-5
+	Domain             string `json:"domain"`     // "code" | "research" | "general" | "mixed"
+	Complexity         int    `json:"complexity"` // 1-5
 	NeedsClarification bool   `json:"needs_clarification"`
 }
 

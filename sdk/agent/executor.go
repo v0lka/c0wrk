@@ -343,7 +343,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		// --- Truncation detection: max_tokens with tool calls ---
 		if resp.StopReason == "max_tokens" && len(resp.Message.ToolCalls) > 0 {
 			truncAction := resp.Message.ToolCalls[0]
-			e.emitter.ToolCall(stepNum, truncAction.Name, string(truncAction.Input))
+			e.emitter.ToolCall(stepNum, truncAction.Name, string(truncAction.Input), e.tools.GetToolSource(truncAction.Name))
 
 			e.consecutiveTruncationCount++
 			if e.consecutiveTruncationCount >= truncationAbortThreshold {
@@ -377,7 +377,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		action := resp.Message.ToolCalls[0]
 
 		// Emit tool call
-		e.emitter.ToolCall(stepNum, action.Name, string(action.Input))
+		e.emitter.ToolCall(stepNum, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
 
 		// --- Circuit breaker: detect repeated identical tool calls ---
 		toolKey := action.Name + ":" + compactJSON(action.Input)

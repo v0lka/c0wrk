@@ -1,8 +1,8 @@
 import { useState, useEffect, type KeyboardEvent } from 'react'
-import { Info, Plus, X } from 'lucide-react'
+import { Info, Plus, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { GetSecuritySettings, UpdateSecuritySettings } from '../../../wailsjs/go/desktop/App'
+import { GetSecuritySettings, UpdateSecuritySettings, GetToolList } from '../../../wailsjs/go/desktop/App'
 import { desktop } from '../../../wailsjs/go/models'
 import { logger } from '@/lib/logger'
 
@@ -23,6 +23,17 @@ interface PolicyOption {
   label: string
 }
 
+interface ToolInfo {
+  name: string
+  description: string
+  source: string
+  policy: string
+}
+
+interface GroupedTools {
+  [source: string]: ToolInfo[]
+}
+
 const policyOptions: PolicyOption[] = [
   { value: 'always_allow', label: 'Always Allow' },
   { value: 'always_deny', label: 'Always Deny' },
@@ -30,20 +41,25 @@ const policyOptions: PolicyOption[] = [
   { value: 'auto', label: 'Auto (Heuristics + LLM Judge)' },
 ]
 
-const toolConfigs = [
-  { id: 'bash_exec', name: 'Bash Execution', hasBlacklist: true },
-  { id: 'file_ops', name: 'File Operations', hasBlacklist: false },
-  { id: 'web_search', name: 'Web Search', hasBlacklist: false },
-  { id: 'web_fetch', name: 'Web Fetch', hasBlacklist: false },
-]
+// Tools that support blacklist functionality
+const BLACKLIST_ENABLED_TOOLS = ['bash_exec']
+
+function getGroupLabel(source: string): string {
+  if (source === 'core') {
+    return 'Built-in Tools'
+  }
+  return `MCP: ${source}`
+}
 
 export function SecuritySettings() {
   const [settings, setSettings] = useState<SecuritySettings>({
     default_policy: 'auto',
     tool_policies: {},
   })
+  const [tools, setTools] = useState<ToolInfo[]>([])
   const [newBlacklistPattern, setNewBlacklistPattern] = useState('')
   const [isLoading, setIsLoading] = useState(true)
+  const [isToolsLoading, setIsToolsLoading] = useState(true)
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -60,6 +76,23 @@ export function SecuritySettings() {
       }
     }
     loadSettings()
+  }, [])
+
+  useEffect(() => {
+    const loadTools = async () => {
+      try {
+        const result = await GetToolList()
+        if (!result || !Array.isArray(result)) {
+          throw new Error('Invalid tool list response')
+        }
+        setTools(result as ToolInfo[])
+      } catch (error) {
+        logger.error('Failed to load tools:', error)
+      } finally {
+        setIsToolsLoading(false)
+      }
+    }
+    loadTools()
   }, [])
 
   const updateSettings = async (newSettings: SecuritySettings) => {
@@ -132,90 +165,133 @@ export function SecuritySettings() {
     }
   }
 
-  if (isLoading) {
+  // Group tools by source
+  const groupedTools: GroupedTools = tools.reduce((acc, tool) => {
+    const source = tool.source || 'core'
+    if (!acc[source]) {
+      acc[source] = []
+    }
+    acc[source].push(tool)
+    return acc
+  }, {} as GroupedTools)
+
+  // Sort sources: core first, then alphabetically
+  const sortedSources = Object.keys(groupedTools).sort((a, b) => {
+    if (a === 'core') return -1
+    if (b === 'core') return 1
+    return a.localeCompare(b)
+  })
+
+  // Sort tools within each source by name
+  sortedSources.forEach((source) => {
+    if (groupedTools[source]) {
+      groupedTools[source].sort((a, b) => a.name.localeCompare(b.name))
+    }
+  })
+
+  if (isLoading || isToolsLoading) {
     return (
-      <div className="flex items-center justify-center py-8">
+      <div className="flex items-center justify-center py-8 gap-2">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         <span className="text-sm text-muted-foreground">Loading security settings...</span>
+      </div>
+    )
+  }
+
+  if (tools.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 gap-2">
+        <span className="text-sm text-muted-foreground">No tools available.</span>
+        <span className="text-xs text-muted-foreground">Tools will appear here once registered.</span>
       </div>
     )
   }
 
   return (
     <div className="flex flex-col gap-6">
-      {toolConfigs.map((tool) => {
-        const currentPolicy = settings.tool_policies[tool.id]?.policy || 'auto'
-        const blacklist = settings.tool_policies[tool.id]?.blacklist || []
+      {sortedSources.map((source) => (
+        <div key={source} className="flex flex-col gap-4">
+          <h3 className="text-sm font-semibold text-muted-foreground border-b border-border pb-1">
+            {getGroupLabel(source)}
+          </h3>
+          {(groupedTools[source] || []).map((tool) => {
+            const currentPolicy = settings.tool_policies[tool.name]?.policy || 'auto'
+            const blacklist = settings.tool_policies[tool.name]?.blacklist || []
+            const hasBlacklist = BLACKLIST_ENABLED_TOOLS.includes(tool.name)
 
-        return (
-          <div key={tool.id} className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">{tool.name}</span>
-            </div>
-            <div className="flex gap-1 p-1 bg-muted rounded-lg flex-wrap">
-              {policyOptions.map((option) => (
-                <Button
-                  key={option.value}
-                  variant={currentPolicy === option.value ? 'secondary' : 'ghost'}
-                  size="sm"
-                  className={`flex-1 gap-2 justify-center transition-all duration-200 ${
-                    currentPolicy === option.value
-                      ? 'bg-background shadow-sm text-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                  onClick={() => handlePolicyChange(tool.id, option.value)}
-                >
-                  <span className="text-xs">{option.label}</span>
-                </Button>
-              ))}
-            </div>
+            return (
+              <div key={tool.name} className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium font-mono">{tool.name}</span>
+                  <span className="text-xs text-muted-foreground">{tool.description}</span>
+                </div>
+                <div className="flex gap-1 p-1 bg-muted rounded-lg flex-wrap">
+                  {policyOptions.map((option) => (
+                    <Button
+                      key={option.value}
+                      variant={currentPolicy === option.value ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className={`flex-1 gap-2 justify-center transition-all duration-200 ${
+                        currentPolicy === option.value
+                          ? 'bg-background shadow-sm text-foreground'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                      onClick={() => handlePolicyChange(tool.name, option.value)}
+                    >
+                      <span className="text-xs">{option.label}</span>
+                    </Button>
+                  ))}
+                </div>
 
-            {/* Blacklist for bash_exec */}
-            {tool.hasBlacklist && (
-              <div className="mt-2 space-y-2">
-                <p className="text-xs text-muted-foreground">Blacklist patterns (regex):</p>
-                {blacklist.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {blacklist.map((pattern) => (
-                      <div
-                        key={pattern}
-                        className="flex items-center gap-1 px-2 py-1 bg-muted rounded text-xs"
-                      >
-                        <code className="font-mono">{pattern}</code>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-4 w-4 p-0 hover:bg-destructive/20"
-                          onClick={() => handleRemoveBlacklistPattern(pattern)}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
+                {/* Blacklist for bash_exec */}
+                {hasBlacklist && (
+                  <div className="mt-2 space-y-2">
+                    <p className="text-xs text-muted-foreground">Blacklist patterns (regex):</p>
+                    {blacklist.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {blacklist.map((pattern) => (
+                          <div
+                            key={pattern}
+                            className="flex items-center gap-1 px-2 py-1 bg-muted rounded text-xs"
+                          >
+                            <code className="font-mono">{pattern}</code>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-4 w-4 p-0 hover:bg-destructive/20"
+                              onClick={() => handleRemoveBlacklistPattern(pattern)}
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="e.g., rm\\s+-rf"
+                        value={newBlacklistPattern}
+                        onChange={(e) => setNewBlacklistPattern(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        className="h-8 text-xs font-mono"
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={handleAddBlacklistPattern}
+                        disabled={!newBlacklistPattern.trim()}
+                      >
+                        <Plus className="h-3 w-3" />
+                      </Button>
+                    </div>
                   </div>
                 )}
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="e.g., rm\\s+-rf"
-                    value={newBlacklistPattern}
-                    onChange={(e) => setNewBlacklistPattern(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    className="h-8 text-xs font-mono"
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8"
-                    onClick={handleAddBlacklistPattern}
-                    disabled={!newBlacklistPattern.trim()}
-                  >
-                    <Plus className="h-3 w-3" />
-                  </Button>
-                </div>
               </div>
-            )}
-          </div>
-        )
-      })}
+            )
+          })}
+        </div>
+      ))}
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />

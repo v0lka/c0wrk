@@ -23,7 +23,7 @@ export type DisplayItem =
   | { kind: 'user'; message: ChatMessageUI }
   | { kind: 'assistant'; message: ChatMessageUI }
   | { kind: 'thought'; id: string; stepNum: number; content: string; reasoning?: string }
-  | { kind: 'tool'; id: string; toolName: string; args: string; parsedArgs?: Record<string, unknown>; result?: string; resultLen?: number; status: 'running' | 'success' | 'error' | 'awaiting_confirmation' }
+  | { kind: 'tool'; id: string; toolName: string; args: string; parsedArgs?: Record<string, unknown>; result?: string; resultLen?: number; status: 'running' | 'success' | 'error' | 'awaiting_confirmation'; source?: string }
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
@@ -187,6 +187,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           result: hasResult ? ((meta?.result as string) ?? (meta?.result_preview as string)) : undefined,
           resultLen: hasResult ? (meta?.result_len as number) : undefined,
           status: hasResult ? 'success' : (isAwaiting ? 'awaiting_confirmation' : 'running'),
+          source: meta?.source as string | undefined,
         }
         const stepNum = meta?.step as number | string
         if (stepNum !== undefined) toolItemsByStep.set(makeToolKey(planStepId, stepNum), toolItem)

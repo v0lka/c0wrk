@@ -3,6 +3,8 @@
 import {project} from '../models';
 import {session} from '../models';
 import {desktop} from '../models';
+import {config} from '../models';
+import {mcp} from '../models';
 
 export function ArchiveSession(arg1:string):Promise<void>;
 
@@ -20,6 +22,10 @@ export function GetConfig():Promise<desktop.ConfigResponse>;
 
 export function GetLogLevel():Promise<string>;
 
+export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
+
+export function GetMCPStatus():Promise<Array<mcp.ServerStatus>>;
+
 export function GetSecuritySettings():Promise<desktop.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
@@ -27,6 +33,8 @@ export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage
 export function GetSessionTokens(arg1:string):Promise<desktop.SessionTokensResponse>;
 
 export function GetSessionWorkspace(arg1:string):Promise<string>;
+
+export function GetToolList():Promise<Array<desktop.ToolInfo>>;
 
 export function ListDirectory(arg1:string):Promise<Array<desktop.FileNode>>;
 
@@ -55,6 +63,8 @@ export function SwitchProject(arg1:string):Promise<void>;
 export function UnwatchDirectory(arg1:string):Promise<void>;
 
 export function UpdateLLMSettings(arg1:desktop.LLMSettingsRequest):Promise<void>;
+
+export function UpdateMCPServers(arg1:Record<string, config.MCPServerConfig>):Promise<void>;
 
 export function UpdateSearchSettings(arg1:desktop.SearchSettingsRequest):Promise<void>;
 

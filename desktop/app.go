@@ -199,6 +199,12 @@ func (a *App) currentConfig() *config.Config {
 					srv.Env[ek] = ev
 				}
 			}
+			if v.Headers != nil {
+				srv.Headers = make(map[string]string, len(v.Headers))
+				for hk, hv := range v.Headers {
+					srv.Headers[hk] = hv
+				}
+			}
 			cfgCopy.MCP.Servers[k] = srv
 		}
 	}

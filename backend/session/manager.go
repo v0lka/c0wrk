@@ -495,7 +495,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 			session.mu.Unlock()
 		}()
 
-			// Get last completed task ID for continuation
+		// Get last completed task ID for continuation
 		session.mu.Lock()
 		lastTaskID := session.lastCompletedTaskID
 		session.mu.Unlock()

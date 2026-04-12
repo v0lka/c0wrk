@@ -10,7 +10,8 @@ import { LogLevelSelector } from './LogLevelSelector'
 import { LLMSettings } from './LLMSettings'
 import { SearchSettings } from './SearchSettings'
 import { SecuritySettings } from './SecuritySettings'
-import { Settings, Brain, Search, Shield, Info } from 'lucide-react'
+import { MCPSettings } from './MCPSettings'
+import { Settings, Brain, Search, Shield, Info, Server } from 'lucide-react'
 import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { useState, useEffect, useRef, useCallback } from 'react'
 
@@ -44,7 +45,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
         
         <Tabs defaultValue="general" className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0">
           <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="general" className="gap-1">
               <Settings className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">General</span>
@@ -56,6 +57,10 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
             <TabsTrigger value="search" className="gap-1">
               <Search className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">Search</span>
+            </TabsTrigger>
+            <TabsTrigger value="mcp" className="gap-1">
+              <Server className="h-4 w-4" />
+              <span className="hidden sm:inline text-xs">MCP</span>
             </TabsTrigger>
             <TabsTrigger value="security" className="gap-1">
               <Shield className="h-4 w-4" />
@@ -83,6 +88,12 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
           <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-4">
               <SearchSettings />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="mcp" className="mt-4 overflow-y-auto min-h-0">
+            <div className="space-y-4">
+              <MCPSettings />
             </div>
           </TabsContent>
 

@@ -153,10 +153,11 @@ type lmsOpenAIRequest struct {
 }
 
 type lmsOpenAIMessage struct {
-	Role       string              `json:"role"`
-	Content    string              `json:"content"`
-	ToolCalls  []lmsOpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string              `json:"tool_call_id,omitempty"`
+	Role             string              `json:"role"`
+	Content          string              `json:"content"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCalls        []lmsOpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string              `json:"tool_call_id,omitempty"`
 }
 
 type lmsOpenAITool struct {
@@ -208,9 +209,10 @@ type lmsOpenAIStreamChoice struct {
 }
 
 type lmsOpenAIStreamDelta struct {
-	Role      string                    `json:"role,omitempty"`
-	Content   string                    `json:"content,omitempty"`
-	ToolCalls []lmsOpenAIStreamToolCall `json:"tool_calls,omitempty"`
+	Role             string                    `json:"role,omitempty"`
+	Content          string                    `json:"content,omitempty"`
+	ReasoningContent string                    `json:"reasoning_content,omitempty"`
+	ToolCalls        []lmsOpenAIStreamToolCall `json:"tool_calls,omitempty"`
 }
 
 type lmsOpenAIStreamToolCall struct {
@@ -655,6 +657,7 @@ func (p *LMStudioProvider) parseOpenAIResponse(resp *lmsOpenAIResponse) (*ChatRe
 
 	return &ChatResponse{
 		Message:    message,
+		Reasoning:  choice.Message.ReasoningContent,
 		StopReason: MapStopReason(choice.FinishReason, openAIStopReasonMap),
 		Usage: TokenUsage{
 			InputTokens:  resp.Usage.PromptTokens,
@@ -695,6 +698,10 @@ func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- 
 
 		if delta.Content != "" {
 			chunks <- ChatChunk{Delta: delta.Content}
+		}
+
+		if delta.ReasoningContent != "" {
+			chunks <- ChatChunk{Reasoning: delta.ReasoningContent}
 		}
 
 		for _, tc := range delta.ToolCalls {

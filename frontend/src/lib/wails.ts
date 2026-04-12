@@ -41,6 +41,7 @@ export interface ToolCallData {
   args: string
   parsed_args?: Record<string, unknown>  // pre-parsed by backend
   plan_step_id?: string
+  source?: string  // "core" for built-in tools, MCP server name for MCP tools
 }
 
 export interface ToolResultData {

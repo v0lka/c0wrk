@@ -18,8 +18,8 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockPlanner struct {
-	planFn            func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
-	replanFn          func(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
+	planFn             func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
+	replanFn           func(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
 	planContinuationFn func(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor) (*Plan, error)
 }
 
@@ -709,17 +709,17 @@ type mockContextManager struct {
 	taskDefinition string
 }
 
-func (m *mockContextManager) BuildPrompt() []llm.Message                      { return nil }
-func (m *mockContextManager) AddStep(_ agent.Step)                            {}
-func (m *mockContextManager) NeedsCompaction() bool                           { return false }
-func (m *mockContextManager) Compact(_ context.Context)                       {}
-func (m *mockContextManager) SetStrategy(_ agent.CompactionStrategy)          {}
-func (m *mockContextManager) CheckFill() agent.FillCheck                      { return agent.FillCheck{} }
-func (m *mockContextManager) CorrectTokenCount(_ int)                         {}
-func (m *mockContextManager) FillPercent() float64                            { return 0 }
-func (m *mockContextManager) AvailableTokens() int                            { return 8000 }
-func (m *mockContextManager) OutputLimit() int                                { return 1000 }
-func (m *mockContextManager) SetTask(task string)                             { m.taskDefinition = task }
+func (m *mockContextManager) BuildPrompt() []llm.Message             { return nil }
+func (m *mockContextManager) AddStep(_ agent.Step)                   {}
+func (m *mockContextManager) NeedsCompaction() bool                  { return false }
+func (m *mockContextManager) Compact(_ context.Context)              {}
+func (m *mockContextManager) SetStrategy(_ agent.CompactionStrategy) {}
+func (m *mockContextManager) CheckFill() agent.FillCheck             { return agent.FillCheck{} }
+func (m *mockContextManager) CorrectTokenCount(_ int)                {}
+func (m *mockContextManager) FillPercent() float64                   { return 0 }
+func (m *mockContextManager) AvailableTokens() int                   { return 8000 }
+func (m *mockContextManager) OutputLimit() int                       { return 1000 }
+func (m *mockContextManager) SetTask(task string)                    { m.taskDefinition = task }
 
 // TestExecuteAdHocStep_AppendsToBlackboard verifies that ExecuteAdHocStep
 // stores the step result in the Blackboard and the result can be retrieved.
@@ -735,11 +735,11 @@ func TestExecuteAdHocStep_AppendsToBlackboard(t *testing.T) {
 		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
-		LLM:           &mockLLMForAdHoc{},
-		Tools:         &mockToolExecutor{},
-		TokenCounter:  llm.NewSimpleTokenCounter(),
-		MaxSteps:      10,
-		ToolRegistry:  tools.NewToolRegistry(),
+		LLM:          &mockLLMForAdHoc{},
+		Tools:        &mockToolExecutor{},
+		TokenCounter: llm.NewSimpleTokenCounter(),
+		MaxSteps:     10,
+		ToolRegistry: tools.NewToolRegistry(),
 	})
 
 	step := PlanStep{
@@ -794,11 +794,11 @@ func TestExecuteAdHocStep_ExtendsPlan(t *testing.T) {
 		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
-		LLM:           &mockLLMForAdHoc{},
-		Tools:         &mockToolExecutor{},
-		TokenCounter:  llm.NewSimpleTokenCounter(),
-		MaxSteps:      10,
-		ToolRegistry:  tools.NewToolRegistry(),
+		LLM:          &mockLLMForAdHoc{},
+		Tools:        &mockToolExecutor{},
+		TokenCounter: llm.NewSimpleTokenCounter(),
+		MaxSteps:     10,
+		ToolRegistry: tools.NewToolRegistry(),
 	})
 
 	step := PlanStep{
@@ -861,6 +861,10 @@ type mockToolExecutor struct{}
 
 func (m *mockToolExecutor) Execute(_ context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
 	return tools.ToolResult{Content: "ok"}, nil
+}
+
+func (m *mockToolExecutor) GetToolSource(name string) string {
+	return "mock"
 }
 
 // ---------------------------------------------------------------------------
@@ -947,4 +951,3 @@ func (b *blackboardWithCallTracker) SetOriginalRequest(req string) {
 	b.setOriginalRequestCalled = true
 	b.Blackboard.SetOriginalRequest(req)
 }
-

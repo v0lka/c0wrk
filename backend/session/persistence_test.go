@@ -1554,8 +1554,8 @@ func TestReactivateTask(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	completedAt := now.Add(5 * time.Minute)
 	if err := store.SaveTask(TaskRecord{
-		ID:           "task-reactivate",
-		SessionID:    sessionID,
+		ID:              "task-reactivate",
+		SessionID:       sessionID,
 		OriginalRequest: "test task",
 		RoutingDecision: json.RawMessage(`{}`),
 		Plan:            json.RawMessage(`{}`),

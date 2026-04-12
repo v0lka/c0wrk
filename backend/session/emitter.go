@@ -226,14 +226,15 @@ func (e *EventEmitter) Thought(stepNum int, content, reasoning string) {
 // ToolCall emits a tool call event.
 // If argsPreview is valid JSON, a pre-parsed map is included as "parsed_args"
 // so the frontend doesn't need to JSON.parse() at render time.
-func (e *EventEmitter) ToolCall(stepNum int, toolName, argsPreview string) {
+func (e *EventEmitter) ToolCall(stepNum int, toolName, argsPreview, source string) {
 	slog.Debug("emitter: tool call", "sessionID", e.sessionID, "tool", toolName, "step", stepNum)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	data := map[string]any{
-		"step": stepNum,
-		"tool": toolName,
-		"args": argsPreview,
+		"step":   stepNum,
+		"tool":   toolName,
+		"args":   argsPreview,
+		"source": source,
 	}
 	// Pre-parse JSON arguments for the frontend
 	if trimmed := strings.TrimSpace(argsPreview); trimmed != "" && trimmed[0] == '{' {

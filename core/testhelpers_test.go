@@ -107,6 +107,13 @@ func (m *mockToolExecutor) Execute(ctx context.Context, name string, input json.
 	return tools.ToolResult{Content: "mock result for " + name}, nil
 }
 
+func (m *mockToolExecutor) GetToolSource(name string) string {
+	if _, ok := m.results[name]; ok {
+		return "mock"
+	}
+	return "core"
+}
+
 // mockContextManager is a mock implementation of ContextManager for testing.
 type mockContextManager struct {
 	// steps records all steps added
@@ -217,7 +224,7 @@ func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration tim
 }
 func (m *mockEmitter) StepStart(_ int)                                    {}
 func (m *mockEmitter) Thought(_ int, _, _ string)                         {}
-func (m *mockEmitter) ToolCall(_ int, _, _ string)                        {}
+func (m *mockEmitter) ToolCall(_ int, _, _, _ string)                     {}
 func (m *mockEmitter) ToolResult(_, _ int, _ string)                      {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
 func (m *mockEmitter) SubAgentLaunch(_, _ string)                         {}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"github.com/user/agent/core/tools"
@@ -14,6 +15,7 @@ import (
 // their tools to the agent through the ToolRegistry.
 type Gateway struct {
 	servers map[string]*Server
+	config  GatewayConfig
 	mu      sync.RWMutex
 }
 
@@ -61,14 +63,15 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 
 // RegisterTools registers all discovered MCP tools into the ToolRegistry.
 // Each tool is wrapped as a Tool that implements the tools.Tool interface.
+// Tools are registered with the server name as their source for proper unregistration.
 func (g *Gateway) RegisterTools(registry *tools.ToolRegistry) error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	for _, server := range g.servers {
+	for name, server := range g.servers {
 		for _, toolInfo := range server.Tools() {
 			mcpTool := NewTool(server, toolInfo)
-			registry.RegisterWithSource(mcpTool, "mcp")
+			registry.RegisterWithSource(mcpTool, name)
 		}
 	}
 
@@ -95,6 +98,181 @@ func (g *Gateway) Stop() error {
 	}
 
 	return nil
+}
+
+// Reconfigure updates the gateway's server connections based on a new configuration.
+// It handles added, removed, and changed servers while preserving unchanged connections.
+func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
+	registry *tools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	var errs []error
+
+	// Build sets for comparison
+	currentNames := make(map[string]bool, len(g.servers))
+	for name := range g.servers {
+		currentNames[name] = true
+	}
+
+	newNames := make(map[string]bool, len(newConfig.Servers))
+	for name := range newConfig.Servers {
+		newNames[name] = true
+	}
+
+	// Process removed servers
+	for name := range currentNames {
+		if newNames[name] {
+			continue
+		}
+
+		server := g.servers[name]
+
+		// Unregister tools from this server
+		registry.UnregisterBySource(name)
+
+		// Disconnect server
+		if err := server.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("server %s: disconnect: %w", name, err))
+		}
+
+		delete(g.servers, name)
+		if logger != nil {
+			logger.Debug("MCP server removed", "server", name)
+		}
+	}
+
+	// Process added and changed servers
+	for name, entry := range newConfig.Servers {
+		// Build ServerConfig from ServerEntry
+		env := make(map[string]string, len(entry.Env))
+		for ek, ev := range entry.Env {
+			env[ek] = expandEnv(ev)
+		}
+
+		headers := make(map[string]string, len(entry.Headers))
+		for hk, hv := range entry.Headers {
+			headers[hk] = expandEnv(hv)
+		}
+
+		newCfg := ServerConfig{
+			Transport: entry.Transport,
+			Command:   entry.Command,
+			Args:      entry.Args,
+			Env:       env,
+			URL:       expandEnv(entry.URL),
+			Headers:   headers,
+		}
+
+		if currentNames[name] {
+			// Server exists - check if config changed
+			if !g.configChanged(name, newCfg) {
+				continue // Unchanged, keep alive
+			}
+
+			// Config changed - disconnect old, reconnect new
+			oldServer := g.servers[name]
+
+			// Unregister old tools
+			registry.UnregisterBySource(name)
+
+			// Disconnect old server
+			if err := oldServer.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("server %s: disconnect: %w", name, err))
+			}
+
+			if logger != nil {
+				logger.Debug("MCP server config changed, reconnecting", "server", name)
+			}
+		}
+
+		// Connect new server
+		server := NewServer(name)
+		if err := server.Connect(ctx, newCfg); err != nil {
+			errs = append(errs, fmt.Errorf("server %s: connect: %w", name, err))
+			continue
+		}
+
+		if err := server.DiscoverTools(ctx); err != nil {
+			if closeErr := server.Close(); closeErr != nil {
+				errs = append(errs, fmt.Errorf("server %s: close after discovery failure: %w", name, closeErr))
+			}
+			errs = append(errs, fmt.Errorf("server %s: discover tools: %w", name, err))
+			continue
+		}
+
+		g.servers[name] = server
+
+		// Register new tools
+		for _, toolInfo := range server.Tools() {
+			mcpTool := NewTool(server, toolInfo)
+			registry.RegisterWithSource(mcpTool, name)
+		}
+
+		if logger != nil {
+			if currentNames[name] {
+				logger.Debug("MCP server reconnected", "server", name)
+			} else {
+				logger.Debug("MCP server added", "server", name)
+			}
+		}
+	}
+
+	// Update stored config
+	g.config = newConfig
+
+	if len(errs) > 0 {
+		return &ReconfigureError{Errors: errs}
+	}
+
+	return nil
+}
+
+// configChanged compares the new config with the stored config for a given server.
+func (g *Gateway) configChanged(name string, newCfg ServerConfig) bool {
+	oldEntry, exists := g.config.Servers[name]
+	if !exists {
+		return true // New server
+	}
+
+	// Compare relevant fields
+	if oldEntry.Transport != newCfg.Transport ||
+		oldEntry.Command != newCfg.Command ||
+		oldEntry.URL != newCfg.URL {
+		return true
+	}
+
+	// Compare args
+	if len(oldEntry.Args) != len(newCfg.Args) {
+		return true
+	}
+	for i, arg := range oldEntry.Args {
+		if arg != newCfg.Args[i] {
+			return true
+		}
+	}
+
+	// Compare env (we compare the expanded values)
+	if len(oldEntry.Env) != len(newCfg.Env) {
+		return true
+	}
+	for k, v := range oldEntry.Env {
+		if newCfg.Env[k] != v {
+			return true
+		}
+	}
+
+	// Compare headers (we compare the expanded values)
+	if len(oldEntry.Headers) != len(newCfg.Headers) {
+		return true
+	}
+	for k, v := range oldEntry.Headers {
+		if newCfg.Headers[k] != v {
+			return true
+		}
+	}
+
+	return false
 }
 
 // GetServer returns a specific MCP server by name, or nil if not found.
@@ -128,6 +306,25 @@ func (g *Gateway) ToolCount() int {
 	return count
 }
 
+// Status returns the current status of all MCP server connections.
+// The result is sorted by server name for deterministic output.
+func (g *Gateway) Status() []ServerStatus {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	statuses := make([]ServerStatus, 0, len(g.servers))
+	for _, server := range g.servers {
+		statuses = append(statuses, server.Status())
+	}
+
+	// Sort by name for deterministic output
+	sort.Slice(statuses, func(i, j int) bool {
+		return statuses[i].Name < statuses[j].Name
+	})
+
+	return statuses
+}
+
 // StartError represents errors that occurred during gateway startup.
 type StartError struct {
 	Errors []error
@@ -152,6 +349,28 @@ func (e *StopError) Error() string {
 	return fmt.Sprintf("MCP gateway stop errors: %d servers failed to stop cleanly", len(e.Errors))
 }
 
+// ReconfigureError represents errors that occurred during gateway reconfiguration.
+type ReconfigureError struct {
+	Errors []error
+}
+
+func (e *ReconfigureError) Error() string {
+	if len(e.Errors) == 1 {
+		return fmt.Sprintf("MCP gateway reconfigure error: %v", e.Errors[0])
+	}
+	return fmt.Sprintf("MCP gateway reconfigure errors: %d operations failed", len(e.Errors))
+}
+
+// ServerStatus represents the current status of an MCP server connection.
+type ServerStatus struct {
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"`
+	Connected bool     `json:"connected"`
+	ToolCount int      `json:"tool_count"`
+	Tools     []string `json:"tools"`
+	Error     string   `json:"error,omitempty"`
+}
+
 // GatewayConfig holds the raw MCP server entries for gateway initialization.
 type GatewayConfig struct {
 	Servers map[string]ServerEntry
@@ -159,9 +378,12 @@ type GatewayConfig struct {
 
 // ServerEntry describes how to launch a single MCP server.
 type ServerEntry struct {
-	Command string
-	Args    []string
-	Env     map[string]string // values may contain ${ENV_VAR} references
+	Transport string            // "stdio" | "http"; default "stdio"
+	Command   string            // stdio: command to execute
+	Args      []string          // stdio: command arguments
+	Env       map[string]string // stdio: environment variables (values may contain ${ENV_VAR} references)
+	URL       string            // http: server URL (may contain ${ENV_VAR} references)
+	Headers   map[string]string // http: custom headers (values may contain ${ENV_VAR} references)
 }
 
 // StartGateway creates, configures, starts, and registers an Gateway.
@@ -178,14 +400,25 @@ func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRe
 		for ek, ev := range entry.Env {
 			env[ek] = expandEnv(ev)
 		}
+
+		headers := make(map[string]string, len(entry.Headers))
+		for hk, hv := range entry.Headers {
+			headers[hk] = expandEnv(hv)
+		}
+
 		mcpConfigs[name] = ServerConfig{
-			Command: entry.Command,
-			Args:    entry.Args,
-			Env:     env,
+			Transport: entry.Transport,
+			Command:   entry.Command,
+			Args:      entry.Args,
+			Env:       env,
+			URL:       expandEnv(entry.URL),
+			Headers:   headers,
 		}
 	}
 
 	gateway := NewGateway()
+	gateway.config = cfg // Store the original config for diffing in Reconfigure
+
 	if err := gateway.Start(ctx, mcpConfigs); err != nil {
 		if logger != nil {
 			logger.Warn("MCP gateway start errors", "error", err)

@@ -120,6 +120,53 @@ func TestUnregisterNonExistent(t *testing.T) {
 	reg.Unregister("nope")
 }
 
+func TestUnregisterBySource(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.RegisterWithSource(newMockTool("tool1", "first"), "server-a")
+	reg.RegisterWithSource(newMockTool("tool2", "second"), "server-a")
+	reg.RegisterWithSource(newMockTool("tool3", "third"), "server-b")
+
+	// Remove all tools from server-a
+	reg.UnregisterBySource("server-a")
+
+	// tool1 and tool2 should be gone
+	if _, ok := reg.Get("tool1"); ok {
+		t.Error("tool1 should be unregistered")
+	}
+	if _, ok := reg.Get("tool2"); ok {
+		t.Error("tool2 should be unregistered")
+	}
+
+	// tool3 should still exist
+	if _, ok := reg.Get("tool3"); !ok {
+		t.Error("tool3 should still be registered")
+	}
+
+	// List should only have 1 tool
+	if list := reg.List(); len(list) != 1 {
+		t.Errorf("expected 1 tool, got %d", len(list))
+	}
+}
+
+func TestUnregisterBySourceNonExistent(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.RegisterWithSource(newMockTool("tool1", "test"), "server-a")
+
+	// Unregistering a non-existent source should be a no-op
+	reg.UnregisterBySource("nonexistent")
+
+	// tool1 should still exist
+	if _, ok := reg.Get("tool1"); !ok {
+		t.Error("tool1 should still be registered")
+	}
+}
+
+func TestUnregisterBySourceEmptyRegistry(t *testing.T) {
+	reg := NewToolRegistry()
+	// Should not panic
+	reg.UnregisterBySource("anything")
+}
+
 func TestListDescriptors(t *testing.T) {
 	reg := NewToolRegistry()
 	reg.Register(newMockTool("a", "tool a"))

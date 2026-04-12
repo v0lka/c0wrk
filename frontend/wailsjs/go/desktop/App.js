@@ -34,6 +34,14 @@ export function GetLogLevel() {
   return window['go']['desktop']['App']['GetLogLevel']();
 }
 
+export function GetMCPServers() {
+  return window['go']['desktop']['App']['GetMCPServers']();
+}
+
+export function GetMCPStatus() {
+  return window['go']['desktop']['App']['GetMCPStatus']();
+}
+
 export function GetSecuritySettings() {
   return window['go']['desktop']['App']['GetSecuritySettings']();
 }
@@ -48,6 +56,10 @@ export function GetSessionTokens(arg1) {
 
 export function GetSessionWorkspace(arg1) {
   return window['go']['desktop']['App']['GetSessionWorkspace'](arg1);
+}
+
+export function GetToolList() {
+  return window['go']['desktop']['App']['GetToolList']();
 }
 
 export function ListDirectory(arg1) {
@@ -104,6 +116,10 @@ export function UnwatchDirectory(arg1) {
 
 export function UpdateLLMSettings(arg1) {
   return window['go']['desktop']['App']['UpdateLLMSettings'](arg1);
+}
+
+export function UpdateMCPServers(arg1) {
+  return window['go']['desktop']['App']['UpdateMCPServers'](arg1);
 }
 
 export function UpdateSearchSettings(arg1) {

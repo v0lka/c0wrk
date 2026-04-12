@@ -181,3 +181,131 @@ func TestServer_Name(t *testing.T) {
 		})
 	}
 }
+
+func TestServer_Connect_UnsupportedTransport(t *testing.T) {
+	s := NewServer("test")
+
+	cfg := ServerConfig{
+		Transport: "unsupported",
+	}
+
+	err := s.Connect(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported transport")
+	}
+
+	expected := `unsupported transport type "unsupported" for MCP server test`
+	if err.Error() != expected {
+		t.Errorf("error = %q, want %q", err.Error(), expected)
+	}
+}
+
+func TestServer_Connect_HTTP_MissingURL(t *testing.T) {
+	s := NewServer("test")
+
+	cfg := ServerConfig{
+		Transport: "http",
+		URL:       "",
+	}
+
+	err := s.Connect(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for HTTP transport without URL")
+	}
+
+	expected := "HTTP transport requires URL for MCP server test"
+	if err.Error() != expected {
+		t.Errorf("error = %q, want %q", err.Error(), expected)
+	}
+}
+
+func TestServer_Connect_HTTP_InvalidURL(t *testing.T) {
+	s := NewServer("test")
+
+	cfg := ServerConfig{
+		Transport: "http",
+		URL:       "http://localhost:99999/invalid", // Invalid port
+	}
+
+	err := s.Connect(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid HTTP URL")
+	}
+
+	// Should get an error related to HTTP connection failure
+	// The error could be from Streamable HTTP or SSE fallback
+	if !containsSubstring(err.Error(), "failed to start MCP client") && !containsSubstring(err.Error(), "failed to create HTTP MCP client") {
+		t.Errorf("error should indicate HTTP connection failure, got: %v", err)
+	}
+}
+
+func TestServerConfig_DefaultsToStdio(t *testing.T) {
+	// Verify that empty transport defaults to stdio behavior
+	cfg := ServerConfig{
+		Transport: "",
+		Command:   "/nonexistent/command",
+	}
+
+	s := NewServer("test")
+	err := s.Connect(context.Background(), cfg)
+
+	// Should fail because command doesn't exist, not because of transport type
+	if err == nil {
+		t.Fatal("expected error for nonexistent command")
+	}
+
+	// Error should mention stdio client creation
+	if !containsSubstring(err.Error(), "stdio") {
+		t.Errorf("error should mention stdio, got: %v", err)
+	}
+}
+
+func TestServerConfig_TransportStdioExplicit(t *testing.T) {
+	// Verify explicit "stdio" transport works
+	cfg := ServerConfig{
+		Transport: "stdio",
+		Command:   "/nonexistent/command",
+	}
+
+	s := NewServer("test")
+	err := s.Connect(context.Background(), cfg)
+
+	// Should fail because command doesn't exist
+	if err == nil {
+		t.Fatal("expected error for nonexistent command")
+	}
+
+	// Error should mention stdio client creation
+	if !containsSubstring(err.Error(), "stdio") {
+		t.Errorf("error should mention stdio, got: %v", err)
+	}
+}
+
+// containsSubstring checks if s contains substr (case-insensitive).
+func containsSubstring(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || substr == "" ||
+		(s != "" && substr != "" && containsFold(s, substr)))
+}
+
+func containsFold(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		match := true
+		for j := 0; j < len(substr); j++ {
+			if toLower(s[i+j]) != toLower(substr[j]) {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func toLower(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}

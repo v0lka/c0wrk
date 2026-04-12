@@ -607,3 +607,583 @@ func TestToolExecuteIntegration(t *testing.T) {
 		t.Errorf("tool execution returned error: %s", result.Content)
 	}
 }
+
+// Reconfigure tests
+
+func TestGateway_Reconfigure_AddServer(t *testing.T) {
+	gateway := NewGateway()
+	registry := tools.NewToolRegistry()
+
+	// Start with one mock server
+	server1 := NewServer("server1")
+	server1.tools = []ToolInfo{
+		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	gateway.servers["server1"] = server1
+	gateway.config = GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1"},
+		},
+	}
+
+	// Register initial tools
+	_ = gateway.RegisterTools(registry)
+	if len(registry.List()) != 1 {
+		t.Fatalf("expected 1 tool initially, got %d", len(registry.List()))
+	}
+
+	// Reconfigure to add server2 (using mock to avoid actual connection)
+	// Note: This test verifies the logic, but since we can't easily mock Connect(),
+	// we'll verify the error handling instead
+
+	newConfig := GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1"},
+			"server2": {Command: "/nonexistent/cmd"},
+		},
+	}
+
+	err := gateway.Reconfigure(context.Background(), newConfig, registry, func(s string) string { return s }, nil)
+
+	// Should get an error for the failed connection to server2
+	if err == nil {
+		t.Fatal("expected error for nonexistent command")
+	}
+
+	var reconfigErr *ReconfigureError
+	if !errors.As(err, &reconfigErr) {
+		t.Fatalf("expected ReconfigureError, got %T", err)
+	}
+
+	// server1 should still be present (unchanged)
+	if gateway.GetServer("server1") == nil {
+		t.Error("server1 should still exist")
+	}
+
+	// tool1 should still be registered
+	if _, ok := registry.Get("tool1"); !ok {
+		t.Error("tool1 should still be registered")
+	}
+}
+
+func TestGateway_Reconfigure_RemoveServer(t *testing.T) {
+	gateway := NewGateway()
+	registry := tools.NewToolRegistry()
+
+	// Start with two mock servers
+	server1 := NewServer("server1")
+	server1.tools = []ToolInfo{
+		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	server2 := NewServer("server2")
+	server2.tools = []ToolInfo{
+		{Name: "tool2", Description: "tool from server2", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	gateway.servers["server1"] = server1
+	gateway.servers["server2"] = server2
+	gateway.config = GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1"},
+			"server2": {Command: "cmd2"},
+		},
+	}
+
+	// Register initial tools
+	_ = gateway.RegisterTools(registry)
+	if len(registry.List()) != 2 {
+		t.Fatalf("expected 2 tools initially, got %d", len(registry.List()))
+	}
+
+	// Reconfigure to remove server2
+	newConfig := GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1"},
+		},
+	}
+
+	err := gateway.Reconfigure(context.Background(), newConfig, registry, func(s string) string { return s }, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// server2 should be removed
+	if gateway.GetServer("server2") != nil {
+		t.Error("server2 should be removed")
+	}
+
+	// server1 should still exist
+	if gateway.GetServer("server1") == nil {
+		t.Error("server1 should still exist")
+	}
+
+	// tool2 should be unregistered
+	if _, ok := registry.Get("tool2"); ok {
+		t.Error("tool2 should be unregistered")
+	}
+
+	// tool1 should still be registered
+	if _, ok := registry.Get("tool1"); !ok {
+		t.Error("tool1 should still be registered")
+	}
+}
+
+func TestGateway_Reconfigure_UnchangedServer(t *testing.T) {
+	gateway := NewGateway()
+	registry := tools.NewToolRegistry()
+
+	// Start with one mock server
+	server1 := NewServer("server1")
+	server1.tools = []ToolInfo{
+		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	gateway.servers["server1"] = server1
+	gateway.config = GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1", Args: []string{"arg1"}},
+		},
+	}
+
+	// Register initial tools
+	_ = gateway.RegisterTools(registry)
+
+	// Reconfigure with same config
+	newConfig := GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1", Args: []string{"arg1"}},
+		},
+	}
+
+	err := gateway.Reconfigure(context.Background(), newConfig, registry, func(s string) string { return s }, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Same server instance should be preserved
+	got := gateway.GetServer("server1")
+	if got == nil {
+		t.Fatal("server1 should exist")
+	}
+	if got != server1 {
+		t.Error("server1 should be the same instance (connection preserved)")
+	}
+
+	// tool1 should still be registered
+	if _, ok := registry.Get("tool1"); !ok {
+		t.Error("tool1 should still be registered")
+	}
+}
+
+func TestGateway_Reconfigure_EmptyConfig(t *testing.T) {
+	gateway := NewGateway()
+	registry := tools.NewToolRegistry()
+
+	// Start with one mock server
+	server1 := NewServer("server1")
+	server1.tools = []ToolInfo{
+		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	gateway.servers["server1"] = server1
+	gateway.config = GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1"},
+		},
+	}
+
+	// Register initial tools
+	_ = gateway.RegisterTools(registry)
+
+	// Reconfigure with empty config (removes all servers)
+	newConfig := GatewayConfig{
+		Servers: map[string]ServerEntry{},
+	}
+
+	err := gateway.Reconfigure(context.Background(), newConfig, registry, func(s string) string { return s }, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// server1 should be removed
+	if gateway.GetServer("server1") != nil {
+		t.Error("server1 should be removed")
+	}
+
+	// tool1 should be unregistered
+	if _, ok := registry.Get("tool1"); ok {
+		t.Error("tool1 should be unregistered")
+	}
+
+	// No servers should remain
+	if len(gateway.ServerNames()) != 0 {
+		t.Errorf("expected 0 servers, got %d", len(gateway.ServerNames()))
+	}
+}
+
+func TestGateway_Reconfigure_ChangedConfig(t *testing.T) {
+	gateway := NewGateway()
+	registry := tools.NewToolRegistry()
+
+	// Start with one mock server
+	server1 := NewServer("server1")
+	server1.tools = []ToolInfo{
+		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	gateway.servers["server1"] = server1
+	gateway.config = GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "cmd1"},
+		},
+	}
+
+	// Register initial tools
+	_ = gateway.RegisterTools(registry)
+
+	// Reconfigure with changed command (will fail to connect to new command)
+	newConfig := GatewayConfig{
+		Servers: map[string]ServerEntry{
+			"server1": {Command: "/nonexistent/newcmd"},
+		},
+	}
+
+	err := gateway.Reconfigure(context.Background(), newConfig, registry, func(s string) string { return s }, nil)
+
+	// Should get an error for the failed connection
+	if err == nil {
+		t.Fatal("expected error for nonexistent command")
+	}
+
+	var reconfigErr *ReconfigureError
+	if !errors.As(err, &reconfigErr) {
+		t.Fatalf("expected ReconfigureError, got %T", err)
+	}
+
+	// tool1 should be unregistered (old server was closed)
+	if _, ok := registry.Get("tool1"); ok {
+		t.Error("tool1 should be unregistered")
+	}
+}
+
+func TestGateway_ConfigChanged(t *testing.T) {
+	tests := []struct {
+		name     string
+		old      ServerEntry
+		new      ServerConfig
+		expected bool
+	}{
+		{
+			name:     "identical command",
+			old:      ServerEntry{Command: "cmd", Args: []string{"arg1"}},
+			new:      ServerConfig{Command: "cmd", Args: []string{"arg1"}},
+			expected: false,
+		},
+		{
+			name:     "different command",
+			old:      ServerEntry{Command: "cmd1"},
+			new:      ServerConfig{Command: "cmd2"},
+			expected: true,
+		},
+		{
+			name:     "different args",
+			old:      ServerEntry{Command: "cmd", Args: []string{"arg1"}},
+			new:      ServerConfig{Command: "cmd", Args: []string{"arg2"}},
+			expected: true,
+		},
+		{
+			name:     "different transport",
+			old:      ServerEntry{Transport: "stdio"},
+			new:      ServerConfig{Transport: "http"},
+			expected: true,
+		},
+		{
+			name:     "different URL",
+			old:      ServerEntry{URL: "http://localhost:8080"},
+			new:      ServerConfig{URL: "http://localhost:9090"},
+			expected: true,
+		},
+		{
+			name:     "same URL",
+			old:      ServerEntry{URL: "http://localhost:8080"},
+			new:      ServerConfig{URL: "http://localhost:8080"},
+			expected: false,
+		},
+		{
+			name:     "different env count",
+			old:      ServerEntry{Env: map[string]string{"A": "1"}},
+			new:      ServerConfig{Env: map[string]string{"A": "1", "B": "2"}},
+			expected: true,
+		},
+		{
+			name:     "different env value",
+			old:      ServerEntry{Env: map[string]string{"A": "1"}},
+			new:      ServerConfig{Env: map[string]string{"A": "2"}},
+			expected: true,
+		},
+		{
+			name:     "same env",
+			old:      ServerEntry{Env: map[string]string{"A": "1", "B": "2"}},
+			new:      ServerConfig{Env: map[string]string{"A": "1", "B": "2"}},
+			expected: false,
+		},
+		{
+			name:     "different headers count",
+			old:      ServerEntry{Headers: map[string]string{"X-Auth": "token"}},
+			new:      ServerConfig{Headers: map[string]string{"X-Auth": "token", "X-Other": "val"}},
+			expected: true,
+		},
+		{
+			name:     "same headers",
+			old:      ServerEntry{Headers: map[string]string{"X-Auth": "token"}},
+			new:      ServerConfig{Headers: map[string]string{"X-Auth": "token"}},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gateway := &Gateway{
+				config: GatewayConfig{
+					Servers: map[string]ServerEntry{
+						"test": tt.old,
+					},
+				},
+			}
+
+			result := gateway.configChanged("test", tt.new)
+			if result != tt.expected {
+				t.Errorf("configChanged() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGateway_ConfigChanged_NonExistent(t *testing.T) {
+	gateway := &Gateway{
+		config: GatewayConfig{
+			Servers: map[string]ServerEntry{},
+		},
+	}
+
+	// Non-existent server should return true (it's new)
+	result := gateway.configChanged("nonexistent", ServerConfig{Command: "cmd"})
+	if !result {
+		t.Error("configChanged for non-existent server should return true")
+	}
+}
+
+func TestReconfigureError(t *testing.T) {
+	singleErr := &ReconfigureError{
+		Errors: []error{
+			&mockError{msg: "connection failed"},
+		},
+	}
+
+	if singleErr.Error() != "MCP gateway reconfigure error: connection failed" {
+		t.Errorf("unexpected error message: %s", singleErr.Error())
+	}
+
+	multiErr := &ReconfigureError{
+		Errors: []error{
+			&mockError{msg: "error 1"},
+			&mockError{msg: "error 2"},
+		},
+	}
+
+	if multiErr.Error() != "MCP gateway reconfigure errors: 2 operations failed" {
+		t.Errorf("unexpected error message: %s", multiErr.Error())
+	}
+}
+
+// Status tests
+
+func TestGateway_Status_EmptyGateway(t *testing.T) {
+	gateway := NewGateway()
+	status := gateway.Status()
+	if status == nil {
+		t.Fatal("Status() should not return nil")
+	}
+	if len(status) != 0 {
+		t.Errorf("expected empty slice for empty gateway, got %d items", len(status))
+	}
+}
+
+func TestGateway_Status_ConnectedServers(t *testing.T) {
+	gateway := NewGateway()
+
+	// Add mock servers with tools
+	server1 := NewServer("alpha")
+	server1.tools = []ToolInfo{
+		{Name: "tool1", Description: "first tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "tool2", Description: "second tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	server1.connected = true
+	server1.transportType = "stdio"
+
+	server2 := NewServer("beta")
+	server2.tools = []ToolInfo{
+		{Name: "tool3", Description: "third tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	server2.connected = true
+	server2.transportType = "http"
+
+	gateway.servers["alpha"] = server1
+	gateway.servers["beta"] = server2
+
+	status := gateway.Status()
+	if len(status) != 2 {
+		t.Fatalf("expected 2 status items, got %d", len(status))
+	}
+
+	// Verify sorting (alpha < beta)
+	if status[0].Name != "alpha" {
+		t.Errorf("expected first status to be 'alpha', got %q", status[0].Name)
+	}
+	if status[1].Name != "beta" {
+		t.Errorf("expected second status to be 'beta', got %q", status[1].Name)
+	}
+
+	// Verify alpha server status
+	if status[0].Transport != "stdio" {
+		t.Errorf("expected alpha transport 'stdio', got %q", status[0].Transport)
+	}
+	if !status[0].Connected {
+		t.Error("expected alpha to be connected")
+	}
+	if status[0].ToolCount != 2 {
+		t.Errorf("expected alpha tool count 2, got %d", status[0].ToolCount)
+	}
+	if len(status[0].Tools) != 2 {
+		t.Errorf("expected 2 tool names, got %d", len(status[0].Tools))
+	}
+
+	// Verify beta server status
+	if status[1].Transport != "http" {
+		t.Errorf("expected beta transport 'http', got %q", status[1].Transport)
+	}
+	if !status[1].Connected {
+		t.Error("expected beta to be connected")
+	}
+	if status[1].ToolCount != 1 {
+		t.Errorf("expected beta tool count 1, got %d", status[1].ToolCount)
+	}
+}
+
+func TestGateway_Status_DisconnectedServer(t *testing.T) {
+	gateway := NewGateway()
+
+	// Add a server that failed to connect
+	server := NewServer("failed-server")
+	server.connected = false
+	server.transportType = "stdio"
+	server.lastError = "connection refused"
+
+	gateway.servers["failed-server"] = server
+
+	status := gateway.Status()
+	if len(status) != 1 {
+		t.Fatalf("expected 1 status item, got %d", len(status))
+	}
+
+	if status[0].Name != "failed-server" {
+		t.Errorf("expected name 'failed-server', got %q", status[0].Name)
+	}
+	if status[0].Connected {
+		t.Error("expected server to be disconnected")
+	}
+	if status[0].Error != "connection refused" {
+		t.Errorf("expected error 'connection refused', got %q", status[0].Error)
+	}
+}
+
+func TestGateway_Status_SortedByName(t *testing.T) {
+	gateway := NewGateway()
+
+	// Add servers in non-alphabetical order
+	names := []string{"zebra", "alpha", "mike"}
+	for _, name := range names {
+		server := NewServer(name)
+		server.connected = true
+		server.transportType = "stdio"
+		gateway.servers[name] = server
+	}
+
+	status := gateway.Status()
+	if len(status) != 3 {
+		t.Fatalf("expected 3 status items, got %d", len(status))
+	}
+
+	// Verify alphabetical ordering
+	expected := []string{"alpha", "mike", "zebra"}
+	for i, exp := range expected {
+		if status[i].Name != exp {
+			t.Errorf("expected status[%d].Name=%q, got %q", i, exp, status[i].Name)
+		}
+	}
+}
+
+func TestServer_Status(t *testing.T) {
+	server := NewServer("test-server")
+	server.tools = []ToolInfo{
+		{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "write_file", Description: "Write a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	server.connected = true
+	server.transportType = "http"
+
+	status := server.Status()
+
+	if status.Name != "test-server" {
+		t.Errorf("expected name 'test-server', got %q", status.Name)
+	}
+	if status.Transport != "http" {
+		t.Errorf("expected transport 'http', got %q", status.Transport)
+	}
+	if !status.Connected {
+		t.Error("expected connected=true")
+	}
+	if status.ToolCount != 2 {
+		t.Errorf("expected tool count 2, got %d", status.ToolCount)
+	}
+	if len(status.Tools) != 2 {
+		t.Errorf("expected 2 tool names, got %d", len(status.Tools))
+	}
+	// Verify tool names are present
+	toolSet := make(map[string]bool)
+	for _, name := range status.Tools {
+		toolSet[name] = true
+	}
+	if !toolSet["read_file"] || !toolSet["write_file"] {
+		t.Errorf("expected tools [read_file, write_file], got %v", status.Tools)
+	}
+}
+
+func TestServer_Status_NoTools(t *testing.T) {
+	server := NewServer("empty-server")
+	server.connected = true
+	server.transportType = "stdio"
+
+	status := server.Status()
+
+	if status.ToolCount != 0 {
+		t.Errorf("expected tool count 0, got %d", status.ToolCount)
+	}
+	if len(status.Tools) != 0 {
+		t.Errorf("expected empty tools slice, got %d items", len(status.Tools))
+	}
+}
+
+func TestServer_Status_WithError(t *testing.T) {
+	server := NewServer("error-server")
+	server.connected = false
+	server.lastError = "failed to connect: connection refused"
+
+	status := server.Status()
+
+	if status.Connected {
+		t.Error("expected connected=false")
+	}
+	if status.Error != "failed to connect: connection refused" {
+		t.Errorf("unexpected error: %q", status.Error)
+	}
+}

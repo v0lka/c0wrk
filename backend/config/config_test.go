@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestLoadMinimalConfig tests loading a minimal YAML config with active_provider and provider config.
@@ -552,5 +554,276 @@ llm:
 	}
 	if findSubstring(savedContent, "actual-secret-value") {
 		t.Errorf("saved config should NOT contain the resolved secret value")
+	}
+}
+
+// TestMCPServerConfig_YAMLUnmarshal tests YAML unmarshaling of MCPServerConfig.
+func TestMCPServerConfig_YAMLUnmarshal(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		expected MCPServerConfig
+	}{
+		{
+			name: "stdio transport with all fields",
+			yaml: `
+transport: stdio
+command: /usr/bin/mcp-server
+args:
+  - --port
+  - "8080"
+env:
+  API_KEY: secret123
+`,
+			expected: MCPServerConfig{
+				Transport: "stdio",
+				Command:   "/usr/bin/mcp-server",
+				Args:      []string{"--port", "8080"},
+				Env:       map[string]string{"API_KEY": "secret123"},
+			},
+		},
+		{
+			name: "http transport with url and headers",
+			yaml: `
+transport: http
+url: https://api.example.com/mcp
+headers:
+  Authorization: Bearer token123
+  X-Custom-Header: custom-value
+`,
+			expected: MCPServerConfig{
+				Transport: "http",
+				URL:       "https://api.example.com/mcp",
+				Headers:   map[string]string{"Authorization": "Bearer token123", "X-Custom-Header": "custom-value"},
+			},
+		},
+		{
+			name: "backward compat - no transport field defaults to empty",
+			yaml: `
+command: /usr/bin/mcp-server
+args:
+  - --verbose
+`,
+			expected: MCPServerConfig{
+				Command: "/usr/bin/mcp-server",
+				Args:    []string{"--verbose"},
+			},
+		},
+		{
+			name: "minimal stdio config",
+			yaml: `command: node`,
+			expected: MCPServerConfig{
+				Command: "node",
+			},
+		},
+		{
+			name: "http with env var reference in headers",
+			yaml: `
+transport: http
+url: https://api.example.com/mcp
+headers:
+  Authorization: "Bearer ${MCP_API_KEY}"
+`,
+			expected: MCPServerConfig{
+				Transport: "http",
+				URL:       "https://api.example.com/mcp",
+				Headers:   map[string]string{"Authorization": "Bearer ${MCP_API_KEY}"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg MCPServerConfig
+			if err := yaml.Unmarshal([]byte(tt.yaml), &cfg); err != nil {
+				t.Fatalf("yaml.Unmarshal() failed: %v", err)
+			}
+
+			if cfg.Transport != tt.expected.Transport {
+				t.Errorf("Transport = %q, want %q", cfg.Transport, tt.expected.Transport)
+			}
+			if cfg.Command != tt.expected.Command {
+				t.Errorf("Command = %q, want %q", cfg.Command, tt.expected.Command)
+			}
+			if cfg.URL != tt.expected.URL {
+				t.Errorf("URL = %q, want %q", cfg.URL, tt.expected.URL)
+			}
+
+			// Compare Args slices
+			if len(cfg.Args) != len(tt.expected.Args) {
+				t.Errorf("Args length = %d, want %d", len(cfg.Args), len(tt.expected.Args))
+			} else {
+				for i, v := range cfg.Args {
+					if v != tt.expected.Args[i] {
+						t.Errorf("Args[%d] = %q, want %q", i, v, tt.expected.Args[i])
+					}
+				}
+			}
+
+			// Compare Env maps
+			if len(cfg.Env) != len(tt.expected.Env) {
+				t.Errorf("Env length = %d, want %d", len(cfg.Env), len(tt.expected.Env))
+			} else {
+				for k, v := range tt.expected.Env {
+					if cfg.Env[k] != v {
+						t.Errorf("Env[%q] = %q, want %q", k, cfg.Env[k], v)
+					}
+				}
+			}
+
+			// Compare Headers maps
+			if len(cfg.Headers) != len(tt.expected.Headers) {
+				t.Errorf("Headers length = %d, want %d", len(cfg.Headers), len(tt.expected.Headers))
+			} else {
+				for k, v := range tt.expected.Headers {
+					if cfg.Headers[k] != v {
+						t.Errorf("Headers[%q] = %q, want %q", k, cfg.Headers[k], v)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestMCPServerConfig_YAMLMarshal tests YAML marshaling of MCPServerConfig.
+func TestMCPServerConfig_YAMLMarshal(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   MCPServerConfig
+		contains []string
+	}{
+		{
+			name: "stdio config",
+			config: MCPServerConfig{
+				Transport: "stdio",
+				Command:   "/usr/bin/mcp-server",
+				Args:      []string{"--port", "8080"},
+				Env:       map[string]string{"API_KEY": "secret"},
+			},
+			contains: []string{"transport: stdio", "command: /usr/bin/mcp-server", "- --port", "- \"8080\"", "API_KEY: secret"},
+		},
+		{
+			name: "http config",
+			config: MCPServerConfig{
+				Transport: "http",
+				URL:       "https://api.example.com/mcp",
+				Headers:   map[string]string{"Authorization": "Bearer token"},
+			},
+			contains: []string{"transport: http", "url: https://api.example.com/mcp", "Authorization: Bearer token"},
+		},
+		{
+			name: "minimal config - empty fields omitted",
+			config: MCPServerConfig{
+				Command: "node",
+			},
+			contains: []string{"command: node"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := yaml.Marshal(&tt.config)
+			if err != nil {
+				t.Fatalf("yaml.Marshal() failed: %v", err)
+			}
+
+			output := string(data)
+			for _, substr := range tt.contains {
+				if !findSubstring(output, substr) {
+					t.Errorf("YAML output should contain %q, got:\n%s", substr, output)
+				}
+			}
+		})
+	}
+}
+
+// TestMCPServerConfig_RoundTrip tests that YAML marshal/unmarshal preserves all fields.
+func TestMCPServerConfig_RoundTrip(t *testing.T) {
+	original := MCPServerConfig{
+		Transport: "http",
+		Command:   "/usr/bin/mcp-server",
+		Args:      []string{"--verbose", "--port", "8080"},
+		Env:       map[string]string{"API_KEY": "secret", "DEBUG": "true"},
+		URL:       "https://api.example.com/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer token", "X-Custom": "value"},
+	}
+
+	data, err := yaml.Marshal(&original)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() failed: %v", err)
+	}
+
+	var restored MCPServerConfig
+	if err := yaml.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("yaml.Unmarshal() failed: %v", err)
+	}
+
+	if restored.Transport != original.Transport {
+		t.Errorf("Transport = %q, want %q", restored.Transport, original.Transport)
+	}
+	if restored.Command != original.Command {
+		t.Errorf("Command = %q, want %q", restored.Command, original.Command)
+	}
+	if restored.URL != original.URL {
+		t.Errorf("URL = %q, want %q", restored.URL, original.URL)
+	}
+	if len(restored.Args) != len(original.Args) {
+		t.Errorf("Args length = %d, want %d", len(restored.Args), len(original.Args))
+	}
+	if len(restored.Env) != len(original.Env) {
+		t.Errorf("Env length = %d, want %d", len(restored.Env), len(original.Env))
+	}
+	if len(restored.Headers) != len(original.Headers) {
+		t.Errorf("Headers length = %d, want %d", len(restored.Headers), len(original.Headers))
+	}
+}
+
+// TestMCPServerConfig_BackwardCompat tests that configs without transport field still work.
+func TestMCPServerConfig_BackwardCompat(t *testing.T) {
+	// This simulates loading an existing config file that doesn't have the transport field
+	content := `
+llm:
+  active_provider: anthropic
+  anthropic:
+    api_key: "test-key"
+    model: claude-3-haiku
+mcp:
+  servers:
+    myserver:
+      command: /usr/bin/mcp-server
+      args:
+        - --verbose
+      env:
+        API_KEY: secret
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// Verify MCP server config loaded correctly
+	if len(cfg.MCP.Servers) != 1 {
+		t.Fatalf("Expected 1 MCP server, got %d", len(cfg.MCP.Servers))
+	}
+
+	server, ok := cfg.MCP.Servers["myserver"]
+	if !ok {
+		t.Fatal("Expected 'myserver' in MCP.Servers")
+	}
+
+	// Transport should be empty (not defaulting here, defaults handled at usage site)
+	if server.Transport != "" {
+		t.Errorf("Transport = %q, want empty string", server.Transport)
+	}
+	if server.Command != "/usr/bin/mcp-server" {
+		t.Errorf("Command = %q, want /usr/bin/mcp-server", server.Command)
+	}
+	if len(server.Args) != 1 || server.Args[0] != "--verbose" {
+		t.Errorf("Args = %v, want [--verbose]", server.Args)
+	}
+	if server.Env["API_KEY"] != "secret" {
+		t.Errorf("Env[API_KEY] = %q, want secret", server.Env["API_KEY"])
 	}
 }

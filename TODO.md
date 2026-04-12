@@ -1,5 +1,10 @@
 - [ ] Поддержка MCP
+  - [x] Базовая поддержка
   - [ ] Подключение https://github.com/DeusData/codebase-memory-mcp
+
+- [ ] Запуск любых инструментов должен быть относительно каталога воркспейса
+
+- [ ] Разобраться с ошибкой "Step failed: step execution did not complete within max steps" в ReAct
 
 - [ ] Ручной запуск LLMJudge
 
