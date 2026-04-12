@@ -13,15 +13,21 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically. Returns up to 1000 results by default. For searching within file contents, use ripgrep instead.`
+const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically. Returns up to 200 results by default. For searching within file contents, use ripgrep instead.`
 
 // GlobTool finds files and directories matching doublestar glob patterns.
 type GlobTool struct {
 	*tools.BaseTool
+	limits GlobLimits
 }
 
-// NewGlobTool creates a new GlobTool instance.
+// NewGlobTool creates a new GlobTool instance with default limits.
 func NewGlobTool() *GlobTool {
+	return NewGlobToolWithLimits(DefaultGlobLimits())
+}
+
+// NewGlobToolWithLimits creates a new GlobTool instance with specified limits.
+func NewGlobToolWithLimits(limits GlobLimits) *GlobTool {
 	return &GlobTool{BaseTool: &tools.BaseTool{
 		ToolName:        "glob",
 		ToolDescription: toolGlobDescription,
@@ -43,13 +49,15 @@ func NewGlobTool() *GlobTool {
 			},
 			"max_results": {
 				"type": "integer",
-				"description": "Maximum number of results to return. Default: 1000."
+				"description": "Maximum number of results to return. Default: 200."
 			}
 		},
 		"required": ["pattern", "path"]
 	}`),
 		Policy: tools.PolicyAlwaysAllow,
-	}}
+	},
+		limits: limits,
+	}
 }
 
 // GlobInput represents the input parameters for glob search.
@@ -75,7 +83,7 @@ func (t *GlobTool) Execute(_ context.Context, input json.RawMessage) (tools.Tool
 		params.Type = "files"
 	}
 	if params.MaxResults <= 0 {
-		params.MaxResults = 1000
+		params.MaxResults = t.limits.MaxResults
 	}
 
 	// Validate path exists and is a directory

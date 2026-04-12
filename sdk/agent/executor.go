@@ -20,13 +20,6 @@ const executorWrapUpNudge = "[System] You are running low on tool call iteration
 const executorFinishNudge = "[System] You must call the finish tool to complete your task. Simply responding with text does not count as completion. Call the finish tool now with your final answer."
 
 const (
-	// repeatNudgeThreshold is the number of consecutive identical tool calls
-	// before injecting a system message to try a different approach.
-	repeatNudgeThreshold = 3
-	// repeatAbortThreshold is the number of consecutive identical tool calls
-	// before aborting the executor loop.
-	repeatAbortThreshold = 4
-
 	repeatNudgeMessage = "[System] You have called the same tool with the same arguments " +
 		"multiple times in a row and it keeps failing. Try a different approach: " +
 		"use different arguments, a different tool, or call finish if the task cannot be completed."
@@ -36,19 +29,11 @@ const (
 		"same error. You must try a different approach: use different arguments, a " +
 		"different tool, or call finish if the task cannot be completed."
 
-	// truncationAbortThreshold is the number of consecutive truncated responses
-	// before aborting the executor loop.
-	truncationAbortThreshold = 3
-
 	truncationMessage = "[System] Your tool call to '%s' was NOT executed because your output " +
 		"was cut off by the model's maximum output token limit. The tool call arguments are " +
 		"incomplete/truncated. You MUST use a different approach that produces smaller output — " +
 		"for example, break large file writes into multiple smaller operations, use file_ops read_file " +
 		"with line ranges instead of reading entire files, or reduce the content size."
-
-	// parseErrorAbortThreshold is the number of consecutive parse errors on the
-	// same tool before aborting.
-	parseErrorAbortThreshold = 3
 
 	parseErrorNudgeMessage = "[System] This tool has now failed to parse input %d times in a row. " +
 		"The arguments you are generating are malformed. Try a completely different approach: " +
@@ -65,6 +50,7 @@ type Executor struct {
 	emitter                 AgentEvents // event emitter (uses NoopEvents if nil)
 	suppressAssistantEvents bool        // if true, don't emit AssistantChunk/AssistantDone
 	toolResultBudget        ToolResultBudget
+	circuitBreaker          CircuitBreakerConfig
 	stepLimitFunc           StepLimitFunc // callback when step limit is reached
 
 	// Circuit breaker: detect repeated identical tool calls
@@ -92,7 +78,7 @@ type Executor struct {
 // emitter is optional (nil-safe).
 // suppressAssistantEvents disables AssistantChunk/AssistantDone events; set to true for plan-step
 // executors to avoid duplicate assistant messages when the orchestrator handles final output.
-func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget) *Executor {
+func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget, circuitBreaker CircuitBreakerConfig) *Executor {
 	// Use NoopEvents if nil to avoid nil checks throughout the code
 	if emitter == nil {
 		emitter = &NoopEvents{}
@@ -105,6 +91,7 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		emitter:                 emitter,
 		suppressAssistantEvents: suppressAssistantEvents,
 		toolResultBudget:        toolResultBudget,
+		circuitBreaker:          circuitBreaker,
 	}
 }
 
@@ -124,7 +111,7 @@ func (e *Executor) SetStepLimitFunc(fn StepLimitFunc) {
 // applyToolResultBudget truncates a tool result if it exceeds the budget.
 // The budget is min(HardCapTokens, AvailableTokens * MaxFillFraction) with a 256-token floor.
 // When truncated, a notice is appended to inform the model.
-func (e *Executor) applyToolResultBudget(observation string, cw ContextManager) string {
+func (e *Executor) applyToolResultBudget(observation string, cw ContextManager, toolName string) string {
 	if e.toolResultBudget.HardCapTokens <= 0 {
 		return observation
 	}
@@ -155,10 +142,30 @@ func (e *Executor) applyToolResultBudget(observation string, cw ContextManager) 
 	}
 
 	truncated := observation[:charLimit]
+
+	// Generate context-aware hint based on tool name
+	hint := getTruncationHint(toolName)
+
 	return truncated + fmt.Sprintf(
-		"\n\n[OUTPUT TRUNCATED: showing ~%d of ~%d tokens (%.0f%%). Full output was too large for context window budget.]",
-		capTokens, observationTokens, float64(capTokens)/float64(observationTokens)*100,
+		"\n\n[OUTPUT TRUNCATED: showing ~%d of ~%d tokens (%.0f%%). %s]",
+		capTokens, observationTokens, float64(capTokens)/float64(observationTokens)*100, hint,
 	)
+}
+
+// getTruncationHint returns a context-aware hint based on the tool name.
+func getTruncationHint(toolName string) string {
+	switch toolName {
+	case "file_ops":
+		return "Re-read the file with start_line/end_line to see specific sections, or use ripgrep to search for specific content."
+	case "ripgrep", "grep":
+		return "Narrow your search pattern or add path filters to reduce results."
+	case "glob":
+		return "Use a more specific glob pattern to reduce results."
+	case "web_fetch":
+		return "The page content was truncated. Ask the user to open the URL directly, or try fetching a more specific page."
+	default:
+		return "Break into smaller operations or use targeted queries."
+	}
 }
 
 // Run executes the ReAct loop for the given task tools and context manager.
@@ -381,7 +388,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			e.emitter.ToolCall(stepNum, truncAction.Name, string(truncAction.Input), e.tools.GetToolSource(truncAction.Name))
 
 			e.consecutiveTruncationCount++
-			if e.consecutiveTruncationCount >= truncationAbortThreshold {
+			if e.consecutiveTruncationCount >= e.circuitBreaker.TruncationAbortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "truncation_abort", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
 				return &ExecutorResult{
 					Output:   fmt.Sprintf("Aborted: tool '%s' output was truncated %d times consecutively by max output token limit", truncAction.Name, e.consecutiveTruncationCount),
@@ -425,11 +432,11 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		}
 
 		// Use lower thresholds when the previous identical call produced an error
-		nudgeThreshold := repeatNudgeThreshold
-		abortThreshold := repeatAbortThreshold
+		nudgeThreshold := e.circuitBreaker.RepeatNudgeThreshold
+		abortThreshold := e.circuitBreaker.RepeatAbortThreshold
 		if e.lastToolResultIsError {
-			nudgeThreshold = 2
-			abortThreshold = 3
+			nudgeThreshold = e.circuitBreaker.RepeatNudgeThreshold - 1
+			abortThreshold = e.circuitBreaker.RepeatAbortThreshold - 1
 		}
 
 		if e.consecutiveRepeatCount >= abortThreshold {
@@ -510,7 +517,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.consecutiveParseErrorCount = 1
 			}
 
-			if e.consecutiveParseErrorCount >= parseErrorAbortThreshold {
+			if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
 				return &ExecutorResult{
 					Output:   fmt.Sprintf("Aborted: tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount),
@@ -528,7 +535,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		// --- End parse error tracker ---
 
 		// Apply tool result budget
-		observation = e.applyToolResultBudget(observation, cw)
+		observation = e.applyToolResultBudget(observation, cw, action.Name)
 
 		// Emit tool result
 		e.emitter.ToolResult(stepNum, len(observation), observation)

@@ -195,8 +195,9 @@ func (p *GeminiProvider) buildConfig(req ChatRequest, systemInstruction *genai.C
 				Description: tool.Description,
 			}
 			if len(tool.InputSchema) > 0 {
+				sanitized := SanitizeSchemaForGemini(tool.InputSchema)
 				var schema *genai.Schema
-				if err := json.Unmarshal(tool.InputSchema, &schema); err == nil {
+				if err := json.Unmarshal(sanitized, &schema); err == nil {
 					fd.Parameters = schema
 				}
 			}

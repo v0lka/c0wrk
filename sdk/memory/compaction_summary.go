@@ -12,35 +12,41 @@ import (
 // SummarizationStrategy groups the oldest steps into blocks and uses an LLM
 // to summarize each block into a compact summary message.
 type SummarizationStrategy struct {
-	blockSize          int // number of steps per summary block (default: 10)
-	keepLast           int // number of recent steps to preserve verbatim
-	summarizer         func(ctx context.Context, text string) (string, error)
-	tokenCounter       llm.TokenCounter
-	maxSummarizeTokens int
+	blockSize            int // number of steps per summary block (default: 10)
+	keepLast             int // number of recent steps to preserve verbatim
+	observationTruncate  int // max chars for observations in summary blocks (default: 500)
+	summarizer           func(ctx context.Context, text string) (string, error)
+	tokenCounter         llm.TokenCounter
+	maxSummarizeTokens   int
 }
 
 // NewSummarizationStrategy creates a new SummarizationStrategy.
 // blockSize is the number of steps per summary block.
 // keepLast is the number of recent steps to preserve verbatim.
+// observationTruncate is the max chars for observations in summary blocks (default: 500 if <= 0).
 // summarizer is the function to call for LLM summarization.
 // tokenCounter is optional; if provided, blocks are truncated to maxSummarizeTokens.
 // maxSummarizeTokens defaults to 16000 if zero.
-func NewSummarizationStrategy(blockSize, keepLast int, summarizer func(ctx context.Context, text string) (string, error), tokenCounter llm.TokenCounter, maxSummarizeTokens int) *SummarizationStrategy {
+func NewSummarizationStrategy(blockSize, keepLast, observationTruncate int, summarizer func(ctx context.Context, text string) (string, error), tokenCounter llm.TokenCounter, maxSummarizeTokens int) *SummarizationStrategy {
 	if blockSize <= 0 {
 		blockSize = 10
 	}
 	if keepLast <= 0 {
 		keepLast = 5
 	}
+	if observationTruncate <= 0 {
+		observationTruncate = 500
+	}
 	if maxSummarizeTokens <= 0 {
 		maxSummarizeTokens = 16000
 	}
 	return &SummarizationStrategy{
-		blockSize:          blockSize,
-		keepLast:           keepLast,
-		summarizer:         summarizer,
-		tokenCounter:       tokenCounter,
-		maxSummarizeTokens: maxSummarizeTokens,
+		blockSize:           blockSize,
+		keepLast:            keepLast,
+		observationTruncate: observationTruncate,
+		summarizer:          summarizer,
+		tokenCounter:        tokenCounter,
+		maxSummarizeTokens:  maxSummarizeTokens,
 	}
 }
 
@@ -122,8 +128,8 @@ func (s *SummarizationStrategy) buildBlockText(steps []sdkagent.Step) string {
 		if step.Observation != "" {
 			// Truncate long observations
 			obs := step.Observation
-			if len(obs) > 500 {
-				obs = obs[:500] + "..."
+			if len(obs) > s.observationTruncate {
+				obs = obs[:s.observationTruncate] + "..."
 			}
 			stepText += fmt.Sprintf("  Observation: %s\n", obs)
 		}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/localrivet/goripgrep"
 	"github.com/user/agent/sdk/tools"
@@ -16,10 +15,16 @@ const toolRipgrepDescription = `Search file contents using regex or literal patt
 // RipgrepTool searches file contents using regex patterns via goripgrep.
 type RipgrepTool struct {
 	*tools.BaseTool
+	limits RipgrepLimits
 }
 
-// NewRipgrepTool creates a new RipgrepTool instance.
+// NewRipgrepTool creates a new RipgrepTool instance with default limits.
 func NewRipgrepTool() *RipgrepTool {
+	return NewRipgrepToolWithLimits(DefaultRipgrepLimits())
+}
+
+// NewRipgrepToolWithLimits creates a new RipgrepTool instance with specified limits.
+func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool {
 	return &RipgrepTool{BaseTool: &tools.BaseTool{
 		ToolName:        "ripgrep",
 		ToolDescription: toolRipgrepDescription,
@@ -58,7 +63,9 @@ func NewRipgrepTool() *RipgrepTool {
 		"required": ["pattern", "path"]
 	}`),
 		Policy: tools.PolicyAlwaysAllow,
-	}}
+	},
+		limits: limits,
+	}
 }
 
 // RipgrepInput represents the input parameters for ripgrep search.
@@ -81,7 +88,7 @@ func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.T
 
 	// Apply defaults
 	if params.MaxResults <= 0 {
-		params.MaxResults = 200
+		params.MaxResults = t.limits.MaxResults
 	}
 
 	// Build goripgrep options.
@@ -92,7 +99,7 @@ func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.T
 	opts := []goripgrep.Option{
 		goripgrep.WithRecursive(true),
 		goripgrep.WithGitignore(true),
-		goripgrep.WithTimeout(60 * time.Second),
+		goripgrep.WithTimeout(t.limits.Timeout),
 	}
 
 	if params.IgnoreCase {
@@ -132,11 +139,18 @@ func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.T
 	// Format results
 	var sb strings.Builder
 	for _, m := range matches {
+		var line string
 		if m.Column > 0 {
-			fmt.Fprintf(&sb, "%s:%d:%d: %s\n", m.File, m.Line, m.Column, m.Content)
+			line = fmt.Sprintf("%s:%d:%d: %s", m.File, m.Line, m.Column, m.Content)
 		} else {
-			fmt.Fprintf(&sb, "%s:%d: %s\n", m.File, m.Line, m.Content)
+			line = fmt.Sprintf("%s:%d: %s", m.File, m.Line, m.Content)
 		}
+		// Truncate long lines to prevent token waste
+		if len(line) > t.limits.MaxLineLength {
+			line = line[:t.limits.MaxLineLength] + "...(line truncated)"
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
 		if len(m.Context) > 0 {
 			for _, cl := range m.Context {
 				fmt.Fprintf(&sb, "  %s\n", cl)

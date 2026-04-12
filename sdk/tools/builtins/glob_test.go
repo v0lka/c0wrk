@@ -3,6 +3,7 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,5 +218,37 @@ func TestGlobTool_InvalidJSON(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Errorf("expected IsError=true for invalid JSON")
+	}
+}
+
+func TestGlobTool_DefaultMaxResults(t *testing.T) {
+	base := t.TempDir()
+	tool := NewGlobTool()
+
+	// Create many files to potentially exceed the default limit
+	for i := 0; i < 250; i++ {
+		f := filepath.Join(base, fmt.Sprintf("file%d.txt", i))
+		if err := os.WriteFile(f, []byte("content"), 0o644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+	}
+
+	input, _ := json.Marshal(GlobInput{
+		Pattern: "*.txt",
+		Path:    base,
+		// MaxResults not specified, should use default of 200
+	})
+
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected no error, got: %s", result.Content)
+	}
+
+	// Should be truncated to 200 results (the new default)
+	if !strings.Contains(result.Content, "(results limited to 200)") {
+		t.Errorf("expected truncation message for default max_results=200, got: %s", result.Content)
 	}
 }

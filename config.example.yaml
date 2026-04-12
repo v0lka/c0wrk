@@ -1,0 +1,212 @@
+# ===========================================================
+# c0wrk Configuration
+# ===========================================================
+# Copy this file to config.yaml and adjust values as needed.
+# Environment variables can be referenced as ${ENV_VAR}.
+# ===========================================================
+
+# Logging level: DEBUG, INFO, WARN, ERROR
+log_level: "DEBUG"
+
+# UI theme: "system", "dark", "light"
+theme: "system"
+
+# ---------------------------------------------------------------------------
+# LLM Provider Configuration
+# ---------------------------------------------------------------------------
+llm:
+  # Active provider: "anthropic" | "gemini" | "lmstudio" | "openai_compatible" | "chatgpt"
+  active_provider: "anthropic"
+
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-sonnet-4-20250514"
+
+  gemini:
+    api_key: "${GEMINI_API_KEY}"
+    model: ""
+
+  lmstudio:
+    api_key: ""
+    base_url: "http://localhost:1234"
+    model: ""
+
+  openai_compatible:
+    api_key: "${OPENAI_API_KEY}"
+    base_url: ""
+    model: ""
+
+  chatgpt:
+    api_key: "${OPENAI_API_KEY}"
+    model: ""
+
+  # Override built-in model metadata (context window, output limit)
+  models: {}
+  #   "custom-model-name":
+  #     context_window: 128000
+  #     output_limit: 8192
+
+  # Retry behavior for LLM API calls
+  retry:
+    max_retries: 3 # Max retry attempts (0 = no retries)
+    initial_backoff: "1s" # Initial backoff duration
+    max_backoff: "30s" # Maximum backoff duration
+
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol) Servers
+# ---------------------------------------------------------------------------
+mcp:
+  servers: {}
+  #   example-server:
+  #     transport: "stdio"         # "stdio" or "http"
+  #     command: "npx"             # Command to execute (stdio)
+  #     args: ["-y", "some-mcp"]   # Arguments (stdio)
+  #     env:                       # Environment variables (stdio)
+  #       SOME_VAR: "value"
+  #     url: ""                    # HTTP endpoint URL (http transport)
+  #     headers: {}                # HTTP headers (http transport)
+
+# ---------------------------------------------------------------------------
+# Memory / Persistence
+# ---------------------------------------------------------------------------
+memory:
+  database: "" # Path to SQLite database; empty = default location (${c0wrk}/database.db)
+
+# ---------------------------------------------------------------------------
+# Router
+# ---------------------------------------------------------------------------
+router:
+  history_window: 10 # Number of prior messages included in routing context
+
+# ---------------------------------------------------------------------------
+# Executor & Agent Execution
+# ---------------------------------------------------------------------------
+executor:
+  max_react_steps: 50 # Maximum ReAct loop iterations per execution
+  max_retries: 2 # Maximum retries on execution failure
+  output_token_reserve: 4096 # Tokens reserved for model output generation
+
+  # --- Context Compaction ---------------------------------------------------
+  compaction:
+    # Sliding-window compaction
+    sliding_window:
+      keep_first: 3 # First N steps always preserved
+      keep_last: 10 # Last N steps always preserved
+
+    # Summarization compaction
+    summarization:
+      block_size: 7 # Steps per summarization block
+      keepLast: 5 # Recent steps preserved verbatim
+
+    # Hierarchical (3-zone) compaction
+    hierarchical:
+      enabled_above_steps: 25 # Activate when step count exceeds this
+      distantRatio: 0.4 # Budget ratio for distant zone
+      middleRatio: 0.3 # Budget ratio for middle zone
+      recentRatio: 0.3 # Budget ratio for recent zone
+
+    # Context-usage thresholds that trigger compaction
+    thresholds:
+      predictive_percent: 85 # Predictive compaction trigger
+      warning_percent: 92 # Warning-level compaction trigger
+      emergency_percent: 98 # Emergency compaction trigger
+
+    maxSummarizeTokens: 16000 # Max tokens for summarization LLM calls
+    observationTruncate: 500 # Characters to truncate observations in summaries
+    safetyMarginPercent: 5 # % of context window reserved as safety margin
+
+  # --- Tool Result Budget ---------------------------------------------------
+  tool_result_budget:
+    hard_cap_tokens: 4096 # Absolute max tokens per tool result
+    max_fill_fraction: 0.3 # Max fraction of available context space
+
+  # --- Tool Output Pruning --------------------------------------------------
+  toolOutputPruning:
+    keepLastN: 3 # Recent tool outputs to keep intact
+    protectedTools: ["read_evidence"] # Tools whose outputs are never pruned
+
+  # --- Circuit Breaker (loop protection) ------------------------------------
+  circuitBreaker:
+    repeatNudgeThreshold: 3 # Identical tool calls before nudge
+    repeatAbortThreshold: 4 # Identical tool calls before abort
+    truncationAbortThreshold: 3 # Consecutive truncated responses before abort
+    parseErrorAbortThreshold: 3 # Consecutive parse errors before abort
+
+# ---------------------------------------------------------------------------
+# Security & Tool Access Policies
+# ---------------------------------------------------------------------------
+security:
+  # LLM-based safety judge
+  judge:
+    enabled: true # Whether the safety judge is active
+    model: "" # Model override for judge calls (empty = use default)
+
+  # Default policy for tools not listed below: "auto" | "always_allow" | "always_deny" | "user_confirm"
+  default_policy: "auto"
+
+  # Per-tool security policies
+  tool_policies:
+    bash_exec:
+      policy: "user_confirm"
+      blacklist:
+        - 'rm\s+-rf\s+/'
+        - 'sudo\s+'
+        - "mkfs"
+        - 'dd\s+if='
+        - '>\s*/dev/'
+    file_ops:
+      policy: "auto"
+    web_search:
+      policy: "always_allow"
+    web_fetch:
+      policy: "always_allow"
+
+# ---------------------------------------------------------------------------
+# Web Search
+# ---------------------------------------------------------------------------
+search:
+  provider: "tavily" # Web search provider
+  api_key: "${TAVILY_API_KEY}"
+
+# ---------------------------------------------------------------------------
+# Tool Output Limits
+# ---------------------------------------------------------------------------
+toolLimits:
+  # File read limits
+  readDefaultLines: 2000 # Max lines returned per read call
+  readMaxLineLength: 2000 # Max characters per line
+  readMaxBytes: 51200 # Total output cap in bytes (50 KB)
+
+  # Search limits
+  ripgrepMaxResults: 200 # Max ripgrep matches
+  ripgrepMaxLineLength: 2000 # Max chars per ripgrep result line
+  globMaxResults: 200 # Max glob pattern results
+  fileSearchMaxMatches: 100 # Max file content search matches
+  webSearchMaxResults: 5 # Max web search results
+
+  # Web fetch
+  webFetchMaxBodySize: 102400 # Max response body in bytes (100 KB)
+
+  # Batch execution
+  batchMaxConcurrency: 10 # Max parallel tool executions
+  batchMaxResultSize: 50000 # Total character budget across batch results
+
+# ---------------------------------------------------------------------------
+# Timeouts (in seconds)
+# ---------------------------------------------------------------------------
+timeouts:
+  bashMaxTimeout: 120 # Max execution time for bash commands
+  bashWaitDelay: 5 # Wait delay for bash process cleanup
+  ripgrepTimeout: 60 # Timeout for ripgrep searches
+  webFetchTimeout: 30 # Timeout for web page fetching
+  webSearchTimeout: 30 # Timeout for web search queries
+  persistenceTimeout: 5 # Timeout for persistence (DB) operations
+
+# ---------------------------------------------------------------------------
+# Orchestration Limits
+# ---------------------------------------------------------------------------
+orchestration:
+  maxDependencyContextChars: 8000 # Max chars for dependency context injection
+  maxSummaryLength: 500 # Max summary length in characters
+  maxHistoryMessages: 20 # Max history messages retained
+  maxJudgeCacheSize: 1000 # Max entries in judge decision cache

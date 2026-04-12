@@ -259,9 +259,13 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 	// Rebuild web search tool so new sessions use updated settings immediately.
 	if a.toolRegistry != nil {
 		searchAPIKey := config.ExpandEnvVars(a.config.Search.APIKey)
-		searchProvider := a.createSearchProvider(a.config.Search.Provider, searchAPIKey)
+		searchProvider := a.createSearchProvider(a.config.Search.Provider, searchAPIKey, time.Duration(a.config.Timeouts.WebSearchTimeout)*time.Second)
 		if searchProvider != nil {
-			a.toolRegistry.Register(websearch.NewWebSearchTool(searchProvider))
+			webSearchLimits := websearch.Limits{
+				MaxResults: a.config.ToolLimits.WebSearchMaxResults,
+				Timeout:    time.Duration(a.config.Timeouts.WebSearchTimeout) * time.Second,
+			}
+			a.toolRegistry.Register(websearch.NewWebSearchToolWithLimits(searchProvider, webSearchLimits))
 		} else {
 			a.toolRegistry.Unregister("web_search")
 		}

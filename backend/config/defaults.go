@@ -14,7 +14,7 @@ func ApplyDefaults(cfg *Config) {
 
 	// Executor defaults
 	if cfg.Executor.MaxReactSteps == 0 {
-		cfg.Executor.MaxReactSteps = 30
+		cfg.Executor.MaxReactSteps = 50
 	}
 	if cfg.Executor.MaxRetries == 0 {
 		cfg.Executor.MaxRetries = 2
@@ -33,8 +33,29 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.Compaction.Summarization.BlockSize == 0 {
 		cfg.Executor.Compaction.Summarization.BlockSize = 7
 	}
+	if cfg.Executor.Compaction.Summarization.KeepLast == 0 {
+		cfg.Executor.Compaction.Summarization.KeepLast = 5
+	}
 	if cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps == 0 {
 		cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps = 40
+	}
+	if cfg.Executor.Compaction.Hierarchical.DistantRatio == 0 {
+		cfg.Executor.Compaction.Hierarchical.DistantRatio = 0.4
+	}
+	if cfg.Executor.Compaction.Hierarchical.MiddleRatio == 0 {
+		cfg.Executor.Compaction.Hierarchical.MiddleRatio = 0.3
+	}
+	if cfg.Executor.Compaction.Hierarchical.RecentRatio == 0 {
+		cfg.Executor.Compaction.Hierarchical.RecentRatio = 0.3
+	}
+	if cfg.Executor.Compaction.MaxSummarizeTokens == 0 {
+		cfg.Executor.Compaction.MaxSummarizeTokens = 16000
+	}
+	if cfg.Executor.Compaction.ObservationTruncate == 0 {
+		cfg.Executor.Compaction.ObservationTruncate = 500
+	}
+	if cfg.Executor.Compaction.SafetyMarginPercent == 0 {
+		cfg.Executor.Compaction.SafetyMarginPercent = 5
 	}
 
 	// Compaction thresholds defaults
@@ -56,6 +77,28 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.ToolResultBudget.MaxFillFraction = 0.3
 	}
 
+	// Tool output pruning defaults
+	if cfg.Executor.ToolOutputPruning.KeepLastN == 0 {
+		cfg.Executor.ToolOutputPruning.KeepLastN = 3
+	}
+	if cfg.Executor.ToolOutputPruning.ProtectedTools == nil {
+		cfg.Executor.ToolOutputPruning.ProtectedTools = []string{"read_evidence"}
+	}
+
+	// Circuit breaker defaults
+	if cfg.Executor.CircuitBreaker.RepeatNudgeThreshold == 0 {
+		cfg.Executor.CircuitBreaker.RepeatNudgeThreshold = 3
+	}
+	if cfg.Executor.CircuitBreaker.RepeatAbortThreshold == 0 {
+		cfg.Executor.CircuitBreaker.RepeatAbortThreshold = 4
+	}
+	if cfg.Executor.CircuitBreaker.TruncationAbortThreshold == 0 {
+		cfg.Executor.CircuitBreaker.TruncationAbortThreshold = 3
+	}
+	if cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold == 0 {
+		cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold = 3
+	}
+
 	// Models defaults (initialize empty map if nil)
 	if cfg.LLM.Models == nil {
 		cfg.LLM.Models = make(map[string]ModelOverride)
@@ -75,6 +118,11 @@ func ApplyDefaults(cfg *Config) {
 	// LMStudio default base URL
 	if cfg.LLM.LMStudio.BaseURL == "" {
 		cfg.LLM.LMStudio.BaseURL = "http://localhost:1234"
+	}
+
+	// Memory defaults
+	if cfg.Memory.Database == "" {
+		cfg.Memory.Database = "database.db"
 	}
 
 	// Router defaults
@@ -125,5 +173,74 @@ func ApplyDefaults(cfg *Config) {
 	// Search defaults
 	if cfg.Search.Provider == "" {
 		cfg.Search.Provider = "tavily"
+	}
+
+	// Tool limits defaults
+	if cfg.ToolLimits.ReadDefaultLines == 0 {
+		cfg.ToolLimits.ReadDefaultLines = 2000
+	}
+	if cfg.ToolLimits.ReadMaxLineLength == 0 {
+		cfg.ToolLimits.ReadMaxLineLength = 2000
+	}
+	if cfg.ToolLimits.ReadMaxBytes == 0 {
+		cfg.ToolLimits.ReadMaxBytes = 51200 // 50KB
+	}
+	if cfg.ToolLimits.RipgrepMaxResults == 0 {
+		cfg.ToolLimits.RipgrepMaxResults = 200
+	}
+	if cfg.ToolLimits.RipgrepMaxLineLength == 0 {
+		cfg.ToolLimits.RipgrepMaxLineLength = 2000
+	}
+	if cfg.ToolLimits.GlobMaxResults == 0 {
+		cfg.ToolLimits.GlobMaxResults = 200
+	}
+	if cfg.ToolLimits.FileSearchMaxMatches == 0 {
+		cfg.ToolLimits.FileSearchMaxMatches = 100
+	}
+	if cfg.ToolLimits.WebSearchMaxResults == 0 {
+		cfg.ToolLimits.WebSearchMaxResults = 5
+	}
+	if cfg.ToolLimits.WebFetchMaxBodySize == 0 {
+		cfg.ToolLimits.WebFetchMaxBodySize = 102400 // 100KB
+	}
+	if cfg.ToolLimits.BatchMaxConcurrency == 0 {
+		cfg.ToolLimits.BatchMaxConcurrency = 10
+	}
+	if cfg.ToolLimits.BatchMaxResultSize == 0 {
+		cfg.ToolLimits.BatchMaxResultSize = 50000
+	}
+
+	// Timeouts defaults
+	if cfg.Timeouts.BashMaxTimeout == 0 {
+		cfg.Timeouts.BashMaxTimeout = 120
+	}
+	if cfg.Timeouts.BashWaitDelay == 0 {
+		cfg.Timeouts.BashWaitDelay = 5
+	}
+	if cfg.Timeouts.RipgrepTimeout == 0 {
+		cfg.Timeouts.RipgrepTimeout = 60
+	}
+	if cfg.Timeouts.WebFetchTimeout == 0 {
+		cfg.Timeouts.WebFetchTimeout = 30
+	}
+	if cfg.Timeouts.WebSearchTimeout == 0 {
+		cfg.Timeouts.WebSearchTimeout = 30
+	}
+	if cfg.Timeouts.PersistenceTimeout == 0 {
+		cfg.Timeouts.PersistenceTimeout = 5
+	}
+
+	// Orchestration defaults
+	if cfg.Orchestration.MaxDependencyContextChars == 0 {
+		cfg.Orchestration.MaxDependencyContextChars = 8000
+	}
+	if cfg.Orchestration.MaxSummaryLength == 0 {
+		cfg.Orchestration.MaxSummaryLength = 500
+	}
+	if cfg.Orchestration.MaxHistoryMessages == 0 {
+		cfg.Orchestration.MaxHistoryMessages = 20
+	}
+	if cfg.Orchestration.MaxJudgeCacheSize == 0 {
+		cfg.Orchestration.MaxJudgeCacheSize = 1000
 	}
 }

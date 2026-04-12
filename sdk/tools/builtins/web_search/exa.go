@@ -23,10 +23,15 @@ type ExaProvider struct {
 
 // NewExaProvider creates a new ExaProvider with the given API key.
 func NewExaProvider(apiKey string) *ExaProvider {
+	return NewExaProviderWithTimeout(apiKey, 30*time.Second)
+}
+
+// NewExaProviderWithTimeout creates a new ExaProvider with the given API key and timeout.
+func NewExaProviderWithTimeout(apiKey string, timeout time.Duration) *ExaProvider {
 	return &ExaProvider{
 		apiKey:  apiKey,
 		baseURL: "https://api.exa.ai/search",
-		client:  &http.Client{Timeout: 60 * time.Second},
+		client:  &http.Client{Timeout: timeout},
 	}
 }
 

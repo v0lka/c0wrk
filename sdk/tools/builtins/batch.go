@@ -75,6 +75,18 @@ func WithMaxResultSize(chars int) BatchOption {
 	}
 }
 
+// WithBatchLimits sets all limits from a BatchLimits struct.
+func WithBatchLimits(limits BatchLimits) BatchOption {
+	return func(bt *BatchTool) {
+		if limits.MaxConcurrency > 0 {
+			bt.maxConcurrency = limits.MaxConcurrency
+		}
+		if limits.MaxResultSize > 0 {
+			bt.maxResultSize = limits.MaxResultSize
+		}
+	}
+}
+
 // BatchTool executes multiple independent tools in parallel.
 type BatchTool struct {
 	*tools.BaseTool
@@ -85,6 +97,7 @@ type BatchTool struct {
 
 // NewBatchTool creates a new BatchTool with the given dispatcher and options.
 func NewBatchTool(dispatcher toolDispatcher, opts ...BatchOption) *BatchTool {
+	defaults := DefaultBatchLimits()
 	bt := &BatchTool{
 		BaseTool: &tools.BaseTool{
 			ToolName:        "batch",
@@ -116,8 +129,8 @@ func NewBatchTool(dispatcher toolDispatcher, opts ...BatchOption) *BatchTool {
 			Policy: tools.PolicyAlwaysAllow,
 		},
 		dispatcher:     dispatcher,
-		maxConcurrency: 10,
-		maxResultSize:  50000,
+		maxConcurrency: defaults.MaxConcurrency,
+		maxResultSize:  defaults.MaxResultSize,
 	}
 	for _, opt := range opts {
 		opt(bt)

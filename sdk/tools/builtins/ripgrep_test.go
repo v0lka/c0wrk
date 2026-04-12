@@ -209,3 +209,50 @@ func TestRipgrepTool_InvalidJSON(t *testing.T) {
 		t.Errorf("expected IsError=true for invalid JSON")
 	}
 }
+
+func TestRipgrepTool_LongLineTruncation(t *testing.T) {
+	base := t.TempDir()
+	tool := NewRipgrepTool()
+
+	// Create a file with a very long line (5000 characters)
+	longContent := strings.Repeat("a", 5000)
+	content := "short line\n" + longContent + "\nanother short line\n"
+	testFile := filepath.Join(base, "longline.txt")
+	if err := os.WriteFile(testFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	input, _ := json.Marshal(RipgrepInput{
+		Pattern: "aaaa",
+		Path:    base,
+	})
+
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected no error, got: %s", result.Content)
+	}
+
+	// Verify the output contains the truncation marker
+	if !strings.Contains(result.Content, "...(line truncated)") {
+		t.Errorf("expected result to contain '...(line truncated)', got: %s", result.Content)
+	}
+
+	// Verify the line is actually truncated (should be around 2000 + len(truncation marker))
+	lines := strings.Split(result.Content, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "...(line truncated)") {
+			// The line should be truncated to DefaultRipgrepLimits().MaxLineLength + len("...(line truncated)")
+			defaults := DefaultRipgrepLimits()
+			if len(line) > defaults.MaxLineLength+50 {
+				t.Errorf("line appears not to be truncated, length: %d", len(line))
+			}
+			// Verify the file path and line number are preserved
+			if !strings.HasPrefix(line, base) && !strings.Contains(line, "longline.txt") {
+				t.Errorf("expected line to contain file path, got: %s", line)
+			}
+		}
+	}
+}

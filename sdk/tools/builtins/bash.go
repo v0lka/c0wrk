@@ -23,10 +23,16 @@ type BashExecTool struct {
 	*tools.BaseTool
 	blacklist []string
 	compiled  []*regexp.Regexp
+	timeouts  BashTimeouts
 }
 
 // NewBashExecTool creates a new BashExecTool with the given blacklist.
 func NewBashExecTool(blacklist []string) *BashExecTool {
+	return NewBashExecToolWithTimeouts(blacklist, DefaultBashTimeouts())
+}
+
+// NewBashExecToolWithTimeouts creates a new BashExecTool with the given blacklist and timeouts.
+func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) *BashExecTool {
 	compiled := make([]*regexp.Regexp, 0, len(blacklist))
 	for _, pattern := range blacklist {
 		re, err := regexp.Compile(pattern)
@@ -44,6 +50,7 @@ func NewBashExecTool(blacklist []string) *BashExecTool {
 		},
 		blacklist: blacklist,
 		compiled:  compiled,
+		timeouts:  timeouts,
 	}
 }
 
@@ -78,7 +85,7 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ParseInputError(err)
 	}
 
-	// Parse timeout (default 60s, max 120s)
+	// Parse timeout (default 60s, max from config)
 	timeoutStr := params.Timeout
 	if timeoutStr == "" {
 		timeoutStr = "60s"
@@ -90,10 +97,9 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 			IsError: true,
 		}, nil
 	}
-	// Enforce maximum timeout of 120s
-	const maxTimeout = 120 * time.Second
-	if timeout > maxTimeout {
-		timeout = maxTimeout
+	// Enforce maximum timeout from config
+	if timeout > t.timeouts.MaxTimeout {
+		timeout = t.timeouts.MaxTimeout
 	}
 
 	// Pre-bash snapshot (if tracker available)
@@ -123,7 +129,7 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	// Grace period for pipe readers to drain after the process group is killed.
-	cmd.WaitDelay = 5 * time.Second
+	cmd.WaitDelay = t.timeouts.WaitDelay
 
 	// Set working directory if specified
 	if params.WorkingDirectory != "" {

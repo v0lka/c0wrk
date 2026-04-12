@@ -42,13 +42,27 @@ func makeStep(thought, observation string, toolID int) sdkagent.Step {
 	}
 }
 
+// Helper to create a test step with a specific tool name
+func makeStepWithTool(thought, observation, toolName string, toolID int) sdkagent.Step {
+	return sdkagent.Step{
+		Thought: thought,
+		Action: llm.ToolCall{
+			ID:    fmt.Sprintf("call_%d", toolID),
+			Name:  toolName,
+			Input: json.RawMessage(`{"arg": "value"}`),
+		},
+		Observation: observation,
+		TokensUsed:  100,
+	}
+}
+
 // TestBuildPromptOrdering verifies that BuildPrompt returns messages in correct order.
 func TestBuildPromptOrdering(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("You are a helpful assistant.", testModelMeta(128000), tracker, testThresholds(), strategy)
+	cw := NewContextWindow("You are a helpful assistant.", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
 
 	// Set task (caller is responsible for formatting criteria into task string)
 	cw.SetTask("Complete the coding task\n\nAcceptance Criteria:\n- First criterion (llm_judge)\n- Second criterion (programmatic: go test)")
@@ -99,7 +113,7 @@ func TestBuildPromptWithEmptySections(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("System prompt only", testModelMeta(128000), tracker, testThresholds(), strategy)
+	cw := NewContextWindow("System prompt only", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
 
 	// Only add steps, no task, criteria, or plan
 	cw.AddStep(makeStep("Thought 1", "Obs 1", 1))
@@ -215,7 +229,7 @@ func TestNeedsCompaction(t *testing.T) {
 		OutputLimit:   4096,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System prompt", modelMeta, tracker, testThresholds(), strategy)
+	cw := NewContextWindow("System prompt", modelMeta, tracker, testThresholds(), strategy, 0)
 
 	// Add many steps to exceed predictive threshold
 	// Each step adds ~60-80 tokens with the simple counter
@@ -239,7 +253,7 @@ func TestNeedsCompactionWithinBudget(t *testing.T) {
 	strategy := NewSlidingWindowStrategy(3, 5)
 
 	// Create with high budget
-	cw := NewContextWindow("Hi", testModelMeta(128000), tracker, testThresholds(), strategy)
+	cw := NewContextWindow("Hi", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
 
 	// Add just one step
 	cw.AddStep(makeStep("Thought", "Obs", 1))
@@ -253,7 +267,7 @@ func TestNeedsCompactionWithinBudget(t *testing.T) {
 func TestAddStep(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
 
 	// Initially no steps
 	messages := cw.BuildPrompt()
@@ -290,7 +304,7 @@ func TestCompactClearsCompactedOnNewStep(t *testing.T) {
 		OutputLimit:   1000,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
 
 	// Add steps
 	for i := 1; i <= 10; i++ {
@@ -353,7 +367,7 @@ func TestNewCompactionStrategy(t *testing.T) {
 func TestEmptyContextWindow(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("", testModelMeta(128000), tracker, testThresholds(), nil)
+	cw := NewContextWindow("", testModelMeta(128000), tracker, testThresholds(), nil, 0)
 
 	messages := cw.BuildPrompt()
 
@@ -376,7 +390,7 @@ func TestEffectiveMax(t *testing.T) {
 		OutputLimit:   8192,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
 
 	expectedMax := 100000 - 8192 - 5000 // 86808
 	if cw.EffectiveMax() != expectedMax {
@@ -397,7 +411,7 @@ func TestFillPercent(t *testing.T) {
 		OutputLimit:   1000,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
 
 	// Initially should be 0% (no tokens used)
 	if cw.FillPercent() != 0.0 {
@@ -487,7 +501,7 @@ func TestCheckFill(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := llm.NewContextTokenTracker(counter)
-			cw := NewContextWindow("System", modelMeta, tracker, thresholds, strategy)
+			cw := NewContextWindow("System", modelMeta, tracker, thresholds, strategy, 0)
 
 			for i := 1; i <= tt.steps; i++ {
 				cw.AddStep(makeStep(
@@ -521,7 +535,7 @@ func TestCheckFillReject(t *testing.T) {
 		OutputLimit:   500,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
 
 	// Add many steps to exceed 100%
 	for i := 1; i <= 500; i++ {
@@ -543,7 +557,7 @@ func TestCorrectTokenCount(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(3, 5)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), strategy)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
 
 	// Add some steps
 	cw.AddStep(makeStep("Thought 1", "Observation 1", 1))
@@ -571,7 +585,7 @@ func TestCorrectTokenCount(t *testing.T) {
 func TestAddStepUpdatesTracker(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
 
 	// Initial state
 	initialTotal := cw.tracker.EstimateTotal()
@@ -603,7 +617,7 @@ func TestAddStepUpdatesTracker(t *testing.T) {
 func TestBuildStepMessages_EmptyThoughtNoAction(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
 
 	// Add a step with empty thought and no action (edge case that could cause API errors)
 	emptyStep := sdkagent.Step{
@@ -659,5 +673,335 @@ func TestBuildStepMessages_EmptyThoughtNoAction(t *testing.T) {
 	}
 	if normalStepMsg.Content != "Normal thought" {
 		t.Errorf("Expected 'Normal thought' as content, got %q", normalStepMsg.Content)
+	}
+}
+
+// TestBuildStepMessages_TrimsTrailingInvisibleChars verifies that trailing invisible characters are trimmed.
+func TestBuildStepMessages_TrimsTrailingInvisibleChars(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+
+	// Add a step with thought containing trailing zero-width space characters
+	step := sdkagent.Step{
+		Thought:     "Some thought\u200b\u200b\u200b",
+		Action:      llm.ToolCall{},
+		Observation: "",
+		TokensUsed:  100,
+	}
+	cw.AddStep(step)
+
+	messages := cw.BuildPrompt()
+
+	if len(messages) < 2 {
+		t.Fatalf("Expected at least 2 messages, got %d", len(messages))
+	}
+
+	assistantMsg := messages[1]
+	if assistantMsg.Role != "assistant" {
+		t.Fatalf("Expected assistant message, got role=%s", assistantMsg.Role)
+	}
+
+	// Verify trailing \u200b characters were trimmed
+	expectedContent := "Some thought"
+	if assistantMsg.Content != expectedContent {
+		t.Errorf("Expected trimmed content %q, got %q", expectedContent, assistantMsg.Content)
+	}
+}
+
+// TestBuildStepMessages_EmptyThoughtAfterTrimmingBecomesProceeding verifies that thoughts with only
+// whitespace/invisible characters become "(proceeding)" after trimming.
+func TestBuildStepMessages_EmptyThoughtAfterTrimmingBecomesProceeding(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+
+	// Add a step with thought containing only whitespace and invisible characters, no tool call
+	step := sdkagent.Step{
+		Thought:     "   \t\n\r\u200b\u200c\u200d\ufeff  ",
+		Action:      llm.ToolCall{}, // Empty action (no ID)
+		Observation: "",
+		TokensUsed:  100,
+	}
+	cw.AddStep(step)
+
+	messages := cw.BuildPrompt()
+
+	if len(messages) < 2 {
+		t.Fatalf("Expected at least 2 messages, got %d", len(messages))
+	}
+
+	assistantMsg := messages[1]
+	if assistantMsg.Role != "assistant" {
+		t.Fatalf("Expected assistant message, got role=%s", assistantMsg.Role)
+	}
+
+	// After trimming, content should be "(proceeding)" since there's no tool call
+	if assistantMsg.Content != "(proceeding)" {
+		t.Errorf("Expected '(proceeding)' for empty thought after trimming, got %q", assistantMsg.Content)
+	}
+}
+
+// TestBuildStepMessages_WhitespaceUserNudgeSkipped verifies that user nudges with only
+// whitespace/invisible characters are skipped entirely.
+func TestBuildStepMessages_WhitespaceUserNudgeSkipped(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+
+	// Add a step with a valid thought but whitespace-only nudge
+	step := sdkagent.Step{
+		Thought:     "Valid thought",
+		Action:      llm.ToolCall{},
+		Observation: "",
+		UserNudge:   "   \t\n\r\u200b\u200c  ",
+		TokensUsed:  100,
+	}
+	cw.AddStep(step)
+
+	messages := cw.BuildPrompt()
+
+	// Should have: system (1) + assistant (1) = 2 messages (no user nudge)
+	if len(messages) != 2 {
+		t.Errorf("Expected 2 messages (system + assistant), got %d", len(messages))
+	}
+
+	// Verify the messages are system and assistant only
+	if messages[0].Role != "system" {
+		t.Errorf("Expected first message to be system, got %s", messages[0].Role)
+	}
+	if messages[1].Role != "assistant" {
+		t.Errorf("Expected second message to be assistant, got %s", messages[1].Role)
+	}
+}
+
+// TestBuildStepMessages_ValidUserNudgePreserved verifies that valid user nudges are preserved.
+func TestBuildStepMessages_ValidUserNudgePreserved(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+
+	// Add a step with a valid thought and valid nudge
+	step := sdkagent.Step{
+		Thought:     "Valid thought",
+		Action:      llm.ToolCall{},
+		Observation: "",
+		UserNudge:   "Step limit extended",
+		TokensUsed:  100,
+	}
+	cw.AddStep(step)
+
+	messages := cw.BuildPrompt()
+
+	// Should have: system (1) + assistant (1) + user nudge (1) = 3 messages
+	if len(messages) != 3 {
+		t.Fatalf("Expected 3 messages (system + assistant + nudge), got %d", len(messages))
+	}
+
+	// Verify the nudge message is present and correct
+	if messages[2].Role != "user" {
+		t.Errorf("Expected third message to be user (nudge), got %s", messages[2].Role)
+	}
+	if messages[2].Content != "Step limit extended" {
+		t.Errorf("Expected nudge content 'Step limit extended', got %q", messages[2].Content)
+	}
+}
+
+// TestPruningKeepsLastN verifies that pruning keeps the last N tool results verbatim.
+func TestPruningKeepsLastN(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:       3,
+		PlaceholderText: "[PRUNED]",
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Create 10 steps with unique observations
+	for i := 1; i <= 10; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
+	}
+
+	messages := cw.BuildPrompt()
+
+	// Expected: system (1) + 10 steps (each = assistant + tool = 2) = 21 messages
+	if len(messages) != 21 {
+		t.Fatalf("Expected 21 messages, got %d", len(messages))
+	}
+
+	// Find tool messages (every odd index starting from 2: 2, 4, 6, 8, 10, 12, 14, 16, 18, 20)
+	toolMessageIndices := []int{2, 4, 6, 8, 10, 12, 14, 16, 18, 20}
+
+	// Last 3 tool messages (steps 8, 9, 10 at indices 16, 18, 20) should have original content
+	for i := 7; i < 10; i++ {
+		msgIdx := toolMessageIndices[i]
+		expectedContent := fmt.Sprintf("Observation %d", i+1)
+		if messages[msgIdx].Content != expectedContent {
+			t.Errorf("Tool message %d (step %d) should have original content %q, got %q",
+				msgIdx, i+1, expectedContent, messages[msgIdx].Content)
+		}
+	}
+
+	// First 7 tool messages (steps 1-7 at indices 2, 4, 6, 8, 10, 12, 14) should be pruned
+	for i := 0; i < 7; i++ {
+		msgIdx := toolMessageIndices[i]
+		if messages[msgIdx].Content != "[PRUNED]" {
+			t.Errorf("Tool message %d (step %d) should be pruned to %q, got %q",
+				msgIdx, i+1, "[PRUNED]", messages[msgIdx].Content)
+		}
+	}
+}
+
+// TestPruningProtectsTools verifies that protected tools are never pruned.
+func TestPruningProtectsTools(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:       3,
+		ProtectedTools:  []string{"read_evidence"},
+		PlaceholderText: "[PRUNED]",
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Create 5 steps (all have tool results):
+	// Step 1: regular tool (outside KeepLastN -> pruned)
+	// Step 2: read_evidence (protected -> NOT pruned)
+	// Step 3: regular tool (within KeepLastN -> NOT pruned)
+	// Step 4: regular tool (within KeepLastN -> NOT pruned)
+	// Step 5: regular tool (within KeepLastN -> NOT pruned)
+	// KeepLastN=3 protects the last 3 tool-result steps (steps 3, 4, 5)
+	cw.AddStep(makeStep("Thought 1", "Observation 1", 1))
+	cw.AddStep(makeStepWithTool("Thought 2", "Evidence content", "read_evidence", 2))
+	cw.AddStep(makeStep("Thought 3", "Observation 3", 3))
+	cw.AddStep(makeStep("Thought 4", "Observation 4", 4))
+	cw.AddStep(makeStep("Thought 5", "Observation 5", 5))
+
+	messages := cw.BuildPrompt()
+
+	// Expected: system (1) + 5 steps (assistant + tool each) = 11 messages
+	if len(messages) != 11 {
+		t.Fatalf("Expected 11 messages, got %d", len(messages))
+	}
+
+	// Tool messages are at indices 2, 4, 6, 8, 10
+	// Step 1 (index 2): regular tool, outside KeepLastN -> pruned
+	if messages[2].Content != "[PRUNED]" {
+		t.Errorf("Step 1 (regular tool) should be pruned, got %q", messages[2].Content)
+	}
+
+	// Step 2 (index 4): read_evidence (protected) -> NOT pruned
+	if messages[4].Content != "Evidence content" {
+		t.Errorf("Step 2 (read_evidence) should NOT be pruned, got %q", messages[4].Content)
+	}
+
+	// Step 3 (index 6): regular tool, within KeepLastN -> NOT pruned
+	if messages[6].Content != "Observation 3" {
+		t.Errorf("Step 3 (within KeepLastN) should NOT be pruned, got %q", messages[6].Content)
+	}
+
+	// Step 4 (index 8): regular tool, within KeepLastN -> NOT pruned
+	if messages[8].Content != "Observation 4" {
+		t.Errorf("Step 4 (within KeepLastN) should NOT be pruned, got %q", messages[8].Content)
+	}
+
+	// Step 5 (index 10): regular tool, within KeepLastN -> NOT pruned
+	if messages[10].Content != "Observation 5" {
+		t.Errorf("Step 5 (within KeepLastN) should NOT be pruned, got %q", messages[10].Content)
+	}
+}
+
+// TestPruningSkipsNonToolSteps verifies that steps without tool calls are unaffected by pruning.
+func TestPruningSkipsNonToolSteps(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:       1, // Only keep the last 1 tool-result step
+		PlaceholderText: "[PRUNED]",
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Create steps: tool step, non-tool step, tool step, non-tool step
+	// Tool-result steps are at indices 0 and 2 (steps 1 and 3)
+	// KeepLastN=1 protects only the last tool-result step (step 3 at index 2)
+	cw.AddStep(makeStep("Thought 1", "Observation 1", 1)) // tool step (will be pruned)
+	cw.AddStep(sdkagent.Step{                              // non-tool step
+		Thought:     "Thought 2 (no tool)",
+		Action:      llm.ToolCall{}, // Empty action (no ID)
+		Observation: "",
+		TokensUsed:  100,
+	})
+	cw.AddStep(makeStep("Thought 3", "Observation 3", 3)) // tool step (NOT pruned)
+	cw.AddStep(sdkagent.Step{                              // non-tool step
+		Thought:     "Thought 4 (no tool)",
+		Action:      llm.ToolCall{},
+		Observation: "",
+		TokensUsed:  100,
+	})
+
+	messages := cw.BuildPrompt()
+
+	// Expected: system (1) + step1 (2) + step2 (1, no tool) + step3 (2) + step4 (1, no tool) = 7 messages
+	if len(messages) != 7 {
+		t.Fatalf("Expected 7 messages, got %d", len(messages))
+	}
+
+	// Message 0: system
+	// Message 1: step 1 assistant
+	// Message 2: step 1 tool (pruned - outside KeepLastN)
+	if messages[2].Content != "[PRUNED]" {
+		t.Errorf("Step 1 tool should be pruned, got %q", messages[2].Content)
+	}
+
+	// Message 3: step 2 assistant (no tool message)
+	if messages[3].Content != "Thought 2 (no tool)" {
+		t.Errorf("Step 2 assistant content should be preserved, got %q", messages[3].Content)
+	}
+
+	// Message 4: step 3 assistant
+	// Message 5: step 3 tool (NOT pruned - within KeepLastN)
+	if messages[5].Content != "Observation 3" {
+		t.Errorf("Step 3 tool should NOT be pruned, got %q", messages[5].Content)
+	}
+
+	// Message 6: step 4 assistant (no tool message)
+	if messages[6].Content != "Thought 4 (no tool)" {
+		t.Errorf("Step 4 assistant content should be preserved, got %q", messages[6].Content)
+	}
+}
+
+// TestPruningDisabledWhenKeepLastNZero verifies that pruning is disabled when KeepLastN is 0.
+func TestPruningDisabledWhenKeepLastNZero(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:       0, // Pruning disabled
+		PlaceholderText: "[PRUNED]",
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Create 5 steps
+	for i := 1; i <= 5; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
+	}
+
+	messages := cw.BuildPrompt()
+
+	// Expected: system (1) + 5 steps (2 each) = 11 messages
+	if len(messages) != 11 {
+		t.Fatalf("Expected 11 messages, got %d", len(messages))
+	}
+
+	// All tool messages should have original content (no pruning)
+	toolMessageIndices := []int{2, 4, 6, 8, 10}
+	for i, msgIdx := range toolMessageIndices {
+		expectedContent := fmt.Sprintf("Observation %d", i+1)
+		if messages[msgIdx].Content != expectedContent {
+			t.Errorf("Tool message %d (step %d) should have original content %q when pruning disabled, got %q",
+				msgIdx, i+1, expectedContent, messages[msgIdx].Content)
+		}
 	}
 }

@@ -20,11 +20,14 @@ type Config struct {
 	LLM      LLMConfig `yaml:"llm"`
 	MCP      MCPConfig `yaml:"mcp"`
 
-	Memory   MemoryConfig   `yaml:"memory"`
-	Router   RouterConfig   `yaml:"router"`
-	Executor ExecutorConfig `yaml:"executor"`
-	Security SecurityConfig `yaml:"security"`
-	Search   SearchConfig   `yaml:"search"`
+	Memory        MemoryConfig        `yaml:"memory"`
+	Router        RouterConfig        `yaml:"router"`
+	Executor      ExecutorConfig      `yaml:"executor"`
+	Security      SecurityConfig      `yaml:"security"`
+	Search        SearchConfig        `yaml:"search"`
+	ToolLimits    ToolLimitsConfig    `yaml:"toolLimits"`
+	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
+	Orchestration OrchestrationConfig `yaml:"orchestration"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
@@ -120,21 +123,40 @@ type ToolResultBudgetConfig struct {
 	MaxFillFraction float64 `yaml:"max_fill_fraction"` // max fraction of available context space (default: 0.3)
 }
 
+// ToolOutputPruningConfig configures selective pruning of old tool outputs to save context.
+type ToolOutputPruningConfig struct {
+	KeepLastN      int      `yaml:"keepLastN"`
+	ProtectedTools []string `yaml:"protectedTools"`
+}
+
+// CircuitBreakerConfig holds circuit breaker thresholds for executor protection.
+type CircuitBreakerConfig struct {
+	RepeatNudgeThreshold     int `yaml:"repeatNudgeThreshold"`     // consecutive identical tool calls before nudge
+	RepeatAbortThreshold     int `yaml:"repeatAbortThreshold"`     // consecutive identical tool calls before abort
+	TruncationAbortThreshold int `yaml:"truncationAbortThreshold"` // consecutive truncated responses before abort
+	ParseErrorAbortThreshold int `yaml:"parseErrorAbortThreshold"` // consecutive parse errors before abort
+}
+
 // ExecutorConfig holds executor settings.
 type ExecutorConfig struct {
-	MaxReactSteps      int                    `yaml:"max_react_steps"`
-	MaxRetries         int                    `yaml:"max_retries"`
-	OutputTokenReserve int                    `yaml:"output_token_reserve"`
-	Compaction         CompactionConfig       `yaml:"compaction"`
-	ToolResultBudget   ToolResultBudgetConfig `yaml:"tool_result_budget"`
+	MaxReactSteps      int                     `yaml:"max_react_steps"`
+	MaxRetries         int                     `yaml:"max_retries"`
+	OutputTokenReserve int                     `yaml:"output_token_reserve"`
+	Compaction         CompactionConfig        `yaml:"compaction"`
+	ToolResultBudget   ToolResultBudgetConfig  `yaml:"tool_result_budget"`
+	ToolOutputPruning  ToolOutputPruningConfig `yaml:"toolOutputPruning"`
+	CircuitBreaker     CircuitBreakerConfig    `yaml:"circuitBreaker"`
 }
 
 // CompactionConfig holds context compaction settings.
 type CompactionConfig struct {
-	SlidingWindow SlidingWindowConfig  `yaml:"sliding_window"`
-	Summarization SummarizationConfig  `yaml:"summarization"`
-	Hierarchical  HierarchicalConfig   `yaml:"hierarchical"`
-	Thresholds    CompactionThresholds `yaml:"thresholds"`
+	SlidingWindow          SlidingWindowConfig  `yaml:"sliding_window"`
+	Summarization          SummarizationConfig  `yaml:"summarization"`
+	Hierarchical           HierarchicalConfig   `yaml:"hierarchical"`
+	Thresholds             CompactionThresholds `yaml:"thresholds"`
+	MaxSummarizeTokens     int                  `yaml:"maxSummarizeTokens"`     // max tokens for summarization LLM calls (default: 16000)
+	ObservationTruncate    int                  `yaml:"observationTruncate"`    // chars to truncate observations in summaries (default: 500)
+	SafetyMarginPercent    int                  `yaml:"safetyMarginPercent"`    // % of context window reserved as safety margin (default: 5)
 }
 
 // CompactionThresholds defines context window usage thresholds for compaction triggers.
@@ -153,11 +175,15 @@ type SlidingWindowConfig struct {
 // SummarizationConfig configures summarization compaction.
 type SummarizationConfig struct {
 	BlockSize int `yaml:"block_size"`
+	KeepLast  int `yaml:"keepLast"` // number of recent steps to preserve verbatim (default: 5)
 }
 
 // HierarchicalConfig configures hierarchical compaction.
 type HierarchicalConfig struct {
-	EnabledAboveSteps int `yaml:"enabled_above_steps"`
+	EnabledAboveSteps int     `yaml:"enabled_above_steps"`
+	DistantRatio      float64 `yaml:"distantRatio"` // ratio for distant zone (default: 0.4)
+	MiddleRatio       float64 `yaml:"middleRatio"`  // ratio for middle zone (default: 0.3)
+	RecentRatio       float64 `yaml:"recentRatio"`  // ratio for recent zone (default: 0.3)
 }
 
 // SecurityConfig holds security settings.
@@ -183,6 +209,47 @@ type JudgeConfig struct {
 type SearchConfig struct {
 	Provider string `yaml:"provider"`
 	APIKey   string `yaml:"api_key"`
+}
+
+// ToolLimitsConfig holds configurable limits for builtin tools.
+// These limits prevent tool outputs from consuming excessive context.
+type ToolLimitsConfig struct {
+	// File read limits
+	ReadDefaultLines  int `yaml:"readDefaultLines"`  // max lines per read call (default: 2000)
+	ReadMaxLineLength int `yaml:"readMaxLineLength"` // max characters per line (default: 2000)
+	ReadMaxBytes      int `yaml:"readMaxBytes"`      // total output cap in bytes (default: 51200)
+
+	// Search limits
+	RipgrepMaxResults    int `yaml:"ripgrepMaxResults"`    // max matches for ripgrep (default: 200)
+	RipgrepMaxLineLength int `yaml:"ripgrepMaxLineLength"` // max chars per ripgrep line (default: 2000)
+	GlobMaxResults       int `yaml:"globMaxResults"`       // max glob results (default: 200)
+	FileSearchMaxMatches int `yaml:"fileSearchMaxMatches"` // max matches for file content search (default: 100)
+	WebSearchMaxResults  int `yaml:"webSearchMaxResults"`  // max web search results (default: 5)
+
+	// Web fetch limit
+	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // max response body size in bytes (default: 102400)
+
+	// Batch limits
+	BatchMaxConcurrency int `yaml:"batchMaxConcurrency"` // max parallel tool executions (default: 10)
+	BatchMaxResultSize  int `yaml:"batchMaxResultSize"`  // total character budget across results (default: 50000)
+}
+
+// TimeoutsConfig holds configurable timeout values for various operations.
+type TimeoutsConfig struct {
+	BashMaxTimeout     int `yaml:"bashMaxTimeout"`     // seconds, default: 120
+	BashWaitDelay      int `yaml:"bashWaitDelay"`      // seconds, default: 5
+	RipgrepTimeout     int `yaml:"ripgrepTimeout"`     // seconds, default: 60
+	WebFetchTimeout    int `yaml:"webFetchTimeout"`    // seconds, default: 30
+	WebSearchTimeout   int `yaml:"webSearchTimeout"`   // seconds, default: 30
+	PersistenceTimeout int `yaml:"persistenceTimeout"` // seconds, default: 5
+}
+
+// OrchestrationConfig holds orchestration-specific limits and settings.
+type OrchestrationConfig struct {
+	MaxDependencyContextChars int `yaml:"maxDependencyContextChars"` // default: 8000
+	MaxSummaryLength          int `yaml:"maxSummaryLength"`          // default: 500
+	MaxHistoryMessages        int `yaml:"maxHistoryMessages"`        // default: 20
+	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
 }
 
 // envVarPattern matches ${ENV_VAR} patterns for substitution.

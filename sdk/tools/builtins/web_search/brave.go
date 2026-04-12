@@ -23,10 +23,15 @@ type BraveProvider struct {
 
 // NewBraveProvider creates a new BraveProvider with the given API key.
 func NewBraveProvider(apiKey string) *BraveProvider {
+	return NewBraveProviderWithTimeout(apiKey, 30*time.Second)
+}
+
+// NewBraveProviderWithTimeout creates a new BraveProvider with the given API key and timeout.
+func NewBraveProviderWithTimeout(apiKey string, timeout time.Duration) *BraveProvider {
 	return &BraveProvider{
 		apiKey:  apiKey,
 		baseURL: "https://api.search.brave.com/res/v1/web/search",
-		client:  &http.Client{Timeout: 30 * time.Second},
+		client:  &http.Client{Timeout: timeout},
 	}
 }
 

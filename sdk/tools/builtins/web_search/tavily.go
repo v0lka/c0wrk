@@ -22,10 +22,15 @@ type TavilyProvider struct {
 
 // NewTavilyProvider creates a new TavilyProvider with the given API key.
 func NewTavilyProvider(apiKey string) *TavilyProvider {
+	return NewTavilyProviderWithTimeout(apiKey, 30*time.Second)
+}
+
+// NewTavilyProviderWithTimeout creates a new TavilyProvider with the given API key and timeout.
+func NewTavilyProviderWithTimeout(apiKey string, timeout time.Duration) *TavilyProvider {
 	return &TavilyProvider{
 		apiKey:  apiKey,
 		baseURL: "https://api.tavily.com/search",
-		client:  &http.Client{Timeout: 30 * time.Second},
+		client:  &http.Client{Timeout: timeout},
 	}
 }
 

@@ -180,7 +180,7 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 			tools[i] = anthropic.ToolDefinition{
 				Name:        tool.Name,
 				Description: tool.Description,
-				InputSchema: tool.InputSchema,
+				InputSchema: SanitizeSchemaForAnthropic(tool.InputSchema),
 			}
 		}
 		anthropicReq.Tools = tools

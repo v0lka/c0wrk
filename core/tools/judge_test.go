@@ -62,7 +62,7 @@ func TestJudge_CacheHit(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background()
 	input := json.RawMessage(`{"command":"ls"}`)
@@ -104,7 +104,7 @@ func TestJudge_CacheMiss(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Potentially dangerous"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background()
 
@@ -137,7 +137,7 @@ func TestJudge_AllowVerdict(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe file listing command"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background()
 	verdict, reason, err := judge.Judge(ctx, "bash", json.RawMessage(`{"command":"ls -la"}`), "list directory contents")
@@ -158,7 +158,7 @@ func TestJudge_ConfirmVerdict(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Destructive command detected"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background()
 	verdict, reason, err := judge.Judge(ctx, "bash", json.RawMessage(`{"command":"rm -rf /"}`), "delete everything")
@@ -177,7 +177,7 @@ func TestJudge_LLMError_FallsBackToConfirm(t *testing.T) {
 	mockProvider := &mockLLMProvider{
 		err: errors.New("LLM connection error"),
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background()
 	verdict, reason, err := judge.Judge(ctx, "bash", json.RawMessage(`{"command":"ls"}`), "list files")
@@ -199,7 +199,7 @@ func TestJudge_ResetCache(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background()
 	input := json.RawMessage(`{"command":"ls"}`)
@@ -226,7 +226,7 @@ func TestJudge_TaskContextFromCtx(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	// Create context with task context
 	ctx := WithTaskContext(context.Background(), "task from context")
@@ -261,7 +261,7 @@ func TestJudge_TaskContextParameter_TakesPrecedence(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	// Create context with task context
 	ctx := WithTaskContext(context.Background(), "task from context")
@@ -317,7 +317,7 @@ func TestJudge_InputTruncation(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	// Create a very long input
 	longInput := make([]byte, 3000)
@@ -447,7 +447,7 @@ func TestJudge_WorkspacePreCheck_AllowsInternalPaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
 	input := json.RawMessage(`{"path":"/tmp/test-workspace/src/main.go"}`)
@@ -473,7 +473,7 @@ func TestJudge_WorkspacePreCheck_DeniesExternalPaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: External path"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
 	input := json.RawMessage(`{"path":"/etc/passwd"}`)
@@ -496,7 +496,7 @@ func TestJudge_WorkspacePreCheck_MixedPaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Mixed paths"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
 	input := json.RawMessage(`{"src":"/tmp/test-workspace/file.go","dest":"/etc/somefile"}`)
@@ -519,7 +519,7 @@ func TestJudge_WorkspacePreCheck_NoWorkspace(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background() // no workspace path
 	input := json.RawMessage(`{"path":"/tmp/test-workspace/file.go"}`)
@@ -542,7 +542,7 @@ func TestJudge_WorkspacePreCheck_NoPaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
 	input := json.RawMessage(`{"query":"SELECT * FROM users"}`)
@@ -565,7 +565,7 @@ func TestJudge_WorkspacePreCheck_BashCommand(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
 	input := json.RawMessage(`{"command":"cat /tmp/test-workspace/src/main.go | grep func"}`)
@@ -591,7 +591,7 @@ func TestJudge_WorkspacePreCheck_RelativePaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := WithWorkspacePath(context.Background(), "/tmp/test-workspace")
 	input := json.RawMessage(`{"path":"src/main.go"}`)
@@ -803,7 +803,7 @@ func TestJudge_TempDirPreCheck_AllowsInternalPaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
 	input := json.RawMessage(`{"path":"/tmp/session-temp/cache/data.json"}`)
@@ -829,7 +829,7 @@ func TestJudge_TempDirPreCheck_DeniesExternalPaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: External path"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
 	input := json.RawMessage(`{"path":"/etc/passwd"}`)
@@ -852,7 +852,7 @@ func TestJudge_TempDirPreCheck_MixedPaths(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Mixed paths"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
 	input := json.RawMessage(`{"src":"/tmp/session-temp/file.txt","dest":"/tmp/other/file.txt"}`)
@@ -875,7 +875,7 @@ func TestJudge_TempDirPreCheck_NoTempDir(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: From LLM"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	ctx := context.Background() // no temp dir
 	input := json.RawMessage(`{"path":"/tmp/session-temp/file.txt"}`)
@@ -898,7 +898,7 @@ func TestJudge_TempDirPreCheck_TakesPrecedenceOverWorkspace(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	// Both temp dir and workspace are set, but path is only in temp dir
 	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
@@ -927,7 +927,7 @@ func TestJudgeEvaluate_WithEnvInfo(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 
 	info := &EnvInfo{
 		OS:   "macOS 15.4 (Darwin 24.4.0)",

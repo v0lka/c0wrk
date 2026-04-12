@@ -56,6 +56,14 @@ type ToolResultBudget struct {
 	MaxFillFraction float64
 }
 
+// CircuitBreakerConfig — circuit breaker thresholds for executor protection.
+type CircuitBreakerConfig struct {
+	RepeatNudgeThreshold     int // consecutive identical tool calls before nudge
+	RepeatAbortThreshold     int // consecutive identical tool calls before abort
+	TruncationAbortThreshold int // consecutive truncated responses before abort
+	ParseErrorAbortThreshold int // consecutive parse errors on same tool before abort
+}
+
 // LLMCaller is the interface Executor needs from the LLM layer.
 type LLMCaller interface {
 	Call(ctx context.Context, req llm.ChatRequest) (resp *llm.ChatResponse, err error)

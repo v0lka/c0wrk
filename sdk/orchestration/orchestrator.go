@@ -13,10 +13,6 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-// maxDependencyContextChars is the maximum total character length for all
-// dependency summaries injected into a step's task description (~2000 tokens).
-const maxDependencyContextChars = 8000
-
 // Orchestrator is the generic Plan&Execute engine. It composes strategy
 // interfaces (Planner, Evaluator, Reflector, etc.) to run a DAG-based
 // execution loop with optional retry/replan.
@@ -394,7 +390,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			}
 
 			scopedEvents := o.scopeEvents(step.ID)
-			executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
+			executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 			if o.cfg.StepLimitFunc != nil {
 				executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
@@ -552,7 +548,7 @@ func (o *Orchestrator) executePlanWithSteps(
 						o.cfg.ContextSetup(cm, taskDef.task)
 					}
 
-					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget)
+					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 					executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
 					if o.cfg.StepLimitFunc != nil {
 						executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
@@ -729,8 +725,12 @@ func (o *Orchestrator) buildStepTask(
 			}
 		}
 		depContext := depBuf.String()
-		if len(depContext) > maxDependencyContextChars {
-			depContext = depContext[len(depContext)-maxDependencyContextChars:]
+		maxDepChars := o.cfg.MaxDependencyContextChars
+		if maxDepChars == 0 {
+			maxDepChars = 8000
+		}
+		if len(depContext) > maxDepChars {
+			depContext = depContext[len(depContext)-maxDepChars:]
 			if idx := strings.Index(depContext, "\n-["); idx >= 0 {
 				depContext = depContext[idx:]
 			}
@@ -965,7 +965,7 @@ func (o *Orchestrator) ExecuteAdHocStep(
 
 	// 4. Create executor infrastructure
 	scopedEvents := o.scopeEvents(step.ID)
-	executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget)
+	executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 	executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 	if o.cfg.StepLimitFunc != nil {
 		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)

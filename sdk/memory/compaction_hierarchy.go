@@ -15,20 +15,22 @@ import (
 // - Middle: moderate summarization (smaller blocks)
 // - Recent: kept verbatim
 type HierarchicalStrategy struct {
-	distantRatio       float64 // fraction of steps in distant zone (default: 0.4)
-	middleRatio        float64 // fraction in middle zone (default: 0.3)
-	recentRatio        float64 // fraction in recent zone (default: 0.3)
-	summarizer         func(ctx context.Context, text string) (string, error)
-	tokenCounter       llm.TokenCounter
-	maxSummarizeTokens int
+	distantRatio        float64 // fraction of steps in distant zone (default: 0.4)
+	middleRatio         float64 // fraction in middle zone (default: 0.3)
+	recentRatio         float64 // fraction in recent zone (default: 0.3)
+	observationTruncate int     // max chars for observations in summary blocks (default: 500)
+	summarizer          func(ctx context.Context, text string) (string, error)
+	tokenCounter        llm.TokenCounter
+	maxSummarizeTokens  int
 }
 
 // NewHierarchicalStrategy creates a new HierarchicalStrategy.
 // distant, middle, recent are the fractions of steps in each zone.
 // They will be normalized to sum to 1.0 if they don't already.
+// observationTruncate is the max chars for observations in summary blocks (default: 500 if <= 0).
 // tokenCounter is optional; if provided, blocks are truncated to maxSummarizeTokens.
 // maxSummarizeTokens defaults to 16000 if zero.
-func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ctx context.Context, text string) (string, error), tokenCounter llm.TokenCounter, maxSummarizeTokens int) *HierarchicalStrategy {
+func NewHierarchicalStrategy(distant, middle, recent float64, observationTruncate int, summarizer func(ctx context.Context, text string) (string, error), tokenCounter llm.TokenCounter, maxSummarizeTokens int) *HierarchicalStrategy {
 	// Normalize ratios
 	total := distant + middle + recent
 	if total <= 0 {
@@ -42,17 +44,21 @@ func NewHierarchicalStrategy(distant, middle, recent float64, summarizer func(ct
 		recent /= total
 	}
 
+	if observationTruncate <= 0 {
+		observationTruncate = 500
+	}
 	if maxSummarizeTokens <= 0 {
 		maxSummarizeTokens = 16000
 	}
 
 	return &HierarchicalStrategy{
-		distantRatio:       distant,
-		middleRatio:        middle,
-		recentRatio:        recent,
-		summarizer:         summarizer,
-		tokenCounter:       tokenCounter,
-		maxSummarizeTokens: maxSummarizeTokens,
+		distantRatio:        distant,
+		middleRatio:         middle,
+		recentRatio:         recent,
+		observationTruncate: observationTruncate,
+		summarizer:          summarizer,
+		tokenCounter:        tokenCounter,
+		maxSummarizeTokens:  maxSummarizeTokens,
 	}
 }
 
@@ -171,9 +177,10 @@ func (h *HierarchicalStrategy) buildBlockText(steps []sdkagent.Step, zoneName st
 		}
 		if step.Observation != "" {
 			// Truncate long observations more aggressively for distant zone
-			maxLen := 300
+			// Distant zone uses 60% of the base truncation value
+			maxLen := h.observationTruncate * 6 / 10 // 60% for distant zone
 			if zoneName == "middle" {
-				maxLen = 500
+				maxLen = h.observationTruncate
 			}
 			obs := step.Observation
 			if len(obs) > maxLen {

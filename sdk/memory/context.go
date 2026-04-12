@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	sdkagent "github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
@@ -16,6 +17,13 @@ type CompactionThresholds struct {
 	EmergencyPercent  int // Context fill % that triggers emergency compaction
 }
 
+// ToolOutputPruning configures selective pruning of old tool outputs.
+type ToolOutputPruning struct {
+	KeepLastN       int
+	ProtectedTools  []string
+	PlaceholderText string
+}
+
 // ContextWindow — managed representation of the LLM context window.
 type ContextWindow struct {
 	systemPrompt string
@@ -26,14 +34,16 @@ type ContextWindow struct {
 	tracker      *llm.ContextTokenTracker
 	modelMeta    llm.ModelMetadata
 	thresholds   CompactionThresholds
+	pruning      ToolOutputPruning
+	safetyMargin int // percentage of context window reserved as safety margin (default: 5)
 
 	// compactedMessages stores the result of compaction.
 	// When non-nil, BuildPrompt uses this instead of converting steps.
 	compactedMessages []llm.Message
 }
 
-// safetyMarginPercent is the percentage of context window reserved as safety margin.
-const safetyMarginPercent = 5 // 5% of context window
+// defaultSafetyMargin is the default percentage of context window reserved as safety margin.
+const defaultSafetyMargin = 5 // 5% of context window
 
 // FillCheck is an alias for sdkagent.FillCheck for backward compatibility.
 //
@@ -41,20 +51,32 @@ const safetyMarginPercent = 5 // 5% of context window
 type FillCheck = sdkagent.FillCheck
 
 // NewContextWindow creates a new ContextWindow.
-func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy) *ContextWindow {
-	return &ContextWindow{
+// safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
+func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, pruning ...ToolOutputPruning) *ContextWindow {
+	cw := &ContextWindow{
 		systemPrompt: systemPrompt,
 		modelMeta:    modelMeta,
 		tracker:      tracker,
 		thresholds:   thresholds,
 		strategy:     strategy,
 	}
+	if safetyMarginPercent <= 0 {
+		safetyMarginPercent = defaultSafetyMargin
+	}
+	cw.safetyMargin = safetyMarginPercent
+	if len(pruning) > 0 {
+		cw.pruning = pruning[0]
+	}
+	if cw.pruning.PlaceholderText == "" {
+		cw.pruning.PlaceholderText = "[Tool output omitted to save context. Re-run the tool if needed.]"
+	}
+	return cw
 }
 
 // EffectiveMax returns the effective maximum token count for the context window,
 // accounting for output limit and safety margin.
 func (cw *ContextWindow) EffectiveMax() int {
-	safetyMargin := cw.modelMeta.ContextWindow * safetyMarginPercent / 100
+	safetyMargin := cw.modelMeta.ContextWindow * cw.safetyMargin / 100
 	return cw.modelMeta.ContextWindow - cw.modelMeta.OutputLimit - safetyMargin
 }
 
@@ -172,6 +194,11 @@ func (cw *ContextWindow) BuildPrompt() []llm.Message {
 	return messages
 }
 
+// invisibleChars is the cutset of trailing invisible characters to trim from message content.
+// Includes: spaces, tabs, newlines, carriage returns, null, zero-width space,
+// zero-width non-joiner, zero-width joiner, and BOM.
+const invisibleChars = " \t\n\r\x00\u200b\u200c\u200d\ufeff"
+
 // buildStepMessages returns messages for the step history.
 // Uses compactedMessages if available, otherwise converts steps.
 func (cw *ContextWindow) buildStepMessages() []llm.Message {
@@ -179,12 +206,15 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 		return cw.compactedMessages
 	}
 
+	// Determine which step indices have tool results and should be pruned
+	protectedIndices := cw.computeProtectedIndices()
+
 	var messages []llm.Message
-	for _, step := range cw.steps {
+	for i, step := range cw.steps {
 		// Assistant message with thought and action
 		assistantMsg := llm.Message{
 			Role:    "assistant",
-			Content: step.Thought,
+			Content: strings.TrimRight(step.Thought, invisibleChars),
 		}
 		if step.Action.ID != "" {
 			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
@@ -200,10 +230,16 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 		if step.Action.ID != "" {
 			// OpenAI API requires non-empty content for tool-role messages.
 			// Use placeholder if observation is empty to prevent 400 errors.
-			observation := step.Observation
+			observation := strings.TrimRight(step.Observation, invisibleChars)
 			if observation == "" {
 				observation = "(no output)"
 			}
+
+			// Apply pruning: use placeholder for non-protected tool outputs
+			if _, protected := protectedIndices[i]; !protected && cw.pruning.KeepLastN > 0 {
+				observation = cw.pruning.PlaceholderText
+			}
+
 			toolMsg := llm.Message{
 				Role:       "tool",
 				Content:    observation,
@@ -213,14 +249,60 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 		}
 
 		// User nudge message (e.g., step limit extension notifications)
-		if step.UserNudge != "" {
+		// Skip if content is empty or only contains whitespace/invisible characters.
+		nudgeContent := strings.TrimRight(step.UserNudge, invisibleChars)
+		if nudgeContent != "" {
 			messages = append(messages, llm.Message{
 				Role:    "user",
-				Content: step.UserNudge,
+				Content: nudgeContent,
 			})
 		}
 	}
 	return messages
+}
+
+// computeProtectedIndices returns a set of step indices that should NOT be pruned.
+// Protected indices include:
+//   - The last KeepLastN steps that have tool results
+//   - Any step whose tool name is in ProtectedTools
+func (cw *ContextWindow) computeProtectedIndices() map[int]struct{} {
+	protected := make(map[int]struct{})
+
+	if cw.pruning.KeepLastN <= 0 {
+		return protected // No pruning, nothing is protected (everything is kept)
+	}
+
+	// First pass: collect indices of steps with tool results
+	var toolResultIndices []int
+	for i, step := range cw.steps {
+		if step.Action.ID != "" {
+			toolResultIndices = append(toolResultIndices, i)
+		}
+	}
+
+	// Build protected set from last KeepLastN tool-result steps
+	start := len(toolResultIndices) - cw.pruning.KeepLastN
+	if start < 0 {
+		start = 0
+	}
+	for _, idx := range toolResultIndices[start:] {
+		protected[idx] = struct{}{}
+	}
+
+	// Add protected tools (always keep these regardless of position)
+	protectedToolSet := make(map[string]struct{})
+	for _, tool := range cw.pruning.ProtectedTools {
+		protectedToolSet[tool] = struct{}{}
+	}
+	for i, step := range cw.steps {
+		if step.Action.ID != "" {
+			if _, isProtected := protectedToolSet[step.Action.Name]; isProtected {
+				protected[i] = struct{}{}
+			}
+		}
+	}
+
+	return protected
 }
 
 // NeedsCompaction returns true if compaction is needed based on fill status.

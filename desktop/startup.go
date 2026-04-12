@@ -35,6 +35,8 @@ import (
 	_ "modernc.org/sqlite" // register SQLite driver
 )
 
+// Note: time package is used for timeout configurations throughout startup
+
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
@@ -131,7 +133,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Note: workspace watcher is initialized per-project in SwitchProject
 
 	// Initialize shared SQLite database
-	dbPath := filepath.Join(agentDir, "sessions.db")
+	dbPath := filepath.Join(agentDir, a.config.Memory.Database)
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		log.Error("failed to open sqlite database", "error", err)
@@ -331,29 +333,61 @@ func (a *App) Startup(ctx context.Context) {
 	registry := tools.NewToolRegistry()
 	a.toolRegistry = registry
 
+	// Build tool limits from config
+	fileOpsLimits := builtins.FileOpsLimits{
+		ReadDefaultLines:  a.config.ToolLimits.ReadDefaultLines,
+		ReadMaxLineLength: a.config.ToolLimits.ReadMaxLineLength,
+		ReadMaxBytes:      a.config.ToolLimits.ReadMaxBytes,
+		FileSearchMatches: a.config.ToolLimits.FileSearchMaxMatches,
+	}
+	ripgrepLimits := builtins.RipgrepLimits{
+		MaxResults:    a.config.ToolLimits.RipgrepMaxResults,
+		MaxLineLength: a.config.ToolLimits.RipgrepMaxLineLength,
+		Timeout:       time.Duration(a.config.Timeouts.RipgrepTimeout) * time.Second,
+	}
+	globLimits := builtins.GlobLimits{
+		MaxResults: a.config.ToolLimits.GlobMaxResults,
+	}
+	webFetchLimits := builtins.WebFetchLimits{
+		MaxBodySize: a.config.ToolLimits.WebFetchMaxBodySize,
+		Timeout:     time.Duration(a.config.Timeouts.WebFetchTimeout) * time.Second,
+	}
+	webSearchLimits := websearch.Limits{
+		MaxResults: a.config.ToolLimits.WebSearchMaxResults,
+		Timeout:    time.Duration(a.config.Timeouts.WebSearchTimeout) * time.Second,
+	}
+	batchLimits := builtins.BatchLimits{
+		MaxConcurrency: a.config.ToolLimits.BatchMaxConcurrency,
+		MaxResultSize:  a.config.ToolLimits.BatchMaxResultSize,
+	}
+	bashTimeouts := builtins.BashTimeouts{
+		MaxTimeout: time.Duration(a.config.Timeouts.BashMaxTimeout) * time.Second,
+		WaitDelay:  time.Duration(a.config.Timeouts.BashWaitDelay) * time.Second,
+	}
+
 	// Register core tools
 	var bashBlacklist []string
 	if bashCfg, ok := a.config.Security.ToolPolicies["bash_exec"]; ok {
 		bashBlacklist = bashCfg.Blacklist
 	}
-	bashTool := builtins.NewBashExecTool(bashBlacklist)
+	bashTool := builtins.NewBashExecToolWithTimeouts(bashBlacklist, bashTimeouts)
 	registry.Register(bashTool)
 
-	fileOpsTool := builtins.NewFileOpsTool()
+	fileOpsTool := builtins.NewFileOpsToolWithLimits(fileOpsLimits)
 	registry.Register(fileOpsTool)
 
 	finishTool := agent.NewFinishTool()
 	registry.Register(finishTool)
 
 	// WebFetch tool
-	webFetchTool := builtins.NewWebFetchTool()
+	webFetchTool := builtins.NewWebFetchToolWithLimits(webFetchLimits)
 	registry.Register(webFetchTool)
 
 	// WebSearch tool
 	searchAPIKey := config.ExpandEnvVars(a.config.Search.APIKey)
-	searchProvider := a.createSearchProvider(a.config.Search.Provider, searchAPIKey)
+	searchProvider := a.createSearchProvider(a.config.Search.Provider, searchAPIKey, webSearchLimits.Timeout)
 	if searchProvider != nil {
-		webSearchTool := websearch.NewWebSearchTool(searchProvider)
+		webSearchTool := websearch.NewWebSearchToolWithLimits(searchProvider, webSearchLimits)
 		registry.Register(webSearchTool)
 	}
 
@@ -388,11 +422,11 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// Glob tool (doublestar pattern matching)
-	globTool := builtins.NewGlobTool()
+	globTool := builtins.NewGlobToolWithLimits(globLimits)
 	registry.Register(globTool)
 
 	// Ripgrep tool (content search)
-	ripgrepTool := builtins.NewRipgrepTool()
+	ripgrepTool := builtins.NewRipgrepToolWithLimits(ripgrepLimits)
 	registry.Register(ripgrepTool)
 
 	// SharedWorkspace tools for reading step outputs
@@ -403,7 +437,7 @@ func (a *App) Startup(ctx context.Context) {
 	registry.Register(listStepOutputsTool)
 
 	// Batch tool (executes multiple tool calls in one request)
-	batchTool := builtins.NewBatchTool(registry)
+	batchTool := builtins.NewBatchTool(registry, builtins.WithBatchLimits(batchLimits))
 	registry.Register(batchTool)
 
 	// Ask User tool (interactive question panel)
@@ -566,6 +600,12 @@ func (a *App) Startup(ctx context.Context) {
 			HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
 			MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
 		}
+		circuitBreaker := core.CircuitBreakerConfig{
+			RepeatNudgeThreshold:     cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,
+			RepeatAbortThreshold:     cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
+			TruncationAbortThreshold: cfg.Executor.CircuitBreaker.TruncationAbortThreshold,
+			ParseErrorAbortThreshold: cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold,
+		}
 
 		// Wrap the LLM caller for step-execution so those calls are also logged.
 		loggedLLM := core.NewLoggingCaller(newLLMRouter, cfg.LLM.ActiveProvider, logger)
@@ -584,6 +624,7 @@ func (a *App) Startup(ctx context.Context) {
 			emitter,          // Emitter
 			newModelRegistry, // ModelRegistry for resolving model metadata
 			toolResultBudget,
+			circuitBreaker,
 			bbFactory, // BlackboardFactory (nil = default MapBlackboard)
 		), nil
 	}
@@ -620,6 +661,9 @@ func (a *App) Startup(ctx context.Context) {
 		// Wire task persistence: CreateSession will build BlackboardFactory closures
 		// that create PersistentBlackboard instances backed by the session store.
 		a.manager.SetTaskStore(a.store)
+
+		// Wire max summary length from config for auto-generated step summaries.
+		a.manager.SetMaxSummaryLen(a.config.Orchestration.MaxSummaryLength)
 	}
 
 	// Listen for confirmation responses from frontend
@@ -882,25 +926,25 @@ func (a *App) Shutdown(ctx context.Context) {
 
 // createSearchProvider creates a search provider based on the configured provider name.
 // Returns nil if the provider requires an API key but none is configured.
-func (a *App) createSearchProvider(providerName, apiKey string) websearch.SearchProvider {
+func (a *App) createSearchProvider(providerName, apiKey string, timeout time.Duration) websearch.SearchProvider {
 	switch providerName {
 	case "brave":
 		if apiKey == "" {
 			return nil
 		}
-		return websearch.NewBraveProvider(apiKey)
+		return websearch.NewBraveProviderWithTimeout(apiKey, timeout)
 	case "exa":
 		if apiKey == "" {
 			return nil
 		}
-		return websearch.NewExaProvider(apiKey)
+		return websearch.NewExaProviderWithTimeout(apiKey, timeout)
 	case "duckduckgo":
 		// DuckDuckGo does not require an API key
-		return websearch.NewDuckDuckGoProvider()
+		return websearch.NewDuckDuckGoProviderWithTimeout(timeout)
 	default: // "tavily" or empty
 		if apiKey == "" {
 			return nil
 		}
-		return websearch.NewTavilyProvider(apiKey)
+		return websearch.NewTavilyProviderWithTimeout(apiKey, timeout)
 	}
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewSubAgent(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{})
+	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	sa := NewSubAgent("step_1", exec)
 	if sa.ID != "step_1" {
 		t.Errorf("ID = %q, want %q", sa.ID, "step_1")
@@ -28,7 +28,7 @@ func TestRunSubAgent_Success(t *testing.T) {
 		},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{})
+	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "test task", nil)
 	result := <-ch
@@ -51,7 +51,7 @@ func TestRunSubAgent_WithEmitter(t *testing.T) {
 	}
 	cm := newMockContextManager()
 	events := &recordingEvents{}
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{})
+	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "task desc", events)
 	result := <-ch
@@ -83,7 +83,7 @@ func TestRunSubAgent_LLMError(t *testing.T) {
 		errors: []error{errors.New("llm failed")},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{})
+	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "test", nil)
 	result := <-ch
@@ -105,7 +105,7 @@ func TestRunSubAgent_MaxStepsExhausted(t *testing.T) {
 		},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 2, nil, false, ToolResultBudget{})
+	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	ch := RunSubAgent(context.Background(), "step_1", exec, cm, []tools.ToolDescriptor{
 		{Name: "tool1", Description: "t", Source: "core"},
@@ -141,7 +141,7 @@ func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 		}
 		agents[i] = SubAgentTask{
 			StepID:   "step_" + string(rune('1'+i)),
-			Executor: NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}),
+			Executor: NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig),
 			CM:       newMockContextManager(),
 			TaskDesc: "task " + string(rune('A'+i)),
 		}
@@ -174,13 +174,13 @@ func TestRunSubAgentsParallel_MixedResults(t *testing.T) {
 	agents := []SubAgentTask{
 		{
 			StepID:   "step_1",
-			Executor: NewExecutor(successLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}),
+			Executor: NewExecutor(successLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig),
 			CM:       newMockContextManager(),
 			TaskDesc: "good task",
 		},
 		{
 			StepID:   "step_2",
-			Executor: NewExecutor(failLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}),
+			Executor: NewExecutor(failLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig),
 			CM:       newMockContextManager(),
 			TaskDesc: "bad task",
 		},

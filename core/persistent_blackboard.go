@@ -9,6 +9,9 @@ import (
 	"github.com/user/agent/sdk/orchestration"
 )
 
+// defaultPersistenceTimeout is the default maximum time allowed for a single persistence operation.
+const defaultPersistenceTimeout = 5 * time.Second
+
 // ---------------------------------------------------------------------------
 // TaskPersistence — core-side abstraction for task storage
 // ---------------------------------------------------------------------------
@@ -57,33 +60,37 @@ type TaskState struct {
 // compile-time check
 var _ Blackboard = (*PersistentBlackboard)(nil)
 
-// persistenceTimeout is the maximum time allowed for a single persistence operation.
-// If exceeded, the operation is abandoned and execution continues.
-const persistenceTimeout = 5 * time.Second
-
 // PersistentBlackboard wraps a MapBlackboard and persists write operations to a TaskPersistence store.
 // Read methods delegate to the embedded MapBlackboard. Write methods delegate AND persist.
 // All persistence calls are best-effort: errors are logged but do not propagate to callers.
 // Persistence operations are guarded by a timeout and panic recovery to prevent hangs.
 type PersistentBlackboard struct {
 	*MapBlackboard
-	taskID    string
-	sessionID string
-	store     TaskPersistence
-	logger    *slog.Logger
-	emitterMu sync.RWMutex
-	emitter   Emitter // optional, nil-safe; used to surface persistence warnings to the user
+	taskID             string
+	sessionID          string
+	store              TaskPersistence
+	logger             *slog.Logger
+	emitterMu          sync.RWMutex
+	emitter            Emitter       // optional, nil-safe; used to surface persistence warnings to the user
+	persistenceTimeout time.Duration // timeout for persistence operations
 }
 
 // NewPersistentBlackboard creates a PersistentBlackboard that wraps a fresh MapBlackboard.
 // The logger is optional (nil-safe).
 func NewPersistentBlackboard(taskID, sessionID string, store TaskPersistence, logger *slog.Logger, opts ...MapBlackboardOption) *PersistentBlackboard {
+	return NewPersistentBlackboardWithTimeout(taskID, sessionID, store, logger, 0, opts...)
+}
+
+// NewPersistentBlackboardWithTimeout creates a PersistentBlackboard that wraps a fresh MapBlackboard with a configurable timeout.
+// The logger is optional (nil-safe). If timeout is 0, defaultPersistenceTimeout is used.
+func NewPersistentBlackboardWithTimeout(taskID, sessionID string, store TaskPersistence, logger *slog.Logger, timeout time.Duration, opts ...MapBlackboardOption) *PersistentBlackboard {
 	return &PersistentBlackboard{
-		MapBlackboard: NewMapBlackboard(opts...),
-		taskID:        taskID,
-		sessionID:     sessionID,
-		store:         store,
-		logger:        logger,
+		MapBlackboard:      NewMapBlackboard(opts...),
+		taskID:             taskID,
+		sessionID:          sessionID,
+		store:              store,
+		logger:             logger,
+		persistenceTimeout: timeout,
 	}
 }
 
@@ -113,10 +120,14 @@ func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
 	}()
 
 	var err error
+	timeout := pb.persistenceTimeout
+	if timeout == 0 {
+		timeout = defaultPersistenceTimeout
+	}
 	select {
 	case err = <-done:
-	case <-time.After(persistenceTimeout):
-		err = fmt.Errorf("persistence timeout after %s", persistenceTimeout)
+	case <-time.After(timeout):
+		err = fmt.Errorf("persistence timeout after %s", timeout)
 	}
 
 	if err != nil {
@@ -158,7 +169,11 @@ func (pb *PersistentBlackboard) SetPlan(plan *Plan) {
 func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, steps []Step) {
 	pb.MapBlackboard.SetStepResult(stepID, output, err, steps)
 
-	summary := orchestration.GenerateSummary(output)
+	maxLen := pb.MaxSummaryLen()
+	if maxLen == 0 {
+		maxLen = 500
+	}
+	summary := orchestration.GenerateSummary(output, maxLen)
 	// Apply the same token-budget cap as MapBlackboard.
 	if pb.MaxSummaryTokens() > 0 {
 		maxChars := pb.MaxSummaryTokens() * 4
@@ -276,11 +291,12 @@ func RestoreBlackboard(taskID, sessionID string, store TaskPersistence, logger *
 	}
 
 	return &PersistentBlackboard{
-		MapBlackboard: mb,
-		taskID:        taskID,
-		sessionID:     sessionID,
-		store:         store,
-		logger:        logger,
+		MapBlackboard:      mb,
+		taskID:             taskID,
+		sessionID:          sessionID,
+		store:              store,
+		logger:             logger,
+		persistenceTimeout: defaultPersistenceTimeout,
 	}, nil
 }
 

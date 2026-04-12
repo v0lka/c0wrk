@@ -86,6 +86,7 @@ type Manager struct {
 	taskStore           TaskStore      // optional persistent task store
 	envInfo             *tools.EnvInfo // environment info for context injection
 	stopTimeout         time.Duration  // how long to wait for goroutine on cancel/delete
+	maxSummaryLen       int            // character limit for auto-generated step summaries
 }
 
 // NewManager creates a new session Manager.
@@ -124,6 +125,13 @@ func (m *Manager) SetEnvInfo(info *tools.EnvInfo) {
 	m.envInfo = info
 }
 
+// SetMaxSummaryLen sets the character limit for auto-generated step summaries.
+func (m *Manager) SetMaxSummaryLen(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxSummaryLen = n
+}
+
 // CreateSession creates a new session with a fresh orchestrator.
 // The projectID ties the session to a project; workspacePath is the project's workspace directory.
 func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, error) {
@@ -152,11 +160,15 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	var adapter *TaskStoreAdapter
 	m.mu.RLock()
 	ts := m.taskStore
+	maxSumLen := m.maxSummaryLen
 	m.mu.RUnlock()
 	if ts != nil {
 		adapter = NewTaskStoreAdapter(ts)
 		sessionID := id // capture for closure
 		bbFactory = func(taskID string) core.Blackboard {
+			if maxSumLen > 0 {
+				return core.NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+			}
 			return core.NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 		}
 	}

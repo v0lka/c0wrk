@@ -38,6 +38,9 @@ type FileChange = agent.FileChange
 // ToolResultBudget — tool result truncation config.
 type ToolResultBudget = agent.ToolResultBudget
 
+// CircuitBreakerConfig — circuit breaker thresholds for executor protection.
+type CircuitBreakerConfig = agent.CircuitBreakerConfig
+
 // LLMCaller is the interface Executor needs from the LLM layer.
 type LLMCaller = agent.LLMCaller
 

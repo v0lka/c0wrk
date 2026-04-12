@@ -44,7 +44,7 @@ func TestSummarizationStrategy_CompactsOldSteps(t *testing.T) {
 	// Create 20 steps, with blockSize=5 and keepLast=5
 	// Should result in: 3 summary blocks (15 steps / 5) + 5 recent steps (10 messages)
 	steps := createTestSteps(20)
-	strategy := NewSummarizationStrategy(5, 5, mockSummarizer, nil, 0)
+	strategy := NewSummarizationStrategy(5, 5, 0, mockSummarizer, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -77,7 +77,7 @@ func TestSummarizationStrategy_PreservesRecentSteps(t *testing.T) {
 	// Create 10 steps with keepLast=5
 	// Only the first 5 should be summarized, last 5 kept verbatim
 	steps := createTestSteps(10)
-	strategy := NewSummarizationStrategy(10, 5, mockSummarizer, nil, 0)
+	strategy := NewSummarizationStrategy(10, 5, 0, mockSummarizer, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -107,7 +107,7 @@ func TestSummarizationStrategy_CallsSummarizer(t *testing.T) {
 	}
 
 	steps := createTestSteps(25)
-	strategy := NewSummarizationStrategy(5, 5, countingSummarizer, nil, 0)
+	strategy := NewSummarizationStrategy(5, 5, 0, countingSummarizer, nil, 0)
 
 	strategy.Compact(context.Background(), steps, 10000)
 
@@ -121,7 +121,7 @@ func TestSummarizationStrategy_CallsSummarizer(t *testing.T) {
 func TestSummarizationStrategy_NoCompactionNeeded(t *testing.T) {
 	// When steps <= keepLast, no summarization should happen
 	steps := createTestSteps(5)
-	strategy := NewSummarizationStrategy(10, 5, mockSummarizer, nil, 0)
+	strategy := NewSummarizationStrategy(10, 5, 0, mockSummarizer, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -136,7 +136,7 @@ func TestSummarizationStrategy_NoCompactionNeeded(t *testing.T) {
 func TestSummarizationStrategy_NilSummarizer(t *testing.T) {
 	// When summarizer is nil, should use placeholder
 	steps := createTestSteps(15)
-	strategy := NewSummarizationStrategy(5, 5, nil, nil, 0)
+	strategy := NewSummarizationStrategy(5, 5, 0, nil, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -159,7 +159,7 @@ func TestHierarchicalStrategy_ThreeZones(t *testing.T) {
 	// Create 30 steps with default ratios (0.4, 0.3, 0.3)
 	// Distant: 12 steps, Middle: 9 steps, Recent: 9 steps
 	steps := createTestSteps(30)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, 0, mockSummarizer, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -200,7 +200,7 @@ func TestHierarchicalStrategy_PreservesRecentZone(t *testing.T) {
 	// Create 30 steps with default ratios
 	// Recent zone (last 30%) = 9 steps should be kept verbatim
 	steps := createTestSteps(30)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, 0, mockSummarizer, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -225,7 +225,7 @@ func TestHierarchicalStrategy_PreservesRecentZone(t *testing.T) {
 func TestHierarchicalStrategy_SmallStepCount(t *testing.T) {
 	// With 5 or fewer steps, should return all as messages without summarization
 	steps := createTestSteps(5)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, 0, mockSummarizer, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -246,7 +246,7 @@ func TestHierarchicalStrategy_DifferentCompressionLevels(t *testing.T) {
 	// The distant zone uses larger blocks (15), middle uses smaller (5)
 	// Create enough steps to see multiple blocks in middle zone
 	steps := createTestSteps(50)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, mockSummarizer, nil, 0)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, 0, mockSummarizer, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -276,7 +276,7 @@ func TestHierarchicalStrategy_DifferentCompressionLevels(t *testing.T) {
 func TestHierarchicalStrategy_NilSummarizer(t *testing.T) {
 	// When summarizer is nil, should use placeholder
 	steps := createTestSteps(15)
-	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, nil, nil, 0)
+	strategy := NewHierarchicalStrategy(0.4, 0.3, 0.3, 0, nil, nil, 0)
 
 	messages := strategy.Compact(context.Background(), steps, 10000)
 
@@ -362,7 +362,7 @@ func TestSummarizationStrategy_RespectsContextCancellation(t *testing.T) {
 	}
 
 	steps := createTestSteps(15)
-	strategy := NewSummarizationStrategy(5, 5, summarizer, nil, 0)
+	strategy := NewSummarizationStrategy(5, 5, 0, summarizer, nil, 0)
 
 	messages := strategy.Compact(ctx, steps, 10000)
 
@@ -422,7 +422,7 @@ func TestSummarizationStrategy_TruncatesLargeBlocks(t *testing.T) {
 	}
 
 	// Create strategy with maxSummarizeTokens = 100 (very low to trigger truncation)
-	strategy := NewSummarizationStrategy(5, 5, trackingSummarizer, mockCounter, 100)
+	strategy := NewSummarizationStrategy(5, 5, 0, trackingSummarizer, mockCounter, 100)
 
 	strategy.Compact(context.Background(), steps, 10000)
 

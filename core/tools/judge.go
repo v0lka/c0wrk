@@ -20,9 +20,6 @@ import (
 // pathRegex matches absolute path-like substrings in command strings.
 var pathRegex = regexp.MustCompile(`/[a-zA-Z0-9/_.\-~]+`)
 
-// maxJudgeCacheSize is the maximum number of cached judge results before the cache is cleared.
-const maxJudgeCacheSize = 1000
-
 // JudgeVerdict represents the safety assessment of a tool call.
 type JudgeVerdict int
 
@@ -41,18 +38,24 @@ type judgeResult struct {
 
 // ToolJudge evaluates whether a mutating tool call is safe to auto-approve.
 type ToolJudge struct {
-	provider llm.Provider
-	model    string
-	cache    map[string]judgeResult
-	mu       sync.RWMutex
+	provider     llm.Provider
+	model        string
+	cache        map[string]judgeResult
+	mu           sync.RWMutex
+	maxCacheSize int // max cached results before cache is cleared (default: 1000)
 }
 
 // NewToolJudge creates a new ToolJudge with the given LLM provider and model.
-func NewToolJudge(provider llm.Provider, model string) *ToolJudge {
+// If maxCacheSize is 0, defaults to 1000.
+func NewToolJudge(provider llm.Provider, model string, maxCacheSize int) *ToolJudge {
+	if maxCacheSize == 0 {
+		maxCacheSize = 1000
+	}
 	return &ToolJudge{
-		provider: provider,
-		model:    model,
-		cache:    make(map[string]judgeResult),
+		provider:     provider,
+		model:        model,
+		cache:        make(map[string]judgeResult),
+		maxCacheSize: maxCacheSize,
 	}
 }
 
@@ -136,7 +139,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 
 	// Cache the result under Lock (evict if cache is too large)
 	j.mu.Lock()
-	if len(j.cache) >= maxJudgeCacheSize {
+	if len(j.cache) >= j.maxCacheSize {
 		j.cache = make(map[string]judgeResult)
 	}
 	j.cache[key] = judgeResult{verdict: verdict, reasoning: reasoning}
@@ -266,6 +269,7 @@ type JudgeConfig struct {
 	Model        string // specific model for judge; if empty, uses DefaultModel
 	DefaultModel string // fallback model from active provider
 	Provider     llm.Provider
+	MaxCacheSize int    // max cached results before cache is cleared (default: 1000)
 }
 
 // NewToolJudgeFromConfig creates a ToolJudge if enabled and properly configured.
@@ -287,7 +291,7 @@ func NewToolJudgeFromConfig(cfg JudgeConfig, logger *slog.Logger) *ToolJudge {
 		return nil
 	}
 
-	judge := NewToolJudge(cfg.Provider, model)
+	judge := NewToolJudge(cfg.Provider, model, cfg.MaxCacheSize)
 	if logger != nil {
 		logger.Info("tool judge initialized", "model", model)
 	}

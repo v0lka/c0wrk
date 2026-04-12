@@ -3,6 +3,7 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,8 +65,18 @@ func TestFileOpsTool_ReadFile(t *testing.T) {
 	if result.IsError {
 		t.Errorf("expected success, got error: %s", result.Content)
 	}
-	if result.Content != testContent {
-		t.Errorf("expected content '%s', got '%s'", testContent, result.Content)
+
+	// Verify metadata header is present
+	if !strings.HasPrefix(result.Content, "[File:") {
+		t.Errorf("expected result to start with metadata header '[File:', got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Lines 1-1 of 1") {
+		t.Errorf("expected metadata header to contain 'Lines 1-1 of 1', got: %s", result.Content)
+	}
+
+	// Verify original file content is preserved
+	if !strings.Contains(result.Content, testContent) {
+		t.Errorf("expected content to contain '%s', got: %s", testContent, result.Content)
 	}
 }
 
@@ -1058,5 +1069,242 @@ func TestFileOps_WriteFile_NoTracker(t *testing.T) {
 	}
 	if string(data) != "works without tracker" {
 		t.Errorf("expected 'works without tracker', got '%s'", string(data))
+	}
+}
+
+// --- Pagination tests ---
+
+func TestFileOpsTool_ReadFile_DefaultPagination(t *testing.T) {
+	tool := NewFileOpsTool()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create a temp file with 3000 lines
+	testFile := filepath.Join(tmpDir, "large.txt")
+	lines := make([]string, 0, 3000)
+	for i := 1; i <= 3000; i++ {
+		lines = append(lines, fmt.Sprintf("Line %d", i))
+	}
+	if err := os.WriteFile(testFile, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Read with no start_line/end_line
+	input, _ := json.Marshal(map[string]string{
+		"action": "read_file",
+		"path":   testFile,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+
+	// Verify only first 2000 lines returned
+	if !strings.Contains(result.Content, "Line 1") {
+		t.Errorf("expected 'Line 1' in content")
+	}
+	if !strings.Contains(result.Content, "Line 2000") {
+		t.Errorf("expected 'Line 2000' in content")
+	}
+	if strings.Contains(result.Content, "Line 2001") {
+		t.Errorf("did not expect 'Line 2001' in content (should be truncated)")
+	}
+
+	// Verify continuation hint present
+	if !strings.Contains(result.Content, "[Use start_line=2001 to continue reading]") {
+		t.Errorf("expected continuation hint, got: %s", result.Content)
+	}
+
+	// Verify metadata header
+	if !strings.Contains(result.Content, "[File: large.txt | Lines 1-2000 of 3000") {
+		t.Errorf("expected metadata header with correct line range, got: %s", result.Content)
+	}
+}
+
+func TestFileOpsTool_ReadFile_ExplicitRange(t *testing.T) {
+	tool := NewFileOpsTool()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create a temp file with 100 lines
+	testFile := filepath.Join(tmpDir, "medium.txt")
+	lines := make([]string, 0, 100)
+	for i := 1; i <= 100; i++ {
+		lines = append(lines, fmt.Sprintf("Line %d", i))
+	}
+	if err := os.WriteFile(testFile, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Read with explicit range: start_line=10, end_line=20
+	input, _ := json.Marshal(map[string]any{
+		"action":     "read_file",
+		"path":       testFile,
+		"start_line": 10,
+		"end_line":   20,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+
+	// Verify exactly lines 10-20 returned
+	if strings.Contains(result.Content, "Line 9") {
+		t.Errorf("did not expect 'Line 9' in content (should start at 10)")
+	}
+	if !strings.Contains(result.Content, "Line 10") {
+		t.Errorf("expected 'Line 10' in content")
+	}
+	if !strings.Contains(result.Content, "Line 20") {
+		t.Errorf("expected 'Line 20' in content")
+	}
+	if strings.Contains(result.Content, "Line 21") {
+		t.Errorf("did not expect 'Line 21' in content (should end at 20)")
+	}
+
+	// Verify metadata header shows correct range
+	if !strings.Contains(result.Content, "[File: medium.txt | Lines 10-20 of 100") {
+		t.Errorf("expected metadata header with lines 10-20, got: %s", result.Content)
+	}
+}
+
+func TestFileOpsTool_ReadFile_LongLinesTruncated(t *testing.T) {
+	tool := NewFileOpsTool()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create a temp file with one 5000-char line
+	testFile := filepath.Join(tmpDir, "longline.txt")
+	longLine := strings.Repeat("a", 5000)
+	if err := os.WriteFile(testFile, []byte(longLine), 0o644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	input, _ := json.Marshal(map[string]string{
+		"action": "read_file",
+		"path":   testFile,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+
+	// Verify line is truncated and contains truncation notice
+	if !strings.Contains(result.Content, "...(line truncated, original: 5000 chars)") {
+		t.Errorf("expected line truncation notice with original length, got: %s", result.Content)
+	}
+
+	// Verify the truncated content is present (2000 chars + notice)
+	if !strings.Contains(result.Content, strings.Repeat("a", 2000)) {
+		t.Errorf("expected first 2000 chars of the line")
+	}
+}
+
+func TestFileOpsTool_ReadFile_SmallFile(t *testing.T) {
+	tool := NewFileOpsTool()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create a temp file with 50 lines
+	testFile := filepath.Join(tmpDir, "small.txt")
+	lines := make([]string, 0, 50)
+	for i := 1; i <= 50; i++ {
+		lines = append(lines, fmt.Sprintf("Line %d", i))
+	}
+	if err := os.WriteFile(testFile, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	input, _ := json.Marshal(map[string]string{
+		"action": "read_file",
+		"path":   testFile,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+
+	// Verify all lines returned
+	if !strings.Contains(result.Content, "Line 1") {
+		t.Errorf("expected 'Line 1' in content")
+	}
+	if !strings.Contains(result.Content, "Line 50") {
+		t.Errorf("expected 'Line 50' in content")
+	}
+
+	// Verify NO continuation hint (all lines fit)
+	if strings.Contains(result.Content, "[Use start_line=") {
+		t.Errorf("did not expect continuation hint for small file, got: %s", result.Content)
+	}
+
+	// Verify NO truncation notice
+	if strings.Contains(result.Content, "truncated") {
+		t.Errorf("did not expect truncation notice, got: %s", result.Content)
+	}
+
+	// Verify metadata header shows all lines
+	if !strings.Contains(result.Content, "[File: small.txt | Lines 1-50 of 50") {
+		t.Errorf("expected metadata header showing all lines, got: %s", result.Content)
+	}
+}
+
+func TestFileOpsTool_ReadFile_OutOfRangeClamp(t *testing.T) {
+	tool := NewFileOpsTool()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create a temp file with 100 lines
+	testFile := filepath.Join(tmpDir, "clamp.txt")
+	lines := make([]string, 0, 100)
+	for i := 1; i <= 100; i++ {
+		lines = append(lines, fmt.Sprintf("Line %d", i))
+	}
+	if err := os.WriteFile(testFile, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Read with end_line=500 (beyond file size)
+	input, _ := json.Marshal(map[string]any{
+		"action":     "read_file",
+		"path":       testFile,
+		"start_line": 1,
+		"end_line":   500,
+	})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+
+	// Verify all lines returned (clamped to 100)
+	if !strings.Contains(result.Content, "Line 1") {
+		t.Errorf("expected 'Line 1' in content")
+	}
+	if !strings.Contains(result.Content, "Line 100") {
+		t.Errorf("expected 'Line 100' in content")
+	}
+
+	// Verify metadata header shows clamped range
+	if !strings.Contains(result.Content, "[File: clamp.txt | Lines 1-100 of 100") {
+		t.Errorf("expected metadata header with clamped line range, got: %s", result.Content)
 	}
 }

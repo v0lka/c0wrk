@@ -12,4 +12,5 @@ type MapBlackboardOption = orchestration.MapBlackboardOption
 var (
 	NewMapBlackboard     = orchestration.NewMapBlackboard
 	WithMaxSummaryTokens = orchestration.WithMaxSummaryTokens
+	WithMaxSummaryLen    = orchestration.WithMaxSummaryLen
 )

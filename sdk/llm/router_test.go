@@ -64,13 +64,14 @@ func newTestRouter(providers map[string]*mockProvider, activeProviderName, activ
 		activeProvider = p
 	}
 	return &Router{
-		providers:          providerMap,
-		activeProvider:     activeProvider,
-		activeModel:        activeModel,
-		activeProviderName: activeProviderName,
-		maxRetries:         3,
-		initialBackoff:     10 * time.Millisecond,
-		maxBackoff:         100 * time.Millisecond,
+		providers:           providerMap,
+		activeProvider:      activeProvider,
+		activeModel:         activeModel,
+		activeProviderName:  activeProviderName,
+		maxRetries:          3,
+		initialBackoff:      10 * time.Millisecond,
+		maxBackoff:          100 * time.Millisecond,
+		safetyMarginPercent: 5,
 	}
 }
 
@@ -603,15 +604,16 @@ func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
 // newTestRouterWithRegistry creates a router with mock provider, model registry and token counter.
 func newTestRouterWithRegistry(mock *mockProvider, activeModel string, registry *ModelRegistry) *Router {
 	return &Router{
-		providers:          map[string]Provider{"primary": mock},
-		activeProvider:     mock,
-		activeModel:        activeModel,
-		activeProviderName: "primary",
-		maxRetries:         0,
-		initialBackoff:     10 * time.Millisecond,
-		maxBackoff:         100 * time.Millisecond,
-		registry:           registry,
-		tokenCounter:       NewSimpleTokenCounter(),
+		providers:           map[string]Provider{"primary": mock},
+		activeProvider:      mock,
+		activeModel:         activeModel,
+		activeProviderName:  "primary",
+		maxRetries:          0,
+		initialBackoff:      10 * time.Millisecond,
+		maxBackoff:          100 * time.Millisecond,
+		registry:            registry,
+		tokenCounter:        NewSimpleTokenCounter(),
+		safetyMarginPercent: 5,
 	}
 }
 

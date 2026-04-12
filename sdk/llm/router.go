@@ -11,14 +11,16 @@ import (
 // RouterConfig configures the LLM router.
 // All values must be pre-resolved by the caller (env vars expanded, durations parsed).
 type RouterConfig struct {
-	ActiveProvider string        // Logical name of the active provider (e.g. "openai", "lmstudio")
-	ProviderType   string        // Provider type: "openai", "lmstudio", "anthropic", "gemini"
-	APIKey         string        // Already-expanded API key
-	BaseURL        string        // Already-expanded base URL
-	Model          string        // Default model to use
-	MaxRetries     int           // Max retry attempts on retryable errors
-	InitialBackoff time.Duration // Already parsed initial backoff duration
-	MaxBackoff     time.Duration // Already parsed max backoff duration
+	ActiveProvider      string        // Logical name of the active provider (e.g. "openai", "lmstudio")
+	ProviderType        string        // Provider type: "openai", "lmstudio", "anthropic", "gemini"
+	APIKey              string        // Already-expanded API key
+	BaseURL             string        // Already-expanded base URL
+	Model               string        // Default model to use
+	MaxRetries          int           // Max retry attempts on retryable errors
+	InitialBackoff      time.Duration // Already parsed initial backoff duration
+	MaxBackoff          time.Duration // Already parsed max backoff duration
+	SafetyMarginPercent int           // Percentage of context window reserved as safety margin (default: 5)
+	OutputTokenReserve  int           // Default output token reserve when model metadata doesn't specify (default: 4096)
 }
 
 // Router routes LLM calls to the active provider.
@@ -32,8 +34,10 @@ type Router struct {
 	initialBackoff time.Duration
 	maxBackoff     time.Duration
 	// Pre-call context window validation
-	registry     *ModelRegistry
-	tokenCounter TokenCounter
+	registry            *ModelRegistry
+	tokenCounter        TokenCounter
+	safetyMarginPercent int // percentage of context window reserved as safety margin (default: 5)
+	outputTokenReserve  int // default output token reserve when model metadata doesn't specify (default: 4096)
 }
 
 // NewRouter creates a new Router from the given configuration.
@@ -66,19 +70,29 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 	if maxBackoff == 0 {
 		maxBackoff = 30 * time.Second
 	}
+	safetyMarginPercent := cfg.SafetyMarginPercent
+	if safetyMarginPercent <= 0 {
+		safetyMarginPercent = 5
+	}
+	outputTokenReserve := cfg.OutputTokenReserve
+	if outputTokenReserve <= 0 {
+		outputTokenReserve = 4096
+	}
 
 	return &Router{
 		providers: map[string]Provider{
 			cfg.ActiveProvider: provider,
 		},
-		activeProvider:     provider,
+		activeProvider:      provider,
 		activeModel:        cfg.Model,
 		activeProviderName: cfg.ActiveProvider,
 		maxRetries:         cfg.MaxRetries,
 		initialBackoff:     initialBackoff,
 		maxBackoff:         maxBackoff,
-		registry:           registry,
-		tokenCounter:       NewSimpleTokenCounter(),
+		registry:            registry,
+		tokenCounter:        NewSimpleTokenCounter(),
+		safetyMarginPercent: safetyMarginPercent,
+		outputTokenReserve:  outputTokenReserve,
 	}, nil
 }
 
@@ -128,10 +142,6 @@ func retryBackoff(ctx context.Context, backoff time.Duration) bool {
 	}
 }
 
-// contextWindowSafetyMargin is the fraction (5%) subtracted from the effective
-// max to account for token-counting inaccuracy.
-const contextWindowSafetyMargin = 0.05
-
 // validateContextWindow checks whether the estimated token count of msgs fits
 // within the model's context window minus output reserve. Returns nil when
 // validation passes or should be skipped (unknown model, zero context window,
@@ -150,7 +160,7 @@ func (r *Router) validateContextWindow(model string, msgs []Message) error {
 
 	outputReserve := meta.OutputLimit
 	if outputReserve <= 0 {
-		outputReserve = 4096
+		outputReserve = r.outputTokenReserve
 	}
 
 	effectiveMax := meta.ContextWindow - outputReserve
@@ -159,7 +169,7 @@ func (r *Router) validateContextWindow(model string, msgs []Message) error {
 	}
 
 	// Apply safety margin to account for counting inaccuracy
-	effectiveMax = int(float64(effectiveMax) * (1 - contextWindowSafetyMargin))
+	effectiveMax = int(float64(effectiveMax) * (1 - float64(r.safetyMarginPercent)/100.0))
 
 	estimated := r.tokenCounter.CountMessages(msgs)
 	if estimated > effectiveMax {

@@ -19,8 +19,9 @@ type CompactionConfig struct {
 		KeepLast  int
 	}
 	Summarization struct {
-		BlockSize int
-		KeepLast  int
+		BlockSize          int
+		KeepLast           int
+		ObservationTruncate int // max chars for observations in summary blocks (default: 500)
 	}
 	Hierarchical struct {
 		DistantRatio float64
@@ -60,7 +61,11 @@ func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDep
 		if keepLast <= 0 {
 			keepLast = 5
 		}
-		return NewSummarizationStrategy(blockSize, keepLast, deps.Summarize, deps.TokenCounter, maxTokens)
+		obsTruncate := cfg.Summarization.ObservationTruncate
+		if obsTruncate <= 0 {
+			obsTruncate = 500
+		}
+		return NewSummarizationStrategy(blockSize, keepLast, obsTruncate, deps.Summarize, deps.TokenCounter, maxTokens)
 	case "hierarchical":
 		distant := cfg.Hierarchical.DistantRatio
 		if distant <= 0 {
@@ -74,7 +79,11 @@ func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDep
 		if recent <= 0 {
 			recent = 0.3
 		}
-		return NewHierarchicalStrategy(distant, middle, recent, deps.Summarize, deps.TokenCounter, maxTokens)
+		obsTruncateHier := cfg.Summarization.ObservationTruncate
+		if obsTruncateHier <= 0 {
+			obsTruncateHier = 500
+		}
+		return NewHierarchicalStrategy(distant, middle, recent, obsTruncateHier, deps.Summarize, deps.TokenCounter, maxTokens)
 	default:
 		return NewSlidingWindowStrategy(cfg.SlidingWindow.KeepFirst, cfg.SlidingWindow.KeepLast)
 	}

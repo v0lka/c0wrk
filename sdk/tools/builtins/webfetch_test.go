@@ -209,7 +209,7 @@ func TestWebFetchTool_HTTPError(t *testing.T) {
 
 func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 	// Create a test server that returns large content
-	largeContent := strings.Repeat("x", 200*1024) // 200KB
+	largeContent := strings.Repeat("x", 3*1024*1024) // 3MB
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
@@ -229,9 +229,9 @@ func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 		t.Errorf("unexpected error result: %s", result.Content)
 	}
 
-	// Content should be truncated to ~100KB
-	if len(result.Content) > 110*1024 { // Allow some overhead for markdown conversion
-		t.Errorf("expected content to be truncated, got %d bytes", len(result.Content))
+	// Content should be truncated to ~2MB
+	if len(result.Content) > 2300000 { // Allow some overhead for markdown conversion (~2.2MB)
+		t.Errorf("expected content to be truncated to ~2MB, got %d bytes", len(result.Content))
 	}
 }
 
@@ -291,5 +291,112 @@ func TestWebFetchTool_ContextCancellation(t *testing.T) {
 	// Should return error due to cancelled context
 	if !result.IsError {
 		t.Error("expected error for cancelled context")
+	}
+}
+
+func TestWebFetchTool_ReadabilityExtraction(t *testing.T) {
+	// Create a test server that returns realistic article HTML with nav, sidebar, and article content
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+	<title>Test Article Page</title>
+</head>
+<body>
+	<nav>
+		<a href="/">Home</a>
+		<a href="/about">About</a>
+		<a href="/contact">Contact</a>
+	</nav>
+	<div class="sidebar">
+		<h3>Related Articles</h3>
+		<ul>
+			<li><a href="/article1">Article 1</a></li>
+			<li><a href="/article2">Article 2</a></li>
+			<li><a href="/article3">Article 3</a></li>
+		</ul>
+	</div>
+	<article>
+		<h1>Main Article Title</h1>
+		<p>This is the main article content that should be extracted by readability. It contains important information about the topic.</p>
+		<p>Here is another paragraph with more details about the subject matter.</p>
+		<h2>Subsection</h2>
+		<p>This subsection provides additional context and information.</p>
+	</article>
+	<footer>
+		<p>Copyright 2024 Test Site</p>
+		<p>Privacy Policy | Terms of Service</p>
+	</footer>
+</body>
+</html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool()
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+
+	// Verify that the main article content is present
+	if !strings.Contains(result.Content, "Main Article Title") {
+		t.Errorf("expected markdown to contain 'Main Article Title', got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "main article content") {
+		t.Errorf("expected markdown to contain 'main article content', got: %s", result.Content)
+	}
+
+	// Verify that navigation/sidebar content is not present (extracted by readability)
+	if strings.Contains(result.Content, "Related Articles") {
+		t.Errorf("expected sidebar content to be filtered out, but found 'Related Articles' in: %s", result.Content)
+	}
+	if strings.Contains(result.Content, "Privacy Policy") {
+		t.Errorf("expected footer content to be filtered out, but found 'Privacy Policy' in: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_ReadabilityFallback(t *testing.T) {
+	// Create a test server that returns non-article HTML (e.g., a simple HTML page without article structure)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>Simple Page</title></head>
+<body>
+	<h1>Welcome</h1>
+	<p>This is a simple page without article markup.</p>
+	<p>It should still be converted to markdown via fallback.</p>
+</body>
+</html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebFetchTool()
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+
+	// Verify that the content is still returned via fallback
+	if !strings.Contains(result.Content, "Welcome") {
+		t.Errorf("expected markdown to contain 'Welcome', got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "simple page") {
+		t.Errorf("expected markdown to contain 'simple page', got: %s", result.Content)
 	}
 }

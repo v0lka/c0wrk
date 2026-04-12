@@ -90,6 +90,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 	)
 
@@ -205,6 +206,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 	)
 
@@ -277,6 +279,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 	)
 
@@ -347,6 +350,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 	)
 
@@ -452,6 +456,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // emitter - nil for tests
 		nil, // modelRegistry - nil for tests
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 	)
 
@@ -531,6 +536,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		mockEm, // emitter - use mock to track events
 		nil,    // modelRegistry - nil for tests
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 	)
 
@@ -679,6 +685,7 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 
@@ -1003,6 +1010,7 @@ func TestHandleMessage_ReActContinuation(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 
@@ -1104,6 +1112,7 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 
@@ -1171,6 +1180,7 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 	// Note: taskStore is nil by default
@@ -1220,6 +1230,7 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 
@@ -1293,6 +1304,7 @@ func TestHandleMessage_ReActFirstMessage(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 
@@ -1401,6 +1413,7 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 
@@ -1500,6 +1513,7 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 		nil, // emitter
 		nil, // modelRegistry
 		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 	)
 
@@ -1633,6 +1647,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 				nil, // emitter
 				nil, // modelRegistry
 				ToolResultBudget{},
+				defaultCircuitBreakerConfig,
 				nil, // bbFactory
 			)
 
@@ -1759,6 +1774,7 @@ func TestHandleMessage_Clarification(t *testing.T) {
 				nil, // emitter
 				nil, // modelRegistry
 				ToolResultBudget{},
+				defaultCircuitBreakerConfig,
 				nil, // bbFactory
 			)
 

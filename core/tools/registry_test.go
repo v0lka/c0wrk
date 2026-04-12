@@ -359,7 +359,7 @@ func TestJudge_AllowSkipsConfirm(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 	registry.SetJudge(judge)
 
 	// Set a confirmFunc that should NOT be called
@@ -407,7 +407,7 @@ func TestJudge_ConfirmCallsConfirmFunc(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Potentially dangerous"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 	registry.SetJudge(judge)
 
 	// Set a confirmFunc that returns ConfirmAllowOnce
@@ -664,7 +664,7 @@ func TestPolicyAuto_ToolJudgerDefersToLLM(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 	registry.SetJudge(judge)
 
 	confirmCalled := false
@@ -709,7 +709,7 @@ func TestPolicyAuto_WithoutToolJudgerUsesLLM(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Needs user review"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 	registry.SetJudge(judge)
 
 	confirmCalled := false
@@ -1050,7 +1050,7 @@ func TestPolicyUniformity_AllToolFamilies(t *testing.T) {
 					Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
 				},
 			}
-			judge := NewToolJudge(mockProvider, "test-model")
+			judge := NewToolJudge(mockProvider, "test-model", 0)
 			registry.SetJudge(judge)
 
 			confirmCalled := false
@@ -1124,7 +1124,7 @@ func TestPolicyAuto_JudgeSetAfterCreation(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 	registry.SetJudge(judge)
 
 	confirmCalled = false
@@ -1158,7 +1158,7 @@ func TestPolicyAuto_SetJudgeNilFallsBackToConfirmation(t *testing.T) {
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
 		},
 	}
-	judge := NewToolJudge(mockProvider, "test-model")
+	judge := NewToolJudge(mockProvider, "test-model", 0)
 	registry.SetJudge(judge)
 
 	confirmCalled := false

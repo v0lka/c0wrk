@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"strings"
+
 	sdkagent "github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 )
@@ -15,7 +17,7 @@ func stepsToMessages(steps []sdkagent.Step) []llm.Message {
 		// Assistant message with thought and action
 		assistantMsg := llm.Message{
 			Role:    "assistant",
-			Content: step.Thought,
+			Content: strings.TrimRight(step.Thought, invisibleChars),
 		}
 		if step.Action.ID != "" {
 			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
@@ -29,9 +31,13 @@ func stepsToMessages(steps []sdkagent.Step) []llm.Message {
 
 		// Tool response message with observation
 		if step.Action.ID != "" {
+			observation := strings.TrimRight(step.Observation, invisibleChars)
+			if observation == "" {
+				observation = "(no output)"
+			}
 			toolMsg := llm.Message{
 				Role:       "tool",
-				Content:    step.Observation,
+				Content:    observation,
 				ToolCallID: step.Action.ID,
 			}
 			messages = append(messages, toolMsg)

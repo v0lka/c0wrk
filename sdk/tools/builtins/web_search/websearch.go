@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/user/agent/sdk/tools"
+	"github.com/user/agent/sdk/tools/builtins"
 )
 
 const toolWebsearchDescription = `Search the web and return a list of results with titles, URLs, and text snippets. Use this to find current information, external documentation, recent events, or any knowledge that may be beyond training data. Returns up to max_results entries (default 5), each with a title, URL, and a brief snippet summarizing the page content.`
@@ -24,16 +25,30 @@ type SearchProvider interface {
 	Name() string
 }
 
+// Limits is an alias for builtins.WebSearchLimits for backward compatibility.
+type Limits = builtins.WebSearchLimits
+
+// DefaultLimits returns the default limits for web_search.
+func DefaultLimits() Limits {
+	return builtins.DefaultWebSearchLimits()
+}
+
 // --- WebSearchTool ---
 
 // WebSearchTool searches the web using a pluggable SearchProvider.
 type WebSearchTool struct {
 	*tools.BaseTool
 	provider SearchProvider
+	limits   Limits
 }
 
-// NewWebSearchTool creates a new WebSearchTool with the given SearchProvider.
+// NewWebSearchTool creates a new WebSearchTool with the given SearchProvider and default limits.
 func NewWebSearchTool(provider SearchProvider) *WebSearchTool {
+	return NewWebSearchToolWithLimits(provider, DefaultLimits())
+}
+
+// NewWebSearchToolWithLimits creates a new WebSearchTool with the given SearchProvider and specified limits.
+func NewWebSearchToolWithLimits(provider SearchProvider, limits Limits) *WebSearchTool {
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -56,6 +71,7 @@ func NewWebSearchTool(provider SearchProvider) *WebSearchTool {
 			Policy:          tools.PolicyAlwaysAllow,
 		},
 		provider: provider,
+		limits:   limits,
 	}
 }
 
@@ -85,7 +101,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (too
 	// Set default max_results if not provided
 	maxResults := params.MaxResults
 	if maxResults <= 0 {
-		maxResults = 5
+		maxResults = t.limits.MaxResults
 	}
 
 	// Perform the search

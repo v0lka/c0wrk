@@ -172,7 +172,7 @@ func (p *OpenAIProvider) buildRequest(req ChatRequest) openai.ChatCompletionRequ
 				Function: &openai.FunctionDefinition{
 					Name:        tool.Name,
 					Description: tool.Description,
-					Parameters:  tool.InputSchema,
+					Parameters:  SanitizeSchemaForOpenAI(tool.InputSchema),
 				},
 			}
 		}
@@ -183,8 +183,8 @@ func (p *OpenAIProvider) buildRequest(req ChatRequest) openai.ChatCompletionRequ
 
 // convertRequestMessage converts our Message to OpenAI's message format.
 func (p *OpenAIProvider) convertRequestMessage(msg Message) openai.ChatCompletionMessage {
-	// OpenAI API requires non-empty content for tool-role messages.
-	// This is a safety net to prevent 400 errors.
+	// Safety net: OpenAI API requires non-empty content for tool-role messages.
+	// The context layer should already guarantee this, but we keep this as a defensive measure.
 	content := msg.Content
 	if msg.Role == "tool" && content == "" {
 		content = "(no output)"

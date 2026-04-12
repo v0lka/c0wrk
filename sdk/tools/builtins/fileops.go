@@ -20,10 +20,16 @@ const toolFileopsDescription = `Perform file system operations: read, write, edi
 // FileOpsTool provides file system operations: read, write, edit, list, search.
 type FileOpsTool struct {
 	*tools.BaseTool
+	limits FileOpsLimits
 }
 
-// NewFileOpsTool creates a new FileOpsTool instance.
+// NewFileOpsTool creates a new FileOpsTool instance with default limits.
 func NewFileOpsTool() *FileOpsTool {
+	return NewFileOpsToolWithLimits(DefaultFileOpsLimits())
+}
+
+// NewFileOpsToolWithLimits creates a new FileOpsTool instance with specified limits.
+func NewFileOpsToolWithLimits(limits FileOpsLimits) *FileOpsTool {
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -59,16 +65,27 @@ func NewFileOpsTool() *FileOpsTool {
 			"recursive": {
 				"type": "boolean",
 				"description": "If true, recursively delete all directory contents (used with delete_directory). Required for non-empty directories."
+			},
+			"start_line": {
+				"type": "integer",
+				"description": "1-based line number to start reading from. Default: 1."
+			},
+			"end_line": {
+				"type": "integer",
+				"description": "1-based line number to stop reading at (inclusive). Default: start_line + 2000."
 			}
 		},
 		"required": ["action", "path"]
 	}`
-	return &FileOpsTool{BaseTool: &tools.BaseTool{
-		ToolName:        "file_ops",
-		ToolDescription: toolFileopsDescription,
-		Schema:          json.RawMessage(schema),
-		Policy:          tools.PolicyAuto,
-	}}
+	return &FileOpsTool{
+		BaseTool: &tools.BaseTool{
+			ToolName:        "file_ops",
+			ToolDescription: toolFileopsDescription,
+			Schema:          json.RawMessage(schema),
+			Policy:          tools.PolicyAuto,
+		},
+		limits: limits,
+	}
 }
 
 // fileOpsInput represents the input structure for file operations.
@@ -81,6 +98,8 @@ type fileOpsInput struct {
 	Pattern   string `json:"pattern"`
 	Regex     string `json:"regex"`
 	Recursive bool   `json:"recursive"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 }
 
 // Judge evaluates whether a file operation is safe to execute.
@@ -159,7 +178,7 @@ func (t *FileOpsTool) Execute(ctx context.Context, input json.RawMessage) (tools
 
 	switch params.Action {
 	case "read_file":
-		return t.readFile(params.Path)
+		return t.readFile(params.Path, params.StartLine, params.EndLine)
 	case "write_file":
 		return t.writeFile(ctx, params.Path, params.Content)
 	case "edit_file":
@@ -181,13 +200,66 @@ func (t *FileOpsTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	}
 }
 
-// readFile reads and returns the content of a file.
-func (t *FileOpsTool) readFile(path string) (tools.ToolResult, error) {
+// readFile reads and returns the content of a file with pagination support.
+func (t *FileOpsTool) readFile(path string, startLine, endLine int) (tools.ToolResult, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil
 	}
-	return tools.ToolResult{Content: string(data), IsError: false}, nil
+
+	// Split content by newlines
+	allLines := strings.Split(string(data), "\n")
+	totalLines := len(allLines)
+
+	// Apply defaults
+	if startLine <= 0 {
+		startLine = 1
+	}
+	if endLine <= 0 {
+		endLine = startLine + t.limits.ReadDefaultLines - 1
+	}
+
+	// Clamp to bounds
+	if startLine > totalLines {
+		startLine = totalLines
+	}
+	if endLine > totalLines {
+		endLine = totalLines
+	}
+	if startLine < 1 {
+		startLine = 1
+	}
+
+	// Extract the requested range (convert 1-based to 0-based indexing)
+	selectedLines := allLines[startLine-1 : endLine]
+
+	// Truncate individual lines that exceed max length
+	for i, line := range selectedLines {
+		if len(line) > t.limits.ReadMaxLineLength {
+			selectedLines[i] = fmt.Sprintf("%s...(line truncated, original: %d chars)", line[:t.limits.ReadMaxLineLength], len(line))
+		}
+	}
+
+	// Join lines
+	content := strings.Join(selectedLines, "\n")
+
+	// Check byte limit
+	if len(content) > t.limits.ReadMaxBytes {
+		content = content[:t.limits.ReadMaxBytes] + "\n[Byte limit reached]"
+	}
+
+	// Build metadata header
+	filename := filepath.Base(path)
+	header := fmt.Sprintf("[File: %s | Lines %d-%d of %d | %d bytes]\n", filename, startLine, endLine, totalLines, len(content))
+
+	// Add continuation hint if there are more lines
+	if endLine < totalLines {
+		content = header + content + fmt.Sprintf("\n[Use start_line=%d to continue reading]", endLine+1)
+	} else {
+		content = header + content
+	}
+
+	return tools.ToolResult{Content: content, IsError: false}, nil
 }
 
 // writeFile writes content to a file, creating parent directories if needed.
@@ -320,7 +392,7 @@ func (t *FileOpsTool) searchContent(basePath, regexPattern string) (tools.ToolRe
 		return tools.ToolResult{Content: fmt.Sprintf("invalid regex: %v", err), IsError: true}, nil
 	}
 
-	const maxMatches = 100
+	maxMatches := t.limits.FileSearchMatches
 	var results []string
 
 	err = filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {

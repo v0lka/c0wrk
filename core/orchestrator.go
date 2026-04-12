@@ -25,10 +25,12 @@ var PlanModeKey = planModeKeyType{}
 
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
-	MaxSteps   int
-	KeepFirst  int // for sliding window compaction
-	KeepLast   int // for sliding window compaction
-	MaxRetries int // max retry attempts after failed evaluation (default: 3)
+	MaxSteps                  int
+	KeepFirst                 int // for sliding window compaction
+	KeepLast                  int // for sliding window compaction
+	MaxRetries                int // max retry attempts after failed evaluation (default: 3)
+	MaxHistoryMessages        int // max conversation history messages to retain (default: 20)
+	MaxDependencyContextChars int // max chars for dependency context in step tasks (default: 8000)
 
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
@@ -79,6 +81,7 @@ func NewOrchestrator(
 	emitter Emitter, // optional, uses noopEmitter if nil
 	modelRegistry *llm.ModelRegistry, // optional, nil-safe
 	toolResultBudget ToolResultBudget,
+	circuitBreaker CircuitBreakerConfig,
 	bbFactory BlackboardFactory, // optional, nil = default MapBlackboard
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
@@ -113,13 +116,15 @@ func NewOrchestrator(
 				ccm.SetTask(taskDesc)
 			}
 		},
-		Events:           &emitterEventsAdapter{emitter},
-		SystemPrompt:     buildSystemPrompt,
-		MaxRetries:       cfg.MaxRetries,
-		MaxSteps:         cfg.MaxSteps,
-		ToolResultBudget: toolResultBudget,
-		StepConfigurator: coreStepConfigurator(cfg, modelRegistry, logger),
-		StepLimitFunc:    cfg.StepLimitFunc,
+		Events:                    &emitterEventsAdapter{emitter},
+		SystemPrompt:              buildSystemPrompt,
+		MaxRetries:                cfg.MaxRetries,
+		MaxSteps:                  cfg.MaxSteps,
+		MaxDependencyContextChars: cfg.MaxDependencyContextChars,
+		ToolResultBudget:          toolResultBudget,
+		CircuitBreaker:            circuitBreaker,
+		StepConfigurator:          coreStepConfigurator(cfg, modelRegistry, logger),
+		StepLimitFunc:             cfg.StepLimitFunc,
 	}
 
 	// Configure state factory to use core's blackboard factory.
@@ -176,19 +181,21 @@ var smallRoleSuffixes = map[string]string{
 
 // coreStepConfigurator resolves AgentProfile from PlanStep.Profile.
 // If modelRegistry is provided, role suffixes are selected based on model tier.
+// Applies tool filtering based on AgentProfile.AllowedTools or role-based ToolProfiles.
 func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegistry, logger *slog.Logger) orchestration.StepConfigurator {
 	return func(step orchestration.PlanStep, defaults orchestration.StepDefaults) orchestration.StepConfig {
 		profile := resolveAgentProfile(step, cfg.MaxSteps)
+
+		// Determine allowed tools: explicit profile setting > role-based profile > all tools
 		var allowed []tools.ToolDescriptor
 		if len(profile.AllowedTools) > 0 {
-			allowSet := make(map[string]bool, len(profile.AllowedTools))
-			for _, name := range profile.AllowedTools {
-				allowSet[name] = true
-			}
-			for _, t := range defaults.AllTools {
-				if allowSet[t.Name] {
-					allowed = append(allowed, t)
-				}
+			// Profile has explicit AllowedTools - use them
+			allowed = FilterToolsByProfile(defaults.AllTools, profile.AllowedTools)
+		} else if toolProfile, ok := ToolProfiles[profile.Role]; ok {
+			// Apply role-based tool profile (e.g., "router", "planner", "reflector")
+			allowed = FilterToolsByProfile(defaults.AllTools, toolProfile)
+			if logger != nil {
+				logger.Debug("orchestrator: applied role-based tool profile", "role", profile.Role, "tools", len(allowed))
 			}
 		}
 
@@ -672,9 +679,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		llm.Message{Role: "user", Content: message},
 		llm.Message{Role: "assistant", Content: result.Output},
 	)
-	const maxHistoryMessages = 20
-	if len(o.conversationHistory) > maxHistoryMessages {
-		o.conversationHistory = o.conversationHistory[len(o.conversationHistory)-maxHistoryMessages:]
+	maxHistory := o.config.MaxHistoryMessages
+	if maxHistory == 0 {
+		maxHistory = 20
+	}
+	if len(o.conversationHistory) > maxHistory {
+		o.conversationHistory = o.conversationHistory[len(o.conversationHistory)-maxHistory:]
 	}
 
 	return result, nil

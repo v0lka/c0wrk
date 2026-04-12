@@ -47,14 +47,16 @@ func (a *App) buildRouter(cfg *config.Config) (*llm.Router, *llm.ModelRegistry, 
 		slog.Warn("invalid max_backoff, using default", "value", cfg.LLM.Retry.MaxBackoff, "error", err)
 	}
 	routerCfg := llm.RouterConfig{
-		ActiveProvider: cfg.LLM.ActiveProvider,
-		ProviderType:   provType,
-		APIKey:         config.ExpandEnvVars(apiKey),
-		BaseURL:        config.ExpandEnvVars(baseURL),
-		Model:          model,
-		MaxRetries:     cfg.LLM.Retry.MaxRetries,
-		InitialBackoff: initialBackoff,
-		MaxBackoff:     maxBackoff,
+		ActiveProvider:       cfg.LLM.ActiveProvider,
+		ProviderType:         provType,
+		APIKey:              config.ExpandEnvVars(apiKey),
+		BaseURL:             config.ExpandEnvVars(baseURL),
+		Model:               model,
+		MaxRetries:          cfg.LLM.Retry.MaxRetries,
+		InitialBackoff:      initialBackoff,
+		MaxBackoff:          maxBackoff,
+		SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
+		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
 	}
 	llmRouter, err := llm.NewRouter(context.Background(), routerCfg, modelRegistry)
 	if err != nil {
@@ -92,11 +94,13 @@ func (a *App) buildCoreAgents(llmRouter *llm.Router, registry *tools.ToolRegistr
 // stepLimitFunc is optional; if provided, it will be called when an executor reaches its step limit.
 func (a *App) buildOrchestratorConfig(cfg *config.Config, stepLimitFunc agent.StepLimitFunc) core.OrchestratorConfig {
 	return core.OrchestratorConfig{
-		MaxSteps:      cfg.Executor.MaxReactSteps,
-		KeepFirst:     cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:      cfg.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries:    cfg.Executor.MaxRetries,
-		StepLimitFunc: stepLimitFunc,
+		MaxSteps:                  cfg.Executor.MaxReactSteps,
+		KeepFirst:                 cfg.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:                  cfg.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxRetries:                cfg.Executor.MaxRetries,
+		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
+		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
+		StepLimitFunc:             stepLimitFunc,
 	}
 }
 
@@ -136,6 +140,7 @@ func (a *App) rebuildJudge(cfg *config.Config, router *llm.Router, logger *slog.
 		Model:        cfg.Security.Judge.Model,
 		DefaultModel: defaultModel,
 		Provider:     judgeProvider,
+		MaxCacheSize: cfg.Orchestration.MaxJudgeCacheSize,
 	}, logger)
 
 	if judge != nil {
@@ -163,17 +168,23 @@ func (a *App) buildContextFactory(llmRouter *llm.Router, cfg *config.Config) cor
 				KeepFirst: cfg.Executor.Compaction.SlidingWindow.KeepFirst,
 				KeepLast:  cfg.Executor.Compaction.SlidingWindow.KeepLast,
 			},
-			Summarization: struct{ BlockSize, KeepLast int }{
-				BlockSize: cfg.Executor.Compaction.Summarization.BlockSize,
-				KeepLast:  5,
+			Summarization: struct {
+				BlockSize           int
+				KeepLast            int
+				ObservationTruncate int
+			}{
+				BlockSize:           cfg.Executor.Compaction.Summarization.BlockSize,
+				KeepLast:            cfg.Executor.Compaction.Summarization.KeepLast,
+				ObservationTruncate: cfg.Executor.Compaction.ObservationTruncate,
 			},
 			Hierarchical: struct{ DistantRatio, MiddleRatio, RecentRatio float64 }{
-				DistantRatio: 0.4,
-				MiddleRatio:  0.3,
-				RecentRatio:  0.3,
+				DistantRatio: cfg.Executor.Compaction.Hierarchical.DistantRatio,
+				MiddleRatio:  cfg.Executor.Compaction.Hierarchical.MiddleRatio,
+				RecentRatio:  cfg.Executor.Compaction.Hierarchical.RecentRatio,
 			},
 		}, sdkmemory.CompactionDeps{
-			TokenCounter: counter,
+			TokenCounter:       counter,
+			MaxSummarizeTokens: cfg.Executor.Compaction.MaxSummarizeTokens,
 			Summarize: func(ctx context.Context, blockText string) (string, error) {
 				if llmRouter == nil {
 					return "", errors.New("compaction summarize: LLM router not available")
@@ -198,7 +209,12 @@ func (a *App) buildContextFactory(llmRouter *llm.Router, cfg *config.Config) cor
 			EmergencyPercent:  cfg.Executor.Compaction.Thresholds.EmergencyPercent,
 		}
 
-		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy)
+		pruning := sdkmemory.ToolOutputPruning{
+			KeepLastN:      cfg.Executor.ToolOutputPruning.KeepLastN,
+			ProtectedTools: cfg.Executor.ToolOutputPruning.ProtectedTools,
+		}
+
+		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy, cfg.Executor.Compaction.SafetyMarginPercent, pruning)
 		return core.NewCoreContextManager(cw)
 	}
 }

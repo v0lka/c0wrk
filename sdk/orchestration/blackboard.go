@@ -10,9 +10,6 @@ import (
 	"github.com/user/agent/sdk/agent"
 )
 
-// maxSummaryLen is the maximum length for auto-generated step summaries.
-const maxSummaryLen = 500
-
 // compile-time check
 var _ Blackboard = (*MapBlackboard)(nil)
 
@@ -25,6 +22,7 @@ type MapBlackboard struct {
 	reflections      []Reflection
 	finalResult      string
 	maxSummaryTokens int                     // token-based limit for summaries (0 = use char-based default)
+	maxSummaryLen    int                     // char-based limit for summaries (0 = use default 500)
 	fileChanges      map[string][]FileChange // keyed by stepID
 }
 
@@ -37,6 +35,14 @@ type MapBlackboardOption func(*MapBlackboard)
 func WithMaxSummaryTokens(n int) MapBlackboardOption {
 	return func(b *MapBlackboard) {
 		b.maxSummaryTokens = n
+	}
+}
+
+// WithMaxSummaryLen sets a character-based cap on auto-generated step summaries.
+// A value of 0 uses the default (500).
+func WithMaxSummaryLen(n int) MapBlackboardOption {
+	return func(b *MapBlackboard) {
+		b.maxSummaryLen = n
 	}
 }
 
@@ -151,7 +157,11 @@ func (b *MapBlackboard) SetPlan(plan *Plan) {
 // If maxSummaryTokens is configured, the summary is additionally capped to
 // approximately maxSummaryTokens*4 characters.
 func (b *MapBlackboard) SetStepResult(stepID, output string, err error, steps []agent.Step) {
-	summary := GenerateSummary(output)
+	maxLen := b.maxSummaryLen
+	if maxLen == 0 {
+		maxLen = 500
+	}
+	summary := GenerateSummary(output, maxLen)
 
 	// Apply token-budget cap as a secondary limit.
 	if b.maxSummaryTokens > 0 {
@@ -212,6 +222,11 @@ func (b *MapBlackboard) SetFinalResult(result string) {
 // MaxSummaryTokens returns the configured token budget for summaries.
 func (b *MapBlackboard) MaxSummaryTokens() int {
 	return b.maxSummaryTokens
+}
+
+// MaxSummaryLen returns the configured character limit for summaries.
+func (b *MapBlackboard) MaxSummaryLen() int {
+	return b.maxSummaryLen
 }
 
 // ---------------------------------------------------------------------------
@@ -382,10 +397,15 @@ func (b *MapBlackboard) Search(query string) []BlackboardEntry {
 // ---------------------------------------------------------------------------
 
 // GenerateSummary creates a summary from output: first paragraph (up to first
-// double-newline) or first 500 chars, whichever is shorter. Appends "..." if truncated.
-func GenerateSummary(output string) string {
+// double-newline) or first maxLen chars, whichever is shorter. Appends "..." if truncated.
+// If maxLen is 0, uses default of 500.
+func GenerateSummary(output string, maxLen int) string {
 	if output == "" {
 		return ""
+	}
+
+	if maxLen == 0 {
+		maxLen = 500
 	}
 
 	// Find first double-newline (paragraph break).
@@ -394,11 +414,11 @@ func GenerateSummary(output string) string {
 		paragraph = output[:idx]
 	}
 
-	// Take whichever is shorter: paragraph or maxSummaryLen chars.
+	// Take whichever is shorter: paragraph or maxLen chars.
 	result := paragraph
 	truncated := false
-	if len(result) > maxSummaryLen {
-		result = result[:maxSummaryLen]
+	if len(result) > maxLen {
+		result = result[:maxLen]
 		truncated = true
 	}
 

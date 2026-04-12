@@ -34,9 +34,11 @@ type Config struct {
 	StepLimitFunc agent.StepLimitFunc
 
 	// Tuning
-	MaxRetries       int
-	MaxSteps         int
-	ToolResultBudget agent.ToolResultBudget
+	MaxRetries                int
+	MaxSteps                  int
+	MaxDependencyContextChars int // default: 8000
+	ToolResultBudget          agent.ToolResultBudget
+	CircuitBreaker            agent.CircuitBreakerConfig
 
 	// StepConfigurator resolves step-specific execution parameters from a PlanStep.
 	// If nil, default values are used (all tools, cfg.MaxSteps, no custom prompt).
