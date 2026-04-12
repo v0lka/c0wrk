@@ -77,13 +77,27 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	// Unmarshal into RoutingDecision
 	var routingDecision RoutingDecision
 	if err := json.Unmarshal([]byte(jsonStr), &routingDecision); err != nil {
-		return nil, fmt.Errorf("failed to parse routing decision: %w", err)
+		// Retry with repair prompt
+		repairMessages := make([]llm.Message, len(messages)+2)
+		copy(repairMessages, messages)
+		repairMessages[len(messages)] = llm.Message{Role: "assistant", Content: resp.Message.Content}
+		repairMessages[len(messages)+1] = llm.Message{
+			Role:    "user",
+			Content: "Your previous response was not valid JSON. Respond with ONLY a JSON object in this exact format:\n{\"domain\":\"general\",\"complexity\":1,\"needs_clarification\":false}",
+		}
+
+		retryResp, retryErr := r.llm.Call(ctx, llm.ChatRequest{Messages: repairMessages})
+		if retryErr != nil {
+			return nil, fmt.Errorf("failed to parse routing decision: %w", err)
+		}
+
+		retryJSON := extractJSON(retryResp.Message.Content)
+		if retryErr := json.Unmarshal([]byte(retryJSON), &routingDecision); retryErr != nil {
+			return nil, fmt.Errorf("failed to parse routing decision after retry: %w", retryErr)
+		}
 	}
 
-	// Validate and apply defaults
-	if routingDecision.CompactionStrategy == "" {
-		routingDecision.CompactionStrategy = applyCompactionStrategy(routingDecision.Domain, routingDecision.Complexity)
-	}
+	validateRoutingDecision(&routingDecision)
 
 	return &routingDecision, nil
 }
@@ -107,6 +121,25 @@ func extractJSON(content string) string {
 
 	// Return as-is if nothing found
 	return content
+}
+
+// validateRoutingDecision sanitizes and corrects a routing decision from LLM output.
+func validateRoutingDecision(d *RoutingDecision) {
+	// Validate domain
+	switch d.Domain {
+	case "code", "research", "general", "mixed":
+		// valid
+	default:
+		d.Domain = "general"
+	}
+
+	// Clamp complexity to [1, 5]
+	if d.Complexity < 1 {
+		d.Complexity = 1
+	}
+	if d.Complexity > 5 {
+		d.Complexity = 5
+	}
 }
 
 // applyCompactionStrategy applies the domain-based compaction strategy rule.

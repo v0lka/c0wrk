@@ -16,6 +16,9 @@ var PlannerReplan string
 //go:embed orchestrator_system.md
 var OrchestratorSystem string
 
+//go:embed orchestrator_plan_context.md
+var OrchestratorPlanContext string
+
 // Reflector prompt
 
 //go:embed reflector_system.md

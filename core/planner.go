@@ -29,7 +29,7 @@ Prefer fewer, broader steps over many granular ones. Each step should represent 
 - Medium tasks (complexity 3): 2-4 steps
 - Complex tasks (complexity 4-5): 3-7 steps
 
-Never exceed 10 steps. If a task seems to require more, combine related work into broader steps.
+Limit plans to 10 steps maximum. If a task seems to require more, combine related work into broader steps.
 `
 
 	planModeDomainAssignment = `
@@ -47,11 +47,10 @@ Choose the domain that matches the **primary activity** of the step, not its sub
 
 **Wrong domain → wrong compaction → degraded context quality.** A research step with domain "code" will lose synthesized findings to sliding window eviction. A coding step with domain "research" will lose recent edits to summarization.
 
-Do NOT:
-
-- Default every step to "code" — reading docs, searching the web, or analyzing logs is "research".
-- Copy a domain from a similar-looking step without considering what this specific step actually does.
-- Use "general" as a lazy default — prefer a specific domain when the step's activity is clear.
+For each step:
+1. Identify the primary activity (reading/analyzing vs modifying files vs mixed)
+2. Match to the domain that fits the primary activity
+3. Prefer a specific domain ("code" or "research") over "general" when the activity is clear
 `
 
 	planModeAgentProfiles = `
@@ -66,7 +65,7 @@ Prefer higher-tier tools over bash_exec in all profiles:
 	planModeExtraSections = `
 ## Output Expectations
 
-- "researcher" / "tester": Pass all results through the finish tool. Do NOT write files.
+- "researcher" / "tester": Pass all results through the finish tool. Write files ONLY for final deliverables.
 - "coder": Write code/config files as needed. Summarize what was done through finish.
 - "executor": Files only when the file IS the deliverable.
 
@@ -105,7 +104,7 @@ COMPLETED-PLAN-SUMMARY
 3. New step IDs MUST be prefixed with ` + "`continuation_`" + ` (e.g., "continuation_1", "continuation_2").
 4. New steps MUST reference the terminal steps of the existing plan in their DependsOn field.
 5. Keep the same granularity and style as the original plan.
-6. Do NOT repeat or restate completed steps.
+6. Focus ONLY on new steps that address the follow-up request.
 
 ## Terminal Steps
 

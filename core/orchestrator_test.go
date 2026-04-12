@@ -1689,3 +1689,41 @@ func TestHandleMessage_Clarification(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildSystemPrompt_PlanMode verifies that buildSystemPrompt includes the
+// Plan Context section when PlanModeKey is set in the context.
+func TestBuildSystemPrompt_PlanMode(t *testing.T) {
+	ctx := context.WithValue(context.Background(), PlanModeKey, true)
+	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
+
+	result := buildSystemPrompt(ctx, "test message")
+
+	if !strings.Contains(result, "Plan Context") {
+		t.Error("plan mode prompt should contain Plan Context section")
+	}
+	if !strings.Contains(result, "read_step_output") {
+		t.Error("plan mode prompt should contain read_step_output")
+	}
+	if !strings.Contains(result, "list_step_outputs") {
+		t.Error("plan mode prompt should contain list_step_outputs")
+	}
+}
+
+// TestBuildSystemPrompt_ReactMode verifies that buildSystemPrompt does NOT include
+// the Plan Context section when PlanModeKey is not set (ReAct mode).
+func TestBuildSystemPrompt_ReactMode(t *testing.T) {
+	ctx := context.Background()
+	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
+
+	result := buildSystemPrompt(ctx, "test message")
+
+	if strings.Contains(result, "Plan Context") {
+		t.Error("react mode prompt should NOT contain Plan Context section")
+	}
+	if strings.Contains(result, "read_step_output") {
+		t.Error("react mode prompt should NOT contain read_step_output")
+	}
+	if strings.Contains(result, "list_step_outputs") {
+		t.Error("react mode prompt should NOT contain list_step_outputs")
+	}
+}

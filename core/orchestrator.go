@@ -17,6 +17,11 @@ import (
 	tools "github.com/user/agent/sdk/tools"
 )
 
+type planModeKeyType struct{}
+
+// PlanModeKey is the context key for signaling plan-execute mode to buildSystemPrompt.
+var PlanModeKey = planModeKeyType{}
+
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps   int
@@ -310,6 +315,11 @@ func buildSystemPrompt(ctx context.Context, userMessage string) string {
 	result := prompts.OrchestratorSystem
 	result = strings.ReplaceAll(result, "WORKSPACE-CONTEXT", workspaceCtxStr)
 
+	// Append plan context section if in plan-execute mode.
+	if ctx.Value(PlanModeKey) != nil {
+		result += "\n\n" + prompts.OrchestratorPlanContext
+	}
+
 	// Append environment context if available.
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
 		result += "\n\n" + envBlock
@@ -381,13 +391,18 @@ func (o *Orchestrator) Run(ctx context.Context, userMessage string) (*HandleResu
 //   - TaskID="": First message (create new blackboard)
 //   - TaskID!="": Continuation (restore existing blackboard)
 func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID string, opts HandleOptions) (*HandleResult, error) {
-	// 0. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
+	// 0. Set plan mode context key if PlanFirst is enabled.
+	if opts.PlanFirst {
+		ctx = context.WithValue(ctx, PlanModeKey, true)
+	}
+
+	// 1. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "planFirst", opts.PlanFirst, "taskID", opts.TaskID)
 	o.emitInitialContextFill()
 
 	var bb Blackboard
 
-	// 1. Blackboard lifecycle
+	// 2. Blackboard lifecycle
 	if opts.TaskID == "" {
 		// First message: create clean BB
 		taskID := uuid.New().String()
@@ -426,10 +441,10 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		bb = pbb
 	}
 
-	// 2. Get available tools
+	// 3. Get available tools
 	availableTools := o.toolRegistry.List()
 
-	// 3. Route the message
+	// 4. Route the message
 	o.logDebug("orchestrator: starting routing")
 	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "orchestration"})
 	routing, err := o.router.Route(ctx, message, availableTools, o.conversationHistory)
@@ -443,7 +458,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
 	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
 
-	// 4. Handle clarification
+	// 5. Handle clarification
 	if routing.NeedsClarification {
 		o.logDebug("orchestrator: returning clarification request")
 		return &HandleResult{
@@ -458,7 +473,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	var attemptCount int
 	var reflections []Reflection
 
-	// 5. Branch on PlanFirst
+	// 6. Branch on PlanFirst
 	switch {
 	case !opts.PlanFirst:
 		// === ReAct mode (single step) ===
@@ -583,14 +598,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		reflections = execResult.Reflections
 	}
 
-	// 6. Persist routing decision on PersistentBlackboard (post-execution)
+	// 7. Persist routing decision on PersistentBlackboard (post-execution)
 	o.logDebug("orchestrator: persisting routing decision")
 	if pbb, ok := bb.(*PersistentBlackboard); ok {
 		pbb.SetRouting(routing)
 		pbb.CompleteTask(attemptCount)
 	}
 
-	// 7. Build HandleResult
+	// 8. Build HandleResult
 	result := &HandleResult{
 		Output:          output,
 		RoutingDecision: routing,
@@ -606,7 +621,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	o.logDebug("orchestrator: handle_message completed", "attemptCount", result.AttemptCount)
 
-	// 8. Accumulate conversation history for future routing context
+	// 9. Accumulate conversation history for future routing context
 	o.conversationHistory = append(o.conversationHistory,
 		llm.Message{Role: "user", Content: message},
 		llm.Message{Role: "assistant", Content: result.Output},

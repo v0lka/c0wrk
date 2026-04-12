@@ -154,7 +154,17 @@ func (r *Reflector) parseReflectionResponse(content string) (*Reflection, error)
 	case "":
 		reflection.SuggestedAction = "retry" // Default to retry if not specified
 	default:
-		// Keep as-is, let the caller decide what to do with unknown values
+		reflection.SuggestedAction = "retry" // Default to retry for unknown values
+	}
+
+	// Set default summary if empty
+	if reflection.Summary == "" {
+		reflection.Summary = "Execution analysis unavailable"
+	}
+
+	// Ensure hypotheses is non-nil
+	if reflection.Hypotheses == nil {
+		reflection.Hypotheses = []string{}
 	}
 
 	return &reflection, nil

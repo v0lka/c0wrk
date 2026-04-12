@@ -35,7 +35,6 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 	routing := &core.RoutingDecision{
 		Domain:     "code",
 		Complexity: 3,
-		Confidence: 0.95,
 	}
 	if err := adapter.PersistRouting(taskID, routing); err != nil {
 		t.Fatalf("PersistRouting failed: %v", err)

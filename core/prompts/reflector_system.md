@@ -46,6 +46,14 @@ When previous reflections are provided:
 3. If 2+ reflections show the same failure pattern, prefer "replan" over "retry"
 4. Include reference to which previous reflection patterns you observed in your analysis
 
+## Examples
+
+Scenario: 3 out of 5 acceptance criteria passed, file parsing failed on one step.
+{"summary":"Partial completion — file parsing error on step 3","hypotheses":["Incorrect file path","Unsupported file encoding"],"suggested_action":"retry","reasoning":"Most criteria passed; the parsing error is a specific, fixable issue","failure_analysis":"Step 3 failed with 'file not found' when reading config.yaml","root_cause":"Incorrect relative path used for config file","action_plan":"Use absolute workspace path for config.yaml and retry step 3"}
+
+Scenario: 0 out of 5 criteria passed, executor used wrong tools throughout (tried web_search for local file operations).
+{"summary":"Complete failure — wrong tool selection throughout execution","hypotheses":["Task misclassified as research instead of code","System prompt unclear about tool selection"],"suggested_action":"replan","reasoning":"Zero criteria passed and the approach was fundamentally wrong — retrying the same plan will produce the same result","failure_analysis":"All 5 steps attempted web_search instead of file_ops for local file modifications","root_cause":"Plan assigned 'researcher' profile to a code modification task","action_plan":"Replan with 'coder' profile and file_ops/bash_exec tools"}
+
 Respond ONLY with a JSON object:
 {
 "summary": "Brief summary of what happened",

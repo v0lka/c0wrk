@@ -18,7 +18,7 @@ func TestRoute_ReturnsValidRoutingDecision(t *testing.T) {
 		responses: []*llm.ChatResponse{{
 			Message: llm.Message{
 				Role:    "assistant",
-				Content: `{"mode":"react","domain":"code","complexity":2,"compaction_strategy":"sliding_window","suggested_tools":["bash_exec"],"needs_clarification":false}`,
+				Content: `{"domain":"code","complexity":2,"needs_clarification":false}`,
 			},
 		}},
 	}
@@ -35,12 +35,6 @@ func TestRoute_ReturnsValidRoutingDecision(t *testing.T) {
 	}
 	if decision.Complexity != 2 {
 		t.Errorf("expected complexity 2, got %d", decision.Complexity)
-	}
-	if decision.CompactionStrategy != "sliding_window" {
-		t.Errorf("expected compaction_strategy 'sliding_window', got '%s'", decision.CompactionStrategy)
-	}
-	if len(decision.SuggestedTools) != 1 || decision.SuggestedTools[0] != "bash_exec" {
-		t.Errorf("expected suggested_tools ['bash_exec'], got %v", decision.SuggestedTools)
 	}
 	if decision.NeedsClarification {
 		t.Errorf("expected needs_clarification false, got true")
@@ -139,7 +133,7 @@ func TestRoute_PlanExecuteMode(t *testing.T) {
 		responses: []*llm.ChatResponse{{
 			Message: llm.Message{
 				Role:    "assistant",
-				Content: `{"mode":"plan_execute","domain":"mixed","complexity":5,"compaction_strategy":"hierarchical","suggested_tools":["file_read","file_write","bash_exec"],"needs_clarification":false}`,
+				Content: `{"domain":"mixed","complexity":5,"needs_clarification":false}`,
 			},
 		}},
 	}
@@ -153,9 +147,6 @@ func TestRoute_PlanExecuteMode(t *testing.T) {
 
 	if decision.Complexity != 5 {
 		t.Errorf("expected complexity 5, got %d", decision.Complexity)
-	}
-	if decision.CompactionStrategy != "hierarchical" {
-		t.Errorf("expected compaction_strategy 'hierarchical', got '%s'", decision.CompactionStrategy)
 	}
 }
 
@@ -184,73 +175,6 @@ func TestRoute_HandlesJSONInCodeBlocks(t *testing.T) {
 	}
 	if decision.Complexity != 1 {
 		t.Errorf("expected complexity 1, got %d", decision.Complexity)
-	}
-}
-
-func TestRoute_AppliesCompactionStrategyForCode(t *testing.T) {
-	// Mock returns empty compaction_strategy with code domain
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"react","domain":"code","complexity":2}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	decision, err := router.Route(context.Background(), "read a file", nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	if decision.CompactionStrategy != "sliding_window" {
-		t.Errorf("expected compaction_strategy 'sliding_window' for code domain, got '%s'", decision.CompactionStrategy)
-	}
-}
-
-func TestRoute_AppliesCompactionStrategyForResearch(t *testing.T) {
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"react","domain":"research","complexity":3}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	decision, err := router.Route(context.Background(), "research topic", nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	if decision.CompactionStrategy != "summarization" {
-		t.Errorf("expected compaction_strategy 'summarization' for research domain, got '%s'", decision.CompactionStrategy)
-	}
-}
-
-func TestRoute_AppliesCompactionStrategyForMixedHighComplexity(t *testing.T) {
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"plan_execute","domain":"mixed","complexity":4}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	decision, err := router.Route(context.Background(), "complex mixed task", nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	if decision.CompactionStrategy != "hierarchical" {
-		t.Errorf("expected compaction_strategy 'hierarchical' for mixed domain with complexity >= 4, got '%s'", decision.CompactionStrategy)
 	}
 }
 
@@ -324,64 +248,6 @@ func TestRoute_UsesRouterRole(t *testing.T) {
 	// For now, this test verifies the call completes without error
 }
 
-// TestRoute_ConfidenceField tests that the Confidence field is correctly parsed from routing response.
-func TestRoute_ConfidenceField(t *testing.T) {
-	// Mock returns a routing response with confidence field
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"react","domain":"code","complexity":3,"compaction_strategy":"sliding_window","suggested_tools":["bash_exec"],"needs_clarification":false,"confidence":0.85}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	decision, err := router.Route(context.Background(), "implement a feature", nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	// Verify confidence field is parsed correctly
-	if decision.Confidence != 0.85 {
-		t.Errorf("expected confidence 0.85, got %f", decision.Confidence)
-	}
-
-	// Verify other fields are still correct
-	if decision.Domain != "code" {
-		t.Errorf("expected domain 'code', got '%s'", decision.Domain)
-	}
-	if decision.Complexity != 3 {
-		t.Errorf("expected complexity 3, got %d", decision.Complexity)
-	}
-}
-
-// TestRoute_ConfidenceFieldDefaultsToZero tests that Confidence defaults to 0 when not provided.
-func TestRoute_ConfidenceFieldDefaultsToZero(t *testing.T) {
-	// Mock returns a routing response WITHOUT confidence field
-	mock := &mockLLMCaller{
-		responses: []*llm.ChatResponse{{
-			Message: llm.Message{
-				Role:    "assistant",
-				Content: `{"mode":"direct","domain":"general","complexity":1}`,
-			},
-		}},
-	}
-
-	router := NewRouter(mock, 5)
-
-	decision, err := router.Route(context.Background(), "simple question", nil, nil)
-	if err != nil {
-		t.Fatalf("Route returned error: %v", err)
-	}
-
-	// Confidence should default to 0 when not provided
-	if decision.Confidence != 0 {
-		t.Errorf("expected confidence 0 (default), got %f", decision.Confidence)
-	}
-}
-
 func TestNewRouter_DefaultHistoryWindow(t *testing.T) {
 	mock := &mockLLMCaller{}
 
@@ -401,5 +267,59 @@ func TestNewRouter_DefaultHistoryWindow(t *testing.T) {
 	router = NewRouter(mock, 20)
 	if router.historyWindow != 20 {
 		t.Errorf("expected historyWindow=20, got %d", router.historyWindow)
+	}
+}
+
+func TestValidateRoutingDecision(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    RoutingDecision
+		expected RoutingDecision
+	}{
+		{"valid decision unchanged", RoutingDecision{Domain: "code", Complexity: 3}, RoutingDecision{Domain: "code", Complexity: 3}},
+		{"unknown domain defaults to general", RoutingDecision{Domain: "unknown", Complexity: 2}, RoutingDecision{Domain: "general", Complexity: 2}},
+		{"empty domain defaults to general", RoutingDecision{Domain: "", Complexity: 2}, RoutingDecision{Domain: "general", Complexity: 2}},
+		{"complexity clamped to min 1", RoutingDecision{Domain: "code", Complexity: 0}, RoutingDecision{Domain: "code", Complexity: 1}},
+		{"complexity clamped to max 5", RoutingDecision{Domain: "code", Complexity: 10}, RoutingDecision{Domain: "code", Complexity: 5}},
+		{"negative complexity clamped", RoutingDecision{Domain: "code", Complexity: -1}, RoutingDecision{Domain: "code", Complexity: 1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := tt.input
+			validateRoutingDecision(&d)
+			if d != tt.expected {
+				t.Errorf("got %+v, want %+v", d, tt.expected)
+			}
+		})
+	}
+}
+
+func TestRoute_RetriesOnInvalidJSON(t *testing.T) {
+	callCount := 0
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				// First call returns invalid JSON
+				return &llm.ChatResponse{
+					Message: llm.Message{Role: "assistant", Content: "I think this is a code task"},
+				}, nil
+			}
+			// Retry returns valid JSON
+			return &llm.ChatResponse{
+				Message: llm.Message{Role: "assistant", Content: `{"domain":"code","complexity":2,"needs_clarification":false}`},
+			}, nil
+		},
+	}
+	router := NewRouter(mock, 5)
+	decision, err := router.Route(context.Background(), "fix the bug", nil, nil)
+	if err != nil {
+		t.Fatalf("expected successful retry, got error: %v", err)
+	}
+	if decision.Domain != "code" {
+		t.Errorf("expected domain 'code', got '%s'", decision.Domain)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 LLM calls (original + retry), got %d", callCount)
 	}
 }

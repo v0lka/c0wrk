@@ -116,9 +116,9 @@ func TestReflector_Reflect_ValidActions(t *testing.T) {
 			expectedAction: "abort",
 		},
 		{
-			name:           "unknown action preserved",
+			name:           "unknown action defaults to retry",
 			response:       `{"summary": "Test", "suggested_action": "custom"}`,
-			expectedAction: "custom",
+			expectedAction: "retry",
 		},
 	}
 
@@ -327,4 +327,23 @@ func TestReflector_Reflect_EmptyTrajectory(t *testing.T) {
 // TestReflector_ImplementsInterface verifies Reflector implements orchestration.Reflector.
 func TestReflector_ImplementsInterface(t *testing.T) {
 	var _ orchestration.Reflector = (*Reflector)(nil)
+}
+
+func TestParseReflectionResponse_Defaults(t *testing.T) {
+	r := &Reflector{}
+
+	// Test with minimal JSON (missing optional fields)
+	reflection, err := r.parseReflectionResponse(`{"summary":"","suggested_action":"unknown"}`)
+	if err != nil {
+		t.Fatalf("parseReflectionResponse failed: %v", err)
+	}
+	if reflection.Summary != "Execution analysis unavailable" {
+		t.Errorf("expected default summary, got '%s'", reflection.Summary)
+	}
+	if reflection.SuggestedAction != "retry" {
+		t.Errorf("expected 'retry' for unknown action, got '%s'", reflection.SuggestedAction)
+	}
+	if reflection.Hypotheses == nil {
+		t.Error("expected non-nil hypotheses slice")
+	}
 }
