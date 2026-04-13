@@ -275,18 +275,23 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 }
 
 // GetSecuritySettings returns current security settings for the UI.
+// Internal tools are filtered out from the policy map.
 func (a *App) GetSecuritySettings() SecuritySettingsResponse {
 	a.configMu.RLock()
 	defer a.configMu.RUnlock()
 
 	if a.config == nil {
-		return SecuritySettingsResponse{DefaultPolicy: "auto"}
+		return SecuritySettingsResponse{DefaultPolicy: "user_confirm"}
 	}
 	resp := SecuritySettingsResponse{
 		DefaultPolicy: a.config.Security.DefaultPolicy,
 		ToolPolicies:  make(map[string]ToolPolicyResponse),
 	}
 	for name, cfg := range a.config.Security.ToolPolicies {
+		// Filter out internal tools
+		if tools.IsInternalTool(name) {
+			continue
+		}
 		resp.ToolPolicies[name] = ToolPolicyResponse{
 			Policy:    cfg.Policy,
 			Blacklist: cfg.Blacklist,
@@ -296,6 +301,7 @@ func (a *App) GetSecuritySettings() SecuritySettingsResponse {
 }
 
 // UpdateSecuritySettings updates security settings at runtime.
+// Internal tools are silently stripped from incoming policy updates.
 func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
@@ -310,6 +316,10 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 		a.config.Security.ToolPolicies = make(map[string]config.ToolPolicyConfig)
 	}
 	for name, policyCfg := range settings.ToolPolicies {
+		// Silently skip internal tools
+		if tools.IsInternalTool(name) {
+			continue
+		}
 		a.config.Security.ToolPolicies[name] = config.ToolPolicyConfig{
 			Policy:    policyCfg.Policy,
 			Blacklist: policyCfg.Blacklist,
@@ -320,6 +330,10 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	if a.toolRegistry != nil {
 		policyOverrides := make(map[string]tools.ToolPolicy)
 		for toolName, policyCfg := range settings.ToolPolicies {
+			// Silently skip internal tools
+			if tools.IsInternalTool(toolName) {
+				continue
+			}
 			policyOverrides[toolName] = tools.ParseToolPolicy(policyCfg.Policy)
 		}
 		a.toolRegistry.SetPolicyOverrides(policyOverrides)

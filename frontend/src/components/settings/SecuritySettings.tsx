@@ -6,7 +6,7 @@ import { GetSecuritySettings, UpdateSecuritySettings, GetToolList } from '../../
 import { desktop } from '../../../wailsjs/go/models'
 import { logger } from '@/lib/logger'
 
-type ToolPolicy = 'always_allow' | 'always_deny' | 'user_confirm' | 'auto'
+type ToolPolicy = 'always_allow' | 'always_deny' | 'user_confirm'
 
 interface ToolPolicyData {
   policy: ToolPolicy
@@ -38,11 +38,19 @@ const policyOptions: PolicyOption[] = [
   { value: 'always_allow', label: 'Always Allow' },
   { value: 'always_deny', label: 'Always Deny' },
   { value: 'user_confirm', label: 'User Confirm' },
-  { value: 'auto', label: 'Auto (Heuristics + LLM Judge)' },
 ]
 
 // Tools that support blacklist functionality
 const BLACKLIST_ENABLED_TOOLS = ['bash_exec']
+
+// Internal system tools that are always allowed and should not appear in UI
+const INTERNAL_TOOLS = new Set([
+  'ask_user',
+  'batch',
+  'finish',
+  'list_step_outputs',
+  'read_step_output',
+])
 
 function getGroupLabel(source: string): string {
   if (source === 'core') {
@@ -53,7 +61,7 @@ function getGroupLabel(source: string): string {
 
 export function SecuritySettings() {
   const [settings, setSettings] = useState<SecuritySettings>({
-    default_policy: 'auto',
+    default_policy: 'user_confirm',
     tool_policies: {},
   })
   const [tools, setTools] = useState<ToolInfo[]>([])
@@ -85,7 +93,11 @@ export function SecuritySettings() {
         if (!result || !Array.isArray(result)) {
           throw new Error('Invalid tool list response')
         }
-        setTools(result as ToolInfo[])
+        // Filter out internal tools that should not appear in UI
+        const filteredTools = (result as ToolInfo[]).filter(
+          (tool) => !INTERNAL_TOOLS.has(tool.name)
+        )
+        setTools(filteredTools)
       } catch (error) {
         logger.error('Failed to load tools:', error)
       } finally {
@@ -133,7 +145,7 @@ export function SecuritySettings() {
         ...settings.tool_policies,
         bash_exec: {
           ...settings.tool_policies['bash_exec'],
-          policy: settings.tool_policies['bash_exec']?.policy || 'auto',
+          policy: settings.tool_policies['bash_exec']?.policy || 'user_confirm',
           blacklist: [...currentBlacklist, newBlacklistPattern.trim()],
         },
       },
@@ -150,7 +162,7 @@ export function SecuritySettings() {
         ...settings.tool_policies,
         bash_exec: {
           ...settings.tool_policies['bash_exec'],
-          policy: settings.tool_policies['bash_exec']?.policy || 'auto',
+          policy: settings.tool_policies['bash_exec']?.policy || 'user_confirm',
           blacklist: currentBlacklist.filter((p) => p !== pattern),
         },
       },
@@ -215,7 +227,7 @@ export function SecuritySettings() {
             {getGroupLabel(source)}
           </h3>
           {(groupedTools[source] || []).map((tool) => {
-            const currentPolicy = settings.tool_policies[tool.name]?.policy || 'auto'
+            const currentPolicy = settings.tool_policies[tool.name]?.policy || 'user_confirm'
             const blacklist = settings.tool_policies[tool.name]?.blacklist || []
             const hasBlacklist = BLACKLIST_ENABLED_TOOLS.includes(tool.name)
 
@@ -296,7 +308,7 @@ export function SecuritySettings() {
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
         <p>
-          <strong>Auto</strong> mode uses heuristics and LLM Judge to determine if confirmation is needed.
+          <strong>User Confirm</strong> mode requires manual approval. Use the "Ask agent" button to get an AI safety assessment before deciding.
           <strong> Always Allow</strong> disables all confirmations (use with caution).
         </p>
       </div>

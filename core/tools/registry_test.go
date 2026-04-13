@@ -841,6 +841,107 @@ func TestAutoApproval_OutsideWorkspace(t *testing.T) {
 	}
 }
 
+// TestIsInternalTool_ReturnsTrueForInternalTools tests that IsInternalTool()
+// returns true for each of the 5 internal tools.
+func TestIsInternalTool_ReturnsTrueForInternalTools(t *testing.T) {
+	internalToolNames := []string{"ask_user", "batch", "finish", "list_step_outputs", "read_step_output"}
+
+	for _, name := range internalToolNames {
+		t.Run(name, func(t *testing.T) {
+			if !IsInternalTool(name) {
+				t.Errorf("IsInternalTool(%q) = false, want true", name)
+			}
+		})
+	}
+}
+
+// TestIsInternalTool_ReturnsFalseForNonInternalTools tests that IsInternalTool()
+// returns false for non-internal tools like "bash_exec".
+func TestIsInternalTool_ReturnsFalseForNonInternalTools(t *testing.T) {
+	nonInternalTools := []string{"bash_exec", "file_write", "file_read", "search_code", "edit_file"}
+
+	for _, name := range nonInternalTools {
+		t.Run(name, func(t *testing.T) {
+			if IsInternalTool(name) {
+				t.Errorf("IsInternalTool(%q) = true, want false", name)
+			}
+		})
+	}
+}
+
+// TestInternalTool_BypassesPolicyAlwaysDeny tests that internal tools bypass
+// policy resolution and execute even when the default policy is PolicyAlwaysDeny.
+func TestInternalTool_BypassesPolicyAlwaysDeny(t *testing.T) {
+	registry := NewToolRegistry()
+	// Register a mock internal tool (using "finish" as the name)
+	tool := &mockTool{
+		name:          "finish",
+		description:   "Finish the task",
+		inputSchema:   json.RawMessage(`{"type":"object"}`),
+		defaultPolicy: PolicyAlwaysDeny, // Even with AlwaysDeny as tool's default
+	}
+	registry.Register(tool)
+
+	// Set global default policy to AlwaysDeny
+	registry.SetDefaultPolicy(PolicyAlwaysDeny)
+
+	// Set up a confirm func that should NOT be called for internal tools
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"status":"success"}`)
+
+	// Execute the internal tool - it should bypass policy and execute successfully
+	result, err := registry.Execute(ctx, "finish", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError to be false for internal tool, got true with content: %s", result.Content)
+	}
+	if result.Content != `{"status":"success"}` {
+		t.Errorf("expected content %q, got %q", `{"status":"success"}`, result.Content)
+	}
+	if confirmCalled {
+		t.Error("expected confirmFunc NOT to be called for internal tools")
+	}
+}
+
+// TestInternalTool_BypassesPolicyUserConfirm tests that internal tools bypass
+// policy resolution and execute even when the policy would require user confirmation.
+func TestInternalTool_BypassesPolicyUserConfirm(t *testing.T) {
+	registry := NewToolRegistry()
+	// Register a mock internal tool
+	tool := newMockTool("ask_user", "Ask the user a question")
+	registry.Register(tool)
+
+	// Set up a confirm func that should NOT be called for internal tools
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"question":"What is your name?"}`)
+
+	// Execute the internal tool - it should bypass confirmation
+	result, err := registry.Execute(ctx, "ask_user", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError to be false for internal tool, got true")
+	}
+	if confirmCalled {
+		t.Error("expected confirmFunc NOT to be called for internal tools")
+	}
+}
+
 // TestAutoApproval_AlwaysDenyRespected tests that PolicyAlwaysDeny is still
 // respected even when all paths are within the workspace.
 func TestAutoApproval_AlwaysDenyRespected(t *testing.T) {

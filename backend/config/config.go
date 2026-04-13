@@ -195,7 +195,7 @@ type SecurityConfig struct {
 
 // ToolPolicyConfig holds per-tool security policy configuration.
 type ToolPolicyConfig struct {
-	Policy    string   `yaml:"policy"`    // "always_allow"|"always_deny"|"user_confirm"|"auto"
+	Policy    string   `yaml:"policy"`    // "always_allow"|"always_deny"|"user_confirm"
 	Blacklist []string `yaml:"blacklist"` // regex patterns (e.g. for bash)
 }
 
@@ -379,5 +379,26 @@ func validate(cfg *Config) error {
 		}
 	}
 
+	// Validate that internal tools are not in tool_policies
+	for toolName := range cfg.Security.ToolPolicies {
+		if isInternalTool(toolName) {
+			return fmt.Errorf("tool %q is an internal tool and cannot have a custom policy", toolName)
+		}
+	}
+
 	return nil
+}
+
+// isInternalTool returns true if the given tool name is an internal tool
+// that is always allowed and cannot have a custom policy.
+// This must be kept in sync with core/tools/registry.go internalTools.
+func isInternalTool(name string) bool {
+	internalTools := map[string]bool{
+		"ask_user":          true,
+		"batch":             true,
+		"finish":            true,
+		"list_step_outputs": true,
+		"read_step_output":  true,
+	}
+	return internalTools[name]
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -777,6 +778,79 @@ func TestMCPServerConfig_RoundTrip(t *testing.T) {
 	}
 	if len(restored.Headers) != len(original.Headers) {
 		t.Errorf("Headers length = %d, want %d", len(restored.Headers), len(original.Headers))
+	}
+}
+
+// TestConfigValidation_RejectsInternalToolPolicies tests that config validation
+// rejects a config where an internal tool name appears in Security.ToolPolicies.
+func TestConfigValidation_RejectsInternalToolPolicies(t *testing.T) {
+	internalTools := []string{"ask_user", "batch", "finish", "list_step_outputs", "read_step_output"}
+
+	for _, toolName := range internalTools {
+		t.Run(toolName, func(t *testing.T) {
+			content := fmt.Sprintf(`
+llm:
+  active_provider: anthropic
+  anthropic:
+    api_key: "test-key"
+    model: claude-3-haiku
+security:
+  tool_policies:
+    %s:
+      policy: always_allow
+`, toolName)
+			configPath := writeTestConfig(t, content)
+
+			_, err := Load(configPath)
+			if err == nil {
+				t.Fatalf("expected error when internal tool %q is in tool_policies, got nil", toolName)
+			}
+
+			expectedSubstring := "internal tool"
+			if !contains(err.Error(), expectedSubstring) {
+				t.Errorf("expected error to contain %q, got: %v", expectedSubstring, err)
+			}
+		})
+	}
+}
+
+// TestConfigValidation_AcceptsNonInternalToolPolicies tests that config validation
+// accepts a config where a non-internal tool appears in Security.ToolPolicies.
+func TestConfigValidation_AcceptsNonInternalToolPolicies(t *testing.T) {
+	nonInternalTools := []string{"bash_exec", "file_write", "file_read"}
+
+	for _, toolName := range nonInternalTools {
+		t.Run(toolName, func(t *testing.T) {
+			content := fmt.Sprintf(`
+llm:
+  active_provider: anthropic
+  anthropic:
+    api_key: "test-key"
+    model: claude-3-haiku
+security:
+  tool_policies:
+    %s:
+      policy: always_allow
+`, toolName)
+			configPath := writeTestConfig(t, content)
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("unexpected error for non-internal tool %q: %v", toolName, err)
+			}
+
+			// Verify the policy was loaded correctly
+			if cfg.Security.ToolPolicies == nil {
+				t.Fatalf("expected ToolPolicies to be initialized")
+			}
+			policy, ok := cfg.Security.ToolPolicies[toolName]
+			if !ok {
+				t.Errorf("expected policy for tool %q to be loaded", toolName)
+			}
+			if policy.Policy != "always_allow" {
+				t.Errorf("expected policy 'always_allow' for tool %q, got %q", toolName, policy.Policy)
+			}
+		})
 	}
 }
 

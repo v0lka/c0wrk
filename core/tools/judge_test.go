@@ -795,6 +795,69 @@ func TestAllPathsInWorkspace(t *testing.T) {
 	}
 }
 
+// TestJudge_InternalTools_ReturnsAllowImmediately tests that Judge() returns
+// VerdictAllow immediately for internal tools without calling the LLM.
+func TestJudge_InternalTools_ReturnsAllowImmediately(t *testing.T) {
+	internalTools := []string{"ask_user", "batch", "finish", "list_step_outputs", "read_step_output"}
+
+	for _, toolName := range internalTools {
+		t.Run(toolName, func(t *testing.T) {
+			// Mock provider that would return CONFIRM if called
+			mockProvider := &mockLLMProvider{
+				response: &llm.ChatResponse{
+					Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
+				},
+			}
+			judge := NewToolJudge(mockProvider, "test-model", 0)
+
+			ctx := context.Background()
+			input := json.RawMessage(`{"data":"test"}`)
+
+			verdict, reasoning, err := judge.Judge(ctx, toolName, input, "test task")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if verdict != VerdictAllow {
+				t.Errorf("expected VerdictAllow for internal tool %q, got %d", toolName, verdict)
+			}
+			if reasoning != "internal tool, always allowed" {
+				t.Errorf("expected reasoning 'internal tool, always allowed', got %q", reasoning)
+			}
+			if mockProvider.callCount != 0 {
+				t.Errorf("expected 0 LLM calls for internal tool, got %d", mockProvider.callCount)
+			}
+		})
+	}
+}
+
+// TestJudge_NonInternalTools_CallsLLM tests that non-internal tools still
+// go through the normal LLM evaluation process.
+func TestJudge_NonInternalTools_CallsLLM(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model", 0)
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"command":"ls"}`)
+
+	verdict, reasoning, err := judge.Judge(ctx, "bash_exec", input, "list files")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+	if reasoning != "Safe operation" {
+		t.Errorf("expected reasoning 'Safe operation', got %q", reasoning)
+	}
+	if mockProvider.callCount != 1 {
+		t.Errorf("expected 1 LLM call for non-internal tool, got %d", mockProvider.callCount)
+	}
+}
+
 // TestJudgeEvaluate_WithEnvInfo verifies that the judge's user prompt includes
 // the compact environment block when EnvInfo is present in context.
 func TestJudge_TempDirPreCheck_AllowsInternalPaths(t *testing.T) {

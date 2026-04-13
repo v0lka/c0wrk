@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/user/agent/backend/config"
+	"github.com/user/agent/core/tools"
 	"github.com/user/agent/core/tools/mcp"
 )
 
@@ -64,6 +65,7 @@ func (a *App) GetMCPServers() map[string]config.MCPServerConfig {
 }
 
 // GetToolList returns all registered tools with source and policy info.
+// Internal tools are filtered out from the list.
 func (a *App) GetToolList() []ToolInfo {
 	if a.toolRegistry == nil {
 		return []ToolInfo{}
@@ -77,6 +79,11 @@ func (a *App) GetToolList() []ToolInfo {
 
 	toolInfos := make([]ToolInfo, 0, len(descriptors))
 	for _, desc := range descriptors {
+		// Filter out internal tools
+		if tools.IsInternalTool(desc.Name) {
+			continue
+		}
+
 		// Resolve effective policy
 		policy := a.resolveToolPolicy(desc.Name)
 
@@ -95,7 +102,7 @@ func (a *App) GetToolList() []ToolInfo {
 // It checks policy overrides and default policy from config.
 func (a *App) resolveToolPolicy(toolName string) string {
 	if a.config == nil {
-		return "auto"
+		return "user_confirm"
 	}
 
 	// Check per-tool override first
@@ -108,7 +115,7 @@ func (a *App) resolveToolPolicy(toolName string) string {
 		return a.config.Security.DefaultPolicy
 	}
 
-	return "auto"
+	return "user_confirm"
 }
 
 // UpdateMCPServers updates MCP server configuration and hot-reloads the gateway.

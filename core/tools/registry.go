@@ -10,6 +10,23 @@ import (
 	sdktools "github.com/user/agent/sdk/tools"
 )
 
+// internalTools is the set of tool names that are always allowed,
+// excluded from policy configuration, and bypass the tool judge entirely.
+var internalTools = map[string]struct{}{
+	"ask_user":          {},
+	"batch":             {},
+	"finish":            {},
+	"list_step_outputs": {},
+	"read_step_output":  {},
+}
+
+// IsInternalTool returns true if the given tool name is an internal tool
+// that is always allowed and bypasses policy/judge checks.
+func IsInternalTool(name string) bool {
+	_, ok := internalTools[name]
+	return ok
+}
+
 // ToolRegistry stores all available tools and provides them to Executor.
 // It embeds the SDK ToolRegistry for basic operations and adds policy enforcement on top.
 // Thread-safe via sync.RWMutex.
@@ -84,10 +101,16 @@ func (r *ToolRegistry) resolvePolicy(name string, tool Tool) ToolPolicy {
 // Execute looks up a tool by name and executes it with the given input.
 // Returns an error if the tool is not found.
 // Security policy is resolved via resolvePolicy() and applied accordingly.
+// Internal tools bypass all policy and judge checks.
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (ToolResult, error) {
 	tool, ok := r.Get(name)
 	if !ok {
 		return ToolResult{}, fmt.Errorf("tool not found: %s", name)
+	}
+
+	// Internal tools bypass all policy/judge checks
+	if IsInternalTool(name) {
+		return tool.Execute(ctx, input)
 	}
 
 	policy := r.resolvePolicy(name, tool)

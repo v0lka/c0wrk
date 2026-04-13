@@ -70,6 +70,11 @@ func judgeCacheKey(toolName string, input json.RawMessage) string {
 // On any LLM error, it defaults to VerdictConfirm (fail-safe) with a reasoning explaining the failure.
 // Returns (verdict, reasoning, error).
 func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (JudgeVerdict, string, error) {
+	// Internal tools are always allowed (defense-in-depth)
+	if IsInternalTool(toolName) {
+		return VerdictAllow, "internal tool, always allowed", nil
+	}
+
 	// Use context-based task context as fallback
 	if taskContext == "" {
 		taskContext = TaskContextFrom(ctx)
