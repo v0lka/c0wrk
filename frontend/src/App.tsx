@@ -4,6 +4,7 @@ import { useThemeEffect } from '@/stores/uiStore'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useWails } from '@/hooks/useWails'
 import { AlertCircle, X } from 'lucide-react'
+import { CodebaseMemoryBanner } from '@/components/CodebaseMemoryBanner'
 
 interface StartupError {
   message: string
@@ -33,8 +34,9 @@ function App() {
 
   return (
     <TooltipProvider>
+      <CodebaseMemoryBanner />
       {startupError && (
-        <div className="fixed top-0 left-0 right-0 z-50 bg-destructive/95 text-destructive-foreground p-4 shadow-lg">
+        <div className="fixed top-0 left-0 right-0 z-50 bg-destructive/95 text-destructive-foreground p-4 shadow-lg" style={{ top: '48px' }}>
           <div className="max-w-4xl mx-auto flex items-start gap-3">
             <AlertCircle className="h-5 w-5 mt-0.5 flex-shrink-0" />
             <div className="flex-1">

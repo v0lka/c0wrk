@@ -232,7 +232,7 @@ func (r *recordingEvents) AssistantDone(content string, inputTokens, outputToken
 	r.record("AssistantDone")
 }
 
-func (r *recordingEvents) TokensUsed(inputTokens, outputTokens int) {
+func (r *recordingEvents) TokensUsed(inputTokens, outputTokens int, model, tier string) {
 	r.record("TokensUsed")
 }
 

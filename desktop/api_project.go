@@ -21,6 +21,10 @@ func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, er
 		return nil, err
 	}
 	wailsRuntime.EventsEmit(a.ctx, "project:created", p)
+
+	// Trigger codebase indexing for the new project
+	a.IndexRepository(p.WorkspacePath)
+
 	return p, nil
 }
 
@@ -105,8 +109,14 @@ func (a *App) SwitchProject(id string) error {
 		_ = a.watcher.Close()
 		a.watcher = nil
 	}
+
+	// Capture project path for the watcher closure
+	projectPath := p.WorkspacePath
+
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
 		wailsRuntime.EventsEmit(a.ctx, "workspace:tree_changed", nil)
+		// Trigger debounced indexing on workspace changes
+		a.debouncedIndexRepository(projectPath)
 	})
 	if err != nil {
 		slog.Warn("failed to start workspace file watcher", "project", id, "error", err)
@@ -115,5 +125,9 @@ func (a *App) SwitchProject(id string) error {
 	}
 
 	wailsRuntime.EventsEmit(a.ctx, "project:switched", p)
+
+	// Trigger codebase indexing when switching to a project
+	a.IndexRepository(p.WorkspacePath)
+
 	return nil
 }

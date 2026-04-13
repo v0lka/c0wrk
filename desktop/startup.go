@@ -983,6 +983,10 @@ func (a *App) Startup(ctx context.Context) {
 		}
 		a.pendingStepLimit.Delete(requestID)
 	})
+
+	// Check codebase-memory-mcp availability and emit status
+	cmStatus := a.CheckCodebaseMemoryMCP()
+	wailsRuntime.EventsEmit(a.ctx, "codememory:status", cmStatus)
 }
 
 // Shutdown is called when the Wails app is shutting down.

@@ -28,6 +28,8 @@ type ChatRequest struct {
 
 // ChatResponse — LLM response.
 type ChatResponse struct {
+	Model      string     `json:"model"`      // Model ID used for this response
+	Tier       string     `json:"tier"`       // Model tier: "large" or "small"
 	Message    Message    `json:"message"`
 	Reasoning  string     `json:"reasoning"` // Extended thinking/reasoning (if model supports)
 	Usage      TokenUsage `json:"usage"`

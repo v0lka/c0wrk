@@ -32,6 +32,8 @@ declare global {
           ListProjects(): Promise<ProjectInfo[]>
           SwitchProject(id: string): Promise<void>
           PickDirectory(): Promise<string>
+          CheckCodebaseMemoryMCP(): Promise<[boolean, string]>
+          InstallCodebaseMemoryMCP(): Promise<void>
         }
       }
     }

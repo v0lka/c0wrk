@@ -126,6 +126,7 @@ func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
 func (n *noopEmitter) Reflection(_ string, _ []string, _, _ int)          {}
 func (n *noopEmitter) Retry(_, _ int)                                     {}
 func (n *noopEmitter) StepRetry(_ string, _, _ int)                       {}
+func (n *noopEmitter) TokensUsed(_, _ int, _, _ string)                   {}
 func (n *noopEmitter) Service(_ string)                                   {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
 func (n *noopEmitter) ReplanFailed(_ error)                               {}

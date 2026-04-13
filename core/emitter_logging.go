@@ -89,9 +89,9 @@ func (l *loggingEmitter) AssistantDone(content string, inputTokens, outputTokens
 	l.inner.AssistantDone(content, inputTokens, outputTokens)
 }
 
-func (l *loggingEmitter) TokensUsed(inputTokens, outputTokens int) {
-	l.logger.Debug("executor: tokens used", "inputTokens", inputTokens, "outputTokens", outputTokens)
-	l.inner.TokensUsed(inputTokens, outputTokens)
+func (l *loggingEmitter) TokensUsed(inputTokens, outputTokens int, model, tier string) {
+	l.logger.Debug("executor: tokens used", "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "tier", tier)
+	l.inner.TokensUsed(inputTokens, outputTokens, model, tier)
 }
 
 func (l *loggingEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {

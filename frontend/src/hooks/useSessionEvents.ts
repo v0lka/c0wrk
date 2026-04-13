@@ -562,15 +562,25 @@ export function useSessionEvents(sessionId: string | null) {
           status: fillData.status,
         })
       }
-      // Always update session tokens
-      useChatStore.getState().setSessionTokens(fillData.session_input_tokens ?? 0, fillData.session_output_tokens ?? 0)
+      // Always update session tokens with model/tier
+      useChatStore.getState().setSessionTokens(
+        fillData.session_input_tokens ?? 0,
+        fillData.session_output_tokens ?? 0,
+        fillData.model,
+        fillData.tier
+      )
     })
 
     on('session_tokens', (data: unknown) => {
       if (!mounted) return
       if (!isSessionTokensData(data)) return
       if (!isActiveSession()) return
-      useChatStore.getState().setSessionTokens(data.session_input_tokens, data.session_output_tokens)
+      useChatStore.getState().setSessionTokens(
+        data.session_input_tokens,
+        data.session_output_tokens,
+        data.model,
+        data.tier
+      )
     })
 
     on('task_failed_resumable', (data: unknown) => {

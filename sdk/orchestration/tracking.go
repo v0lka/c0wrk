@@ -29,7 +29,7 @@ func NewTokenTrackingCaller(inner agent.LLMCaller, emitter agent.AgentEvents) ag
 func (t *tokenTrackingCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	resp, err := t.inner.Call(ctx, req)
 	if err == nil && resp != nil {
-		t.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens)
+		t.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Model, resp.Tier)
 	}
 	return resp, err
 }

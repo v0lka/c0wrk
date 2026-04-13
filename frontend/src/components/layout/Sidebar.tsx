@@ -24,6 +24,7 @@ import { FileTreePanel } from './FileTreePanel'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import type { SessionInfo } from '@/lib/wails'
+import { useSettingsStore } from '@/stores/settingsStore'
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -242,7 +243,7 @@ export function Sidebar() {
   const sessionAPI = useSessionAPI()
 
   // ── Local UI state ──
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const openSettings = useSettingsStore(s => s.openSettings)
   const [createProjectOpen, setCreateProjectOpen] = useState(false)
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -497,7 +498,7 @@ export function Sidebar() {
           variant="ghost"
           size="icon"
           className="h-7 w-7 flex-shrink-0"
-          onClick={() => setSettingsOpen(true)}
+          onClick={() => openSettings()}
           title="Settings"
         >
           <Settings className="h-3.5 w-3.5" />
@@ -613,7 +614,7 @@ export function Sidebar() {
       )}
 
       {/* ═══ Modals ═══ */}
-      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SettingsModal />
       <CreateProjectDialog open={createProjectOpen} onOpenChange={setCreateProjectOpen} />
     </div>
   )

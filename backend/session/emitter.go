@@ -28,6 +28,8 @@ type tokenState struct {
 	lastUsedTokens      int
 	lastMaxTokens       int
 	lastFillStatus      string
+	lastModel           string // last model used
+	lastTier            string // last tier used
 	tokenPersist        func(inputTokens, outputTokens int) // callback to persist tokens
 }
 
@@ -380,6 +382,8 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	e.tokens.mu.Lock()
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
+	lastModel := e.tokens.lastModel
+	lastTier := e.tokens.lastTier
 	e.tokens.mu.Unlock()
 
 	e.mu.Lock()
@@ -396,6 +400,8 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 		Data: SessionTokensEventData{
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
+			Model:               lastModel,
+			Tier:                lastTier,
 		},
 	})
 
@@ -414,13 +420,20 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 // and emits a "session_tokens" event. This is called after every LLM response
 // regardless of the suppressAssistantEvents flag, ensuring all tokens (including
 // from plan-step subagents) are counted.
-func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int) {
-	slog.Debug("emitter: token usage", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens)
+func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int, model, tier string) {
+	slog.Debug("emitter: token usage", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "tier", tier)
 	e.tokens.mu.Lock()
 	e.tokens.sessionInputTokens += inputTokens
 	e.tokens.sessionOutputTokens += outputTokens
+	// Track latest model/tier for display
+	if model != "" {
+		e.tokens.lastModel = model
+		e.tokens.lastTier = tier
+	}
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
+	lastModel := e.tokens.lastModel
+	lastTier := e.tokens.lastTier
 	persist := e.tokens.tokenPersist
 	e.tokens.mu.Unlock()
 
@@ -434,6 +447,8 @@ func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int) {
 		Data: SessionTokensEventData{
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
+			Model:               lastModel,
+			Tier:                lastTier,
 		},
 	})
 }
@@ -448,6 +463,8 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 	e.tokens.lastFillStatus = status
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
+	lastModel := e.tokens.lastModel
+	lastTier := e.tokens.lastTier
 	e.tokens.mu.Unlock()
 
 	e.mu.Lock()
@@ -463,6 +480,8 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 			PlanStepID:          stepID,
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
+			Model:               lastModel,
+			Tier:                lastTier,
 		},
 	})
 }

@@ -151,12 +151,16 @@ type ContextFillEventData struct {
 	PlanStepID          string  `json:"plan_step_id,omitempty"`
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
+	Model               string  `json:"model"`
+	Tier                string  `json:"tier"`
 }
 
 // SessionTokensEventData is the typed Data payload for "session_tokens" events.
 type SessionTokensEventData struct {
-	SessionInputTokens  int `json:"session_input_tokens"`
-	SessionOutputTokens int `json:"session_output_tokens"`
+	SessionInputTokens  int    `json:"session_input_tokens"`
+	SessionOutputTokens int    `json:"session_output_tokens"`
+	Model               string `json:"model"`
+	Tier                string `json:"tier"`
 }
 
 // --- ChatMessage metadata helpers ---

@@ -1,5 +1,19 @@
 export namespace desktop {
 	
+	export class CodeMemoryStatus {
+	    installed: boolean;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CodeMemoryStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.installed = source["installed"];
+	        this.path = source["path"];
+	    }
+	}
 	export class ConfigProviderFull {
 	    base_url: string;
 	    api_key: string;

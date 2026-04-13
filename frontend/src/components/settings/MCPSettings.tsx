@@ -10,6 +10,9 @@ import {
   AlertCircle,
   CheckCircle2,
   X,
+  Download,
+  Loader2,
+  Cpu,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,6 +35,8 @@ import {
   GetMCPServers,
   GetToolList,
   UpdateMCPServers,
+  CheckCodebaseMemoryMCP,
+  InstallCodebaseMemoryMCP,
 } from '../../../wailsjs/go/desktop/App'
 import { mcp, desktop } from '../../../wailsjs/go/models'
 
@@ -44,6 +49,7 @@ interface MCPServerConfig {
   headers: Record<string, string>
 }
 import { logger } from '@/lib/logger'
+import { useWails } from '@/hooks/useWails'
 
 type TransportType = 'stdio' | 'http'
 
@@ -92,6 +98,13 @@ export function MCPSettings() {
   // Delete confirmation state
   const [deleteConfirmName, setDeleteConfirmName] = useState<string | null>(null)
 
+  // Codebase Memory state
+  const { runtime } = useWails()
+  const [cmInstalled, setCmInstalled] = useState(false)
+  const [cmPath, setCmPath] = useState('')
+  const [installProgress, setInstallProgress] = useState<string | null>(null)
+  const [installError, setInstallError] = useState<string | null>(null)
+
   const loadData = useCallback(async () => {
     setIsLoading(true)
     setError(null)
@@ -115,6 +128,61 @@ export function MCPSettings() {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  // Check Codebase Memory status on mount
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const result = await CheckCodebaseMemoryMCP()
+        setCmInstalled(result.installed)
+        setCmPath(result.path)
+      } catch (err) {
+        logger.error('Failed to check Codebase Memory status:', err)
+      }
+    }
+    checkStatus()
+  }, [])
+
+  // Listen for Codebase Memory events
+  useEffect(() => {
+    if (!runtime) return
+
+    const unsubProgress = runtime.EventsOn('codememory:install-progress', (data: unknown) => {
+      const progress = data as string
+      setInstallProgress(progress)
+      if (progress === 'done') {
+        setInstallProgress(null)
+      } else if (progress === 'error') {
+        setInstallProgress(null)
+      }
+    })
+
+    const unsubStatus = runtime.EventsOn('codememory:status', (data: unknown) => {
+      const status = data as { installed: boolean; path: string }
+      setCmInstalled(status.installed)
+      setCmPath(status.path)
+      if (status.installed) {
+        setInstallProgress(null)
+        setInstallError(null)
+      }
+    })
+
+    return () => {
+      unsubProgress()
+      unsubStatus()
+    }
+  }, [runtime])
+
+  const handleInstallCodebaseMemory = async () => {
+    setInstallProgress('downloading')
+    setInstallError(null)
+    try {
+      await InstallCodebaseMemoryMCP()
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err))
+      setInstallProgress(null)
+    }
+  }
 
   const toggleExpanded = (serverName: string) => {
     setExpandedServers((prev) => {
@@ -304,6 +372,59 @@ export function MCPSettings() {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Codebase Memory Section */}
+      <div className="border rounded-lg p-4">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-muted">
+            <Cpu className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-medium text-sm">Codebase Memory</span>
+              {cmInstalled ? (
+                <Badge variant="secondary" className="text-xs bg-green-500/10 text-green-600 border-green-500/20">
+                  Installed
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="text-xs bg-orange-500/10 text-orange-600 border-orange-500/20">
+                  Not Installed
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              High-performance code intelligence for your projects
+            </p>
+            {cmInstalled ? (
+              <p className="text-xs text-muted-foreground font-mono truncate" title={cmPath}>
+                {cmPath}
+              </p>
+            ) : installProgress ? (
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled>
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  {installProgress === 'downloading' && 'Downloading...'}
+                  {installProgress === 'installing' && 'Installing...'}
+                  {installProgress === 'configuring' && 'Configuring...'}
+                </Button>
+              </div>
+            ) : installError ? (
+              <div className="space-y-2">
+                <p className="text-xs text-destructive">{installError}</p>
+                <Button size="sm" variant="outline" onClick={handleInstallCodebaseMemory}>
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" onClick={handleInstallCodebaseMemory}>
+                <Download className="h-3 w-3 mr-1" />
+                Install
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Header with refresh button */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">

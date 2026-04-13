@@ -282,7 +282,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		thought := resp.Message.Content
 
 		// Always accumulate tokens regardless of suppressAssistantEvents
-		e.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens)
+		e.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Model, resp.Tier)
 
 		// Emit thought event
 		if thought != "" || resp.Reasoning != "" {

@@ -150,11 +150,15 @@ export interface ContextFillData {
   plan_step_id?: string
   session_input_tokens: number
   session_output_tokens: number
+  model: string
+  tier: string
 }
 
 export interface SessionTokensData {
   session_input_tokens: number
   session_output_tokens: number
+  model: string
+  tier: string
 }
 
 export function isSessionTokensData(data: unknown): data is SessionTokensData {

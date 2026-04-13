@@ -341,6 +341,8 @@ interface ChatState {
   stepContextFill: Record<string, ContextFillState> // per-step context fill
   sessionInputTokens: number
   sessionOutputTokens: number
+  sessionModel: string
+  sessionTier: string
   activityStatus: string | null
   isTaskActive: boolean
   addMessage: (sessionId: string, msg: ChatMessageUI) => void
@@ -352,7 +354,7 @@ interface ChatState {
   setThinking: (thinking: boolean) => void
   setStepContextFill: (stepId: string, data: ContextFillState) => void
   clearStepContextFill: (stepId: string) => void
-  setSessionTokens: (inputTokens: number, outputTokens: number) => void
+  setSessionTokens: (inputTokens: number, outputTokens: number, model?: string, tier?: string) => void
   setActivityStatus: (status: string | null) => void
   resolveAction: (sessionId: string, messageId: string, metadataUpdates?: Record<string, unknown>) => void
   resolveResumeMessage: (sessionId: string) => void
@@ -367,6 +369,8 @@ export const useChatStore = create<ChatState>((set) => ({
   stepContextFill: {},
   sessionInputTokens: 0,
   sessionOutputTokens: 0,
+  sessionModel: '',
+  sessionTier: '',
   activityStatus: null,
   isTaskActive: false,
   addMessage: (sessionId, msg) => set((s) => ({
@@ -410,9 +414,11 @@ export const useChatStore = create<ChatState>((set) => ({
       Object.entries(s.stepContextFill).filter(([k]) => k !== stepId)
     ),
   })),
-  setSessionTokens: (inputTokens, outputTokens) => set({
+  setSessionTokens: (inputTokens, outputTokens, model?, tier?) => set({
     sessionInputTokens: inputTokens,
     sessionOutputTokens: outputTokens,
+    ...(model !== undefined && { sessionModel: model }),
+    ...(tier !== undefined && { sessionTier: tier }),
   }),
   setActivityStatus: (status) => set({ activityStatus: status }),
   resolveAction: (sessionId, messageId, metadataUpdates) => set((s) => {
@@ -455,5 +461,7 @@ export const useChatStore = create<ChatState>((set) => ({
     stepContextFill: {},
     sessionInputTokens: 0,
     sessionOutputTokens: 0,
+    sessionModel: '',
+    sessionTier: '',
   }),
 }))

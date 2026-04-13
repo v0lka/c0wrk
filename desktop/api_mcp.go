@@ -1,10 +1,22 @@
 package desktop
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/core/tools"
@@ -220,4 +232,354 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 	}
 
 	return nil
+}
+
+// CheckCodebaseMemoryMCP checks if codebase-memory-mcp is installed and returns its path.
+// CodeMemoryStatus represents the installation status of codebase-memory-mcp.
+type CodeMemoryStatus struct {
+	Installed bool   `json:"installed"`
+	Path      string `json:"path"`
+}
+
+// CheckCodebaseMemoryMCP checks if codebase-memory-mcp is installed and returns its status.
+func (a *App) CheckCodebaseMemoryMCP() CodeMemoryStatus {
+	// Try exec.LookPath first
+	if path, err := exec.LookPath("codebase-memory-mcp"); err == nil {
+		return CodeMemoryStatus{Installed: true, Path: path}
+	}
+	// Check common install location
+	home, _ := os.UserHomeDir()
+	localPath := filepath.Join(home, ".local", "bin", "codebase-memory-mcp")
+	if _, err := os.Stat(localPath); err == nil {
+		return CodeMemoryStatus{Installed: true, Path: localPath}
+	}
+	return CodeMemoryStatus{}
+}
+
+// InstallCodebaseMemoryMCP downloads and installs the codebase-memory-mcp binary.
+func (a *App) InstallCodebaseMemoryMCP() error {
+	// Determine OS/arch
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+
+	// Map Go arch to release arch
+	arch := goarch
+	if goarch == "amd64" {
+		arch = "x86_64"
+	}
+
+	// Determine file extension
+	ext := "tar.gz"
+	if goos == "windows" {
+		ext = "zip"
+	}
+
+	// Build download URL
+	url := fmt.Sprintf("https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-%s-%s.%s", goos, arch, ext)
+
+	slog.Info("downloading codebase-memory-mcp", "url", url)
+	wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "downloading")
+
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "codebase-memory-mcp-*")
+	if err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Download file
+	client := &http.Client{Timeout: 5 * time.Minute}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
+	if err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("failed to download: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("download failed with status: %s", resp.Status)
+	}
+
+	// Save to temp file
+	archivePath := filepath.Join(tempDir, "codebase-memory-mcp."+ext)
+	out, err := os.Create(archivePath)
+	if err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	_, err = io.Copy(out, resp.Body)
+	_ = out.Close()
+	if err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("failed to save download: %w", err)
+	}
+
+	slog.Info("extracting codebase-memory-mcp")
+	wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "installing")
+
+	// Extract archive
+	extractDir := filepath.Join(tempDir, "extracted")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("failed to create extract directory: %w", err)
+	}
+
+	if goos == "windows" {
+		if err := extractZip(archivePath, extractDir); err != nil {
+			wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+			return fmt.Errorf("failed to extract zip: %w", err)
+		}
+	} else {
+		cmd := exec.CommandContext(context.Background(), "tar", "xzf", archivePath, "-C", extractDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+			return fmt.Errorf("failed to extract tar.gz: %w, output: %s", err, string(output))
+		}
+	}
+
+	// Run installer
+	slog.Info("running codebase-memory-mcp installer")
+	var installCmd *exec.Cmd
+	if goos == "windows" {
+		installCmd = exec.CommandContext(context.Background(), "powershell", "-File", "install.ps1", "-SkipConfig")
+	} else {
+		installCmd = exec.CommandContext(context.Background(), "./install.sh", "--skip-config")
+	}
+	installCmd.Dir = extractDir
+	if output, err := installCmd.CombinedOutput(); err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+		return fmt.Errorf("installer failed: %w, output: %s", err, string(output))
+	}
+
+	// Verify installation
+	var installPath string
+	if path, err := exec.LookPath("codebase-memory-mcp"); err == nil {
+		installPath = path
+	} else {
+		home, _ := os.UserHomeDir()
+		localPath := filepath.Join(home, ".local", "bin", "codebase-memory-mcp")
+		if _, err := os.Stat(localPath); err == nil {
+			installPath = localPath
+		} else {
+			wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+			return errors.New("installation verification failed: binary not found after install")
+		}
+	}
+
+	slog.Info("codebase-memory-mcp installed", "path", installPath)
+	wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "configuring")
+
+	// Add MCP config entry
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	if a.config.MCP.Servers == nil {
+		a.config.MCP.Servers = make(map[string]config.MCPServerConfig)
+	}
+	a.config.MCP.Servers["codebase-memory"] = config.MCPServerConfig{
+		Transport: "stdio",
+		Command:   "codebase-memory-mcp",
+	}
+
+	// Persist config
+	if err := a.persistConfig(); err != nil {
+		slog.Warn("failed to persist MCP server settings", "error", err)
+	}
+
+	// Build gateway config from server configs
+	mcpEntries := make(map[string]mcp.ServerEntry, len(a.config.MCP.Servers))
+	for name, cfg := range a.config.MCP.Servers {
+		mcpEntries[name] = mcp.ServerEntry{
+			Transport: cfg.Transport,
+			Command:   cfg.Command,
+			Args:      cfg.Args,
+			Env:       cfg.Env,
+			URL:       cfg.URL,
+			Headers:   cfg.Headers,
+		}
+	}
+
+	// Get logger
+	var log *slog.Logger
+	if a.sessionLogger != nil {
+		log = a.sessionLogger.Logger()
+	} else {
+		log = slog.Default()
+	}
+
+	// Reconfigure gateway (or start if nil)
+	if a.mcpGateway == nil {
+		gateway, err := mcp.StartGateway(context.Background(), mcp.GatewayConfig{Servers: mcpEntries}, a.toolRegistry, config.ExpandEnvVars, log)
+		if err != nil {
+			wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+			return fmt.Errorf("failed to start MCP gateway: %w", err)
+		}
+		a.mcpGateway = gateway
+	} else {
+		if err := a.mcpGateway.Reconfigure(context.Background(), mcp.GatewayConfig{Servers: mcpEntries}, a.toolRegistry, config.ExpandEnvVars, log); err != nil {
+			wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+			return fmt.Errorf("failed to reconfigure MCP gateway: %w", err)
+		}
+	}
+
+	wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "done")
+	return nil
+}
+
+// extractZip extracts a zip file to the specified directory.
+func extractZip(src, dest string) error {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.Close() }()
+
+	for _, f := range r.File {
+		fpath := filepath.Join(dest, f.Name)
+
+		// Check for ZipSlip
+		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
+			return fmt.Errorf("illegal file path: %s", fpath)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(fpath, f.Mode()); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(fpath), 0o755); err != nil {
+			return err
+		}
+
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			_ = outFile.Close()
+			return err
+		}
+
+		_, err = io.Copy(outFile, rc)
+		_ = outFile.Close()
+		_ = rc.Close()
+
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// codebaseMemoryServerName is the name of the MCP server that provides
+// codebase indexing functionality.
+const codebaseMemoryServerName = "codebase-memory"
+
+// indexDebounceTimer tracks the debounce timer for workspace change indexing.
+var indexDebounceTimer *time.Timer
+var indexDebounceMu sync.Mutex
+
+// IndexRepository triggers codebase-memory-mcp indexing for the given project path.
+// It runs asynchronously and emits events for progress tracking.
+func (a *App) IndexRepository(projectPath string) {
+	go a.indexRepositoryAsync(projectPath)
+}
+
+func (a *App) indexRepositoryAsync(projectPath string) {
+	// Check if gateway exists and codebase-memory server is available
+	if a.mcpGateway == nil {
+		return // silently skip
+	}
+
+	// Get the codebase-memory server
+	server := a.mcpGateway.GetServer(codebaseMemoryServerName)
+	if server == nil || !server.IsConnected() {
+		return // silently skip
+	}
+
+	// Emit start event
+	wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
+		"status": "start",
+		"path":   projectPath,
+	})
+
+	// Call index_repository tool via the server
+	result, err := server.CallTool(a.ctx, "index_repository", map[string]any{
+		"path": projectPath,
+	})
+
+	if err != nil {
+		slog.Warn("codebase indexing failed", "path", projectPath, "error", err)
+		wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	// Check if the tool call itself returned an error
+	if result != nil && result.IsError {
+		errMsg := "indexing tool returned error"
+		if len(result.Content) > 0 {
+			// Extract text from first content item if available
+			for _, c := range result.Content {
+				if text := extractTextFromMCPContent(c); text != "" {
+					errMsg = text
+					break
+				}
+			}
+		}
+		slog.Warn("codebase indexing tool error", "path", projectPath, "error", errMsg)
+		wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
+			"status": "error",
+			"error":  errMsg,
+		})
+		return
+	}
+
+	// Success
+	slog.Debug("codebase indexing completed", "path", projectPath)
+	wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
+		"status": "done",
+	})
+}
+
+// debouncedIndexRepository triggers indexing with a 5-second debounce.
+// This is used for workspace change events to avoid excessive indexing.
+func (a *App) debouncedIndexRepository(projectPath string) {
+	indexDebounceMu.Lock()
+	defer indexDebounceMu.Unlock()
+
+	if indexDebounceTimer != nil {
+		indexDebounceTimer.Stop()
+	}
+	indexDebounceTimer = time.AfterFunc(5*time.Second, func() {
+		a.IndexRepository(projectPath)
+	})
+}
+
+// extractTextFromMCPContent extracts text from an MCP Content interface.
+func extractTextFromMCPContent(content interface{}) string {
+	// Try type assertion for map with text field (common MCP content format)
+	if m, ok := content.(map[string]interface{}); ok {
+		if text, ok := m["text"].(string); ok {
+			return text
+		}
+	}
+	// Try type assertion for string
+	if s, ok := content.(string); ok {
+		return s
+	}
+	return ""
 }

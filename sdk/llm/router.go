@@ -203,6 +203,15 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	for attempt := 0; attempt <= r.maxRetries; attempt++ {
 		resp, err := r.activeProvider.ChatCompletion(ctx, req)
 		if err == nil {
+			// Ensure model is set in response
+			if resp.Model == "" {
+				resp.Model = req.Model
+			}
+			// Resolve tier from model registry
+			if r.registry != nil && resp.Tier == "" {
+				meta, _ := r.registry.Resolve(resp.Model)
+				resp.Tier = meta.Tier
+			}
 			return resp, nil
 		}
 
