@@ -12,13 +12,14 @@ Prefer higher-tier tools over bash_exec. Use bash_exec only when no purpose-buil
 
 ### File Operations Strategy
 
-For file-related tasks, use these tools in order of preference:
+For file-related tasks, use these purpose-built tools:
 
-- **file_ops**: Reading files, editing, writing, listing directories
-- **ripgrep**: Searching file contents by regex or literal pattern (fast, respects .gitignore)
-- **glob**: Finding files by name or extension pattern
+- **Reading/inspecting**: `read_file` (view file contents), `list_directory` (list directory entries)
+- **Searching**: `ripgrep` (fast content search, respects .gitignore), `glob` (find files by name pattern), `search_files` (find files by glob), `search_content` (regex content search)
+- **Writing/editing**: `edit_file` (find-and-replace in existing files), `write_file` (create or overwrite files)
+- **Managing**: `create_directory`, `delete_directory`, `delete_file`
 
-For text operations ALWAYS use: file_ops, ripgrep, glob. Use bash_exec ONLY for: build commands (python setup.py, npm run, dotnet build, mvn package, go build, composer install), git operations, package management, running tests, and complex shell pipelines not replicated by higher-tier tools.
+For text and file operations, ALWAYS prefer the purpose-built tools above. Use bash_exec ONLY for: build commands, git operations, package management, running tests, and complex shell pipelines not replicated by higher-tier tools.
 
 ## Search Efficiency
 

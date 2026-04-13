@@ -85,6 +85,18 @@ type ToolConfirmPayload struct {
 	Reasoning string `json:"reasoning"`
 }
 
+// JudgeRequestPayload is received from the frontend when the user requests an on-demand judge verdict.
+type JudgeRequestPayload struct {
+	ConfirmID string `json:"confirm_id"`
+}
+
+// JudgeResponsePayload is sent to the frontend with the judge's verdict.
+type JudgeResponsePayload struct {
+	ConfirmID string `json:"confirm_id"`
+	Reasoning string `json:"reasoning"`
+	Error     string `json:"error,omitempty"`
+}
+
 // --- Ask-user payloads ---
 
 // AskUserPayload is sent to the frontend when the agent asks the user questions.

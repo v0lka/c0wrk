@@ -105,18 +105,10 @@ func (a *App) buildOrchestratorConfig(cfg *config.Config, stepLimitFunc agent.St
 }
 
 // rebuildJudge recreates the ToolJudge from current config and sets it on the registry.
-// If the judge cannot be created (disabled, no provider, no model), it keeps the existing judge.
+// If the judge cannot be created (no provider, no model), it keeps the existing judge.
 // router is optional; if nil, a new router is built from config.
 func (a *App) rebuildJudge(cfg *config.Config, router *llm.Router, logger *slog.Logger) {
 	if a.toolRegistry == nil {
-		return
-	}
-
-	if cfg.Security.Judge.Enabled == nil || !*cfg.Security.Judge.Enabled {
-		a.toolRegistry.SetJudge(nil)
-		if logger != nil {
-			logger.Info("tool judge disabled by configuration")
-		}
 		return
 	}
 
@@ -136,7 +128,6 @@ func (a *App) rebuildJudge(cfg *config.Config, router *llm.Router, logger *slog.
 	}
 
 	judge := tools.NewToolJudgeFromConfig(tools.JudgeConfig{
-		Enabled:      true,
 		Model:        cfg.Security.Judge.Model,
 		DefaultModel: defaultModel,
 		Provider:     judgeProvider,
@@ -149,7 +140,7 @@ func (a *App) rebuildJudge(cfg *config.Config, router *llm.Router, logger *slog.
 			logger.Info("tool judge rebuilt successfully")
 		}
 	} else if logger != nil {
-		logger.Warn("tool judge rebuild failed: keeping existing judge (provider or model unavailable)")
+		logger.Warn("tool judge rebuild failed: judge will not be available for on-demand evaluation")
 	}
 }
 

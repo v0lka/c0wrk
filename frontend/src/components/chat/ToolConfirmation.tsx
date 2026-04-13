@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { AlertTriangle, Check, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { AlertTriangle, Check, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useWails } from '@/hooks/useWails'
 import { useChatStore } from '@/stores/chatStore'
@@ -20,11 +20,13 @@ interface ToolConfirmationProps {
 export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps) {
   const { runtime } = useWails()
   const [resolved, setResolved] = useState<'confirmed' | 'denied' | null>(null)
+  const [judgeReasoning, setJudgeReasoning] = useState<string | null>(null)
+  const [judgeLoading, setJudgeLoading] = useState(false)
+  const [judgeError, setJudgeError] = useState<string | null>(null)
 
   const tool = typeof metadata?.tool === 'string' ? metadata.tool : undefined
   const args = typeof metadata?.args === 'string' ? metadata.args : undefined
   const confirmId = typeof metadata?.confirm_id === 'string' ? metadata.confirm_id : undefined
-  const reasoning = typeof metadata?.reasoning === 'string' ? metadata.reasoning : undefined
   const toolMsgId = typeof metadata?.tool_msg_id === 'string' ? metadata.tool_msg_id : undefined
 
   const handleResponse = (decision: 'allow_once' | 'deny') => {
@@ -58,6 +60,36 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
     } else {
       useChatStore.getState().setActivityStatus(null)
     }
+  }
+
+  // Listen for judge response
+  useEffect(() => {
+    if (!runtime || !confirmId) return
+
+    const cancel = runtime.EventsOn('tool_judge_response', (data: any) => {
+      if (data?.confirm_id !== confirmId) return
+
+      setJudgeLoading(false)
+      if (data.error) {
+        setJudgeError(data.error)
+      }
+      if (data.reasoning) {
+        setJudgeReasoning(data.reasoning)
+      }
+    })
+
+    return () => {
+      if (cancel) cancel()
+    }
+  }, [runtime, confirmId])
+
+  const handleAskAgent = () => {
+    if (!runtime || !confirmId) return
+    setJudgeLoading(true)
+    setJudgeError(null)
+    runtime.EventsEmit('tool_judge_request', {
+      confirm_id: confirmId,
+    })
   }
 
   // Resolved state — compact line replaces the panel
@@ -99,15 +131,21 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
       </div>
 
       {/* Judge reasoning — yellow/amber warning style */}
-      {reasoning && (
+      {judgeReasoning && (
         <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-md">
           <div className="flex items-start gap-2">
             <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
-              <p className="text-xs font-medium text-amber-600 dark:text-amber-300 mb-1">LLM Judge Verdict</p>
-              <p className="text-sm text-amber-900 dark:text-amber-100">{reasoning}</p>
+              <p className="text-xs font-medium text-amber-600 dark:text-amber-300 mb-1">Agent Verdict</p>
+              <p className="text-sm text-amber-900 dark:text-amber-100">{judgeReasoning}</p>
             </div>
           </div>
+        </div>
+      )}
+
+      {judgeError && (
+        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md">
+          <p className="text-xs text-red-600 dark:text-red-400">{judgeError}</p>
         </div>
       )}
 
@@ -137,6 +175,25 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
           aria-label="Allow this tool action once"
         >
           Allow Once
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={handleAskAgent}
+          disabled={judgeLoading || judgeReasoning !== null}
+          className="text-xs"
+          aria-label="Ask the AI agent to evaluate this tool action"
+        >
+          {judgeLoading ? (
+            <>
+              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              Evaluating...
+            </>
+          ) : judgeReasoning !== null ? (
+            'Evaluated'
+          ) : (
+            'Ask agent'
+          )}
         </Button>
         <Button
           size="sm"

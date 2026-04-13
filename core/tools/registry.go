@@ -45,6 +45,13 @@ func (r *ToolRegistry) SetJudge(j *ToolJudge) {
 	r.judge = j
 }
 
+// GetJudge returns the current tool judge, or nil if not set.
+func (r *ToolRegistry) GetJudge() *ToolJudge {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.judge
+}
+
 // SetPolicyOverrides sets per-tool policy overrides from configuration.
 func (r *ToolRegistry) SetPolicyOverrides(overrides map[string]ToolPolicy) {
 	r.mu.Lock()
@@ -85,8 +92,30 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	policy := r.resolvePolicy(name, tool)
 
+	// Workspace/temp auto-approval: if all paths in the input are within
+	// the session workspace or temp directory, execute without confirmation
+	// regardless of policy (except AlwaysDeny which is always respected).
+	if policy != PolicyAlwaysDeny {
+		if tempDir := sdktools.TempDirFrom(ctx); tempDir != "" && allPathsInDir(input, tempDir) {
+			slog.Debug("auto-approved: all paths within session temp directory", "tool", name)
+			return tool.Execute(ctx, input)
+		}
+		if allPathsInWorkspace(ctx, input) {
+			slog.Debug("auto-approved: all paths within workspace", "tool", name)
+			return tool.Execute(ctx, input)
+		}
+	}
+
 	switch policy {
 	case PolicyAlwaysAllow:
+		// Safety filter: if the tool implements ToolJudger and flags the call, escalate to user confirmation.
+		if judger, ok := tool.(ToolJudger); ok {
+			allow, reasoning := judger.Judge(ctx, input)
+			if !allow && reasoning != "" {
+				slog.Debug("PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
+				return r.confirmAndExecute(ctx, tool, name, input, reasoning)
+			}
+		}
 		return tool.Execute(ctx, input)
 
 	case PolicyAlwaysDeny:
@@ -97,9 +126,6 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	case PolicyUserConfirm:
 		return r.confirmAndExecute(ctx, tool, name, input, "")
-
-	case PolicyAuto:
-		return r.executeAuto(ctx, tool, name, input)
 
 	default:
 		return tool.Execute(ctx, input)
@@ -142,41 +168,3 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool Tool, name st
 	}
 }
 
-// executeAuto implements the Auto policy: tool judge -> LLM judge -> user confirmation.
-func (r *ToolRegistry) executeAuto(ctx context.Context, tool Tool, name string, input json.RawMessage) (ToolResult, error) {
-	// 1. Try tool-specific judge if implemented
-	if judger, ok := tool.(ToolJudger); ok {
-		allow, reasoning := judger.Judge(ctx, input)
-		if allow {
-			slog.Debug("executeAuto: tool-specific judge allowed", "tool", name)
-			return tool.Execute(ctx, input)
-		}
-		if reasoning != "" {
-			// Tool explicitly flagged the call with a reason -> ask user
-			slog.Debug("executeAuto: tool-specific judge flagged", "tool", name, "reasoning", reasoning)
-			return r.confirmAndExecute(ctx, tool, name, input, reasoning)
-		}
-		// reasoning == "" -> tool defers to LLM Judge, fall through
-		slog.Debug("executeAuto: tool-specific judge deferred to LLM", "tool", name)
-	}
-
-	// 2. LLM Judge fallback
-	r.mu.RLock()
-	judge := r.judge
-	r.mu.RUnlock()
-
-	if judge != nil {
-		verdict, reasoning, err := judge.Judge(ctx, name, input, TaskContextFrom(ctx))
-		if err == nil && verdict == VerdictAllow {
-			slog.Debug("executeAuto: LLM judge allowed", "tool", name, "reasoning", reasoning)
-			return tool.Execute(ctx, input)
-		}
-		// VerdictConfirm or error -> ask user (fail-safe)
-		slog.Debug("executeAuto: LLM judge requesting confirmation", "tool", name, "reasoning", reasoning)
-		return r.confirmAndExecute(ctx, tool, name, input, reasoning)
-	}
-
-	// 3. No judge available -> ask user (fail-safe)
-	slog.Debug("executeAuto: no LLM judge available, requesting confirmation", "tool", name)
-	return r.confirmAndExecute(ctx, tool, name, input, "no judge available; requiring manual confirmation")
-}

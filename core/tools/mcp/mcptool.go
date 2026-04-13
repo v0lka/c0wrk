@@ -46,9 +46,9 @@ func (t *Tool) InputSchema() json.RawMessage {
 	return t.inputSchema
 }
 
-// DefaultPolicy returns PolicyAuto as a conservative default for MCP tools.
+// DefaultPolicy returns PolicyUserConfirm as a conservative default for MCP tools.
 func (t *Tool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyAuto
+	return tools.PolicyUserConfirm
 }
 
 // Execute calls the MCP server's tools/call endpoint with the provided input.

@@ -17,8 +17,6 @@ const (
 	PolicyAlwaysDeny
 	// PolicyUserConfirm always requires user confirmation before executing.
 	PolicyUserConfirm
-	// PolicyAuto uses tool-specific heuristics with LLM Judge fallback.
-	PolicyAuto
 )
 
 // Tool — unified interface for all tools (Core, MCP).
@@ -53,8 +51,10 @@ func ParseToolPolicy(s string) ToolPolicy {
 		return PolicyAlwaysDeny
 	case "user_confirm":
 		return PolicyUserConfirm
+	case "auto":
+		return PolicyUserConfirm // backward compatibility: auto maps to user_confirm
 	default:
-		return PolicyAuto
+		return PolicyUserConfirm
 	}
 }
 

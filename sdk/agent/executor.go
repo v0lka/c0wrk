@@ -32,7 +32,7 @@ const (
 	truncationMessage = "[System] Your tool call to '%s' was NOT executed because your output " +
 		"was cut off by the model's maximum output token limit. The tool call arguments are " +
 		"incomplete/truncated. You MUST use a different approach that produces smaller output — " +
-		"for example, break large file writes into multiple smaller operations, use file_ops read_file " +
+		"for example, break large file writes into multiple smaller operations, use read_file " +
 		"with line ranges instead of reading entire files, or reduce the content size."
 
 	parseErrorNudgeMessage = "[System] This tool has now failed to parse input %d times in a row. " +
@@ -169,7 +169,7 @@ func (e *Executor) applyToolResultBudget(observation string, cw ContextManager, 
 // getTruncationHint returns a context-aware hint based on the tool name.
 func getTruncationHint(toolName string) string {
 	switch toolName {
-	case "file_ops":
+	case "read_file":
 		return "Re-read the file with start_line/end_line to see specific sections, or use ripgrep to search for specific content."
 	case "ripgrep", "grep":
 		return "Narrow your search pattern or add path filters to reduce results."

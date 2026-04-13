@@ -265,17 +265,16 @@ func parseJudgeResponse(content string) (verdict JudgeVerdict, reasoning string)
 
 // JudgeConfig holds the settings needed to create a ToolJudge.
 type JudgeConfig struct {
-	Enabled      bool
 	Model        string // specific model for judge; if empty, uses DefaultModel
 	DefaultModel string // fallback model from active provider
 	Provider     llm.Provider
-	MaxCacheSize int    // max cached results before cache is cleared (default: 1000)
+	MaxCacheSize int // max cached results before cache is cleared (default: 1000)
 }
 
-// NewToolJudgeFromConfig creates a ToolJudge if enabled and properly configured.
-// Returns nil if disabled or misconfigured. Logs warnings via the provided logger.
+// NewToolJudgeFromConfig creates a ToolJudge if properly configured.
+// Returns nil if misconfigured. Logs warnings via the provided logger.
 func NewToolJudgeFromConfig(cfg JudgeConfig, logger *slog.Logger) *ToolJudge {
-	if !cfg.Enabled || cfg.Provider == nil {
+	if cfg.Provider == nil {
 		return nil
 	}
 

@@ -689,7 +689,7 @@ func TestApplyToolResultBudget_MinFloor(t *testing.T) {
 	}
 }
 
-func TestApplyToolResultBudget_FileOpsHint(t *testing.T) {
+func TestApplyToolResultBudget_ReadFileHint(t *testing.T) {
 	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   100,
 		MaxFillFraction: 0.5,
@@ -698,12 +698,12 @@ func TestApplyToolResultBudget_FileOpsHint(t *testing.T) {
 	cm.availableTokens = 200
 
 	longContent := strings.Repeat("x", 2000)
-	result := exec.applyToolResultBudget(longContent, cm, "file_ops")
+	result := exec.applyToolResultBudget(longContent, cm, "read_file")
 	if !strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("expected truncation notice")
 	}
 	if !strings.Contains(result, "start_line/end_line") {
-		t.Error("expected file_ops hint about start_line/end_line")
+		t.Error("expected read_file hint about start_line/end_line")
 	}
 }
 

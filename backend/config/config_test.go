@@ -134,8 +134,8 @@ llm:
 	}
 
 	// Check Executor defaults
-	if cfg.Executor.MaxReactSteps != 30 {
-		t.Errorf("Expected default max_react_steps 30, got %d", cfg.Executor.MaxReactSteps)
+	if cfg.Executor.MaxReactSteps != 50 {
+		t.Errorf("Expected default max_react_steps 50, got %d", cfg.Executor.MaxReactSteps)
 	}
 	if cfg.Executor.MaxRetries != 2 {
 		t.Errorf("Expected default max_retries 2, got %d", cfg.Executor.MaxRetries)
@@ -164,11 +164,8 @@ llm:
 	}
 
 	// Check Security defaults
-	if cfg.Security.Judge.Enabled == nil || !*cfg.Security.Judge.Enabled {
-		t.Error("Expected default judge enabled to be true")
-	}
-	if cfg.Security.DefaultPolicy != "auto" {
-		t.Errorf("Expected default policy 'auto', got %q", cfg.Security.DefaultPolicy)
+	if cfg.Security.DefaultPolicy != "user_confirm" {
+		t.Errorf("Expected default policy 'user_confirm', got %q", cfg.Security.DefaultPolicy)
 	}
 	if cfg.Security.ToolPolicies == nil {
 		t.Error("Expected ToolPolicies to be initialized")
@@ -179,10 +176,15 @@ llm:
 	} else if bashPolicy.Policy != "user_confirm" {
 		t.Errorf("Expected bash_exec policy 'user_confirm', got %q", bashPolicy.Policy)
 	}
-	if fileOpsPolicy, ok := cfg.Security.ToolPolicies["file_ops"]; !ok {
-		t.Error("Expected default file_ops policy")
-	} else if fileOpsPolicy.Policy != "auto" {
-		t.Errorf("Expected file_ops policy 'auto', got %q", fileOpsPolicy.Policy)
+	if writeFilePolicy, ok := cfg.Security.ToolPolicies["write_file"]; !ok {
+		t.Error("Expected default write_file policy")
+	} else if writeFilePolicy.Policy != "user_confirm" {
+		t.Errorf("Expected write_file policy 'user_confirm', got %q", writeFilePolicy.Policy)
+	}
+	if editFilePolicy, ok := cfg.Security.ToolPolicies["edit_file"]; !ok {
+		t.Error("Expected default edit_file policy")
+	} else if editFilePolicy.Policy != "user_confirm" {
+		t.Errorf("Expected edit_file policy 'user_confirm', got %q", editFilePolicy.Policy)
 	}
 
 	// Check LMStudio default base URL

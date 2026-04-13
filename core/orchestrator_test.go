@@ -36,10 +36,10 @@ func createTestRegistry() *tools.ToolRegistry {
 		description: "Execute bash commands",
 		result:      tools.ToolResult{Content: "PASSED:Build succeeded", IsError: false},
 	})
-	// Register a mock file_ops tool
+	// Register a mock write_file tool
 	reg.Register(&mockTool{
-		name:        "file_ops",
-		description: "File operations",
+		name:        "write_file",
+		description: "Write files",
 		result:      tools.ToolResult{Content: "File written", IsError: false},
 	})
 	return reg
@@ -130,7 +130,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
-						Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": ["bash_exec", "file_ops"], "needs_clarification": false}`,
+						Content: `{"domain": "code", "complexity": 4, "compaction_strategy": "sliding_window", "suggested_tools": ["bash_exec", "write_file"], "needs_clarification": false}`,
 					},
 					StopReason: "end_turn",
 				}, nil
@@ -139,7 +139,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 					Message: llm.Message{
 						Role: "assistant",
 						Content: `{"steps": [
-							{"id": "step_1", "description": "Write tests", "depends_on": [], "parallelizable": false, "estimated_tools": ["file_ops"]},
+							{"id": "step_1", "description": "Write tests", "depends_on": [], "parallelizable": false, "estimated_tools": ["write_file"]},
 							{"id": "step_2", "description": "Run tests", "depends_on": ["step_1"], "parallelizable": false, "estimated_tools": ["bash_exec"]}
 						]}`,
 					},

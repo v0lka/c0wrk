@@ -1754,7 +1754,7 @@ func TestExecutor_RepeatedToolCallCircuitBreaker(t *testing.T) {
 					Role:    "assistant",
 					Content: "Let me try again",
 					ToolCalls: []llm.ToolCall{
-						{ID: "call_1", Name: "file_ops", Input: json.RawMessage(`{"action":"write_file","path":"/tmp/test.txt","content":"hello"}`)},
+						{ID: "call_1", Name: "write_file", Input: json.RawMessage(`{"path":"/tmp/test.txt","content":"hello"}`)},
 					},
 				},
 				StopReason: "tool_use",
@@ -1776,7 +1776,7 @@ func TestExecutor_RepeatedToolCallCircuitBreaker(t *testing.T) {
 	task := TaskDefinition{
 		Task: "Write a file",
 		Tools: []tools.ToolDescriptor{
-			{Name: "file_ops", Description: "File operations"},
+			{Name: "write_file", Description: "Write files"},
 		},
 	}
 
@@ -1797,8 +1797,8 @@ func TestExecutor_RepeatedToolCallCircuitBreaker(t *testing.T) {
 		t.Errorf("expected output to contain 'Aborted', got '%s'", result.Output)
 	}
 
-	if !strings.Contains(result.Output, "file_ops") {
-		t.Errorf("expected output to contain 'file_ops', got '%s'", result.Output)
+	if !strings.Contains(result.Output, "write_file") {
+		t.Errorf("expected output to contain 'write_file', got '%s'", result.Output)
 	}
 
 	if len(result.Steps) >= 10 {
@@ -1836,7 +1836,7 @@ func TestExecutor_RepeatedToolCallResets(t *testing.T) {
 						Role:    "assistant",
 						Content: "Reading file",
 						ToolCalls: []llm.ToolCall{
-							{ID: "call_1", Name: "file_ops", Input: json.RawMessage(`{"action":"read"}`)},
+							{ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"/tmp/test"}`)},
 						},
 					},
 					StopReason: "tool_use",
@@ -1872,8 +1872,8 @@ func TestExecutor_RepeatedToolCallResets(t *testing.T) {
 
 	mockTools := &mockToolExecutor{
 		results: map[string]tools.ToolResult{
-			"search":   {Content: "search result", IsError: false},
-			"file_ops": {Content: "file content", IsError: false},
+			"search":    {Content: "search result", IsError: false},
+			"read_file": {Content: "file content", IsError: false},
 		},
 	}
 
@@ -1885,7 +1885,7 @@ func TestExecutor_RepeatedToolCallResets(t *testing.T) {
 		Task: "Mixed tool calls",
 		Tools: []tools.ToolDescriptor{
 			{Name: "search", Description: "Search tool"},
-			{Name: "file_ops", Description: "File operations"},
+			{Name: "read_file", Description: "Read files"},
 		},
 	}
 

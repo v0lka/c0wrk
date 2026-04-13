@@ -18,8 +18,8 @@ func TestTool_DefaultPolicy(t *testing.T) {
 		InputSchema: []byte(`{"type": "object"}`),
 	})
 
-	if tool.DefaultPolicy() != tools.PolicyAuto {
-		t.Errorf("expected DefaultPolicy() to return PolicyAuto, got %v", tool.DefaultPolicy())
+	if tool.DefaultPolicy() != tools.PolicyUserConfirm {
+		t.Errorf("expected DefaultPolicy() to return PolicyUserConfirm, got %v", tool.DefaultPolicy())
 	}
 }
 

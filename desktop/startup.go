@@ -37,6 +37,16 @@ import (
 
 // Note: time package is used for timeout configurations throughout startup
 
+// pendingConfirmData holds the state for a pending tool confirmation,
+// including metadata needed for on-demand judge evaluation.
+type pendingConfirmData struct {
+	ch          chan tools.ConfirmationResponse
+	taskContext string
+	toolName    string
+	input       json.RawMessage
+	sessionID   string
+}
+
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
@@ -334,7 +344,7 @@ func (a *App) Startup(ctx context.Context) {
 	a.toolRegistry = registry
 
 	// Build tool limits from config
-	fileOpsLimits := builtins.FileOpsLimits{
+	fileLimits := builtins.FileLimits{
 		ReadDefaultLines:  a.config.ToolLimits.ReadDefaultLines,
 		ReadMaxLineLength: a.config.ToolLimits.ReadMaxLineLength,
 		ReadMaxBytes:      a.config.ToolLimits.ReadMaxBytes,
@@ -373,8 +383,33 @@ func (a *App) Startup(ctx context.Context) {
 	bashTool := builtins.NewBashExecToolWithTimeouts(bashBlacklist, bashTimeouts)
 	registry.Register(bashTool)
 
-	fileOpsTool := builtins.NewFileOpsToolWithLimits(fileOpsLimits)
-	registry.Register(fileOpsTool)
+	// File operation tools (individual tools replacing former monolithic tool)
+	readFileTool := builtins.NewReadFileToolWithLimits(fileLimits)
+	registry.Register(readFileTool)
+
+	writeFileTool := builtins.NewWriteFileTool()
+	registry.Register(writeFileTool)
+
+	editFileTool := builtins.NewEditFileTool()
+	registry.Register(editFileTool)
+
+	listDirectoryTool := builtins.NewListDirectoryTool()
+	registry.Register(listDirectoryTool)
+
+	searchFilesTool := builtins.NewSearchFilesTool()
+	registry.Register(searchFilesTool)
+
+	searchContentTool := builtins.NewSearchContentToolWithLimits(fileLimits)
+	registry.Register(searchContentTool)
+
+	createDirectoryTool := builtins.NewCreateDirectoryTool()
+	registry.Register(createDirectoryTool)
+
+	deleteDirectoryTool := builtins.NewDeleteDirectoryTool()
+	registry.Register(deleteDirectoryTool)
+
+	deleteFileTool := builtins.NewDeleteFileTool()
+	registry.Register(deleteFileTool)
 
 	finishTool := agent.NewFinishTool()
 	registry.Register(finishTool)
@@ -502,7 +537,13 @@ func (a *App) Startup(ctx context.Context) {
 
 		requestID := uuid.New().String()
 		ch := make(chan tools.ConfirmationResponse, 1)
-		a.pendingConfirmations.Store(requestID, ch)
+		a.pendingConfirmations.Store(requestID, &pendingConfirmData{
+			ch:          ch,
+			taskContext: tools.TaskContextFrom(ctx),
+			toolName:    req.ToolName,
+			input:       req.Input,
+			sessionID:   sessionID,
+		})
 
 		// Payload field names must match frontend ToolConfirmation.tsx expectations
 		payload := session.ToolConfirmPayload{
@@ -723,12 +764,12 @@ func (a *App) Startup(ctx context.Context) {
 			return
 		}
 
-		chVal, ok := a.pendingConfirmations.Load(requestID)
+		dataVal, ok := a.pendingConfirmations.Load(requestID)
 		if !ok {
 			log.Warn("no pending confirmation for confirm_id", "confirm_id", requestID)
 			return
 		}
-		ch, ok := chVal.(chan tools.ConfirmationResponse)
+		confirmData, ok := dataVal.(*pendingConfirmData)
 		if !ok {
 			log.Warn("pending confirmation has wrong type", "confirm_id", requestID)
 			a.pendingConfirmations.Delete(requestID)
@@ -736,12 +777,76 @@ func (a *App) Startup(ctx context.Context) {
 		}
 
 		select {
-		case ch <- resp:
+		case confirmData.ch <- resp:
 		default:
-			// Channel already has a value or receiver gone; drop
 		}
 
 		a.pendingConfirmations.Delete(requestID)
+	})
+
+	// Listen for on-demand judge verdict requests from frontend
+	wailsRuntime.EventsOn(a.ctx, "tool_judge_request", func(data ...any) {
+		if len(data) == 0 {
+			log.Warn("tool judge request missing payload")
+			return
+		}
+
+		payload, ok := data[0].(map[string]any)
+		if !ok {
+			log.Warn("tool judge request has unexpected type", "data", data)
+			return
+		}
+
+		confirmIDVal, ok := payload["confirm_id"]
+		if !ok {
+			log.Warn("tool judge request missing confirm_id")
+			return
+		}
+		confirmID, ok := confirmIDVal.(string)
+		if !ok {
+			log.Warn("tool judge request confirm_id is not string")
+			return
+		}
+
+		// Look up pending confirmation metadata
+		dataVal, ok := a.pendingConfirmations.Load(confirmID)
+		if !ok {
+			log.Warn("no pending confirmation for judge request", "confirm_id", confirmID)
+			return
+		}
+		pendingData, ok := dataVal.(*pendingConfirmData)
+		if !ok {
+			log.Warn("pending confirmation has wrong type for judge request", "confirm_id", confirmID)
+			return
+		}
+
+		// Call judge asynchronously to avoid blocking the event listener
+		go func() {
+			responsePayload := session.JudgeResponsePayload{
+				ConfirmID: confirmID,
+			}
+
+			judge := a.toolRegistry.GetJudge()
+			if judge == nil {
+				responsePayload.Error = "Judge is not available. Check LLM provider configuration."
+				emitFunc(session.Event{SessionID: pendingData.sessionID, Type: "tool_judge_response", Data: responsePayload})
+				return
+			}
+
+			verdict, reasoning, err := judge.Judge(a.ctx, pendingData.toolName, pendingData.input, pendingData.taskContext)
+			if err != nil {
+				responsePayload.Error = fmt.Sprintf("Judge evaluation failed: %v", err)
+				responsePayload.Reasoning = reasoning
+			} else {
+				if verdict == tools.VerdictAllow {
+					responsePayload.Reasoning = "SAFE: " + reasoning
+				} else {
+					responsePayload.Reasoning = reasoning
+				}
+			}
+
+			emitFunc(session.Event{SessionID: pendingData.sessionID, Type: "tool_judge_response", Data: responsePayload})
+		}()
 	})
 
 	// Listen for ask_user responses from frontend

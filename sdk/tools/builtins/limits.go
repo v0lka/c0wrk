@@ -2,8 +2,8 @@ package builtins
 
 import "time"
 
-// FileOpsLimits holds configurable limits for the file_ops tool.
-type FileOpsLimits struct {
+// FileLimits holds configurable limits for file operation tools.
+type FileLimits struct {
 	ReadDefaultLines  int // max lines per read call
 	ReadMaxLineLength int // max characters per line
 	ReadMaxBytes      int // total output cap in bytes
@@ -24,9 +24,9 @@ func DefaultBashTimeouts() BashTimeouts {
 	}
 }
 
-// DefaultFileOpsLimits returns the default limits for file_ops.
-func DefaultFileOpsLimits() FileOpsLimits {
-	return FileOpsLimits{
+// DefaultFileLimits returns the default limits for file operation tools.
+func DefaultFileLimits() FileLimits {
+	return FileLimits{
 		ReadDefaultLines:  2000,
 		ReadMaxLineLength: 2000,
 		ReadMaxBytes:      51200, // 50KB

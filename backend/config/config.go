@@ -201,8 +201,7 @@ type ToolPolicyConfig struct {
 
 // JudgeConfig holds LLM-based tool safety judge settings.
 type JudgeConfig struct {
-	Enabled *bool  `yaml:"enabled"` // whether judge is active (pointer to distinguish unset from false)
-	Model   string `yaml:"model"`   // LLM model override for judge calls (empty = use default)
+	Model string `yaml:"model"` // LLM model override for judge calls (empty = use default)
 }
 
 // SearchConfig holds web search configuration.

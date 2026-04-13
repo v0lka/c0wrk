@@ -59,9 +59,9 @@ For each step:
 Assign specialized profiles when it adds clear value. Omit profile for simple tasks.
 Prefer higher-tier tools over bash_exec in all profiles:
 
-- "researcher": information gathering, analysis (tools: web_search, web_fetch, ripgrep, glob, file_ops)
-- "coder": implementation, file operations (tools: file_ops, ripgrep, glob; bash_exec for build/run/test)
-- "tester": test execution, verification (tools: bash_exec, ripgrep, glob, file_ops)
+- "researcher": information gathering, analysis (tools: web_search, web_fetch, ripgrep, glob, read_file, list_directory, search_files, search_content)
+- "coder": implementation, file operations (tools: read_file, write_file, edit_file, list_directory, ripgrep, glob; bash_exec for build/run/test)
+- "tester": test execution, verification (tools: bash_exec, ripgrep, glob, read_file, list_directory, search_files, search_content)
 - "executor": general purpose (default, all tools — follow tool priority tiers)`
 
 	planModeExtraSections = `
@@ -82,7 +82,7 @@ Steps are parallelizable when they have NO data dependencies — step B can run 
 
 	planModeTail = "REFLECTIONS\n"
 
-	planModeJSONExample = `{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["file_ops", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
+	planModeJSONExample = `{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
 )
 
 // Continuation mode template content.
@@ -127,14 +127,14 @@ Choose the domain that matches the **primary activity** of the step.
 	continuationModeAgentProfiles = `
 Assign specialized profiles when it adds clear value. Omit profile for simple tasks.
 
-- "researcher": information gathering, analysis (tools: web_search, web_fetch, ripgrep, glob, file_ops)
-- "coder": implementation, file operations (tools: file_ops, ripgrep, glob; bash_exec for build/run/test)
-- "tester": test execution, verification (tools: bash_exec, ripgrep, glob, file_ops)
+- "researcher": information gathering, analysis (tools: web_search, web_fetch, ripgrep, glob, read_file, list_directory, search_files, search_content)
+- "coder": implementation, file operations (tools: read_file, write_file, edit_file, list_directory, ripgrep, glob; bash_exec for build/run/test)
+- "tester": test execution, verification (tools: bash_exec, ripgrep, glob, read_file, list_directory, search_files, search_content)
 - "executor": general purpose (default, all tools)`
 
 	continuationModeExtraSections = ""
 	continuationModeTail          = ""
-	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "description": "...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["file_ops", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
+	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "description": "...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
 )
 
 // compile-time check: Planner implements orchestration.Planner.

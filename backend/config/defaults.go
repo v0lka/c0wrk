@@ -131,12 +131,8 @@ func ApplyDefaults(cfg *Config) {
 	}
 
 	// Security defaults
-	if cfg.Security.Judge.Enabled == nil {
-		v := true
-		cfg.Security.Judge.Enabled = &v
-	}
 	if cfg.Security.DefaultPolicy == "" {
-		cfg.Security.DefaultPolicy = "auto"
+		cfg.Security.DefaultPolicy = "user_confirm"
 	}
 	if cfg.Security.ToolPolicies == nil {
 		cfg.Security.ToolPolicies = make(map[string]ToolPolicyConfig)
@@ -154,9 +150,14 @@ func ApplyDefaults(cfg *Config) {
 			},
 		}
 	}
-	if _, ok := cfg.Security.ToolPolicies["file_ops"]; !ok {
-		cfg.Security.ToolPolicies["file_ops"] = ToolPolicyConfig{
-			Policy: "auto",
+	if _, ok := cfg.Security.ToolPolicies["write_file"]; !ok {
+		cfg.Security.ToolPolicies["write_file"] = ToolPolicyConfig{
+			Policy: "user_confirm",
+		}
+	}
+	if _, ok := cfg.Security.ToolPolicies["edit_file"]; !ok {
+		cfg.Security.ToolPolicies["edit_file"] = ToolPolicyConfig{
+			Policy: "user_confirm",
 		}
 	}
 	if _, ok := cfg.Security.ToolPolicies["web_search"]; !ok {

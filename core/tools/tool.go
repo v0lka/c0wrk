@@ -21,7 +21,6 @@ const (
 	PolicyAlwaysAllow = sdktools.PolicyAlwaysAllow
 	PolicyAlwaysDeny  = sdktools.PolicyAlwaysDeny
 	PolicyUserConfirm = sdktools.PolicyUserConfirm
-	PolicyAuto        = sdktools.PolicyAuto
 )
 
 // Re-export SDK functions.
@@ -41,10 +40,9 @@ var (
 )
 
 // ToolJudger is an optional interface that tools can implement to provide
-// tool-specific safety heuristics for Auto policy mode.
-// If allow is true, the tool call is safe to execute.
-// If allow is false and reasoning is non-empty, the tool explicitly flags the call (ask user).
-// If allow is false and reasoning is empty, the tool defers to the LLM Judge.
+// tool-specific safety heuristics. When a tool with PolicyAlwaysAllow implements
+// this interface, the registry calls Judge before execution. If the judge returns
+// allow=false with non-empty reasoning, the call is escalated to user confirmation.
 type ToolJudger interface {
 	Judge(ctx context.Context, input json.RawMessage) (allow bool, reasoning string)
 }

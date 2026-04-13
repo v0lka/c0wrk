@@ -14,9 +14,9 @@ func TestParseToolPolicy(t *testing.T) {
 		{"always_allow", PolicyAlwaysAllow},
 		{"always_deny", PolicyAlwaysDeny},
 		{"user_confirm", PolicyUserConfirm},
-		{"auto", PolicyAuto},
-		{"", PolicyAuto},
-		{"unknown_value", PolicyAuto},
+		{"auto", PolicyUserConfirm},
+		{"", PolicyUserConfirm},
+		{"unknown_value", PolicyUserConfirm},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
@@ -118,8 +118,5 @@ func TestToolPolicyConstants(t *testing.T) {
 	}
 	if PolicyUserConfirm != 2 {
 		t.Errorf("PolicyUserConfirm = %d, want 2", PolicyUserConfirm)
-	}
-	if PolicyAuto != 3 {
-		t.Errorf("PolicyAuto = %d, want 3", PolicyAuto)
 	}
 }

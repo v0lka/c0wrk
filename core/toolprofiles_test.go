@@ -17,31 +17,13 @@ func mockToolDescriptor(name string) tools.ToolDescriptor {
 	}
 }
 
-// mockFileOpsDescriptor creates a file_ops descriptor with the full schema
-func mockFileOpsDescriptor() tools.ToolDescriptor {
-	schema := `{
-		"type": "object",
-		"properties": {
-			"action": {
-				"type": "string",
-				"enum": ["read_file", "write_file", "edit_file", "list_directory", "search_files", "search_content", "create_directory", "delete_directory", "delete_file"]
-			},
-			"path": {"type": "string"}
-		},
-		"required": ["action", "path"]
-	}`
-	return tools.ToolDescriptor{
-		Name:        "file_ops",
-		Description: "File operations tool",
-		InputSchema: json.RawMessage(schema),
-		Source:      "core",
-	}
-}
-
 // TestRouterGetsNoTools verifies router profile returns empty tool list
 func TestRouterGetsNoTools(t *testing.T) {
 	allTools := []tools.ToolDescriptor{
-		mockToolDescriptor("file_ops"),
+		mockToolDescriptor("read_file"),
+		mockToolDescriptor("list_directory"),
+		mockToolDescriptor("search_files"),
+		mockToolDescriptor("search_content"),
 		mockToolDescriptor("ripgrep"),
 		mockToolDescriptor("glob"),
 		mockToolDescriptor("bash_exec"),
@@ -60,11 +42,13 @@ func TestRouterGetsNoTools(t *testing.T) {
 	}
 }
 
-// TestPlannerGetsReadOnlyTools verifies planner profile returns only file_ops, ripgrep, glob
-// and that file_ops has write operations stripped
+// TestPlannerGetsReadOnlyTools verifies planner profile returns only read-only tools
 func TestPlannerGetsReadOnlyTools(t *testing.T) {
 	allTools := []tools.ToolDescriptor{
-		mockFileOpsDescriptor(),
+		mockToolDescriptor("read_file"),
+		mockToolDescriptor("list_directory"),
+		mockToolDescriptor("search_files"),
+		mockToolDescriptor("search_content"),
 		mockToolDescriptor("ripgrep"),
 		mockToolDescriptor("glob"),
 		mockToolDescriptor("bash_exec"),
@@ -78,9 +62,9 @@ func TestPlannerGetsReadOnlyTools(t *testing.T) {
 
 	filtered := FilterToolsByProfile(allTools, profile)
 
-	// Should have exactly 3 tools
-	if len(filtered) != 3 {
-		t.Errorf("planner should get exactly 3 tools, got %d", len(filtered))
+	// Should have exactly 6 tools
+	if len(filtered) != 6 {
+		t.Errorf("planner should get exactly 6 tools, got %d", len(filtered))
 	}
 
 	// Check that expected tools are present
@@ -89,7 +73,7 @@ func TestPlannerGetsReadOnlyTools(t *testing.T) {
 		toolNames[tool.Name] = true
 	}
 
-	expectedTools := []string{"file_ops", "ripgrep", "glob"}
+	expectedTools := []string{"read_file", "list_directory", "search_files", "search_content", "ripgrep", "glob"}
 	for _, expected := range expectedTools {
 		if !toolNames[expected] {
 			t.Errorf("planner should have %s tool", expected)
@@ -103,67 +87,15 @@ func TestPlannerGetsReadOnlyTools(t *testing.T) {
 			t.Errorf("planner should NOT have %s tool", unexpected)
 		}
 	}
-
-	// Verify file_ops has write operations stripped
-	var fileOpsTool *tools.ToolDescriptor
-	for i := range filtered {
-		if filtered[i].Name == "file_ops" {
-			fileOpsTool = &filtered[i]
-			break
-		}
-	}
-
-	if fileOpsTool == nil {
-		t.Fatal("file_ops tool not found in filtered tools")
-	}
-
-	// Parse the schema and check enum values
-	var schema map[string]interface{}
-	if err := json.Unmarshal(fileOpsTool.InputSchema, &schema); err != nil {
-		t.Fatalf("failed to unmarshal schema: %v", err)
-	}
-
-	properties, ok := schema["properties"].(map[string]interface{})
-	if !ok {
-		t.Fatal("schema missing 'properties' map")
-	}
-	actionProp, ok := properties["action"].(map[string]interface{})
-	if !ok {
-		t.Fatal("schema missing 'action' property")
-	}
-	enum, ok := actionProp["enum"].([]interface{})
-	if !ok {
-		t.Fatal("action property missing 'enum'")
-	}
-
-	// Should only have read-only actions
-	allowedActions := map[string]bool{
-		"read_file":      true,
-		"list_directory": true,
-		"search_files":   true,
-		"search_content": true,
-	}
-
-	for _, action := range enum {
-		actionStr, ok := action.(string)
-		if !ok {
-			t.Fatalf("enum value is not a string: %v", action)
-		}
-		if !allowedActions[actionStr] {
-			t.Errorf("file_ops enum should not contain write action %s", actionStr)
-		}
-	}
-
-	// Should have exactly 4 read-only actions
-	if len(enum) != 4 {
-		t.Errorf("file_ops should have exactly 4 read-only actions, got %d: %v", len(enum), enum)
-	}
 }
 
-// TestReflectorGetsReadOnlyPlusEvidence verifies reflector gets file_ops, ripgrep, glob, read_evidence
+// TestReflectorGetsReadOnlyPlusEvidence verifies reflector gets read-only tools + read_evidence
 func TestReflectorGetsReadOnlyPlusEvidence(t *testing.T) {
 	allTools := []tools.ToolDescriptor{
-		mockFileOpsDescriptor(),
+		mockToolDescriptor("read_file"),
+		mockToolDescriptor("list_directory"),
+		mockToolDescriptor("search_files"),
+		mockToolDescriptor("search_content"),
 		mockToolDescriptor("ripgrep"),
 		mockToolDescriptor("glob"),
 		mockToolDescriptor("read_evidence"),
@@ -178,9 +110,9 @@ func TestReflectorGetsReadOnlyPlusEvidence(t *testing.T) {
 
 	filtered := FilterToolsByProfile(allTools, profile)
 
-	// Should have exactly 4 tools
-	if len(filtered) != 4 {
-		t.Errorf("reflector should get exactly 4 tools, got %d", len(filtered))
+	// Should have exactly 7 tools
+	if len(filtered) != 7 {
+		t.Errorf("reflector should get exactly 7 tools, got %d", len(filtered))
 	}
 
 	// Check that expected tools are present
@@ -189,7 +121,7 @@ func TestReflectorGetsReadOnlyPlusEvidence(t *testing.T) {
 		toolNames[tool.Name] = true
 	}
 
-	expectedTools := []string{"file_ops", "ripgrep", "glob", "read_evidence"}
+	expectedTools := []string{"read_file", "list_directory", "search_files", "search_content", "ripgrep", "glob", "read_evidence"}
 	for _, expected := range expectedTools {
 		if !toolNames[expected] {
 			t.Errorf("reflector should have %s tool", expected)
@@ -208,7 +140,12 @@ func TestReflectorGetsReadOnlyPlusEvidence(t *testing.T) {
 // TestExecutorGetsAllTools verifies nil profile returns all tools
 func TestExecutorGetsAllTools(t *testing.T) {
 	allTools := []tools.ToolDescriptor{
-		mockToolDescriptor("file_ops"),
+		mockToolDescriptor("read_file"),
+		mockToolDescriptor("list_directory"),
+		mockToolDescriptor("search_files"),
+		mockToolDescriptor("search_content"),
+		mockToolDescriptor("write_file"),
+		mockToolDescriptor("edit_file"),
 		mockToolDescriptor("ripgrep"),
 		mockToolDescriptor("glob"),
 		mockToolDescriptor("bash_exec"),
@@ -239,12 +176,12 @@ func TestExecutorGetsAllTools(t *testing.T) {
 // gracefully returns only matching tools
 func TestFilterWithUnknownTool(t *testing.T) {
 	allTools := []tools.ToolDescriptor{
-		mockToolDescriptor("file_ops"),
+		mockToolDescriptor("read_file"),
 		mockToolDescriptor("ripgrep"),
 	}
 
 	// Request tools including one that doesn't exist
-	allowedNames := []string{"file_ops", "unknown_tool", "ripgrep", "another_missing"}
+	allowedNames := []string{"read_file", "unknown_tool", "ripgrep", "another_missing"}
 	filtered := FilterToolsByProfile(allTools, allowedNames)
 
 	// Should only have the 2 tools that exist
@@ -257,8 +194,8 @@ func TestFilterWithUnknownTool(t *testing.T) {
 		toolNames[tool.Name] = true
 	}
 
-	if !toolNames["file_ops"] {
-		t.Error("should have file_ops tool")
+	if !toolNames["read_file"] {
+		t.Error("should have read_file tool")
 	}
 	if !toolNames["ripgrep"] {
 		t.Error("should have ripgrep tool")
@@ -271,7 +208,7 @@ func TestFilterWithUnknownTool(t *testing.T) {
 // TestFilterWithEmptyAllowedList verifies empty allowed list returns no tools
 func TestFilterWithEmptyAllowedList(t *testing.T) {
 	allTools := []tools.ToolDescriptor{
-		mockToolDescriptor("file_ops"),
+		mockToolDescriptor("read_file"),
 		mockToolDescriptor("ripgrep"),
 	}
 
@@ -313,53 +250,6 @@ func TestFilterPreservesToolDescriptorFields(t *testing.T) {
 	}
 }
 
-// TestFilterFileOpsDescriptorWithInvalidSchema verifies graceful handling of invalid schema
-func TestFilterFileOpsDescriptorWithInvalidSchema(t *testing.T) {
-	// Create a file_ops tool with invalid schema
-	invalidFileOps := tools.ToolDescriptor{
-		Name:        "file_ops",
-		Description: "File operations",
-		InputSchema: json.RawMessage(`{invalid json`),
-		Source:      "core",
-	}
-
-	allTools := []tools.ToolDescriptor{invalidFileOps}
-	filtered := FilterToolsByProfile(allTools, []string{"file_ops"})
-
-	if len(filtered) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(filtered))
-	}
-
-	// Should return original (unmodified) when schema can't be parsed
-	if string(filtered[0].InputSchema) != string(invalidFileOps.InputSchema) {
-		t.Error("should return original schema when parsing fails")
-	}
-}
-
-// TestFilterFileOpsDescriptorWithMissingProperties verifies graceful handling of missing properties
-func TestFilterFileOpsDescriptorWithMissingProperties(t *testing.T) {
-	// Schema without properties.action
-	schema := `{"type":"object","properties":{"path":{"type":"string"}}}`
-	fileOps := tools.ToolDescriptor{
-		Name:        "file_ops",
-		Description: "File operations",
-		InputSchema: json.RawMessage(schema),
-		Source:      "core",
-	}
-
-	allTools := []tools.ToolDescriptor{fileOps}
-	filtered := FilterToolsByProfile(allTools, []string{"file_ops"})
-
-	if len(filtered) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(filtered))
-	}
-
-	// Should return original when properties.action is missing
-	if string(filtered[0].InputSchema) != string(fileOps.InputSchema) {
-		t.Error("should return original schema when properties.action is missing")
-	}
-}
-
 // TestToolProfilesMapContent verifies the ToolProfiles map has expected content
 func TestToolProfilesMapContent(t *testing.T) {
 	tests := []struct {
@@ -369,8 +259,8 @@ func TestToolProfilesMapContent(t *testing.T) {
 		expectNil    bool
 	}{
 		{"router", 0, true, false},      // empty slice
-		{"planner", 3, true, false},     // 3 tools
-		{"reflector", 4, true, false},   // 4 tools
+		{"planner", 6, true, false},     // 6 tools
+		{"reflector", 7, true, false},   // 7 tools
 		{"evaluator", 0, false, false},  // should not exist
 		{"executor", 0, false, true},    // should not exist (gets all tools via nil)
 		{"unknown", 0, false, false},    // should not exist
@@ -413,9 +303,12 @@ func TestPlannerProfileContent(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"file_ops": true,
-		"ripgrep":  true,
-		"glob":     true,
+		"read_file":      true,
+		"list_directory": true,
+		"search_files":   true,
+		"search_content": true,
+		"ripgrep":        true,
+		"glob":           true,
 	}
 
 	if len(profile) != len(expectedTools) {
@@ -437,10 +330,13 @@ func TestReflectorProfileContent(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"file_ops":      true,
-		"ripgrep":       true,
-		"glob":          true,
-		"read_evidence": true,
+		"read_file":      true,
+		"list_directory": true,
+		"search_files":   true,
+		"search_content": true,
+		"ripgrep":        true,
+		"glob":           true,
+		"read_evidence":  true,
 	}
 
 	if len(profile) != len(expectedTools) {

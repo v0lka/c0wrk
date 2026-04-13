@@ -13,22 +13,75 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-func TestFileOpsTool_Name(t *testing.T) {
-	tool := NewFileOpsTool()
-	if tool.Name() != "file_ops" {
-		t.Errorf("expected name 'file_ops', got '%s'", tool.Name())
+// --- Name tests for individual tools ---
+
+func TestReadFileTool_Name(t *testing.T) {
+	tool := NewReadFileTool()
+	if tool.Name() != "read_file" {
+		t.Errorf("expected name 'read_file', got '%s'", tool.Name())
 	}
 }
 
-func TestFileOpsTool_Description(t *testing.T) {
-	tool := NewFileOpsTool()
-	if tool.Description() != toolFileopsDescription {
-		t.Errorf("unexpected description: %s", tool.Description())
+func TestWriteFileTool_Name(t *testing.T) {
+	tool := NewWriteFileTool()
+	if tool.Name() != "write_file" {
+		t.Errorf("expected name 'write_file', got '%s'", tool.Name())
 	}
 }
 
-func TestFileOpsTool_InputSchema(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestEditFileTool_Name(t *testing.T) {
+	tool := NewEditFileTool()
+	if tool.Name() != "edit_file" {
+		t.Errorf("expected name 'edit_file', got '%s'", tool.Name())
+	}
+}
+
+func TestListDirectoryTool_Name(t *testing.T) {
+	tool := NewListDirectoryTool()
+	if tool.Name() != "list_directory" {
+		t.Errorf("expected name 'list_directory', got '%s'", tool.Name())
+	}
+}
+
+func TestSearchFilesTool_Name(t *testing.T) {
+	tool := NewSearchFilesTool()
+	if tool.Name() != "search_files" {
+		t.Errorf("expected name 'search_files', got '%s'", tool.Name())
+	}
+}
+
+func TestSearchContentTool_Name(t *testing.T) {
+	tool := NewSearchContentTool()
+	if tool.Name() != "search_content" {
+		t.Errorf("expected name 'search_content', got '%s'", tool.Name())
+	}
+}
+
+func TestCreateDirectoryTool_Name(t *testing.T) {
+	tool := NewCreateDirectoryTool()
+	if tool.Name() != "create_directory" {
+		t.Errorf("expected name 'create_directory', got '%s'", tool.Name())
+	}
+}
+
+func TestDeleteDirectoryTool_Name(t *testing.T) {
+	tool := NewDeleteDirectoryTool()
+	if tool.Name() != "delete_directory" {
+		t.Errorf("expected name 'delete_directory', got '%s'", tool.Name())
+	}
+}
+
+func TestDeleteFileTool_Name(t *testing.T) {
+	tool := NewDeleteFileTool()
+	if tool.Name() != "delete_file" {
+		t.Errorf("expected name 'delete_file', got '%s'", tool.Name())
+	}
+}
+
+// --- InputSchema test for a representative tool ---
+
+func TestReadFileTool_InputSchema(t *testing.T) {
+	tool := NewReadFileTool()
 	schema := tool.InputSchema()
 	if len(schema) == 0 {
 		t.Error("expected non-empty schema")
@@ -40,8 +93,10 @@ func TestFileOpsTool_InputSchema(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_ReadFile(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- Read tests ---
+
+func TestReadFileTool_ReadFile(t *testing.T) {
+	tool := NewReadFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -54,8 +109,7 @@ func TestFileOpsTool_ReadFile(t *testing.T) {
 
 	// Read the file
 	input, _ := json.Marshal(map[string]string{
-		"action": "read_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -80,14 +134,13 @@ func TestFileOpsTool_ReadFile(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_ReadFile_NonExistent(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestReadFileTool_ReadFile_NonExistent(t *testing.T) {
+	tool := NewReadFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "read_file",
-		"path":   filepath.Join(tmpDir, "nonexistent.txt"),
+		"path": filepath.Join(tmpDir, "nonexistent.txt"),
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -102,8 +155,10 @@ func TestFileOpsTool_ReadFile_NonExistent(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_WriteFile(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- Write tests ---
+
+func TestWriteFileTool_WriteFile(t *testing.T) {
+	tool := NewWriteFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -111,7 +166,6 @@ func TestFileOpsTool_WriteFile(t *testing.T) {
 	testContent := "Test content to write"
 
 	input, _ := json.Marshal(map[string]string{
-		"action":  "write_file",
 		"path":    testFile,
 		"content": testContent,
 	})
@@ -134,8 +188,8 @@ func TestFileOpsTool_WriteFile(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_WriteFile_NestedPath(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_WriteFile_NestedPath(t *testing.T) {
+	tool := NewWriteFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -144,7 +198,6 @@ func TestFileOpsTool_WriteFile_NestedPath(t *testing.T) {
 	testContent := "Nested content"
 
 	input, _ := json.Marshal(map[string]string{
-		"action":  "write_file",
 		"path":    testFile,
 		"content": testContent,
 	})
@@ -167,8 +220,10 @@ func TestFileOpsTool_WriteFile_NestedPath(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_EditFile_UniqueMatch(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- Edit tests ---
+
+func TestEditFileTool_EditFile_UniqueMatch(t *testing.T) {
+	tool := NewEditFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -179,7 +234,6 @@ func TestFileOpsTool_EditFile_UniqueMatch(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action":     "edit_file",
 		"path":       testFile,
 		"old_string": "World",
 		"new_string": "Universe",
@@ -204,8 +258,8 @@ func TestFileOpsTool_EditFile_UniqueMatch(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_EditFile_NonUniqueMatch(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestEditFileTool_EditFile_NonUniqueMatch(t *testing.T) {
+	tool := NewEditFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -216,7 +270,6 @@ func TestFileOpsTool_EditFile_NonUniqueMatch(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action":     "edit_file",
 		"path":       testFile,
 		"old_string": "test",
 		"new_string": "example",
@@ -237,8 +290,8 @@ func TestFileOpsTool_EditFile_NonUniqueMatch(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_EditFile_NotFound(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestEditFileTool_EditFile_NotFound(t *testing.T) {
+	tool := NewEditFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -249,7 +302,6 @@ func TestFileOpsTool_EditFile_NotFound(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action":     "edit_file",
 		"path":       testFile,
 		"old_string": "nonexistent",
 		"new_string": "replacement",
@@ -267,8 +319,10 @@ func TestFileOpsTool_EditFile_NotFound(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_ListDirectory(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- List test ---
+
+func TestListDirectoryTool_ListDirectory(t *testing.T) {
+	tool := NewListDirectoryTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -283,8 +337,7 @@ func TestFileOpsTool_ListDirectory(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "list_directory",
-		"path":   tmpDir,
+		"path": tmpDir,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -312,8 +365,10 @@ func TestFileOpsTool_ListDirectory(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_SearchFiles(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- Search tests ---
+
+func TestSearchFilesTool_SearchFiles(t *testing.T) {
+	tool := NewSearchFilesTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -336,7 +391,6 @@ func TestFileOpsTool_SearchFiles(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action":  "search_files",
 		"path":    tmpDir,
 		"pattern": "*.txt",
 	})
@@ -363,8 +417,8 @@ func TestFileOpsTool_SearchFiles(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_SearchContent(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestSearchContentTool_SearchContent(t *testing.T) {
+	tool := NewSearchContentTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -384,9 +438,8 @@ func TestFileOpsTool_SearchContent(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "search_content",
-		"path":   tmpDir,
-		"regex":  "World",
+		"path":  tmpDir,
+		"regex": "World",
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -411,15 +464,14 @@ func TestFileOpsTool_SearchContent(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_SearchContent_InvalidRegex(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestSearchContentTool_SearchContent_InvalidRegex(t *testing.T) {
+	tool := NewSearchContentTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "search_content",
-		"path":   tmpDir,
-		"regex":  "[invalid",
+		"path":  tmpDir,
+		"regex": "[invalid",
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -434,40 +486,22 @@ func TestFileOpsTool_SearchContent_InvalidRegex(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_UnknownAction(t *testing.T) {
-	tool := NewFileOpsTool()
-	ctx := context.Background()
+// --- DefaultPolicy test ---
 
-	input, _ := json.Marshal(map[string]string{
-		"action": "unknown_action",
-		"path":   "/tmp",
-	})
-
-	result, err := tool.Execute(ctx, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true for unknown action")
-	}
-	if !strings.Contains(result.Content, "unknown action") {
-		t.Errorf("expected 'unknown action' error message, got: %s", result.Content)
+func TestReadFileTool_DefaultPolicy(t *testing.T) {
+	tool := NewReadFileTool()
+	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
+		t.Errorf("expected DefaultPolicy() to return PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
 	}
 }
 
-func TestFileOpsTool_DefaultPolicy(t *testing.T) {
-	tool := NewFileOpsTool()
-	if tool.DefaultPolicy() != tools.PolicyAuto {
-		t.Errorf("expected DefaultPolicy() to return PolicyAuto, got %v", tool.DefaultPolicy())
-	}
-}
+// --- Judge tests ---
 
-func TestFileOpsTool_Judge_ReadOnlyAction(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestReadFileTool_Judge_ReadOnlyAction(t *testing.T) {
+	tool := NewReadFileTool()
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "read_file",
-		"path":   "/some/path.txt",
+		"path": "/some/path.txt",
 	})
 
 	allow, reasoning := tool.Judge(context.Background(), input)
@@ -479,16 +513,15 @@ func TestFileOpsTool_Judge_ReadOnlyAction(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_Judge_WriteActionInsideWorkspace(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_Judge_WriteActionInsideWorkspace(t *testing.T) {
+	tool := NewWriteFileTool()
 
 	tmpDir := t.TempDir()
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 
 	testFile := filepath.Join(tmpDir, "test.txt")
 	input, _ := json.Marshal(map[string]string{
-		"action": "write_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	allow, reasoning := tool.Judge(ctx, input)
@@ -500,8 +533,8 @@ func TestFileOpsTool_Judge_WriteActionInsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_Judge_WriteActionOutsideWorkspace(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_Judge_WriteActionOutsideWorkspace(t *testing.T) {
+	tool := NewWriteFileTool()
 
 	tmpDir := t.TempDir()
 	otherDir := t.TempDir()
@@ -509,8 +542,7 @@ func TestFileOpsTool_Judge_WriteActionOutsideWorkspace(t *testing.T) {
 
 	testFile := filepath.Join(otherDir, "test.txt")
 	input, _ := json.Marshal(map[string]string{
-		"action": "write_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	allow, reasoning := tool.Judge(ctx, input)
@@ -522,14 +554,13 @@ func TestFileOpsTool_Judge_WriteActionOutsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_Judge_WriteActionNoWorkspace(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_Judge_WriteActionNoWorkspace(t *testing.T) {
+	tool := NewWriteFileTool()
 
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "write_file",
-		"path":   "/some/path.txt",
+		"path": "/some/path.txt",
 	})
 
 	allow, reasoning := tool.Judge(ctx, input)
@@ -541,8 +572,8 @@ func TestFileOpsTool_Judge_WriteActionNoWorkspace(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_Judge_InvalidJSON(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_Judge_InvalidJSON(t *testing.T) {
+	tool := NewWriteFileTool()
 
 	allow, reasoning := tool.Judge(context.Background(), json.RawMessage(`{invalid`))
 	if allow {
@@ -553,8 +584,8 @@ func TestFileOpsTool_Judge_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_InvalidJSON(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_InvalidJSON(t *testing.T) {
+	tool := NewWriteFileTool()
 	ctx := context.Background()
 
 	result, err := tool.Execute(ctx, json.RawMessage(`{invalid json}`))
@@ -569,15 +600,16 @@ func TestFileOpsTool_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_CreateDirectory(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- Directory management tests ---
+
+func TestCreateDirectoryTool_CreateDirectory(t *testing.T) {
+	tool := NewCreateDirectoryTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
 	newDir := filepath.Join(tmpDir, "newdir")
 	input, _ := json.Marshal(map[string]string{
-		"action": "create_directory",
-		"path":   newDir,
+		"path": newDir,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -600,15 +632,14 @@ func TestFileOpsTool_CreateDirectory(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_CreateDirectory_Nested(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestCreateDirectoryTool_CreateDirectory_Nested(t *testing.T) {
+	tool := NewCreateDirectoryTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
 	nestedDir := filepath.Join(tmpDir, "a", "b", "c", "d")
 	input, _ := json.Marshal(map[string]string{
-		"action": "create_directory",
-		"path":   nestedDir,
+		"path": nestedDir,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -636,8 +667,8 @@ func TestFileOpsTool_CreateDirectory_Nested(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_DeleteDirectory_Empty(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteDirectoryTool_DeleteDirectory_Empty(t *testing.T) {
+	tool := NewDeleteDirectoryTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -647,7 +678,6 @@ func TestFileOpsTool_DeleteDirectory_Empty(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]any{
-		"action":    "delete_directory",
 		"path":      emptyDir,
 		"recursive": false,
 	})
@@ -668,8 +698,8 @@ func TestFileOpsTool_DeleteDirectory_Empty(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_DeleteDirectory_NonEmpty_NonRecursive(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteDirectoryTool_DeleteDirectory_NonEmpty_NonRecursive(t *testing.T) {
+	tool := NewDeleteDirectoryTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -682,7 +712,6 @@ func TestFileOpsTool_DeleteDirectory_NonEmpty_NonRecursive(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]any{
-		"action":    "delete_directory",
 		"path":      nonEmptyDir,
 		"recursive": false,
 	})
@@ -699,8 +728,8 @@ func TestFileOpsTool_DeleteDirectory_NonEmpty_NonRecursive(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_DeleteDirectory_Recursive(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteDirectoryTool_DeleteDirectory_Recursive(t *testing.T) {
+	tool := NewDeleteDirectoryTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -717,7 +746,6 @@ func TestFileOpsTool_DeleteDirectory_Recursive(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]any{
-		"action":    "delete_directory",
 		"path":      dirToDelete,
 		"recursive": true,
 	})
@@ -738,13 +766,12 @@ func TestFileOpsTool_DeleteDirectory_Recursive(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_DeleteDirectory_NonExistent(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteDirectoryTool_DeleteDirectory_NonExistent(t *testing.T) {
+	tool := NewDeleteDirectoryTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
 	input, _ := json.Marshal(map[string]any{
-		"action":    "delete_directory",
 		"path":      filepath.Join(tmpDir, "nonexistent"),
 		"recursive": false,
 	})
@@ -761,8 +788,10 @@ func TestFileOpsTool_DeleteDirectory_NonExistent(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_DeleteFile(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- File delete tests ---
+
+func TestDeleteFileTool_DeleteFile(t *testing.T) {
+	tool := NewDeleteFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -772,8 +801,7 @@ func TestFileOpsTool_DeleteFile(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "delete_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -792,14 +820,13 @@ func TestFileOpsTool_DeleteFile(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_DeleteFile_NonExistent(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteFileTool_DeleteFile_NonExistent(t *testing.T) {
+	tool := NewDeleteFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "delete_file",
-		"path":   filepath.Join(tmpDir, "nonexistent.txt"),
+		"path": filepath.Join(tmpDir, "nonexistent.txt"),
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -814,8 +841,8 @@ func TestFileOpsTool_DeleteFile_NonExistent(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_DeleteFile_IsDirectory(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteFileTool_DeleteFile_IsDirectory(t *testing.T) {
+	tool := NewDeleteFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -825,8 +852,7 @@ func TestFileOpsTool_DeleteFile_IsDirectory(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "delete_file",
-		"path":   dirPath,
+		"path": dirPath,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -841,16 +867,17 @@ func TestFileOpsTool_DeleteFile_IsDirectory(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_Judge_CreateDirectoryInsideWorkspace(t *testing.T) {
-	tool := NewFileOpsTool()
+// --- More Judge tests ---
+
+func TestCreateDirectoryTool_Judge_CreateDirectoryInsideWorkspace(t *testing.T) {
+	tool := NewCreateDirectoryTool()
 
 	tmpDir := t.TempDir()
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 
 	newDir := filepath.Join(tmpDir, "newdir")
 	input, _ := json.Marshal(map[string]string{
-		"action": "create_directory",
-		"path":   newDir,
+		"path": newDir,
 	})
 
 	allow, reasoning := tool.Judge(ctx, input)
@@ -862,15 +889,14 @@ func TestFileOpsTool_Judge_CreateDirectoryInsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_Judge_DeleteDirectoryOutsideWorkspace(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteDirectoryTool_Judge_DeleteDirectoryOutsideWorkspace(t *testing.T) {
+	tool := NewDeleteDirectoryTool()
 
 	tmpDir := t.TempDir()
 	otherDir := t.TempDir()
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 
 	input, _ := json.Marshal(map[string]any{
-		"action":    "delete_directory",
 		"path":      filepath.Join(otherDir, "somedir"),
 		"recursive": true,
 	})
@@ -884,16 +910,15 @@ func TestFileOpsTool_Judge_DeleteDirectoryOutsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_Judge_DeleteFileInsideWorkspace(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteFileTool_Judge_DeleteFileInsideWorkspace(t *testing.T) {
+	tool := NewDeleteFileTool()
 
 	tmpDir := t.TempDir()
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 
 	testFile := filepath.Join(tmpDir, "file.txt")
 	input, _ := json.Marshal(map[string]string{
-		"action": "delete_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	allow, reasoning := tool.Judge(ctx, input)
@@ -915,14 +940,13 @@ func trackerCtx(t *testing.T, workspaceRoot string) (context.Context, *agent.Fil
 	return ctx, tracker
 }
 
-func TestFileOps_WriteFile_TracksChanges(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_WriteFile_TracksChanges(t *testing.T) {
+	tool := NewWriteFileTool()
 	tmpDir := t.TempDir()
 	ctx, tracker := trackerCtx(t, tmpDir)
 
 	testFile := filepath.Join(tmpDir, "new.txt")
 	input, _ := json.Marshal(map[string]string{
-		"action":  "write_file",
 		"path":    testFile,
 		"content": "hello",
 	})
@@ -944,8 +968,8 @@ func TestFileOps_WriteFile_TracksChanges(t *testing.T) {
 	}
 }
 
-func TestFileOps_WriteFile_TracksModify(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_WriteFile_TracksModify(t *testing.T) {
+	tool := NewWriteFileTool()
 	tmpDir := t.TempDir()
 	ctx, tracker := trackerCtx(t, tmpDir)
 
@@ -955,7 +979,6 @@ func TestFileOps_WriteFile_TracksModify(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action":  "write_file",
 		"path":    testFile,
 		"content": "new content",
 	})
@@ -977,8 +1000,8 @@ func TestFileOps_WriteFile_TracksModify(t *testing.T) {
 	}
 }
 
-func TestFileOps_EditFile_TracksChanges(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestEditFileTool_EditFile_TracksChanges(t *testing.T) {
+	tool := NewEditFileTool()
 	tmpDir := t.TempDir()
 	ctx, tracker := trackerCtx(t, tmpDir)
 
@@ -988,7 +1011,6 @@ func TestFileOps_EditFile_TracksChanges(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action":     "edit_file",
 		"path":       testFile,
 		"old_string": "World",
 		"new_string": "Universe",
@@ -1011,8 +1033,8 @@ func TestFileOps_EditFile_TracksChanges(t *testing.T) {
 	}
 }
 
-func TestFileOps_DeleteFile_TracksChanges(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestDeleteFileTool_DeleteFile_TracksChanges(t *testing.T) {
+	tool := NewDeleteFileTool()
 	tmpDir := t.TempDir()
 	ctx, tracker := trackerCtx(t, tmpDir)
 
@@ -1022,8 +1044,7 @@ func TestFileOps_DeleteFile_TracksChanges(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "delete_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -1043,14 +1064,13 @@ func TestFileOps_DeleteFile_TracksChanges(t *testing.T) {
 	}
 }
 
-func TestFileOps_WriteFile_NoTracker(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestWriteFileTool_WriteFile_NoTracker(t *testing.T) {
+	tool := NewWriteFileTool()
 	tmpDir := t.TempDir()
 	ctx := context.Background() // no tracker in context
 
 	testFile := filepath.Join(tmpDir, "notracker.txt")
 	input, _ := json.Marshal(map[string]string{
-		"action":  "write_file",
 		"path":    testFile,
 		"content": "works without tracker",
 	})
@@ -1074,8 +1094,8 @@ func TestFileOps_WriteFile_NoTracker(t *testing.T) {
 
 // --- Pagination tests ---
 
-func TestFileOpsTool_ReadFile_DefaultPagination(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestReadFileTool_ReadFile_DefaultPagination(t *testing.T) {
+	tool := NewReadFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -1091,8 +1111,7 @@ func TestFileOpsTool_ReadFile_DefaultPagination(t *testing.T) {
 
 	// Read with no start_line/end_line
 	input, _ := json.Marshal(map[string]string{
-		"action": "read_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -1125,8 +1144,8 @@ func TestFileOpsTool_ReadFile_DefaultPagination(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_ReadFile_ExplicitRange(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestReadFileTool_ReadFile_ExplicitRange(t *testing.T) {
+	tool := NewReadFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -1142,7 +1161,6 @@ func TestFileOpsTool_ReadFile_ExplicitRange(t *testing.T) {
 
 	// Read with explicit range: start_line=10, end_line=20
 	input, _ := json.Marshal(map[string]any{
-		"action":     "read_file",
 		"path":       testFile,
 		"start_line": 10,
 		"end_line":   20,
@@ -1176,8 +1194,8 @@ func TestFileOpsTool_ReadFile_ExplicitRange(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_ReadFile_LongLinesTruncated(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestReadFileTool_ReadFile_LongLinesTruncated(t *testing.T) {
+	tool := NewReadFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -1189,8 +1207,7 @@ func TestFileOpsTool_ReadFile_LongLinesTruncated(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "read_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -1212,8 +1229,8 @@ func TestFileOpsTool_ReadFile_LongLinesTruncated(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_ReadFile_SmallFile(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestReadFileTool_ReadFile_SmallFile(t *testing.T) {
+	tool := NewReadFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -1228,8 +1245,7 @@ func TestFileOpsTool_ReadFile_SmallFile(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(map[string]string{
-		"action": "read_file",
-		"path":   testFile,
+		"path": testFile,
 	})
 
 	result, err := tool.Execute(ctx, input)
@@ -1264,8 +1280,8 @@ func TestFileOpsTool_ReadFile_SmallFile(t *testing.T) {
 	}
 }
 
-func TestFileOpsTool_ReadFile_OutOfRangeClamp(t *testing.T) {
-	tool := NewFileOpsTool()
+func TestReadFileTool_ReadFile_OutOfRangeClamp(t *testing.T) {
+	tool := NewReadFileTool()
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 
@@ -1281,7 +1297,6 @@ func TestFileOpsTool_ReadFile_OutOfRangeClamp(t *testing.T) {
 
 	// Read with end_line=500 (beyond file size)
 	input, _ := json.Marshal(map[string]any{
-		"action":     "read_file",
 		"path":       testFile,
 		"start_line": 1,
 		"end_line":   500,

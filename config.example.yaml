@@ -136,13 +136,12 @@ executor:
 # Security & Tool Access Policies
 # ---------------------------------------------------------------------------
 security:
-  # LLM-based safety judge
+  # LLM-based safety judge (used on-demand via "Ask agent" button)
   judge:
-    enabled: true # Whether the safety judge is active
     model: "" # Model override for judge calls (empty = use default)
 
-  # Default policy for tools not listed below: "auto" | "always_allow" | "always_deny" | "user_confirm"
-  default_policy: "auto"
+  # Default policy for tools not listed below: "user_confirm" | "always_allow" | "always_deny"
+  default_policy: "user_confirm"
 
   # Per-tool security policies
   tool_policies:
@@ -154,8 +153,16 @@ security:
         - "mkfs"
         - 'dd\s+if='
         - '>\s*/dev/'
-    file_ops:
-      policy: "auto"
+    write_file:
+      policy: "user_confirm"
+    edit_file:
+      policy: "user_confirm"
+    create_directory:
+      policy: "user_confirm"
+    delete_directory:
+      policy: "user_confirm"
+    delete_file:
+      policy: "user_confirm"
     web_search:
       policy: "always_allow"
     web_fetch:
