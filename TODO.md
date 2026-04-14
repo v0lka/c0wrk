@@ -1,6 +1,6 @@
 - [ ] Поддержка MCP
   - [x] Базовая поддержка
-  - [ ] Подключение https://github.com/DeusData/codebase-memory-mcp
+  - [x] Подключение https://github.com/DeusData/codebase-memory-mcp
 
 - [ ] Запуск любых инструментов должен быть относительно каталога воркспейса
 

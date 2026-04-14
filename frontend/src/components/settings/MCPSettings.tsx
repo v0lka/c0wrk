@@ -13,6 +13,7 @@ import {
   Download,
   Loader2,
   Cpu,
+  Terminal,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +38,8 @@ import {
   UpdateMCPServers,
   CheckCodebaseMemoryMCP,
   InstallCodebaseMemoryMCP,
+  CheckRtk,
+  InstallRtk,
 } from '../../../wailsjs/go/desktop/App'
 import { mcp, desktop } from '../../../wailsjs/go/models'
 
@@ -105,6 +108,13 @@ export function MCPSettings() {
   const [installProgress, setInstallProgress] = useState<string | null>(null)
   const [installError, setInstallError] = useState<string | null>(null)
 
+  // RTK state
+  const [rtkInstalled, setRtkInstalled] = useState(false)
+  const [rtkPath, setRtkPath] = useState('')
+  const [rtkVersion, setRtkVersion] = useState('')
+  const [rtkInstallProgress, setRtkInstallProgress] = useState<string | null>(null)
+  const [rtkInstallError, setRtkInstallError] = useState<string | null>(null)
+
   const loadData = useCallback(async () => {
     setIsLoading(true)
     setError(null)
@@ -143,6 +153,21 @@ export function MCPSettings() {
     checkStatus()
   }, [])
 
+  // Check RTK status on mount
+  useEffect(() => {
+    const checkRtkStatus = async () => {
+      try {
+        const result = await CheckRtk()
+        setRtkInstalled(result.installed)
+        setRtkPath(result.path)
+        setRtkVersion(result.version)
+      } catch (err) {
+        logger.error('Failed to check RTK status:', err)
+      }
+    }
+    checkRtkStatus()
+  }, [])
+
   // Listen for Codebase Memory events
   useEffect(() => {
     if (!runtime) return
@@ -173,6 +198,43 @@ export function MCPSettings() {
     }
   }, [runtime])
 
+  // Listen for RTK events
+  useEffect(() => {
+    if (!runtime) return
+
+    const unsubProgress = runtime.EventsOn('rtk:install-progress', (data: unknown) => {
+      const progress = data as string
+      setRtkInstallProgress(progress)
+      if (progress === 'done') {
+        setRtkInstallProgress(null)
+        // Re-check status after install
+        CheckRtk().then((result) => {
+          setRtkInstalled(result.installed)
+          setRtkPath(result.path)
+          setRtkVersion(result.version)
+        }).catch(() => {})
+      } else if (progress === 'error') {
+        setRtkInstallProgress(null)
+      }
+    })
+
+    const unsubStatus = runtime.EventsOn('rtk:status', (data: unknown) => {
+      const status = data as { installed: boolean; path: string; version: string }
+      setRtkInstalled(status.installed)
+      setRtkPath(status.path)
+      setRtkVersion(status.version)
+      if (status.installed) {
+        setRtkInstallProgress(null)
+        setRtkInstallError(null)
+      }
+    })
+
+    return () => {
+      unsubProgress()
+      unsubStatus()
+    }
+  }, [runtime])
+
   const handleInstallCodebaseMemory = async () => {
     setInstallProgress('downloading')
     setInstallError(null)
@@ -181,6 +243,17 @@ export function MCPSettings() {
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err))
       setInstallProgress(null)
+    }
+  }
+
+  const handleInstallRtk = async () => {
+    setRtkInstallProgress('downloading')
+    setRtkInstallError(null)
+    try {
+      await InstallRtk()
+    } catch (err) {
+      setRtkInstallError(err instanceof Error ? err.message : String(err))
+      setRtkInstallProgress(null)
     }
   }
 
@@ -417,6 +490,58 @@ export function MCPSettings() {
               </div>
             ) : (
               <Button size="sm" onClick={handleInstallCodebaseMemory}>
+                <Download className="h-3 w-3 mr-1" />
+                Install
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* RTK Section */}
+      <div className="border rounded-lg p-4">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-muted">
+            <Terminal className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-medium text-sm">RTK (Command Optimizer)</span>
+              {rtkInstalled ? (
+                <Badge variant="secondary" className="text-xs bg-green-500/10 text-green-600 border-green-500/20">
+                  Installed
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="text-xs bg-orange-500/10 text-orange-600 border-orange-500/20">
+                  Not Installed
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              Compresses command output for reduced token usage (60-90% savings)
+            </p>
+            {rtkInstalled ? (
+              <p className="text-xs text-muted-foreground font-mono truncate" title={rtkPath}>
+                {rtkPath}{rtkVersion ? ` (${rtkVersion})` : ''}
+              </p>
+            ) : rtkInstallProgress ? (
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled>
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  {rtkInstallProgress === 'downloading' && 'Downloading...'}
+                  {rtkInstallProgress === 'installing' && 'Installing...'}
+                </Button>
+              </div>
+            ) : rtkInstallError ? (
+              <div className="space-y-2">
+                <p className="text-xs text-destructive">{rtkInstallError}</p>
+                <Button size="sm" variant="outline" onClick={handleInstallRtk}>
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" onClick={handleInstallRtk}>
                 <Download className="h-3 w-3 mr-1" />
                 Install
               </Button>

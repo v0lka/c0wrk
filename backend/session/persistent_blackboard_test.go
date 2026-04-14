@@ -1,4 +1,4 @@
-package core
+package session
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/user/agent/core"
 )
 
 // ---------------------------------------------------------------------------
@@ -19,22 +21,22 @@ type newTaskCall struct {
 
 type planCall struct {
 	taskID string
-	plan   *Plan
+	plan   *core.Plan
 }
 
 type routingCall struct {
 	taskID  string
-	routing *RoutingDecision
+	routing *core.RoutingDecision
 }
 
 type stepResultCall struct {
 	taskID, stepID, summary, fullOutput, errorText string
-	steps                                          []Step
+	steps                                          []core.Step
 }
 
 type reflectionCall struct {
 	taskID     string
-	reflection Reflection
+	reflection core.Reflection
 }
 
 type completionCall struct {
@@ -48,7 +50,7 @@ type failureCall struct {
 
 type stepFileChangesCall struct {
 	taskID, stepID string
-	changes        []FileChange
+	changes        []core.FileChange
 }
 
 type mockTaskPersistence struct {
@@ -67,7 +69,7 @@ type mockTaskPersistence struct {
 	persistError error
 
 	// For LoadTaskState
-	loadState *TaskState
+	loadState *core.TaskState
 	loadErr   error
 }
 
@@ -78,28 +80,28 @@ func (m *mockTaskPersistence) PersistNewTask(taskID, sessionID, originalRequest 
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistPlan(taskID string, plan *Plan) error {
+func (m *mockTaskPersistence) PersistPlan(taskID string, plan *core.Plan) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.planCalls = append(m.planCalls, planCall{taskID, plan})
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistRouting(taskID string, routing *RoutingDecision) error {
+func (m *mockTaskPersistence) PersistRouting(taskID string, routing *core.RoutingDecision) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.routingCalls = append(m.routingCalls, routingCall{taskID, routing})
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []Step) error {
+func (m *mockTaskPersistence) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []core.Step) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stepResultCalls = append(m.stepResultCalls, stepResultCall{taskID, stepID, summary, fullOutput, errorText, steps})
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistReflection(taskID string, r Reflection) error {
+func (m *mockTaskPersistence) PersistReflection(taskID string, r core.Reflection) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reflectionCalls = append(m.reflectionCalls, reflectionCall{taskID, r})
@@ -120,14 +122,14 @@ func (m *mockTaskPersistence) PersistFailure(taskID string) error {
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistStepFileChanges(taskID, stepID string, changes []FileChange) error {
+func (m *mockTaskPersistence) PersistStepFileChanges(taskID, stepID string, changes []core.FileChange) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stepFileChangesCalls = append(m.stepFileChangesCalls, stepFileChangesCall{taskID, stepID, changes})
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) LoadTaskState(taskID string) (*TaskState, error) {
+func (m *mockTaskPersistence) LoadTaskState(taskID string) (*core.TaskState, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.loadState, m.loadErr
@@ -178,7 +180,7 @@ func TestPersistentBlackboard_SetPlan(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	plan := &Plan{Steps: []PlanStep{{ID: "step_1", Description: "write code"}}}
+	plan := &core.Plan{Steps: []core.PlanStep{{ID: "step_1", Description: "write code"}}}
 	pb.SetPlan(plan)
 
 	// Verify delegation
@@ -200,7 +202,7 @@ func TestPersistentBlackboard_SetStepResult(t *testing.T) {
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
 	testErr := errors.New("step failed")
-	steps := []Step{{Thought: "thinking"}}
+	steps := []core.Step{{Thought: "thinking"}}
 	pb.SetStepResult("step_1", "output text", testErr, steps)
 
 	// Verify delegation
@@ -234,7 +236,7 @@ func TestPersistentBlackboard_AddReflection(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	r := Reflection{Summary: "things went wrong", SuggestedAction: "retry"}
+	r := core.Reflection{Summary: "things went wrong", SuggestedAction: "retry"}
 	pb.AddReflection(r)
 
 	// Verify delegation
@@ -319,9 +321,9 @@ func TestPersistentBlackboard_ReadDelegation(t *testing.T) {
 
 	// Populate via MapBlackboard-level writes
 	pb.SetOriginalRequest("req")
-	pb.SetPlan(&Plan{Steps: []PlanStep{{ID: "s1"}}})
+	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1"}}})
 	pb.SetStepResult("s1", "output", nil, nil)
-	pb.AddReflection(Reflection{Summary: "r1"})
+	pb.AddReflection(core.Reflection{Summary: "r1"})
 	pb.SetFinalResult("done")
 
 	// All reads should delegate to MapBlackboard
@@ -354,10 +356,10 @@ func TestPersistentBlackboard_BestEffortErrors(t *testing.T) {
 
 	// All write methods should NOT panic even though persistence fails
 	pb.SetOriginalRequest("req")
-	pb.SetPlan(&Plan{Steps: []PlanStep{{ID: "s1"}}})
+	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1"}}})
 	pb.SetStepResult("s1", "output", nil, nil)
-	pb.AddReflection(Reflection{Summary: "r"})
-	pb.SetRouting(&RoutingDecision{Domain: "code"})
+	pb.AddReflection(core.Reflection{Summary: "r"})
+	pb.SetRouting(&core.RoutingDecision{Domain: "code"})
 	pb.CompleteTask(1)
 	pb.FailTask()
 
@@ -375,8 +377,8 @@ func TestPersistentBlackboard_NilLogger(t *testing.T) {
 	pb.SetOriginalRequest("req")
 	pb.SetPlan(nil)
 	pb.SetStepResult("s1", "out", nil, nil)
-	pb.AddReflection(Reflection{})
-	pb.SetRouting(&RoutingDecision{})
+	pb.AddReflection(core.Reflection{})
+	pb.SetRouting(&core.RoutingDecision{})
 	pb.CompleteTask(0)
 	pb.FailTask()
 }
@@ -385,7 +387,7 @@ func TestPersistentBlackboard_SetRouting(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	routing := &RoutingDecision{Domain: "code", Complexity: 3}
+	routing := &core.RoutingDecision{Domain: "code", Complexity: 3}
 	pb.SetRouting(routing)
 
 	mock.mu.Lock()
@@ -409,15 +411,15 @@ func TestPersistentBlackboard_TaskID(t *testing.T) {
 
 func TestRestoreBlackboard(t *testing.T) {
 	mock := &mockTaskPersistence{
-		loadState: &TaskState{
+		loadState: &core.TaskState{
 			TaskID:          "t1",
 			SessionID:       "s1",
 			OriginalRequest: "build CLI",
-			Plan:            &Plan{Steps: []PlanStep{{ID: "step_1", Description: "write code"}}},
-			StepResults: map[string]StepResult{
+			Plan:            &core.Plan{Steps: []core.PlanStep{{ID: "step_1", Description: "write code"}}},
+			StepResults: map[string]core.StepResult{
 				"step_1": {StepID: "step_1", Summary: "wrote code", FullOutput: "full output"},
 			},
-			Reflections: []Reflection{{Summary: "attempt 1 failed", Timestamp: time.Now()}},
+			Reflections: []core.Reflection{{Summary: "attempt 1 failed", Timestamp: time.Now()}},
 			FinalOutput: "completed output",
 			Status:      "in_progress",
 		},
@@ -481,7 +483,7 @@ func TestPersistentBlackboard_SetStepFileChanges(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	changes := []FileChange{
+	changes := []core.FileChange{
 		{Path: "main.go", Operation: "MODIFY", Diff: "--- a/main.go\n+++ b/main.go", SizeBytes: 1024},
 		{Path: "new.go", Operation: "CREATE", SizeBytes: 256},
 	}
@@ -518,7 +520,7 @@ func TestPersistentBlackboard_SetStepFileChanges_PersistError(t *testing.T) {
 	mock := &mockTaskPersistence{persistError: errors.New("storage down")}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	changes := []FileChange{
+	changes := []core.FileChange{
 		{Path: "main.go", Operation: "MODIFY"},
 	}
 	// Should not panic even though persistence fails
@@ -536,15 +538,15 @@ func TestPersistentBlackboard_SetStepFileChanges_PersistError(t *testing.T) {
 
 func TestRestoreBlackboard_WithFileChanges(t *testing.T) {
 	mock := &mockTaskPersistence{
-		loadState: &TaskState{
+		loadState: &core.TaskState{
 			TaskID:          "t1",
 			SessionID:       "s1",
 			OriginalRequest: "implement feature",
-			Plan:            &Plan{Steps: []PlanStep{{ID: "step_1", Description: "write code"}}},
-			StepResults: map[string]StepResult{
+			Plan:            &core.Plan{Steps: []core.PlanStep{{ID: "step_1", Description: "write code"}}},
+			StepResults: map[string]core.StepResult{
 				"step_1": {StepID: "step_1", Summary: "wrote code", FullOutput: "full output"},
 			},
-			FileChanges: map[string][]FileChange{
+			FileChanges: map[string][]core.FileChange{
 				"step_1": {
 					{Path: "main.go", Operation: "MODIFY", Diff: "some diff", SizeBytes: 512},
 					{Path: "helper.go", Operation: "CREATE", SizeBytes: 128},

@@ -10,6 +10,12 @@ Before acting, form a brief hypothesis about how to accomplish the task. After e
 
 Prefer higher-tier tools over bash_exec. Use bash_exec only when no purpose-built tool covers the operation.
 
+Tool preference hierarchy for code investigation:
+
+1. **codebase-memory MCP tools** (when available) — first choice for code investigation. They provide semantic code search, architecture understanding, and related-code discovery that surpasses text matching.
+2. **Built-in search tools** — ripgrep, glob, search_files, search_content for precise text and pattern matching.
+3. **bash_exec** — fallback only when no higher-tier tool covers the operation.
+
 ### File Operations Strategy
 
 For file-related tasks, use these purpose-built tools:
@@ -20,6 +26,16 @@ For file-related tasks, use these purpose-built tools:
 - **Managing**: `create_directory`, `delete_directory`, `delete_file`
 
 For text and file operations, ALWAYS prefer the purpose-built tools above. Use bash_exec ONLY for: build commands, git operations, package management, running tests, and complex shell pipelines not replicated by higher-tier tools.
+
+### bash_exec Output Management
+
+Always use flags that produce minimal, structured output to avoid flooding the context window. Only request verbose output when compact output is insufficient to diagnose an issue.
+
+- `git status` → `git status --porcelain`
+- `git log` → `git log --oneline -20`
+- `git diff` → `git diff --stat` first
+- `pytest` → `pytest --tb=short -q`
+- `cargo test` → `cargo test 2>&1 | tail -30`
 
 ## Search Efficiency
 

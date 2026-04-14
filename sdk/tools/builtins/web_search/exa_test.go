@@ -176,6 +176,9 @@ func TestExaProvider_RealSearch(t *testing.T) {
 	provider := NewExaProvider(apiKey)
 	results, err := provider.Search(context.Background(), "golang programming language", 3)
 	if err != nil {
+		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "INVALID_API_KEY") || strings.Contains(err.Error(), "403") {
+			t.Skipf("Skipping integration test: API key invalid or expired: %v", err)
+		}
 		t.Fatalf("Search() returned error: %v", err)
 	}
 	if len(results) == 0 {

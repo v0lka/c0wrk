@@ -5,29 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
-	"time"
 
-	openai "github.com/sashabaranov/go-openai"
-
+	"github.com/user/agent/backend"
 	"github.com/user/agent/backend/config"
-	"github.com/user/agent/core/tools"
-	"github.com/user/agent/sdk/llm"
-	websearch "github.com/user/agent/sdk/tools/builtins/web_search"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
 const maskedAPIKey = "***configured***"
-
-// validProviders is the set of known LLM provider names accepted by UpdateSettings.
-var validProviders = map[string]bool{
-	"anthropic":         true,
-	"gemini":            true,
-	"lmstudio":          true,
-	"openai_compatible": true,
-	"chatgpt":           true,
-}
 
 // ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
 type ConfigResponse struct {
@@ -164,7 +149,7 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 
 	// Update active provider
 	if settings.ActiveProvider != "" {
-		if !validProviders[settings.ActiveProvider] {
+		if !config.ValidProviders[settings.ActiveProvider] {
 			return fmt.Errorf("active_provider %q is not a valid provider", settings.ActiveProvider)
 		}
 		a.config.LLM.ActiveProvider = settings.ActiveProvider
@@ -224,14 +209,14 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 	// Clear any config load errors since settings are now valid
 	a.configLoadErrors = nil
 
-	// Rebuild judge with updated LLM provider so Auto-policy tools use
-	// the new provider for safety evaluation.
-	a.rebuildJudge(a.config, nil, slog.Default())
-
-	// Rebuild shared LLM router so tools using it (e.g. WebFetch summarizer)
-	// pick up the new provider immediately.
-	if newRouter, _, err := a.buildRouter(a.config); err == nil && newRouter != nil {
-		a.llmRouter = newRouter
+	// Rebuild judge and LLM router via the backend builder so new sessions
+	// use the updated provider immediately.
+	if a.app != nil {
+		bcfg := backend.ToBuilderConfig(a.config)
+		a.app.Builder().RebuildJudge(bcfg)
+		if err := a.app.Builder().RebuildRouter(bcfg); err != nil {
+			slog.Warn("failed to rebuild LLM router after settings update", "error", err)
+		}
 	}
 
 	return nil
@@ -256,19 +241,9 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 		slog.Warn("failed to persist search settings", "error", err)
 	}
 
-	// Rebuild web search tool so new sessions use updated settings immediately.
-	if a.toolRegistry != nil {
-		searchAPIKey := config.ExpandEnvVars(a.config.Search.APIKey)
-		searchProvider := a.createSearchProvider(a.config.Search.Provider, searchAPIKey, time.Duration(a.config.Timeouts.WebSearchTimeout)*time.Second)
-		if searchProvider != nil {
-			webSearchLimits := websearch.Limits{
-				MaxResults: a.config.ToolLimits.WebSearchMaxResults,
-				Timeout:    time.Duration(a.config.Timeouts.WebSearchTimeout) * time.Second,
-			}
-			a.toolRegistry.Register(websearch.NewWebSearchToolWithLimits(searchProvider, webSearchLimits))
-		} else {
-			a.toolRegistry.Unregister("web_search")
-		}
+	// Rebuild web search tool via the backend builder.
+	if a.app != nil {
+		a.app.Builder().UpdateSearchTool(backend.ToBuilderConfig(a.config))
 	}
 
 	return nil
@@ -289,7 +264,7 @@ func (a *App) GetSecuritySettings() SecuritySettingsResponse {
 	}
 	for name, cfg := range a.config.Security.ToolPolicies {
 		// Filter out internal tools
-		if tools.IsInternalTool(name) {
+		if backend.IsInternalTool(name) {
 			continue
 		}
 		resp.ToolPolicies[name] = ToolPolicyResponse{
@@ -310,37 +285,25 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 		return errors.New("config not initialized")
 	}
 
-	// Update config
+	// Update config — replace the full policy set so config stays in sync
+	// with the registry (the frontend always sends the complete set).
 	a.config.Security.DefaultPolicy = settings.DefaultPolicy
-	if a.config.Security.ToolPolicies == nil {
-		a.config.Security.ToolPolicies = make(map[string]config.ToolPolicyConfig)
-	}
+	newPolicies := make(map[string]config.ToolPolicyConfig, len(settings.ToolPolicies))
 	for name, policyCfg := range settings.ToolPolicies {
 		// Silently skip internal tools
-		if tools.IsInternalTool(name) {
+		if backend.IsInternalTool(name) {
 			continue
 		}
-		a.config.Security.ToolPolicies[name] = config.ToolPolicyConfig{
+		newPolicies[name] = config.ToolPolicyConfig{
 			Policy:    policyCfg.Policy,
 			Blacklist: policyCfg.Blacklist,
 		}
 	}
+	a.config.Security.ToolPolicies = newPolicies
 
-	// Update registry policy overrides
-	if a.toolRegistry != nil {
-		policyOverrides := make(map[string]tools.ToolPolicy)
-		for toolName, policyCfg := range settings.ToolPolicies {
-			// Silently skip internal tools
-			if tools.IsInternalTool(toolName) {
-				continue
-			}
-			policyOverrides[toolName] = tools.ParseToolPolicy(policyCfg.Policy)
-		}
-		a.toolRegistry.SetPolicyOverrides(policyOverrides)
-
-		if settings.DefaultPolicy != "" {
-			a.toolRegistry.SetDefaultPolicy(tools.ParseToolPolicy(settings.DefaultPolicy))
-		}
+	// Apply policies to the shared tool registry via the backend builder.
+	if a.app != nil {
+		a.app.Builder().UpdateSecurityPolicies(backend.ToBuilderConfig(a.config))
 	}
 
 	if err := a.persistConfig(); err != nil {
@@ -404,90 +367,11 @@ func (a *App) ListProviderModels(provider string) ([]string, error) {
 	if a.config == nil {
 		return nil, errors.New("config not initialized")
 	}
-
-	switch provider {
-	case "anthropic":
-		return llm.BuiltInModelNames("anthropic-api"), nil
-	case "gemini":
-		return llm.BuiltInModelNamesByPrefix("gemini-"), nil
-	case "chatgpt":
-		apiKey := config.ExpandEnvVars(a.config.LLM.ChatGPT.APIKey)
-		if apiKey == "" {
-			return nil, errors.New("ChatGPT API key not configured")
-		}
-		return a.listOpenAIModels("", apiKey)
-	case "openai_compatible":
-		cfg := a.config.LLM.OpenAICompatible
-		baseURL := config.ExpandEnvVars(cfg.BaseURL)
-		apiKey := config.ExpandEnvVars(cfg.APIKey)
-		if baseURL == "" {
-			return nil, errors.New("OpenAI Compatible base URL not configured")
-		}
-		return a.listOpenAIModels(baseURL, apiKey)
-	case "lmstudio":
-		cfg := a.config.LLM.LMStudio
-		baseURL := config.ExpandEnvVars(cfg.BaseURL)
-		if baseURL == "" {
-			baseURL = "http://localhost:1234"
-		}
-		apiKey := config.ExpandEnvVars(cfg.APIKey)
-		return a.listLMStudioModels(baseURL, apiKey)
-	default:
-		return nil, fmt.Errorf("unknown provider: %s", provider)
-	}
-}
-
-// listOpenAIModels fetches available models from an OpenAI-compatible API.
-func (a *App) listOpenAIModels(baseURL, apiKey string) ([]string, error) {
-	var client *openai.Client
-	if baseURL == "" {
-		client = openai.NewClient(apiKey)
-	} else {
-		cfg := openai.DefaultConfig(apiKey)
-		cfg.BaseURL = baseURL
-		client = openai.NewClientWithConfig(cfg)
+	if a.app == nil {
+		return nil, errors.New("application not initialized")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	modelList, err := client.ListModels(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list models: %w", err)
-	}
-
-	names := []string{}
-	for _, m := range modelList.Models {
-		names = append(names, m.ID)
-	}
-	sort.Strings(names)
-	return names, nil
-}
-
-// listLMStudioModels fetches available models from LM Studio API.
-func (a *App) listLMStudioModels(baseURL, apiKey string) ([]string, error) {
-	provider, err := llm.NewLMStudioProvider(llm.LMStudioProviderConfig{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create LM Studio provider: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	models, err := provider.ListModels(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list models: %w", err)
-	}
-
-	names := []string{}
-	for _, m := range models {
-		names = append(names, m.ID)
-	}
-	sort.Strings(names)
-	return names, nil
+	return a.app.Builder().ListProviderModels(context.Background(), provider, backend.ToBuilderConfig(a.config))
 }
 
 // persistConfig saves the current in-memory config to disk.

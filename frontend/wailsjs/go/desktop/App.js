@@ -14,6 +14,10 @@ export function CheckCodebaseMemoryMCP() {
   return window['go']['desktop']['App']['CheckCodebaseMemoryMCP']();
 }
 
+export function CheckRtk() {
+  return window['go']['desktop']['App']['CheckRtk']();
+}
+
 export function CreateProject(arg1, arg2) {
   return window['go']['desktop']['App']['CreateProject'](arg1, arg2);
 }
@@ -72,6 +76,10 @@ export function IndexRepository(arg1) {
 
 export function InstallCodebaseMemoryMCP() {
   return window['go']['desktop']['App']['InstallCodebaseMemoryMCP']();
+}
+
+export function InstallRtk() {
+  return window['go']['desktop']['App']['InstallRtk']();
 }
 
 export function ListDirectory(arg1) {

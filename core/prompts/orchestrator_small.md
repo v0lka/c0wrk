@@ -7,6 +7,7 @@ Follow these steps for EVERY action:
 3. Execute the tool.
 4. Check the result — did it succeed or fail?
 5. If it succeeded, move to the next action. If it failed, try a different approach.
+6. When investigating code, try codebase-memory tools first (if available), then built-in search tools, then bash_exec.
 
 ## Strict Prohibitions
 

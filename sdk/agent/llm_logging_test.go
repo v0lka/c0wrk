@@ -1,4 +1,4 @@
-package core
+package agent
 
 import (
 	"bytes"
@@ -27,7 +27,7 @@ func TestLoggingCaller_CallSuccess_LogsTokenUsage(t *testing.T) {
 	slog.SetDefault(slog.New(handler))
 	defer slog.SetDefault(origLogger)
 
-	caller := NewLoggingCaller(inner, "openai", slog.New(handler))
+	caller := NewLoggingLLMCaller(inner, "openai", slog.New(handler))
 	req := llm.ChatRequest{Model: "gpt-4o"}
 	resp, err := caller.Call(context.Background(), req)
 
@@ -47,7 +47,7 @@ func TestLoggingCaller_CallSuccess_LogsTokenUsage(t *testing.T) {
 }
 
 func TestLoggingCaller_CallError_NoLog(t *testing.T) {
-	inner := &mockLLMCaller{err: errors.New("provider down")}
+	inner := &mockLLMCaller{errors: []error{errors.New("provider down")}}
 
 	var buf bytes.Buffer
 	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
@@ -55,7 +55,7 @@ func TestLoggingCaller_CallError_NoLog(t *testing.T) {
 	slog.SetDefault(slog.New(handler))
 	defer slog.SetDefault(origLogger)
 
-	caller := NewLoggingCaller(inner, "anthropic", slog.New(handler))
+	caller := NewLoggingLLMCaller(inner, "anthropic", slog.New(handler))
 	_, err := caller.Call(context.Background(), llm.ChatRequest{Model: "claude-3"})
 
 	if err == nil {
@@ -87,7 +87,7 @@ func TestLoggingCaller_DelegatesToInner(t *testing.T) {
 	slog.SetDefault(slog.New(handler))
 	defer slog.SetDefault(origLogger)
 
-	caller := NewLoggingCaller(inner, "test", slog.New(handler))
+	caller := NewLoggingLLMCaller(inner, "test", slog.New(handler))
 	req := llm.ChatRequest{Model: "m1", Messages: []llm.Message{{Role: "user", Content: "hello"}}}
 	resp, err := caller.Call(context.Background(), req)
 

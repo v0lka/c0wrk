@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -250,3 +252,85 @@ func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
 func (m *mockEmitter) ReplanFailed(_ error)                                 {}
 func (m *mockEmitter) FileRollbackError(_ string, _ error)                  {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
+
+// ---------------------------------------------------------------------------
+// testPersistableBlackboard — a minimal PersistableBlackboard for core tests
+// ---------------------------------------------------------------------------
+
+// testPersistableBlackboard wraps a MapBlackboard and records persistence calls.
+// Used by orchestrator tests that exercise continuation/restore flows.
+type testPersistableBlackboard struct {
+	*MapBlackboard
+	taskID    string
+	store     TaskPersistence
+
+	reactivated bool
+	completed   bool
+	failed      bool
+}
+
+var _ PersistableBlackboard = (*testPersistableBlackboard)(nil)
+
+func (t *testPersistableBlackboard) SetEmitter(_ Emitter) {}
+func (t *testPersistableBlackboard) SetRouting(routing *RoutingDecision) {
+	if t.store != nil {
+		_ = t.store.PersistRouting(t.taskID, routing)
+	}
+}
+func (t *testPersistableBlackboard) CompleteTask(attemptCount int) {
+	t.completed = true
+	if t.store != nil {
+		_ = t.store.PersistCompletion(t.taskID, t.GetFinalResult(), attemptCount)
+	}
+}
+func (t *testPersistableBlackboard) FailTask() {
+	t.failed = true
+	if t.store != nil {
+		_ = t.store.PersistFailure(t.taskID)
+	}
+}
+func (t *testPersistableBlackboard) ReactivateTask() {
+	t.reactivated = true
+	if t.store != nil {
+		_ = t.store.ReactivateTask(t.taskID)
+	}
+}
+func (t *testPersistableBlackboard) TaskID() string { return t.taskID }
+
+// testBlackboardRestoreFunc returns a BlackboardRestoreFunc that creates
+// a testPersistableBlackboard from the mock store.
+func testBlackboardRestoreFunc() BlackboardRestoreFunc {
+	return func(taskID, sessionID string, store TaskPersistence, _ *slog.Logger, opts ...MapBlackboardOption) (PersistableBlackboard, error) {
+		state, err := store.LoadTaskState(taskID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load task state: %w", err)
+		}
+		if state == nil {
+			return nil, nil
+		}
+
+		mb := NewMapBlackboard(opts...)
+		mb.SetOriginalRequest(state.OriginalRequest)
+		if state.Plan != nil {
+			mb.SetPlan(state.Plan)
+		}
+		for stepID, sr := range state.StepResults {
+			mb.SetStepResultRaw(stepID, sr)
+		}
+		for _, r := range state.Reflections {
+			mb.AddReflection(r)
+		}
+		for stepID, changes := range state.FileChanges {
+			mb.SetStepFileChanges(stepID, changes)
+		}
+		if state.FinalOutput != "" {
+			mb.SetFinalResult(state.FinalOutput)
+		}
+
+		return &testPersistableBlackboard{
+			MapBlackboard: mb,
+			taskID:        taskID,
+			store:         store,
+		}, nil
+	}
+}

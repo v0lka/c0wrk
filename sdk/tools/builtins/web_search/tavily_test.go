@@ -258,7 +258,11 @@ func TestTavilyProvider_RealSearch(t *testing.T) {
 	}
 
 	if result.IsError {
-		t.Errorf("Execute() returned IsError=true: %s", result.Content)
+		content := result.Content
+		if strings.Contains(content, "401") || strings.Contains(content, "403") || strings.Contains(content, "432") || strings.Contains(content, "usage limit") {
+			t.Skipf("Skipping integration test: API key invalid or quota exceeded: %s", content)
+		}
+		t.Errorf("Execute() returned IsError=true: %s", content)
 	}
 
 	// Verify we got some results

@@ -15,6 +15,7 @@ type ToolResult = sdktools.ToolResult
 type ToolDescriptor = sdktools.ToolDescriptor
 type BaseTool = sdktools.BaseTool
 type EnvInfo = sdktools.EnvInfo
+type AskUserQuestion = sdktools.AskUserQuestion
 
 // Re-export SDK constants.
 const (
@@ -37,6 +38,7 @@ var (
 	CollectEnvInfo        = sdktools.CollectEnvInfo
 	FormatFullEnvBlock    = sdktools.FormatFullEnvBlock
 	FormatCompactEnvBlock = sdktools.FormatCompactEnvBlock
+	WithTempDir           = sdktools.WithTempDir
 )
 
 // ToolJudger is an optional interface that tools can implement to provide
@@ -75,6 +77,9 @@ type AskUserRequest = sdktools.AskUserRequest
 
 // AskUserResponse represents the user's answer.
 type AskUserResponse = sdktools.AskUserResponse
+
+// AskUserAnswer is a single answer from the user.
+type AskUserAnswer = sdktools.AskUserAnswer
 
 // AskUserFunc is called when the ask_user tool needs to display a question to the user.
 // If nil, ask_user is not available (CLI mode).

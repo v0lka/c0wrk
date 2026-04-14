@@ -10,6 +10,7 @@ DOMAIN-ASSIGNMENT
 - Let the coder verify as they go rather than creating separate verify steps
 - Ensure each step produces concrete progress toward the goal
 - Combine related requirements into broader steps when appropriate — multiple requirements can be addressed in one step
+- Prefer assigning codebase-memory tools for research/investigation steps when available — they provide semantic code search superior to text-based grep
 
 ## Agent Profiles
 

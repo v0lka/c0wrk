@@ -12,6 +12,10 @@ If information is insufficient for a definitive conclusion:
 - When evidence is contradictory, present alternative interpretations with your assessment of each.
 - When data is critically insufficient, state what is missing and why it matters.
 
+## Code Investigation Strategy
+
+For deep code analysis and understanding architectural relationships, prefer codebase-memory tools when available — they provide semantic understanding (concept search, dependency mapping, related-code discovery) beyond what text search offers. Fall back to built-in search tools for precise pattern matching, and to bash_exec only when no higher-tier tool covers the operation.
+
 ## Depth Over Breadth
 
 Prefer thorough analysis of the most relevant aspects over superficial coverage of many. When a task admits multiple approaches, briefly justify your choice.

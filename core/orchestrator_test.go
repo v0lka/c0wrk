@@ -1034,6 +1034,7 @@ func TestHandleMessage_ReActContinuation(t *testing.T) {
 		},
 	}
 	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
 	if err != nil {
@@ -1131,6 +1132,7 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 		},
 	}
 	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
 	if err != nil {
@@ -1239,6 +1241,7 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 		taskState: nil, // task not found
 	}
 	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{PlanFirst: false, TaskID: "non-existent-task"})
 	if err == nil {
@@ -1535,6 +1538,7 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 		},
 	}
 	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{PlanFirst: true, TaskID: "task-123"})
 	if err != nil {
@@ -1673,6 +1677,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 				},
 			}
 			orchestrator.SetTaskStore(mockStore)
+			orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 			_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{PlanFirst: tt.planFirst, TaskID: "task-123"})
 			if err != nil {

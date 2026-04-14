@@ -53,6 +53,19 @@ type CompactionStrategy = agent.CompactionStrategy
 // NewSharedWorkspace creates a new empty SharedWorkspace.
 var NewSharedWorkspace = agent.NewSharedWorkspace
 
+// StepLimitFunc is called when an executor reaches its step limit.
+type StepLimitFunc = agent.StepLimitFunc
+
+// StepLimitResponse represents the user's decision when the step limit is reached.
+type StepLimitResponse = agent.StepLimitResponse
+
+// Step limit response constants.
+var (
+	StepLimitAllowOnce  = agent.StepLimitAllowOnce
+	StepLimitAllowAlways = agent.StepLimitAllowAlways
+	StepLimitDeny        = agent.StepLimitDeny
+)
+
 // ---------------------------------------------------------------------------
 // Type aliases for types that moved to sdk/orchestration
 // ---------------------------------------------------------------------------
@@ -62,6 +75,19 @@ type CompletedStep = orchestration.CompletedStep
 
 // PlanStepEvent represents a single step in a plan for event emission.
 type PlanStepEvent = orchestration.PlanStepEvent
+
+// Re-export blackboard types from sdk/orchestration.
+type StepResult = orchestration.StepResult
+type BlackboardEntry = orchestration.BlackboardEntry
+type Blackboard = orchestration.Blackboard
+type MapBlackboard = orchestration.MapBlackboard
+type MapBlackboardOption = orchestration.MapBlackboardOption
+
+var (
+	NewMapBlackboard     = orchestration.NewMapBlackboard
+	WithMaxSummaryTokens = orchestration.WithMaxSummaryTokens
+	WithMaxSummaryLen    = orchestration.WithMaxSummaryLen
+)
 
 // ---------------------------------------------------------------------------
 // ContextManager — extends sdk/agent.ContextManager with c0wrk-specific SetTask

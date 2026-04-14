@@ -15,6 +15,108 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
+// --- RTK integration tests ---
+
+func TestBashExecTool_SetRtkPath(t *testing.T) {
+	tool := NewBashExecTool(nil)
+
+	// Initially empty
+	if got := tool.getRtkPath(); got != "" {
+		t.Errorf("expected empty rtk path, got %q", got)
+	}
+
+	// Set path
+	tool.SetRtkPath("/usr/local/bin/rtk")
+	if got := tool.getRtkPath(); got != "/usr/local/bin/rtk" {
+		t.Errorf("expected /usr/local/bin/rtk, got %q", got)
+	}
+
+	// Update path
+	tool.SetRtkPath("/opt/bin/rtk")
+	if got := tool.getRtkPath(); got != "/opt/bin/rtk" {
+		t.Errorf("expected /opt/bin/rtk, got %q", got)
+	}
+}
+
+func TestBashExecTool_Execute_NoRtk(t *testing.T) {
+	tool := NewBashExecTool(nil)
+	ctx := context.Background()
+	input := []byte(`{"command": "echo hello"}`)
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "hello") {
+		t.Errorf("expected output to contain 'hello', got %q", result.Content)
+	}
+}
+
+func TestBashExecTool_Execute_InvalidRtkPath(t *testing.T) {
+	tool := NewBashExecTool(nil)
+	tool.SetRtkPath("/nonexistent/rtk")
+	ctx := context.Background()
+	input := []byte(`{"command": "echo hello"}`)
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+	// Should still work - falls back to original command
+	if !strings.Contains(result.Content, "hello") {
+		t.Errorf("expected output to contain 'hello', got %q", result.Content)
+	}
+}
+
+func TestBashExecTool_RtkRewrite_MockRtk(t *testing.T) {
+	// Create a mock rtk script
+	tmpDir := t.TempDir()
+	mockRtk := filepath.Join(tmpDir, "rtk")
+
+	// Script: if args are "rewrite <cmd>", output "echo REWRITTEN"
+	script := `#!/bin/bash
+if [ "$1" = "rewrite" ]; then
+    echo "echo REWRITTEN"
+else
+    echo "unknown"
+fi
+`
+	if err := os.WriteFile(mockRtk, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewBashExecTool(nil)
+	tool.SetRtkPath(mockRtk)
+	ctx := context.Background()
+	input := []byte(`{"command": "echo hello"}`)
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+	// The mock rtk rewrites "echo hello" to "echo REWRITTEN"
+	if !strings.Contains(result.Content, "REWRITTEN") {
+		t.Errorf("expected rewritten output, got %q", result.Content)
+	}
+}
+
+func TestBashExecTool_ConstructorWithRtkPath(t *testing.T) {
+	tool := NewBashExecToolWithTimeouts(nil, DefaultBashTimeouts(), "/usr/bin/rtk")
+	if got := tool.getRtkPath(); got != "/usr/bin/rtk" {
+		t.Errorf("expected /usr/bin/rtk from constructor, got %q", got)
+	}
+}
+
+
 func TestBashExecTool_EchoHello(t *testing.T) {
 	tool := NewBashExecTool(nil)
 

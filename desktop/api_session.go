@@ -1,7 +1,6 @@
 package desktop
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -70,33 +69,11 @@ func (a *App) ListSessions() ([]session.SessionInfo, error) {
 		return []session.SessionInfo{}, nil
 	}
 
-	if a.store != nil {
-		sessions, err := a.store.ListSessionsByProject(projectID)
-		if err != nil {
-			return nil, err
-		}
-		// Overlay in-memory active state from the manager, since the SQLite
-		// store never persists the transient "active" flag.
-		if a.manager != nil {
-			for _, ms := range a.manager.ListSessions() {
-				for i := range sessions {
-					if sessions[i].ID == ms.ID {
-						sessions[i].Active = ms.Active
-						break
-					}
-				}
-			}
-		}
-		return sessions, nil
-	}
 	if a.manager == nil {
 		return []session.SessionInfo{}, nil
 	}
-	sessions := a.manager.ListSessions()
-	if sessions == nil {
-		return []session.SessionInfo{}, nil
-	}
-	return sessions, nil
+
+	return a.manager.ListSessionsByProject(projectID)
 }
 
 // RenameSession changes session name.
@@ -172,26 +149,7 @@ func (a *App) SendMessage(id, text string, planFirst bool) error {
 	}
 
 	// Check if this is the first message (session has default name)
-	// and spawn title generation in background
-	if a.store != nil && a.llmRouter != nil {
-		if info, err := a.store.LoadSession(id); err == nil && info != nil {
-			// Check if name matches default pattern (first 8 chars of UUID)
-			if info.Name == "Session "+id[:8] {
-				titleGen := session.NewTitleGenerator(&llmTitleCaller{router: a.llmRouter})
-				go func() {
-					title := titleGen.Generate(context.Background(), text)
-					if title == "" {
-						return
-					}
-					if err := a.RenameSession(id, title); err != nil {
-						slog.Warn("failed to rename session with generated title", "session", id, "error", err)
-					} else {
-						slog.Info("session auto-named", "session", id, "title", title)
-					}
-				}()
-			}
-		}
-	}
+	// Title generation is handled by the backend session Manager.
 
 	if err := a.manager.SendMessage(a.ctx, id, text, planFirst); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)

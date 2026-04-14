@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/user/agent/core"
-	sdktools "github.com/user/agent/sdk/tools"
+	"github.com/user/agent/core/tools"
 )
 
 // Event type constants for backend-to-frontend communication.
@@ -102,7 +102,7 @@ type JudgeResponsePayload struct {
 // AskUserPayload is sent to the frontend when the agent asks the user questions.
 type AskUserPayload struct {
 	RequestID string                     `json:"request_id"`
-	Questions []sdktools.AskUserQuestion `json:"questions"`
+	Questions []tools.AskUserQuestion `json:"questions"`
 }
 
 // --- Step limit payloads ---

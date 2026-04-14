@@ -10,11 +10,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
-	"github.com/user/agent/sdk/prompt"
 	tools "github.com/user/agent/sdk/tools"
 )
 
@@ -62,7 +60,8 @@ type Orchestrator struct {
 	modelRegistry       *llm.ModelRegistry
 	bbFactory           BlackboardFactory
 	conversationHistory []llm.Message
-	taskStore           TaskPersistence // optional, for ContinueTask blackboard restoration
+	taskStore           TaskPersistence        // optional, for ContinueTask blackboard restoration
+	bbRestoreFunc       BlackboardRestoreFunc  // optional, restores PersistableBlackboard from store
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -134,7 +133,7 @@ func NewOrchestrator(
 		capturedEmitter := emitter // capture for closure
 		sdkCfg.StateFactory = func(taskID string) orchestration.Blackboard {
 			bb := bbFactory(taskID)
-			if pbb, ok := bb.(*PersistentBlackboard); ok {
+			if pbb, ok := bb.(PersistableBlackboard); ok {
 				pbb.SetEmitter(capturedEmitter)
 			}
 			return bb
@@ -161,95 +160,6 @@ func NewOrchestrator(
 		modelRegistry:  modelRegistry,
 		bbFactory:      bbFactory,
 	}
-}
-
-// roleSuffixes defines role-specific system prompt suffixes for large models.
-// These are appended to the base system prompt when no explicit SystemPrompt is set.
-var roleSuffixes = map[string]string{
-	"researcher": "## Role: Researcher\nYour primary function is information gathering and analysis. Synthesize findings clearly and pass all results through the finish tool. Do NOT create or modify project files.",
-	"coder":      "## Role: Coder\nYour primary function is code implementation. Write clean, well-structured code. Verify your changes compile and work before finishing.",
-	"tester":     "## Role: Tester\nYour primary function is verification and testing. Run tests, check builds, and report results clearly. Do NOT modify source code — only test infrastructure if necessary.",
-}
-
-// smallRoleSuffixes defines more explicit, directive role suffixes for small models.
-// Small models benefit from clearer, more structured instructions.
-var smallRoleSuffixes = map[string]string{
-	"researcher": "## Role: Researcher\nYou gather information. Follow these rules:\n1. Use search and read tools to find information.\n2. Summarize findings clearly.\n3. Pass ALL results through the finish tool.\n4. Do NOT create or modify project files.\n5. Do NOT write code.",
-	"coder":      "## Role: Coder\nYou write code. Follow these rules:\n1. Read existing code before making changes.\n2. Write clean, working code.\n3. Verify your changes compile before finishing.\n4. Use the finish tool when done.",
-	"tester":     "## Role: Tester\nYou run tests and verify code. Follow these rules:\n1. Run the specified tests or checks.\n2. Report results clearly: PASS or FAIL.\n3. Do NOT modify source code.\n4. Use the finish tool with your findings.",
-}
-
-// coreStepConfigurator resolves AgentProfile from PlanStep.Profile.
-// If modelRegistry is provided, role suffixes are selected based on model tier.
-// Applies tool filtering based on AgentProfile.AllowedTools or role-based ToolProfiles.
-func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegistry, logger *slog.Logger) orchestration.StepConfigurator {
-	return func(step orchestration.PlanStep, defaults orchestration.StepDefaults) orchestration.StepConfig {
-		profile := resolveAgentProfile(step, cfg.MaxSteps)
-
-		// Determine allowed tools: explicit profile setting > role-based profile > all tools
-		var allowed []tools.ToolDescriptor
-		if len(profile.AllowedTools) > 0 {
-			// Profile has explicit AllowedTools - use them
-			allowed = FilterToolsByProfile(defaults.AllTools, profile.AllowedTools)
-		} else if toolProfile, ok := ToolProfiles[profile.Role]; ok {
-			// Apply role-based tool profile (e.g., "router", "planner", "reflector")
-			allowed = FilterToolsByProfile(defaults.AllTools, toolProfile)
-			if logger != nil {
-				logger.Debug("orchestrator: applied role-based tool profile", "role", profile.Role, "tools", len(allowed))
-			}
-		}
-
-		// Only inject role suffix when there's no explicit SystemPrompt override.
-		// If someone explicitly set SystemPrompt, they're taking full control.
-		var suffix string
-		if profile.SystemPrompt == "" {
-			// Resolve tier and pick appropriate suffix map
-			tier := resolveTierFromRegistry(modelRegistry)
-			if logger != nil {
-				logger.Debug("orchestrator: model tier resolved", "tier", tier)
-			}
-			suffixMap := roleSuffixes
-			if tier == prompt.TierSmall {
-				suffixMap = smallRoleSuffixes
-			}
-			suffix = suffixMap[profile.Role]
-		}
-
-		return orchestration.StepConfig{
-			MaxSteps:           profile.MaxSteps,
-			AllowedTools:       allowed,
-			SystemPrompt:       profile.SystemPrompt,
-			SystemPromptSuffix: suffix,
-			CompactionStrategy: applyCompactionStrategy(profile.Domain, 3),
-		}
-	}
-}
-
-// resolveTierFromRegistry resolves the model tier from the registry, defaulting to large.
-func resolveTierFromRegistry(registry *llm.ModelRegistry) prompt.ModelTier {
-	if registry == nil {
-		return prompt.TierLarge
-	}
-	meta, _ := registry.Resolve("")
-	tier := prompt.ModelTier(meta.Tier)
-	if tier == "" {
-		return prompt.TierLarge
-	}
-	return tier
-}
-
-// resolveAgentProfile returns the effective AgentProfile for a plan step.
-func resolveAgentProfile(step orchestration.PlanStep, defaultMaxSteps int) AgentProfile {
-	if step.Profile != nil {
-		if profile, ok := step.Profile.(*AgentProfile); ok {
-			p := *profile
-			if p.MaxSteps == 0 {
-				p.MaxSteps = defaultMaxSteps
-			}
-			return p
-		}
-	}
-	return AgentProfile{Role: "executor", MaxSteps: defaultMaxSteps}
 }
 
 // logInfo logs an INFO level message if logger is not nil.
@@ -279,7 +189,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	o.logDebug("orchestrator: resume started")
 	// Wire emitter into restored PersistentBlackboard so persistence warnings
 	// are surfaced to the user (the backend creates the BB without an emitter).
-	if pbb, ok := bb.(*PersistentBlackboard); ok {
+	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetEmitter(o.emitter)
 	}
 	plan := bb.GetPlan()
@@ -301,7 +211,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	execResult, err := o.engine.Resume(ctx, bb)
 	if err != nil {
 		o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
-		if pbb, ok := bb.(*PersistentBlackboard); ok {
+		if pbb, ok := bb.(PersistableBlackboard); ok {
 			pbb.FailTask()
 		}
 		return nil, err
@@ -318,7 +228,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	}
 
 	// Persist task completion if using persistent blackboard.
-	if pbb, ok := bb.(*PersistentBlackboard); ok {
+	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.CompleteTask(execResult.AttemptCount)
 	}
 
@@ -339,95 +249,15 @@ func (o *Orchestrator) emitInitialContextFill() {
 	o.emitter.ContextFill(0, 0, effectiveMax, "ok", "")
 }
 
-// buildSystemPrompt creates the system prompt for executors.
-func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
-	// Build workspace context string
-	var workspaceCtxStr string
-	if wsPath := tools.WorkspacePathFrom(ctx); wsPath != "" {
-		workspaceCtxStr = "## Workspace\nYour session workspace is: " + wsPath + "\nAll artifacts you create (files, directories, temporary files) MUST be placed strictly inside this workspace directory, unless the task explicitly requires creating artifacts at a specific external location."
-		if tempDir := tools.TempDirFrom(ctx); tempDir != "" {
-			workspaceCtxStr += "\nYour session temp directory is: " + tempDir + "\nUse this directory for ANY intermediate files — drafts, partial results, scratch data, inter-step artifacts. These files are NOT part of the final deliverable and will be cleaned up when the session ends."
-		}
-	}
-
-	// Determine model tier (default to large if not specified)
-	tier := prompt.ModelTier(modelMeta.Tier)
-	if tier == "" {
-		tier = prompt.TierLarge
-	}
-
-	// Build base prompt using the prompt builder
-	result := prompt.New(tier).
-		Core(prompts.OrchestratorSystem).
-		ForLarge(prompts.OrchestratorLarge).
-		ForSmall(prompts.OrchestratorSmall).
-		Replace("WORKSPACE-CONTEXT", workspaceCtxStr).
-		Build()
-
-	// Append mode-specific context.
-	if ctx.Value(PlanModeKey) != nil {
-		result += "\n\n" + prompts.OrchestratorPlanContext
-	} else {
-		// ReAct mode: reinforce finish tool requirement since there's no plan context
-		// to naturally motivate its use.
-		result += "\n\n## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call."
-	}
-
-	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
-		result += "\n\n" + envBlock
-	}
-
-	return result
-}
-
 // SetTaskStore sets the TaskPersistence store for blackboard restoration.
 // This is used by HandleMessage continuations to restore a completed task's blackboard.
 func (o *Orchestrator) SetTaskStore(store TaskPersistence) {
 	o.taskStore = store
 }
 
-// terminalSteps returns the IDs of steps that have no dependents in the plan.
-// These are the leaf nodes of the DAG - steps that no other step depends on.
-func terminalSteps(plan *Plan) []string {
-	if plan == nil || len(plan.Steps) == 0 {
-		return nil
-	}
-
-	// Build set of all steps that are dependencies of other steps
-	dependedOn := make(map[string]bool)
-	for _, step := range plan.Steps {
-		for _, depID := range step.DependsOn {
-			dependedOn[depID] = true
-		}
-	}
-
-	// Terminal steps are those not depended on by any other step
-	var terminals []string
-	for _, step := range plan.Steps {
-		if !dependedOn[step.ID] {
-			terminals = append(terminals, step.ID)
-		}
-	}
-	return terminals
-}
-
-// domainToAgentProfile maps a routing domain to an AgentProfile with appropriate role.
-func domainToAgentProfile(domain string, maxSteps int) AgentProfile {
-	var role string
-	switch domain {
-	case "code":
-		role = "coder"
-	case "research":
-		role = "researcher"
-	default:
-		role = "executor"
-	}
-	return AgentProfile{
-		Role:     role,
-		MaxSteps: maxSteps,
-		Domain:   domain,
-	}
+// SetBlackboardRestoreFunc sets the function used to restore a PersistableBlackboard from persistence.
+func (o *Orchestrator) SetBlackboardRestoreFunc(fn BlackboardRestoreFunc) {
+	o.bbRestoreFunc = fn
 }
 
 // Run is a backwards-compatible method that calls Handle.
@@ -467,17 +297,17 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		bb.SetOriginalRequest(message)
 
 		// Wire emitter if PersistentBlackboard
-		if pbb, ok := bb.(*PersistentBlackboard); ok {
+		if pbb, ok := bb.(PersistableBlackboard); ok {
 			pbb.SetEmitter(o.emitter)
 		}
 	} else {
 		// Continuation: restore existing BB
-		if o.taskStore == nil {
+		if o.taskStore == nil || o.bbRestoreFunc == nil {
 			return nil, errors.New("task persistence not configured")
 		}
 
 		o.logDebug("orchestrator: restoring blackboard", "taskID", opts.TaskID)
-		pbb, err := RestoreBlackboard(opts.TaskID, sessionID, o.taskStore, o.logger)
+		pbb, err := o.bbRestoreFunc(opts.TaskID, sessionID, o.taskStore, o.logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to restore blackboard: %w", err)
 		}
@@ -640,7 +470,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		execResult, err = o.engine.Resume(ctx, bb)
 		if err != nil {
 			o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
-			if pbb, ok := bb.(*PersistentBlackboard); ok {
+			if pbb, ok := bb.(PersistableBlackboard); ok {
 				pbb.FailTask()
 			}
 			return nil, err
@@ -653,7 +483,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	// 7. Persist routing decision on PersistentBlackboard (post-execution)
 	o.logDebug("orchestrator: persisting routing decision")
-	if pbb, ok := bb.(*PersistentBlackboard); ok {
+	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetRouting(routing)
 		pbb.CompleteTask(attemptCount)
 	}
@@ -690,8 +520,3 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	return result, nil
 }
 
-// RunSubAgent is a backward-compatible wrapper around agent.RunSubAgent.
-// It accepts a TaskDefinition (c0wrk-specific) and extracts tools/description for the SDK call.
-func RunSubAgent(ctx context.Context, stepID string, executor *agent.Executor, cm ContextManager, task TaskDefinition, emitter Emitter) <-chan SubAgentResult {
-	return agent.RunSubAgent(ctx, stepID, executor, cm, task.Tools, task.Task, emitter)
-}

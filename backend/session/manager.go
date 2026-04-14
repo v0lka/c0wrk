@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/user/agent/core"
 	"github.com/user/agent/core/tools"
-	sdktools "github.com/user/agent/sdk/tools"
 )
 
 // contextKey is a type for context keys in the session package.
@@ -84,6 +83,8 @@ type Manager struct {
 	projectsDir         string      // base directory for project temp dirs (~/.c0wrk/Projects)
 	tokenPersist        TokenPersistFunc
 	taskStore           TaskStore      // optional persistent task store
+	sessionStore        SessionStore   // optional persistent session store
+	titleGen            *TitleGenerator // optional title generator for auto-naming
 	envInfo             *tools.EnvInfo // environment info for context injection
 	stopTimeout         time.Duration  // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int            // character limit for auto-generated step summaries
@@ -100,6 +101,14 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir, proje
 		projectsDir:         projectsDir,
 		stopTimeout:         10 * time.Second,
 	}
+}
+
+// SetFactory replaces the orchestrator factory used for new sessions.
+// Existing sessions are not affected.
+func (m *Manager) SetFactory(factory OrchestratorFactory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.orchestratorFactory = factory
 }
 
 // SetTokenPersist sets the callback used to persist cumulative session token totals.
@@ -132,6 +141,58 @@ func (m *Manager) SetMaxSummaryLen(n int) {
 	m.maxSummaryLen = n
 }
 
+// SetTitleGenerator sets the title generator for auto-naming sessions.
+func (m *Manager) SetTitleGenerator(gen *TitleGenerator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.titleGen = gen
+}
+
+// SetSessionStore sets the persistent session store.
+func (m *Manager) SetSessionStore(store SessionStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionStore = store
+}
+
+// ListSessionsByProject returns sessions for a project, merging in-memory active
+// state with persistent store data. Falls back to in-memory sessions if no store.
+func (m *Manager) ListSessionsByProject(projectID string) ([]SessionInfo, error) {
+	m.mu.RLock()
+	store := m.sessionStore
+	m.mu.RUnlock()
+
+	if store == nil {
+		// Fallback: filter in-memory sessions by project
+		all := m.ListSessions()
+		result := make([]SessionInfo, 0)
+		for _, s := range all {
+			if s.ProjectID == projectID {
+				result = append(result, s)
+			}
+		}
+		return result, nil
+	}
+
+	sessions, err := store.ListSessionsByProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Overlay in-memory active state from live sessions.
+	m.mu.RLock()
+	for i := range sessions {
+		if s, ok := m.sessions[sessions[i].ID]; ok {
+			s.mu.Lock()
+			sessions[i].Active = s.active
+			s.mu.Unlock()
+		}
+	}
+	m.mu.RUnlock()
+
+	return sessions, nil
+}
+
 // CreateSession creates a new session with a fresh orchestrator.
 // The projectID ties the session to a project; workspacePath is the project's workspace directory.
 func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, error) {
@@ -147,9 +208,16 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Create EventEmitter for this session
 	emitter := NewEventEmitter(id, m.emitFunc)
 
+	// Snapshot mutable fields under read lock
+	m.mu.RLock()
+	factory := m.orchestratorFactory
+	persistFn := m.tokenPersist
+	ts := m.taskStore
+	maxSumLen := m.maxSummaryLen
+	m.mu.RUnlock()
+
 	// Wire token persistence callback if configured
-	if m.tokenPersist != nil {
-		persistFn := m.tokenPersist // capture for closure
+	if persistFn != nil {
 		emitter.SetTokenPersist(func(inputTokens, outputTokens int) {
 			persistFn(id, inputTokens, outputTokens)
 		})
@@ -158,23 +226,19 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Build BlackboardFactory if task persistence is configured
 	var bbFactory core.BlackboardFactory
 	var adapter *TaskStoreAdapter
-	m.mu.RLock()
-	ts := m.taskStore
-	maxSumLen := m.maxSummaryLen
-	m.mu.RUnlock()
 	if ts != nil {
 		adapter = NewTaskStoreAdapter(ts)
 		sessionID := id // capture for closure
 		bbFactory = func(taskID string) core.Blackboard {
 			if maxSumLen > 0 {
-				return core.NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+				return NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
 			}
-			return core.NewPersistentBlackboard(taskID, sessionID, adapter, logger)
+			return NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 		}
 	}
 
-	// Create orchestrator using the factory
-	orchestrator, err := m.orchestratorFactory(emitter, logger, workspacePath, bbFactory)
+	// Create orchestrator using the factory (called outside the lock — can be slow)
+	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory)
 	if err != nil {
 		// Close the log file since we're not creating the session
 		if logFile != nil {
@@ -186,6 +250,9 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Wire task persistence into core orchestrator for continuations
 	if adapter != nil {
 		orchestrator.SetTaskStore(adapter)
+		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...core.MapBlackboardOption) (core.PersistableBlackboard, error) {
+			return RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+		})
 	}
 
 	// Create session temp directory
@@ -479,12 +546,17 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	// Enrich context with session workspace path for tool security heuristics
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
-	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
-	if m.envInfo != nil {
-		taskCtx = tools.WithEnvInfo(taskCtx, m.envInfo)
-	}
+	taskCtx = tools.WithTempDir(taskCtx, session.TempDir)
 	session.cancel = cancel
 	session.mu.Unlock()
+
+	// Snapshot envInfo under read lock
+	m.mu.RLock()
+	envInfo := m.envInfo
+	m.mu.RUnlock()
+	if envInfo != nil {
+		taskCtx = tools.WithEnvInfo(taskCtx, envInfo)
+	}
 
 	// Emit message received event
 	m.emitFunc(Event{
@@ -495,6 +567,35 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 			Text:      text,
 		},
 	})
+
+	// Check if this is the first message (session has default name)
+	// and spawn title generation in background.
+	session.mu.Lock()
+	sessionName := session.Name
+	session.mu.Unlock()
+	m.mu.RLock()
+	titleGen := m.titleGen
+	store := m.sessionStore
+	m.mu.RUnlock()
+	if sessionName == "Session "+id[:8] && titleGen != nil {
+		go func() {
+			title := titleGen.Generate(context.Background(), text)
+			if title == "" {
+				return
+			}
+			if err := m.RenameSession(id, title); err != nil {
+				slog.Warn("failed to rename session with generated title", "session", id, "error", err)
+				return
+			}
+			slog.Info("session auto-named", "session", id, "title", title)
+			// Persist rename to store
+			if store != nil {
+				if err := store.RenameSession(id, title); err != nil {
+					slog.Warn("failed to persist session title", "session", id, "error", err)
+				}
+			}
+		}()
+	}
 
 	// Launch goroutine to handle the message
 	go func(ctx context.Context, msg string) {
@@ -568,7 +669,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 		}
 
 		// Store the task ID for potential continuations
-		if pbb, ok := result.Blackboard.(*core.PersistentBlackboard); ok {
+		if pbb, ok := result.Blackboard.(*PersistentBlackboard); ok {
 			session.mu.Lock()
 			session.lastCompletedTaskID = pbb.TaskID()
 			session.mu.Unlock()
@@ -622,7 +723,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	}
 
 	// Load task state and restore blackboard.
-	bb, err := core.RestoreBlackboard(taskID, id, adapter, nil)
+	bb, err := RestoreBlackboard(taskID, id, adapter, nil)
 	if err != nil {
 		return fmt.Errorf("failed to restore blackboard: %w", err)
 	}
@@ -653,12 +754,17 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	session.done = resumeDoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
-	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
-	if m.envInfo != nil {
-		taskCtx = tools.WithEnvInfo(taskCtx, m.envInfo)
-	}
+	taskCtx = tools.WithTempDir(taskCtx, session.TempDir)
 	session.cancel = cancel
 	session.mu.Unlock()
+
+	// Snapshot envInfo under read lock
+	m.mu.RLock()
+	envInfo := m.envInfo
+	m.mu.RUnlock()
+	if envInfo != nil {
+		taskCtx = tools.WithEnvInfo(taskCtx, envInfo)
+	}
 
 	// Emit resume event so the frontend knows a task is resuming.
 	m.emitFunc(Event{
@@ -710,7 +816,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		}
 
 		// Store the task ID for potential continuations
-		if pbb, ok := result.Blackboard.(*core.PersistentBlackboard); ok {
+		if pbb, ok := result.Blackboard.(*PersistentBlackboard); ok {
 			session.mu.Lock()
 			session.lastCompletedTaskID = pbb.TaskID()
 			session.mu.Unlock()

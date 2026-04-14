@@ -1,10 +1,9 @@
-package core
+package agent
 
 import (
 	"context"
 	"log/slog"
 
-	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 )
 
@@ -12,18 +11,18 @@ import (
 // session-specific logger. Logging is performed at DEBUG level so it can be
 // toggled via the log-level configuration without any code changes.
 type loggingCaller struct {
-	inner    agent.LLMCaller
+	inner    LLMCaller
 	provider string
 	logger   *slog.Logger
 }
 
-// NewLoggingCaller wraps an LLMCaller so that every Call logs request details
+// NewLoggingLLMCaller wraps an LLMCaller so that every Call logs request details
 // and per-response token usage via the given logger.
 //
 // provider is the logical provider name (e.g. "openai", "anthropic") used
 // in the log record for identification.
 // If logger is nil, returns inner unchanged.
-func NewLoggingCaller(inner agent.LLMCaller, provider string, logger *slog.Logger) agent.LLMCaller {
+func NewLoggingLLMCaller(inner LLMCaller, provider string, logger *slog.Logger) LLMCaller {
 	if logger == nil {
 		return inner
 	}

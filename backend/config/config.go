@@ -251,6 +251,15 @@ type OrchestrationConfig struct {
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
 }
 
+// ValidProviders is the canonical set of supported LLM provider names.
+var ValidProviders = map[string]bool{
+	"anthropic":         true,
+	"gemini":            true,
+	"lmstudio":          true,
+	"openai_compatible": true,
+	"chatgpt":           true,
+}
+
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
@@ -357,12 +366,10 @@ func Save(cfg *Config, path string) error {
 // validate checks that the configuration is valid.
 func validate(cfg *Config) error {
 	// Validate active_provider is one of known values
-	switch cfg.LLM.ActiveProvider {
-	case "anthropic", "gemini", "lmstudio", "openai_compatible", "chatgpt":
-		// valid
-	case "":
+	if cfg.LLM.ActiveProvider == "" {
 		return errors.New("llm.active_provider must be specified")
-	default:
+	}
+	if !ValidProviders[cfg.LLM.ActiveProvider] {
 		return fmt.Errorf("llm.active_provider %q is not a valid provider (must be anthropic, gemini, lmstudio, openai_compatible, or chatgpt)", cfg.LLM.ActiveProvider)
 	}
 
