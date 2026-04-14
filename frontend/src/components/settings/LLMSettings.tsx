@@ -12,6 +12,14 @@ interface ProviderConfig {
   model: string
 }
 
+const defaultProviderConfigs: Record<string, ProviderConfig> = {
+  anthropic: { api_key: '', model: '', base_url: '' },
+  gemini: { api_key: '', model: '', base_url: '' },
+  lmstudio: { api_key: '', base_url: '', model: '' },
+  openai_compatible: { api_key: '', base_url: '', model: '' },
+  chatgpt: { api_key: '', model: '', base_url: '' },
+}
+
 export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void }) {
   const [activeProvider, setActiveProvider] = useState<string>('')
   const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
@@ -36,7 +44,7 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
       const result = await GetConfig()
       const llmConfig = result?.llm
       if (llmConfig) {
-        setActiveProvider(llmConfig.active_provider)
+        setActiveProvider(llmConfig.active_provider || 'anthropic')
         setProviderConfigs({
           anthropic: { api_key: llmConfig.anthropic.api_key, model: llmConfig.anthropic.model, base_url: '' },
           gemini: { api_key: llmConfig.gemini.api_key, model: llmConfig.gemini.model, base_url: '' },
@@ -44,9 +52,14 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
           openai_compatible: llmConfig.openai_compatible ?? { api_key: '', base_url: '', model: '' },
           chatgpt: { api_key: llmConfig.chatgpt.api_key, model: llmConfig.chatgpt.model, base_url: '' },
         })
+      } else {
+        setActiveProvider('anthropic')
+        setProviderConfigs(defaultProviderConfigs)
       }
     } catch (error) {
       logger.error('Failed to load LLM config:', error)
+      setActiveProvider('anthropic')
+      setProviderConfigs(defaultProviderConfigs)
     } finally {
       setIsLoading(false)
     }

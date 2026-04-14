@@ -62,7 +62,7 @@ export function RtkBanner() {
   }
 
   return (
-    <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500/95 text-amber-950 p-3 shadow-lg">
+    <div className="bg-amber-500/95 text-amber-950 p-3 shadow-lg pointer-events-auto">
       <div className="max-w-4xl mx-auto flex items-start gap-3">
         <AlertTriangle className="h-5 w-5 mt-0.5 flex-shrink-0" />
         <div className="flex-1">

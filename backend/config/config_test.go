@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -852,6 +854,93 @@ security:
 			}
 		})
 	}
+}
+
+// TestCreateDefault_CreatesFileWithDefaults tests that CreateDefault creates a YAML file
+// with all default values applied.
+func TestCreateDefault_CreatesFileWithDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	cfg, err := CreateDefault(path)
+	if err != nil {
+		t.Fatalf("CreateDefault() failed: %v", err)
+	}
+
+	// File must exist on disk.
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("expected config file to exist at %s: %v", path, statErr)
+	}
+
+	// Returned config must have defaults applied.
+	if cfg.Executor.MaxReactSteps != 50 {
+		t.Errorf("MaxReactSteps = %d, want 50", cfg.Executor.MaxReactSteps)
+	}
+	if cfg.LogLevel != "DEBUG" {
+		t.Errorf("LogLevel = %q, want 'DEBUG'", cfg.LogLevel)
+	}
+	if cfg.Security.DefaultPolicy != "user_confirm" {
+		t.Errorf("DefaultPolicy = %q, want 'user_confirm'", cfg.Security.DefaultPolicy)
+	}
+
+	// The file must be readable YAML that round-trips back to the same defaults.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read created config: %v", err)
+	}
+	var loaded Config
+	if err := yaml.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("created config is not valid YAML: %v", err)
+	}
+	if loaded.Executor.MaxReactSteps != 50 {
+		t.Errorf("round-tripped MaxReactSteps = %d, want 50", loaded.Executor.MaxReactSteps)
+	}
+}
+
+// TestCreateDefault_FailsOnBadPath tests that CreateDefault returns an error
+// when the target directory does not exist.
+func TestCreateDefault_FailsOnBadPath(t *testing.T) {
+	_, err := CreateDefault("/nonexistent/dir/config.yaml")
+	if err == nil {
+		t.Fatal("expected error for non-existent directory")
+	}
+}
+
+// TestResolveAndLoad_CreatesDefaultWhenMissing verifies that ResolveAndLoad
+// creates a default config file when no config file exists.
+func TestResolveAndLoad_CreatesDefaultWhenMissing(t *testing.T) {
+	// Use a temp directory as HOME so the primary config path doesn't exist.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Change to a temp dir where no local config.yaml exists either.
+	orig, _ := os.Getwd()
+	tmpWd := t.TempDir()
+	if err := os.Chdir(tmpWd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	log := newDiscardLogger()
+	resolved := ResolveAndLoad(log)
+
+	// Config must be non-nil with defaults.
+	if resolved.Config == nil {
+		t.Fatal("expected non-nil Config")
+	}
+	if resolved.Config.Executor.MaxReactSteps != 50 {
+		t.Errorf("MaxReactSteps = %d, want 50", resolved.Config.Executor.MaxReactSteps)
+	}
+
+	// The config file must have been created on disk.
+	expectedPath := filepath.Join(tmpHome, DefaultAgentDir, "config.yaml")
+	if _, err := os.Stat(expectedPath); err != nil {
+		t.Errorf("expected default config file at %s: %v", expectedPath, err)
+	}
+}
+
+func newDiscardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // TestMCPServerConfig_BackwardCompat tests that configs without transport field still work.
