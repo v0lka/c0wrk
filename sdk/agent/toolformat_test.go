@@ -67,6 +67,52 @@ func TestBuildGroupedToolList_SingleTier(t *testing.T) {
 	}
 }
 
+func TestBuildGroupedToolList_MCPServerNames(t *testing.T) {
+	descriptors := []tools.ToolDescriptor{
+		{Name: "read_file", Description: "reads a file", Source: "core"},
+		{Name: "mem_search", Description: "memory search", Source: "codebase-memory"},
+		{Name: "deploy", Description: "deploy tool", Source: "my-server"},
+		{Name: "bash_exec", Description: "run bash", Source: "core"},
+	}
+
+	result := BuildGroupedToolList(descriptors)
+
+	// Both tools with non-core sources should land in TIER 2
+	if !strings.Contains(result, "TIER 2") {
+		t.Error("expected TIER 2 label for external tools")
+	}
+	if !strings.Contains(result, "mem_search") {
+		t.Error("expected mem_search in TIER 2 output")
+	}
+	if !strings.Contains(result, "deploy") {
+		t.Error("expected deploy in TIER 2 output")
+	}
+
+	// Verify tier ordering: TIER 1 before TIER 2 before TIER 3
+	t1 := strings.Index(result, "TIER 1")
+	t2 := strings.Index(result, "TIER 2")
+	t3 := strings.Index(result, "TIER 3")
+	if t1 >= t2 || t2 >= t3 {
+		t.Errorf("expected TIER 1 < TIER 2 < TIER 3 positions, got %d, %d, %d", t1, t2, t3)
+	}
+
+	// read_file should be in TIER 1, not TIER 2
+	readIdx := strings.Index(result, "read_file")
+	if readIdx < t1 || readIdx > t2 {
+		t.Error("expected read_file in TIER 1 section")
+	}
+
+	// mem_search and deploy should be in TIER 2 section
+	memIdx := strings.Index(result, "mem_search")
+	deployIdx := strings.Index(result, "deploy")
+	if memIdx < t2 || memIdx > t3 {
+		t.Error("expected mem_search in TIER 2 section")
+	}
+	if deployIdx < t2 || deployIdx > t3 {
+		t.Error("expected deploy in TIER 2 section")
+	}
+}
+
 func TestBuildGroupedToolList_WithSchema(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)
 	descriptors := []tools.ToolDescriptor{

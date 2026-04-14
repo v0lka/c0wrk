@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
-	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -227,7 +225,7 @@ func (a *App) InstallCodebaseMemoryMCP() error {
 	}
 	a.config.MCP.Servers["codebase-memory"] = config.MCPServerConfig{
 		Transport: "stdio",
-		Command:   "codebase-memory-mcp",
+		Command:   installPath,
 	}
 
 	// Persist config
@@ -245,104 +243,4 @@ func (a *App) InstallCodebaseMemoryMCP() error {
 
 	wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "done")
 	return nil
-}
-
-// codebaseMemoryServerName is the name of the MCP server that provides
-// codebase indexing functionality.
-const codebaseMemoryServerName = "codebase-memory"
-
-// indexDebounceTimer tracks the debounce timer for workspace change indexing.
-var indexDebounceTimer *time.Timer
-var indexDebounceMu sync.Mutex
-
-// IndexRepository triggers codebase-memory-mcp indexing for the given project path.
-// It runs asynchronously and emits events for progress tracking.
-func (a *App) IndexRepository(projectPath string) {
-	go a.indexRepositoryAsync(projectPath)
-}
-
-func (a *App) indexRepositoryAsync(projectPath string) {
-	// Check if backend application exists and codebase-memory server is available
-	if a.app == nil {
-		return // silently skip
-	}
-
-	if !a.app.IsMCPServerConnected(codebaseMemoryServerName) {
-		return // silently skip
-	}
-
-	// Emit start event
-	wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
-		"status": "start",
-		"path":   projectPath,
-	})
-
-	// Call index_repository tool via the backend application
-	result, err := a.app.CallMCPTool(a.ctx, codebaseMemoryServerName, "index_repository", map[string]any{
-		"path": projectPath,
-	})
-
-	if err != nil {
-		slog.Warn("codebase indexing failed", "path", projectPath, "error", err)
-		wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
-			"status": "error",
-			"error":  err.Error(),
-		})
-		return
-	}
-
-	// Check if the tool call itself returned an error
-	if result != nil && result.IsError {
-		errMsg := "indexing tool returned error"
-		if len(result.Content) > 0 {
-			// Extract text from first content item if available
-			for _, c := range result.Content {
-				if text := extractTextFromMCPContent(c); text != "" {
-					errMsg = text
-					break
-				}
-			}
-		}
-		slog.Warn("codebase indexing tool error", "path", projectPath, "error", errMsg)
-		wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
-			"status": "error",
-			"error":  errMsg,
-		})
-		return
-	}
-
-	// Success
-	slog.Debug("codebase indexing completed", "path", projectPath)
-	wailsRuntime.EventsEmit(a.ctx, "codememory:indexing", map[string]any{
-		"status": "done",
-	})
-}
-
-// debouncedIndexRepository triggers indexing with a 5-second debounce.
-// This is used for workspace change events to avoid excessive indexing.
-func (a *App) debouncedIndexRepository(projectPath string) {
-	indexDebounceMu.Lock()
-	defer indexDebounceMu.Unlock()
-
-	if indexDebounceTimer != nil {
-		indexDebounceTimer.Stop()
-	}
-	indexDebounceTimer = time.AfterFunc(5*time.Second, func() {
-		a.IndexRepository(projectPath)
-	})
-}
-
-// extractTextFromMCPContent extracts text from an MCP Content interface.
-func extractTextFromMCPContent(content interface{}) string {
-	// Try type assertion for map with text field (common MCP content format)
-	if m, ok := content.(map[string]interface{}); ok {
-		if text, ok := m["text"].(string); ok {
-			return text
-		}
-	}
-	// Try type assertion for string
-	if s, ok := content.(string); ok {
-		return s
-	}
-	return ""
 }

@@ -135,6 +135,12 @@ type CircuitBreakerConfig struct {
 	RepeatAbortThreshold     int `yaml:"repeatAbortThreshold"`     // consecutive identical tool calls before abort
 	TruncationAbortThreshold int `yaml:"truncationAbortThreshold"` // consecutive truncated responses before abort
 	ParseErrorAbortThreshold int `yaml:"parseErrorAbortThreshold"` // consecutive parse errors before abort
+	FruitlessNudgeThreshold      int `yaml:"fruitlessNudgeThreshold"`      // consecutive minimal-result calls before nudge (default: 4)
+	FruitlessAbortThreshold      int `yaml:"fruitlessAbortThreshold"`      // consecutive minimal-result calls before abort (default: 6)
+	FruitlessMaxResultLen        int `yaml:"fruitlessMaxResultLen"`        // result length at or below which a call is "fruitless" (default: 32)
+	SameToolRepeatNudgeThreshold int `yaml:"sameToolRepeatNudgeThreshold"` // same tool with varied args, similar results (default: 6)
+	SameToolRepeatAbortThreshold int `yaml:"sameToolRepeatAbortThreshold"` // abort threshold (default: 10)
+	SameToolResultSizeDelta      int `yaml:"sameToolResultSizeDelta"`      // max result length difference to consider "similar" (default: 64)
 }
 
 // ExecutorConfig holds executor settings.
@@ -249,6 +255,7 @@ type OrchestrationConfig struct {
 	MaxSummaryLength          int `yaml:"maxSummaryLength"`          // default: 500
 	MaxHistoryMessages        int `yaml:"maxHistoryMessages"`        // default: 20
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
+	MaxPlannerExploreSteps    int `yaml:"maxPlannerExploreSteps"`    // default: 7
 }
 
 // ValidProviders is the canonical set of supported LLM provider names.

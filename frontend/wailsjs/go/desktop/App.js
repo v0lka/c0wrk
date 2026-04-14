@@ -70,10 +70,6 @@ export function GetToolList() {
   return window['go']['desktop']['App']['GetToolList']();
 }
 
-export function IndexRepository(arg1) {
-  return window['go']['desktop']['App']['IndexRepository'](arg1);
-}
-
 export function InstallCodebaseMemoryMCP() {
   return window['go']['desktop']['App']['InstallCodebaseMemoryMCP']();
 }

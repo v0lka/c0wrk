@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -164,6 +165,16 @@ func (o *Orchestrator) runPlanExecute(
 
 	// Retry loop
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
+		// Check for context cancellation (e.g., user pressed Stop) before retrying.
+		if ctx.Err() != nil {
+			return &ExecutionResult{
+				Output:       lastOutput,
+				Plan:         currentPlan,
+				Blackboard:   bb,
+				AttemptCount: attempt,
+				Reflections:  sessionReflections,
+			}, ctx.Err()
+		}
 		if attempt > 0 {
 			o.events.OnRetry(attempt, o.maxRetries+1)
 		}
@@ -178,6 +189,16 @@ func (o *Orchestrator) runPlanExecute(
 
 		// Handle execution errors
 		if execErr != nil {
+			// Propagate context cancellation immediately — do not treat partial results as final.
+			if ctx.Err() != nil {
+				return &ExecutionResult{
+					Output:       lastOutput,
+					Plan:         currentPlan,
+					Blackboard:   bb,
+					AttemptCount: attempt + 1,
+					Reflections:  sessionReflections,
+				}, ctx.Err()
+			}
 			// Check if all steps were executed (some may have failed but all were attempted)
 			allExecuted := len(completedSteps) == len(currentPlan.Steps)
 			if !allExecuted {
@@ -316,7 +337,7 @@ func (o *Orchestrator) executePlanWithSteps(
 		completedSteps = make(map[string]CompletedStep)
 	}
 
-	for {
+	for ctx.Err() == nil {
 		readySteps := FindReadySteps(plan, completedSteps)
 		o.events.OnServiceMeta("finding ready steps", map[string]any{"ready": len(readySteps), "completed": len(completedSteps), "total": len(plan.Steps)})
 		if len(readySteps) == 0 {
@@ -349,6 +370,11 @@ func (o *Orchestrator) executePlanWithSteps(
 			if len(stepTools) == 0 {
 				stepTools = availableTools
 			}
+			slog.Debug("orchestrator: step tools resolved",
+				"step", step.ID,
+				"tool_count", len(stepTools),
+				"using_full_set", len(stepCfg.AllowedTools) == 0,
+			)
 			maxSteps := stepCfg.MaxSteps
 			if maxSteps == 0 {
 				maxSteps = o.maxSteps
@@ -465,6 +491,10 @@ func (o *Orchestrator) executePlanWithSteps(
 				var stepRetryContext string
 			stepRetryLoop:
 				for retryAttempt := 1; retryAttempt <= o.maxRetries; retryAttempt++ {
+					// Exit per-step retry if context was cancelled.
+					if ctx.Err() != nil {
+						break stepRetryLoop
+					}
 					scopedEvents := o.scopeEvents(failedStepID)
 					scopedEvents.OnStepRetry(failedStepID, retryAttempt, o.maxRetries+1)
 
@@ -1005,6 +1035,11 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	r := results[0]
 	duration := time.Since(stepStartTime)
 	o.events.OnStepCompleted(step.ID, r.Error == nil, duration)
+
+	// Propagate context cancellation as a function-level error (ReAct mode).
+	if r.Error != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 
 	// Store step output in SharedWorkspace
 	if r.Error == nil {

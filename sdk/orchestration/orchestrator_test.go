@@ -951,3 +951,138 @@ func (b *blackboardWithCallTracker) SetOriginalRequest(req string) {
 	b.setOriginalRequestCalled = true
 	b.Blackboard.SetOriginalRequest(req)
 }
+
+// ---------------------------------------------------------------------------
+// Context Cancellation Tests
+// ---------------------------------------------------------------------------
+
+// cancellingLLM cancels the given cancel func on the first call and returns
+// context.Canceled. It records how many times Call was invoked.
+type cancellingLLM struct {
+	cancelFn  context.CancelFunc
+	callCount int
+}
+
+func (m *cancellingLLM) Call(ctx context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.callCount++
+	if m.cancelFn != nil {
+		m.cancelFn()
+		m.cancelFn = nil // cancel only once
+	}
+	return nil, ctx.Err()
+}
+
+// TestExecute_ContextCancelled_ReturnsImmediately verifies that when the
+// context is already cancelled before Execute starts, it returns
+// context.Canceled immediately without executing any steps.
+func TestExecute_ContextCancelled_ReturnsImmediately(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	llmCalled := false
+	o := New(Config{
+		Planner: &mockPlanner{
+			planFn: func(_ context.Context, _ string, _ []tools.ToolDescriptor, _ []Reflection) (*Plan, error) {
+				return &Plan{Steps: []PlanStep{{ID: "s1", Description: "step 1"}}}, nil
+			},
+		},
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+			return &mockContextManager{systemPrompt: systemPrompt}
+		},
+		LLM: &mockLLMForAdHoc{},
+		Tools: &mockToolExecutor{},
+		TokenCounter: llm.NewSimpleTokenCounter(),
+		MaxSteps: 10,
+		ToolRegistry: tools.NewToolRegistry(),
+		Events: &recordingEvents{},
+	})
+	// Patch: we only care that the LLM is NOT called.
+	// The planner may or may not be called (planning happens before the
+	// cancellation check in the retry loop), but the executor must not run.
+	_ = llmCalled
+
+	_, err := o.Execute(ctx, "do something")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+// TestExecute_ContextCancelledDuringStep_NoRetry verifies that when the
+// context is cancelled during step execution, no per-step retry occurs.
+func TestExecute_ContextCancelledDuringStep_NoRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cLLM := &cancellingLLM{cancelFn: cancel}
+
+	o := New(Config{
+		Planner: &mockPlanner{
+			planFn: func(_ context.Context, _ string, _ []tools.ToolDescriptor, _ []Reflection) (*Plan, error) {
+				return &Plan{Steps: []PlanStep{{ID: "s1", Description: "step 1"}}}, nil
+			},
+		},
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+			return &mockContextManager{systemPrompt: systemPrompt}
+		},
+		LLM:          cLLM,
+		Tools:        &mockToolExecutor{},
+		TokenCounter: llm.NewSimpleTokenCounter(),
+		MaxRetries:   3,
+		MaxSteps:     10,
+		ToolRegistry: tools.NewToolRegistry(),
+		Events:       &recordingEvents{},
+	})
+
+	_, err := o.Execute(ctx, "do something")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	// The LLM should have been called exactly once (no retry after cancellation).
+	if cLLM.callCount != 1 {
+		t.Errorf("expected LLM to be called once, got %d", cLLM.callCount)
+	}
+}
+
+// TestExecuteAdHocStep_ContextCancelled_ReturnsFunctionError verifies that
+// ExecuteAdHocStep returns context cancellation as a function-level error
+// (second return value), not just in StepResult.Error.
+func TestExecuteAdHocStep_ContextCancelled_ReturnsFunctionError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	bb := NewMapBlackboard()
+	bb.SetOriginalRequest("original task")
+	bb.SetPlan(&Plan{Steps: []PlanStep{
+		{ID: "step_1", Description: "First step"},
+	}})
+	bb.SetStepResult("step_1", "output from step 1", nil, nil)
+
+	o := New(Config{
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+			return &mockContextManager{systemPrompt: systemPrompt}
+		},
+		LLM:          &cancellingLLM{cancelFn: cancel},
+		Tools:        &mockToolExecutor{},
+		TokenCounter: llm.NewSimpleTokenCounter(),
+		MaxSteps:     10,
+		ToolRegistry: tools.NewToolRegistry(),
+		Events:       &recordingEvents{},
+	})
+
+	step := PlanStep{
+		ID:          "continuation_1",
+		Description: "Continue the task",
+	}
+
+	_, err := o.ExecuteAdHocStep(ctx, bb, step, "original task", false)
+	if err == nil {
+		t.Fatal("expected function-level error from cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}

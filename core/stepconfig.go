@@ -41,7 +41,31 @@ func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegist
 			// Apply role-based tool profile (e.g., "router", "planner", "reflector")
 			allowed = tools.FilterToolsByProfile(defaults.AllTools, toolProfile)
 			if logger != nil {
-				logger.Debug("orchestrator: applied role-based tool profile", "role", profile.Role, "tools", len(allowed))
+				allowedNames := make([]string, len(allowed))
+				for i, t := range allowed {
+					allowedNames[i] = t.Name
+				}
+				// Count MCP tools in the full set that were excluded
+				mcpExcluded := 0
+				for _, t := range defaults.AllTools {
+					if t.Source != "" && t.Source != "core" {
+						mcpExcluded++
+					}
+				}
+				mcpIncluded := 0
+				for _, t := range allowed {
+					if t.Source != "" && t.Source != "core" {
+						mcpIncluded++
+					}
+				}
+				mcpExcluded -= mcpIncluded
+				logger.Debug("orchestrator: applied role-based tool profile",
+					"role", profile.Role,
+					"allowed_count", len(allowed),
+					"allowed_tools", allowedNames,
+					"mcp_included", mcpIncluded,
+					"mcp_excluded", mcpExcluded,
+				)
 			}
 		}
 

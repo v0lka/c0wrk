@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/user/agent/core/prompts"
+	coretools "github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
@@ -140,21 +141,60 @@ Assign specialized profiles when it adds clear value. Omit profile for simple ta
 // compile-time check: Planner implements orchestration.Planner.
 var _ orchestration.Planner = (*Planner)(nil)
 
+// defaultMaxExploreSteps is the default step budget for the planner's exploration loop.
+const defaultMaxExploreSteps = 7
+
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {
-	llm           LLMCaller
-	modelRegistry *llm.ModelRegistry
+	llm            LLMCaller
+	modelRegistry  *llm.ModelRegistry
+	toolRegistry   *coretools.ToolRegistry // to discover available tools
+	tokenCounter   llm.TokenCounter        // for context window management
+	contextFactory ContextManagerFactory    // for creating the exploration ContextManager
+	maxExploreSteps int                    // budget for exploration (default: 7)
+	emitter        Emitter                  // for logging/events (optional, nil-safe)
 }
 
 // NewPlanner creates a new Planner with the given LLM caller.
 func NewPlanner(caller LLMCaller) *Planner {
-	return &Planner{llm: caller}
+	return &Planner{
+		llm:             caller,
+		maxExploreSteps: defaultMaxExploreSteps,
+	}
 }
 
 // SetModelRegistry sets the model registry for tier resolution.
 // If not set, the planner defaults to "large" tier.
 func (p *Planner) SetModelRegistry(registry *llm.ModelRegistry) {
 	p.modelRegistry = registry
+}
+
+// SetToolRegistry sets the tool registry for discovering available tools.
+func (p *Planner) SetToolRegistry(registry *coretools.ToolRegistry) {
+	p.toolRegistry = registry
+}
+
+// SetTokenCounter sets the token counter for context window management.
+func (p *Planner) SetTokenCounter(counter llm.TokenCounter) {
+	p.tokenCounter = counter
+}
+
+// SetContextFactory sets the factory for creating the exploration ContextManager.
+func (p *Planner) SetContextFactory(factory ContextManagerFactory) {
+	p.contextFactory = factory
+}
+
+// SetEmitter sets the emitter for logging/events.
+func (p *Planner) SetEmitter(emitter Emitter) {
+	p.emitter = emitter
+}
+
+// SetMaxExploreSteps sets the maximum number of exploration steps.
+// If n <= 0, the default (7) is used.
+func (p *Planner) SetMaxExploreSteps(n int) {
+	if n > 0 {
+		p.maxExploreSteps = n
+	}
 }
 
 // getTier resolves the model tier, defaulting to "large" if not configured.
@@ -174,7 +214,29 @@ func (p *Planner) getTier() prompt.ModelTier {
 }
 
 // Plan generates a DAG execution plan for the given task.
+// If domain is "general" or no planner tools are available, uses a direct one-shot LLM call.
+// Otherwise, runs a bounded ReAct exploration loop before producing the plan.
 func (p *Planner) Plan(
+	ctx context.Context,
+	task string,
+	availableTools []tools.ToolDescriptor,
+	reflections []Reflection,
+) (*Plan, error) {
+	domain := DomainFromContext(ctx)
+	plannerTools := p.getPlannerTools()
+
+	if domain == "general" || len(plannerTools) == 0 {
+		slog.Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools))
+		return p.planDirect(ctx, task, availableTools, reflections)
+	}
+
+	slog.Debug("planner: using informed exploration planning", "domain", domain, "planner_tools", len(plannerTools))
+	return p.planWithExploration(ctx, task, availableTools, reflections, plannerTools)
+}
+
+// planDirect performs a one-shot LLM plan generation (original behavior).
+// Used for "general" domain or when no exploration tools are available.
+func (p *Planner) planDirect(
 	ctx context.Context,
 	task string,
 	availableTools []tools.ToolDescriptor,
@@ -202,6 +264,207 @@ func (p *Planner) Plan(
 	}
 
 	return plan, nil
+}
+
+// planWithExploration runs a bounded ReAct exploration loop, then extracts the plan
+// from the executor's finish output.
+func (p *Planner) planWithExploration(
+	ctx context.Context,
+	task string,
+	availableTools []tools.ToolDescriptor,
+	reflections []Reflection,
+	plannerTools []tools.ToolDescriptor,
+) (*Plan, error) {
+	// Build the informed planner system prompt
+	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, availableTools, reflections)
+
+	// Resolve model metadata for context window management
+	var modelMeta llm.ModelMetadata
+	if p.modelRegistry != nil {
+		modelMeta, _ = p.modelRegistry.Resolve("")
+	}
+	if modelMeta.ContextWindow == 0 {
+		// Sensible defaults if registry is not available
+		modelMeta.ContextWindow = 200000
+		modelMeta.OutputLimit = 16384
+		modelMeta.TokenizerType = "approximate"
+	}
+
+	// Create a ContextManager for the exploration loop
+	if p.contextFactory == nil {
+		// Fall back to direct planning if no context factory is available
+		slog.Warn("planner: contextFactory is nil, falling back to direct planning")
+		return p.planDirect(ctx, task, availableTools, reflections)
+	}
+	cm := p.contextFactory(systemPrompt, modelMeta, "sliding")
+
+	// Set the task in the context manager
+	if setter, ok := cm.(interface{ SetTask(string) }); ok {
+		setter.SetTask(task)
+	}
+
+	// Resolve token counter
+	tokenCounter := p.tokenCounter
+	if tokenCounter == nil {
+		tokenCounter = llm.NewSimpleTokenCounter()
+	}
+
+	// Resolve emitter for the internal executor
+	var executorEmitter agent.AgentEvents
+	if p.emitter != nil {
+		executorEmitter = p.emitter
+	}
+
+	// Create the internal Executor for exploration
+	exec := agent.NewExecutor(
+		p.llm,
+		p.toolRegistry, // ToolExecutor — core ToolRegistry implements this
+		tokenCounter,
+		p.maxExploreSteps,
+		executorEmitter,
+		true, // suppressAssistantEvents — no streaming to frontend
+		ToolResultBudget{HardCapTokens: 30000, MaxFillFraction: 0.4},
+		CircuitBreakerConfig{
+			RepeatNudgeThreshold:     3,
+			RepeatAbortThreshold:     5,
+			TruncationAbortThreshold: 3,
+			ParseErrorAbortThreshold: 3,
+		},
+	)
+
+	// Run the exploration loop
+	result, err := exec.Run(ctx, plannerTools, cm)
+	if err != nil {
+		// Preserve cancellation semantics
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// Degrade gracefully for other executor failures
+		slog.Warn("planner: exploration executor failed, falling back to direct planning", "error", err)
+		return p.planDirect(ctx, task, availableTools, reflections)
+	}
+
+	// Parse the plan from the executor's output
+	if result.Output == "" {
+		// Exploration exhausted budget without producing a plan — fall back to direct
+		slog.Warn("planner: exploration produced no output, falling back to direct planning")
+		return p.planDirect(ctx, task, availableTools, reflections)
+	}
+
+	plan, err := p.parsePlanResponse(result.Output)
+	if err != nil {
+		// If parsing fails, the LLM might have returned free text — fall back
+		slog.Warn("planner: failed to parse exploration plan output, falling back to direct", "error", err)
+		return p.planDirect(ctx, task, availableTools, reflections)
+	}
+
+	return plan, nil
+}
+
+// ---------------------------------------------------------------------------
+// Planner tool filtering
+// ---------------------------------------------------------------------------
+
+// fsToolNames is the set of well-known file-system tool names included for the planner.
+var fsToolNames = map[string]bool{
+	"list_directory": true,
+	"glob":           true,
+	"ripgrep":        true,
+	"read_file":      true,
+	"search_files":   true,
+	"batch":          true,
+}
+
+// getPlannerTools assembles the two-tier tool set for the planner.
+// Returns nil if toolRegistry is nil.
+func (p *Planner) getPlannerTools() []tools.ToolDescriptor {
+	if p.toolRegistry == nil {
+		return nil
+	}
+
+	allTools := p.toolRegistry.List()
+	var result []tools.ToolDescriptor
+
+	for _, t := range allTools {
+		// Tier 1: codebase-memory MCP tools
+		if strings.HasPrefix(t.Source, "codebase-memory") {
+			result = append(result, t)
+			continue
+		}
+		// Tier 2: well-known FS tools (core)
+		if fsToolNames[t.Name] {
+			result = append(result, t)
+		}
+	}
+
+	return result
+}
+
+// hasCodebaseMemoryTools checks if codebase-memory-mcp tools are registered.
+func (p *Planner) hasCodebaseMemoryTools() bool {
+	if p.toolRegistry == nil {
+		return false
+	}
+	for _, t := range p.toolRegistry.List() {
+		if strings.HasPrefix(t.Source, "codebase-memory") {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Informed planner system prompt
+// ---------------------------------------------------------------------------
+
+// buildInformedPlanSystemPrompt constructs the system prompt for the informed planning exploration.
+func (p *Planner) buildInformedPlanSystemPrompt(
+	ctx context.Context,
+	availableTools []tools.ToolDescriptor,
+	reflections []Reflection,
+) string {
+	// Build available tools string (grouped by priority tier)
+	availableToolsStr := agent.BuildGroupedToolList(availableTools)
+
+	// Build reflections string
+	var reflectionsStr string
+	if len(reflections) > 0 {
+		var rb strings.Builder
+		rb.WriteString("Reflections from past attempts (learn from them):\n")
+		for i, r := range reflections {
+			fmt.Fprintf(&rb, "%d. Failure: %s | Root cause: %s | Action plan: %s\n",
+				i+1, r.FailureAnalysis, r.RootCause, r.ActionPlan)
+		}
+		reflectionsStr = rb.String()
+	}
+
+	// Resolve MODE-TAIL
+	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", reflectionsStr)
+
+	substitutions := map[string]string{
+		"MODE-PREAMBLE":       planModePreamble,
+		"DOMAIN-ASSIGNMENT":   planModeDomainAssignment,
+		"AGENT-PROFILES":      planModeAgentProfiles,
+		"MODE-EXTRA-SECTIONS": planModeExtraSections,
+		"MODE-TAIL":           resolvedTail,
+		"MODE-JSON-EXAMPLE":   planModeJSONExample,
+		"AVAILABLE-TOOLS":     availableToolsStr,
+		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
+	}
+
+	result := prompt.New(p.getTier()).
+		Core(prompts.PlannerInformed).
+		ForLarge(prompts.PlannerLarge).
+		ForSmall(prompts.PlannerSmall).
+		ReplaceAll(substitutions).
+		Build()
+
+	// Append environment context if available.
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+		result += "\n\n" + envBlock
+	}
+
+	return result
 }
 
 // Replan generates an updated plan after a step failure.

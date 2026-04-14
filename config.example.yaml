@@ -131,6 +131,12 @@ executor:
     repeatAbortThreshold: 4 # Identical tool calls before abort
     truncationAbortThreshold: 3 # Consecutive truncated responses before abort
     parseErrorAbortThreshold: 3 # Consecutive parse errors before abort
+    fruitlessNudgeThreshold: 4 # Fruitless tool calls before nudge
+    fruitlessAbortThreshold: 6 # Fruitless tool calls before abort
+    fruitlessMaxResultLen: 32 # Max result length to consider fruitless
+    sameToolRepeatNudgeThreshold: 6 # Same tool repeated calls before nudge
+    sameToolRepeatAbortThreshold: 10 # Same tool repeated calls before abort
+    sameToolResultSizeDelta: 64 # Result size delta for same-tool detection
 
 # ---------------------------------------------------------------------------
 # Security & Tool Access Policies

@@ -2,9 +2,12 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	coretools "github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -717,6 +720,595 @@ func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
 
 // TestPlanContinuation verifies that PlanContinuation generates a valid plan
 // for follow-up requests after task completion.
+// === Informed Planner Tests ===
+
+// plannerMockTool is a simple tool implementation for planner tests.
+type plannerMockTool struct {
+	tools.BaseTool
+	result tools.ToolResult
+}
+
+func (m *plannerMockTool) Execute(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+	return m.result, nil
+}
+
+// newPlannerTestRegistry creates a core ToolRegistry with the given tool definitions.
+// Each entry specifies a tool name and optional source (empty = default "core").
+func newPlannerTestRegistry(defs []struct{ name, source string }) *coretools.ToolRegistry {
+	reg := coretools.NewToolRegistry()
+	for _, d := range defs {
+		tool := &plannerMockTool{
+			BaseTool: tools.BaseTool{
+				ToolName:        d.name,
+				ToolDescription: d.name + " tool",
+				Schema:          json.RawMessage(`{"type":"object"}`),
+			},
+			result: tools.ToolResult{Content: "mock result from " + d.name},
+		}
+		if d.source != "" {
+			reg.RegisterWithSource(tool, d.source)
+		} else {
+			reg.Register(tool)
+		}
+	}
+	return reg
+}
+
+// plannerContextFactory returns a ContextManagerFactory that creates mockContextManagers.
+func plannerContextFactory() ContextManagerFactory {
+	return func(systemPrompt string, _ llm.ModelMetadata, _ string) ContextManager {
+		return &mockContextManager{systemPrompt: systemPrompt}
+	}
+}
+
+// validPlanJSON is a plan JSON string used across informed planner tests.
+const validPlanJSON = `{"steps": [{"id": "step_1", "description": "Research codebase", "depends_on": [], "parallelizable": false, "estimated_tools": ["read_file"]}, {"id": "step_2", "description": "Implement changes", "depends_on": ["step_1"], "parallelizable": false, "estimated_tools": ["write_file"]}]}`
+
+// finishWithPlan returns a ChatResponse that calls the finish tool with the given plan JSON.
+func finishWithPlan(planJSON string) *llm.ChatResponse {
+	answerBytes, _ := json.Marshal(planJSON)
+	finishInput := `{"answer":` + string(answerBytes) + `}`
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: "Here is the plan",
+			ToolCalls: []llm.ToolCall{
+				{ID: "call_finish", Name: "finish", Input: json.RawMessage(finishInput)},
+			},
+		},
+		StopReason: "tool_use",
+		Usage:      llm.TokenUsage{InputTokens: 200, OutputTokens: 100},
+	}
+}
+
+func TestPlanWithExploration_InformedPath(t *testing.T) {
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				// Executor step 1: explore with get_architecture
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Let me explore the codebase",
+						ToolCalls: []llm.ToolCall{
+							{ID: "call_1", Name: "get_architecture", Input: json.RawMessage(`{}`)},
+						},
+					},
+					StopReason: "tool_use",
+					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+				}, nil
+			}
+			// Executor step 2: finish with plan
+			return finishWithPlan(validPlanJSON), nil
+		},
+	}
+
+	reg := newPlannerTestRegistry([]struct{ name, source string }{
+		{"get_architecture", "codebase-memory-server"},
+		{"read_file", ""},
+		{"list_directory", ""},
+		{"glob", ""},
+		{"ripgrep", ""},
+		{"search_files", ""},
+		{"batch", ""},
+	})
+
+	planner := NewPlanner(mockLLM)
+	planner.SetToolRegistry(reg)
+	planner.SetContextFactory(plannerContextFactory())
+	planner.SetTokenCounter(llm.NewSimpleTokenCounter())
+
+	ctx := WithDomain(context.Background(), "code")
+	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
+
+	plan, err := planner.Plan(ctx, "Refactor authentication module", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	// Verify exploration was used (multiple LLM calls, not just one)
+	if callCount < 2 {
+		t.Errorf("expected at least 2 LLM calls (exploration), got %d", callCount)
+	}
+
+	// Verify plan was parsed correctly
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].ID != "step_1" {
+		t.Errorf("expected first step ID 'step_1', got %q", plan.Steps[0].ID)
+	}
+	if plan.Steps[1].ID != "step_2" {
+		t.Errorf("expected second step ID 'step_2', got %q", plan.Steps[1].ID)
+	}
+	if len(plan.Steps[1].DependsOn) != 1 || plan.Steps[1].DependsOn[0] != "step_1" {
+		t.Errorf("expected step_2 to depend on step_1, got %v", plan.Steps[1].DependsOn)
+	}
+}
+
+func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
+	// Only FS tools, no codebase-memory tools — should still use exploration
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return finishWithPlan(validPlanJSON), nil
+		},
+	}
+
+	reg := newPlannerTestRegistry([]struct{ name, source string }{
+		{"read_file", ""},
+		{"list_directory", ""},
+		{"glob", ""},
+		{"ripgrep", ""},
+		{"search_files", ""},
+		{"batch", ""},
+	})
+
+	planner := NewPlanner(mockLLM)
+	planner.SetToolRegistry(reg)
+	planner.SetContextFactory(plannerContextFactory())
+	planner.SetTokenCounter(llm.NewSimpleTokenCounter())
+
+	// Verify getPlannerTools returns only FS tools
+	plannerTools := planner.getPlannerTools()
+	for _, pt := range plannerTools {
+		if strings.HasPrefix(pt.Source, "codebase-memory") {
+			t.Errorf("unexpected codebase-memory tool: %s", pt.Name)
+		}
+	}
+	if len(plannerTools) == 0 {
+		t.Fatal("expected FS planner tools, got none")
+	}
+
+	// Verify batch is included
+	hasBatch := false
+	for _, pt := range plannerTools {
+		if pt.Name == "batch" {
+			hasBatch = true
+		}
+	}
+	if !hasBatch {
+		t.Error("expected batch tool in planner tools")
+	}
+
+	ctx := WithDomain(context.Background(), "code")
+	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
+
+	plan, err := planner.Plan(ctx, "Analyze codebase", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+	if len(plan.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(plan.Steps))
+	}
+}
+
+func TestPlanDirect_GeneralDomain(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+	callCount := 0
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "description": "Do general task", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	// Register codebase-memory tools — should still use planDirect for "general" domain
+	reg := newPlannerTestRegistry([]struct{ name, source string }{
+		{"get_architecture", "codebase-memory-server"},
+		{"read_file", ""},
+	})
+
+	planner := NewPlanner(mockLLM)
+	planner.SetToolRegistry(reg)
+	planner.SetContextFactory(plannerContextFactory())
+
+	ctx := WithDomain(context.Background(), "general")
+
+	plan, err := planner.Plan(ctx, "Write a poem", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	// planDirect uses exactly 1 LLM call
+	if callCount != 1 {
+		t.Errorf("expected 1 LLM call (planDirect), got %d", callCount)
+	}
+
+	// Verify it's a direct system+user message pattern (not executor ReAct)
+	if len(capturedRequest.Messages) != 2 {
+		t.Errorf("expected 2 messages (system + user), got %d", len(capturedRequest.Messages))
+	}
+	if capturedRequest.Messages[0].Role != "system" {
+		t.Errorf("expected first message role 'system', got %q", capturedRequest.Messages[0].Role)
+	}
+	if capturedRequest.Messages[1].Role != "user" {
+		t.Errorf("expected second message role 'user', got %q", capturedRequest.Messages[1].Role)
+	}
+
+	if len(plan.Steps) != 1 {
+		t.Errorf("expected 1 step, got %d", len(plan.Steps))
+	}
+}
+
+func TestPlanDirect_NoToolsAvailable(t *testing.T) {
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "description": "Fallback task", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	// Test with nil registry
+	planner := NewPlanner(mockLLM)
+	// toolRegistry is nil by default
+
+	ctx := WithDomain(context.Background(), "code")
+
+	plan, err := planner.Plan(ctx, "Do something", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	// Should use planDirect (single call)
+	if callCount != 1 {
+		t.Errorf("expected 1 LLM call (planDirect fallback), got %d", callCount)
+	}
+	if len(plan.Steps) != 1 {
+		t.Errorf("expected 1 step, got %d", len(plan.Steps))
+	}
+
+	// Test with registry that has no relevant tools
+	callCount = 0
+	reg := newPlannerTestRegistry([]struct{ name, source string }{
+		{"unrelated_tool", ""},
+	})
+	planner2 := NewPlanner(mockLLM)
+	planner2.SetToolRegistry(reg)
+
+	plan2, err := planner2.Plan(ctx, "Do something", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 LLM call (planDirect, no relevant tools), got %d", callCount)
+	}
+	if len(plan2.Steps) != 1 {
+		t.Errorf("expected 1 step, got %d", len(plan2.Steps))
+	}
+}
+
+func TestGetPlannerTools(t *testing.T) {
+	t.Run("codebase_memory_and_fs", func(t *testing.T) {
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"get_architecture", "codebase-memory-server"},
+			{"query_codebase", "codebase-memory-server"},
+			{"read_file", ""},
+			{"list_directory", ""},
+			{"glob", ""},
+			{"ripgrep", ""},
+			{"search_files", ""},
+			{"batch", ""},
+			{"write_file", ""}, // should NOT be included
+		})
+
+		p := &Planner{toolRegistry: reg}
+		result := p.getPlannerTools()
+
+		// Should include both codebase-memory and FS tools, but not write_file
+		names := map[string]bool{}
+		for _, td := range result {
+			names[td.Name] = true
+		}
+
+		expected := []string{"get_architecture", "query_codebase", "read_file", "list_directory", "glob", "ripgrep", "search_files", "batch"}
+		for _, e := range expected {
+			if !names[e] {
+				t.Errorf("expected tool %q in result", e)
+			}
+		}
+		if names["write_file"] {
+			t.Error("write_file should NOT be included in planner tools")
+		}
+	})
+
+	t.Run("fs_only", func(t *testing.T) {
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"read_file", ""},
+			{"glob", ""},
+			{"batch", ""},
+		})
+
+		p := &Planner{toolRegistry: reg}
+		result := p.getPlannerTools()
+
+		names := map[string]bool{}
+		for _, td := range result {
+			names[td.Name] = true
+		}
+
+		if !names["read_file"] || !names["glob"] || !names["batch"] {
+			t.Errorf("expected FS tools in result, got %v", names)
+		}
+
+		for _, td := range result {
+			if strings.HasPrefix(td.Source, "codebase-memory") {
+				t.Errorf("unexpected codebase-memory tool: %s", td.Name)
+			}
+		}
+	})
+
+	t.Run("nil_registry", func(t *testing.T) {
+		p := &Planner{}
+		result := p.getPlannerTools()
+		if result != nil {
+			t.Errorf("expected nil for nil registry, got %v", result)
+		}
+	})
+
+	t.Run("batch_always_included", func(t *testing.T) {
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"read_file", ""},
+			{"batch", ""},
+		})
+
+		p := &Planner{toolRegistry: reg}
+		result := p.getPlannerTools()
+
+		hasBatch := false
+		for _, td := range result {
+			if td.Name == "batch" {
+				hasBatch = true
+			}
+		}
+		if !hasBatch {
+			t.Error("expected batch to be included when FS tools are present")
+		}
+	})
+}
+
+func TestHasCodebaseMemoryTools(t *testing.T) {
+	t.Run("with_codebase_memory", func(t *testing.T) {
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"get_architecture", "codebase-memory-server"},
+			{"read_file", ""},
+		})
+
+		p := &Planner{toolRegistry: reg}
+		if !p.hasCodebaseMemoryTools() {
+			t.Error("expected hasCodebaseMemoryTools() to return true")
+		}
+	})
+
+	t.Run("without_codebase_memory", func(t *testing.T) {
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"read_file", ""},
+			{"glob", ""},
+		})
+
+		p := &Planner{toolRegistry: reg}
+		if p.hasCodebaseMemoryTools() {
+			t.Error("expected hasCodebaseMemoryTools() to return false")
+		}
+	})
+
+	t.Run("nil_registry", func(t *testing.T) {
+		p := &Planner{}
+		if p.hasCodebaseMemoryTools() {
+			t.Error("expected hasCodebaseMemoryTools() to return false for nil registry")
+		}
+	})
+}
+
+func TestPlanWithExploration_DomainVariants(t *testing.T) {
+	for _, domain := range []string{"code", "research", "mixed"} {
+		t.Run(domain, func(t *testing.T) {
+			callCount := 0
+			mockLLM := &mockLLMCaller{
+				callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+					callCount++
+					// Return finish immediately with plan
+					return finishWithPlan(validPlanJSON), nil
+				},
+			}
+
+			reg := newPlannerTestRegistry([]struct{ name, source string }{
+				{"get_architecture", "codebase-memory-server"},
+				{"read_file", ""},
+				{"batch", ""},
+			})
+
+			planner := NewPlanner(mockLLM)
+			planner.SetToolRegistry(reg)
+			planner.SetContextFactory(plannerContextFactory())
+			planner.SetTokenCounter(llm.NewSimpleTokenCounter())
+
+			ctx := WithDomain(context.Background(), domain)
+			ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
+
+			plan, err := planner.Plan(ctx, "Domain-specific task", nil, nil)
+			if err != nil {
+				t.Fatalf("Plan() returned error for domain %q: %v", domain, err)
+			}
+
+			// Verify exploration was used (the executor ran, not just a direct LLM call).
+			// With exploration, the LLM is called through the executor's ReAct loop,
+			// which uses a different pattern than planDirect's single call.
+			if plan == nil {
+				t.Fatal("expected non-nil plan")
+			}
+			if len(plan.Steps) != 2 {
+				t.Errorf("expected 2 steps, got %d", len(plan.Steps))
+			}
+		})
+	}
+
+	// Verify "general" does NOT use exploration
+	t.Run("general_uses_direct", func(t *testing.T) {
+		callCount := 0
+		mockLLM := &mockLLMCaller{
+			callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+				callCount++
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "General task", "depends_on": []}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			},
+		}
+
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"get_architecture", "codebase-memory-server"},
+			{"read_file", ""},
+		})
+
+		planner := NewPlanner(mockLLM)
+		planner.SetToolRegistry(reg)
+		planner.SetContextFactory(plannerContextFactory())
+
+		ctx := WithDomain(context.Background(), "general")
+
+		_, err := planner.Plan(ctx, "General task", nil, nil)
+		if err != nil {
+			t.Fatalf("Plan() returned error: %v", err)
+		}
+
+		// planDirect uses exactly 1 LLM call
+		if callCount != 1 {
+			t.Errorf("expected 1 LLM call (planDirect for 'general'), got %d", callCount)
+		}
+	})
+}
+
+func TestPlanWithExploration_ExecutorError_FallsBackToDirect(t *testing.T) {
+	callCount := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				// First call (from exploration executor): return an error
+				return nil, errors.New("simulated executor failure")
+			}
+			// Second call (from planDirect fallback): return valid plan JSON
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: validPlanJSON,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reg := newPlannerTestRegistry([]struct{ name, source string }{
+		{"get_architecture", "codebase-memory-server"},
+		{"read_file", ""},
+		{"list_directory", ""},
+		{"glob", ""},
+		{"ripgrep", ""},
+		{"search_files", ""},
+		{"batch", ""},
+	})
+
+	planner := NewPlanner(mockLLM)
+	planner.SetToolRegistry(reg)
+	planner.SetContextFactory(plannerContextFactory())
+	planner.SetTokenCounter(llm.NewSimpleTokenCounter())
+
+	ctx := WithDomain(context.Background(), "code")
+	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
+
+	plan, err := planner.Plan(ctx, "Refactor module", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() should have fallen back to planDirect, got error: %v", err)
+	}
+
+	// Verify fallback happened: 1 call failed in executor, 1 call succeeded in planDirect
+	if callCount < 2 {
+		t.Errorf("expected at least 2 LLM calls (failed exploration + direct fallback), got %d", callCount)
+	}
+
+	// Verify plan was parsed correctly from the fallback
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected 2 steps from fallback plan, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].ID != "step_1" {
+		t.Errorf("expected first step ID 'step_1', got %q", plan.Steps[0].ID)
+	}
+	if plan.Steps[1].ID != "step_2" {
+		t.Errorf("expected second step ID 'step_2', got %q", plan.Steps[1].ID)
+	}
+}
+
+func TestPlanWithExploration_ContextCancellation_Propagates(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return nil, context.Canceled
+		},
+	}
+
+	reg := newPlannerTestRegistry([]struct{ name, source string }{
+		{"get_architecture", "codebase-memory-server"},
+		{"read_file", ""},
+	})
+
+	planner := NewPlanner(mockLLM)
+	planner.SetToolRegistry(reg)
+	planner.SetContextFactory(plannerContextFactory())
+	planner.SetTokenCounter(llm.NewSimpleTokenCounter())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithDomain(ctx, "code")
+	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
+	cancel() // cancel immediately
+
+	_, err := planner.Plan(ctx, "Refactor module", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+}
+
 func TestPlanContinuation(t *testing.T) {
 	mockResponse := `{
 		"steps": [

@@ -52,6 +52,7 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 		}
 
 		g.servers[name] = server
+		slog.Debug("MCP server started", "server", name, "tools", len(server.Tools()))
 	}
 
 	if len(errs) > 0 {
@@ -73,6 +74,11 @@ func (g *Gateway) RegisterTools(registry *tools.ToolRegistry) error {
 			mcpTool := NewTool(server, toolInfo)
 			registry.RegisterWithSource(mcpTool, name)
 		}
+		toolNames := make([]string, len(server.Tools()))
+		for i, t := range server.Tools() {
+			toolNames[i] = t.Name
+		}
+		slog.Debug("MCP tools registered", "server", name, "count", len(toolNames), "tools", toolNames)
 	}
 
 	return nil
@@ -211,9 +217,9 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 
 		if logger != nil {
 			if currentNames[name] {
-				logger.Debug("MCP server reconnected", "server", name)
+				logger.Debug("MCP server reconnected", "server", name, "tools", len(server.Tools()))
 			} else {
-				logger.Debug("MCP server added", "server", name)
+				logger.Debug("MCP server added", "server", name, "tools", len(server.Tools()))
 			}
 		}
 	}
@@ -429,6 +435,10 @@ func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRe
 		if logger != nil {
 			logger.Warn("MCP tool registration errors", "error", err)
 		}
+	}
+
+	if logger != nil {
+		logger.Debug("MCP gateway ready", "servers", len(gateway.servers), "total_tools", gateway.ToolCount())
 	}
 
 	return gateway, nil

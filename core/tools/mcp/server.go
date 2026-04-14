@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -91,6 +92,7 @@ func (s *Server) Connect(ctx context.Context, cfg ServerConfig) error {
 	s.transportType = transportType
 	s.connected = true
 	s.lastError = ""
+	slog.Debug("MCP server connected", "server", s.name, "transport", transportType)
 	return nil
 }
 
@@ -219,6 +221,12 @@ func (s *Server) DiscoverTools(ctx context.Context) error {
 			InputSchema: schema,
 		})
 	}
+
+	toolNames := make([]string, len(s.tools))
+	for i, t := range s.tools {
+		toolNames[i] = t.Name
+	}
+	slog.Debug("MCP tools discovered", "server", s.name, "count", len(s.tools), "tools", toolNames)
 
 	return nil
 }

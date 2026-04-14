@@ -1,11 +1,29 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	sdkmemory "github.com/user/agent/sdk/memory"
 )
+
+// domainKey is the context key for the routing domain.
+type domainKey struct{}
+
+// WithDomain returns a new context with the routing domain attached.
+func WithDomain(ctx context.Context, domain string) context.Context {
+	return context.WithValue(ctx, domainKey{}, domain)
+}
+
+// DomainFromContext extracts the routing domain from the context.
+// Returns an empty string if not found.
+func DomainFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(domainKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 // CoreContextManager wraps sdk/memory.ContextWindow to implement the core-level
 // ContextManager interface which adds SetTask and SetPlan(*Plan).

@@ -114,8 +114,12 @@ func (b *OrchestratorBuilder) Build(
 		return nil, errors.New("no active LLM provider configured - check your config.yaml")
 	}
 
+	// Build context factory
+	contextFactory := b.buildContextFactory(router, cfg)
+
 	// Build core agents (router, planner, reflector) with token tracking
-	coreRouter, planner, reflector := b.buildCoreAgents(router, cfg, emitter, logger, modelReg)
+	tokenCounter := llm.NewSimpleTokenCounter()
+	coreRouter, planner, reflector := b.buildCoreAgents(router, cfg, emitter, logger, modelReg, contextFactory, tokenCounter)
 	if coreRouter == nil || planner == nil {
 		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
 	}
@@ -131,11 +135,7 @@ func (b *OrchestratorBuilder) Build(
 		StepLimitFunc:             stepLimitFunc,
 	}
 
-	// Build context factory
-	contextFactory := b.buildContextFactory(router, cfg)
-
 	// Token counter, budgets, circuit breaker
-	tokenCounter := llm.NewSimpleTokenCounter()
 	toolResultBudget := ToolResultBudget{
 		HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
 		MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
@@ -145,6 +145,12 @@ func (b *OrchestratorBuilder) Build(
 		RepeatAbortThreshold:     cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
 		TruncationAbortThreshold: cfg.Executor.CircuitBreaker.TruncationAbortThreshold,
 		ParseErrorAbortThreshold: cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold,
+		FruitlessNudgeThreshold:      cfg.Executor.CircuitBreaker.FruitlessNudgeThreshold,
+		FruitlessAbortThreshold:      cfg.Executor.CircuitBreaker.FruitlessAbortThreshold,
+		FruitlessMaxResultLen:        cfg.Executor.CircuitBreaker.FruitlessMaxResultLen,
+		SameToolRepeatNudgeThreshold: cfg.Executor.CircuitBreaker.SameToolRepeatNudgeThreshold,
+		SameToolRepeatAbortThreshold: cfg.Executor.CircuitBreaker.SameToolRepeatAbortThreshold,
+		SameToolResultSizeDelta:      cfg.Executor.CircuitBreaker.SameToolResultSizeDelta,
 	}
 
 	// Logged LLM caller for step execution
@@ -361,6 +367,8 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	emitter Emitter,
 	logger *slog.Logger,
 	modelRegistry *llm.ModelRegistry,
+	contextFactory ContextManagerFactory,
+	tokenCounter llm.TokenCounter,
 ) (*Router, *Planner, *Reflector) {
 	if router == nil {
 		return nil, nil, nil
@@ -376,6 +384,13 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 		planner.SetModelRegistry(modelRegistry)
 		reflector.SetModelRegistry(modelRegistry)
 	}
+
+	// Wire planner exploration dependencies
+	planner.SetToolRegistry(b.registry)
+	planner.SetTokenCounter(tokenCounter)
+	planner.SetContextFactory(contextFactory)
+	planner.SetEmitter(emitter)
+	planner.SetMaxExploreSteps(cfg.Orchestration.MaxPlannerExploreSteps)
 
 	return coreRouter, planner, reflector
 }

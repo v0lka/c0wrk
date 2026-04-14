@@ -19,10 +19,16 @@ import (
 
 // defaultCircuitBreakerConfig provides the standard circuit breaker thresholds for tests.
 var defaultCircuitBreakerConfig = CircuitBreakerConfig{
-	RepeatNudgeThreshold:     3,
-	RepeatAbortThreshold:     4,
-	TruncationAbortThreshold: 3,
-	ParseErrorAbortThreshold: 3,
+	RepeatNudgeThreshold:         3,
+	RepeatAbortThreshold:         4,
+	TruncationAbortThreshold:     3,
+	ParseErrorAbortThreshold:     3,
+	FruitlessNudgeThreshold:      4,
+	FruitlessAbortThreshold:      6,
+	FruitlessMaxResultLen:        32,
+	SameToolRepeatNudgeThreshold: 6,
+	SameToolRepeatAbortThreshold: 10,
+	SameToolResultSizeDelta:      64,
 }
 
 func TestRunSubAgent_Successful(t *testing.T) {

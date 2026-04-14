@@ -98,6 +98,24 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold == 0 {
 		cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold = 3
 	}
+	if cfg.Executor.CircuitBreaker.FruitlessNudgeThreshold == 0 {
+		cfg.Executor.CircuitBreaker.FruitlessNudgeThreshold = 4
+	}
+	if cfg.Executor.CircuitBreaker.FruitlessAbortThreshold == 0 {
+		cfg.Executor.CircuitBreaker.FruitlessAbortThreshold = 6
+	}
+	if cfg.Executor.CircuitBreaker.FruitlessMaxResultLen == 0 {
+		cfg.Executor.CircuitBreaker.FruitlessMaxResultLen = 32
+	}
+	if cfg.Executor.CircuitBreaker.SameToolRepeatNudgeThreshold == 0 {
+		cfg.Executor.CircuitBreaker.SameToolRepeatNudgeThreshold = 6
+	}
+	if cfg.Executor.CircuitBreaker.SameToolRepeatAbortThreshold == 0 {
+		cfg.Executor.CircuitBreaker.SameToolRepeatAbortThreshold = 10
+	}
+	if cfg.Executor.CircuitBreaker.SameToolResultSizeDelta == 0 {
+		cfg.Executor.CircuitBreaker.SameToolResultSizeDelta = 64
+	}
 
 	// Models defaults (initialize empty map if nil)
 	if cfg.LLM.Models == nil {
@@ -243,5 +261,8 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.Orchestration.MaxJudgeCacheSize == 0 {
 		cfg.Orchestration.MaxJudgeCacheSize = 1000
+	}
+	if cfg.Orchestration.MaxPlannerExploreSteps == 0 {
+		cfg.Orchestration.MaxPlannerExploreSteps = 7
 	}
 }

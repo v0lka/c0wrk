@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -732,6 +733,12 @@ func (e *Executor) buildToolDefinitions(taskTools []tools.ToolDescriptor) []llm.
 			InputSchema: finishTool.InputSchema(),
 		})
 	}
+
+	toolNames := make([]string, len(defs))
+	for i, d := range defs {
+		toolNames[i] = d.Name
+	}
+	slog.Debug("executor: tool definitions built for LLM", "count", len(defs), "tools", toolNames)
 
 	return defs
 }

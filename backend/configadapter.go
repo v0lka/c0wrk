@@ -103,6 +103,12 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				RepeatAbortThreshold:     cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
 				TruncationAbortThreshold: cfg.Executor.CircuitBreaker.TruncationAbortThreshold,
 				ParseErrorAbortThreshold: cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold,
+				FruitlessNudgeThreshold:      cfg.Executor.CircuitBreaker.FruitlessNudgeThreshold,
+				FruitlessAbortThreshold:      cfg.Executor.CircuitBreaker.FruitlessAbortThreshold,
+				FruitlessMaxResultLen:        cfg.Executor.CircuitBreaker.FruitlessMaxResultLen,
+				SameToolRepeatNudgeThreshold: cfg.Executor.CircuitBreaker.SameToolRepeatNudgeThreshold,
+				SameToolRepeatAbortThreshold: cfg.Executor.CircuitBreaker.SameToolRepeatAbortThreshold,
+				SameToolResultSizeDelta:      cfg.Executor.CircuitBreaker.SameToolResultSizeDelta,
 			},
 		},
 		Security: core.BuilderSecurityConfig{
@@ -121,6 +127,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
 			MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 			MaxJudgeCacheSize:         cfg.Orchestration.MaxJudgeCacheSize,
+			MaxPlannerExploreSteps:    cfg.Orchestration.MaxPlannerExploreSteps,
 		},
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:     cfg.ToolLimits.ReadDefaultLines,

@@ -41,8 +41,6 @@ export function GetSessionWorkspace(arg1:string):Promise<string>;
 
 export function GetToolList():Promise<Array<desktop.ToolInfo>>;
 
-export function IndexRepository(arg1:string):Promise<void>;
-
 export function InstallCodebaseMemoryMCP():Promise<void>;
 
 export function InstallRtk():Promise<void>;

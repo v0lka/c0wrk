@@ -25,24 +25,39 @@ function formatResultLen(len: number): string {
 
 export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedArgs, result, resultLen, status, source }: ToolBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [showFullArgs, setShowFullArgs] = useState(false)
-  const [showFullResult, setShowFullResult] = useState(false)
+  const [showFull, setShowFull] = useState(false)
 
   const MAX_PREVIEW = 200
 
-  // Use pre-parsed args from backend if available, fall back to raw string
-  const formattedArgs = (() => {
-    if (parsedArgs) {
-      try { return JSON.stringify(parsedArgs, null, 2) } catch { /* fall through */ }
-    }
-    try { return JSON.stringify(JSON.parse(args), null, 2) } catch { return args }
+  // Parse args into key-value pairs if possible
+  const argEntries: [string, unknown][] | null = (() => {
+    try {
+      const obj = parsedArgs ?? JSON.parse(args)
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        return Object.entries(obj)
+      }
+    } catch { /* fall through */ }
+    return null
   })()
 
+  const formatValue = (v: unknown): string => {
+    if (v === null || v === undefined) return String(v)
+    if (typeof v === 'string') return v
+    if (typeof v === 'object') return JSON.stringify(v)
+    return String(v)
+  }
+
+  const formattedArgs = argEntries
+    ? argEntries.map(([k, v]) => `- ${k}: ${formatValue(v)}`).join('\n')
+    : args
+
   const isArgsLong = formattedArgs.length > MAX_PREVIEW || formattedArgs.includes('\n')
-  const displayArgs = (!showFullArgs && isArgsLong) ? formattedArgs.slice(0, MAX_PREVIEW) + '...' : formattedArgs
+  const displayArgs = (!showFull && isArgsLong) ? formattedArgs.slice(0, MAX_PREVIEW) + '...' : formattedArgs
 
   const isResultLong = !!result && (result.length > MAX_PREVIEW || result.includes('\n'))
-  const displayResult = result && (!showFullResult && isResultLong) ? result.slice(0, MAX_PREVIEW) + '...' : result
+  const displayResult = result && (!showFull && isResultLong) ? result.slice(0, MAX_PREVIEW) + '...' : result
+
+  const hasLongContent = isArgsLong || isResultLong
 
   const StatusIcon = status === 'success' ? Check 
     : status === 'error' ? X 
@@ -67,7 +82,7 @@ export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedA
         )}
         <StatusIcon className={`h-3.5 w-3.5 ${statusClass}`} />
         <Wrench className="h-3.5 w-3.5" />
-        <span className="text-sm">Tool called: {toolName}</span>
+        <span className="text-sm">Tool called: <span className="text-muted-foreground/60">{toolName}</span></span>
         {source !== undefined && source !== '' && source !== 'core' && (
           <span className="text-[10px] font-medium bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
             MCP
@@ -82,17 +97,6 @@ export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedA
             <pre className="mt-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
               {displayArgs}
             </pre>
-            {isArgsLong && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setShowFullArgs(!showFullArgs)
-                }}
-                className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 active:bg-accent/70 rounded px-1 py-0.5 mt-1 transition-colors"
-              >
-                {showFullArgs ? 'Show less' : 'Show more'}
-              </button>
-            )}
           </div>
 
           {/* Result */}
@@ -109,18 +113,19 @@ export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedA
               <pre className="mt-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
                 {displayResult}
               </pre>
-              {isResultLong && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setShowFullResult(!showFullResult)
-                  }}
-                  className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 active:bg-accent/70 rounded px-1 py-0.5 mt-1 transition-colors"
-                >
-                  {showFullResult ? 'Show less' : 'Show more'}
-                </button>
-              )}
             </div>
+          )}
+
+          {hasLongContent && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setShowFull(!showFull)
+              }}
+              className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 active:bg-accent/70 rounded px-1 py-0.5 mt-1 transition-colors"
+            >
+              {showFull ? 'Show less' : 'Show more'}
+            </button>
           )}
         </div>
       </CollapsibleContent>

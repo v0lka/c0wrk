@@ -16,6 +16,7 @@ import (
 	"github.com/user/agent/backend"
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/backend/logger"
+	beMcp "github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/session"
 
@@ -549,6 +550,13 @@ func (a *App) Startup(ctx context.Context) {
 	// Check codebase-memory-mcp availability and emit status
 	cmStatus := a.CheckCodebaseMemoryMCP()
 	wailsRuntime.EventsEmit(a.ctx, "codememory:status", cmStatus)
+
+	// Ensure auto_index is enabled if codebase-memory-mcp is installed
+	if cmStatus.Installed {
+		if err := beMcp.EnsureAutoIndex(a.ctx); err != nil {
+			slog.Warn("failed to ensure codebase-memory-mcp auto_index", "error", err)
+		}
+	}
 
 	// Check rtk availability and emit status
 	rtkStatus := a.CheckRtk()

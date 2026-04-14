@@ -675,6 +675,30 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 			session.mu.Unlock()
 		}
 
+		// Safety net: if context was cancelled but orchestrator returned no error,
+		// still treat as cancellation — do not emit partial results as final.
+		if ctx.Err() == context.Canceled {
+			m.emitFunc(Event{
+				SessionID: id,
+				Type:      "task_cancelled",
+				Data: TaskCancelledData{
+					SessionID: id,
+				},
+			})
+			m.mu.RLock()
+			ts := m.taskStore
+			m.mu.RUnlock()
+			if ts != nil {
+				adapter := NewTaskStoreAdapter(ts)
+				if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
+					if pErr := adapter.PersistCompletion(tid, "", 0); pErr != nil {
+						slog.Warn("failed to persist completion on cancel safety-net", "task", tid, "error", pErr)
+					}
+				}
+			}
+			return
+		}
+
 		// Emit done event with result
 		m.emitFunc(Event{
 			SessionID: id,

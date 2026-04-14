@@ -17,6 +17,9 @@ var PlannerLarge string
 //go:embed planner_small.md
 var PlannerSmall string
 
+//go:embed planner_informed.md
+var PlannerInformed string
+
 // Orchestrator prompt
 
 //go:embed orchestrator_system.md

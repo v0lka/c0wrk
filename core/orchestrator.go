@@ -326,6 +326,13 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	// 3. Get available tools
 	availableTools := o.toolRegistry.List()
+	mcpCount := 0
+	for _, t := range availableTools {
+		if t.Source != "" && t.Source != "core" {
+			mcpCount++
+		}
+	}
+	o.logDebug("orchestrator: tools loaded from registry", "total", len(availableTools), "mcp", mcpCount)
 
 	// 4. Route the message
 	o.logDebug("orchestrator: starting routing")
@@ -361,6 +368,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	case !opts.PlanFirst:
 		// === ReAct mode (single step) ===
 		o.logDebug("orchestrator: executing in ReAct mode (single step)")
+		ctx = WithDomain(ctx, routing.Domain)
 
 		// Build synthetic 1-step plan
 		plan := bb.GetPlan()
@@ -419,6 +427,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	case opts.TaskID == "":
 		// === Plan&Execute, first message ===
 		o.logDebug("orchestrator: executing in Plan&Execute mode (first message)")
+		ctx = WithDomain(ctx, routing.Domain)
 		execResult, err = o.engine.ExecuteWithBlackboard(ctx, message, bb)
 		if err != nil {
 			o.logDebug("orchestrator: SDK engine returned error", "error", err)
@@ -432,6 +441,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	default:
 		// === Plan&Execute, continuation ===
 		o.logDebug("orchestrator: executing in Plan&Execute mode (continuation)")
+		ctx = WithDomain(ctx, routing.Domain)
 
 		// Build completedSteps from BB's step results for PlanContinuation
 		allResults := bb.GetAllStepResults()

@@ -138,6 +138,12 @@ type BuilderCircuitBreaker struct {
 	RepeatAbortThreshold     int
 	TruncationAbortThreshold int
 	ParseErrorAbortThreshold int
+	FruitlessNudgeThreshold      int
+	FruitlessAbortThreshold      int
+	FruitlessMaxResultLen        int
+	SameToolRepeatNudgeThreshold int
+	SameToolRepeatAbortThreshold int
+	SameToolResultSizeDelta      int
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +201,7 @@ type BuilderOrchestrationConfig struct {
 	MaxHistoryMessages        int
 	MaxDependencyContextChars int
 	MaxJudgeCacheSize         int
+	MaxPlannerExploreSteps    int // Max steps for planner exploration. Default: 7
 }
 
 // ---------------------------------------------------------------------------

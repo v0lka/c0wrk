@@ -67,9 +67,11 @@ func LoadShellEnvironment() {
 		key := line[:eqIdx]
 		value := line[eqIdx+1:]
 
-		// Don't override already-set variables; shell profile is source of truth
-		// but we want to respect explicit env vars if set by launcher
-		if os.Getenv(key) != "" {
+		// Don't override already-set variables (respects explicit env vars set by launcher),
+		// EXCEPT for PATH: on macOS Finder/Dock launches, the inherited PATH is minimal
+		// (/usr/bin:/bin:/usr/sbin:/sbin) and lacks user-specific directories like
+		// ~/.local/bin or ~/go/bin. The shell login profile provides the authoritative PATH.
+		if key != "PATH" && os.Getenv(key) != "" {
 			continue
 		}
 
