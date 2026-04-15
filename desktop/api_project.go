@@ -1,15 +1,26 @@
 package desktop
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
+	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/workspace"
 )
+
+// checkCodebaseMemoryFn is the function used to check codebase-memory-mcp installation.
+// It can be overridden in tests.
+var checkCodebaseMemoryFn = mcp.CheckCodebaseMemoryMCP
+
+// execCommandFn is used to create exec commands. It can be overridden in tests.
+var execCommandFn = exec.CommandContext
 
 // CreateProject creates a new project. If externalPath is empty, an internal workspace is created.
 func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, error) {
@@ -20,9 +31,41 @@ func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, er
 	if err != nil {
 		return nil, err
 	}
+
+	// Trigger async codebase indexing (non-blocking, non-fatal)
+	go a.triggerCodebaseIndexing(p.WorkspacePath)
+
 	wailsRuntime.EventsEmit(a.ctx, "project:created", p)
 
 	return p, nil
+}
+
+// triggerCodebaseIndexing runs codebase-memory-mcp index_repository for the
+// given workspace path. It is designed to run in a goroutine and never panics.
+// Errors are logged as warnings and are non-fatal.
+func (a *App) triggerCodebaseIndexing(workspacePath string) {
+	status := checkCodebaseMemoryFn()
+	if !status.Installed {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	jsonArg := fmt.Sprintf(`{"workspace_path": %q}`, workspacePath)
+
+	cmd := execCommandFn(ctx, status.Path, "cli", "index_repository", jsonArg)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Warn("codebase-memory-mcp indexing failed",
+			"workspace", workspacePath,
+			"error", err,
+			"output", string(output),
+		)
+		return
+	}
+
+	slog.Info("codebase-memory-mcp indexing triggered", "workspace", workspacePath)
 }
 
 // DeleteProject deletes a project and all its sessions.

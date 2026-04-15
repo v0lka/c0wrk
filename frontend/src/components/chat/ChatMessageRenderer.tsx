@@ -11,11 +11,12 @@ import { ResumeActionPanel } from './ResumeActionPanel'
 import { StepLimitPrompt } from './StepLimitPrompt'
 import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
+import { ReflectionBlock } from './ReflectionBlock'
 import { ActionPlaceholder } from './ActionPlaceholder'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ActivityIndicator } from './ActivityIndicator'
-import { CheckCircle2, BookOpen } from 'lucide-react'
+import { CheckCircle2, BookOpen, Minimize2 } from 'lucide-react'
 
 interface ChatMessageRendererProps {
   displayItems: DisplayItem[]
@@ -39,7 +40,7 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
     case 'tool':
       return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} parsedArgs={item.parsedArgs} result={item.result} resultLen={item.resultLen} status={item.status} source={item.source} />
     case 'plan_step':
-      return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} isRetry={item.isRetry} children={item.children} renderItem={(child) => renderDisplayItem(child, lastUserMessageId)} />
+      return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} error={item.error} isRetry={item.isRetry} children={item.children} renderItem={(child) => renderDisplayItem(child, lastUserMessageId)} />
     case 'tool_confirm':
       return <ToolConfirmation key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
     case 'ask_user':
@@ -68,8 +69,17 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
       )
     case 'action_placeholder':
       return <ActionPlaceholder key={item.id} label={item.label} />
+    case 'context_compaction':
+      return (
+        <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <Minimize2 className="h-3.5 w-3.5 text-blue-500" />
+          <span>Context compacted from {item.beforePercent}% to {item.afterPercent}%</span>
+        </div>
+      )
     case 'thought_group':
       return <ThoughtGroupBlock key={item.id} thoughts={item.thoughts} />
+    case 'reflection':
+      return <ReflectionBlock key={item.id} summary={item.summary} suggestedAction={item.suggestedAction} rootCause={item.rootCause} failureAnalysis={item.failureAnalysis} actionPlan={item.actionPlan} reasoning={item.reasoning} hypotheses={item.hypotheses} attempt={item.attempt} maxAttempts={item.maxAttempts} />
     default:
       return null
   }

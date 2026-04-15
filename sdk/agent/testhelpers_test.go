@@ -127,10 +127,11 @@ func (m *mockContextManager) NeedsCompaction() bool {
 	return m.needsCompaction
 }
 
-func (m *mockContextManager) Compact(_ context.Context) {
+func (m *mockContextManager) Compact(_ context.Context) *CompactionResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.compactCalled++
+	return nil
 }
 
 func (m *mockContextManager) SetStrategy(_ CompactionStrategy) {
@@ -240,6 +241,8 @@ func (r *recordingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens
 	r.record("ContextFill:" + status)
 }
 
+func (r *recordingEvents) ContextCompaction(_, _ float64, _ string) {}
+
 func (r *recordingEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 
 // --- Helper to build LLM responses ---
@@ -307,4 +310,17 @@ func (m *countingToolExecutor) Execute(_ context.Context, name string, input jso
 
 func (m *countingToolExecutor) GetToolSource(name string) string {
 	return "core"
+}
+
+// llmResponseWithMultipleToolCalls creates a ChatResponse with multiple tool calls.
+func llmResponseWithMultipleToolCalls(thought string, calls []llm.ToolCall) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:      "assistant",
+			Content:   thought,
+			ToolCalls: calls,
+		},
+		StopReason: "tool_use",
+		Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
+	}
 }

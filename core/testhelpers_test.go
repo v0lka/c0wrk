@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 	tools "github.com/user/agent/sdk/tools"
 )
 
@@ -162,8 +163,9 @@ func (m *mockContextManager) NeedsCompaction() bool {
 	return m.needsCompaction
 }
 
-func (m *mockContextManager) Compact(ctx context.Context) {
+func (m *mockContextManager) Compact(ctx context.Context) *CompactionResult {
 	m.compactCalled = true
+	return nil
 }
 
 func (m *mockContextManager) SetTask(task string) {
@@ -217,7 +219,7 @@ func (m *mockEmitter) PlanGenerated(_ int, _ []PlanStepEvent) {}
 func (m *mockEmitter) PlanStepStart(stepID, description string) {
 	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description string }{stepID, description})
 }
-func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration) {
+func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
 	m.planStepCompletes = append(m.planStepCompletes, struct {
 		stepID   string
 		success  bool
@@ -231,7 +233,7 @@ func (m *mockEmitter) ToolResult(_, _ int, _ string)                      {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
 func (m *mockEmitter) SubAgentLaunch(_, _ string)                         {}
 func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
-func (m *mockEmitter) Reflection(_ string, _ []string, _, _ int)          {}
+func (m *mockEmitter) Reflection(_ *orchestration.Reflection, _, _ int)          {}
 func (m *mockEmitter) Retry(_, _ int)                                     {}
 func (m *mockEmitter) StepRetry(_ string, _, _ int)                       {}
 func (m *mockEmitter) AssistantChunk(content string) {
@@ -245,7 +247,8 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 	}{content, inputTokens, outputTokens})
 }
 func (m *mockEmitter) TokensUsed(_, _ int, _, _ string)             {}
-func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string) {}
+func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string)        {}
+func (m *mockEmitter) ContextCompaction(_, _ float64, _ string)      {}
 func (m *mockEmitter) Service(_ string)                             {}
 func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
 

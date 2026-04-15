@@ -788,7 +788,7 @@ func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := OrchestratorConfig{MaxSteps: 30}
-			configurator := coreStepConfigurator(cfg, nil, nil) // nil modelRegistry and logger defaults to TierLarge
+			configurator := coreStepConfigurator(cfg, nil, nil) // nil modelRegistry and logger defaults to the default family
 
 			step := orchestration.PlanStep{
 				ID:          "test_step",
@@ -822,25 +822,10 @@ func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
 	}
 }
 
-// TestCoreStepConfigurator_TierAwareSuffixes verifies that coreStepConfigurator
-// selects the appropriate role suffixes based on model tier.
-func TestCoreStepConfigurator_TierAwareSuffixes(t *testing.T) {
-	// Create a mock model registry with large tier
-	// We need to set an override for "" (empty model name) to control the fallback tier
-	largeRegistry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
-		"": {
-			ContextWindow: 200000,
-			OutputLimit:   8192,
-			Tier:          "large",
-		},
-	})
-
-	// Also test with explicit tier set
-	explicitSmallRegistry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
-		"": {
-			Tier: "small",
-		},
-	})
+// TestCoreStepConfigurator_RoleSuffixes verifies that coreStepConfigurator
+// selects the appropriate role suffixes based on agent profile role.
+func TestCoreStepConfigurator_RoleSuffixes(t *testing.T) {
+	registry := llm.NewModelRegistry(nil)
 
 	tests := []struct {
 		name           string
@@ -850,33 +835,25 @@ func TestCoreStepConfigurator_TierAwareSuffixes(t *testing.T) {
 		notWantContain string // substring NOT expected in suffix
 	}{
 		{
-			name:         "small tier researcher gets explicit rules",
-			registry:     explicitSmallRegistry,
+			name:         "researcher gets role suffix",
+			registry:     registry,
 			role:         "researcher",
-			wantContains: "Follow these rules",
+			wantContains: "Role: Researcher",
 		},
 		{
-			name:           "large tier researcher gets standard suffix",
-			registry:       largeRegistry,
-			role:           "researcher",
-			wantContains:   "Role: Researcher",
-			notWantContain: "Follow these rules",
-		},
-		{
-			name:         "small tier coder gets explicit rules",
-			registry:     explicitSmallRegistry,
+			name:         "coder gets role suffix",
+			registry:     registry,
 			role:         "coder",
-			wantContains: "Follow these rules",
+			wantContains: "Role: Coder",
 		},
 		{
-			name:           "large tier coder gets standard suffix",
-			registry:       largeRegistry,
-			role:         "coder",
-			wantContains:   "Role: Coder",
-			notWantContain: "Follow these rules",
+			name:         "tester gets role suffix",
+			registry:     registry,
+			role:         "tester",
+			wantContains: "Role: Tester",
 		},
 		{
-			name:         "nil registry defaults to large tier",
+			name:         "nil registry still works",
 			registry:     nil,
 			role:         "tester",
 			wantContains: "Role: Tester",
@@ -1815,7 +1792,7 @@ func TestBuildSystemPrompt_PlanMode(t *testing.T) {
 	ctx := context.WithValue(context.Background(), PlanModeKey, true)
 	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
 
-	modelMeta := llm.ModelMetadata{Tier: "large"}
+	modelMeta := llm.ModelMetadata{Family: "openai_flagship"}
 	result := buildSystemPrompt(ctx, "test message", modelMeta)
 
 	if !strings.Contains(result, "Plan Context") {
@@ -1835,7 +1812,7 @@ func TestBuildSystemPrompt_ReactMode(t *testing.T) {
 	ctx := context.Background()
 	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
 
-	modelMeta := llm.ModelMetadata{Tier: "large"}
+	modelMeta := llm.ModelMetadata{Family: "openai_flagship"}
 	result := buildSystemPrompt(ctx, "test message", modelMeta)
 
 	if strings.Contains(result, "Plan Context") {

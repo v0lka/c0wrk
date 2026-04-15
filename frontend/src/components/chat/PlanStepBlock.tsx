@@ -14,6 +14,7 @@ interface PlanStepBlockProps {
   title: string
   status: 'running' | 'completed' | 'failed'
   duration?: number
+  error?: string
   isRetry?: boolean
   children: DisplayItem[]
   renderItem: (item: DisplayItem, index: number) => React.ReactNode
@@ -35,7 +36,7 @@ function getStatusColor(status: string): string {
   }
 }
 
-export function PlanStepBlock({ stepId, stepNum, title, status, duration, isRetry, children, renderItem }: PlanStepBlockProps) {
+export function PlanStepBlock({ stepId, stepNum, title, status, duration, error, isRetry, children, renderItem }: PlanStepBlockProps) {
   const [isOpen, setIsOpen] = useState(status === 'running')
   const stepContextFill = useChatStore(s => s.stepContextFill[stepId])
 
@@ -73,6 +74,11 @@ export function PlanStepBlock({ stepId, stepNum, title, status, duration, isRetr
         )}
         <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${iconClass}`} />
         <span className="text-sm truncate">Step {stepNum}: {title}{isRetry ? ' (retry)' : ''}</span>
+        {status === 'failed' && error && (
+          <span className="text-xs text-red-400 truncate max-w-[300px]" title={error}>
+            — {error.length > 150 ? error.slice(0, 150) + '…' : error}
+          </span>
+        )}
         {status === 'running' && stepContextFill && (
           <span className={`text-xs ml-2 ${getStatusColor(stepContextFill.status)}`}>
             {Math.round(stepContextFill.fillPercent)}%

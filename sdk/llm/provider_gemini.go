@@ -182,6 +182,22 @@ func (p *GeminiProvider) buildConfig(req ChatRequest, systemInstruction *genai.C
 		config.Temperature = &temp
 	}
 
+	// Apply reasoning effort if set
+	if req.ReasoningEffort != "" {
+		rc := ResolveReasoning(req.ReasoningEffort, "gemini")
+		if rc.Enabled {
+			tc := &genai.ThinkingConfig{
+				IncludeThoughts: true,
+				ThinkingLevel:   genai.ThinkingLevel(rc.GeminiThinkingLevel),
+			}
+			if rc.GeminiThinkingBudget > 0 {
+				budget := int32(rc.GeminiThinkingBudget)
+				tc.ThinkingBudget = &budget
+			}
+			config.ThinkingConfig = tc
+		}
+	}
+
 	if systemInstruction != nil {
 		config.SystemInstruction = systemInstruction
 	}

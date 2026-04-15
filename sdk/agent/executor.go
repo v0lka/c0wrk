@@ -83,6 +83,9 @@ type Executor struct {
 	// Finish nudge tracker: ensure explicit finish tool call before accepting implicit finish
 	finishNudgeAttempted bool
 
+	// Multi-tool-call response group counter
+	responseGroupCounter int64
+
 	// Plan-step context for structured logging
 	planStepID    string // e.g. "step_3" (empty if not plan mode)
 	planStepIndex int    // 1-based position in plan (0 if not plan mode)
@@ -268,7 +271,9 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		if err != nil {
 			if isContextExceededError(err) && !reactiveCompactAttempted {
 				reactiveCompactAttempted = true
-				cw.Compact(ctx)
+				if result := cw.Compact(ctx); result != nil {
+					e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
+				}
 				e.emitter.ExecutorDiagnostic(stepNum, "reactive_compaction_api_error", map[string]any{"error": err.Error()})
 				continue
 			}
@@ -283,7 +288,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		thought := resp.Message.Content
 
 		// Always accumulate tokens regardless of suppressAssistantEvents
-		e.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Model, resp.Tier)
+		e.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Model, resp.Family)
 
 		// Emit thought event
 		if thought != "" || resp.Reasoning != "" {
@@ -431,225 +436,264 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		// Reset truncation counter on any non-truncated response
 		e.consecutiveTruncationCount = 0
 
-		action := resp.Message.ToolCalls[0]
+		// --- Process ALL tool calls from the response ---
+		toolCalls := resp.Message.ToolCalls
 
-		// Emit tool call
-		e.emitter.ToolCall(stepNum, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
-
-		// --- Circuit breaker: detect repeated identical tool calls ---
-		toolKey := action.Name + ":" + compactJSON(action.Input)
-		if toolKey == e.lastToolKey {
-			e.consecutiveRepeatCount++
-		} else {
-			e.consecutiveRepeatCount = 1
-			e.lastToolKey = toolKey
-			e.lastToolResultIsError = false
+		// Generate ResponseGroup ID for multi-call responses
+		var responseGroup int64
+		if len(toolCalls) > 1 {
+			e.responseGroupCounter++
+			responseGroup = e.responseGroupCounter
 		}
 
-		// Use lower thresholds when the previous identical call produced an error
-		nudgeThreshold := e.circuitBreaker.RepeatNudgeThreshold
-		abortThreshold := e.circuitBreaker.RepeatAbortThreshold
-		if e.lastToolResultIsError {
-			nudgeThreshold = e.circuitBreaker.RepeatNudgeThreshold - 1
-			abortThreshold = e.circuitBreaker.RepeatAbortThreshold - 1
-		}
+		var finishResult *ExecutorResult
+		circuitBreakerTriggered := false
 
-		if e.consecutiveRepeatCount >= abortThreshold {
-			e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
-			return &ExecutorResult{
-				Output:   fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount),
-				Steps:    allSteps,
-				Finished: false,
-			}, nil
-		}
+		for callIdx, action := range toolCalls {
+			// Emit tool call
+			e.emitter.ToolCall(stepNum, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
 
-		if e.consecutiveRepeatCount >= nudgeThreshold {
-			nudgeMsg := repeatNudgeMessage
-			if e.lastToolResultIsError {
-				nudgeMsg = repeatErrorNudgeMessage
-			}
-			e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_nudge", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
-			step := Step{
-				Thought:     thought,
-				Action:      action,
-				Observation: nudgeMsg,
-				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			}
-			allSteps = append(allSteps, step)
-			cw.AddStep(step)
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-			continue
-		}
-		// --- End circuit breaker ---
-
-		// Check for finish tool
-		if action.Name == "finish" {
-			// Parse answer from input
-			var params struct {
-				Answer string `json:"answer"`
-			}
-			if err := json.Unmarshal(action.Input, &params); err != nil {
-				params.Answer = string(action.Input) // fallback
-			}
-
-			step := Step{
-				Thought:    thought,
-				Action:     action,
-				TokensUsed: resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			}
-			allSteps = append(allSteps, step)
-
-			e.emitter.ToolResult(stepNum, len(params.Answer), params.Answer)
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-
-			return &ExecutorResult{
-				Output:   params.Answer,
-				Steps:    allSteps,
-				Finished: true,
-			}, nil
-		}
-
-		// Execute the tool (task context should already be set by the caller)
-		result, err := e.tools.Execute(ctx, action.Name, action.Input)
-		if err != nil {
-			// Infrastructure error
-			return nil, err
-		}
-
-		observation := result.Content
-		e.lastToolResultIsError = result.IsError
-
-		// --- Fruitless result detector: consecutive minimal-result calls ---
-		// A result is "fruitless" if it's small AND not an error (errors have their own tracking)
-		fruitlessMaxLen := e.circuitBreaker.FruitlessMaxResultLen
-		if fruitlessMaxLen == 0 {
-			fruitlessMaxLen = 32 // default
-		}
-		isFruitless := !result.IsError && len(result.Content) <= fruitlessMaxLen
-		if isFruitless {
-			e.consecutiveFruitlessCount++
-		} else if !result.IsError {
-			// Reset on non-fruitless, non-error result
-			e.consecutiveFruitlessCount = 0
-		}
-
-		// Check fruitless thresholds (skip if threshold is 0 = disabled)
-		if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
-			e.emitter.ExecutorDiagnostic(stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
-			return &ExecutorResult{
-				Output:   fmt.Sprintf("Aborted: %d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount),
-				Steps:    allSteps,
-				Finished: false,
-			}, nil
-		}
-
-		if e.circuitBreaker.FruitlessNudgeThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessNudgeThreshold && !e.fruitlessNudgeAttempted {
-			e.fruitlessNudgeAttempted = true
-			e.emitter.ExecutorDiagnostic(stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
-			nudgeStep := Step{
-				Observation: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
-			}
-			allSteps = append(allSteps, nudgeStep)
-			cw.AddStep(nudgeStep)
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-			continue
-		}
-		// --- End fruitless result detector ---
-
-		// --- Same-tool repetition detector: same tool, varied args, similar results ---
-		resultLen := len(result.Content)
-		sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
-		if sizeDelta == 0 {
-			sizeDelta = 64 // default
-		}
-		// Calculate absolute difference without importing math
-		lenDiff := resultLen - e.sameToolLastResultLen
-		if lenDiff < 0 {
-			lenDiff = -lenDiff
-		}
-
-		if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
-			e.sameToolConsecutiveCount++
-			e.sameToolLastResultLen = resultLen
-		} else {
-			e.sameToolConsecutiveCount = 1
-			e.sameToolLastName = action.Name
-			e.sameToolLastResultLen = resultLen
-		}
-
-		// Check same-tool thresholds (skip if threshold is 0 = disabled)
-		if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
-			e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-			return &ExecutorResult{
-				Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
-				Steps:    allSteps,
-				Finished: false,
-			}, nil
-		}
-
-		if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
-			e.sameToolNudgeAttempted = true
-			e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-			nudgeStep := Step{
-				Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
-			}
-			allSteps = append(allSteps, nudgeStep)
-			cw.AddStep(nudgeStep)
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-			continue
-		}
-		// --- End same-tool repetition detector ---
-
-		// Ensure non-empty observation for tool messages (OpenAI API requirement)
-		if observation == "" {
-			observation = "(no output)"
-		}
-
-		// --- Parse error tracker ---
-		if result.IsError && isParseError(observation) {
-			if action.Name == e.consecutiveParseErrorTool {
-				e.consecutiveParseErrorCount++
+			// --- Circuit breaker: detect repeated identical tool calls ---
+			toolKey := action.Name + ":" + compactJSON(action.Input)
+			if toolKey == e.lastToolKey {
+				e.consecutiveRepeatCount++
 			} else {
-				e.consecutiveParseErrorTool = action.Name
-				e.consecutiveParseErrorCount = 1
+				e.consecutiveRepeatCount = 1
+				e.lastToolKey = toolKey
+				e.lastToolResultIsError = false
 			}
 
-			if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
-				e.emitter.ExecutorDiagnostic(stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
+			// Use lower thresholds when the previous identical call produced an error
+			nudgeThreshold := e.circuitBreaker.RepeatNudgeThreshold
+			abortThreshold := e.circuitBreaker.RepeatAbortThreshold
+			if e.lastToolResultIsError {
+				nudgeThreshold = e.circuitBreaker.RepeatNudgeThreshold - 1
+				abortThreshold = e.circuitBreaker.RepeatAbortThreshold - 1
+			}
+
+			if e.consecutiveRepeatCount >= abortThreshold {
+				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
 				return &ExecutorResult{
-					Output:   fmt.Sprintf("Aborted: tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount),
+					Output:   fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount),
 					Steps:    allSteps,
 					Finished: false,
 				}, nil
 			}
 
-			observation += "\n\n" + fmt.Sprintf(parseErrorNudgeMessage, e.consecutiveParseErrorCount)
-		} else if !result.IsError {
-			// Reset parse error tracker on successful execution
-			e.consecutiveParseErrorTool = ""
-			e.consecutiveParseErrorCount = 0
+			if e.consecutiveRepeatCount >= nudgeThreshold {
+				nudgeMsg := repeatNudgeMessage
+				if e.lastToolResultIsError {
+					nudgeMsg = repeatErrorNudgeMessage
+				}
+				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_nudge", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
+				stepThought := ""
+				if callIdx == 0 {
+					stepThought = thought
+				}
+				step := Step{
+					Thought:       stepThought,
+					Action:        action,
+					Observation:   nudgeMsg,
+					TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
+					ResponseGroup: responseGroup,
+				}
+				allSteps = append(allSteps, step)
+				cw.AddStep(step)
+				circuitBreakerTriggered = true
+				break
+			}
+			// --- End circuit breaker ---
+
+			// Check for finish tool
+			if action.Name == "finish" {
+				// Parse answer from input
+				var params struct {
+					Answer string `json:"answer"`
+				}
+				if err := json.Unmarshal(action.Input, &params); err != nil {
+					params.Answer = string(action.Input) // fallback
+				}
+
+				stepThought := ""
+				if callIdx == 0 {
+					stepThought = thought
+				}
+				step := Step{
+					Thought:       stepThought,
+					Action:        action,
+					TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
+					ResponseGroup: responseGroup,
+				}
+				allSteps = append(allSteps, step)
+
+				e.emitter.ToolResult(stepNum, len(params.Answer), params.Answer)
+
+				finishResult = &ExecutorResult{
+					Output:   params.Answer,
+					Steps:    allSteps,
+					Finished: true,
+				}
+				break // stop processing further tool calls
+			}
+
+			// Execute the tool (task context should already be set by the caller)
+			result, err := e.tools.Execute(ctx, action.Name, action.Input)
+			if err != nil {
+				// Infrastructure error
+				return nil, err
+			}
+
+			observation := result.Content
+			e.lastToolResultIsError = result.IsError
+
+			// --- Fruitless result detector: consecutive minimal-result calls ---
+			// A result is "fruitless" if it's small AND not an error (errors have their own tracking)
+			fruitlessMaxLen := e.circuitBreaker.FruitlessMaxResultLen
+			if fruitlessMaxLen == 0 {
+				fruitlessMaxLen = 32 // default
+			}
+			isFruitless := !result.IsError && len(result.Content) <= fruitlessMaxLen
+			if isFruitless {
+				e.consecutiveFruitlessCount++
+			} else if !result.IsError {
+				// Reset on non-fruitless, non-error result
+				e.consecutiveFruitlessCount = 0
+			}
+
+			// Check fruitless thresholds (skip if threshold is 0 = disabled)
+			if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
+				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
+				return &ExecutorResult{
+					Output:   fmt.Sprintf("Aborted: %d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount),
+					Steps:    allSteps,
+					Finished: false,
+				}, nil
+			}
+
+			if e.circuitBreaker.FruitlessNudgeThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessNudgeThreshold && !e.fruitlessNudgeAttempted {
+				e.fruitlessNudgeAttempted = true
+				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
+				nudgeStep := Step{
+					Observation: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
+				}
+				allSteps = append(allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				circuitBreakerTriggered = true
+				break
+			}
+			// --- End fruitless result detector ---
+
+			// --- Same-tool repetition detector: same tool, varied args, similar results ---
+			resultLen := len(result.Content)
+			sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
+			if sizeDelta == 0 {
+				sizeDelta = 64 // default
+			}
+			// Calculate absolute difference without importing math
+			lenDiff := resultLen - e.sameToolLastResultLen
+			if lenDiff < 0 {
+				lenDiff = -lenDiff
+			}
+
+			if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
+				e.sameToolConsecutiveCount++
+				e.sameToolLastResultLen = resultLen
+			} else {
+				e.sameToolConsecutiveCount = 1
+				e.sameToolLastName = action.Name
+				e.sameToolLastResultLen = resultLen
+			}
+
+			// Check same-tool thresholds (skip if threshold is 0 = disabled)
+			if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
+				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+				return &ExecutorResult{
+					Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
+					Steps:    allSteps,
+					Finished: false,
+				}, nil
+			}
+
+			if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
+				e.sameToolNudgeAttempted = true
+				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+				nudgeStep := Step{
+					Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
+				}
+				allSteps = append(allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				circuitBreakerTriggered = true
+				break
+			}
+			// --- End same-tool repetition detector ---
+
+			// Ensure non-empty observation for tool messages (OpenAI API requirement)
+			if observation == "" {
+				observation = "(no output)"
+			}
+
+			// --- Parse error tracker ---
+			if result.IsError && isParseError(observation) {
+				if action.Name == e.consecutiveParseErrorTool {
+					e.consecutiveParseErrorCount++
+				} else {
+					e.consecutiveParseErrorTool = action.Name
+					e.consecutiveParseErrorCount = 1
+				}
+
+				if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
+					e.emitter.ExecutorDiagnostic(stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
+					return &ExecutorResult{
+						Output:   fmt.Sprintf("Aborted: tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount),
+						Steps:    allSteps,
+						Finished: false,
+					}, nil
+				}
+
+				observation += "\n\n" + fmt.Sprintf(parseErrorNudgeMessage, e.consecutiveParseErrorCount)
+			} else if !result.IsError {
+				// Reset parse error tracker on successful execution
+				e.consecutiveParseErrorTool = ""
+				e.consecutiveParseErrorCount = 0
+			}
+			// --- End parse error tracker ---
+
+			// Apply tool result budget
+			observation = e.applyToolResultBudget(observation, cw, action.Name)
+
+			// Emit tool result
+			e.emitter.ToolResult(stepNum, len(observation), observation)
+
+			// Create step - only first tool call in the group carries the Thought
+			stepThought := ""
+			if callIdx == 0 {
+				stepThought = thought
+			}
+			step := Step{
+				Thought:       stepThought,
+				Action:        action,
+				Observation:   observation,
+				TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				ResponseGroup: responseGroup,
+			}
+			allSteps = append(allSteps, step)
+
+			// Add step to context window
+			cw.AddStep(step)
+		} // end tool call loop
+
+		// If finish was encountered, return
+		if finishResult != nil {
+			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
+			return finishResult, nil
 		}
-		// --- End parse error tracker ---
-
-		// Apply tool result budget
-		observation = e.applyToolResultBudget(observation, cw, action.Name)
-
-		// Emit tool result
-		e.emitter.ToolResult(stepNum, len(observation), observation)
-
-		// Create step
-		step := Step{
-			Thought:     thought,
-			Action:      action,
-			Observation: observation,
-			TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		}
-		allSteps = append(allSteps, step)
-
-		// Add step to context window
-		cw.AddStep(step)
 
 		e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
+
+		// If circuit breaker triggered, continue to next LLM call
+		if circuitBreakerTriggered {
+			continue
+		}
 
 		// Wrap-up nudge: warn LLM when approaching budget limit
 		// Only applies when the budget is large enough for the nudge to be meaningful.
@@ -679,15 +723,21 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		switch fill.Status {
 		case "compact", "warning":
-			cw.Compact(ctx)
+			if result := cw.Compact(ctx); result != nil {
+				e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
+			}
 			reactiveCompactAttempted = false
 		case "emergency":
-			cw.Compact(ctx)
+			if result := cw.Compact(ctx); result != nil {
+				e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
+			}
 			reactiveCompactAttempted = false
 		case "reject":
 			if !reactiveCompactAttempted {
 				reactiveCompactAttempted = true
-				cw.Compact(ctx)
+				if result := cw.Compact(ctx); result != nil {
+					e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
+				}
 				continue
 			}
 			return nil, fmt.Errorf("context window full after reactive compaction (%.1f%% of %d tokens)", fill.Percent, fill.Max)

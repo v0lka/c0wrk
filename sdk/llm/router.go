@@ -207,10 +207,10 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 			if resp.Model == "" {
 				resp.Model = req.Model
 			}
-			// Resolve tier from model registry
-			if r.registry != nil && resp.Tier == "" {
+			// Resolve family from model registry
+			if r.registry != nil && resp.Family == "" {
 				meta, _ := r.registry.Resolve(resp.Model)
-				resp.Tier = meta.Tier
+				resp.Family = meta.Family
 			}
 			return resp, nil
 		}

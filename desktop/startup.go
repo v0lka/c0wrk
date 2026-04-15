@@ -396,19 +396,38 @@ func (a *App) Startup(ctx context.Context) {
 
 		// Call judge asynchronously to avoid blocking the event listener
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("judge: goroutine panicked", "confirm_id", confirmID, "panic", r)
+					uiEmitFunc(session.Event{
+						SessionID: pendingData.sessionID,
+						Type:      "tool_judge_response",
+						Data: session.JudgeResponsePayload{
+							ConfirmID: confirmID,
+							Error:     fmt.Sprintf("Internal error during judge evaluation: %v", r),
+						},
+					})
+				}
+			}()
+
+			log.Debug("judge: goroutine started", "confirm_id", confirmID, "tool", pendingData.toolName)
+
 			responsePayload := session.JudgeResponsePayload{
 				ConfirmID: confirmID,
 			}
 
 			_, reasoning, err := a.app.EvaluateJudge(a.ctx, pendingData.toolName, pendingData.input, pendingData.taskContext)
 			if err != nil {
+				log.Warn("judge: evaluation failed", "confirm_id", confirmID, "tool", pendingData.toolName, "error", err)
 				responsePayload.Error = fmt.Sprintf("Judge evaluation failed: %v", err)
 				responsePayload.Reasoning = reasoning
 			} else {
+				log.Debug("judge: evaluation completed", "confirm_id", confirmID, "tool", pendingData.toolName, "reasoning", reasoning)
 				responsePayload.Reasoning = reasoning
 			}
 
 			uiEmitFunc(session.Event{SessionID: pendingData.sessionID, Type: "tool_judge_response", Data: responsePayload})
+			log.Debug("judge: response event emitted", "confirm_id", confirmID)
 		}()
 	})
 

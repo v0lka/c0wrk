@@ -11,16 +11,33 @@ var PlannerBase string
 //go:embed planner_replan.md
 var PlannerReplan string
 
-//go:embed planner_large.md
-var PlannerLarge string
-
-//go:embed planner_small.md
-var PlannerSmall string
-
 //go:embed planner_informed.md
 var PlannerInformed string
 
-// Orchestrator prompt
+// Planner family-specific prompts
+
+//go:embed planner_default.md
+var PlannerDefault string
+
+//go:embed planner_anthropic.md
+var PlannerAnthropic string
+
+//go:embed planner_openai_flagship.md
+var PlannerOpenAIFlagship string
+
+//go:embed planner_openai_standard.md
+var PlannerOpenAIStandard string
+
+//go:embed planner_gemini.md
+var PlannerGemini string
+
+//go:embed planner_deepseek.md
+var PlannerDeepSeek string
+
+//go:embed planner_mistral.md
+var PlannerMistral string
+
+// Orchestrator prompts
 
 //go:embed orchestrator_system.md
 var OrchestratorSystem string
@@ -28,35 +45,98 @@ var OrchestratorSystem string
 //go:embed orchestrator_plan_context.md
 var OrchestratorPlanContext string
 
-//go:embed orchestrator_large.md
-var OrchestratorLarge string
+// Orchestrator family-specific prompts
 
-//go:embed orchestrator_small.md
-var OrchestratorSmall string
+//go:embed orchestrator_default.md
+var OrchestratorDefault string
 
-// Reflector prompt
+//go:embed orchestrator_anthropic.md
+var OrchestratorAnthropic string
+
+//go:embed orchestrator_openai_flagship.md
+var OrchestratorOpenAIFlagship string
+
+//go:embed orchestrator_openai_standard.md
+var OrchestratorOpenAIStandard string
+
+//go:embed orchestrator_gemini.md
+var OrchestratorGemini string
+
+//go:embed orchestrator_deepseek.md
+var OrchestratorDeepSeek string
+
+//go:embed orchestrator_mistral.md
+var OrchestratorMistral string
+
+// Reflector prompt (auxiliary agent — fixed prompt, no family variants)
 
 //go:embed reflector_system.md
 var ReflectorSystem string
 
-//go:embed reflector_large.md
-var ReflectorLarge string
+//go:embed reflector_instructions.md
+var ReflectorInstructions string
 
-//go:embed reflector_small.md
-var ReflectorSmall string
-
-// Router prompt
+// Router prompt (auxiliary agent — fixed prompt, no family variants)
 
 //go:embed router_system.md
 var RouterSystem string
 
-//go:embed router_large.md
-var RouterLarge string
-
-//go:embed router_small.md
-var RouterSmall string
+//go:embed router_instructions.md
+var RouterInstructions string
 
 // Compaction summarize prompt
 
 //go:embed compaction_summarize.md
 var CompactionSummarize string
+
+// FamilyPrompt returns the family-specific prompt for the given agent and family.
+// Falls back to the "default" family if no specific prompt exists.
+// Returns empty string if the agent has no family-specific prompts (auxiliary agents).
+func FamilyPrompt(agent, family string) string {
+	switch agent {
+	case "orchestrator":
+		return orchestratorFamilyPrompt(family)
+	case "planner":
+		return plannerFamilyPrompt(family)
+	default:
+		return ""
+	}
+}
+
+func orchestratorFamilyPrompt(family string) string {
+	switch family {
+	case "anthropic":
+		return OrchestratorAnthropic
+	case "openai_flagship":
+		return OrchestratorOpenAIFlagship
+	case "openai_standard":
+		return OrchestratorOpenAIStandard
+	case "gemini":
+		return OrchestratorGemini
+	case "deepseek":
+		return OrchestratorDeepSeek
+	case "mistral":
+		return OrchestratorMistral
+	default:
+		return OrchestratorDefault
+	}
+}
+
+func plannerFamilyPrompt(family string) string {
+	switch family {
+	case "anthropic":
+		return PlannerAnthropic
+	case "openai_flagship":
+		return PlannerOpenAIFlagship
+	case "openai_standard":
+		return PlannerOpenAIStandard
+	case "gemini":
+		return PlannerGemini
+	case "deepseek":
+		return PlannerDeepSeek
+	case "mistral":
+		return PlannerMistral
+	default:
+		return PlannerDefault
+	}
+}

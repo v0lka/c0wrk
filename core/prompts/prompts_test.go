@@ -12,9 +12,30 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 	}{
 		{"PlannerBase", PlannerBase},
 		{"PlannerReplan", PlannerReplan},
+		{"PlannerInformed", PlannerInformed},
 		{"OrchestratorSystem", OrchestratorSystem},
+		{"OrchestratorPlanContext", OrchestratorPlanContext},
 		{"ReflectorSystem", ReflectorSystem},
+		{"ReflectorInstructions", ReflectorInstructions},
 		{"RouterSystem", RouterSystem},
+		{"RouterInstructions", RouterInstructions},
+		{"CompactionSummarize", CompactionSummarize},
+		// Family-specific orchestrator prompts
+		{"OrchestratorDefault", OrchestratorDefault},
+		{"OrchestratorAnthropic", OrchestratorAnthropic},
+		{"OrchestratorOpenAIFlagship", OrchestratorOpenAIFlagship},
+		{"OrchestratorOpenAIStandard", OrchestratorOpenAIStandard},
+		{"OrchestratorGemini", OrchestratorGemini},
+		{"OrchestratorDeepSeek", OrchestratorDeepSeek},
+		{"OrchestratorMistral", OrchestratorMistral},
+		// Family-specific planner prompts
+		{"PlannerDefault", PlannerDefault},
+		{"PlannerAnthropic", PlannerAnthropic},
+		{"PlannerOpenAIFlagship", PlannerOpenAIFlagship},
+		{"PlannerOpenAIStandard", PlannerOpenAIStandard},
+		{"PlannerGemini", PlannerGemini},
+		{"PlannerDeepSeek", PlannerDeepSeek},
+		{"PlannerMistral", PlannerMistral},
 	}
 
 	for _, tt := range tests {
@@ -70,5 +91,52 @@ func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 			t.Errorf("%s and %s have identical content", name, prev)
 		}
 		seen[content] = name
+	}
+}
+
+func TestFamilyPrompt_Orchestrator(t *testing.T) {
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "default"}
+	for _, fam := range families {
+		t.Run(fam, func(t *testing.T) {
+			result := FamilyPrompt("orchestrator", fam)
+			if result == "" {
+				t.Errorf("FamilyPrompt(orchestrator, %s) returned empty", fam)
+			}
+		})
+	}
+}
+
+func TestFamilyPrompt_Planner(t *testing.T) {
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "default"}
+	for _, fam := range families {
+		t.Run(fam, func(t *testing.T) {
+			result := FamilyPrompt("planner", fam)
+			if result == "" {
+				t.Errorf("FamilyPrompt(planner, %s) returned empty", fam)
+			}
+		})
+	}
+}
+
+func TestFamilyPrompt_UnknownFamily_FallsBackToDefault(t *testing.T) {
+	result := FamilyPrompt("orchestrator", "unknown_family")
+	if result != OrchestratorDefault {
+		t.Error("expected fallback to OrchestratorDefault for unknown family")
+	}
+	result = FamilyPrompt("planner", "unknown_family")
+	if result != PlannerDefault {
+		t.Error("expected fallback to PlannerDefault for unknown family")
+	}
+}
+
+func TestFamilyPrompt_AuxiliaryAgent_ReturnsEmpty(t *testing.T) {
+	if result := FamilyPrompt("router", "anthropic"); result != "" {
+		t.Error("expected empty for auxiliary agent router")
+	}
+	if result := FamilyPrompt("reflector", "anthropic"); result != "" {
+		t.Error("expected empty for auxiliary agent reflector")
+	}
+	if result := FamilyPrompt("unknown", "anthropic"); result != "" {
+		t.Error("expected empty for unknown agent")
 	}
 }

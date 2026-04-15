@@ -260,11 +260,33 @@ func (o *Orchestrator) runPlanExecute(
 					return result, nil
 				}
 
-				o.events.OnReflected(reflection.Summary, reflection.Hypotheses, attempt+1, o.maxRetries)
+				// Collect failed step IDs for logging
+				var outerFailedIDs []string
+				for _, cs := range completedSteps {
+					if cs.Error != nil {
+						outerFailedIDs = append(outerFailedIDs, cs.StepID)
+					}
+				}
+				slog.Info("reflection completed",
+					"failed_steps", outerFailedIDs,
+					"summary", reflection.Summary,
+					"suggested_action", reflection.SuggestedAction,
+					"root_cause", reflection.RootCause,
+					"action_plan", reflection.ActionPlan,
+					"failure_analysis", reflection.FailureAnalysis,
+					"hypotheses", reflection.Hypotheses,
+					"reasoning", reflection.Reasoning,
+				)
+				o.events.OnReflected(reflection, attempt+1, o.maxRetries)
 				sessionReflections = append(sessionReflections, *reflection)
 				bb.AddReflection(*reflection)
 
 				if reflection.SuggestedAction == "replan" {
+					slog.Info("replan triggered by reflection",
+						"suggested_action", reflection.SuggestedAction,
+						"root_cause", reflection.RootCause,
+						"action_plan", reflection.ActionPlan,
+					)
 					o.events.OnServiceMeta("replanning after reflection", nil)
 					var failedStep CompletedStep
 					if len(completedSteps) > 0 {
@@ -445,7 +467,11 @@ func (o *Orchestrator) executePlanWithSteps(
 		var failedSteps []string
 		for _, r := range results {
 			duration := time.Since(stepStartTimes[r.StepID])
-			o.events.OnStepCompleted(r.StepID, r.Error == nil, duration)
+			if r.Error != nil {
+				o.events.OnStepCompleted(r.StepID, false, duration, r.Error.Error())
+			} else {
+				o.events.OnStepCompleted(r.StepID, true, duration, "")
+			}
 
 			if sharedWS != nil && r.Error == nil {
 				o.events.OnServiceMeta("storing step output", map[string]any{"stepID": r.StepID})
@@ -471,6 +497,11 @@ func (o *Orchestrator) executePlanWithSteps(
 			}
 
 			if r.Error != nil {
+				slog.Info("plan step failed",
+					"step_id", r.StepID,
+					"error", r.Error.Error(),
+					"output_length", len(r.Output),
+				)
 				failedSteps = append(failedSteps, r.StepID)
 			}
 		}
@@ -507,11 +538,21 @@ func (o *Orchestrator) executePlanWithSteps(
 							if reflection.SuggestedAction == "abort" {
 								sessionReflections = append(sessionReflections, *reflection)
 								bb.AddReflection(*reflection)
-								o.events.OnReflected(reflection.Summary, reflection.Hypotheses, retryAttempt, o.maxRetries)
+								o.events.OnReflected(reflection, retryAttempt, o.maxRetries)
 								break stepRetryLoop // abort retry for this step
 							}
 
-							o.events.OnReflected(reflection.Summary, reflection.Hypotheses, retryAttempt, o.maxRetries)
+							slog.Info("reflection completed",
+								"step_id", failedStepID,
+								"summary", reflection.Summary,
+								"suggested_action", reflection.SuggestedAction,
+								"root_cause", reflection.RootCause,
+								"action_plan", reflection.ActionPlan,
+								"failure_analysis", reflection.FailureAnalysis,
+								"hypotheses", reflection.Hypotheses,
+								"reasoning", reflection.Reasoning,
+							)
+							o.events.OnReflected(reflection, retryAttempt, o.maxRetries)
 							sessionReflections = append(sessionReflections, *reflection)
 							bb.AddReflection(*reflection)
 
@@ -602,7 +643,11 @@ func (o *Orchestrator) executePlanWithSteps(
 					retryResults := agent.RunSubAgentsParallel(ctx, retryTasks)
 
 					for _, rr := range retryResults {
-						o.events.OnStepCompleted(rr.StepID, rr.Error == nil, time.Since(stepStartTime))
+						if rr.Error != nil {
+							o.events.OnStepCompleted(rr.StepID, false, time.Since(stepStartTime), rr.Error.Error())
+						} else {
+							o.events.OnStepCompleted(rr.StepID, true, time.Since(stepStartTime), "")
+						}
 
 						if rr.Error == nil {
 							// Step succeeded on retry
@@ -1034,7 +1079,11 @@ func (o *Orchestrator) ExecuteAdHocStep(
 
 	r := results[0]
 	duration := time.Since(stepStartTime)
-	o.events.OnStepCompleted(step.ID, r.Error == nil, duration)
+	if r.Error != nil {
+		o.events.OnStepCompleted(step.ID, false, duration, r.Error.Error())
+	} else {
+		o.events.OnStepCompleted(step.ID, true, duration, "")
+	}
 
 	// Propagate context cancellation as a function-level error (ReAct mode).
 	if r.Error != nil && ctx.Err() != nil {

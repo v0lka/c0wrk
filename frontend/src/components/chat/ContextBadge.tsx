@@ -6,21 +6,21 @@ export function ContextBadge() {
   const sessionInputTokens = useChatStore(s => s.sessionInputTokens)
   const sessionOutputTokens = useChatStore(s => s.sessionOutputTokens)
   const sessionModel = useChatStore(s => s.sessionModel)
-  const sessionTier = useChatStore(s => s.sessionTier)
+  const sessionFamily = useChatStore(s => s.sessionFamily)
 
   const hasTokens = sessionInputTokens > 0 || sessionOutputTokens > 0
   if (!hasTokens) return null
 
   const tooltipParts = [
     `Model: ${sessionModel || 'unknown'}`,
-    `Tier: ${sessionTier || 'unknown'}`,
+    `Family: ${sessionFamily || 'unknown'}`,
     `Session input: ${sessionInputTokens.toLocaleString()} tokens`,
     `Session output: ${sessionOutputTokens.toLocaleString()} tokens`,
   ]
 
-  // Build display: <icon> <model> (tier): in <input> / out <output>
+  // Build display: <icon> <model> (family): in <input> / out <output>
   const hasModel = sessionModel && sessionModel !== ''
-  const hasTier = sessionTier && sessionTier !== ''
+  const hasFamily = sessionFamily && sessionFamily !== ''
 
   return (
     <span
@@ -31,8 +31,8 @@ export function ContextBadge() {
       {hasModel && (
         <span className="font-medium">{sessionModel}</span>
       )}
-      {hasModel && hasTier && (
-        <span className="text-muted-foreground/70">({sessionTier})</span>
+      {hasModel && hasFamily && (
+        <span className="text-muted-foreground/70">({sessionFamily})</span>
       )}
       <span>:</span>
       <span>{formatTokenCount(sessionInputTokens)} in</span>

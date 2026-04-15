@@ -71,7 +71,7 @@ func ApplyDefaults(cfg *Config) {
 
 	// Tool result budget defaults
 	if cfg.Executor.ToolResultBudget.HardCapTokens == 0 {
-		cfg.Executor.ToolResultBudget.HardCapTokens = 4096
+		cfg.Executor.ToolResultBudget.HardCapTokens = 8192
 	}
 	if cfg.Executor.ToolResultBudget.MaxFillFraction == 0 {
 		cfg.Executor.ToolResultBudget.MaxFillFraction = 0.3

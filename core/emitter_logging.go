@@ -3,6 +3,8 @@ package core
 import (
 	"log/slog"
 	"time"
+
+	"github.com/user/agent/sdk/orchestration"
 )
 
 // loggingEmitter wraps an Emitter to log all events via a session-specific logger.
@@ -89,14 +91,19 @@ func (l *loggingEmitter) AssistantDone(content string, inputTokens, outputTokens
 	l.inner.AssistantDone(content, inputTokens, outputTokens)
 }
 
-func (l *loggingEmitter) TokensUsed(inputTokens, outputTokens int, model, tier string) {
-	l.logger.Debug("executor: tokens used", "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "tier", tier)
-	l.inner.TokensUsed(inputTokens, outputTokens, model, tier)
+func (l *loggingEmitter) TokensUsed(inputTokens, outputTokens int, model, family string) {
+	l.logger.Debug("executor: tokens used", "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "family", family)
+	l.inner.TokensUsed(inputTokens, outputTokens, model, family)
 }
 
 func (l *loggingEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
 	l.logger.Debug("executor: context fill", "fillPercent", fillPercent, "usedTokens", usedTokens, "maxTokens", maxTokens, "status", status, "stepID", stepID)
 	l.inner.ContextFill(fillPercent, usedTokens, maxTokens, status, stepID)
+}
+
+func (l *loggingEmitter) ContextCompaction(beforePercent, afterPercent float64, stepID string) {
+	l.logger.Debug("executor: context compaction", "beforePercent", beforePercent, "afterPercent", afterPercent, "stepID", stepID)
+	l.inner.ContextCompaction(beforePercent, afterPercent, stepID)
 }
 
 func (l *loggingEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
@@ -123,14 +130,14 @@ func (l *loggingEmitter) PlanStepStart(stepID, description string) {
 	l.inner.PlanStepStart(stepID, description)
 }
 
-func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration) {
-	l.logger.Info("plan step complete", "stepID", stepID, "success", success, "durationMs", duration.Milliseconds())
-	l.inner.PlanStepComplete(stepID, success, duration)
+func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
+	l.logger.Info("plan step complete", "stepID", stepID, "success", success, "durationMs", duration.Milliseconds(), "errMsg", errMsg)
+	l.inner.PlanStepComplete(stepID, success, duration, errMsg)
 }
 
-func (l *loggingEmitter) Reflection(summary string, insights []string, attempt, maxAttempts int) {
-	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts, "insightCount", len(insights))
-	l.inner.Reflection(summary, insights, attempt, maxAttempts)
+func (l *loggingEmitter) Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int) {
+	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts, "summary", reflection.Summary, "suggestedAction", reflection.SuggestedAction, "rootCause", reflection.RootCause)
+	l.inner.Reflection(reflection, attempt, maxAttempts)
 }
 
 func (l *loggingEmitter) Retry(attempt, maxAttempts int) {

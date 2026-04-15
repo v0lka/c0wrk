@@ -56,10 +56,10 @@ type recordingEvents struct {
 
 func (r *recordingEvents) OnPlanGenerated(stepCount int, steps []PlanStepEvent) { r.planGenerated++ }
 func (r *recordingEvents) OnStepStarted(stepID, description string)             { r.stepStarted++ }
-func (r *recordingEvents) OnStepCompleted(stepID string, success bool, duration time.Duration) {
+func (r *recordingEvents) OnStepCompleted(stepID string, success bool, duration time.Duration, errMsg string) {
 	r.stepCompleted++
 }
-func (r *recordingEvents) OnReflected(summary string, insights []string, attempt, maxAttempts int) {
+func (r *recordingEvents) OnReflected(reflection *Reflection, attempt, maxAttempts int) {
 	r.reflected++
 }
 func (r *recordingEvents) OnRetry(attempt, maxAttempts int)                    { r.retried++ }
@@ -712,7 +712,7 @@ type mockContextManager struct {
 func (m *mockContextManager) BuildPrompt() []llm.Message             { return nil }
 func (m *mockContextManager) AddStep(_ agent.Step)                   {}
 func (m *mockContextManager) NeedsCompaction() bool                  { return false }
-func (m *mockContextManager) Compact(_ context.Context)              {}
+func (m *mockContextManager) Compact(_ context.Context) *agent.CompactionResult { return nil }
 func (m *mockContextManager) SetStrategy(_ agent.CompactionStrategy) {}
 func (m *mockContextManager) CheckFill() agent.FillCheck             { return agent.FillCheck{} }
 func (m *mockContextManager) CorrectTokenCount(_ int)                {}

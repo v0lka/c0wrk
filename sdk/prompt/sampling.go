@@ -1,36 +1,36 @@
 package prompt
 
-// SamplingConfig holds tier-aware generation parameter defaults.
+// SamplingConfig holds family-aware generation parameter defaults.
 // Pointer fields indicate "set" vs "unset" — nil means no override.
 type SamplingConfig struct {
-	Temperature       *float64
-	TopP              *float64
-	MaxTokens         *int
-	RepetitionPenalty *float64
-	StopSequences     []string
+	Temperature *float64
+	TopP        *float64
+	MaxTokens   *int
 }
 
-// DefaultSampling returns recommended generation parameters for the given model tier.
+// DefaultSampling returns recommended generation parameters for the given model family.
 // These are advisory defaults — providers should use them only when no explicit
 // user overrides are set.
-func DefaultSampling(tier ModelTier) SamplingConfig {
-	switch tier {
-	case TierLarge:
+func DefaultSampling(family string) SamplingConfig {
+	switch family {
+	case "anthropic":
+		// Anthropic recommends letting model self-select temperature
+		return SamplingConfig{} // all nil
+	case "openai_flagship", "openai_standard":
+		return SamplingConfig{Temperature: fp(0.3)}
+	case "gemini":
+		return SamplingConfig{Temperature: fp(1.0)} // Google recommends higher; 0.3 causes looping
+	case "mistral":
+		return SamplingConfig{Temperature: fp(0.3)}
+	case "deepseek":
+		return SamplingConfig{Temperature: fp(0.3)}
+	case "kimi":
+		return SamplingConfig{Temperature: fp(0.55)} // Empirically optimal for coding
+	default:
 		return SamplingConfig{
 			Temperature: fp(0.5),
 			TopP:        fp(0.95),
-			// No repetition penalty or stop sequences for large models
 		}
-	case TierSmall:
-		return SamplingConfig{
-			Temperature:       fp(0.2),
-			TopP:              fp(0.9),
-			RepetitionPenalty: fp(1.1),
-			StopSequences:     []string{"\n\n\n\n"},
-		}
-	default:
-		// Unknown tier — return large defaults as safe fallback
-		return DefaultSampling(TierLarge)
 	}
 }
 

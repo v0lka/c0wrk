@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/user/agent/core"
+	"github.com/user/agent/sdk/orchestration"
 )
 
 // Event represents a structured event emitted during agent execution.
@@ -29,7 +30,7 @@ type tokenState struct {
 	lastMaxTokens       int
 	lastFillStatus      string
 	lastModel           string // last model used
-	lastTier            string // last tier used
+	lastFamily          string // last model family used
 	tokenPersist        func(inputTokens, outputTokens int) // callback to persist tokens
 }
 
@@ -159,8 +160,8 @@ func (e *EventEmitter) PlanStepStart(stepID, description string) {
 }
 
 // PlanStepComplete emits a plan step completion event with updated progress.
-func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration) {
-	slog.Debug("emitter: plan step complete", "sessionID", e.sessionID, "stepID", stepID, "success", success, "duration", duration)
+func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
+	slog.Debug("emitter: plan step complete", "sessionID", e.sessionID, "stepID", stepID, "success", success, "duration", duration, "errMsg", errMsg)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if success {
@@ -173,18 +174,22 @@ func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration ti
 		e.planCurrentStepID = ""
 	}
 	completedCount := len(e.planCompletedSet)
+	data := map[string]any{
+		"step_id":            stepID,
+		"success":            success,
+		"duration":           duration.Milliseconds(),
+		"progress":           e.computeProgress(completedCount),
+		"current_step_index": -1,
+		"completed_count":    completedCount,
+		"total_count":        e.planTotalSteps,
+	}
+	if errMsg != "" {
+		data["error"] = errMsg
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_complete",
-		Data: map[string]any{
-			"step_id":            stepID,
-			"success":            success,
-			"duration":           duration.Milliseconds(),
-			"progress":           e.computeProgress(completedCount),
-			"current_step_index": -1,
-			"completed_count":    completedCount,
-			"total_count":        e.planTotalSteps,
-		},
+		Data:      data,
 	})
 }
 
@@ -312,17 +317,31 @@ func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration ti
 }
 
 // Reflection emits a reflection event.
-func (e *EventEmitter) Reflection(summary string, insights []string, attempt, maxAttempts int) {
+func (e *EventEmitter) Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int) {
+	slog.Info("emitter: reflection completed",
+		"sessionID", e.sessionID,
+		"summary", reflection.Summary,
+		"suggested_action", reflection.SuggestedAction,
+		"root_cause", reflection.RootCause,
+		"action_plan", reflection.ActionPlan,
+		"attempt", attempt,
+		"max_attempts", maxAttempts,
+	)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "reflection",
 		Data: map[string]any{
-			"summary":      summary,
-			"insights":     insights,
-			"attempt":      attempt,
-			"max_attempts": maxAttempts,
+			"summary":          reflection.Summary,
+			"insights":         reflection.Hypotheses,
+			"suggested_action": reflection.SuggestedAction,
+			"root_cause":       reflection.RootCause,
+			"failure_analysis": reflection.FailureAnalysis,
+			"action_plan":      reflection.ActionPlan,
+			"reasoning":        reflection.Reasoning,
+			"attempt":          attempt,
+			"max_attempts":     maxAttempts,
 		},
 	})
 }
@@ -383,7 +402,7 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
 	lastModel := e.tokens.lastModel
-	lastTier := e.tokens.lastTier
+	lastFamily := e.tokens.lastFamily
 	e.tokens.mu.Unlock()
 
 	e.mu.Lock()
@@ -401,7 +420,7 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
 			Model:               lastModel,
-			Tier:                lastTier,
+			Family:              lastFamily,
 		},
 	})
 
@@ -420,20 +439,20 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 // and emits a "session_tokens" event. This is called after every LLM response
 // regardless of the suppressAssistantEvents flag, ensuring all tokens (including
 // from plan-step subagents) are counted.
-func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int, model, tier string) {
-	slog.Debug("emitter: token usage", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "tier", tier)
+func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int, model, family string) {
+	slog.Debug("emitter: token usage", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "family", family)
 	e.tokens.mu.Lock()
 	e.tokens.sessionInputTokens += inputTokens
 	e.tokens.sessionOutputTokens += outputTokens
-	// Track latest model/tier for display
+	// Track latest model/family for display
 	if model != "" {
 		e.tokens.lastModel = model
-		e.tokens.lastTier = tier
+		e.tokens.lastFamily = family
 	}
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
 	lastModel := e.tokens.lastModel
-	lastTier := e.tokens.lastTier
+	lastFamily := e.tokens.lastFamily
 	persist := e.tokens.tokenPersist
 	e.tokens.mu.Unlock()
 
@@ -448,7 +467,7 @@ func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int, model, tier str
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
 			Model:               lastModel,
-			Tier:                lastTier,
+			Family:              lastFamily,
 		},
 	})
 }
@@ -464,7 +483,7 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
 	lastModel := e.tokens.lastModel
-	lastTier := e.tokens.lastTier
+	lastFamily := e.tokens.lastFamily
 	e.tokens.mu.Unlock()
 
 	e.mu.Lock()
@@ -481,7 +500,7 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
 			Model:               lastModel,
-			Tier:                lastTier,
+			Family:              lastFamily,
 		},
 	})
 }
@@ -525,6 +544,21 @@ func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map
 		"event", event,
 		"details", details,
 	)
+}
+
+// ContextCompaction emits a context compaction event with before/after fill percentages.
+func (e *EventEmitter) ContextCompaction(beforePercent, afterPercent float64, stepID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "context_compaction",
+		Data: ContextCompactionEventData{
+			BeforePercent: beforePercent,
+			AfterPercent:  afterPercent,
+			PlanStepID:    stepID,
+		},
+	})
 }
 
 // ReplanFailed logs a failed replan attempt.

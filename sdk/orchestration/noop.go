@@ -16,8 +16,8 @@ var _ Events = (*NoopEvents)(nil)
 
 func (*NoopEvents) OnPlanGenerated(_ int, _ []PlanStepEvent)          {}
 func (*NoopEvents) OnStepStarted(_, _ string)                         {}
-func (*NoopEvents) OnStepCompleted(_ string, _ bool, _ time.Duration) {}
-func (*NoopEvents) OnReflected(_ string, _ []string, _, _ int)        {}
+func (*NoopEvents) OnStepCompleted(_ string, _ bool, _ time.Duration, _ string) {}
+func (*NoopEvents) OnReflected(_ *Reflection, _, _ int)                          {}
 func (*NoopEvents) OnRetry(_, _ int)                                  {}
 func (*NoopEvents) OnStepRetry(_ string, _, _ int)                    {}
 func (*NoopEvents) OnService(_ string)                                {}

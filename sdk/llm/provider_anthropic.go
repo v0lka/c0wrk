@@ -5,9 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/liushuangls/go-anthropic/v2"
 )
+
+// anthropicToolIDPattern matches characters not allowed in Anthropic tool call IDs.
+// Anthropic only allows [a-zA-Z0-9_-] in tool call IDs.
+var anthropicToolIDPattern = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// sanitizeAnthropicToolID ensures tool call IDs only contain characters allowed by Anthropic API.
+func sanitizeAnthropicToolID(id string) string {
+	return anthropicToolIDPattern.ReplaceAllString(id, "_")
+}
 
 // AnthropicProviderConfig holds configuration for Anthropic provider.
 type AnthropicProviderConfig struct {
@@ -151,6 +161,10 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 	var messages []anthropic.Message
 
 	for _, msg := range filteredMsgs {
+		// Skip messages with empty content (Anthropic API rejects them)
+		if msg.Content == "" && len(msg.ToolCalls) == 0 && msg.ToolCallID == "" {
+			continue
+		}
 		anthropicMsg, err := p.convertMessage(msg)
 		if err != nil {
 			return nil, err
@@ -171,6 +185,19 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 	if req.Temperature != nil {
 		temp := float32(*req.Temperature)
 		anthropicReq.Temperature = &temp
+	}
+
+	// Apply reasoning effort if set
+	if req.ReasoningEffort != "" {
+		rc := ResolveReasoning(req.ReasoningEffort, "anthropic")
+		if rc.Enabled && rc.BudgetTokens > 0 {
+			anthropicReq.Thinking = &anthropic.Thinking{
+				Type:         anthropic.ThinkingTypeEnabled,
+				BudgetTokens: rc.BudgetTokens,
+			}
+			// Anthropic requires temperature to be unset (or 1.0) when thinking is enabled
+			anthropicReq.Temperature = nil
+		}
 	}
 
 	// Convert tools
@@ -210,7 +237,7 @@ func (p *AnthropicProvider) convertMessage(msg Message) (anthropic.Message, erro
 
 		// Add tool use blocks for tool calls
 		for _, tc := range msg.ToolCalls {
-			content = append(content, anthropic.NewToolUseMessageContent(tc.ID, tc.Name, tc.Input))
+			content = append(content, anthropic.NewToolUseMessageContent(sanitizeAnthropicToolID(tc.ID), tc.Name, tc.Input))
 		}
 
 		return anthropic.Message{
@@ -222,7 +249,7 @@ func (p *AnthropicProvider) convertMessage(msg Message) (anthropic.Message, erro
 		return anthropic.Message{
 			Role: anthropic.RoleUser,
 			Content: []anthropic.MessageContent{
-				anthropic.NewToolResultMessageContent(msg.ToolCallID, msg.Content, false),
+				anthropic.NewToolResultMessageContent(sanitizeAnthropicToolID(msg.ToolCallID), msg.Content, false),
 			},
 		}, nil
 

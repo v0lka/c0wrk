@@ -6,123 +6,114 @@ import (
 
 func TestDefaultSampling(t *testing.T) {
 	tests := []struct {
-		name                       string
-		tier                       ModelTier
-		wantTemp                   float64
-		wantTopP                   float64
-		wantTempSet                bool
-		wantTopPSet                bool
-		wantMaxTokensSet           bool
-		wantRepetitionPenaltySet   bool
-		wantStopSequences          bool
-		wantRepetitionPenaltyValue float64
-		wantStopSequencesValue     []string
+		name        string
+		family      string
+		wantTemp    *float64 // nil means Temperature should be nil
+		wantTopP    *float64 // nil means TopP should be nil
+		wantMaxTok  bool     // whether MaxTokens should be set
 	}{
 		{
-			name:                     "large tier returns correct defaults",
-			tier:                     TierLarge,
-			wantTempSet:              true,
-			wantTemp:                 0.5,
-			wantTopPSet:              true,
-			wantTopP:                 0.95,
-			wantMaxTokensSet:         false,
-			wantRepetitionPenaltySet: false,
-			wantStopSequences:        false,
+			name:     "anthropic returns all nil (model self-selects)",
+			family:   "anthropic",
+			wantTemp: nil,
+			wantTopP: nil,
 		},
 		{
-			name:                       "small tier returns correct defaults",
-			tier:                       TierSmall,
-			wantTempSet:                true,
-			wantTemp:                   0.2,
-			wantTopPSet:                true,
-			wantTopP:                   0.9,
-			wantMaxTokensSet:           false,
-			wantRepetitionPenaltySet:   true,
-			wantRepetitionPenaltyValue: 1.1,
-			wantStopSequences:          true,
-			wantStopSequencesValue:     []string{"\n\n\n\n"},
+			name:     "openai_flagship returns 0.3 temperature",
+			family:   "openai_flagship",
+			wantTemp: pfloat(0.3),
+			wantTopP: nil,
 		},
 		{
-			name:                     "unknown tier falls back to large defaults",
-			tier:                     ModelTier("unknown"),
-			wantTempSet:              true,
-			wantTemp:                 0.5,
-			wantTopPSet:              true,
-			wantTopP:                 0.95,
-			wantMaxTokensSet:         false,
-			wantRepetitionPenaltySet: false,
-			wantStopSequences:        false,
+			name:     "openai_standard returns 0.3 temperature",
+			family:   "openai_standard",
+			wantTemp: pfloat(0.3),
+			wantTopP: nil,
 		},
 		{
-			name:                     "empty tier falls back to large defaults",
-			tier:                     ModelTier(""),
-			wantTempSet:              true,
-			wantTemp:                 0.5,
-			wantTopPSet:              true,
-			wantTopP:                 0.95,
-			wantMaxTokensSet:         false,
-			wantRepetitionPenaltySet: false,
-			wantStopSequences:        false,
+			name:     "gemini returns 1.0 temperature",
+			family:   "gemini",
+			wantTemp: pfloat(1.0),
+			wantTopP: nil,
+		},
+		{
+			name:     "mistral returns 0.3 temperature",
+			family:   "mistral",
+			wantTemp: pfloat(0.3),
+			wantTopP: nil,
+		},
+		{
+			name:     "deepseek returns 0.3 temperature",
+			family:   "deepseek",
+			wantTemp: pfloat(0.3),
+			wantTopP: nil,
+		},
+		{
+			name:     "kimi returns 0.55 temperature",
+			family:   "kimi",
+			wantTemp: pfloat(0.55),
+			wantTopP: nil,
+		},
+		{
+			name:     "default family returns 0.5 temp and 0.95 topP",
+			family:   "default",
+			wantTemp: pfloat(0.5),
+			wantTopP: pfloat(0.95),
+		},
+		{
+			name:     "unknown family falls back to default",
+			family:   "unknown_provider",
+			wantTemp: pfloat(0.5),
+			wantTopP: pfloat(0.95),
+		},
+		{
+			name:     "empty family falls back to default",
+			family:   "",
+			wantTemp: pfloat(0.5),
+			wantTopP: pfloat(0.95),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := DefaultSampling(tt.tier)
+			got := DefaultSampling(tt.family)
 
 			// Check Temperature
-			switch {
-			case tt.wantTempSet && got.Temperature == nil:
-				t.Error("Temperature: expected to be set, got nil")
-			case tt.wantTempSet && *got.Temperature != tt.wantTemp:
-				t.Errorf("Temperature: got %v, want %v", *got.Temperature, tt.wantTemp)
-			case !tt.wantTempSet && got.Temperature != nil:
-				t.Errorf("Temperature: expected nil, got %v", *got.Temperature)
+			if tt.wantTemp == nil {
+				if got.Temperature != nil {
+					t.Errorf("Temperature: expected nil, got %v", *got.Temperature)
+				}
+			} else {
+				if got.Temperature == nil {
+					t.Errorf("Temperature: expected %v, got nil", *tt.wantTemp)
+				} else if *got.Temperature != *tt.wantTemp {
+					t.Errorf("Temperature: got %v, want %v", *got.Temperature, *tt.wantTemp)
+				}
 			}
 
 			// Check TopP
-			switch {
-			case tt.wantTopPSet && got.TopP == nil:
-				t.Error("TopP: expected to be set, got nil")
-			case tt.wantTopPSet && *got.TopP != tt.wantTopP:
-				t.Errorf("TopP: got %v, want %v", *got.TopP, tt.wantTopP)
-			case !tt.wantTopPSet && got.TopP != nil:
-				t.Errorf("TopP: expected nil, got %v", *got.TopP)
-			}
-
-			// Check MaxTokens
-			switch {
-			case tt.wantMaxTokensSet && got.MaxTokens == nil:
-				t.Error("MaxTokens: expected to be set, got nil")
-			case !tt.wantMaxTokensSet && got.MaxTokens != nil:
-				t.Errorf("MaxTokens: expected nil, got %v", *got.MaxTokens)
-			}
-
-			// Check RepetitionPenalty
-			switch {
-			case tt.wantRepetitionPenaltySet && got.RepetitionPenalty == nil:
-				t.Error("RepetitionPenalty: expected to be set, got nil")
-			case tt.wantRepetitionPenaltySet && *got.RepetitionPenalty != tt.wantRepetitionPenaltyValue:
-				t.Errorf("RepetitionPenalty: got %v, want %v", *got.RepetitionPenalty, tt.wantRepetitionPenaltyValue)
-			case !tt.wantRepetitionPenaltySet && got.RepetitionPenalty != nil:
-				t.Errorf("RepetitionPenalty: expected nil, got %v", *got.RepetitionPenalty)
-			}
-
-			// Check StopSequences
-			switch {
-			case tt.wantStopSequences && got.StopSequences == nil:
-				t.Error("StopSequences: expected to be set, got nil")
-			case tt.wantStopSequences && len(got.StopSequences) != len(tt.wantStopSequencesValue):
-				t.Errorf("StopSequences: got %d elements, want %d", len(got.StopSequences), len(tt.wantStopSequencesValue))
-			case tt.wantStopSequences:
-				for i, seq := range got.StopSequences {
-					if seq != tt.wantStopSequencesValue[i] {
-						t.Errorf("StopSequences[%d]: got %q, want %q", i, seq, tt.wantStopSequencesValue[i])
-					}
+			if tt.wantTopP == nil {
+				if got.TopP != nil {
+					t.Errorf("TopP: expected nil, got %v", *got.TopP)
 				}
-			case got.StopSequences != nil:
-				t.Errorf("StopSequences: expected nil, got %v", got.StopSequences)
+			} else {
+				if got.TopP == nil {
+					t.Errorf("TopP: expected %v, got nil", *tt.wantTopP)
+				} else if *got.TopP != *tt.wantTopP {
+					t.Errorf("TopP: got %v, want %v", *got.TopP, *tt.wantTopP)
+				}
+			}
+
+			// Check MaxTokens (should never be set in current implementation)
+			if tt.wantMaxTok && got.MaxTokens == nil {
+				t.Error("MaxTokens: expected to be set, got nil")
+			}
+			if !tt.wantMaxTok && got.MaxTokens != nil {
+				t.Errorf("MaxTokens: expected nil, got %v", *got.MaxTokens)
 			}
 		})
 	}
 }
+
+// pfloat is a test helper that returns a pointer to a float64.
+func pfloat(v float64) *float64 { return &v }

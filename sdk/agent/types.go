@@ -25,6 +25,11 @@ type Step struct {
 	// UserNudge is an optional user message injected into the context (e.g., step limit nudges).
 	// When set, this is added as a user message after the step's normal messages.
 	UserNudge string `json:"user_nudge,omitempty"`
+	// ResponseGroup links steps from the same LLM response when multiple tool calls were returned.
+	// Steps with the same non-zero ResponseGroup value came from one response and should be
+	// rendered as one assistant message with multiple tool_calls in BuildPrompt().
+	// Zero means standalone step (backward compatible).
+	ResponseGroup int64 `json:"response_group,omitempty"`
 }
 
 // ExecutorResult — result of Executor.Run.
@@ -92,13 +97,19 @@ type CompactionStrategy interface {
 	Compact(ctx context.Context, steps []Step, budgetTokens int) []llm.Message
 }
 
+// CompactionResult holds before/after fill percentages from a compaction operation.
+type CompactionResult struct {
+	BeforePercent float64
+	AfterPercent  float64
+}
+
 // ContextManager is the interface Executor needs for context window management.
 // NOTE: This is the SDK-level interface WITHOUT SetTask (c0wrk-core adds that).
 type ContextManager interface {
 	BuildPrompt() []llm.Message
 	AddStep(step Step)
 	NeedsCompaction() bool
-	Compact(ctx context.Context)
+	Compact(ctx context.Context) *CompactionResult
 	SetStrategy(strategy CompactionStrategy)
 	CheckFill() FillCheck
 	CorrectTokenCount(apiInputTokens int)

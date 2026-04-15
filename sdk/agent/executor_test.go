@@ -1944,3 +1944,176 @@ func TestExecutor_Run_SameToolRepeat_ResetOnSizeChange(t *testing.T) {
 		}
 	}
 }
+
+// --- Multi-Tool-Call tests ---
+
+func TestExecutor_Run_MultiToolCall_AllExecuted(t *testing.T) {
+	// LLM returns 3 tool calls in a single response, then finishes.
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithMultipleToolCalls("I'll read all three files", []llm.ToolCall{
+				{ID: "call_a", Name: "read_file", Input: json.RawMessage(`{"path":"/a"}`)},
+				{ID: "call_b", Name: "read_file", Input: json.RawMessage(`{"path":"/b"}`)},
+				{ID: "call_c", Name: "read_file", Input: json.RawMessage(`{"path":"/c"}`)},
+			}),
+			llmResponseFinish("done", "all read"),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	mockTools.results["read_file"] = tools.ToolResult{Content: "file content"}
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "read_file", Description: "read a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Finished {
+		t.Error("expected Finished=true")
+	}
+
+	// All 3 tool calls should be executed
+	toolCalls := 0
+	for _, c := range mockTools.calls {
+		if c.Name == "read_file" {
+			toolCalls++
+		}
+	}
+	if toolCalls != 3 {
+		t.Errorf("expected 3 tool executions, got %d", toolCalls)
+	}
+
+	// 3 steps from the multi-call + 1 finish step = 4
+	if len(result.Steps) != 4 {
+		t.Errorf("expected 4 steps, got %d", len(result.Steps))
+	}
+
+	// Verify ResponseGroup is set on the first 3 steps
+	if result.Steps[0].ResponseGroup == 0 {
+		t.Error("expected non-zero ResponseGroup for multi-call steps")
+	}
+	group := result.Steps[0].ResponseGroup
+	for i := 0; i < 3; i++ {
+		if result.Steps[i].ResponseGroup != group {
+			t.Errorf("step %d ResponseGroup = %d, want %d", i, result.Steps[i].ResponseGroup, group)
+		}
+	}
+
+	// Only first step should carry the thought
+	if result.Steps[0].Thought != "I'll read all three files" {
+		t.Errorf("first step Thought = %q", result.Steps[0].Thought)
+	}
+	for i := 1; i < 3; i++ {
+		if result.Steps[i].Thought != "" {
+			t.Errorf("step %d should have empty Thought, got %q", i, result.Steps[i].Thought)
+		}
+	}
+}
+
+func TestExecutor_Run_MultiToolCall_SingleCallBackwardCompat(t *testing.T) {
+	// Single tool call should have ResponseGroup == 0 (backward compatible)
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithToolCall("reading", "read_file", json.RawMessage(`{"path":"/a"}`)),
+			llmResponseFinish("done", "ok"),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "read_file", Description: "read a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Finished {
+		t.Error("expected Finished=true")
+	}
+
+	// Single-call steps should have ResponseGroup == 0
+	if result.Steps[0].ResponseGroup != 0 {
+		t.Errorf("expected ResponseGroup=0 for single-call, got %d", result.Steps[0].ResponseGroup)
+	}
+}
+
+func TestExecutor_Run_MultiToolCall_FinishInGroup(t *testing.T) {
+	// LLM returns 2 tool calls where the second is finish. The first should execute, finish should be handled.
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithMultipleToolCalls("reading and finishing", []llm.ToolCall{
+				{ID: "call_a", Name: "read_file", Input: json.RawMessage(`{"path":"/a"}`)},
+				{ID: "call_finish", Name: "finish", Input: json.RawMessage(`{"answer":"done"}`)},
+			}),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	mockTools.results["read_file"] = tools.ToolResult{Content: "content"}
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "read_file", Description: "read a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Finished {
+		t.Error("expected Finished=true")
+	}
+	if result.Output != "done" {
+		t.Errorf("Output = %q, want %q", result.Output, "done")
+	}
+
+	// read_file should have been executed
+	executed := false
+	for _, c := range mockTools.calls {
+		if c.Name == "read_file" {
+			executed = true
+		}
+	}
+	if !executed {
+		t.Error("expected read_file to be executed before finish")
+	}
+}
+
+func TestExecutor_Run_MultiToolCall_EmptyResultHandled(t *testing.T) {
+	// Multi-tool call with empty results should get "(no output)" replacement
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithMultipleToolCalls("running tools", []llm.ToolCall{
+				{ID: "call_a", Name: "tool1", Input: json.RawMessage(`{}`)},
+				{ID: "call_b", Name: "tool2", Input: json.RawMessage(`{}`)},
+			}),
+			llmResponseFinish("done", "ok"),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	mockTools.results["tool1"] = tools.ToolResult{Content: ""}
+	mockTools.results["tool2"] = tools.ToolResult{Content: "result2"}
+	cm := newMockContextManager()
+
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "tool1", Description: "t", Source: "core"},
+		{Name: "tool2", Description: "t", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Finished {
+		t.Error("expected Finished=true")
+	}
+
+	// Step 0 (tool1) should have "(no output)" observation
+	if result.Steps[0].Observation != "(no output)" {
+		t.Errorf("expected '(no output)' for empty tool result, got %q", result.Steps[0].Observation)
+	}
+	// Step 1 (tool2) should have actual result
+	if result.Steps[1].Observation != "result2" {
+		t.Errorf("expected 'result2', got %q", result.Steps[1].Observation)
+	}
+}

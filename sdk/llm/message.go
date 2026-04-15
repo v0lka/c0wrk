@@ -23,13 +23,14 @@ type ChatRequest struct {
 	Messages    []Message        `json:"messages"`
 	Tools       []ToolDefinition `json:"tools,omitempty"`
 	MaxTokens   int              `json:"max_tokens"`
-	Temperature *float64         `json:"temperature,omitempty"` // nil = use provider default
+	Temperature     *float64        `json:"temperature,omitempty"`      // nil = use provider default
+	ReasoningEffort ReasoningEffort `json:"reasoning_effort,omitempty"` // user-facing reasoning level
 }
 
 // ChatResponse — LLM response.
 type ChatResponse struct {
 	Model      string     `json:"model"`      // Model ID used for this response
-	Tier       string     `json:"tier"`       // Model tier: "large" or "small"
+	Family     string     `json:"family"`     // Model family for prompt/parameter adaptation
 	Message    Message    `json:"message"`
 	Reasoning  string     `json:"reasoning"` // Extended thinking/reasoning (if model supports)
 	Usage      TokenUsage `json:"usage"`

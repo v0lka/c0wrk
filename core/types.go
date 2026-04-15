@@ -50,6 +50,9 @@ type ToolExecutor = agent.ToolExecutor
 // CompactionStrategy defines an algorithm for compressing step history.
 type CompactionStrategy = agent.CompactionStrategy
 
+// CompactionResult holds before/after fill percentages from a compaction operation.
+type CompactionResult = agent.CompactionResult
+
 // NewSharedWorkspace creates a new empty SharedWorkspace.
 var NewSharedWorkspace = agent.NewSharedWorkspace
 
@@ -115,8 +118,8 @@ type Emitter interface {
 	Routing(mode, domain, complexity string)
 	PlanGenerated(stepCount int, steps []PlanStepEvent)
 	PlanStepStart(stepID string, description string)
-	PlanStepComplete(stepID string, success bool, duration time.Duration)
-	Reflection(summary string, insights []string, attempt, maxAttempts int)
+	PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string)
+	Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
 	StepRetry(stepID string, attempt, maxAttempts int)
 	// Service emits a general service message without metadata.
@@ -148,8 +151,8 @@ var _ Emitter = (*noopEmitter)(nil)
 func (n *noopEmitter) Routing(_, _, _ string)                             {}
 func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)             {}
 func (n *noopEmitter) PlanStepStart(_, _ string)                          {}
-func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration) {}
-func (n *noopEmitter) Reflection(_ string, _ []string, _, _ int)          {}
+func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
+func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)               {}
 func (n *noopEmitter) Retry(_, _ int)                                     {}
 func (n *noopEmitter) StepRetry(_ string, _, _ int)                       {}
 func (n *noopEmitter) TokensUsed(_, _ int, _, _ string)                   {}
@@ -174,11 +177,11 @@ func (a *emitterEventsAdapter) OnPlanGenerated(n int, steps []PlanStepEvent) {
 func (a *emitterEventsAdapter) OnStepStarted(id, desc string) {
 	a.PlanStepStart(id, desc)
 }
-func (a *emitterEventsAdapter) OnStepCompleted(id string, ok bool, d time.Duration) {
-	a.PlanStepComplete(id, ok, d)
+func (a *emitterEventsAdapter) OnStepCompleted(id string, ok bool, d time.Duration, errMsg string) {
+	a.PlanStepComplete(id, ok, d, errMsg)
 }
-func (a *emitterEventsAdapter) OnReflected(s string, insights []string, attempt, maxAttempts int) {
-	a.Reflection(s, insights, attempt, maxAttempts)
+func (a *emitterEventsAdapter) OnReflected(reflection *orchestration.Reflection, attempt, maxAttempts int) {
+	a.Reflection(reflection, attempt, maxAttempts)
 }
 func (a *emitterEventsAdapter) OnRetry(attempt, maxAttempts int) {
 	a.Retry(attempt, maxAttempts)

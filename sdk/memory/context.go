@@ -68,7 +68,7 @@ func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker 
 		cw.pruning = pruning[0]
 	}
 	if cw.pruning.PlaceholderText == "" {
-		cw.pruning.PlaceholderText = "[Tool output omitted to save context. Re-run the tool if needed.]"
+		cw.pruning.PlaceholderText = "[Tool output omitted to save context. Rely on the information already gathered above.]"
 	}
 	return cw
 }
@@ -210,52 +210,110 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 	protectedIndices := cw.computeProtectedIndices()
 
 	var messages []llm.Message
-	for i, step := range cw.steps {
-		// Assistant message with thought and action
-		assistantMsg := llm.Message{
-			Role:    "assistant",
-			Content: strings.TrimRight(step.Thought, invisibleChars),
-		}
-		if step.Action.ID != "" {
-			assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
-		}
-		// OpenAI API requires assistant messages to have either content or tool_calls.
-		// If both are empty, add a placeholder to prevent 400 errors.
-		if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
-			assistantMsg.Content = "(proceeding)"
-		}
-		messages = append(messages, assistantMsg)
+	for i := 0; i < len(cw.steps); {
+		step := cw.steps[i]
 
-		// Tool response message with observation
-		if step.Action.ID != "" {
-			// OpenAI API requires non-empty content for tool-role messages.
-			// Use placeholder if observation is empty to prevent 400 errors.
-			observation := strings.TrimRight(step.Observation, invisibleChars)
-			if observation == "" {
-				observation = "(no output)"
+		if step.ResponseGroup > 0 {
+			// Collect all consecutive steps with the same ResponseGroup
+			groupStart := i
+			groupEnd := i + 1
+			for groupEnd < len(cw.steps) && cw.steps[groupEnd].ResponseGroup == step.ResponseGroup {
+				groupEnd++
+			}
+			groupSteps := cw.steps[groupStart:groupEnd]
+
+			// Build ONE assistant message with all tool calls
+			assistantMsg := llm.Message{
+				Role:    "assistant",
+				Content: strings.TrimRight(groupSteps[0].Thought, invisibleChars),
+			}
+			for _, gs := range groupSteps {
+				if gs.Action.ID != "" {
+					assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, gs.Action)
+				}
+			}
+			if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
+				assistantMsg.Content = "(proceeding)"
+			}
+			messages = append(messages, assistantMsg)
+
+			// Add individual tool result messages
+			for gi, gs := range groupSteps {
+				idx := groupStart + gi
+				if gs.Action.ID != "" {
+					observation := strings.TrimRight(gs.Observation, invisibleChars)
+					if observation == "" {
+						observation = "(no output)"
+					}
+					// Apply pruning: use placeholder for non-protected tool outputs
+					if _, protected := protectedIndices[idx]; !protected && cw.pruning.KeepLastN > 0 {
+						observation = cw.pruning.PlaceholderText
+					}
+					messages = append(messages, llm.Message{
+						Role:       "tool",
+						Content:    observation,
+						ToolCallID: gs.Action.ID,
+					})
+				}
+				// UserNudge only on last step of group
+				if gi == len(groupSteps)-1 {
+					nudgeContent := strings.TrimRight(gs.UserNudge, invisibleChars)
+					if nudgeContent != "" {
+						messages = append(messages, llm.Message{Role: "user", Content: nudgeContent})
+					}
+				}
 			}
 
-			// Apply pruning: use placeholder for non-protected tool outputs
-			if _, protected := protectedIndices[i]; !protected && cw.pruning.KeepLastN > 0 {
-				observation = cw.pruning.PlaceholderText
+			i = groupEnd
+		} else {
+			// Original logic for standalone steps (backward compatible)
+			assistantMsg := llm.Message{
+				Role:    "assistant",
+				Content: strings.TrimRight(step.Thought, invisibleChars),
+			}
+			if step.Action.ID != "" {
+				assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
+			}
+			// OpenAI API requires assistant messages to have either content or tool_calls.
+			// If both are empty, add a placeholder to prevent 400 errors.
+			if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
+				assistantMsg.Content = "(proceeding)"
+			}
+			messages = append(messages, assistantMsg)
+
+			// Tool response message with observation
+			if step.Action.ID != "" {
+				// OpenAI API requires non-empty content for tool-role messages.
+				// Use placeholder if observation is empty to prevent 400 errors.
+				observation := strings.TrimRight(step.Observation, invisibleChars)
+				if observation == "" {
+					observation = "(no output)"
+				}
+
+				// Apply pruning: use placeholder for non-protected tool outputs
+				if _, protected := protectedIndices[i]; !protected && cw.pruning.KeepLastN > 0 {
+					observation = cw.pruning.PlaceholderText
+				}
+
+				toolMsg := llm.Message{
+					Role:       "tool",
+					Content:    observation,
+					ToolCallID: step.Action.ID,
+				}
+				messages = append(messages, toolMsg)
 			}
 
-			toolMsg := llm.Message{
-				Role:       "tool",
-				Content:    observation,
-				ToolCallID: step.Action.ID,
+			// User nudge message (e.g., step limit extension notifications)
+			// Skip if content is empty or only contains whitespace/invisible characters.
+			nudgeContent := strings.TrimRight(step.UserNudge, invisibleChars)
+			if nudgeContent != "" {
+				messages = append(messages, llm.Message{
+					Role:    "user",
+					Content: nudgeContent,
+				})
 			}
-			messages = append(messages, toolMsg)
-		}
 
-		// User nudge message (e.g., step limit extension notifications)
-		// Skip if content is empty or only contains whitespace/invisible characters.
-		nudgeContent := strings.TrimRight(step.UserNudge, invisibleChars)
-		if nudgeContent != "" {
-			messages = append(messages, llm.Message{
-				Role:    "user",
-				Content: nudgeContent,
-			})
+			i++
 		}
 	}
 	return messages
@@ -265,6 +323,7 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 // Protected indices include:
 //   - The last KeepLastN steps that have tool results
 //   - Any step whose tool name is in ProtectedTools
+//   - All steps in a ResponseGroup if any step in the group is protected
 func (cw *ContextWindow) computeProtectedIndices() map[int]struct{} {
 	protected := make(map[int]struct{})
 
@@ -302,6 +361,23 @@ func (cw *ContextWindow) computeProtectedIndices() map[int]struct{} {
 		}
 	}
 
+	// Protect entire response groups: if any step in a group is protected, protect all.
+	// This prevents partial pruning which would produce malformed API messages
+	// (assistant message with N tool_calls but fewer tool results).
+	groupProtection := make(map[int64]bool)
+	for i, step := range cw.steps {
+		if step.ResponseGroup > 0 {
+			if _, isProtected := protected[i]; isProtected {
+				groupProtection[step.ResponseGroup] = true
+			}
+		}
+	}
+	for i, step := range cw.steps {
+		if step.ResponseGroup > 0 && groupProtection[step.ResponseGroup] {
+			protected[i] = struct{}{}
+		}
+	}
+
 	return protected
 }
 
@@ -312,11 +388,17 @@ func (cw *ContextWindow) NeedsCompaction() bool {
 	return fill.Status == "compact" || fill.Status == "warning" || fill.Status == "emergency" || fill.Status == "reject"
 }
 
+// CompactionResult is an alias for sdkagent.CompactionResult.
+type CompactionResult = sdkagent.CompactionResult
+
 // Compact compresses the step history using the configured strategy.
-func (cw *ContextWindow) Compact(ctx context.Context) {
+// Returns a CompactionResult with before/after fill percentages, or nil if no compaction occurred.
+func (cw *ContextWindow) Compact(ctx context.Context) *CompactionResult {
 	if cw.strategy == nil || len(cw.steps) == 0 {
-		return
+		return nil
 	}
+
+	beforeFill := cw.CheckFill()
 
 	// Use effective max as the budget for compaction
 	budgetTokens := cw.EffectiveMax()
@@ -324,4 +406,26 @@ func (cw *ContextWindow) Compact(ctx context.Context) {
 	// Compact steps using the strategy
 	cw.compactedMessages = cw.strategy.Compact(ctx, cw.steps, budgetTokens)
 	cw.steps = nil
+
+	// Estimate after-compaction fill
+	effectiveMax := cw.EffectiveMax()
+	afterPercent := float64(0)
+	if effectiveMax > 0 {
+		baseTokens := cw.tracker.EstimateMessages([]llm.Message{
+			{Role: "system", Content: cw.systemPrompt},
+			{Role: "user", Content: cw.taskContent},
+		})
+		if cw.planContent != "" {
+			baseTokens += cw.tracker.EstimateMessages([]llm.Message{
+				{Role: "system", Content: cw.planContent},
+			})
+		}
+		compactedTokens := cw.tracker.EstimateMessages(cw.compactedMessages)
+		afterPercent = float64(baseTokens+compactedTokens) / float64(effectiveMax) * 100
+	}
+
+	return &CompactionResult{
+		BeforePercent: beforeFill.Percent,
+		AfterPercent:  afterPercent,
+	}
 }

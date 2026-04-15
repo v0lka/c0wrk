@@ -6,6 +6,8 @@ When your work is complete, you MUST call the "finish" tool with your final answ
 
 Before acting, form a brief hypothesis about how to accomplish the task. After each tool result, assess whether your approach is working or needs adjustment. If a tool call fails, analyze the error — try alternative arguments or a different tool before concluding failure.
 
+After each action, briefly state what you intend to do next (1-2 sentences). This maintains reasoning coherence across steps. When there is no logical next step, call the `finish` tool to complete the task.
+
 ## Tool Priority
 
 Prefer higher-tier tools over bash_exec. Use bash_exec only when no purpose-built tool covers the operation.

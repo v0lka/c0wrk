@@ -171,3 +171,9 @@ func (t *ContextTokenTracker) Reset() {
 	t.lastKnownUsed = 0
 	t.pendingDelta = 0
 }
+
+// EstimateMessages returns the estimated token count for the given messages
+// using the predictive counter. This is a read-only operation.
+func (t *ContextTokenTracker) EstimateMessages(msgs []Message) int {
+	return t.predictive.CountMessages(msgs)
+}

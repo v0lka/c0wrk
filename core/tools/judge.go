@@ -43,11 +43,12 @@ type ToolJudge struct {
 	cache        map[string]judgeResult
 	mu           sync.RWMutex
 	maxCacheSize int // max cached results before cache is cleared (default: 1000)
+	logger       *slog.Logger
 }
 
 // NewToolJudge creates a new ToolJudge with the given LLM provider and model.
-// If maxCacheSize is 0, defaults to 1000.
-func NewToolJudge(provider llm.Provider, model string, maxCacheSize int) *ToolJudge {
+// If maxCacheSize is 0, defaults to 1000. Logger may be nil.
+func NewToolJudge(provider llm.Provider, model string, maxCacheSize int, logger *slog.Logger) *ToolJudge {
 	if maxCacheSize == 0 {
 		maxCacheSize = 1000
 	}
@@ -56,6 +57,7 @@ func NewToolJudge(provider llm.Provider, model string, maxCacheSize int) *ToolJu
 		model:        model,
 		cache:        make(map[string]judgeResult),
 		maxCacheSize: maxCacheSize,
+		logger:       logger,
 	}
 }
 
@@ -70,8 +72,17 @@ func judgeCacheKey(toolName string, input json.RawMessage) string {
 // On any LLM error, it defaults to VerdictConfirm (fail-safe) with a reasoning explaining the failure.
 // Returns (verdict, reasoning, error).
 func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (JudgeVerdict, string, error) {
+	log := j.logger
+
+	if log != nil {
+		log.Debug("judge: evaluating tool", "tool", toolName)
+	}
+
 	// Internal tools are always allowed (defense-in-depth)
 	if IsInternalTool(toolName) {
+		if log != nil {
+			log.Debug("judge: fast-path internal tool", "tool", toolName, "verdict", "ALLOW")
+		}
 		return VerdictAllow, "internal tool, always allowed", nil
 	}
 
@@ -82,11 +93,17 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 
 	// Unconditionally allow operations inside session temp directory
 	if tempDir := tools.TempDirFrom(ctx); tempDir != "" && allPathsInDir(input, tempDir) {
+		if log != nil {
+			log.Debug("judge: fast-path temp dir", "tool", toolName, "verdict", "ALLOW")
+		}
 		return VerdictAllow, "all paths are within the session temp directory", nil
 	}
 
 	// Short-circuit for workspace-internal operations
 	if allPathsInWorkspace(ctx, input) {
+		if log != nil {
+			log.Debug("judge: fast-path workspace", "tool", toolName, "verdict", "ALLOW")
+		}
 		return VerdictAllow, "all paths are within the session workspace", nil
 	}
 
@@ -97,6 +114,9 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	j.mu.RLock()
 	if result, ok := j.cache[key]; ok {
 		j.mu.RUnlock()
+		if log != nil {
+			log.Debug("judge: cache hit", "tool", toolName, "verdict", verdictString(result.verdict))
+		}
 		return result.verdict, result.reasoning, nil
 	}
 	j.mu.RUnlock()
@@ -131,9 +151,16 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	judgeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
+	if log != nil {
+		log.Debug("judge: LLM evaluation starting", "tool", toolName, "model", j.model)
+	}
+
 	// Call LLM
 	resp, err := j.provider.ChatCompletion(judgeCtx, req)
 	if err != nil {
+		if log != nil {
+			log.Warn("judge: LLM call failed, fail-safe to CONFIRM", "tool", toolName, "error", err)
+		}
 		// Fail-safe: default to CONFIRM on error with explanatory reasoning
 		return VerdictConfirm, "Judge evaluation failed; requiring manual confirmation for safety", nil
 	}
@@ -141,6 +168,14 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	// Parse response - extract verdict and reason
 	content := strings.TrimSpace(resp.Message.Content)
 	verdict, reasoning := parseJudgeResponse(content)
+
+	if log != nil {
+		abbrevReasoning := reasoning
+		if len(abbrevReasoning) > 120 {
+			abbrevReasoning = abbrevReasoning[:120] + "..."
+		}
+		log.Debug("judge: LLM verdict", "tool", toolName, "verdict", verdictString(verdict), "reasoning", abbrevReasoning)
+	}
 
 	// Cache the result under Lock (evict if cache is too large)
 	j.mu.Lock()
@@ -295,9 +330,21 @@ func NewToolJudgeFromConfig(cfg JudgeConfig, logger *slog.Logger) *ToolJudge {
 		return nil
 	}
 
-	judge := NewToolJudge(cfg.Provider, model, cfg.MaxCacheSize)
+	judge := NewToolJudge(cfg.Provider, model, cfg.MaxCacheSize, logger)
 	if logger != nil {
 		logger.Info("tool judge initialized", "model", model)
 	}
 	return judge
+}
+
+// verdictString returns a human-readable string for a JudgeVerdict.
+func verdictString(v JudgeVerdict) string {
+	switch v {
+	case VerdictAllow:
+		return "ALLOW"
+	case VerdictConfirm:
+		return "CONFIRM"
+	default:
+		return "UNKNOWN"
+	}
 }

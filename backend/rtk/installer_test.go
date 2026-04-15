@@ -108,6 +108,8 @@ func searchSubstring(s, sub string) bool {
 func TestCheckRtk_NotInPath(t *testing.T) {
 	// Override PATH to ensure rtk is not found.
 	t.Setenv("PATH", t.TempDir())
+	// Override HOME so the ~/.local/bin/rtk fallback doesn't find a real binary.
+	t.Setenv("HOME", t.TempDir())
 
 	status := CheckRtk()
 

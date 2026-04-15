@@ -265,148 +265,144 @@ func TestModelRegistry_RegisteredSource(t *testing.T) {
 	}
 }
 
-// TestResolveTier_BuiltinModels verifies that known built-in models get the correct tier.
-func TestResolveTier_BuiltinModels(t *testing.T) {
+// TestResolveFamily_BuiltinModels verifies that known built-in models get the correct family.
+func TestResolveFamily_BuiltinModels(t *testing.T) {
 	registry := NewModelRegistry(nil)
 
 	tests := []struct {
-		model        string
-		expectedTier string
+		model          string
+		expectedFamily string
 	}{
-		// OpenAI models - all should be large
-		{"gpt-5.4", "large"},
-		{"gpt-5.4-mini", "large"},
-		{"gpt-5", "large"},
-		{"gpt-4.1", "large"},
-		{"gpt-4o", "large"},
-		{"gpt-4o-mini", "large"},
-		{"o4-mini", "large"},
-		{"o3", "large"},
-		{"o3-mini", "large"},
-		{"o1", "large"},
-		{"o1-mini", "large"},
+		// OpenAI flagship models
+		{"gpt-5.4", "openai_flagship"},
+		{"gpt-5.4-mini", "openai_flagship"},
+		{"gpt-5", "openai_flagship"},
+		{"gpt-4o", "openai_flagship"},
+		{"gpt-4o-mini", "openai_flagship"},
+		{"o4-mini", "openai_flagship"},
+		{"o3", "openai_flagship"},
+		{"o3-mini", "openai_flagship"},
+		{"o1", "openai_flagship"},
+		{"o1-mini", "openai_flagship"},
 
-		// Anthropic models - all should be large
-		{"claude-opus-4.6", "large"},
-		{"claude-sonnet-4.5", "large"},
-		{"claude-haiku-4.5", "large"},
-		{"claude-3.5-sonnet", "large"},
-		{"claude-3.5-haiku", "large"},
+		// OpenAI standard models
+		{"gpt-4.1", "openai_standard"},
 
-		// Gemini models - all should be large (>= 1.5)
-		{"gemini-3.1-pro", "large"},
-		{"gemini-3.1-flash-lite", "large"},
-		{"gemini-2.5-pro", "large"},
-		{"gemini-2.5-flash", "large"},
-		{"gemini-2.0-flash", "large"},
+		// Anthropic models
+		{"claude-opus-4.6", "anthropic"},
+		{"claude-sonnet-4.5", "anthropic"},
+		{"claude-haiku-4.5", "anthropic"},
+		{"claude-3.5-sonnet", "anthropic"},
+		{"claude-3.5-haiku", "anthropic"},
 
-		// DeepSeek models - should be large
-		{"deepseek-chat", "large"},
-		{"deepseek-reasoner", "large"},
+		// Gemini models
+		{"gemini-3.1-pro", "gemini"},
+		{"gemini-3.1-flash-lite", "gemini"},
+		{"gemini-2.5-pro", "gemini"},
+		{"gemini-2.5-flash", "gemini"},
+		{"gemini-2.0-flash", "gemini"},
 
-		// Grok models - all should be large
-		{"grok-4.20", "large"},
-		{"grok-4", "large"},
-		{"grok-3", "large"},
-		{"grok-3-mini", "large"},
+		// DeepSeek models
+		{"deepseek-chat", "deepseek"},
+		{"deepseek-reasoner", "deepseek"},
+
+		// Grok models → default family
+		{"grok-4.20", "default"},
+		{"grok-4", "default"},
+		{"grok-3", "default"},
+		{"grok-3-mini", "default"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
 			meta, _ := registry.Resolve(tt.model)
-			if meta.Tier != tt.expectedTier {
-				t.Errorf("expected Tier %q, got %q", tt.expectedTier, meta.Tier)
+			if meta.Family != tt.expectedFamily {
+				t.Errorf("expected Family %q, got %q", tt.expectedFamily, meta.Family)
 			}
 		})
 	}
 }
 
-// TestResolveTier_PatternMatching verifies pattern-based detection for unknown model IDs.
-func TestResolveTier_PatternMatching(t *testing.T) {
+// TestResolveFamily_PatternMatching verifies DetectFamily-based detection for unknown model IDs.
+func TestResolveFamily_PatternMatching(t *testing.T) {
 	registry := NewModelRegistry(nil)
 
 	tests := []struct {
-		model        string
-		expectedTier string
+		model          string
+		expectedFamily string
 	}{
-		// Large model patterns
-		{"gpt-4-turbo-custom", "large"},
-		{"gpt-5-preview", "large"},
-		{"o1-preview-custom", "large"},
-		{"o3-mini-custom", "large"},
-		{"o4-model", "large"},
-		{"claude-custom-model", "large"},
-		{"gemini-custom-pro", "large"},
-		{"deepseek-v3-custom", "large"},
-		{"deepseek-reasoner-v2", "large"},
-		{"grok-custom-model", "large"},
-		{"command-r-plus-custom", "large"},
+		// OpenAI flagship patterns
+		{"gpt-4-turbo-custom", "openai_flagship"},
+		{"gpt-5-preview", "openai_flagship"},
+		{"o1-preview-custom", "openai_flagship"},
+		{"o3-mini-custom", "openai_flagship"},
+		{"o4-model", "openai_flagship"},
 
-		// Small model patterns
-		{"llama-3.1-70b", "small"},
-		{"llama-3.2-1b", "small"},
-		{"qwen-2.5-72b", "small"},
-		{"phi-3-mini", "small"},
-		{"gemma-2-27b", "small"},
-		{"mistral-small-latest", "small"},
-		{"mistral-7b-instruct", "small"},
-		{"codellama-34b", "small"},
+		// OpenAI standard patterns
+		{"gpt-4.1-turbo", "openai_standard"},
+
+		// Anthropic patterns
+		{"claude-custom-model", "anthropic"},
+
+		// Gemini patterns
+		{"gemini-custom-pro", "gemini"},
+
+		// DeepSeek patterns
+		{"deepseek-v3-custom", "deepseek"},
+		{"deepseek-reasoner-v2", "deepseek"},
+
+		// Mistral patterns
+		{"mistral-small-latest", "mistral"},
+		{"mistral-7b-instruct", "mistral"},
+		{"devstral-custom", "mistral"},
+		{"codestral-latest", "mistral"},
+
+		// Kimi patterns
+		{"kimi-k2", "kimi"},
+		{"qwen-2.5-72b", "kimi"},
+		{"moonshot-v1", "kimi"},
+
+		// Default family (no specific pattern)
+		{"grok-custom-model", "default"},
+		{"llama-3.1-70b", "default"},
+		{"phi-3-mini", "default"},
+		{"gemma-2-27b", "default"},
+		{"codellama-34b", "default"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			// These are unknown models, so ok will be false but tier should still be set
+			// These are unknown models resolved via DetectFamily
 			meta, _ := registry.Resolve(tt.model)
-			if meta.Tier != tt.expectedTier {
-				t.Errorf("expected Tier %q for model %q, got %q", tt.expectedTier, tt.model, meta.Tier)
+			if meta.Family != tt.expectedFamily {
+				t.Errorf("expected Family %q for model %q, got %q", tt.expectedFamily, tt.model, meta.Family)
 			}
 		})
 	}
 }
 
-// TestResolveTier_Fallback verifies heuristic fallback based on capabilities.
-func TestResolveTier_Fallback(t *testing.T) {
+// TestResolveFamily_SourceWithoutFamily verifies that when a source returns metadata
+// without Family set, resolveFamily delegates to DetectFamily.
+func TestResolveFamily_SourceWithoutFamily(t *testing.T) {
 	tests := []struct {
-		name         string
-		model        string
-		contextWin   int
-		outputLimit  int
-		expectedTier string
+		name           string
+		model          string
+		expectedFamily string
 	}{
 		{
-			name:         "large context and output should be large",
-			model:        "unknown-large-model",
-			contextWin:   128000,
-			outputLimit:  8192,
-			expectedTier: "large",
+			name:           "claude model from source gets anthropic family",
+			model:          "claude-custom-v2",
+			expectedFamily: "anthropic",
 		},
 		{
-			name:         "large context but small output should be small",
-			model:        "unknown-mid-model-1",
-			contextWin:   128000,
-			outputLimit:  4096,
-			expectedTier: "small",
+			name:           "gemini model from source gets gemini family",
+			model:          "gemini-custom-pro",
+			expectedFamily: "gemini",
 		},
 		{
-			name:         "small context but large output should be small",
-			model:        "unknown-mid-model-2",
-			contextWin:   64000,
-			outputLimit:  8192,
-			expectedTier: "small",
-		},
-		{
-			name:         "small context and output should be small",
-			model:        "unknown-small-model",
-			contextWin:   32000,
-			outputLimit:  2048,
-			expectedTier: "small",
-		},
-		{
-			name:         "exactly at large threshold should be large",
-			model:        "threshold-model",
-			contextWin:   128000,
-			outputLimit:  8192,
-			expectedTier: "large",
+			name:           "unknown model from source gets default family",
+			model:          "custom-llm-v1",
+			expectedFamily: "default",
 		},
 	}
 
@@ -414,12 +410,12 @@ func TestResolveTier_Fallback(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewModelRegistry(nil)
 
-			// Register a source that returns metadata without tier set
+			// Register a source that returns metadata without Family set
 			registry.RegisterSource(func(model string) (ModelMetadata, bool) {
 				if model == tt.model {
 					return ModelMetadata{
-						ContextWindow: tt.contextWin,
-						OutputLimit:   tt.outputLimit,
+						ContextWindow: 128000,
+						OutputLimit:   8192,
 						TokenizerType: "test",
 					}, true
 				}
@@ -427,44 +423,44 @@ func TestResolveTier_Fallback(t *testing.T) {
 			})
 
 			meta, _ := registry.Resolve(tt.model)
-			if meta.Tier != tt.expectedTier {
-				t.Errorf("expected Tier %q, got %q", tt.expectedTier, meta.Tier)
+			if meta.Family != tt.expectedFamily {
+				t.Errorf("expected Family %q, got %q", tt.expectedFamily, meta.Family)
 			}
 		})
 	}
 }
 
-// TestResolveTier_UserOverride verifies that user override takes precedence.
-func TestResolveTier_UserOverride(t *testing.T) {
+// TestResolveFamily_UserOverride verifies that user override Family takes precedence.
+func TestResolveFamily_UserOverride(t *testing.T) {
 	tests := []struct {
-		name         string
-		model        string
-		overrideTier string
-		expectedTier string
+		name           string
+		model          string
+		overrideFamily string
+		expectedFamily string
 	}{
 		{
-			name:         "override with large tier",
-			model:        "custom-model",
-			overrideTier: "large",
-			expectedTier: "large",
+			name:           "override with explicit anthropic family",
+			model:          "custom-model",
+			overrideFamily: "anthropic",
+			expectedFamily: "anthropic",
 		},
 		{
-			name:         "override with small tier",
-			model:        "custom-model",
-			overrideTier: "small",
-			expectedTier: "small",
+			name:           "override with explicit gemini family",
+			model:          "custom-model",
+			overrideFamily: "gemini",
+			expectedFamily: "gemini",
 		},
 		{
-			name:         "override without tier should get pattern-based tier",
-			model:        "llama-custom", // matches small pattern
-			overrideTier: "",
-			expectedTier: "small",
+			name:           "override without family should get DetectFamily result",
+			model:          "claude-custom", // matches anthropic pattern
+			overrideFamily: "",
+			expectedFamily: "anthropic",
 		},
 		{
-			name:         "override builtin model with different tier",
-			model:        "gpt-4o", // normally large
-			overrideTier: "small",  // overridden to small
-			expectedTier: "small",
+			name:           "override builtin model with different family",
+			model:          "gpt-4o",   // normally openai_flagship
+			overrideFamily: "anthropic", // overridden
+			expectedFamily: "anthropic",
 		},
 	}
 
@@ -475,8 +471,8 @@ func TestResolveTier_UserOverride(t *testing.T) {
 				OutputLimit:   5000,
 				TokenizerType: "override",
 			}
-			if tt.overrideTier != "" {
-				overrideMeta.Tier = tt.overrideTier
+			if tt.overrideFamily != "" {
+				overrideMeta.Family = tt.overrideFamily
 			}
 
 			registry := NewModelRegistry(map[string]ModelMetadata{
@@ -484,21 +480,21 @@ func TestResolveTier_UserOverride(t *testing.T) {
 			})
 
 			meta, _ := registry.Resolve(tt.model)
-			if meta.Tier != tt.expectedTier {
-				t.Errorf("expected Tier %q, got %q", tt.expectedTier, meta.Tier)
+			if meta.Family != tt.expectedFamily {
+				t.Errorf("expected Family %q, got %q", tt.expectedFamily, meta.Family)
 			}
 		})
 	}
 }
 
-// TestResolveTier_EmptyModelID verifies that Resolve("") returns "large" tier.
+// TestResolveFamily_EmptyModelID verifies that Resolve("") returns "default" family.
 // This is important because core components call Resolve("") when model ID
-// isn't threaded through, and we want to preserve rich prompt behavior.
-func TestResolveTier_EmptyModelID(t *testing.T) {
+// isn't threaded through, and we want predictable fallback behavior.
+func TestResolveFamily_EmptyModelID(t *testing.T) {
 	reg := NewModelRegistry(nil)
 	meta, _ := reg.Resolve("")
-	if meta.Tier != "large" {
-		t.Errorf("expected Tier 'large' for empty model ID, got %q", meta.Tier)
+	if meta.Family != "default" {
+		t.Errorf("expected Family 'default' for empty model ID, got %q", meta.Family)
 	}
 }
 

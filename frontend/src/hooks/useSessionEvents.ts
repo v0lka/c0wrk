@@ -4,7 +4,7 @@ import { usePanelStore } from '@/stores/panelStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useWails } from './useWails'
 import type { RoutingData, ToolCallData, ToolResultData, PlanData, ToolConfirmData, ThoughtData, PlanStepStartData, PlanStepCompleteData, ContextFillData, AskUserData, AssistantChunkData, StepLimitData } from '@/lib/wails'
-import { isSessionTokensData } from '@/lib/wails'
+import { isSessionTokensData, isContextCompactionData } from '@/lib/wails'
 import { GetSessionTokens } from '../../wailsjs/go/desktop/App'
 
 // --- Type guards for event data validation ---
@@ -372,7 +372,12 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'plan_step_complete',
         content: '',
-        metadata: { step_id: stepData.step_id, success: stepData.success, duration: stepData.duration },
+        metadata: {
+          step_id: stepData.step_id,
+          success: stepData.success,
+          duration: stepData.duration,
+          ...(stepData.error ? { error: stepData.error } : {}),
+        },
         timestamp: Date.now(),
       })
     })
@@ -562,13 +567,27 @@ export function useSessionEvents(sessionId: string | null) {
           status: fillData.status,
         })
       }
-      // Always update session tokens with model/tier
+      // Always update session tokens with model/family
       useChatStore.getState().setSessionTokens(
         fillData.session_input_tokens ?? 0,
         fillData.session_output_tokens ?? 0,
         fillData.model,
-        fillData.tier
+        fillData.family
       )
+    })
+
+    on('context_compaction', (data: unknown) => {
+      if (!mounted) return
+      if (!isContextCompactionData(data)) return
+      if (!isActiveSession()) return
+      useChatStore.getState().addMessage(sessionId, {
+        id: `context-compaction-${Date.now()}`,
+        sessionId,
+        type: 'context_compaction',
+        content: `Context compacted from ${Math.round(data.before_percent)}% to ${Math.round(data.after_percent)}%`,
+        metadata: { before_percent: data.before_percent, after_percent: data.after_percent, plan_step_id: data.plan_step_id },
+        timestamp: Date.now(),
+      })
     })
 
     on('session_tokens', (data: unknown) => {
@@ -579,7 +598,7 @@ export function useSessionEvents(sessionId: string | null) {
         data.session_input_tokens,
         data.session_output_tokens,
         data.model,
-        data.tier
+        data.family
       )
     })
 

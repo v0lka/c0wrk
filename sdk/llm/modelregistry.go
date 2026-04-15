@@ -13,12 +13,26 @@ import (
 	"time"
 )
 
+// ModelCapabilities describes what a model supports.
+type ModelCapabilities struct {
+	Attachment  bool   // image/PDF support
+	Reasoning   bool   // reasoning/thinking mode
+	Temperature bool   // accepts temperature parameter
+	ToolCall    bool   // function calling support
+	Interleaved string // "reasoning_content" | "reasoning_details" | ""
+}
+
 // ModelMetadata holds the capabilities and configuration for a language model.
 type ModelMetadata struct {
-	ContextWindow int    // max input tokens (e.g., 200000)
-	OutputLimit   int    // max output tokens (e.g., 8192)
-	TokenizerType string // "tiktoken/o200k_base", "tiktoken/cl100k_base", "anthropic-api", "approximate", etc.
-	Tier          string // "large" or "small" — model capability tier
+	ContextWindow       int
+	OutputLimit         int
+	TokenizerType       string
+	Family              string
+	Capabilities        ModelCapabilities
+	InputCostPer1M      float64
+	OutputCostPer1M     float64
+	CacheReadCostPer1M  float64
+	CacheWriteCostPer1M float64
 }
 
 // ModelMetadataSource is a function that can resolve model metadata from an external source.
@@ -63,13 +77,13 @@ func NewModelRegistry(overrides map[string]ModelMetadata) *ModelRegistry {
 func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
 	// Priority 1: Check overrides (no lock needed for read-only map after construction)
 	if meta, ok := r.overrides[model]; ok {
-		meta.Tier = resolveTier(model, meta)
+		meta.Family = resolveFamily(model, meta)
 		return meta, true
 	}
 
 	// Priority 2: Check built-in registry (no lock needed for read-only map)
 	if meta, ok := r.builtIn[model]; ok {
-		meta.Tier = resolveTier(model, meta)
+		meta.Family = resolveFamily(model, meta)
 		return meta, true
 	}
 
@@ -77,7 +91,7 @@ func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
 	r.mu.RLock()
 	if meta, ok := r.cache[model]; ok {
 		r.mu.RUnlock()
-		meta.Tier = resolveTier(model, meta)
+		meta.Family = resolveFamily(model, meta)
 		return meta, true
 	}
 	r.mu.RUnlock()
@@ -85,7 +99,7 @@ func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
 	// Priority 3: Fetch from HuggingFace
 	meta, err := r.fetchFromHuggingFace(model)
 	if err == nil {
-		meta.Tier = resolveTier(model, meta)
+		meta.Family = resolveFamily(model, meta)
 		r.mu.Lock()
 		r.cache[model] = meta
 		r.mu.Unlock()
@@ -105,7 +119,7 @@ func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
 		if !ok {
 			continue
 		}
-		m.Tier = resolveTier(model, m)
+		m.Family = resolveFamily(model, m)
 		r.mu.Lock()
 		r.cache[model] = m
 		r.mu.Unlock()
@@ -118,7 +132,7 @@ func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
 		OutputLimit:   4096,
 		TokenizerType: "approximate",
 	}
-	meta.Tier = resolveTier(model, meta)
+	meta.Family = resolveFamily(model, meta)
 	return meta, false
 }
 
@@ -129,44 +143,13 @@ func (r *ModelRegistry) Invalidate(model string) {
 	r.mu.Unlock()
 }
 
-// resolveTier determines the tier for a model based on pattern matching and heuristics.
-// This is used when tier is not set by user override or builtin registry.
-func resolveTier(modelID string, meta ModelMetadata) string {
-	// Already set (e.g., from builtin or user override)
-	if meta.Tier != "" {
-		return meta.Tier
+// resolveFamily determines the family for a model.
+// If already set in metadata, returns it directly; otherwise delegates to DetectFamily.
+func resolveFamily(modelID string, meta ModelMetadata) string {
+	if meta.Family != "" {
+		return meta.Family
 	}
-
-	id := strings.ToLower(modelID)
-
-	// No model ID provided — default to large tier for safety.
-	// Core components call Resolve("") when model ID isn't threaded through;
-	// defaulting to large preserves rich prompt behavior.
-	if id == "" {
-		return "large"
-	}
-
-	// Known large model patterns
-	largePatterns := []string{"gpt-4", "gpt-5", "o1-", "o3-", "o4-", "claude-", "gemini-", "deepseek-v3", "deepseek-reasoner", "grok-", "command-r-plus"}
-	for _, p := range largePatterns {
-		if strings.Contains(id, p) {
-			return "large"
-		}
-	}
-
-	// Known small model patterns
-	smallPatterns := []string{"llama", "qwen", "phi-", "gemma", "mistral-small", "mistral-7b", "codellama"}
-	for _, p := range smallPatterns {
-		if strings.Contains(id, p) {
-			return "small"
-		}
-	}
-
-	// Heuristic fallback based on capabilities
-	if meta.ContextWindow >= 128000 && meta.OutputLimit >= 8192 {
-		return "large"
-	}
-	return "small"
+	return string(DetectFamily(modelID))
 }
 
 // RegisterSource adds a metadata source to the registry.
@@ -234,85 +217,99 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			ContextWindow: 1050000,
 			OutputLimit:   32768,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gpt-5.4-mini": {
 			ContextWindow: 400000,
 			OutputLimit:   16384,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gpt-5.4-nano": {
 			ContextWindow: 400000,
 			OutputLimit:   16384,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 		"gpt-5": {
 			ContextWindow: 400000,
 			OutputLimit:   32768,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gpt-4.1": {
 			ContextWindow: 1047576,
 			OutputLimit:   32768,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_standard",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gpt-4.1-mini": {
 			ContextWindow: 1047576,
 			OutputLimit:   32768,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_standard",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gpt-4.1-nano": {
 			ContextWindow: 1047576,
 			OutputLimit:   32768,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_standard",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 		"o4-mini": {
 			ContextWindow: 200000,
 			OutputLimit:   100000,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 		"o3": {
 			ContextWindow: 200000,
 			OutputLimit:   100000,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 		"o3-mini": {
 			ContextWindow: 200000,
 			OutputLimit:   100000,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 		"o1": {
 			ContextWindow: 200000,
 			OutputLimit:   100000,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 		"o1-mini": {
 			ContextWindow: 128000,
 			OutputLimit:   65536,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 		"gpt-4o": {
 			ContextWindow: 128000,
 			OutputLimit:   16384,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gpt-4o-mini": {
 			ContextWindow: 128000,
 			OutputLimit:   16384,
 			TokenizerType: "tiktoken/o200k_base",
-			Tier:          "large",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 
 		// Anthropic models
@@ -320,55 +317,64 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			ContextWindow: 1000000,
 			OutputLimit:   32768,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"claude-sonnet-4.6": {
 			ContextWindow: 1000000,
 			OutputLimit:   32768,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"claude-haiku-4.5": {
 			ContextWindow: 200000,
 			OutputLimit:   8192,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"claude-sonnet-4.5": {
 			ContextWindow: 200000,
 			OutputLimit:   16384,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-opus-4.5": {
 			ContextWindow: 200000,
 			OutputLimit:   32768,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-sonnet-4": {
 			ContextWindow: 200000,
 			OutputLimit:   16384,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-opus-4": {
 			ContextWindow: 200000,
 			OutputLimit:   32768,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-3.5-sonnet": {
 			ContextWindow: 200000,
 			OutputLimit:   8192,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"claude-3.5-haiku": {
 			ContextWindow: 200000,
 			OutputLimit:   8192,
 			TokenizerType: "anthropic-api",
-			Tier:          "large",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 
 		// Google Gemini models
@@ -376,43 +382,50 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "gemini",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-3.1-flash-lite": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "gemini",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-3-flash": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "gemini",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.5-pro": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "gemini",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.5-flash": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "gemini",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.5-flash-lite": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "gemini",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.0-flash": {
 			ContextWindow: 1048576,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "gemini",
+			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 
 		// DeepSeek models
@@ -420,13 +433,15 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			ContextWindow: 128000,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "deepseek",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 		"deepseek-reasoner": {
 			ContextWindow: 128000,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "deepseek",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 
 		// xAI Grok models
@@ -434,31 +449,36 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			ContextWindow: 2000000,
 			OutputLimit:   32768,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "default",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 		"grok-4.1-fast": {
 			ContextWindow: 2000000,
 			OutputLimit:   32768,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "default",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 		"grok-4": {
 			ContextWindow: 256000,
 			OutputLimit:   32768,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "default",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 		"grok-3": {
 			ContextWindow: 131072,
 			OutputLimit:   32768,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "default",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 		"grok-3-mini": {
 			ContextWindow: 131072,
 			OutputLimit:   32768,
 			TokenizerType: "approximate",
-			Tier:          "large",
+			Family:        "default",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 	}
 }

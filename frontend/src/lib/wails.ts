@@ -140,6 +140,7 @@ export interface PlanStepCompleteData {
   step_id: string
   success: boolean
   duration: number // milliseconds
+  error?: string    // optional failure reason from backend
 }
 
 export interface ContextFillData {
@@ -151,14 +152,24 @@ export interface ContextFillData {
   session_input_tokens: number
   session_output_tokens: number
   model: string
-  tier: string
+  family: string
+}
+
+export interface ContextCompactionData {
+  before_percent: number
+  after_percent: number
+  plan_step_id?: string
+}
+
+export function isContextCompactionData(data: unknown): data is ContextCompactionData {
+  return typeof data === 'object' && data !== null && 'before_percent' in data && 'after_percent' in data
 }
 
 export interface SessionTokensData {
   session_input_tokens: number
   session_output_tokens: number
   model: string
-  tier: string
+  family: string
 }
 
 export function isSessionTokensData(data: unknown): data is SessionTokensData {

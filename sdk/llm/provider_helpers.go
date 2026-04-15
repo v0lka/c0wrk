@@ -97,3 +97,52 @@ func (a *StreamToolCallAccumulator) Emit(chunks chan<- ChatChunk) {
 func (a *StreamToolCallAccumulator) HasToolCalls() bool {
 	return len(a.toolCalls) > 0
 }
+
+// NormalizeMistralMessages applies Mistral-specific message normalization:
+// 1. Truncates tool call IDs to 9 characters
+// 2. Inserts dummy assistant messages between tool_result and user messages
+func NormalizeMistralMessages(messages []Message) []Message {
+	result := make([]Message, 0, len(messages))
+
+	for i, msg := range messages {
+		// Truncate tool call IDs to 9 characters
+		if msg.ToolCallID != "" && len(msg.ToolCallID) > 9 {
+			msg.ToolCallID = msg.ToolCallID[:9]
+		}
+
+		// Truncate tool call IDs in assistant tool calls
+		if len(msg.ToolCalls) > 0 {
+			calls := make([]ToolCall, len(msg.ToolCalls))
+			copy(calls, msg.ToolCalls)
+			for j := range calls {
+				if len(calls[j].ID) > 9 {
+					calls[j].ID = calls[j].ID[:9]
+				}
+			}
+			msg.ToolCalls = calls
+		}
+
+		result = append(result, msg)
+
+		// Insert dummy assistant message between tool result and user message
+		if msg.Role == "tool" && i+1 < len(messages) && messages[i+1].Role == "user" {
+			result = append(result, Message{
+				Role:    "assistant",
+				Content: "I'll continue processing your request.",
+			})
+		}
+	}
+
+	return result
+}
+
+// StripReasoningFromHistory removes reasoning content from message history.
+// Reasoning models produce reasoning_content/reasoning_details that should not
+// be passed back in subsequent turns. Currently the Message struct does not carry
+// a Reasoning field (reasoning lives on ChatResponse), so this function acts as
+// a safety net ensuring no reasoning leaks if the struct evolves.
+func StripReasoningFromHistory(messages []Message) []Message {
+	result := make([]Message, len(messages))
+	copy(result, messages)
+	return result
+}

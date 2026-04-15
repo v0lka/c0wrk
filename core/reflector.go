@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -32,26 +31,9 @@ func NewReflector(caller LLMCaller) *Reflector {
 	return &Reflector{llm: caller}
 }
 
-// SetModelRegistry sets the model registry for tier resolution.
-// If not set, the reflector defaults to "large" tier.
+// SetModelRegistry sets the model registry for model metadata resolution.
 func (r *Reflector) SetModelRegistry(registry *llm.ModelRegistry) {
 	r.modelRegistry = registry
-}
-
-// getTier resolves the model tier, defaulting to "large" if not configured.
-func (r *Reflector) getTier() prompt.ModelTier {
-	if r.modelRegistry == nil {
-		slog.Debug("reflector: model tier resolved", "tier", prompt.TierLarge)
-		return prompt.TierLarge
-	}
-	meta, _ := r.modelRegistry.Resolve("")
-	tier := prompt.ModelTier(meta.Tier)
-	if tier == "" {
-		slog.Debug("reflector: model tier resolved", "tier", prompt.TierLarge)
-		return prompt.TierLarge
-	}
-	slog.Debug("reflector: model tier resolved", "tier", tier)
-	return tier
 }
 
 // Reflect analyzes execution trajectory to produce structured self-correction insights.
@@ -99,10 +81,9 @@ func (r *Reflector) Reflect(
 
 // buildSystemPrompt constructs the system prompt for the reflector role.
 func (r *Reflector) buildSystemPrompt() string {
-	return prompt.New(r.getTier()).
+	return prompt.NewBuilder().
 		Core(prompts.ReflectorSystem).
-		ForLarge(prompts.ReflectorLarge).
-		ForSmall(prompts.ReflectorSmall).
+		Core(prompts.ReflectorInstructions).
 		Build()
 }
 

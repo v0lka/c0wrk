@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/user/agent/sdk/orchestration"
 )
 
 // spyEmitter records all method calls for assertion.
@@ -32,9 +34,12 @@ func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration) {
 }
 func (s *spyEmitter) AssistantChunk(c string)             { s.record("AssistantChunk", c) }
 func (s *spyEmitter) AssistantDone(c string, in, out int) { s.record("AssistantDone", c, in, out) }
-func (s *spyEmitter) TokensUsed(in, out int, model, tier string) { s.record("TokensUsed", in, out, model, tier) }
+func (s *spyEmitter) TokensUsed(in, out int, model, family string) { s.record("TokensUsed", in, out, model, family) }
 func (s *spyEmitter) ContextFill(p float64, u, m int, st, id string) {
 	s.record("ContextFill", p, u, m, st, id)
+}
+func (s *spyEmitter) ContextCompaction(before, after float64, id string) {
+	s.record("ContextCompaction", before, after, id)
 }
 func (s *spyEmitter) ExecutorDiagnostic(n int, e string, d map[string]any) {
 	s.record("ExecutorDiagnostic", n, e, d)
@@ -42,11 +47,11 @@ func (s *spyEmitter) ExecutorDiagnostic(n int, e string, d map[string]any) {
 func (s *spyEmitter) Routing(m, d, c string)                     { s.record("Routing", m, d, c) }
 func (s *spyEmitter) PlanGenerated(n int, steps []PlanStepEvent) { s.record("PlanGenerated", n, steps) }
 func (s *spyEmitter) PlanStepStart(id, desc string)              { s.record("PlanStepStart", id, desc) }
-func (s *spyEmitter) PlanStepComplete(id string, ok bool, d time.Duration) {
-	s.record("PlanStepComplete", id, ok, d)
+func (s *spyEmitter) PlanStepComplete(id string, ok bool, d time.Duration, errMsg string) {
+	s.record("PlanStepComplete", id, ok, d, errMsg)
 }
-func (s *spyEmitter) Reflection(sum string, ins []string, a, m int) {
-	s.record("Reflection", sum, ins, a, m)
+func (s *spyEmitter) Reflection(r *orchestration.Reflection, a, m int) {
+	s.record("Reflection", r, a, m)
 }
 func (s *spyEmitter) Retry(a, m int)                             { s.record("Retry", a, m) }
 func (s *spyEmitter) StepRetry(id string, a, m int)              { s.record("StepRetry", id, a, m) }
@@ -96,14 +101,15 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"SubAgentComplete", func(e Emitter) { e.SubAgentComplete("s1", true, dur) }, "SubAgentComplete"},
 		{"AssistantChunk", func(e Emitter) { e.AssistantChunk("hi") }, "AssistantChunk"},
 		{"AssistantDone", func(e Emitter) { e.AssistantDone("hi", 10, 20) }, "AssistantDone"},
-		{"TokensUsed", func(e Emitter) { e.TokensUsed(10, 20, "gpt-4o", "large") }, "TokensUsed"},
+		{"TokensUsed", func(e Emitter) { e.TokensUsed(10, 20, "gpt-4o", "openai_flagship") }, "TokensUsed"},
 		{"ContextFill", func(e Emitter) { e.ContextFill(0.5, 500, 1000, "ok", "s1") }, "ContextFill"},
+		{"ContextCompaction", func(e Emitter) { e.ContextCompaction(85.0, 30.0, "s1") }, "ContextCompaction"},
 		{"ExecutorDiagnostic", func(e Emitter) { e.ExecutorDiagnostic(1, "nudge", details) }, "ExecutorDiagnostic"},
 		{"Routing", func(e Emitter) { e.Routing("plan", "code", "3") }, "Routing"},
 		{"PlanGenerated", func(e Emitter) { e.PlanGenerated(1, steps) }, "PlanGenerated"},
 		{"PlanStepStart", func(e Emitter) { e.PlanStepStart("s1", "do it") }, "PlanStepStart"},
-		{"PlanStepComplete", func(e Emitter) { e.PlanStepComplete("s1", true, dur) }, "PlanStepComplete"},
-		{"Reflection", func(e Emitter) { e.Reflection("sum", []string{"a"}, 1, 3) }, "Reflection"},
+		{"PlanStepComplete", func(e Emitter) { e.PlanStepComplete("s1", true, dur, "") }, "PlanStepComplete"},
+		{"Reflection", func(e Emitter) { e.Reflection(&orchestration.Reflection{Summary: "sum"}, 1, 3) }, "Reflection"},
 		{"Retry", func(e Emitter) { e.Retry(1, 3) }, "Retry"},
 		{"StepRetry", func(e Emitter) { e.StepRetry("s1", 1, 3) }, "StepRetry"},
 		{"Service", func(e Emitter) { e.Service("msg") }, "Service"},

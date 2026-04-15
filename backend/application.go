@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 
 	"github.com/user/agent/backend/config"
@@ -84,8 +85,8 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// 5. Orchestrator factory closure for the session manager.
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error) {
-		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, bbFactory, app.stepLimitFunc)
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error) {
+		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, bbFactory, app.stepLimitFunc, dumpWriter)
 	}
 
 	// 6. Session manager.
@@ -137,8 +138,8 @@ func (app *Application) TitleGenerator() *session.TitleGenerator {
 // RebuildFactory creates a new orchestrator factory closure from the given config.
 // Call this when config changes so that new sessions use the updated settings.
 func (app *Application) RebuildFactory(cfg *config.Config) {
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error) {
-		return app.builder.Build(ToBuilderConfig(cfg), emitter, logger, bbFactory, app.stepLimitFunc)
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error) {
+		return app.builder.Build(ToBuilderConfig(cfg), emitter, logger, bbFactory, app.stepLimitFunc, dumpWriter)
 	}
 	app.manager.SetFactory(factory)
 }

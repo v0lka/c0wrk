@@ -7,6 +7,7 @@ export type MessageType =
   | 'task_failed_resumable'
   | 'task_resumed'
   | 'step_limit'
+  | 'context_compaction'
 
 export interface ChatMessageUI {
   id: string
@@ -28,13 +29,15 @@ export type DisplayItem =
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
   | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'status'; content: string; metadata?: Record<string, unknown> }
-  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'reflection'; id: string; summary: string; suggestedAction: string; rootCause: string; failureAnalysis: string; actionPlan: string; reasoning: string; hypotheses: string[]; attempt: number; maxAttempts: number }
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'memory_read'; id: string }
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
   | { kind: 'resume_action'; message: ChatMessageUI }
   | { kind: 'step_limit'; message: ChatMessageUI }
+  | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }
 
 export interface GroupedMessages {
   items: DisplayItem[]
@@ -132,13 +135,42 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       if (step) {
         step.status = (meta?.success as boolean) ? 'completed' : 'failed'
         if (meta?.duration !== undefined) step.duration = meta.duration as number
+        if (!meta?.success && meta?.error) step.error = meta.error as string
         openSteps.delete(stepId)
       }
       continue
     }
 
-    // Skip orchestration events handled elsewhere
-    if (msg.type === 'reflection') continue
+    if (msg.type === 'reflection') {
+      const reflectionItem: DisplayItem = {
+        kind: 'reflection',
+        id: msg.id,
+        summary: (meta?.summary as string) || '',
+        suggestedAction: (meta?.suggested_action as string) || '',
+        rootCause: (meta?.root_cause as string) || '',
+        failureAnalysis: (meta?.failure_analysis as string) || '',
+        actionPlan: (meta?.action_plan as string) || '',
+        reasoning: (meta?.reasoning as string) || '',
+        hypotheses: (meta?.insights as string[]) || [],
+        attempt: (meta?.attempt as number) || 0,
+        maxAttempts: (meta?.max_attempts as number) || 0,
+      }
+      // Nest inside the most recently opened plan step if available
+      const planStepIdRef = meta?.plan_step_id as string | undefined
+      const container = planStepIdRef ? openSteps.get(planStepIdRef) : null
+      if (container) {
+        container.children.push(reflectionItem)
+      } else {
+        // Try to nest in any open step, otherwise top-level
+        const openStepEntries = [...openSteps.values()]
+        if (openStepEntries.length > 0) {
+          openStepEntries[openStepEntries.length - 1]!.children.push(reflectionItem)
+        } else {
+          items.push(reflectionItem)
+        }
+      }
+      continue
+    }
 
     const planStepId = meta?.plan_step_id as string | undefined
 
@@ -252,6 +284,18 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         break
       }
 
+      case 'context_compaction': {
+        const bp = (meta?.before_percent as number) ?? 0
+        const ap = (meta?.after_percent as number) ?? 0
+        pushItem({
+          kind: 'context_compaction',
+          id: msg.id,
+          beforePercent: Math.round(bp),
+          afterPercent: Math.round(ap),
+        }, planStepId)
+        break
+      }
+
       case 'error':
         pushItem({ kind: 'error', message: msg }, planStepId)
         break
@@ -342,7 +386,7 @@ interface ChatState {
   sessionInputTokens: number
   sessionOutputTokens: number
   sessionModel: string
-  sessionTier: string
+  sessionFamily: string
   activityStatus: string | null
   isTaskActive: boolean
   addMessage: (sessionId: string, msg: ChatMessageUI) => void
@@ -354,7 +398,7 @@ interface ChatState {
   setThinking: (thinking: boolean) => void
   setStepContextFill: (stepId: string, data: ContextFillState) => void
   clearStepContextFill: (stepId: string) => void
-  setSessionTokens: (inputTokens: number, outputTokens: number, model?: string, tier?: string) => void
+  setSessionTokens: (inputTokens: number, outputTokens: number, model?: string, family?: string) => void
   setActivityStatus: (status: string | null) => void
   resolveAction: (sessionId: string, messageId: string, metadataUpdates?: Record<string, unknown>) => void
   resolveResumeMessage: (sessionId: string) => void
@@ -370,7 +414,7 @@ export const useChatStore = create<ChatState>((set) => ({
   sessionInputTokens: 0,
   sessionOutputTokens: 0,
   sessionModel: '',
-  sessionTier: '',
+  sessionFamily: '',
   activityStatus: null,
   isTaskActive: false,
   addMessage: (sessionId, msg) => set((s) => ({
@@ -414,11 +458,11 @@ export const useChatStore = create<ChatState>((set) => ({
       Object.entries(s.stepContextFill).filter(([k]) => k !== stepId)
     ),
   })),
-  setSessionTokens: (inputTokens, outputTokens, model?, tier?) => set({
+  setSessionTokens: (inputTokens, outputTokens, model?, family?) => set({
     sessionInputTokens: inputTokens,
     sessionOutputTokens: outputTokens,
     ...(model !== undefined && { sessionModel: model }),
-    ...(tier !== undefined && { sessionTier: tier }),
+    ...(family !== undefined && { sessionFamily: family }),
   }),
   setActivityStatus: (status) => set({ activityStatus: status }),
   resolveAction: (sessionId, messageId, metadataUpdates) => set((s) => {
@@ -462,6 +506,6 @@ export const useChatStore = create<ChatState>((set) => ({
     sessionInputTokens: 0,
     sessionOutputTokens: 0,
     sessionModel: '',
-    sessionTier: '',
+    sessionFamily: '',
   }),
 }))

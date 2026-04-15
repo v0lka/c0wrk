@@ -152,7 +152,7 @@ type ContextFillEventData struct {
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
 	Model               string  `json:"model"`
-	Tier                string  `json:"tier"`
+	Family              string  `json:"family"`
 }
 
 // SessionTokensEventData is the typed Data payload for "session_tokens" events.
@@ -160,7 +160,14 @@ type SessionTokensEventData struct {
 	SessionInputTokens  int    `json:"session_input_tokens"`
 	SessionOutputTokens int    `json:"session_output_tokens"`
 	Model               string `json:"model"`
-	Tier                string `json:"tier"`
+	Family              string `json:"family"`
+}
+
+// ContextCompactionEventData is the typed Data payload for "context_compaction" events.
+type ContextCompactionEventData struct {
+	BeforePercent float64 `json:"before_percent"`
+	AfterPercent  float64 `json:"after_percent"`
+	PlanStepID    string  `json:"plan_step_id,omitempty"`
 }
 
 // --- ChatMessage metadata helpers ---

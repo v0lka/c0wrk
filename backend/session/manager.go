@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -48,6 +49,7 @@ type Session struct {
 	TempDir             string // session-specific temp directory
 	orchestrator        *core.Orchestrator
 	logFile             *os.File           // session log file handle, closed on deletion
+	dumpFile            *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
 	cancel              context.CancelFunc // cancel for current task
 	active              bool               // is currently processing
 	done                chan struct{}      // closed when task goroutine finishes
@@ -66,7 +68,7 @@ func sessionTempDir(projectsDir, projectID, sessionID string) string {
 // capture the correct project workspace.
 // bbFactory may be nil, in which case the orchestrator uses an in-memory MapBlackboard.
 // Returns an error if the orchestrator cannot be created.
-type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory) (*core.Orchestrator, error)
+type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error)
 
 // TokenPersistFunc is called with cumulative session token totals after each LLM call.
 // The sessionID parameter identifies which session the tokens belong to.
@@ -237,12 +239,26 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		}
 	}
 
+	// Create LLM request/response dump file when DEBUG logging is enabled
+	var dumpFile *os.File
+	if strings.EqualFold(m.logLevel, "DEBUG") {
+		dumpPath := filepath.Join(m.logDir, fmt.Sprintf("session_%s_llm_dump.jsonl", id))
+		dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			slog.Warn("failed to create LLM dump file", "session_id", id, "error", err)
+			dumpFile = nil // non-fatal, continue without dump
+		}
+	}
+
 	// Create orchestrator using the factory (called outside the lock — can be slow)
-	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory)
+	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile)
 	if err != nil {
 		// Close the log file since we're not creating the session
 		if logFile != nil {
 			_ = logFile.Close()
+		}
+		if dumpFile != nil {
+			_ = dumpFile.Close()
 		}
 		return nil, fmt.Errorf("failed to create orchestrator: %w", err)
 	}
@@ -272,6 +288,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		TempDir:       tempDir,
 		orchestrator:  orchestrator,
 		logFile:       logFile,
+		dumpFile:      dumpFile,
 		active:        false,
 	}
 
@@ -379,6 +396,11 @@ func (m *Manager) DeleteSession(id string) error {
 	if session.logFile != nil {
 		if err := session.logFile.Close(); err != nil {
 			slog.Warn("failed to close session log file", "session_id", id, "error", err)
+		}
+	}
+	if session.dumpFile != nil {
+		if err := session.dumpFile.Close(); err != nil {
+			slog.Warn("failed to close session LLM dump file", "session_id", id, "error", err)
 		}
 	}
 	session.mu.Unlock()
@@ -958,6 +980,9 @@ func (m *Manager) Shutdown() {
 		// Close log file
 		if session.logFile != nil {
 			_ = session.logFile.Close()
+		}
+		if session.dumpFile != nil {
+			_ = session.dumpFile.Close()
 		}
 		session.mu.Unlock()
 

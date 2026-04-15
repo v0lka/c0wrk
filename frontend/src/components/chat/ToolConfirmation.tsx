@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useWails } from '@/hooks/useWails'
@@ -63,11 +63,19 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
   }
 
   // Listen for judge response
-  useEffect(() => {
-    if (!runtime || !confirmId) return
+  const judgeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-    const cancel = runtime.EventsOn('tool_judge_response', (data: any) => {
+  useEffect(() => {
+    if (!runtime || !confirmId || !sessionId) return
+
+    const cancel = runtime.EventsOn(`session:${sessionId}:tool_judge_response`, (data: any) => {
       if (data?.confirm_id !== confirmId) return
+
+      // Clear timeout since we got a response
+      if (judgeTimeoutRef.current) {
+        clearTimeout(judgeTimeoutRef.current)
+        judgeTimeoutRef.current = null
+      }
 
       setJudgeLoading(false)
       if (data.error) {
@@ -80,13 +88,28 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
 
     return () => {
       if (cancel) cancel()
+      if (judgeTimeoutRef.current) {
+        clearTimeout(judgeTimeoutRef.current)
+        judgeTimeoutRef.current = null
+      }
     }
-  }, [runtime, confirmId])
+  }, [runtime, sessionId, confirmId])
 
   const handleAskAgent = () => {
     if (!runtime || !confirmId) return
     setJudgeLoading(true)
     setJudgeError(null)
+
+    // Set a 30-second timeout to prevent infinite spinner
+    if (judgeTimeoutRef.current) {
+      clearTimeout(judgeTimeoutRef.current)
+    }
+    judgeTimeoutRef.current = setTimeout(() => {
+      setJudgeLoading(false)
+      setJudgeError('Judge evaluation timed out')
+      judgeTimeoutRef.current = null
+    }, 30_000)
+
     runtime.EventsEmit('tool_judge_request', {
       confirm_id: confirmId,
     })

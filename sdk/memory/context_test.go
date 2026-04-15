@@ -1005,3 +1005,207 @@ func TestPruningDisabledWhenKeepLastNZero(t *testing.T) {
 		}
 	}
 }
+
+// --- ResponseGroup (multi-tool-call) tests ---
+
+// makeGroupedStep creates a step with ResponseGroup set.
+func makeGroupedStep(thought, observation, toolName string, toolID int, group int64) sdkagent.Step {
+	return sdkagent.Step{
+		Thought: thought,
+		Action: llm.ToolCall{
+			ID:    fmt.Sprintf("call_%d", toolID),
+			Name:  toolName,
+			Input: json.RawMessage(`{"arg": "value"}`),
+		},
+		Observation:   observation,
+		TokensUsed:    100,
+		ResponseGroup: group,
+	}
+}
+
+func TestBuildStepMessages_GroupedStepsProduceOneAssistantMessage(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+
+	// Add 3 steps with the same ResponseGroup
+	cw.AddStep(makeGroupedStep("I'll read all files", "content of a", "read_file", 1, 42))
+	cw.AddStep(makeGroupedStep("", "content of b", "read_file", 2, 42))
+	cw.AddStep(makeGroupedStep("", "content of c", "read_file", 3, 42))
+
+	messages := cw.BuildPrompt()
+
+	// Expected: system (1) + 1 assistant (with 3 tool_calls) + 3 tool results = 5 messages
+	if len(messages) != 5 {
+		t.Fatalf("Expected 5 messages, got %d", len(messages))
+	}
+
+	// Message 1: assistant with thought and 3 tool_calls
+	assistant := messages[1]
+	if assistant.Role != "assistant" {
+		t.Errorf("Expected assistant role, got %s", assistant.Role)
+	}
+	if assistant.Content != "I'll read all files" {
+		t.Errorf("Expected thought from first step, got %q", assistant.Content)
+	}
+	if len(assistant.ToolCalls) != 3 {
+		t.Fatalf("Expected 3 tool_calls in assistant message, got %d", len(assistant.ToolCalls))
+	}
+	if assistant.ToolCalls[0].ID != "call_1" || assistant.ToolCalls[1].ID != "call_2" || assistant.ToolCalls[2].ID != "call_3" {
+		t.Errorf("Tool call IDs wrong: %v", assistant.ToolCalls)
+	}
+
+	// Messages 2-4: tool results
+	for i, expected := range []string{"content of a", "content of b", "content of c"} {
+		if messages[2+i].Role != "tool" {
+			t.Errorf("Message %d should be tool, got %s", 2+i, messages[2+i].Role)
+		}
+		if messages[2+i].Content != expected {
+			t.Errorf("Message %d content = %q, want %q", 2+i, messages[2+i].Content, expected)
+		}
+		if messages[2+i].ToolCallID != fmt.Sprintf("call_%d", i+1) {
+			t.Errorf("Message %d ToolCallID = %q", 2+i, messages[2+i].ToolCallID)
+		}
+	}
+}
+
+func TestBuildStepMessages_MixedGroupedAndStandalone(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+
+	// Standalone step
+	cw.AddStep(makeStep("standalone thought", "standalone obs", 1))
+	// Grouped steps (group 7)
+	cw.AddStep(makeGroupedStep("group thought", "group obs a", "tool_a", 2, 7))
+	cw.AddStep(makeGroupedStep("", "group obs b", "tool_b", 3, 7))
+	// Another standalone step
+	cw.AddStep(makeStep("another standalone", "another obs", 4))
+
+	messages := cw.BuildPrompt()
+
+	// Expected:
+	// system (1)
+	// standalone: assistant + tool = 2
+	// grouped: 1 assistant (2 tool_calls) + 2 tool results = 3
+	// standalone: assistant + tool = 2
+	// Total: 1 + 2 + 3 + 2 = 8
+	if len(messages) != 8 {
+		t.Fatalf("Expected 8 messages, got %d", len(messages))
+	}
+
+	// Verify standalone step 1
+	if messages[1].Role != "assistant" || messages[1].Content != "standalone thought" {
+		t.Errorf("msg[1] = role:%s content:%q", messages[1].Role, messages[1].Content)
+	}
+	if len(messages[1].ToolCalls) != 1 {
+		t.Errorf("msg[1] should have 1 tool_call, got %d", len(messages[1].ToolCalls))
+	}
+
+	// Verify grouped assistant message
+	if messages[3].Role != "assistant" || messages[3].Content != "group thought" {
+		t.Errorf("msg[3] = role:%s content:%q", messages[3].Role, messages[3].Content)
+	}
+	if len(messages[3].ToolCalls) != 2 {
+		t.Errorf("msg[3] should have 2 tool_calls, got %d", len(messages[3].ToolCalls))
+	}
+
+	// Verify grouped tool results
+	if messages[4].Role != "tool" || messages[4].Content != "group obs a" {
+		t.Errorf("msg[4] = role:%s content:%q", messages[4].Role, messages[4].Content)
+	}
+	if messages[5].Role != "tool" || messages[5].Content != "group obs b" {
+		t.Errorf("msg[5] = role:%s content:%q", messages[5].Role, messages[5].Content)
+	}
+
+	// Verify standalone step 2
+	if messages[6].Role != "assistant" || messages[6].Content != "another standalone" {
+		t.Errorf("msg[6] = role:%s content:%q", messages[6].Role, messages[6].Content)
+	}
+}
+
+func TestPruningGroupAwareness_ProtectsEntireGroup(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:       2, // Only protect last 2 tool-result steps
+		PlaceholderText: "[PRUNED]",
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// 2 standalone steps (will be pruned, outside KeepLastN)
+	cw.AddStep(makeStep("old 1", "old obs 1", 1))
+	cw.AddStep(makeStep("old 2", "old obs 2", 2))
+
+	// 3 grouped steps (group 99) — last 2 tool-result indices are within KeepLastN,
+	// so the entire group of 3 should be protected
+	cw.AddStep(makeGroupedStep("grouped", "group a", "tool", 3, 99))
+	cw.AddStep(makeGroupedStep("", "group b", "tool", 4, 99))
+	cw.AddStep(makeGroupedStep("", "group c", "tool", 5, 99))
+
+	messages := cw.BuildPrompt()
+
+	// Find tool messages and check pruning
+	// Standalone steps at indices 0,1 -> their tool results should be pruned
+	// Grouped steps at indices 2,3,4 -> ALL should be protected (group-aware)
+
+	// Message layout:
+	// [0] system
+	// [1] assistant (standalone 1)
+	// [2] tool (standalone 1) -> should be PRUNED
+	// [3] assistant (standalone 2)
+	// [4] tool (standalone 2) -> should be PRUNED
+	// [5] assistant (grouped, 3 tool_calls)
+	// [6] tool (group a) -> should be protected (group-aware)
+	// [7] tool (group b) -> should be protected (group-aware)
+	// [8] tool (group c) -> should be protected (group-aware)
+
+	if len(messages) != 9 {
+		t.Fatalf("Expected 9 messages, got %d", len(messages))
+	}
+
+	// Standalone tool results should be pruned
+	if messages[2].Content != "[PRUNED]" {
+		t.Errorf("standalone 1 tool result should be pruned, got %q", messages[2].Content)
+	}
+	if messages[4].Content != "[PRUNED]" {
+		t.Errorf("standalone 2 tool result should be pruned, got %q", messages[4].Content)
+	}
+
+	// All grouped tool results should be protected (not pruned)
+	if messages[6].Content != "group a" {
+		t.Errorf("group step a should be protected, got %q", messages[6].Content)
+	}
+	if messages[7].Content != "group b" {
+		t.Errorf("group step b should be protected, got %q", messages[7].Content)
+	}
+	if messages[8].Content != "group c" {
+		t.Errorf("group step c should be protected, got %q", messages[8].Content)
+	}
+}
+
+func TestBuildStepMessages_GroupedStepsBackwardCompat(t *testing.T) {
+	// Steps with ResponseGroup == 0 work exactly as before
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+
+	cw.AddStep(makeStep("Thought 1", "Obs 1", 1))
+	cw.AddStep(makeStep("Thought 2", "Obs 2", 2))
+
+	messages := cw.BuildPrompt()
+
+	// system (1) + 2 steps (2 each) = 5
+	if len(messages) != 5 {
+		t.Fatalf("Expected 5 messages, got %d", len(messages))
+	}
+
+	// Each step should produce its own assistant + tool message pair
+	if messages[1].Role != "assistant" || len(messages[1].ToolCalls) != 1 {
+		t.Errorf("Expected standalone assistant with 1 tool_call")
+	}
+	if messages[3].Role != "assistant" || len(messages[3].ToolCalls) != 1 {
+		t.Errorf("Expected standalone assistant with 1 tool_call")
+	}
+}

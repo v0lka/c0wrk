@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"sort"
@@ -101,6 +102,7 @@ func (b *OrchestratorBuilder) Build(
 	logger *slog.Logger,
 	bbFactory BlackboardFactory,
 	stepLimitFunc StepLimitFunc,
+	dumpWriter io.Writer,
 ) (*Orchestrator, error) {
 	// Wrap emitter with logging
 	emitter = NewLoggingEmitter(emitter, logger)
@@ -115,11 +117,11 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// Build context factory
-	contextFactory := b.buildContextFactory(router, cfg)
+	contextFactory := b.buildContextFactory(router, cfg, dumpWriter)
 
 	// Build core agents (router, planner, reflector) with token tracking
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, planner, reflector := b.buildCoreAgents(router, cfg, emitter, logger, modelReg, contextFactory, tokenCounter)
+	coreRouter, planner, reflector := b.buildCoreAgents(router, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter)
 	if coreRouter == nil || planner == nil {
 		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
 	}
@@ -155,6 +157,7 @@ func (b *OrchestratorBuilder) Build(
 
 	// Logged LLM caller for step execution
 	loggedLLM := agent.NewLoggingLLMCaller(router, cfg.LLM.ActiveProvider, logger)
+	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter)
 
 	return NewOrchestrator(
 		coreRouter,
@@ -369,12 +372,14 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	modelRegistry *llm.ModelRegistry,
 	contextFactory ContextManagerFactory,
 	tokenCounter llm.TokenCounter,
+	dumpWriter io.Writer,
 ) (*Router, *Planner, *Reflector) {
 	if router == nil {
 		return nil, nil, nil
 	}
 	caller := orchestration.NewTokenTrackingCaller(router, emitter)
 	caller = agent.NewLoggingLLMCaller(caller, cfg.LLM.ActiveProvider, logger)
+	caller = agent.NewDumpCaller(caller, dumpWriter)
 	coreRouter := NewRouter(caller, cfg.Router.HistoryWindow)
 	planner := NewPlanner(caller)
 	reflector := NewReflector(caller)
@@ -396,7 +401,10 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 }
 
 // buildContextFactory creates a ContextManagerFactory from LLM router and config.
-func (b *OrchestratorBuilder) buildContextFactory(router *llm.Router, cfg *BuilderConfig) ContextManagerFactory {
+func (b *OrchestratorBuilder) buildContextFactory(router *llm.Router, cfg *BuilderConfig, dumpWriter io.Writer) ContextManagerFactory {
+	var summarizeCaller agent.LLMCaller = router
+	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter)
+
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
 		if err != nil {
@@ -437,7 +445,7 @@ func (b *OrchestratorBuilder) buildContextFactory(router *llm.Router, cfg *Build
 						{Role: "user", Content: blockText},
 					},
 				}
-				resp, err := router.Call(ctx, req)
+				resp, err := summarizeCaller.Call(ctx, req)
 				if err != nil {
 					return "", fmt.Errorf("compaction summarize: %w", err)
 				}

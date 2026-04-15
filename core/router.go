@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 
@@ -38,26 +37,9 @@ func NewRouter(caller LLMCaller, historyWindow int) *Router {
 	}
 }
 
-// SetModelRegistry sets the model registry for tier resolution.
-// If not set, the router defaults to "large" tier.
+// SetModelRegistry sets the model registry for model metadata resolution.
 func (r *Router) SetModelRegistry(registry *llm.ModelRegistry) {
 	r.modelRegistry = registry
-}
-
-// getTier resolves the model tier, defaulting to "large" if not configured.
-func (r *Router) getTier() prompt.ModelTier {
-	if r.modelRegistry == nil {
-		slog.Debug("router: model tier resolved", "tier", prompt.TierLarge)
-		return prompt.TierLarge
-	}
-	meta, _ := r.modelRegistry.Resolve("")
-	tier := prompt.ModelTier(meta.Tier)
-	if tier == "" {
-		slog.Debug("router: model tier resolved", "tier", prompt.TierLarge)
-		return prompt.TierLarge
-	}
-	slog.Debug("router: model tier resolved", "tier", tier)
-	return tier
 }
 
 // Route analyzes the user's request and determines the best execution strategy.
@@ -65,11 +47,10 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	// Build tool list for the prompt (grouped by priority tier)
 	toolListStr := agent.BuildGroupedToolList(availableTools)
 
-	// Build system prompt using prompt builder with tier-specific adapters
-	systemPrompt := prompt.New(r.getTier()).
+	// Build system prompt
+	systemPrompt := prompt.NewBuilder().
 		Core(prompts.RouterSystem).
-		ForLarge(prompts.RouterLarge).
-		ForSmall(prompts.RouterSmall).
+		Core(prompts.RouterInstructions).
 		Replace("AVAILABLE-TOOLS", toolListStr).
 		Build()
 

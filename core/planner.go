@@ -163,8 +163,7 @@ func NewPlanner(caller LLMCaller) *Planner {
 	}
 }
 
-// SetModelRegistry sets the model registry for tier resolution.
-// If not set, the planner defaults to "large" tier.
+// SetModelRegistry sets the model registry for family resolution.
 func (p *Planner) SetModelRegistry(registry *llm.ModelRegistry) {
 	p.modelRegistry = registry
 }
@@ -197,20 +196,16 @@ func (p *Planner) SetMaxExploreSteps(n int) {
 	}
 }
 
-// getTier resolves the model tier, defaulting to "large" if not configured.
-func (p *Planner) getTier() prompt.ModelTier {
+// getFamily resolves the model family, defaulting to "default" if not configured.
+func (p *Planner) getFamily() string {
 	if p.modelRegistry == nil {
-		slog.Debug("planner: model tier resolved", "tier", prompt.TierLarge)
-		return prompt.TierLarge
+		return "default"
 	}
 	meta, _ := p.modelRegistry.Resolve("")
-	tier := prompt.ModelTier(meta.Tier)
-	if tier == "" {
-		slog.Debug("planner: model tier resolved", "tier", prompt.TierLarge)
-		return prompt.TierLarge
+	if meta.Family == "" {
+		return "default"
 	}
-	slog.Debug("planner: model tier resolved", "tier", tier)
-	return tier
+	return meta.Family
 }
 
 // Plan generates a DAG execution plan for the given task.
@@ -452,10 +447,9 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
 	}
 
-	result := prompt.New(p.getTier()).
+	result := prompt.NewBuilder().
 		Core(prompts.PlannerInformed).
-		ForLarge(prompts.PlannerLarge).
-		ForSmall(prompts.PlannerSmall).
+		Core(prompts.FamilyPrompt("planner", p.getFamily())).
 		ReplaceAll(substitutions).
 		Build()
 
@@ -570,11 +564,10 @@ func (p *Planner) buildPlanSystemPrompt(
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
 	}
 
-	// Use prompt builder with tier-specific adapters
-	result := prompt.New(p.getTier()).
+	// Use prompt builder with family-specific adapters
+	result := prompt.NewBuilder().
 		Core(prompts.PlannerBase).
-		ForLarge(prompts.PlannerLarge).
-		ForSmall(prompts.PlannerSmall).
+		Core(prompts.FamilyPrompt("planner", p.getFamily())).
 		ReplaceAll(substitutions).
 		Build()
 
@@ -656,11 +649,10 @@ func (p *Planner) buildReplanSystemPrompt(
 		"WORKSPACE-PATH":              formatWorkspacePath(ctx),
 	}
 
-	// Use prompt builder with tier-specific adapters
-	result := prompt.New(p.getTier()).
+	// Use prompt builder with family-specific adapters
+	result := prompt.NewBuilder().
 		Core(prompts.PlannerReplan).
-		ForLarge(prompts.PlannerLarge).
-		ForSmall(prompts.PlannerSmall).
+		Core(prompts.FamilyPrompt("planner", p.getFamily())).
 		ReplaceAll(substitutions).
 		Build()
 
@@ -723,11 +715,10 @@ func (p *Planner) buildContinuationSystemPrompt(
 		"WORKSPACE-PATH":         formatWorkspacePath(ctx),
 	}
 
-	// Use prompt builder with tier-specific adapters
-	result := prompt.New(p.getTier()).
+	// Use prompt builder with family-specific adapters
+	result := prompt.NewBuilder().
 		Core(prompts.PlannerBase).
-		ForLarge(prompts.PlannerLarge).
-		ForSmall(prompts.PlannerSmall).
+		Core(prompts.FamilyPrompt("planner", p.getFamily())).
 		ReplaceAll(substitutions).
 		Build()
 

@@ -21,17 +21,16 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		}
 	}
 
-	// Determine model tier (default to large if not specified)
-	tier := prompt.ModelTier(modelMeta.Tier)
-	if tier == "" {
-		tier = prompt.TierLarge
+	// Resolve model family for prompt adaptation
+	family := modelMeta.Family
+	if family == "" {
+		family = "default"
 	}
 
-	// Build base prompt using the prompt builder
-	result := prompt.New(tier).
+	// Build base prompt: system core + family-specific overlay
+	result := prompt.NewBuilder().
 		Core(prompts.OrchestratorSystem).
-		ForLarge(prompts.OrchestratorLarge).
-		ForSmall(prompts.OrchestratorSmall).
+		Core(prompts.FamilyPrompt("orchestrator", family)).
 		Replace("WORKSPACE-CONTEXT", workspaceCtxStr).
 		Build()
 

@@ -164,6 +164,14 @@ func (p *OpenAIProvider) buildRequest(req ChatRequest) openai.ChatCompletionRequ
 		openaiReq.Temperature = float32(*req.Temperature)
 	}
 
+	// Apply reasoning effort if set
+	if req.ReasoningEffort != "" {
+		rc := ResolveReasoning(req.ReasoningEffort, "openai_flagship")
+		if rc.Enabled && rc.OpenAIEffort != "" {
+			openaiReq.ReasoningEffort = rc.OpenAIEffort
+		}
+	}
+
 	if len(req.Tools) > 0 {
 		openaiReq.Tools = make([]openai.Tool, len(req.Tools))
 		for i, tool := range req.Tools {
