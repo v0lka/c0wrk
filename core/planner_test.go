@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	coretools "github.com/user/agent/core/tools"
+	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -1307,6 +1308,102 @@ func TestPlanWithExploration_ContextCancellation_Propagates(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled error, got: %v", err)
 	}
+}
+
+func TestSummarizeExplorationSteps(t *testing.T) {
+	t.Run("empty input", func(t *testing.T) {
+		result := summarizeExplorationSteps(nil)
+		if result != "" {
+			t.Errorf("expected empty string, got %q", result)
+		}
+	})
+
+	t.Run("steps with thoughts and tools", func(t *testing.T) {
+		steps := []agent.Step{
+			{
+				Thought: "Found main.go in project root",
+				Action:  llm.ToolCall{Name: "read_file"},
+			},
+			{
+				Thought: "Project uses Go modules",
+				Action:  llm.ToolCall{Name: "list_directory"},
+			},
+		}
+		result := summarizeExplorationSteps(steps)
+		if !strings.Contains(result, "Found main.go in project root") {
+			t.Errorf("expected first thought in output, got %q", result)
+		}
+		if !strings.Contains(result, "(via read_file)") {
+			t.Errorf("expected (via read_file) suffix, got %q", result)
+		}
+		if !strings.Contains(result, "Project uses Go modules") {
+			t.Errorf("expected second thought in output, got %q", result)
+		}
+		if !strings.Contains(result, "(via list_directory)") {
+			t.Errorf("expected (via list_directory) suffix, got %q", result)
+		}
+	})
+
+	t.Run("steps without thoughts are skipped", func(t *testing.T) {
+		steps := []agent.Step{
+			{
+				Thought: "Useful thought",
+				Action:  llm.ToolCall{Name: "read_file"},
+			},
+			{
+				Thought: "",
+				Action:  llm.ToolCall{Name: "list_directory"},
+			},
+			{
+				Thought: "   ", // whitespace only
+				Action:  llm.ToolCall{Name: "glob"},
+			},
+		}
+		result := summarizeExplorationSteps(steps)
+		if !strings.Contains(result, "Useful thought") {
+			t.Errorf("expected non-empty thought in output, got %q", result)
+		}
+		if strings.Contains(result, "list_directory") {
+			t.Errorf("expected step with empty thought to be skipped, got %q", result)
+		}
+		if strings.Contains(result, "glob") {
+			t.Errorf("expected step with whitespace-only thought to be skipped, got %q", result)
+		}
+	})
+
+	t.Run("truncation at cap", func(t *testing.T) {
+		// Generate many steps that exceed 4000 chars
+		steps := make([]agent.Step, 0, 200)
+		for i := 0; i < 200; i++ {
+			steps = append(steps, agent.Step{
+				Thought: strings.Repeat("x", 50),
+				Action:  llm.ToolCall{Name: "read_file"},
+			})
+		}
+		result := summarizeExplorationSteps(steps)
+		if len(result) > 4000 {
+			t.Errorf("expected result length <= 4000, got %d", len(result))
+		}
+		if !strings.HasSuffix(result, "\n") {
+			t.Errorf("expected result to end with newline, got %q", result[len(result)-10:])
+		}
+	})
+
+	t.Run("thought without tool name", func(t *testing.T) {
+		steps := []agent.Step{
+			{
+				Thought: "Synthesized findings",
+				Action:  llm.ToolCall{Name: ""},
+			},
+		}
+		result := summarizeExplorationSteps(steps)
+		if !strings.Contains(result, "Synthesized findings") {
+			t.Errorf("expected thought in output, got %q", result)
+		}
+		if strings.Contains(result, "(via") {
+			t.Errorf("expected no (via ...) suffix for empty tool name, got %q", result)
+		}
+	})
 }
 
 func TestPlanContinuation(t *testing.T) {

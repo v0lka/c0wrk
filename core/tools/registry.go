@@ -27,6 +27,12 @@ func IsInternalTool(name string) bool {
 	return ok
 }
 
+// ToolFilter decides whether a tool should be registered. Return false to reject.
+type ToolFilter func(toolName, source string) bool
+
+// ParamInjector transforms tool input before execution (e.g., injecting scoping params).
+type ParamInjector func(toolName, source string, input json.RawMessage) json.RawMessage
+
 // ToolRegistry stores all available tools and provides them to Executor.
 // It embeds the SDK ToolRegistry for basic operations and adds policy enforcement on top.
 // Thread-safe via sync.RWMutex.
@@ -38,7 +44,15 @@ type ToolRegistry struct {
 	policyOverrides  map[string]ToolPolicy
 	defaultPolicy    ToolPolicy
 	hasDefaultPolicy bool
+	preExecuteHook   PreExecuteHook
+	toolFilter       ToolFilter
+	paramInjector    ParamInjector
 }
+
+// PreExecuteHook is called before tool execution. It may block to wait for
+// preconditions (e.g., indexing completion). If it returns an error, execution
+// is aborted and the error is returned as a tool error result.
+type PreExecuteHook func(ctx context.Context, toolName string, source string) error
 
 // NewToolRegistry creates a new ToolRegistry with an empty tool map.
 func NewToolRegistry() *ToolRegistry {
@@ -84,6 +98,41 @@ func (r *ToolRegistry) SetDefaultPolicy(p ToolPolicy) {
 	r.hasDefaultPolicy = true
 }
 
+// SetPreExecuteHook sets a hook that is called before every non-internal tool execution.
+func (r *ToolRegistry) SetPreExecuteHook(hook PreExecuteHook) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.preExecuteHook = hook
+}
+
+// SetToolFilter sets a filter that decides whether a tool should be registered.
+// If the filter returns false, the tool is rejected during RegisterWithSource.
+func (r *ToolRegistry) SetToolFilter(f ToolFilter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.toolFilter = f
+}
+
+// SetParamInjector sets an injector that transforms tool input before execution.
+func (r *ToolRegistry) SetParamInjector(fn ParamInjector) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.paramInjector = fn
+}
+
+// RegisterWithSource registers a tool with the given source, subject to the tool filter.
+// If the filter rejects the tool, it is silently dropped.
+func (r *ToolRegistry) RegisterWithSource(tool Tool, source string) {
+	r.mu.RLock()
+	filter := r.toolFilter
+	r.mu.RUnlock()
+	if filter != nil && !filter(tool.Name(), source) {
+		slog.Debug("tool filtered out during registration", "tool", tool.Name(), "source", source)
+		return
+	}
+	r.ToolRegistry.RegisterWithSource(tool, source)
+}
+
 // resolvePolicy returns the effective policy for a tool.
 // Resolution order: per-tool override > registry default > tool's own default.
 func (r *ToolRegistry) resolvePolicy(name string, tool Tool) ToolPolicy {
@@ -111,6 +160,27 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// Internal tools bypass all policy/judge checks
 	if IsInternalTool(name) {
 		return tool.Execute(ctx, input)
+	}
+
+	// Get source for hooks
+	source := r.GetToolSource(name)
+
+	// Pre-execute hook (e.g., indexing gate for MCP tools)
+	r.mu.RLock()
+	hook := r.preExecuteHook
+	r.mu.RUnlock()
+	if hook != nil {
+		if err := hook(ctx, name, source); err != nil {
+			return ToolResult{Content: fmt.Sprintf("pre-execute hook: %v", err), IsError: true}, nil
+		}
+	}
+
+	// Param injection (e.g., project scoping for codebase-memory MCP tools)
+	r.mu.RLock()
+	injector := r.paramInjector
+	r.mu.RUnlock()
+	if injector != nil {
+		input = injector(name, source, input)
 	}
 
 	policy := r.resolvePolicy(name, tool)

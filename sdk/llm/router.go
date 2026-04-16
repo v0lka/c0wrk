@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// SamplingFunc returns a default temperature for the given model family.
+// Return nil to use the provider's built-in default (no temperature parameter sent).
+type SamplingFunc func(family string) *float64
+
 // RouterConfig configures the LLM router.
 // All values must be pre-resolved by the caller (env vars expanded, durations parsed).
 type RouterConfig struct {
@@ -21,6 +25,7 @@ type RouterConfig struct {
 	MaxBackoff          time.Duration // Already parsed max backoff duration
 	SafetyMarginPercent int           // Percentage of context window reserved as safety margin (default: 5)
 	OutputTokenReserve  int           // Default output token reserve when model metadata doesn't specify (default: 4096)
+	SamplingFunc        SamplingFunc  // Optional family-aware temperature defaults; nil = no default (provider decides)
 }
 
 // Router routes LLM calls to the active provider.
@@ -36,6 +41,7 @@ type Router struct {
 	// Pre-call context window validation
 	registry            *ModelRegistry
 	tokenCounter        TokenCounter
+	sampling            SamplingFunc
 	safetyMarginPercent int // percentage of context window reserved as safety margin (default: 5)
 	outputTokenReserve  int // default output token reserve when model metadata doesn't specify (default: 4096)
 }
@@ -91,6 +97,7 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		maxBackoff:         maxBackoff,
 		registry:            registry,
 		tokenCounter:        NewSimpleTokenCounter(),
+		sampling:            cfg.SamplingFunc,
 		safetyMarginPercent: safetyMarginPercent,
 		outputTokenReserve:  outputTokenReserve,
 	}, nil
@@ -179,6 +186,31 @@ func (r *Router) validateContextWindow(model string, msgs []Message) error {
 	return nil
 }
 
+// applyDefaultTemperature sets a family-aware temperature default on the request
+// when no explicit temperature is provided. Skips models that don't support
+// the temperature parameter (e.g. reasoning models like o1, o3).
+func (r *Router) applyDefaultTemperature(req *ChatRequest) {
+	if req.Temperature != nil {
+		return // caller set explicit temperature — respect it
+	}
+
+	// Resolve model metadata for capability check and family
+	if r.registry != nil {
+		meta, _ := r.registry.Resolve(req.Model)
+		if !meta.Capabilities.Temperature {
+			return // model doesn't accept temperature (e.g. reasoning models)
+		}
+		if r.sampling != nil {
+			req.Temperature = r.sampling(meta.Family)
+			return
+		}
+	}
+
+	// Fallback: no registry or no sampling func — use 0.0 for backward compat
+	temp := 0.0
+	req.Temperature = &temp
+}
+
 // Call sends a chat request to the active provider.
 func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Set model if not specified
@@ -186,11 +218,8 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		req.Model = r.activeModel
 	}
 
-	// Hardcode temperature=0 for deterministic output
-	if req.Temperature == nil {
-		temp := 0.0
-		req.Temperature = &temp
-	}
+	// Apply family-aware temperature default when not explicitly set
+	r.applyDefaultTemperature(&req)
 
 	// Pre-call context window validation
 	if err := r.validateContextWindow(req.Model, req.Messages); err != nil {
@@ -262,11 +291,8 @@ func (r *Router) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk,
 		req.Model = r.activeModel
 	}
 
-	// Hardcode temperature=0 for deterministic output
-	if req.Temperature == nil {
-		temp := 0.0
-		req.Temperature = &temp
-	}
+	// Apply family-aware temperature default when not explicitly set
+	r.applyDefaultTemperature(&req)
 
 	// Pre-call context window validation
 	if err := r.validateContextWindow(req.Model, req.Messages); err != nil {

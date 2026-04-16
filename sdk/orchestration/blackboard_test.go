@@ -490,6 +490,39 @@ func TestBlackboard_FileChanges_DefensiveCopy(t *testing.T) {
 	}
 }
 
+func TestCopyPlanPreservesExplorationContext(t *testing.T) {
+	original := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Description: "Do something"},
+		},
+		ExplorationContext: "- Found file X (via read_file)\n- Project uses Go modules (via list_directory)\n",
+	}
+
+	copied := copyPlan(original)
+
+	if copied.ExplorationContext != original.ExplorationContext {
+		t.Errorf("ExplorationContext not preserved: got %q, want %q", copied.ExplorationContext, original.ExplorationContext)
+	}
+
+	// Verify it's a true copy (modifying copy doesn't affect original)
+	copied.ExplorationContext = "modified"
+	if original.ExplorationContext == "modified" {
+		t.Error("copyPlan did not create independent copy of ExplorationContext")
+	}
+}
+
+func TestCopyPlanEmptyExplorationContext(t *testing.T) {
+	original := &Plan{
+		Steps: []PlanStep{
+			{ID: "s1", Description: "test"},
+		},
+	}
+	copied := copyPlan(original)
+	if copied.ExplorationContext != "" {
+		t.Errorf("expected empty ExplorationContext, got %q", copied.ExplorationContext)
+	}
+}
+
 func TestBlackboard_SetStepFileChanges_UpdatesStepResult(t *testing.T) {
 	bb := NewMapBlackboard()
 

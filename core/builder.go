@@ -20,6 +20,7 @@ import (
 	"github.com/user/agent/sdk/llm"
 	sdkmemory "github.com/user/agent/sdk/memory"
 	"github.com/user/agent/sdk/orchestration"
+	"github.com/user/agent/sdk/prompt"
 	"github.com/user/agent/sdk/tools/builtins"
 )
 
@@ -355,6 +356,9 @@ func (b *OrchestratorBuilder) buildRouter(cfg *BuilderConfig) (*llm.Router, *llm
 		MaxBackoff:          maxBackoff,
 		SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
 		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
+		SamplingFunc: func(family string) *float64 {
+			return prompt.DefaultSampling(family).Temperature
+		},
 	}
 	router, err := llm.NewRouter(context.Background(), routerCfg, modelRegistry)
 	if err != nil {

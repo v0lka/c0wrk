@@ -8,7 +8,8 @@ import (
 
 // Plan is a DAG of execution steps.
 type Plan struct {
-	Steps []PlanStep `json:"steps"`
+	Steps              []PlanStep `json:"steps"`
+	ExplorationContext string     `json:"exploration_context,omitempty"`
 }
 
 // PlanStep is a single step in the execution plan.

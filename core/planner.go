@@ -353,6 +353,7 @@ func (p *Planner) planWithExploration(
 		return p.planDirect(ctx, task, availableTools, reflections)
 	}
 
+	plan.ExplorationContext = summarizeExplorationSteps(result.Steps)
 	return plan, nil
 }
 
@@ -795,4 +796,39 @@ func (p *Planner) parsePlanResponse(content string) (*Plan, error) {
 	}
 
 	return &plan, nil
+}
+
+// summarizeExplorationSteps extracts a concise summary from exploration ReAct steps.
+// It collects the planner's Thought from each step (the LLM's synthesis of tool results)
+// along with the tool name for reference. The output is capped at maxExplorationContextLen
+// characters to prevent bloating step task descriptions.
+func summarizeExplorationSteps(steps []agent.Step) string {
+	const maxExplorationContextLen = 4000
+
+	var b strings.Builder
+	for _, s := range steps {
+		thought := strings.TrimSpace(s.Thought)
+		if thought == "" {
+			continue
+		}
+		toolName := s.Action.Name
+		if toolName != "" {
+			fmt.Fprintf(&b, "- %s (via %s)\n", thought, toolName)
+		} else {
+			fmt.Fprintf(&b, "- %s\n", thought)
+		}
+		if b.Len() >= maxExplorationContextLen {
+			break
+		}
+	}
+
+	result := b.String()
+	if len(result) > maxExplorationContextLen {
+		result = result[:maxExplorationContextLen]
+		// Trim to last complete line to avoid broken output.
+		if idx := strings.LastIndex(result, "\n"); idx > 0 {
+			result = result[:idx+1]
+		}
+	}
+	return result
 }

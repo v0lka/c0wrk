@@ -43,7 +43,13 @@ type App struct {
 	projectsDir       string       // ~/.c0wrk/Projects/
 	activeProjectID   string       // currently active project ID
 	activeProjectPath string       // workspace path of active project
-	activeProjectMu   sync.RWMutex // protects activeProjectID/Path
+	activeProjectMu       sync.RWMutex // protects activeProjectID/Path and codebaseProjectName
+	codebaseProjectName   string       // resolved codebase-memory-mcp project name for active project
+
+	// Codebase indexing state
+	restoreAutoIndex func()        // called on Shutdown to restore original auto_index value
+	indexingDone     chan struct{}  // closed when indexing completes; nil if not indexing
+	indexingMu       sync.Mutex    // protects indexingDone
 }
 
 // NewApp creates a new App instance.

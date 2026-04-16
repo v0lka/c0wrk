@@ -269,6 +269,43 @@ func (a *App) Startup(ctx context.Context) {
 	a.app = application
 	a.manager = application.Manager()
 
+	// Filter out codebase-memory-mcp management tools that should not be exposed to the LLM.
+	a.app.Builder().ToolRegistry().SetToolFilter(func(toolName, source string) bool {
+		if source == "codebase-memory" {
+			return toolName != "list_projects" && toolName != "delete_project"
+		}
+		return true
+	})
+	// Clean up already-registered tools (gateway registered them before filter was set).
+	a.app.Builder().ToolRegistry().Unregister("list_projects")
+	a.app.Builder().ToolRegistry().Unregister("delete_project")
+
+	// Auto-inject project scoping for codebase-memory-mcp tools.
+	a.app.Builder().ToolRegistry().SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
+		if source != "codebase-memory" {
+			return input
+		}
+		a.activeProjectMu.RLock()
+		projectName := a.codebaseProjectName
+		a.activeProjectMu.RUnlock()
+		if projectName == "" {
+			return input
+		}
+		var params map[string]any
+		if err := json.Unmarshal(input, &params); err != nil {
+			return input
+		}
+		if _, ok := params["project"]; ok {
+			return input // don't override explicit project param
+		}
+		params["project"] = projectName
+		modified, err := json.Marshal(params)
+		if err != nil {
+			return input
+		}
+		return modified
+	})
+
 	// Validate LLM provider configuration at startup (fail-fast).
 	if a.config.LLM.ActiveProvider == "" {
 		log.Error("no active LLM provider configured - check your config.yaml")
@@ -572,10 +609,44 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Ensure auto_index is enabled if codebase-memory-mcp is installed
 	if cmStatus.Installed {
-		if err := beMcp.EnsureAutoIndex(a.ctx); err != nil {
+		restoreFn, err := beMcp.EnsureAutoIndex(a.ctx)
+		if err != nil {
 			slog.Warn("failed to ensure codebase-memory-mcp auto_index", "error", err)
 		}
+		a.restoreAutoIndex = restoreFn
 	}
+
+	// Set pre-execute hook to block codebase-memory MCP tools during indexing
+	a.app.Builder().ToolRegistry().SetPreExecuteHook(func(ctx context.Context, toolName, source string) error {
+		if source != "codebase-memory" {
+			return nil
+		}
+		a.indexingMu.Lock()
+		ch := a.indexingDone
+		a.indexingMu.Unlock()
+		if ch == nil {
+			return nil // not indexing
+		}
+
+		sessionID := session.SessionIDFromContext(ctx)
+		if sessionID != "" {
+			wailsRuntime.EventsEmit(a.ctx, "session:event", session.Event{
+				SessionID: sessionID,
+				Type:      "service",
+				Data: map[string]any{
+					"content": "Waiting for codebase indexing to complete...",
+				},
+			})
+		}
+
+		slog.Info("blocking MCP tool call until indexing completes", "tool", toolName)
+		select {
+		case <-ch:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
 
 	// Check rtk availability and emit status
 	rtkStatus := a.CheckRtk()
@@ -584,6 +655,11 @@ func (a *App) Startup(ctx context.Context) {
 
 // Shutdown is called when the Wails app is shutting down.
 func (a *App) Shutdown(ctx context.Context) {
+	// Restore original auto_index value before shutting down
+	if a.restoreAutoIndex != nil {
+		a.restoreAutoIndex()
+	}
+
 	if a.watcher != nil {
 		if err := a.watcher.Close(); err != nil {
 			slog.Error("failed to close workspace watcher", "error", err)

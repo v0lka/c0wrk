@@ -73,9 +73,15 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 			return
 		}
 
-		// Treat max steps exhaustion (no proper finish) as a step failure
+		// Treat incomplete execution (no proper finish) as a step failure.
+		// Use the executor's output as the error message when available — it contains
+		// the specific abort reason (e.g. circuit breaker, fruitless abort, max steps).
 		if !result.Finished {
-			ch <- SubAgentResult{StepID: stepID, Output: result.Output, Steps: result.Steps, Error: errors.New("step execution did not complete within max steps")}
+			errMsg := "step execution did not complete within max steps"
+			if result.Output != "" {
+				errMsg = result.Output
+			}
+			ch <- SubAgentResult{StepID: stepID, Output: result.Output, Steps: result.Steps, Error: errors.New(errMsg)}
 			return
 		}
 

@@ -433,7 +433,8 @@ func GenerateSummary(output string, maxLen int) string {
 // copyPlan returns a deep copy of a Plan.
 func copyPlan(p *Plan) *Plan {
 	out := &Plan{
-		Steps: make([]PlanStep, len(p.Steps)),
+		Steps:              make([]PlanStep, len(p.Steps)),
+		ExplorationContext: p.ExplorationContext,
 	}
 	for i, s := range p.Steps {
 		out.Steps[i] = PlanStep{

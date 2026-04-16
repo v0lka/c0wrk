@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1085,4 +1086,56 @@ func TestExecuteAdHocStep_ContextCancelled_ReturnsFunctionError(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// buildStepTask exploration context tests
+// ---------------------------------------------------------------------------
+
+func TestBuildStepTaskExplorationContext(t *testing.T) {
+	t.Run("with exploration context", func(t *testing.T) {
+		o := New(Config{})
+		plan := Plan{
+			Steps: []PlanStep{
+				{ID: "s1", Description: "Do something"},
+			},
+			ExplorationContext: "- Found file X (via read_file)\n- Project uses Go modules (via list_directory)\n",
+		}
+		bb := NewMapBlackboard()
+		taskDef := o.buildStepTask(
+			plan.Steps[0], 0, plan,
+			map[string]CompletedStep{},
+			nil,
+			bb,
+			"user request", "",
+			30,
+		)
+		if !strings.Contains(taskDef.task, "## Planner Research Context") {
+			t.Error("expected task to contain '## Planner Research Context'")
+		}
+		if !strings.Contains(taskDef.task, "Found file X (via read_file)") {
+			t.Error("expected task to contain exploration context text")
+		}
+	})
+
+	t.Run("without exploration context", func(t *testing.T) {
+		o := New(Config{})
+		plan := Plan{
+			Steps: []PlanStep{
+				{ID: "s1", Description: "Do something"},
+			},
+		}
+		bb := NewMapBlackboard()
+		taskDef := o.buildStepTask(
+			plan.Steps[0], 0, plan,
+			map[string]CompletedStep{},
+			nil,
+			bb,
+			"user request", "",
+			30,
+		)
+		if strings.Contains(taskDef.task, "## Planner Research Context") {
+			t.Error("expected task to NOT contain '## Planner Research Context' when ExplorationContext is empty")
+		}
+	})
 }

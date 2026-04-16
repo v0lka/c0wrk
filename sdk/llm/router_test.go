@@ -387,6 +387,111 @@ func TestRouter_Call_PreservesExistingTemperature(t *testing.T) {
 	}
 }
 
+func TestRouter_Call_FamilyAwareTemperature(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		response: &ChatResponse{
+			Message:    Message{Role: "assistant", Content: "OK"},
+			StopReason: "end_turn",
+		},
+	}
+
+	// Build a registry with a known model that supports temperature
+	registry := NewModelRegistry(map[string]ModelMetadata{
+		"deepseek-chat": {
+			ContextWindow: 128000,
+			OutputLimit:   8192,
+			Family:        "deepseek",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
+		},
+	})
+
+	// Sampling func returns 0.3 for deepseek
+	sampling := func(family string) *float64 {
+		if family == "deepseek" {
+			v := 0.3
+			return &v
+		}
+		return nil
+	}
+
+	router := &Router{
+		providers:           map[string]Provider{"primary": mock},
+		activeProvider:      mock,
+		activeModel:         "deepseek-chat",
+		activeProviderName:  "primary",
+		maxRetries:          0,
+		initialBackoff:      10 * time.Millisecond,
+		maxBackoff:          100 * time.Millisecond,
+		registry:            registry,
+		tokenCounter:        NewSimpleTokenCounter(),
+		sampling:            sampling,
+		safetyMarginPercent: 5,
+	}
+
+	_, err := router.Call(context.Background(), ChatRequest{
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.lastReq.Temperature == nil {
+		t.Fatal("expected temperature to be set")
+	}
+	if *mock.lastReq.Temperature != 0.3 {
+		t.Errorf("expected family-aware temperature 0.3, got %f", *mock.lastReq.Temperature)
+	}
+}
+
+func TestRouter_Call_SkipsTemperatureForReasoningModels(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		response: &ChatResponse{
+			Message:    Message{Role: "assistant", Content: "OK"},
+			StopReason: "end_turn",
+		},
+	}
+
+	// Reasoning model with Temperature capability = false
+	registry := NewModelRegistry(map[string]ModelMetadata{
+		"o3": {
+			ContextWindow: 200000,
+			OutputLimit:   100000,
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true}, // Temperature: false
+		},
+	})
+
+	sampling := func(family string) *float64 {
+		v := 0.3
+		return &v // would return 0.3, but should be ignored for reasoning models
+	}
+
+	router := &Router{
+		providers:           map[string]Provider{"primary": mock},
+		activeProvider:      mock,
+		activeModel:         "o3",
+		activeProviderName:  "primary",
+		maxRetries:          0,
+		initialBackoff:      10 * time.Millisecond,
+		maxBackoff:          100 * time.Millisecond,
+		registry:            registry,
+		tokenCounter:        NewSimpleTokenCounter(),
+		sampling:            sampling,
+		safetyMarginPercent: 5,
+	}
+
+	_, err := router.Call(context.Background(), ChatRequest{
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.lastReq.Temperature != nil {
+		t.Errorf("expected nil temperature for reasoning model, got %f", *mock.lastReq.Temperature)
+	}
+}
+
 func TestNewRouter(t *testing.T) {
 	// Test with lmstudio provider (doesn't require external services)
 	t.Run("lmstudio provider", func(t *testing.T) {

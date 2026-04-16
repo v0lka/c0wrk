@@ -785,6 +785,13 @@ func (o *Orchestrator) buildStepTask(
 		b.WriteString("\n")
 	}
 
+	// Exploration context from planner research
+	if plan.ExplorationContext != "" {
+		b.WriteString("\n## Planner Research Context\nThe following was discovered during planning-phase exploration:\n\n")
+		b.WriteString(plan.ExplorationContext)
+		b.WriteString("\n")
+	}
+
 	// Specific objective
 	fmt.Fprintf(&b, "\nYour specific objective: %s\n\n", step.Description)
 	b.WriteString("Produce output that is scoped to this step only. Later steps will build on your output.\n")

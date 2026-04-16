@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	sdktools "github.com/user/agent/sdk/tools"
 )
@@ -939,6 +941,313 @@ func TestInternalTool_BypassesPolicyUserConfirm(t *testing.T) {
 	}
 	if confirmCalled {
 		t.Error("expected confirmFunc NOT to be called for internal tools")
+	}
+}
+
+// --- PreExecuteHook tests ---
+
+// TestPreExecuteHook_BlocksUntilReleased verifies that the hook can block
+// tool execution until released, and then the tool result is correct.
+func TestPreExecuteHook_BlocksUntilReleased(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("blocked_tool", "A tool that waits for hook")
+	registry.Register(tool)
+
+	gate := make(chan struct{})
+	registry.SetPreExecuteHook(func(ctx context.Context, toolName, source string) error {
+		<-gate // block until released
+		return nil
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"hello"}`)
+
+	var result ToolResult
+	var execErr error
+	done := make(chan struct{})
+	go func() {
+		result, execErr = registry.Execute(ctx, "blocked_tool", input)
+		close(done)
+	}()
+
+	// Verify it hasn't completed yet
+	select {
+	case <-done:
+		t.Fatal("Execute returned before hook was released")
+	case <-time.After(50 * time.Millisecond):
+		// expected: still blocked
+	}
+
+	// Release the gate
+	close(gate)
+
+	// Wait for completion
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Execute did not complete after hook was released")
+	}
+
+	if execErr != nil {
+		t.Fatalf("unexpected error: %v", execErr)
+	}
+	if result.Content != `{"data":"hello"}` {
+		t.Errorf("expected content %q, got %q", `{"data":"hello"}`, result.Content)
+	}
+	if result.IsError {
+		t.Error("expected IsError to be false")
+	}
+}
+
+// TestPreExecuteHook_ErrorPreventsExecution verifies that when the hook returns
+// an error, tool execution is aborted and the error is returned in the result.
+func TestPreExecuteHook_ErrorPreventsExecution(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("error_hook_tool", "A tool with failing hook")
+	registry.Register(tool)
+
+	registry.SetPreExecuteHook(func(ctx context.Context, toolName, source string) error {
+		return errors.New("indexing not ready")
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"test"}`)
+
+	result, err := registry.Execute(ctx, "error_hook_tool", input)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError to be true when hook returns error")
+	}
+	if !strings.Contains(result.Content, "indexing not ready") {
+		t.Errorf("expected error message to contain 'indexing not ready', got: %s", result.Content)
+	}
+}
+
+// TestPreExecuteHook_NotCalledForInternalTools verifies that the pre-execute
+// hook is NOT invoked for internal tools (e.g., ask_user).
+func TestPreExecuteHook_NotCalledForInternalTools(t *testing.T) {
+	registry := NewToolRegistry()
+	// Register a mock tool under an internal tool name
+	tool := newMockReadOnlyTool("ask_user", "Internal ask_user tool")
+	registry.Register(tool)
+
+	var hookCalled bool
+	registry.SetPreExecuteHook(func(ctx context.Context, toolName, source string) error {
+		hookCalled = true
+		return nil
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"question":"hello?"}`)
+
+	result, err := registry.Execute(ctx, "ask_user", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError to be false for internal tool")
+	}
+	if hookCalled {
+		t.Error("expected pre-execute hook NOT to be called for internal tool 'ask_user'")
+	}
+}
+
+// TestPreExecuteHook_ReceivesCorrectSource verifies that the hook receives the
+// correct source string for a tool registered with RegisterWithSource.
+func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("mcp_search", "An MCP tool")
+	registry.RegisterWithSource(tool, "mcp:codebase-memory")
+
+	var mu sync.Mutex
+	var capturedName, capturedSource string
+	registry.SetPreExecuteHook(func(ctx context.Context, toolName, source string) error {
+		mu.Lock()
+		capturedName = toolName
+		capturedSource = source
+		mu.Unlock()
+		return nil
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"q":"test"}`)
+
+	_, err := registry.Execute(ctx, "mcp_search", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedName != "mcp_search" {
+		t.Errorf("expected hook toolName %q, got %q", "mcp_search", capturedName)
+	}
+	if capturedSource != "mcp:codebase-memory" {
+		t.Errorf("expected hook source %q, got %q", "mcp:codebase-memory", capturedSource)
+	}
+}
+
+// --- ToolFilter tests ---
+
+// TestToolFilter_BlocksRegistration verifies that a filter can reject tools during registration.
+func TestToolFilter_BlocksRegistration(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetToolFilter(func(toolName, source string) bool {
+		return source != "blocked-source"
+	})
+
+	tool := newMockTool("blocked_tool", "A tool from blocked source")
+	registry.RegisterWithSource(tool, "blocked-source")
+
+	_, ok := registry.Get("blocked_tool")
+	if ok {
+		t.Error("expected tool to be filtered out, but it was registered")
+	}
+	if len(registry.List()) != 0 {
+		t.Errorf("expected 0 tools in registry, got %d", len(registry.List()))
+	}
+}
+
+// TestToolFilter_AllowsRegistration verifies that a permissive filter allows tools.
+func TestToolFilter_AllowsRegistration(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetToolFilter(func(toolName, source string) bool {
+		return true
+	})
+
+	tool := newMockTool("allowed_tool", "A tool from allowed source")
+	registry.RegisterWithSource(tool, "allowed-source")
+
+	_, ok := registry.Get("allowed_tool")
+	if !ok {
+		t.Error("expected tool to be registered, but it was not found")
+	}
+}
+
+// TestToolFilter_NilAllowsAll verifies that a nil filter allows all tools (default behavior).
+func TestToolFilter_NilAllowsAll(t *testing.T) {
+	registry := NewToolRegistry()
+	// No filter set
+
+	tool := newMockTool("any_tool", "A tool with no filter")
+	registry.RegisterWithSource(tool, "some-source")
+
+	_, ok := registry.Get("any_tool")
+	if !ok {
+		t.Error("expected tool to be registered with nil filter, but it was not found")
+	}
+}
+
+// --- ParamInjector tests ---
+
+// TestParamInjector_ModifiesInput verifies that the param injector transforms input before execution.
+func TestParamInjector_ModifiesInput(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("echo_tool", "An echo tool")
+	registry.Register(tool)
+
+	registry.SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
+		var m map[string]interface{}
+		if err := json.Unmarshal(input, &m); err != nil {
+			return input
+		}
+		m["injected"] = "value"
+		out, _ := json.Marshal(m)
+		return out
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"test"}`)
+
+	result, err := registry.Execute(ctx, "echo_tool", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError to be false, got true with content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, `"injected":"value"`) {
+		t.Errorf("expected injected param in result content, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, `"data":"test"`) {
+		t.Errorf("expected original param preserved in result content, got: %s", result.Content)
+	}
+}
+
+// TestParamInjector_NilPassesThrough verifies that nil injector passes input unchanged.
+func TestParamInjector_NilPassesThrough(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("echo_tool", "An echo tool")
+	registry.Register(tool)
+	// No injector set
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"test"}`)
+
+	result, err := registry.Execute(ctx, "echo_tool", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Content != `{"data":"test"}` {
+		t.Errorf("expected content %q, got %q", `{"data":"test"}`, result.Content)
+	}
+}
+
+// TestParamInjector_RunsAfterPreExecuteHook verifies that the param injector runs
+// only after the pre-execute hook completes.
+func TestParamInjector_RunsAfterPreExecuteHook(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("ordered_tool", "A tool for ordering test")
+	registry.Register(tool)
+
+	gate := make(chan struct{})
+	registry.SetPreExecuteHook(func(ctx context.Context, toolName, source string) error {
+		<-gate // block until released
+		return nil
+	})
+
+	var mu sync.Mutex
+	injectorCalled := false
+	registry.SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
+		mu.Lock()
+		injectorCalled = true
+		mu.Unlock()
+		return input
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"test"}`)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = registry.Execute(ctx, "ordered_tool", input)
+		close(done)
+	}()
+
+	// While hook is blocked, injector should NOT have been called
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	if injectorCalled {
+		t.Error("expected injector NOT to be called while hook is blocked")
+	}
+	mu.Unlock()
+
+	// Release the hook
+	close(gate)
+
+	// Wait for completion
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Execute did not complete after hook was released")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !injectorCalled {
+		t.Error("expected injector to be called after hook completed")
 	}
 }
 

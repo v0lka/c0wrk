@@ -28,7 +28,22 @@ func TestTriggerCodebaseIndexing_NotInstalled(t *testing.T) {
 	}
 
 	app := &App{}
+
+	// Verify indexingDone is nil before call
+	app.indexingMu.Lock()
+	if app.indexingDone != nil {
+		t.Error("expected indexingDone to be nil before triggerCodebaseIndexing")
+	}
+	app.indexingMu.Unlock()
+
 	app.triggerCodebaseIndexing("/tmp/test-workspace")
+
+	// Verify gate channel is closed and cleared even on early return (not installed)
+	app.indexingMu.Lock()
+	if app.indexingDone != nil {
+		t.Error("expected indexingDone to be nil after triggerCodebaseIndexing completes (not installed path)")
+	}
+	app.indexingMu.Unlock()
 
 	if execCalled {
 		t.Error("exec should not have been called when codebase-memory-mcp is not installed")
@@ -52,15 +67,33 @@ func TestTriggerCodebaseIndexing_Installed(t *testing.T) {
 	}
 	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		mu.Lock()
-		capturedName = name
-		capturedArgs = arg
+		// Only capture the first call (index_repository)
+		if capturedName == "" {
+			capturedName = name
+			capturedArgs = arg
+		}
 		mu.Unlock()
 		// Return a no-op command that succeeds
 		return exec.CommandContext(ctx, "true")
 	}
 
 	app := &App{}
+
+	// Verify indexingDone is nil before call
+	app.indexingMu.Lock()
+	if app.indexingDone != nil {
+		t.Error("expected indexingDone to be nil before triggerCodebaseIndexing")
+	}
+	app.indexingMu.Unlock()
+
 	app.triggerCodebaseIndexing("/tmp/test-workspace")
+
+	// Verify indexingDone is nil after completion (channel closed and cleared)
+	app.indexingMu.Lock()
+	if app.indexingDone != nil {
+		t.Error("expected indexingDone to be nil after triggerCodebaseIndexing completes")
+	}
+	app.indexingMu.Unlock()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -84,6 +117,53 @@ func TestTriggerCodebaseIndexing_Installed(t *testing.T) {
 	}
 }
 
+func TestTriggerCodebaseIndexing_SkipsWhenAlreadyRunning(t *testing.T) {
+	origCheck := checkCodebaseMemoryFn
+	origExec := execCommandFn
+	t.Cleanup(func() {
+		checkCodebaseMemoryFn = origCheck
+		execCommandFn = origExec
+	})
+
+	var execCalled bool
+	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
+	}
+	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		execCalled = true
+		return exec.CommandContext(ctx, "true")
+	}
+
+	app := &App{}
+
+	// Simulate an already-running indexing operation.
+	existingCh := make(chan struct{})
+	app.indexingMu.Lock()
+	app.indexingDone = existingCh
+	app.indexingMu.Unlock()
+
+	app.triggerCodebaseIndexing("/tmp/test-workspace")
+
+	if execCalled {
+		t.Error("exec should not have been called when indexing is already in progress")
+	}
+
+	// Verify the original channel is still set (not closed or replaced).
+	app.indexingMu.Lock()
+	if app.indexingDone != existingCh {
+		t.Error("expected indexingDone to still reference the original channel")
+	}
+	app.indexingMu.Unlock()
+
+	// Verify the original channel is still open (not closed).
+	select {
+	case <-existingCh:
+		t.Error("expected the original channel to still be open")
+	default:
+		// OK — channel is still open.
+	}
+}
+
 func TestTriggerCodebaseIndexing_CommandFailure(t *testing.T) {
 	origCheck := checkCodebaseMemoryFn
 	origExec := execCommandFn
@@ -103,4 +183,144 @@ func TestTriggerCodebaseIndexing_CommandFailure(t *testing.T) {
 	app := &App{}
 	// Should not panic even when the command fails
 	app.triggerCodebaseIndexing("/tmp/test-workspace")
+}
+
+func TestResolveCodebaseProjectName_MatchFound(t *testing.T) {
+	origCheck := checkCodebaseMemoryFn
+	origExec := execCommandFn
+	t.Cleanup(func() {
+		checkCodebaseMemoryFn = origCheck
+		execCommandFn = origExec
+	})
+
+	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
+	}
+
+	mcpJSON := `{"content":[{"type":"text","text":"{\"projects\":[{\"name\":\"Test-Project\",\"root_path\":\"/tmp/test-workspace\"},{\"name\":\"Other-Project\",\"root_path\":\"/other/path\"}]}"}]}`
+
+	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "echo", mcpJSON)
+	}
+
+	app := &App{}
+	app.resolveCodebaseProjectName("/tmp/test-workspace")
+
+	app.activeProjectMu.RLock()
+	got := app.codebaseProjectName
+	app.activeProjectMu.RUnlock()
+
+	if got != "Test-Project" {
+		t.Errorf("expected codebaseProjectName %q, got %q", "Test-Project", got)
+	}
+}
+
+func TestResolveCodebaseProjectName_NoMatch(t *testing.T) {
+	origCheck := checkCodebaseMemoryFn
+	origExec := execCommandFn
+	t.Cleanup(func() {
+		checkCodebaseMemoryFn = origCheck
+		execCommandFn = origExec
+	})
+
+	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
+	}
+
+	mcpJSON := `{"content":[{"type":"text","text":"{\"projects\":[{\"name\":\"Test-Project\",\"root_path\":\"/tmp/test-workspace\"}]}"}]}`
+
+	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "echo", mcpJSON)
+	}
+
+	app := &App{}
+	app.resolveCodebaseProjectName("/no/match/path")
+
+	app.activeProjectMu.RLock()
+	got := app.codebaseProjectName
+	app.activeProjectMu.RUnlock()
+
+	if got != "" {
+		t.Errorf("expected empty codebaseProjectName, got %q", got)
+	}
+}
+
+func TestResolveCodebaseProjectName_NotInstalled(t *testing.T) {
+	origCheck := checkCodebaseMemoryFn
+	origExec := execCommandFn
+	t.Cleanup(func() {
+		checkCodebaseMemoryFn = origCheck
+		execCommandFn = origExec
+	})
+
+	var execCalled bool
+	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+		return mcp.CodeMemoryStatus{Installed: false}
+	}
+	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		execCalled = true
+		return exec.CommandContext(ctx, "true")
+	}
+
+	app := &App{}
+	app.resolveCodebaseProjectName("/tmp/test-workspace")
+
+	app.activeProjectMu.RLock()
+	got := app.codebaseProjectName
+	app.activeProjectMu.RUnlock()
+
+	if got != "" {
+		t.Errorf("expected empty codebaseProjectName, got %q", got)
+	}
+	if execCalled {
+		t.Error("exec should not have been called when codebase-memory-mcp is not installed")
+	}
+}
+
+func TestTriggerCodebaseIndexing_ResolvesProjectName(t *testing.T) {
+	origCheck := checkCodebaseMemoryFn
+	origExec := execCommandFn
+	t.Cleanup(func() {
+		checkCodebaseMemoryFn = origCheck
+		execCommandFn = origExec
+	})
+
+	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
+	}
+
+	mcpJSON := `{"content":[{"type":"text","text":"{\"projects\":[{\"name\":\"Indexed-Project\",\"root_path\":\"/tmp/test-workspace\"}]}"}]}`
+
+	var callCount int
+	var mu sync.Mutex
+	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+		if len(arg) >= 2 && arg[1] == "list_projects" {
+			// list_projects call — return MCP JSON
+			return exec.CommandContext(ctx, "echo", mcpJSON)
+		}
+		// index_repository call — succeed silently
+		return exec.CommandContext(ctx, "true")
+	}
+
+	app := &App{}
+	app.triggerCodebaseIndexing("/tmp/test-workspace")
+
+	app.activeProjectMu.RLock()
+	got := app.codebaseProjectName
+	app.activeProjectMu.RUnlock()
+
+	if got != "Indexed-Project" {
+		t.Errorf("expected codebaseProjectName %q, got %q", "Indexed-Project", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Should have been called at least twice: once for index_repository, once for list_projects
+	// checkCodebaseMemoryFn is called twice too (once per method), but execCommandFn is what we count
+	if callCount < 2 {
+		t.Errorf("expected at least 2 exec calls (index + list_projects), got %d", callCount)
+	}
 }

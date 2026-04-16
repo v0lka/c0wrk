@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,6 +45,25 @@ func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, er
 // given workspace path. It is designed to run in a goroutine and never panics.
 // Errors are logged as warnings and are non-fatal.
 func (a *App) triggerCodebaseIndexing(workspacePath string) {
+	a.indexingMu.Lock()
+	if a.indexingDone != nil {
+		// Another indexing run is already in progress; skip.
+		a.indexingMu.Unlock()
+		slog.Info("codebase indexing already in progress, skipping", "workspace", workspacePath)
+		return
+	}
+	ch := make(chan struct{})
+	a.indexingDone = ch
+	a.indexingMu.Unlock()
+	defer func() {
+		a.indexingMu.Lock()
+		close(ch)
+		if a.indexingDone == ch {
+			a.indexingDone = nil
+		}
+		a.indexingMu.Unlock()
+	}()
+
 	status := checkCodebaseMemoryFn()
 	if !status.Installed {
 		return
@@ -66,6 +86,65 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 	}
 
 	slog.Info("codebase-memory-mcp indexing triggered", "workspace", workspacePath)
+	a.resolveCodebaseProjectName(workspacePath)
+}
+
+// resolveCodebaseProjectName queries codebase-memory-mcp for the project name
+// that matches the given workspace path. The result is stored in codebaseProjectName.
+// Errors are logged as warnings and are non-fatal.
+func (a *App) resolveCodebaseProjectName(workspacePath string) {
+	status := checkCodebaseMemoryFn()
+	if !status.Installed {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := execCommandFn(ctx, status.Path, "cli", "list_projects")
+	output, err := cmd.Output()
+	if err != nil {
+		slog.Warn("failed to list codebase-memory-mcp projects", "error", err)
+		return
+	}
+
+	// Parse MCP response: {"content":[{"type":"text","text":"{\"projects\":[...]}"}]}
+	var mcpResp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(output, &mcpResp); err != nil {
+		slog.Warn("failed to parse list_projects response", "error", err)
+		return
+	}
+	if len(mcpResp.Content) == 0 {
+		return
+	}
+
+	var projectList struct {
+		Projects []struct {
+			Name     string `json:"name"`
+			RootPath string `json:"root_path"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal([]byte(mcpResp.Content[0].Text), &projectList); err != nil {
+		slog.Warn("failed to parse project list", "error", err)
+		return
+	}
+
+	for _, p := range projectList.Projects {
+		if p.RootPath == workspacePath {
+			a.activeProjectMu.Lock()
+			a.codebaseProjectName = p.Name
+			a.activeProjectMu.Unlock()
+			slog.Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
+			return
+		}
+	}
+
+	slog.Warn("codebase-memory-mcp project not found for workspace", "workspace", workspacePath)
 }
 
 // DeleteProject deletes a project and all its sessions.
@@ -139,7 +218,11 @@ func (a *App) SwitchProject(id string) error {
 	a.activeProjectMu.Lock()
 	a.activeProjectID = p.ID
 	a.activeProjectPath = p.WorkspacePath
+	a.codebaseProjectName = "" // clear stale name
 	a.activeProjectMu.Unlock()
+
+	// Resolve codebase-memory-mcp project name for new project (fast CLI call)
+	a.resolveCodebaseProjectName(p.WorkspacePath)
 
 	// Update project activity timestamp
 	_ = a.projStore.UpdateProjectActivity(id)

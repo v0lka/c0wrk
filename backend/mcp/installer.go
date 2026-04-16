@@ -171,11 +171,12 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 
 // EnsureAutoIndex checks the codebase-memory-mcp configuration and enables
 // auto_index if it is currently disabled. If the binary is not found, it
-// returns nil (graceful skip).
-func EnsureAutoIndex(ctx context.Context) error {
+// returns (nil, nil) (graceful skip). When auto_index is changed, a restore
+// closure is returned that reverts the setting to its original value.
+func EnsureAutoIndex(ctx context.Context) (restore func(), err error) {
 	status := CheckCodebaseMemoryMCP()
 	if !status.Installed {
-		return nil // not installed, skip gracefully
+		return nil, nil // not installed, skip gracefully
 	}
 
 	binaryPath := status.Path
@@ -184,20 +185,21 @@ func EnsureAutoIndex(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, binaryPath, "config", "list")
 	output, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("failed to read codebase-memory-mcp config: %w", err)
+		return nil, fmt.Errorf("failed to read codebase-memory-mcp config: %w", err)
 	}
 
 	// Parse the output to find auto_index value
+	originalValue := ""
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "auto_index ") && !strings.HasPrefix(line, "auto_index_") {
 			// Line format: "auto_index                = false"
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) == 2 {
-				value := strings.TrimSpace(parts[1])
-				if value == "true" {
+				originalValue = strings.TrimSpace(parts[1])
+				if originalValue == "true" {
 					slog.Debug("codebase-memory-mcp auto_index already enabled")
-					return nil
+					return nil, nil
 				}
 			}
 		}
@@ -207,11 +209,25 @@ func EnsureAutoIndex(ctx context.Context) error {
 	slog.Info("enabling codebase-memory-mcp auto_index")
 	setCmd := exec.CommandContext(ctx, binaryPath, "config", "set", "auto_index", "true")
 	if out, err := setCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to enable auto_index: %w, output: %s", err, string(out))
+		return nil, fmt.Errorf("failed to enable auto_index: %w, output: %s", err, string(out))
+	}
+
+	// Determine the value to restore: use "false" if original was empty or unparseable
+	restoreValue := originalValue
+	if restoreValue == "" {
+		restoreValue = "false"
 	}
 
 	slog.Info("codebase-memory-mcp auto_index enabled")
-	return nil
+	return func() {
+		slog.Info("restoring codebase-memory-mcp auto_index", "value", restoreValue)
+		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		restoreCmd := exec.CommandContext(rctx, binaryPath, "config", "set", "auto_index", restoreValue)
+		if out, err := restoreCmd.CombinedOutput(); err != nil {
+			slog.Warn("failed to restore auto_index", "error", err, "output", string(out))
+		}
+	}, nil
 }
 
 // ExtractZip extracts a zip file to the specified directory.
