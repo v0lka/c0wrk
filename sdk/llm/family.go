@@ -12,6 +12,7 @@ const (
 	FamilyGemini         ModelFamily = "gemini"
 	FamilyMistral        ModelFamily = "mistral"
 	FamilyDeepSeek       ModelFamily = "deepseek"
+	FamilyOpenAICodex    ModelFamily = "openai_codex"
 	FamilyKimi           ModelFamily = "kimi"
 	FamilyDefault        ModelFamily = "default"
 )
@@ -22,6 +23,11 @@ func DetectFamily(modelID string) ModelFamily {
 	id := strings.ToLower(modelID)
 	if id == "" {
 		return FamilyDefault
+	}
+
+	// OpenAI Codex (check before GPT patterns — models like "gpt-5.3-codex" need the Responses API)
+	if strings.Contains(id, "codex") {
+		return FamilyOpenAICodex
 	}
 
 	// OpenAI Standard (check before flagship patterns since gpt-4.1 contains "gpt-4")

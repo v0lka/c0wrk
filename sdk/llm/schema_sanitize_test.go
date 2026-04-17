@@ -409,7 +409,7 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 	})
 
-	t.Run("OpenAIRemovesEmptyRequired", func(t *testing.T) {
+	t.Run("OpenAIRemovesInvalidAndAddsMissingRequired", func(t *testing.T) {
 		schema := json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -425,9 +425,16 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 			t.Fatalf("failed to parse result: %v", err)
 		}
 
-		// required should be removed since none of the properties exist
-		if _, exists := parsed["required"]; exists {
-			t.Error("required should be removed when all properties are invalid")
+		// "b" and "c" are invalid, but "a" exists in properties and must be added
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should exist")
+		}
+		if len(required) != 1 {
+			t.Errorf("required should have 1 element, got %d: %v", len(required), required)
+		}
+		if required[0] != "a" {
+			t.Errorf("required[0] = %v, expected 'a'", required[0])
 		}
 	})
 
@@ -469,6 +476,148 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		result := SanitizeSchemaForOpenAI(nil)
 		if result != nil {
 			t.Errorf("nil schema should return nil, got %q", string(result))
+		}
+	})
+
+	t.Run("OpenAIAddsAllPropertiesWhenRequiredMissing", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"a": {"type": "string"},
+				"b": {"type": "integer"},
+				"c": {"type": "boolean"}
+			}
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should be created from properties")
+		}
+		if len(required) != 3 {
+			t.Fatalf("required should have 3 elements, got %d: %v", len(required), required)
+		}
+		// Sorted order: a, b, c
+		expected := []string{"a", "b", "c"}
+		for i, exp := range expected {
+			if required[i] != exp {
+				t.Errorf("required[%d] = %v, expected %q", i, required[i], exp)
+			}
+		}
+	})
+
+	t.Run("OpenAIAddsMissingPropertiesToPartialRequired", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"a": {"type": "string"},
+				"b": {"type": "integer"},
+				"c": {"type": "boolean"}
+			},
+			"required": ["a"]
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should exist")
+		}
+		if len(required) != 3 {
+			t.Fatalf("required should have 3 elements, got %d: %v", len(required), required)
+		}
+		expected := []string{"a", "b", "c"}
+		for i, exp := range expected {
+			if required[i] != exp {
+				t.Errorf("required[%d] = %v, expected %q", i, required[i], exp)
+			}
+		}
+	})
+
+	t.Run("OpenAINestedObjectMissingRequired", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"outer": {
+					"type": "object",
+					"properties": {
+						"x": {"type": "string"},
+						"y": {"type": "integer"}
+					}
+				}
+			},
+			"required": ["outer"]
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		// Root required should contain "outer"
+		rootReq, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("root required should exist")
+		}
+		if len(rootReq) != 1 || rootReq[0] != "outer" {
+			t.Errorf("root required = %v, expected [outer]", rootReq)
+		}
+
+		// Nested "outer" should have required: ["x", "y"]
+		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
+		outer := props["outer"].(map[string]interface{})           //nolint:errcheck // test: schema structure is known
+		nestedReq, ok := outer["required"].([]interface{})
+		if !ok {
+			t.Fatal("nested required should be created")
+		}
+		if len(nestedReq) != 2 {
+			t.Fatalf("nested required should have 2 elements, got %d: %v", len(nestedReq), nestedReq)
+		}
+		if nestedReq[0] != "x" || nestedReq[1] != "y" {
+			t.Errorf("nested required = %v, expected [x, y]", nestedReq)
+		}
+	})
+
+	t.Run("OpenAIRequiredWithNonExistentAndMissing", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"a": {"type": "string"},
+				"b": {"type": "integer"}
+			},
+			"required": ["a", "nonexistent"]
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should exist")
+		}
+		// "nonexistent" removed, "b" added → ["a", "b"]
+		if len(required) != 2 {
+			t.Fatalf("required should have 2 elements, got %d: %v", len(required), required)
+		}
+		if required[0] != "a" || required[1] != "b" {
+			t.Errorf("required = %v, expected [a, b]", required)
 		}
 	})
 

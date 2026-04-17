@@ -319,6 +319,61 @@ func TestOpenAIProvider_ConvertResponseMessage(t *testing.T) {
 	})
 }
 
+func TestNeedsResponsesAPI(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"codex-mini-latest", true},
+		{"codex-mini-2025-03-25", true},
+		{"gpt-4o", false},
+		{"o3", false},
+		{"claude-sonnet-4-20250514", false},
+		{"gpt-4.1-mini", false},
+		{"deepseek-chat", false},
+		{"gemini-2.5-pro", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := needsResponsesAPI(tt.model)
+			if got != tt.want {
+				t.Errorf("needsResponsesAPI(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenAIProvider_ResponsesClientInitialized(t *testing.T) {
+	p, err := NewOpenAIProvider(OpenAIProviderConfig{
+		Name:   "openai",
+		APIKey: "test-key",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider failed: %v", err)
+	}
+	if p.responsesClient == nil {
+		t.Error("expected responsesClient to be non-nil")
+	}
+	if p.client == nil {
+		t.Error("expected client to be non-nil")
+	}
+}
+
+func TestOpenAIProvider_ResponsesClientInitialized_CustomBaseURL(t *testing.T) {
+	p, err := NewOpenAIProvider(OpenAIProviderConfig{
+		Name:    "custom",
+		APIKey:  "test-key",
+		BaseURL: "https://custom.api.com/v1",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider failed: %v", err)
+	}
+	if p.responsesClient == nil {
+		t.Error("expected responsesClient to be non-nil with custom base URL")
+	}
+}
+
 func TestOpenAIProvider_WrapError(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 

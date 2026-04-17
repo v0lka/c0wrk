@@ -51,6 +51,9 @@ func TestModelRegistry_BuiltInResolution(t *testing.T) {
 		{"gpt-4o", 128000, 16384, "tiktoken/o200k_base"},
 		{"o3-mini", 200000, 100000, "tiktoken/o200k_base"},
 
+		// OpenAI Codex models
+		{"codex-mini-latest", 192000, 16384, "tiktoken/o200k_base"},
+
 		// Anthropic models
 		{"claude-opus-4.6", 1000000, 32768, "anthropic-api"},
 		{"claude-3.5-sonnet", 200000, 8192, "anthropic-api"},
@@ -287,6 +290,9 @@ func TestResolveFamily_BuiltinModels(t *testing.T) {
 
 		// OpenAI standard models
 		{"gpt-4.1", "openai_standard"},
+
+		// OpenAI Codex models
+		{"codex-mini-latest", "openai_codex"},
 
 		// Anthropic models
 		{"claude-opus-4.6", "anthropic"},

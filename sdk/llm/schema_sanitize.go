@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // SanitizeSchemaForGemini normalizes JSON Schema for Gemini API compatibility.
@@ -166,7 +167,8 @@ func convertEnumToStrings(enumVal interface{}) []interface{} {
 
 // SanitizeSchemaForOpenAI ensures strict mode compliance for OpenAI.
 //   - Adds "additionalProperties": false to all object-type schemas (recursively)
-//   - Ensures all properties listed in required actually exist in properties
+//   - Ensures the required array contains ALL property names from properties
+//   - Removes required entries that reference non-existent properties
 func SanitizeSchemaForOpenAI(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
@@ -208,24 +210,42 @@ func sanitizeOpenAISchema(schema map[string]interface{}) map[string]interface{} 
 			result["additionalProperties"] = false
 		}
 
-		// Validate required properties exist
-		if required, ok := result["required"].([]interface{}); ok {
-			props, propsOK := result["properties"].(map[string]interface{})
-			if propsOK && props != nil {
-				validRequired := make([]interface{}, 0)
+		// Ensure required array contains ALL property names (strict mode).
+		// Phase 1: filter out required entries that don't exist in properties.
+		// Phase 2: add any property names missing from required.
+		props, propsOK := result["properties"].(map[string]interface{})
+		if propsOK && len(props) > 0 {
+			// Phase 1: keep only valid existing required entries
+			requiredSet := make(map[string]struct{})
+			if required, ok := result["required"].([]interface{}); ok {
 				for _, req := range required {
 					if reqStr, ok := req.(string); ok {
 						if _, exists := props[reqStr]; exists {
-							validRequired = append(validRequired, reqStr)
+							requiredSet[reqStr] = struct{}{}
 						}
 					}
 				}
-				if len(validRequired) > 0 {
-					result["required"] = validRequired
-				} else {
-					delete(result, "required")
-				}
 			}
+
+			// Phase 2: add any missing property names
+			for propName := range props {
+				requiredSet[propName] = struct{}{}
+			}
+
+			// Build sorted required list for deterministic output
+			sortedNames := make([]string, 0, len(requiredSet))
+			for name := range requiredSet {
+				sortedNames = append(sortedNames, name)
+			}
+			sort.Strings(sortedNames)
+			allRequired := make([]interface{}, len(sortedNames))
+			for i, name := range sortedNames {
+				allRequired[i] = name
+			}
+			result["required"] = allRequired
+		} else {
+			// No properties or empty properties: remove required
+			delete(result, "required")
 		}
 	}
 

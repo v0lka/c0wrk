@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	oai "github.com/openai/openai-go"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -19,8 +20,9 @@ type OpenAIProviderConfig struct {
 
 // OpenAIProvider implements Provider for OpenAI and compatible APIs.
 type OpenAIProvider struct {
-	client *openai.Client
-	name   string
+	client          *openai.Client
+	responsesClient *oai.Client // official SDK for Responses API
+	name            string
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
@@ -37,9 +39,12 @@ func NewOpenAIProvider(cfg OpenAIProviderConfig) (*OpenAIProvider, error) {
 		client = openai.NewClientWithConfig(config)
 	}
 
+	responsesClient := newResponsesClient(cfg.APIKey, cfg.BaseURL)
+
 	return &OpenAIProvider{
-		client: client,
-		name:   cfg.Name,
+		client:          client,
+		responsesClient: responsesClient,
+		name:            cfg.Name,
 	}, nil
 }
 
@@ -50,6 +55,10 @@ func (p *OpenAIProvider) Name() string {
 
 // ChatCompletion sends a request and returns the full response.
 func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	if needsResponsesAPI(req.Model) {
+		return responsesAPICompletion(ctx, p.responsesClient, req)
+	}
+
 	openaiReq := p.buildRequest(req)
 
 	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
@@ -81,6 +90,10 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 
 // StreamChatCompletion sends a request and returns a channel of streaming chunks.
 func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
+	if needsResponsesAPI(req.Model) {
+		return responsesAPIStream(ctx, p.responsesClient, req)
+	}
+
 	openaiReq := p.buildRequest(req)
 	openaiReq.Stream = true
 
@@ -259,4 +272,10 @@ func (p *OpenAIProvider) wrapError(err error) error {
 	}
 	// Fallback: check for net errors directly
 	return WrapProviderError(p.name, 0, err)
+}
+
+// needsResponsesAPI returns true if the model requires the Responses API
+// (e.g., Codex models use /v1/responses instead of /v1/chat/completions).
+func needsResponsesAPI(model string) bool {
+	return DetectFamily(model) == FamilyOpenAICodex
 }

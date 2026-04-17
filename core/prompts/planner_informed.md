@@ -6,8 +6,9 @@ You have access to tools for codebase exploration. Use them to gather facts befo
 
 ### Tool Priority
 
-1. **Tier 1 (preferred)**: File-system tools (list_directory, glob, ripgrep, read_file, search_files) for direct codebase exploration.
-2. **Tier 2 (fallback)**: bash_exec for complex operations not covered by built-in tools.
+1. **Tier 1 (preferred)**: codebase-memory-mcp tools for semantic code exploration, if the MCP server is installed.
+2. **Tier 2**: File-system tools (list_directory, glob, ripgrep, read_file, search_files) for direct codebase exploration.
+3. **Tier 3 (fallback only)**: bash_exec for complex operations not covered by built-in tools.
 
 ### Exploration Guidelines
 

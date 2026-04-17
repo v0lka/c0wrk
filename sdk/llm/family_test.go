@@ -46,6 +46,11 @@ func TestDetectFamily(t *testing.T) {
 		{"devstral-v1", FamilyMistral},
 		{"codestral-latest", FamilyMistral},
 
+		// OpenAI Codex (must match before GPT flagship patterns)
+		{"codex-mini-latest", FamilyOpenAICodex},
+		{"codex-mini-2025-03-25", FamilyOpenAICodex},
+		{"gpt-5.3-codex", FamilyOpenAICodex}, // "codex" takes priority over "gpt-5"
+
 		// DeepSeek
 		{"deepseek-chat", FamilyDeepSeek},
 		{"deepseek-reasoner", FamilyDeepSeek},
@@ -102,6 +107,7 @@ func TestModelFamilyConstants(t *testing.T) {
 		FamilyAnthropic:      "anthropic",
 		FamilyOpenAIFlagship: "openai_flagship",
 		FamilyOpenAIStandard: "openai_standard",
+		FamilyOpenAICodex:    "openai_codex",
 		FamilyGemini:         "gemini",
 		FamilyMistral:        "mistral",
 		FamilyDeepSeek:       "deepseek",

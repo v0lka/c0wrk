@@ -311,6 +311,26 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Family:        "openai_flagship",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
+		"codex-mini-latest": {
+			ContextWindow: 192000,
+			OutputLimit:   16384,
+			TokenizerType: "tiktoken/o200k_base",
+			Family:        "openai_codex",
+			Capabilities: ModelCapabilities{
+				ToolCall:  true,
+				Reasoning: true,
+			},
+		},
+		"gpt-5.3-codex": {
+			ContextWindow: 192000,
+			OutputLimit:   16384,
+			TokenizerType: "tiktoken/o200k_base",
+			Family:        "openai_codex",
+			Capabilities: ModelCapabilities{
+				ToolCall:  true,
+				Reasoning: true,
+			},
+		},
 
 		// Anthropic models
 		"claude-opus-4.6": {
