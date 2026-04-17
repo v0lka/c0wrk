@@ -135,6 +135,8 @@ func (b *OrchestratorBuilder) Build(
 		MaxRetries:                cfg.Executor.MaxRetries,
 		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
+		SimpleComplexityThreshold: cfg.Orchestration.SimpleComplexityThreshold,
+		SimpleMaxSteps:            cfg.Orchestration.SimpleMaxSteps,
 		StepLimitFunc:             stepLimitFunc,
 	}
 

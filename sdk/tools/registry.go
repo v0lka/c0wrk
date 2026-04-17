@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -113,4 +114,23 @@ func (r *ToolRegistry) GetToolSource(name string) string {
 		return source
 	}
 	return "core"
+}
+
+// HasSourceContaining reports whether any registered tool has a source
+// whose name contains the given substring (case-insensitive).
+func (r *ToolRegistry) HasSourceContaining(substr string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	lower := strings.ToLower(substr)
+	seen := make(map[string]struct{})
+	for _, src := range r.toolSources {
+		if _, ok := seen[src]; ok {
+			continue
+		}
+		seen[src] = struct{}{}
+		if strings.Contains(strings.ToLower(src), lower) {
+			return true
+		}
+	}
+	return false
 }

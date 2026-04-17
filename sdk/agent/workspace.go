@@ -95,3 +95,36 @@ func SharedWorkspaceFromContext(ctx context.Context) *SharedWorkspace {
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// FactStore — inter-step fact memory (minimal interface to avoid circular imports)
+// ---------------------------------------------------------------------------
+
+// FactStore provides keyword-tagged fact storage for inter-step communication.
+// This is a minimal interface to avoid circular imports with orchestration.
+type FactStore interface {
+	StoreFact(keywords []string, content, author string)
+	SearchFacts(keywords []string) []FactEntry
+}
+
+// FactEntry represents a stored fact returned by SearchFacts.
+type FactEntry struct {
+	Keywords []string
+	Content  string
+	Author   string
+}
+
+type factStoreKeyType struct{}
+
+var factStoreKey = factStoreKeyType{}
+
+// WithFactStore returns a context carrying the given FactStore.
+func WithFactStore(ctx context.Context, fs FactStore) context.Context {
+	return context.WithValue(ctx, factStoreKey, fs)
+}
+
+// FactStoreFromContext returns the FactStore from context, or nil.
+func FactStoreFromContext(ctx context.Context) FactStore {
+	fs, _ := ctx.Value(factStoreKey).(FactStore)
+	return fs
+}

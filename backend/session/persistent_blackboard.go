@@ -169,6 +169,15 @@ func (pb *PersistentBlackboard) SetStepFileChanges(stepID string, changes []core
 	})
 }
 
+// StoreFact appends a fact and persists the full facts list.
+func (pb *PersistentBlackboard) StoreFact(fact core.Fact) {
+	pb.MapBlackboard.StoreFact(fact)
+	facts := pb.GetFacts()
+	pb.persistSafe("facts", func() error {
+		return pb.store.PersistFacts(pb.taskID, facts)
+	})
+}
+
 // SetFinalResult sets the final result string.
 // Does NOT call PersistCompletion — the orchestrator calls CompleteTask() separately.
 func (pb *PersistentBlackboard) SetFinalResult(result string) {
@@ -246,6 +255,9 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 	}
 	for stepID, changes := range state.FileChanges {
 		mb.SetStepFileChanges(stepID, changes)
+	}
+	if len(state.Facts) > 0 {
+		mb.SetFacts(state.Facts)
 	}
 	if state.FinalOutput != "" {
 		mb.SetFinalResult(state.FinalOutput)

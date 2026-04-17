@@ -74,4 +74,8 @@ type Blackboard interface {
 	GetStepFileChanges(stepID string) []FileChange
 	GetAllFileChanges() map[string][]FileChange // stepID -> changes
 	GetSessionFileChanges() []FileChange        // aggregated: one entry per unique path
+
+	// Fact memory for inter-step communication
+	StoreFact(fact Fact)
+	SearchFacts(keywords []string) []Fact
 }

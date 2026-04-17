@@ -407,7 +407,7 @@ func TestManager_SendMessage_SessionNotFound(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, "non-existent", "hello", false)
+	err := manager.SendMessage(ctx, "non-existent", "hello")
 	if err == nil {
 		t.Error("SendMessage should return error for non-existent session")
 	}
@@ -427,7 +427,7 @@ func TestManager_SendMessage_AlreadyActive(t *testing.T) {
 
 	// Try to send message while active
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, info.ID, "hello", false)
+	err := manager.SendMessage(ctx, info.ID, "hello")
 	if err == nil {
 		t.Error("SendMessage should return error when session is already active")
 	}
@@ -809,7 +809,7 @@ func TestManager_SendMessage_AllowsParallelActiveSessions(t *testing.T) {
 
 	// Sending message to session 1 again should fail (same session double-send)
 	ctx := context.Background()
-	err = manager.SendMessage(ctx, info1.ID, "hello", false)
+	err = manager.SendMessage(ctx, info1.ID, "hello")
 	if err == nil {
 		t.Fatal("expected error when sending message to already-active session")
 	}
@@ -847,6 +847,8 @@ func (m *mockTaskStoreForResumable) LoadTaskSteps(_ string) ([]TaskStepRecord, e
 func (m *mockTaskStoreForResumable) LoadStepFileChanges(_ string) (map[string]json.RawMessage, error) {
 	return nil, nil
 }
+func (m *mockTaskStoreForResumable) SaveFacts(_ string, _ json.RawMessage) error { return nil }
+func (m *mockTaskStoreForResumable) LoadFacts(_ string) (json.RawMessage, error) { return nil, nil }
 func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ string) (*TaskRecord, error) {
 	return m.unfinished, nil
 }
@@ -1072,23 +1074,13 @@ func TestSendMessage_ContinuationRoutingLogic(t *testing.T) {
 	}
 }
 
-// TestSendMessage_PassesPlanFirst verifies that the planFirst parameter
-// is forwarded correctly to HandleMessage. The planFirst parameter controls
-// whether the orchestrator uses ReAct mode (false) or Plan&Execute mode (true).
-//
-// This test verifies the session structure and code path since the orchestrator
-// is a concrete type and cannot be easily mocked. The actual forwarding is at
-// manager.go:472-475 where HandleMessage is called with HandleOptions{PlanFirst: planFirst}.
-func TestSendMessage_PassesPlanFirst(t *testing.T) {
-	// This test verifies that SendMessage accepts the planFirst parameter
-	// and the session correctly stores and passes it to the orchestrator.
+// TestSendMessage_AlwaysPlanFirst verifies that SendMessage always uses
+// plan-first mode — planning is always on.
+func TestSendMessage_AlwaysPlanFirst(t *testing.T) {
+	// This test verifies that SendMessage works without a planFirst parameter
+	// and the session correctly forwards to the orchestrator.
 	// The full integration test requires a working orchestrator, which is
 	// tested separately in core/orchestrator_test.go.
-	//
-	// Key behaviors tested:
-	// 1. SendMessage accepts planFirst=false (ReAct mode)
-	// 2. SendMessage accepts planFirst=true (Plan&Execute mode)
-	// 3. The session properly tracks the active state
 
 	manager, _, _ := testManager(t)
 
@@ -1110,15 +1102,13 @@ func TestSendMessage_PassesPlanFirst(t *testing.T) {
 	orch := session.GetOrchestrator()
 	// With our mock factory, orchestrator is nil - that's expected
 	if orch != nil {
-		t.Log("Orchestrator is non-nil, can test planFirst passing directly")
+		t.Log("Orchestrator is non-nil, can test planning passing directly")
 	}
 
-	// The real test is in the source code at manager.go:472-475:
+	// The real test is in the source code at manager.go where HandleMessage is called with:
 	// session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-	//     PlanFirst: planFirst,
-	//     TaskID:    lastTaskID,
+	//     TaskID: lastTaskID,
 	// })
 	//
-	// This test documents the expected behavior and verifies the session
-	// structure supports both planFirst values.
+	// Planning always happens first; mode is selected automatically.
 }

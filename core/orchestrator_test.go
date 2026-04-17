@@ -924,6 +924,7 @@ func (m *mockTaskStore) PersistFailure(taskID string) error { return nil }
 func (m *mockTaskStore) PersistStepFileChanges(taskID, stepID string, changes []FileChange) error {
 	return nil
 }
+func (m *mockTaskStore) PersistFacts(taskID string, facts []Fact) error { return nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -935,8 +936,9 @@ func (m *mockTaskStore) GetUnfinishedTaskID(sessionID string) (string, error) {
 }
 func (m *mockTaskStore) ReactivateTask(taskID string) error { return nil }
 
-// TestHandleMessage_ReActContinuation tests the ReAct continuation flow with mocks.
-func TestHandleMessage_ReActContinuation(t *testing.T) {
+// TestHandleMessage_Continuation tests the continuation flow with mocks.
+// Continuations always use the P&E path: PlanContinuation + Resume.
+func TestHandleMessage_Continuation(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -947,6 +949,14 @@ func TestHandleMessage_ReActContinuation(t *testing.T) {
 					Message: llm.Message{
 						Role:    "assistant",
 						Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // PlanContinuation - creates continuation step
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "continuation_1", "description": "Continue the work", "depends_on": ["step_2"], "parallelizable": false, "estimated_tools": []}]}`,
 					},
 					StopReason: "end_turn",
 				}, nil
@@ -1013,7 +1023,7 @@ func TestHandleMessage_ReActContinuation(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
+	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{TaskID: "task-123"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1111,7 +1121,7 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
+	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-456", HandleOptions{TaskID: "task-123"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1164,7 +1174,7 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 	)
 	// Note: taskStore is nil by default
 
-	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{PlanFirst: false, TaskID: "task-123"})
+	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "task-123"})
 	if err == nil {
 		t.Fatal("expected error when task store is not configured")
 	}
@@ -1220,7 +1230,7 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{PlanFirst: false, TaskID: "non-existent-task"})
+	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "non-existent-task"})
 	if err == nil {
 		t.Fatal("expected error when task is not found")
 	}
@@ -1230,20 +1240,27 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 	}
 }
 
-// TestHandleMessage_ReActFirstMessage tests the ReAct mode first message flow.
-// PlanFirst=false, TaskID="" should create a clean BB, build synthetic 1-step plan,
-// execute single step via ExecuteAdHocStep.
-func TestHandleMessage_ReActFirstMessage(t *testing.T) {
+// TestHandleMessage_SimpleFirstMessage tests the unified ReAct first message flow
+// when the plan is simple (low complexity, few steps, no branching).
+func TestHandleMessage_SimpleFirstMessage(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callIdx++
 			switch callIdx {
-			case 1: // Router - returns code domain
+			case 1: // Router - returns low complexity (simple)
 				return &llm.ChatResponse{
 					Message: llm.Message{
 						Role:    "assistant",
-						Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+						Content: `{"domain": "code", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Planner - returns a single step (simple)
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Write hello world", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
 					},
 					StopReason: "end_turn",
 				}, nil
@@ -1288,7 +1305,7 @@ func TestHandleMessage_ReActFirstMessage(t *testing.T) {
 		nil, // bbFactory
 	)
 
-	result, err := orchestrator.HandleMessage(context.Background(), "Write a hello world program", "session-test", HandleOptions{PlanFirst: false, TaskID: ""})
+	result, err := orchestrator.HandleMessage(context.Background(), "Write a hello world program", "session-test", HandleOptions{})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1313,10 +1330,10 @@ func TestHandleMessage_ReActFirstMessage(t *testing.T) {
 	}
 
 	if len(result.Plan.Steps) != 1 {
-		t.Errorf("expected 1 step in synthetic plan, got %d", len(result.Plan.Steps))
+		t.Errorf("expected 1 step in plan, got %d", len(result.Plan.Steps))
 	}
 
-	// Verify the step ID is "step_1" for first message
+	// Verify the step ID is "step_1" for first message (unified ReAct)
 	if result.Plan.Steps[0].ID != "step_1" {
 		t.Errorf("expected step ID 'step_1', got %q", result.Plan.Steps[0].ID)
 	}
@@ -1333,7 +1350,7 @@ func TestHandleMessage_ReActFirstMessage(t *testing.T) {
 }
 
 // TestHandleMessage_PlanExecuteFirstMessage tests the Plan&Execute mode first message flow.
-// PlanFirst=true, TaskID="" should create clean BB, run full P&E via ExecuteWithBlackboard.
+// TaskID="" with a complex plan should create clean BB, generate plan, run full P&E via Resume.
 func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
@@ -1397,7 +1414,7 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 		nil, // bbFactory
 	)
 
-	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{PlanFirst: true, TaskID: ""})
+	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1433,7 +1450,7 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 }
 
 // TestHandleMessage_PlanExecuteContinuation tests the Plan&Execute continuation flow.
-// PlanFirst=true, TaskID set should restore BB, call PlanContinuation, execute new steps.
+// TaskID set should restore BB, call PlanContinuation, execute new steps.
 func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
@@ -1517,7 +1534,7 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{PlanFirst: true, TaskID: "task-123"})
+	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{TaskID: "task-123"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1554,117 +1571,101 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 
 // TestHandleMessage_ReactivatesTask verifies that ReactivateTask is called on any continuation.
 func TestHandleMessage_ReactivatesTask(t *testing.T) {
-	tests := []struct {
-		name      string
-		planFirst bool
-	}{
-		{"ReAct continuation", false},
-		{"Plan&Execute continuation", true},
+	callIdx := 0
+	reactivateCalled := false
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // PlanContinuation
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "cont_1", "description": "cont", "depends_on": [], "parallelizable": true}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Done",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "done"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			callIdx := 0
-			reactivateCalled := false
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
 
-			mockLLM := &mockLLMCaller{
-				callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-					callIdx++
-					switch callIdx {
-					case 1: // Router
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-							},
-							StopReason: "end_turn",
-						}, nil
-					case 2:
-						if tt.planFirst {
-							// PlanContinuation
-							return &llm.ChatResponse{
-								Message: llm.Message{
-									Role:    "assistant",
-									Content: `{"steps": [{"id": "cont_1", "description": "cont", "depends_on": [], "parallelizable": true}]}`,
-								},
-								StopReason: "end_turn",
-							}, nil
-						}
-						fallthrough
-					default: // Executor
-						return &llm.ChatResponse{
-							Message: llm.Message{
-								Role:    "assistant",
-								Content: "Done",
-								ToolCalls: []llm.ToolCall{{
-									ID:    "call_1",
-									Name:  "finish",
-									Input: json.RawMessage(`{"answer": "done"}`),
-								}},
-							},
-							StopReason: "tool_use",
-						}, nil
-					}
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
+		nil, // bbFactory
+	)
+
+	// Create mock store that tracks ReactivateTask calls
+	mockStore := &mockTaskStoreWithReactivate{
+		taskState: &TaskState{
+			TaskID:          "task-123",
+			SessionID:       "session-456",
+			OriginalRequest: "original task",
+			Status:          "completed",
+			Plan: &Plan{
+				Steps: []orchestration.PlanStep{
+					{ID: "step_1", Description: "First step"},
 				},
-			}
+			},
+			StepResults: map[string]orchestration.StepResult{
+				"step_1": {StepID: "step_1", FullOutput: "output 1"},
+			},
+		},
+		reactivateFn: func(taskID string) error {
+			reactivateCalled = true
+			return nil
+		},
+	}
+	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-			registry := createTestRegistry()
-			counter := llm.NewSimpleTokenCounter()
+	_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{TaskID: "task-123"})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
 
-			router := NewRouter(mockLLM, 5)
-			planner := NewPlanner(mockLLM)
-
-			orchestrator := NewOrchestrator(
-				router,
-				planner,
-				mockLLM,
-				registry,
-				registry,
-				counter,
-				OrchestratorConfig{MaxSteps: 10},
-				testContextFactory,
-				nil, // reflector
-				nil, // logger
-				nil, // emitter
-				nil, // modelRegistry
-				ToolResultBudget{},
-				defaultCircuitBreakerConfig,
-				nil, // bbFactory
-			)
-
-			// Create mock store that tracks ReactivateTask calls
-			mockStore := &mockTaskStoreWithReactivate{
-				taskState: &TaskState{
-					TaskID:          "task-123",
-					SessionID:       "session-456",
-					OriginalRequest: "original task",
-					Status:          "completed",
-					Plan: &Plan{
-						Steps: []orchestration.PlanStep{
-							{ID: "step_1", Description: "First step"},
-						},
-					},
-					StepResults: map[string]orchestration.StepResult{
-						"step_1": {StepID: "step_1", FullOutput: "output 1"},
-					},
-				},
-				reactivateFn: func(taskID string) error {
-					reactivateCalled = true
-					return nil
-				},
-			}
-			orchestrator.SetTaskStore(mockStore)
-			orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
-
-			_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{PlanFirst: tt.planFirst, TaskID: "task-123"})
-			if err != nil {
-				t.Fatalf("HandleMessage failed: %v", err)
-			}
-
-			if !reactivateCalled {
-				t.Error("expected ReactivateTask to be called for continuation")
-			}
-		})
+	if !reactivateCalled {
+		t.Error("expected ReactivateTask to be called for continuation")
 	}
 }
 
@@ -1695,6 +1696,7 @@ func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error { retu
 func (m *mockTaskStoreWithReactivate) PersistStepFileChanges(taskID, stepID string, changes []FileChange) error {
 	return nil
 }
+func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []Fact) error { return nil }
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -1711,78 +1713,66 @@ func (m *mockTaskStoreWithReactivate) ReactivateTask(taskID string) error {
 	return nil
 }
 
-// TestHandleMessage_Clarification tests that clarification early return works for both modes.
+// TestHandleMessage_Clarification tests that clarification early return works.
 func TestHandleMessage_Clarification(t *testing.T) {
-	tests := []struct {
-		name      string
-		planFirst bool
-	}{
-		{"ReAct mode", false},
-		{"Plan&Execute mode", true},
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Router returns needs_clarification
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": true}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockLLM := &mockLLMCaller{
-				callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-					// Router returns needs_clarification
-					return &llm.ChatResponse{
-						Message: llm.Message{
-							Role:    "assistant",
-							Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": true}`,
-						},
-						StopReason: "end_turn",
-					}, nil
-				},
-			}
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
 
-			registry := createTestRegistry()
-			counter := llm.NewSimpleTokenCounter()
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
 
-			router := NewRouter(mockLLM, 5)
-			planner := NewPlanner(mockLLM)
+	orchestrator := NewOrchestrator(
+		router,
+		planner,
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
+		nil, // bbFactory
+	)
 
-			orchestrator := NewOrchestrator(
-				router,
-				planner,
-				mockLLM,
-				registry,
-				registry,
-				counter,
-				OrchestratorConfig{MaxSteps: 10},
-				testContextFactory,
-				nil, // reflector
-				nil, // logger
-				nil, // emitter
-				nil, // modelRegistry
-				ToolResultBudget{},
-				defaultCircuitBreakerConfig,
-				nil, // bbFactory
-			)
+	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
 
-			result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{PlanFirst: tt.planFirst, TaskID: ""})
-			if err != nil {
-				t.Fatalf("HandleMessage failed: %v", err)
-			}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
 
-			if result == nil {
-				t.Fatal("expected non-nil result")
-			}
+	// Should return clarification message
+	expectedMsg := "I need more information to help you. Could you please clarify your request?"
+	if result.Output != expectedMsg {
+		t.Errorf("expected clarification message, got: %s", result.Output)
+	}
 
-			// Should return clarification message
-			expectedMsg := "I need more information to help you. Could you please clarify your request?"
-			if result.Output != expectedMsg {
-				t.Errorf("expected clarification message, got: %s", result.Output)
-			}
-
-			// Should have routing decision with NeedsClarification=true
-			if result.RoutingDecision == nil {
-				t.Fatal("expected RoutingDecision in result")
-			}
-			if !result.RoutingDecision.NeedsClarification {
-				t.Error("expected NeedsClarification to be true")
-			}
-		})
+	// Should have routing decision with NeedsClarification=true
+	if result.RoutingDecision == nil {
+		t.Fatal("expected RoutingDecision in result")
+	}
+	if !result.RoutingDecision.NeedsClarification {
+		t.Error("expected NeedsClarification to be true")
 	}
 }
 
@@ -1823,5 +1813,158 @@ func TestBuildSystemPrompt_ReactMode(t *testing.T) {
 	}
 	if strings.Contains(result, "list_step_outputs") {
 		t.Error("react mode prompt should NOT contain list_step_outputs")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// planIsSimple / hasBranching helpers
+// ---------------------------------------------------------------------------
+
+func TestPlanIsSimple(t *testing.T) {
+	tests := []struct {
+		name          string
+		plan          *orchestration.Plan
+		complexity    int
+		maxComplexity int
+		maxSteps      int
+		want          bool
+	}{
+		{
+			name: "low complexity, few steps, linear → simple",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "step 1"},
+				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
+			}},
+			complexity:    1,
+			maxComplexity: 2,
+			maxSteps:      2,
+			want:          true,
+		},
+		{
+			name: "single step → simple",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "only step"},
+			}},
+			complexity:    1,
+			maxComplexity: 2,
+			maxSteps:      2,
+			want:          true,
+		},
+		{
+			name: "high complexity → not simple",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "step 1"},
+			}},
+			complexity:    3,
+			maxComplexity: 2,
+			maxSteps:      5,
+			want:          false,
+		},
+		{
+			name: "too many steps → not simple",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "step 1"},
+				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
+				{ID: "s3", Description: "step 3", DependsOn: []string{"s2"}},
+			}},
+			complexity:    1,
+			maxComplexity: 2,
+			maxSteps:      2,
+			want:          false,
+		},
+		{
+			name: "branching (fork) → not simple",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "step 1"},
+				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
+				{ID: "s3", Description: "step 3", DependsOn: []string{"s1"}},
+			}},
+			complexity:    1,
+			maxComplexity: 2,
+			maxSteps:      5,
+			want:          false,
+		},
+		{
+			name:          "empty plan → simple",
+			plan:          &orchestration.Plan{},
+			complexity:    1,
+			maxComplexity: 2,
+			maxSteps:      2,
+			want:          true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := planIsSimple(tc.plan, tc.complexity, tc.maxComplexity, tc.maxSteps)
+			if got != tc.want {
+				t.Errorf("planIsSimple() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHasBranching(t *testing.T) {
+	tests := []struct {
+		name string
+		plan *orchestration.Plan
+		want bool
+	}{
+		{
+			name: "empty plan → no branching",
+			plan: &orchestration.Plan{},
+			want: false,
+		},
+		{
+			name: "single step → no branching",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "only step"},
+			}},
+			want: false,
+		},
+		{
+			name: "linear chain → no branching",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "step 1"},
+				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
+				{ID: "s3", Description: "step 3", DependsOn: []string{"s2"}},
+			}},
+			want: false,
+		},
+		{
+			name: "parallel roots → branching",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "step 1"},
+				{ID: "s2", Description: "step 2"},
+			}},
+			want: true,
+		},
+		{
+			name: "fork → branching",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "root"},
+				{ID: "s2", Description: "branch A", DependsOn: []string{"s1"}},
+				{ID: "s3", Description: "branch B", DependsOn: []string{"s1"}},
+			}},
+			want: true,
+		},
+		{
+			name: "convergence → branching",
+			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
+				{ID: "s1", Description: "step 1"},
+				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
+				{ID: "s3", Description: "step 3", DependsOn: []string{"s1", "s2"}},
+			}},
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasBranching(tc.plan)
+			if got != tc.want {
+				t.Errorf("hasBranching() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

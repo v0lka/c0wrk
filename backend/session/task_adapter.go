@@ -105,6 +105,15 @@ func (a *TaskStoreAdapter) PersistStepFileChanges(taskID, stepID string, changes
 	return a.store.SaveStepFileChanges(taskID, stepID, data)
 }
 
+// PersistFacts JSON-marshals facts and stores them for a task.
+func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []core.Fact) error {
+	data, err := json.Marshal(facts)
+	if err != nil {
+		return fmt.Errorf("marshal facts: %w", err)
+	}
+	return a.store.SaveFacts(taskID, data)
+}
+
 // LoadTaskState loads a task and its steps from the store, deserializes JSON back
 // to core types, and returns a populated *core.TaskState.
 // Returns nil, nil if the task is not found.
@@ -193,6 +202,17 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 				return nil, fmt.Errorf("unmarshal file changes for %s: %w", stepID, err)
 			}
 			state.FileChanges[stepID] = changes
+		}
+	}
+
+	// Load facts
+	factsJSON, err := a.store.LoadFacts(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load facts: %w", err)
+	}
+	if len(factsJSON) > 0 {
+		if err := json.Unmarshal(factsJSON, &state.Facts); err != nil {
+			return nil, fmt.Errorf("unmarshal facts: %w", err)
 		}
 	}
 

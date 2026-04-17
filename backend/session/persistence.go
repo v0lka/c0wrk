@@ -136,6 +136,12 @@ func (s *SQLiteSessionStore) createTables() error {
 		created_at TIMESTAMP NOT NULL,
 		PRIMARY KEY (task_id, step_id)
 	);
+
+	CREATE TABLE IF NOT EXISTS task_facts (
+		task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+		facts TEXT DEFAULT '[]',
+		updated_at TIMESTAMP NOT NULL
+	);
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
 	return err
@@ -427,6 +433,8 @@ type TaskStore interface {
 	LoadTask(taskID string) (*TaskRecord, error)
 	LoadTaskSteps(taskID string) ([]TaskStepRecord, error)
 	LoadStepFileChanges(taskID string) (map[string]json.RawMessage, error)
+	SaveFacts(taskID string, factsJSON json.RawMessage) error
+	LoadFacts(taskID string) (json.RawMessage, error)
 	GetUnfinishedTask(sessionID string) (*TaskRecord, error)
 	ReactivateTask(taskID string) error
 }
@@ -713,4 +721,35 @@ func (s *SQLiteSessionStore) GetUnfinishedTask(sessionID string) (*TaskRecord, e
 	}
 
 	return &task, nil
+}
+
+// SaveFacts inserts or replaces the facts JSON blob for a task.
+func (s *SQLiteSessionStore) SaveFacts(taskID string, factsJSON json.RawMessage) error {
+	_, err := s.db.ExecContext(context.Background(), `
+		INSERT OR REPLACE INTO task_facts (task_id, facts, updated_at)
+		VALUES (?, ?, ?)`,
+		taskID, string(factsJSON), time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save facts: %w", err)
+	}
+	return nil
+}
+
+// LoadFacts loads the facts JSON blob for a task. Returns nil if not found.
+func (s *SQLiteSessionStore) LoadFacts(taskID string) (json.RawMessage, error) {
+	var factsStr string
+	err := s.db.QueryRowContext(context.Background(), `
+		SELECT facts FROM task_facts WHERE task_id = ?`, taskID,
+	).Scan(&factsStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load facts: %w", err)
+	}
+	if factsStr == "" || factsStr == "[]" {
+		return nil, nil
+	}
+	return json.RawMessage(factsStr), nil
 }

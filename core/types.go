@@ -85,6 +85,7 @@ type BlackboardEntry = orchestration.BlackboardEntry
 type Blackboard = orchestration.Blackboard
 type MapBlackboard = orchestration.MapBlackboard
 type MapBlackboardOption = orchestration.MapBlackboardOption
+type Fact = orchestration.Fact
 
 var (
 	NewMapBlackboard     = orchestration.NewMapBlackboard
@@ -277,6 +278,5 @@ type HandleResult struct {
 
 // HandleOptions controls how a message is processed by HandleMessage.
 type HandleOptions struct {
-	PlanFirst bool   // true = Plan&Execute, false = ReAct (single step)
-	TaskID    string // non-empty = continuation of existing task
+	TaskID string // non-empty = continuation of existing task
 }

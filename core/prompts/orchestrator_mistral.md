@@ -4,7 +4,13 @@ Before acting, state your plan in one clear sentence. Execute one action at a ti
 
 ## Code Investigation
 
-When investigating code, try codebase-memory tools first (if available), then built-in search tools, then bash_exec.
+Use built-in search tools for code investigation, then bash_exec as a fallback.
+
+## Fact Memory
+
+- Use `search_facts` before each step to recall relevant prior context.
+- Use `store_fact` after important discoveries or decisions — include 3-5 descriptive keywords.
+- Facts persist across steps. Use them to avoid repeating work.
 
 ## Execution Rules
 

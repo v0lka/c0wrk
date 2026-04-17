@@ -122,9 +122,8 @@ func (a *App) ArchiveSession(id string) error {
 }
 
 // SendMessage sends a user message to a session (async - results come via events).
-// When planFirst is true, the agent will plan before executing (Plan&Execute mode).
-// When planFirst is false, the agent will use ReAct mode (default).
-func (a *App) SendMessage(id, text string, planFirst bool) error {
+// Always uses Plan&Execute mode.
+func (a *App) SendMessage(id, text string) error {
 	if a.manager == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
@@ -151,7 +150,7 @@ func (a *App) SendMessage(id, text string, planFirst bool) error {
 	// Check if this is the first message (session has default name)
 	// Title generation is handled by the backend session Manager.
 
-	if err := a.manager.SendMessage(a.ctx, id, text, planFirst); err != nil {
+	if err := a.manager.SendMessage(a.ctx, id, text); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil

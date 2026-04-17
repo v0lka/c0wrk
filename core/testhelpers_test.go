@@ -326,6 +326,9 @@ func testBlackboardRestoreFunc() BlackboardRestoreFunc {
 		for stepID, changes := range state.FileChanges {
 			mb.SetStepFileChanges(stepID, changes)
 		}
+		if len(state.Facts) > 0 {
+			mb.SetFacts(state.Facts)
+		}
 		if state.FinalOutput != "" {
 			mb.SetFinalResult(state.FinalOutput)
 		}

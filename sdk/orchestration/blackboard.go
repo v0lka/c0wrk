@@ -24,6 +24,7 @@ type MapBlackboard struct {
 	maxSummaryTokens int                     // token-based limit for summaries (0 = use char-based default)
 	maxSummaryLen    int                     // char-based limit for summaries (0 = use default 500)
 	fileChanges      map[string][]FileChange // keyed by stepID
+	facts            []Fact                  // keyword-tagged facts for inter-step communication
 }
 
 // MapBlackboardOption configures a MapBlackboard.
@@ -338,6 +339,97 @@ func (b *MapBlackboard) SetStepResultRaw(stepID string, sr StepResult) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.stepResults[stepID] = sr
+}
+
+// ---------------------------------------------------------------------------
+// Fact memory
+// ---------------------------------------------------------------------------
+
+// StoreFact appends a fact to the facts slice.
+func (b *MapBlackboard) StoreFact(f Fact) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.facts = append(b.facts, f)
+}
+
+// SearchFacts returns facts where at least one keyword matches (case-insensitive),
+// sorted by number of matching keywords descending (most relevant first).
+// Returns defensive copies of matching facts.
+func (b *MapBlackboard) SearchFacts(keywords []string) []Fact {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if len(keywords) == 0 || len(b.facts) == 0 {
+		return nil
+	}
+
+	// Normalize search keywords to lowercase.
+	lowerKeywords := make([]string, len(keywords))
+	for i, k := range keywords {
+		lowerKeywords[i] = strings.ToLower(k)
+	}
+
+	type scored struct {
+		fact  Fact
+		score int
+	}
+	var results []scored
+
+	for _, f := range b.facts {
+		matchCount := 0
+		for _, fk := range f.Keywords {
+			fkLower := strings.ToLower(fk)
+			for _, qk := range lowerKeywords {
+				if fkLower == qk {
+					matchCount++
+					break
+				}
+			}
+		}
+		if matchCount > 0 {
+			// Defensive copy of keywords slice.
+			kwCopy := make([]string, len(f.Keywords))
+			copy(kwCopy, f.Keywords)
+			results = append(results, scored{
+				fact:  Fact{Keywords: kwCopy, Content: f.Content, Author: f.Author},
+				score: matchCount,
+			})
+		}
+	}
+
+	// Sort by match count descending.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].score > results[j].score
+	})
+
+	out := make([]Fact, len(results))
+	for i, r := range results {
+		out[i] = r.fact
+	}
+	return out
+}
+
+// GetFacts returns a defensive copy of all stored facts.
+func (b *MapBlackboard) GetFacts() []Fact {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if len(b.facts) == 0 {
+		return nil
+	}
+	out := make([]Fact, len(b.facts))
+	for i, f := range b.facts {
+		kwCopy := make([]string, len(f.Keywords))
+		copy(kwCopy, f.Keywords)
+		out[i] = Fact{Keywords: kwCopy, Content: f.Content, Author: f.Author}
+	}
+	return out
+}
+
+// SetFacts replaces the facts slice. Used by persistence restoration.
+func (b *MapBlackboard) SetFacts(facts []Fact) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.facts = facts
 }
 
 // ---------------------------------------------------------------------------

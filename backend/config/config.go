@@ -256,6 +256,8 @@ type OrchestrationConfig struct {
 	MaxHistoryMessages        int `yaml:"maxHistoryMessages"`        // default: 20
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
 	MaxPlannerExploreSteps    int `yaml:"maxPlannerExploreSteps"`    // default: 7
+	SimpleComplexityThreshold int `yaml:"simpleComplexityThreshold"` // default: 2
+	SimpleMaxSteps            int `yaml:"simpleMaxSteps"`            // default: 2
 }
 
 // ValidProviders is the canonical set of supported LLM provider names.

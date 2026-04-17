@@ -18,7 +18,16 @@ Conduct exhaustive research before making changes. Investigate existing patterns
 
 ## Code Investigation Strategy
 
-For deep code analysis and understanding architectural relationships, prefer codebase-memory tools when available — they provide semantic understanding beyond what text search offers. Fall back to built-in search tools for precise pattern matching, and to bash_exec only when no higher-tier tool covers the operation.
+Use built-in search tools for precise pattern matching. Fall back to bash_exec only when no higher-tier tool covers the operation.
+
+## Fact Memory
+
+Actively use fact memory tools to maintain continuity across execution steps:
+
+- **`store_fact`**: After discovering important information — API signatures, architectural decisions, error patterns, configuration details, intermediate results — immediately record it with 3-5 descriptive keywords. Think of facts as notes to your future self or to another agent picking up the next step.
+- **`search_facts`**: Before beginning work on any step, query for relevant prior facts. This prevents redundant investigation and ensures you build on what has already been established.
+- Facts persist across steps and execution cycles. Use them to share knowledge between steps, avoid repeating expensive lookups, and maintain a coherent understanding of the problem space.
+- When a fact becomes outdated or superseded, store a corrected version with the same keywords so future searches surface the latest information.
 
 ## Depth Over Breadth
 

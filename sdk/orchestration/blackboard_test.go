@@ -546,3 +546,95 @@ func TestBlackboard_SetStepFileChanges_UpdatesStepResult(t *testing.T) {
 		t.Fatalf("expected main.go, got %q", r.FileChanges[0].Path)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// StoreFact / SearchFacts
+// ---------------------------------------------------------------------------
+
+func TestBlackboard_StoreFact_Retrievable(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.StoreFact(Fact{Keywords: []string{"auth", "login"}, Content: "Users authenticate via OAuth2", Author: "step_1"})
+
+	facts := bb.GetFacts()
+	if len(facts) != 1 {
+		t.Fatalf("expected 1 fact, got %d", len(facts))
+	}
+	if facts[0].Content != "Users authenticate via OAuth2" {
+		t.Fatalf("unexpected content: %q", facts[0].Content)
+	}
+	if facts[0].Author != "step_1" {
+		t.Fatalf("unexpected author: %q", facts[0].Author)
+	}
+}
+
+func TestBlackboard_SearchFacts_ByKeywords(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.StoreFact(Fact{Keywords: []string{"auth", "login", "oauth"}, Content: "OAuth2 used for auth", Author: "s1"})
+	bb.StoreFact(Fact{Keywords: []string{"database", "postgres"}, Content: "PostgreSQL is the main DB", Author: "s2"})
+	bb.StoreFact(Fact{Keywords: []string{"auth", "roles", "permissions"}, Content: "RBAC for authorization", Author: "s3"})
+
+	// Search for "auth" — should match fact 1 and 3.
+	results := bb.SearchFacts([]string{"auth"})
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// Search for "auth", "login" — fact 1 matches 2 keywords, fact 3 matches 1.
+	results = bb.SearchFacts([]string{"auth", "login"})
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// Fact with 2 matches should come first (sorted by relevance).
+	if results[0].Content != "OAuth2 used for auth" {
+		t.Fatalf("expected highest relevance first, got %q", results[0].Content)
+	}
+}
+
+func TestBlackboard_SearchFacts_CaseInsensitive(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.StoreFact(Fact{Keywords: []string{"Auth", "LOGIN"}, Content: "case test", Author: "s1"})
+
+	results := bb.SearchFacts([]string{"auth"})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for case-insensitive search, got %d", len(results))
+	}
+
+	results = bb.SearchFacts([]string{"LOGIN"})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for uppercase search, got %d", len(results))
+	}
+}
+
+func TestBlackboard_SearchFacts_NoMatches(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.StoreFact(Fact{Keywords: []string{"auth"}, Content: "something", Author: "s1"})
+
+	results := bb.SearchFacts([]string{"nonexistent"})
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestBlackboard_SearchFacts_EmptyKeywords(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	bb.StoreFact(Fact{Keywords: []string{"auth"}, Content: "something", Author: "s1"})
+
+	results := bb.SearchFacts(nil)
+	if results != nil {
+		t.Fatalf("expected nil for nil keywords, got %v", results)
+	}
+}
+
+func TestBlackboard_SearchFacts_EmptyStore(t *testing.T) {
+	bb := NewMapBlackboard()
+
+	results := bb.SearchFacts([]string{"auth"})
+	if results != nil {
+		t.Fatalf("expected nil for empty store, got %v", results)
+	}
+}

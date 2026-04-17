@@ -202,6 +202,8 @@ type BuilderOrchestrationConfig struct {
 	MaxDependencyContextChars int
 	MaxJudgeCacheSize         int
 	MaxPlannerExploreSteps    int // Max steps for planner exploration. Default: 7
+	SimpleComplexityThreshold int // max routing complexity for unified ReAct mode (default: 2)
+	SimpleMaxSteps            int // max plan steps for unified ReAct mode (default: 2)
 }
 
 // ---------------------------------------------------------------------------

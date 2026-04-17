@@ -4,7 +4,13 @@ Before acting, form a clear hypothesis. After each tool result, assess whether t
 
 ## Code Investigation
 
-Prefer codebase-memory tools when available for semantic understanding. Fall back to built-in search for pattern matching.
+Use built-in search tools for precise pattern matching. Fall back to bash_exec only when no higher-tier tool covers the operation.
+
+## Fact Memory
+
+1. Before starting a step, use `search_facts` to check for relevant prior discoveries.
+2. After uncovering important information — decisions, API signatures, error patterns, intermediate results — use `store_fact` with 3-5 descriptive keywords.
+3. Facts persist across steps and cycles. Use them to build on prior work and avoid redundant investigation.
 
 ## Execution Style
 

@@ -14,7 +14,15 @@ If information is insufficient for a definitive conclusion:
 
 ## Code Investigation Strategy
 
-For deep code analysis and understanding architectural relationships, prefer codebase-memory tools when available — they provide semantic understanding (concept search, dependency mapping, related-code discovery) beyond what text search offers. Fall back to built-in search tools for precise pattern matching, and to bash_exec only when no higher-tier tool covers the operation.
+Use built-in search tools for precise pattern matching. Fall back to bash_exec only when no higher-tier tool covers the operation.
+
+## Fact Memory
+
+Use the `store_fact` and `search_facts` tools to maintain knowledge continuity across execution steps:
+
+- **Recording facts**: When you discover important information — architectural decisions, API signatures, error patterns, configuration details, intermediate results — use `store_fact` with 3-5 descriptive keywords to make it searchable.
+- **Recalling facts**: Before starting work on a new step, use `search_facts` to check for relevant prior context that may inform your approach.
+- Facts persist across steps and execution cycles. Use them to avoid redundant investigation and to share knowledge between steps.
 
 ## Depth Over Breadth
 

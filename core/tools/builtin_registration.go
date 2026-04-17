@@ -77,6 +77,10 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	registry.Register(builtins.NewReadStepOutputTool())
 	registry.Register(builtins.NewListStepOutputsTool())
 
+	// Fact memory tools
+	registry.Register(builtins.NewStoreFactTool())
+	registry.Register(builtins.NewSearchFactsTool())
+
 	// Batch (must be registered after other tools since it dispatches to them)
 	registry.Register(builtins.NewBatchTool(registry, builtins.WithBatchLimits(cfg.BatchLimits)))
 

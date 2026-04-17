@@ -89,21 +89,3 @@ func resolveAgentProfile(step orchestration.PlanStep, defaultMaxSteps int) Agent
 	}
 	return AgentProfile{Role: "executor", MaxSteps: defaultMaxSteps}
 }
-
-// domainToAgentProfile maps a routing domain to an AgentProfile with appropriate role.
-func domainToAgentProfile(domain string, maxSteps int) AgentProfile {
-	var role string
-	switch domain {
-	case "code":
-		role = "coder"
-	case "research":
-		role = "researcher"
-	default:
-		role = "executor"
-	}
-	return AgentProfile{
-		Role:     role,
-		MaxSteps: maxSteps,
-		Domain:   domain,
-	}
-}

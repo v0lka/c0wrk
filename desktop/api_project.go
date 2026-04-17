@@ -135,13 +135,14 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 	}
 
 	for _, p := range projectList.Projects {
-		if p.RootPath == workspacePath {
-			a.activeProjectMu.Lock()
-			a.codebaseProjectName = p.Name
-			a.activeProjectMu.Unlock()
-			slog.Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
-			return
+		if p.RootPath != workspacePath {
+			continue
 		}
+		a.activeProjectMu.Lock()
+		a.codebaseProjectName = p.Name
+		a.activeProjectMu.Unlock()
+		slog.Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
+		return
 	}
 
 	slog.Warn("codebase-memory-mcp project not found for workspace", "workspace", workspacePath)

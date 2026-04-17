@@ -49,7 +49,7 @@ func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts, rtkP
 		BaseTool: &tools.BaseTool{
 			ToolName:        "bash_exec",
 			ToolDescription: toolBashDescription,
-			Schema:          json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute. Supports pipes, redirects, and chained commands."}, "timeout": {"type": "string", "description": "Timeout as a Go duration string, e.g. \"30s\" or \"2m\". Default: 60s, maximum: 120s."}, "working_directory": {"type": "string", "description": "Absolute path to use as the working directory for command execution. If omitted, uses the current directory."}}, "required": ["command"]}`),
+			Schema:          json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute. Supports pipes, redirects, and chained commands."}, "timeout": {"type": "string", "description": "Timeout as a Go duration string, e.g. \"30s\" or \"2m\". Default: 60s, maximum: 120s."}, "working_directory": {"type": "string", "description": "Absolute path to use as the working directory for command execution. If omitted, defaults to the workspace root when available."}}, "required": ["command"]}`),
 			Policy:          tools.PolicyUserConfirm,
 		},
 		blacklist: blacklist,
@@ -76,7 +76,11 @@ func (t *BashExecTool) getRtkPath() string {
 // rtkRewrite calls `rtk rewrite` to get an optimized version of the command.
 // Returns the rewritten command, or empty string if no rewrite applies or on any error.
 func (t *BashExecTool) rtkRewrite(ctx context.Context, rtkPath, command string) string {
-	rewriteCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	rtkTimeout := t.timeouts.RtkTimeout
+	if rtkTimeout == 0 {
+		rtkTimeout = 500 * time.Millisecond
+	}
+	rewriteCtx, cancel := context.WithTimeout(ctx, rtkTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(rewriteCtx, rtkPath, "rewrite", command)
@@ -180,9 +184,13 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	// Grace period for pipe readers to drain after the process group is killed.
 	cmd.WaitDelay = t.timeouts.WaitDelay
 
-	// Set working directory if specified
-	if params.WorkingDirectory != "" {
-		cmd.Dir = params.WorkingDirectory
+	// Set working directory: prefer explicit param, fall back to workspace root
+	workDir := params.WorkingDirectory
+	if workDir == "" {
+		workDir = tools.WorkspacePathFrom(ctx)
+	}
+	if workDir != "" {
+		cmd.Dir = workDir
 	}
 
 	// Execute and capture combined output

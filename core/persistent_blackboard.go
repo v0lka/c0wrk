@@ -40,6 +40,7 @@ type TaskPersistence interface {
 	PersistCompletion(taskID, finalOutput string, attemptCount int) error
 	PersistFailure(taskID string) error
 	PersistStepFileChanges(taskID, stepID string, changes []FileChange) error
+	PersistFacts(taskID string, facts []Fact) error
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
 	GetUnfinishedTaskID(sessionID string) (string, error) // returns "" if none
@@ -62,5 +63,6 @@ type TaskState struct {
 	Reflections     []Reflection
 	FinalOutput     string
 	FileChanges     map[string][]FileChange // stepID -> file changes
+	Facts           []Fact                  // keyword-tagged facts
 	Status          string                  // "in_progress", "completed", "failed"
 }

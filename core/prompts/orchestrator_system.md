@@ -14,9 +14,8 @@ Prefer higher-tier tools over bash_exec. Use bash_exec only when no purpose-buil
 
 Tool preference hierarchy for code investigation:
 
-1. **codebase-memory MCP tools** (when available) — first choice for code investigation. They provide semantic code search, architecture understanding, and related-code discovery that surpasses text matching.
-2. **Built-in search tools** — ripgrep, glob, search_files, search_content for precise text and pattern matching.
-3. **bash_exec** — fallback only when no higher-tier tool covers the operation.
+1. **Built-in search tools** — ripgrep, glob, search_files, search_content for precise text and pattern matching.
+2. **bash_exec** — fallback only when no higher-tier tool covers the operation.
 
 ### File Operations Strategy
 

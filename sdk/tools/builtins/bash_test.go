@@ -91,7 +91,11 @@ fi
 		t.Fatal(err)
 	}
 
-	tool := NewBashExecTool(nil)
+	tool := NewBashExecToolWithTimeouts(nil, BashTimeouts{
+		MaxTimeout: 120 * time.Second,
+		WaitDelay:  5 * time.Second,
+		RtkTimeout: 5 * time.Second,
+	}, "")
 	tool.SetRtkPath(mockRtk)
 	ctx := context.Background()
 	input := []byte(`{"command": "echo hello"}`)

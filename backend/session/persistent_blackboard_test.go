@@ -129,6 +129,12 @@ func (m *mockTaskPersistence) PersistStepFileChanges(taskID, stepID string, chan
 	return m.persistError
 }
 
+func (m *mockTaskPersistence) PersistFacts(taskID string, facts []core.Fact) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistError
+}
+
 func (m *mockTaskPersistence) LoadTaskState(taskID string) (*core.TaskState, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

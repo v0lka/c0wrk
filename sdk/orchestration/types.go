@@ -78,5 +78,12 @@ type PlanStepEvent struct {
 	DependsOn   []string `json:"depends_on"`
 }
 
+// Fact represents a keyword-tagged piece of information for inter-step communication.
+type Fact struct {
+	Keywords []string `json:"keywords"` // 3-5 keywords for retrieval
+	Content  string   `json:"content"`  // the fact text
+	Author   string   `json:"author"`   // step ID that wrote it
+}
+
 // FileChange is an alias for the canonical type in the agent package.
 type FileChange = agent.FileChange

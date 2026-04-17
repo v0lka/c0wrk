@@ -14,6 +14,7 @@ type FileLimits struct {
 type BashTimeouts struct {
 	MaxTimeout time.Duration // maximum allowed timeout for bash commands
 	WaitDelay  time.Duration // grace period for pipe readers after process kill
+	RtkTimeout time.Duration // timeout for rtk rewrite calls
 }
 
 // DefaultBashTimeouts returns the default timeouts for bash_exec.
@@ -21,6 +22,7 @@ func DefaultBashTimeouts() BashTimeouts {
 	return BashTimeouts{
 		MaxTimeout: 120 * time.Second,
 		WaitDelay:  5 * time.Second,
+		RtkTimeout: 500 * time.Millisecond,
 	}
 }
 

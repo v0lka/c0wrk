@@ -543,8 +543,8 @@ func (m *Manager) ArchiveSession(id string) error {
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-// planFirst controls whether to use Plan&Execute mode (true) or ReAct mode (false).
-func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bool) error {
+// Always uses Plan&Execute mode.
+func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 	m.mu.RLock()
 	session, exists := m.sessions[id]
 	if !exists {
@@ -636,7 +636,6 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 		session.mu.Unlock()
 
 		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-			PlanFirst: planFirst,
 			TaskID:    lastTaskID,
 		})
 
@@ -647,7 +646,6 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, planFirst bo
 			session.lastCompletedTaskID = "" // clear to avoid repeated failures
 			session.mu.Unlock()
 			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-				PlanFirst: planFirst,
 				TaskID:    "",
 			})
 		}

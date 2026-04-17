@@ -457,6 +457,9 @@ func (o *Orchestrator) executePlanWithSteps(
 		// Inject SharedWorkspace into context so tools can access step outputs
 		ctx = agent.WithSharedWorkspace(ctx, sharedWS)
 
+		// Inject FactStore into context so tools can access fact memory
+		ctx = agent.WithFactStore(ctx, NewFactStore(bb))
+
 		// Inject file change tracker into context so tools can record file operations
 		if tracker != nil {
 			ctx = agent.WithFileTracker(ctx, tracker)
@@ -965,6 +968,27 @@ func terminalSteps(plan *Plan) []string {
 	return terminals
 }
 
+// ExecuteSilentPlan runs the plan-execute-reflect loop for a pre-planned blackboard
+// without emitting plan visualization events (OnPlanGenerated, OnStepStarted,
+// OnStepCompleted, OnStepRetry). This is used for simple plans executed as a
+// unified ReAct cycle where the plan is just guidance text, not a tracked DAG.
+// The blackboard must already have a plan set via SetPlan.
+func (o *Orchestrator) ExecuteSilentPlan(ctx context.Context, bb Blackboard) (*ExecutionResult, error) {
+	plan := bb.GetPlan()
+	if plan == nil {
+		return nil, errors.New("blackboard has no plan")
+	}
+	userMessage := bb.GetOriginalRequest()
+	availableTools := o.availableTools()
+
+	// Swap to silent events that suppress plan step visualization
+	saved := o.events
+	o.events = &silentPlanEvents{inner: saved}
+	defer func() { o.events = saved }()
+
+	return o.runPlanExecute(ctx, userMessage, availableTools, nil, bb, plan, nil)
+}
+
 // ExecuteAdHocStep executes a single ad-hoc step on an existing Blackboard,
 // using the same machinery as regular plan step execution.
 // This is useful for continuation steps that need to run after the main plan completes.
@@ -1056,6 +1080,9 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	// 5. Set up SharedWorkspace for inter-step communication
 	sharedWS := agent.NewSharedWorkspace()
 	ctx = agent.WithSharedWorkspace(ctx, sharedWS)
+
+	// Inject FactStore into context so tools can access fact memory
+	ctx = agent.WithFactStore(ctx, NewFactStore(bb))
 
 	// 6. Set up file change tracker if workspace path is available
 	var tracker *agent.FileChangeTracker

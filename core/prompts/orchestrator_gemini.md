@@ -14,7 +14,14 @@ If information is insufficient, state what is missing and why it matters. Procee
 
 ## Code Investigation Strategy
 
-Prefer codebase-memory tools when available for semantic code understanding. Use built-in search for precise pattern matching. Fall back to bash_exec only when necessary.
+Use built-in search tools for precise pattern matching. Fall back to bash_exec only when necessary.
+
+## Fact Memory
+
+- Use `store_fact` to record important discoveries, decisions, API signatures, error patterns, and intermediate results. Always provide 3-5 descriptive keywords for retrieval.
+- Use `search_facts` before starting work on a new step to recall relevant prior context.
+- Facts persist across steps and execution cycles. Treat them as the canonical way to share knowledge between steps and avoid redundant investigation.
+- Never assume prior context is available in conversation history — always check facts first.
 
 ## Depth Over Breadth
 

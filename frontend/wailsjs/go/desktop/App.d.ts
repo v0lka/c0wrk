@@ -61,7 +61,7 @@ export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
 export function ResumeTask(arg1:string):Promise<void>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+export function SendMessage(arg1:string,arg2:string):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 
