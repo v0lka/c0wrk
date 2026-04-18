@@ -77,9 +77,14 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 	var currentToolID string
 	var currentToolName string
 	var currentToolInput []byte
+	var streamUsage TokenUsage
 
 	streamReq := anthropic.MessagesStreamRequest{
 		MessagesRequest: *anthropicReq,
+
+		OnMessageStart: func(data anthropic.MessagesEventMessageStartData) {
+			streamUsage.InputTokens = data.Message.Usage.InputTokens
+		},
 
 		OnContentBlockStart: func(data anthropic.MessagesEventContentBlockStartData) {
 			if data.ContentBlock.Type == anthropic.MessagesContentTypeToolUse {
@@ -125,9 +130,11 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		},
 
 		OnMessageDelta: func(data anthropic.MessagesEventMessageDeltaData) {
+			streamUsage.OutputTokens = data.Usage.OutputTokens
 			if data.Delta.StopReason != "" {
 				chunks <- ChatChunk{
 					StopReason: string(data.Delta.StopReason),
+					Usage:      &streamUsage,
 				}
 			}
 		},

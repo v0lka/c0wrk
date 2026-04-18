@@ -19,8 +19,8 @@ type CompactionConfig struct {
 		KeepLast  int
 	}
 	Summarization struct {
-		BlockSize          int
-		KeepLast           int
+		BlockSize           int
+		KeepLast            int
 		ObservationTruncate int // max chars for observations in summary blocks (default: 500)
 	}
 	Hierarchical struct {

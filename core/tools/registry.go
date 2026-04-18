@@ -260,4 +260,3 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool Tool, name st
 		return ToolResult{}, fmt.Errorf("unknown confirmation response: %d", resp)
 	}
 }
-

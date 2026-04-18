@@ -10,6 +10,15 @@ interface RtkStatus {
   version: string
 }
 
+function isRtkStatus(data: unknown): data is RtkStatus {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'installed' in data &&
+    typeof (data as Record<string, unknown>).installed === 'boolean'
+  )
+}
+
 const DISMISSED_KEY = 'rtk-banner-dismissed'
 
 export function RtkBanner() {
@@ -40,8 +49,9 @@ export function RtkBanner() {
     if (!runtime) return
 
     const unsubscribe = runtime.EventsOn('rtk:status', (data: unknown) => {
-      const statusData = data as RtkStatus
-      setStatus(statusData)
+      if (isRtkStatus(data)) {
+        setStatus(data)
+      }
     })
 
     return unsubscribe

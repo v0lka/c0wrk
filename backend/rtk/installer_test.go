@@ -7,12 +7,12 @@ import (
 
 func TestBuildDownloadURL(t *testing.T) {
 	tests := []struct {
-		name        string
-		goos        string
-		goarch      string
-		wantTarget  string
-		wantExt     string
-		wantErr     bool
+		name       string
+		goos       string
+		goarch     string
+		wantTarget string
+		wantExt    string
+		wantErr    bool
 	}{
 		{
 			name:       "darwin arm64",

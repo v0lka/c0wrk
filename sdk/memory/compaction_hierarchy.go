@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -143,6 +144,7 @@ func (h *HierarchicalStrategy) summarizeZone(ctx context.Context, steps []sdkage
 			var err error
 			summary, err = h.summarizer(ctx, blockText)
 			if err != nil {
+				slog.Error("hierarchy compaction: summarization failed", "error", err)
 				// Fallback to a simple indicator if summarization fails
 				summary = fmt.Sprintf("[%s zone: %d steps summarized (error: %v)]", zoneName, len(block), err)
 			}

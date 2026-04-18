@@ -82,6 +82,7 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 		progress("error")
 		return "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
+	// Temp dir removal error is non-critical; safe to ignore.
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Download file
@@ -96,7 +97,11 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 		progress("error")
 		return "", fmt.Errorf("failed to download: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Debug("failed to close file during extraction", "error", closeErr)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		progress("error")
@@ -111,7 +116,9 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	_, err = io.Copy(out, resp.Body)
-	_ = out.Close()
+	if closeErr := out.Close(); closeErr != nil {
+		slog.Debug("failed to close file during extraction", "error", closeErr)
+	}
 	if err != nil {
 		progress("error")
 		return "", fmt.Errorf("failed to save download: %w", err)
@@ -254,13 +261,21 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = in.Close() }()
+	defer func() {
+		if closeErr := in.Close(); closeErr != nil {
+			slog.Debug("failed to close file during extraction", "error", closeErr)
+		}
+	}()
 
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = out.Close() }()
+	defer func() {
+		if closeErr := out.Close(); closeErr != nil {
+			slog.Debug("failed to close file during extraction", "error", closeErr)
+		}
+	}()
 
 	_, err = io.Copy(out, in)
 	return err

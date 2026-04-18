@@ -1,5 +1,11 @@
 package config
 
+// defaultSafeTool is the tool name allowed without user confirmation by default.
+const defaultSafeTool = "read_evidence"
+
+// defaultSafeTools is the default list of tools allowed without user confirmation.
+var defaultSafeTools = []string{defaultSafeTool}
+
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
 	// Log level defaults
@@ -82,7 +88,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.ToolOutputPruning.KeepLastN = 3
 	}
 	if cfg.Executor.ToolOutputPruning.ProtectedTools == nil {
-		cfg.Executor.ToolOutputPruning.ProtectedTools = []string{"read_evidence"}
+		cfg.Executor.ToolOutputPruning.ProtectedTools = defaultSafeTools
 	}
 
 	// Circuit breaker defaults
@@ -221,12 +227,6 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.ToolLimits.WebFetchMaxBodySize == 0 {
 		cfg.ToolLimits.WebFetchMaxBodySize = 102400 // 100KB
-	}
-	if cfg.ToolLimits.BatchMaxConcurrency == 0 {
-		cfg.ToolLimits.BatchMaxConcurrency = 10
-	}
-	if cfg.ToolLimits.BatchMaxResultSize == 0 {
-		cfg.ToolLimits.BatchMaxResultSize = 50000
 	}
 
 	// Timeouts defaults

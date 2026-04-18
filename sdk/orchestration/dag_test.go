@@ -387,7 +387,7 @@ func TestAggregateOutput(t *testing.T) {
 			"s1": {StepID: "s1", Output: "root output"},
 			"s2": {StepID: "s2", Output: "leaf output"},
 		}
-		got := AggregateOutput(completed, plan)
+		got := AggregateOutput(completed, plan, nil)
 		// s1 is depended upon by s2, so only s2 (terminal) should appear
 		if !contains(got, "leaf output") {
 			t.Error("expected terminal step output")
@@ -407,7 +407,7 @@ func TestAggregateOutput(t *testing.T) {
 		completed := map[string]CompletedStep{
 			"s1": {StepID: "s1", Error: errors.New("fail")},
 		}
-		got := AggregateOutput(completed, plan)
+		got := AggregateOutput(completed, plan, nil)
 		// s1 has error, so it's skipped in terminal collection → fallback also skips it
 		if got != "" {
 			t.Errorf("expected empty output for failed step, got %q", got)
@@ -421,14 +421,14 @@ func TestAggregateOutput(t *testing.T) {
 		completed := map[string]CompletedStep{
 			"s1": {StepID: "s1", Output: "the output"},
 		}
-		got := AggregateOutput(completed, plan)
+		got := AggregateOutput(completed, plan, nil)
 		if got != "the output" {
 			t.Errorf("expected 'the output', got %q", got)
 		}
 	})
 
 	t.Run("empty plan", func(t *testing.T) {
-		got := AggregateOutput(map[string]CompletedStep{}, &Plan{})
+		got := AggregateOutput(map[string]CompletedStep{}, &Plan{}, nil)
 		if got != "" {
 			t.Errorf("expected empty output, got %q", got)
 		}
@@ -445,12 +445,64 @@ func TestAggregateOutput(t *testing.T) {
 			"s2": {StepID: "s2", Output: "A out"},
 			"s3": {StepID: "s3", Output: "B out"},
 		}
-		got := AggregateOutput(completed, plan)
+		got := AggregateOutput(completed, plan, nil)
 		if !contains(got, "A out") || !contains(got, "B out") {
 			t.Errorf("expected both terminal outputs, got %q", got)
 		}
 		if contains(got, "root out") {
 			t.Error("non-terminal output should not appear")
+		}
+	})
+
+	t.Run("pre-completed terminal steps are excluded", func(t *testing.T) {
+		// Simulate continuation: old plan had s1→s2 (both terminal-looking after merge),
+		// new continuation adds s3. s1 and s2 are pre-completed from previous turn.
+		plan := &Plan{Steps: []PlanStep{
+			{ID: "s1", Description: "old root"},
+			{ID: "s2", Description: "old leaf", DependsOn: []string{"s1"}},
+			{ID: "s3", Description: "new continuation step"},
+		}}
+		completed := map[string]CompletedStep{
+			"s1": {StepID: "s1", Output: "old root output"},
+			"s2": {StepID: "s2", Output: "old leaf output"},
+			"s3": {StepID: "s3", Output: "new output"},
+		}
+		preCompletedIDs := map[string]bool{"s1": true, "s2": true}
+		got := AggregateOutput(completed, plan, preCompletedIDs)
+		if !contains(got, "new output") {
+			t.Errorf("expected new continuation output, got %q", got)
+		}
+		if contains(got, "old root output") || contains(got, "old leaf output") {
+			t.Errorf("pre-completed step output should be excluded, got %q", got)
+		}
+	})
+
+	t.Run("nil preCompletedIDs includes all terminal outputs", func(t *testing.T) {
+		plan := &Plan{Steps: []PlanStep{
+			{ID: "s1", Description: "root"},
+			{ID: "s2", Description: "leaf", DependsOn: []string{"s1"}},
+		}}
+		completed := map[string]CompletedStep{
+			"s1": {StepID: "s1", Output: "root output"},
+			"s2": {StepID: "s2", Output: "leaf output"},
+		}
+		got := AggregateOutput(completed, plan, nil)
+		if !contains(got, "leaf output") {
+			t.Error("expected terminal output with nil preCompletedIDs")
+		}
+	})
+
+	t.Run("all terminals pre-completed falls back to empty", func(t *testing.T) {
+		plan := &Plan{Steps: []PlanStep{
+			{ID: "s1", Description: "only step"},
+		}}
+		completed := map[string]CompletedStep{
+			"s1": {StepID: "s1", Output: "old output"},
+		}
+		preCompletedIDs := map[string]bool{"s1": true}
+		got := AggregateOutput(completed, plan, preCompletedIDs)
+		if got != "" {
+			t.Errorf("expected empty output when all terminals are pre-completed, got %q", got)
 		}
 	})
 }

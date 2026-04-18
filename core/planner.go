@@ -66,6 +66,21 @@ Prefer higher-tier tools over bash_exec in all profiles:
 - "executor": general purpose (default, all tools — follow tool priority tiers)`
 
 	planModeExtraSections = `
+## Step Description Format
+
+Each step MUST include two text fields:
+
+- **summary**: A condensed label of 5-7 words STRICTLY. Used only for UI display. Must capture the essence of the step. MUST NOT be empty.
+- **description**: A detailed specification following the What-How-Where format:
+  - What: What needs to be done in this step.
+  - How: The approach, techniques, patterns, or algorithms to use.
+  - Where: Specific files, functions, modules, or components involved.
+  - Acceptance Criteria: Concrete, verifiable conditions that must be satisfied for this step to be considered complete. Each criterion should be testable.
+
+Example:
+  "summary": "Add JWT auth middleware",
+  "description": "What: Implement JWT-based authentication middleware for all protected API endpoints.\nHow: Create a middleware function that extracts and validates JWT tokens from the Authorization header using the existing auth package. Use RS256 signature verification.\nWhere: backend/middleware/auth.go (new file), backend/routes/api.go (wire middleware)\nAcceptance Criteria:\n- All protected endpoints return 401 for missing or invalid tokens\n- Valid tokens allow request processing with user context\n- Token expiration is properly handled with appropriate error messages"
+
 ## Output Expectations
 
 - "researcher" / "tester": Pass all results through the finish tool. Write files ONLY for final deliverables.
@@ -83,7 +98,7 @@ Steps are parallelizable when they have NO data dependencies — step B can run 
 
 	planModeTail = "REFLECTIONS\n"
 
-	planModeJSONExample = `{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
+	planModeJSONExample = `{"steps": [{"id": "step_1", "summary": "Implement auth middleware", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
 )
 
 // Continuation mode template content.
@@ -135,7 +150,7 @@ Assign specialized profiles when it adds clear value. Omit profile for simple ta
 
 	continuationModeExtraSections = ""
 	continuationModeTail          = ""
-	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "description": "...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
+	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
 )
 
 // compile-time check: Planner implements orchestration.Planner.
@@ -144,15 +159,23 @@ var _ orchestration.Planner = (*Planner)(nil)
 // defaultMaxExploreSteps is the default step budget for the planner's exploration loop.
 const defaultMaxExploreSteps = 7
 
+// Circuit breaker defaults for the planner's exploration executor.
+const (
+	defaultRepeatNudgeThreshold     = 3
+	defaultRepeatAbortThreshold     = 5
+	defaultTruncationAbortThreshold = 3
+	defaultParseErrorAbortThreshold = 3
+)
+
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {
-	llm            LLMCaller
-	modelRegistry  *llm.ModelRegistry
-	toolRegistry   *coretools.ToolRegistry // to discover available tools
-	tokenCounter   llm.TokenCounter        // for context window management
-	contextFactory ContextManagerFactory    // for creating the exploration ContextManager
-	maxExploreSteps int                    // budget for exploration (default: 7)
-	emitter        Emitter                  // for logging/events (optional, nil-safe)
+	llm             LLMCaller
+	modelRegistry   *llm.ModelRegistry
+	toolRegistry    *coretools.ToolRegistry // to discover available tools
+	tokenCounter    llm.TokenCounter        // for context window management
+	contextFactory  ContextManagerFactory   // for creating the exploration ContextManager
+	maxExploreSteps int                     // budget for exploration (default: 7)
+	emitter         Emitter                 // for logging/events (optional, nil-safe)
 }
 
 // NewPlanner creates a new Planner with the given LLM caller.
@@ -320,10 +343,10 @@ func (p *Planner) planWithExploration(
 		true, // suppressAssistantEvents — no streaming to frontend
 		ToolResultBudget{HardCapTokens: 30000, MaxFillFraction: 0.4},
 		CircuitBreakerConfig{
-			RepeatNudgeThreshold:     3,
-			RepeatAbortThreshold:     5,
-			TruncationAbortThreshold: 3,
-			ParseErrorAbortThreshold: 3,
+			RepeatNudgeThreshold:     defaultRepeatNudgeThreshold,
+			RepeatAbortThreshold:     defaultRepeatAbortThreshold,
+			TruncationAbortThreshold: defaultTruncationAbortThreshold,
+			ParseErrorAbortThreshold: defaultParseErrorAbortThreshold,
 		},
 	)
 
@@ -471,7 +494,13 @@ func (p *Planner) Replan(
 	reflection *Reflection,
 	sessionReflections []Reflection,
 ) (*Plan, error) {
-	systemPrompt := p.buildReplanSystemPrompt(ctx, originalPlan, completedSteps, failedStep, reflection, sessionReflections)
+	systemPrompt := p.buildReplanSystemPrompt(ctx, replanContext{
+		originalPlan:       originalPlan,
+		completedSteps:     completedSteps,
+		failedStep:         failedStep,
+		reflection:         reflection,
+		sessionReflections: sessionReflections,
+	})
 
 	messages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
@@ -580,57 +609,62 @@ func (p *Planner) buildPlanSystemPrompt(
 	return result
 }
 
+// replanContext groups the parameters needed for replan prompt construction.
+type replanContext struct {
+	originalPlan       *Plan
+	completedSteps     []CompletedStep
+	failedStep         CompletedStep
+	reflection         *Reflection
+	sessionReflections []Reflection
+}
+
 // buildReplanSystemPrompt constructs the system prompt for replanning after failure.
 func (p *Planner) buildReplanSystemPrompt(
 	ctx context.Context,
-	originalPlan *Plan,
-	completedSteps []CompletedStep,
-	failedStep CompletedStep,
-	reflection *Reflection,
-	sessionReflections []Reflection,
+	rc replanContext,
 ) string {
 	// Build original plan string
 	var originalPlanStr string
-	planJSON, err := json.MarshalIndent(originalPlan, "", "  ")
+	planJSON, err := json.MarshalIndent(rc.originalPlan, "", "  ")
 	if err != nil {
 		// Fallback to Go's default formatting if JSON marshaling fails
-		originalPlanStr = fmt.Sprintf("%+v", originalPlan)
+		originalPlanStr = fmt.Sprintf("%+v", rc.originalPlan)
 	} else {
 		originalPlanStr = string(planJSON)
 	}
 
 	// Build completed steps string
 	var completedBuilder strings.Builder
-	for _, cs := range completedSteps {
+	for _, cs := range rc.completedSteps {
 		fmt.Fprintf(&completedBuilder, "- %s: %s\n", cs.StepID, cs.Output)
 	}
 	completedStepsStr := completedBuilder.String()
 
 	// Build failed step string
 	var failedStepBuilder strings.Builder
-	failedStepBuilder.WriteString(failedStep.StepID + "\n")
-	if failedStep.Error != nil {
-		failedStepBuilder.WriteString("Error: " + failedStep.Error.Error() + "\n")
+	failedStepBuilder.WriteString(rc.failedStep.StepID + "\n")
+	if rc.failedStep.Error != nil {
+		failedStepBuilder.WriteString("Error: " + rc.failedStep.Error.Error() + "\n")
 	}
-	failedStepBuilder.WriteString("Output: " + failedStep.Output)
+	failedStepBuilder.WriteString("Output: " + rc.failedStep.Output)
 	failedStepStr := failedStepBuilder.String()
 
 	// Build reflection string
 	var reflectionStr string
-	if reflection != nil {
+	if rc.reflection != nil {
 		reflectionStr = fmt.Sprintf(`Reflection on failure:
 - Failure analysis: %s
 - Root cause: %s
 - Action plan: %s
-`, reflection.FailureAnalysis, reflection.RootCause, reflection.ActionPlan)
+`, rc.reflection.FailureAnalysis, rc.reflection.RootCause, rc.reflection.ActionPlan)
 	}
 
 	// Build previous session reflections string (cross-attempt pattern visibility)
 	var prevReflectionsStr string
-	if len(sessionReflections) > 0 {
+	if len(rc.sessionReflections) > 0 {
 		var prb strings.Builder
 		prb.WriteString("Previous session reflections (showing cross-attempt failure patterns):\n")
-		for i, r := range sessionReflections {
+		for i, r := range rc.sessionReflections {
 			fmt.Fprintf(&prb, "%d. Summary: %s | Root cause: %s | Action plan: %s | Suggested: %s\n",
 				i+1, r.Summary, r.RootCause, r.ActionPlan, r.SuggestedAction)
 		}
@@ -642,12 +676,12 @@ func (p *Planner) buildReplanSystemPrompt(
 	// to avoid substring collision, but the builder handles all substitutions
 	// at once, so we use the full placeholder names which are distinct.
 	substitutions := map[string]string{
-		"ORIGINAL-PLAN":               originalPlanStr,
-		"COMPLETED-STEPS":             completedStepsStr,
-		"FAILED-STEP":                 failedStepStr,
+		"ORIGINAL-PLAN":                originalPlanStr,
+		"COMPLETED-STEPS":              completedStepsStr,
+		"FAILED-STEP":                  failedStepStr,
 		"PREVIOUS-SESSION-REFLECTIONS": prevReflectionsStr,
-		"CURRENT-REFLECTION":          reflectionStr,
-		"WORKSPACE-PATH":              formatWorkspacePath(ctx),
+		"CURRENT-REFLECTION":           reflectionStr,
+		"WORKSPACE-PATH":               formatWorkspacePath(ctx),
 	}
 
 	// Use prompt builder with family-specific adapters

@@ -142,7 +142,10 @@ func BuildChangeSummary(completedSteps map[string]CompletedStep, plan *Plan) str
 
 // AggregateOutput combines outputs from terminal steps (steps that no other step
 // depends on). If no terminal outputs exist, all step outputs are collected instead.
-func AggregateOutput(completedSteps map[string]CompletedStep, plan *Plan) string {
+// preCompletedIDs, when non-nil, lists step IDs that were pre-completed from a
+// previous turn's blackboard; these are excluded from output aggregation so that
+// continuation messages only return newly produced output.
+func AggregateOutput(completedSteps map[string]CompletedStep, plan *Plan, preCompletedIDs map[string]bool) string {
 	// Find terminal steps (steps that no other step depends on)
 	dependedUpon := make(map[string]bool)
 	for _, step := range plan.Steps {
@@ -151,9 +154,12 @@ func AggregateOutput(completedSteps map[string]CompletedStep, plan *Plan) string
 		}
 	}
 
-	// Collect outputs from terminal steps
+	// Collect outputs from terminal steps, skipping pre-completed ones
 	var outputs []string
 	for _, step := range plan.Steps {
+		if preCompletedIDs[step.ID] {
+			continue
+		}
 		if !dependedUpon[step.ID] {
 			if completed, ok := completedSteps[step.ID]; ok && completed.Error == nil {
 				outputs = append(outputs, completed.Output)
@@ -161,9 +167,12 @@ func AggregateOutput(completedSteps map[string]CompletedStep, plan *Plan) string
 		}
 	}
 
-	// If no terminal outputs, collect all outputs
+	// If no terminal outputs, collect all outputs (still excluding pre-completed)
 	if len(outputs) == 0 {
 		for _, step := range plan.Steps {
+			if preCompletedIDs[step.ID] {
+				continue
+			}
 			if completed, ok := completedSteps[step.ID]; ok && completed.Error == nil {
 				outputs = append(outputs, completed.Output)
 			}

@@ -80,9 +80,10 @@ export function UserMessage({ content, timestamp, isPinned, maxHeight }: UserMes
       }}
       onClick={handleClick}
       onBlur={handleBlur}
-      tabIndex={isOverflowing ? 0 : undefined}
+      tabIndex={isOverflowing ? 0 : -1}
       role={isOverflowing ? 'button' : undefined}
       aria-expanded={isOverflowing ? effectiveExpanded : undefined}
+      aria-label="Expand or collapse message"
     >
       <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto">
         <div className="bg-muted text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5">

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"google.golang.org/genai"
 )
@@ -133,7 +134,9 @@ func (p *GeminiProvider) convertMessages(messages []Message) (contents []*genai.
 			for _, tc := range msg.ToolCalls {
 				var args map[string]any
 				if len(tc.Input) > 0 {
-					_ = json.Unmarshal(tc.Input, &args)
+					if err := json.Unmarshal(tc.Input, &args); err != nil {
+						slog.Debug("gemini: failed to unmarshal tool call args", "error", err)
+					}
 				}
 				content.Parts = append(content.Parts, &genai.Part{
 					FunctionCall: &genai.FunctionCall{
@@ -148,7 +151,9 @@ func (p *GeminiProvider) convertMessages(messages []Message) (contents []*genai.
 			// Tool response
 			var responseData map[string]any
 			if msg.Content != "" {
-				_ = json.Unmarshal([]byte(msg.Content), &responseData)
+				if err := json.Unmarshal([]byte(msg.Content), &responseData); err != nil {
+					slog.Debug("gemini: failed to unmarshal tool response", "error", err)
+				}
 				if responseData == nil {
 					responseData = map[string]any{"result": msg.Content}
 				}
@@ -313,9 +318,16 @@ func (p *GeminiProvider) convertStreamResponse(result *genai.GenerateContentResp
 
 		// Check for finish reason
 		if candidate.FinishReason != "" {
-			chunks = append(chunks, ChatChunk{
+			finishChunk := ChatChunk{
 				StopReason: MapStopReason(string(candidate.FinishReason), geminiStopReasonMap),
-			})
+			}
+			if result.UsageMetadata != nil {
+				finishChunk.Usage = &TokenUsage{
+					InputTokens:  int(result.UsageMetadata.PromptTokenCount),
+					OutputTokens: int(result.UsageMetadata.CandidatesTokenCount),
+				}
+			}
+			chunks = append(chunks, finishChunk)
 		}
 	}
 

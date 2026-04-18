@@ -4,6 +4,10 @@ import { Button } from '@/components/ui/button'
 import { useChatStore } from '@/stores/chatStore'
 import { ResumeTask } from '../../../wailsjs/go/desktop/App'
 
+interface ResumeActionMetadata {
+  resolved?: boolean
+}
+
 interface ResumeActionPanelProps {
   sessionId: string
   content: string
@@ -13,7 +17,8 @@ interface ResumeActionPanelProps {
 export function ResumeActionPanel({ sessionId, content, metadata }: ResumeActionPanelProps) {
   const [resumed, setResumed] = useState(false)
 
-  const resolved = metadata?.resolved === true
+  const resumeMeta = metadata as ResumeActionMetadata | undefined
+  const resolved = resumeMeta?.resolved === true
 
   // If resolved (either from local state or metadata), render nothing
   if (resolved || resumed) {

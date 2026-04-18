@@ -90,11 +90,11 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 			cfg.ActiveProvider: provider,
 		},
 		activeProvider:      provider,
-		activeModel:        cfg.Model,
-		activeProviderName: cfg.ActiveProvider,
-		maxRetries:         cfg.MaxRetries,
-		initialBackoff:     initialBackoff,
-		maxBackoff:         maxBackoff,
+		activeModel:         cfg.Model,
+		activeProviderName:  cfg.ActiveProvider,
+		maxRetries:          cfg.MaxRetries,
+		initialBackoff:      initialBackoff,
+		maxBackoff:          maxBackoff,
 		registry:            registry,
 		tokenCounter:        NewSimpleTokenCounter(),
 		sampling:            cfg.SamplingFunc,
@@ -241,6 +241,7 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 				meta, _ := r.registry.Resolve(resp.Model)
 				resp.Family = meta.Family
 			}
+			normalizeResponse(resp)
 			return resp, nil
 		}
 

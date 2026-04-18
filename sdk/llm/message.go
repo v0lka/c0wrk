@@ -1,6 +1,9 @@
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Message — unit of communication with LLM (system/user/assistant/tool).
 type Message struct {
@@ -19,18 +22,18 @@ type ToolCall struct {
 
 // ChatRequest — request to LLM.
 type ChatRequest struct {
-	Model       string           `json:"model"`
-	Messages    []Message        `json:"messages"`
-	Tools       []ToolDefinition `json:"tools,omitempty"`
-	MaxTokens   int              `json:"max_tokens"`
-	Temperature     *float64        `json:"temperature,omitempty"`      // nil = use provider default
-	ReasoningEffort ReasoningEffort `json:"reasoning_effort,omitempty"` // user-facing reasoning level
+	Model           string           `json:"model"`
+	Messages        []Message        `json:"messages"`
+	Tools           []ToolDefinition `json:"tools,omitempty"`
+	MaxTokens       int              `json:"max_tokens"`
+	Temperature     *float64         `json:"temperature,omitempty"`      // nil = use provider default
+	ReasoningEffort ReasoningEffort  `json:"reasoning_effort,omitempty"` // user-facing reasoning level
 }
 
 // ChatResponse — LLM response.
 type ChatResponse struct {
-	Model      string     `json:"model"`      // Model ID used for this response
-	Family     string     `json:"family"`     // Model family for prompt/parameter adaptation
+	Model      string     `json:"model"`  // Model ID used for this response
+	Family     string     `json:"family"` // Model family for prompt/parameter adaptation
 	Message    Message    `json:"message"`
 	Reasoning  string     `json:"reasoning"` // Extended thinking/reasoning (if model supports)
 	Usage      TokenUsage `json:"usage"`
@@ -39,16 +42,23 @@ type ChatResponse struct {
 
 // ChatChunk — streaming response fragment.
 type ChatChunk struct {
-	Delta      string    `json:"delta"`
-	Reasoning  string    `json:"reasoning,omitempty"` // Reasoning delta
-	ToolCall   *ToolCall `json:"tool_call,omitempty"`
-	StopReason string    `json:"stop_reason,omitempty"`
+	Delta      string      `json:"delta"`
+	Reasoning  string      `json:"reasoning,omitempty"` // Reasoning delta
+	ToolCall   *ToolCall   `json:"tool_call,omitempty"`
+	StopReason string      `json:"stop_reason,omitempty"`
+	Usage      *TokenUsage `json:"usage,omitempty"` // Final chunk may include token usage
 }
 
 // TokenUsage — token consumption tracking.
 type TokenUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+}
+
+// normalizeResponse trims trailing whitespace from content and reasoning fields.
+func normalizeResponse(resp *ChatResponse) {
+	resp.Message.Content = strings.TrimRight(resp.Message.Content, " \t\n\r\f\v")
+	resp.Reasoning = strings.TrimRight(resp.Reasoning, " \t\n\r\f\v")
 }
 
 // ToolDefinition — tool description for LLM (JSON Schema).

@@ -464,7 +464,7 @@ func TestResolveFamily_UserOverride(t *testing.T) {
 		},
 		{
 			name:           "override builtin model with different family",
-			model:          "gpt-4o",   // normally openai_flagship
+			model:          "gpt-4o",    // normally openai_flagship
 			overrideFamily: "anthropic", // overridden
 			expectedFamily: "anthropic",
 		},

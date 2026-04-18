@@ -1,14 +1,27 @@
 import { useState } from 'react'
 import { CheckCircle2, Circle, Loader2, ChevronDown, ChevronRight, ListTodo, XCircle, Clock } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { usePanelStore } from '@/stores/panelStore'
+
+/** Derive a short display label from a detailed step description when no summary is available. */
+function deriveStepLabel(summary: string | undefined, description: string): string {
+  if (summary) return summary
+  // Strip What/How/Where prefix, take first line, and truncate
+  let label = description.replace(/^What:\s*/i, '').split('\n')[0] || description
+  if (label.length > 80) {
+    label = label.slice(0, 77).trimEnd() + '\u2026'
+  }
+  return label
+}
 
 // View-specific step type for display
 interface PlanStepView {
   id: string
   description: string
+  summary?: string
   status: 'done' | 'running' | 'waiting' | 'failed'
   details?: string
   duration?: number // milliseconds
@@ -42,6 +55,8 @@ function StatusBadge({ status }: { status: PlanStepView['status'] }) {
 
 function PlanStepItem({ step }: { step: PlanStepView }) {
   const [expanded, setExpanded] = useState(false)
+  const displayLabel = deriveStepLabel(step.summary, step.description)
+  const hasTooltip = !!step.description && step.description.length > 80
 
   return (
     <div className="border border-border rounded-lg overflow-hidden">
@@ -57,7 +72,18 @@ function PlanStepItem({ step }: { step: PlanStepView }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-muted-foreground">#{step.id}</span>
-            <span className="text-sm truncate">{step.description}</span>
+            {hasTooltip ? (
+              <Tooltip delayDuration={400}>
+                <TooltipTrigger asChild>
+                  <span className="text-sm truncate cursor-default">{displayLabel}</span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="start" className="max-w-md text-left whitespace-pre-line p-3 bg-background text-foreground border border-border shadow-md">
+                  {step.description}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <span className="text-sm truncate">{displayLabel}</span>
+            )}
           </div>
         </div>
         {step.duration !== undefined && (step.status === 'done' || step.status === 'failed') && (
@@ -91,6 +117,7 @@ export function PlanView() {
     ? latestPlanGroup.items.map((item, index) => ({
         id: item.id || String(index + 1),
         description: item.title,
+        summary: item.summary,
         status: item.status === 'completed' ? 'done' : item.status === 'pending' ? 'waiting' : item.status,
         duration: item.duration,
       }))
@@ -110,10 +137,12 @@ export function PlanView() {
   }
 
   return (
-    <div className="space-y-2 min-w-0">
-      {steps.map((step) => (
-        <PlanStepItem key={step.id} step={step} />
-      ))}
-    </div>
+    <TooltipProvider delayDuration={400}>
+      <div className="space-y-2 min-w-0">
+        {steps.map((step) => (
+          <PlanStepItem key={step.id} step={step} />
+        ))}
+      </div>
+    </TooltipProvider>
   )
 }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -89,7 +90,8 @@ func (a *App) Startup(ctx context.Context) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		log.Error("failed to open sqlite database", "error", err)
-	} else {
+	}
+	if db != nil {
 		// Apply pragmas once on the shared connection
 		if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
 			log.Error("failed to enable WAL mode", "error", err)
@@ -98,16 +100,20 @@ func (a *App) Startup(ctx context.Context) {
 			log.Error("failed to enable foreign keys", "error", err)
 		}
 		a.db = db
+	}
 
-		// Project store first (sessions FK references projects)
+	// Project store first (sessions FK references projects)
+	if db != nil {
 		projStore, err := project.NewSQLiteProjectStore(db)
 		if err != nil {
 			log.Error("failed to init project store", "error", err)
 		} else {
 			a.projStore = projStore
 		}
+	}
 
-		// Session store (depends on projects table)
+	// Session store (depends on projects table)
+	if db != nil {
 		store, err := session.NewSQLiteSessionStore(db)
 		if err != nil {
 			log.Error("failed to init session store", "error", err)
@@ -118,7 +124,6 @@ func (a *App) Startup(ctx context.Context) {
 
 	// UI emit function: bridges events to Wails frontend (persistence is handled by Application).
 	uiEmitFunc := func(evt session.Event) {
-		slog.Debug("desktop: event received", "type", evt.Type, "sessionID", evt.SessionID)
 		eventName := fmt.Sprintf("session:%s:%s", evt.SessionID, evt.Type)
 		wailsRuntime.EventsEmit(a.ctx, eventName, evt.Data)
 		slog.Debug("desktop: Wails EventsEmit called", "eventName", eventName)
@@ -245,6 +250,13 @@ func (a *App) Startup(ctx context.Context) {
 		log.Error("failed to create projects directory", "error", err)
 	}
 
+	// Initialize project manager early — it only needs the store and a directory path.
+	// This allows us to emit project/session data to the frontend before the slow
+	// NewApplication() call (MCP gateway, etc.).
+	if a.projStore != nil {
+		a.projectManager = project.NewManager(a.projStore, a.projectsDir)
+	}
+
 	application, err := backend.NewApplication(backend.ApplicationConfig{
 		Config:        a.config,
 		Logger:        log,
@@ -268,6 +280,50 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	a.app = application
 	a.manager = application.Manager()
+
+	// Wire project resolver so the session manager can lazily restore sessions
+	// from the database by looking up the project's workspace path.
+	if a.projStore != nil {
+		a.manager.SetProjectResolver(func(projectID string) (string, error) {
+			proj, err := a.projStore.LoadProject(projectID)
+			if err != nil {
+				return "", fmt.Errorf("failed to load project: %w", err)
+			}
+			if proj == nil {
+				return "", fmt.Errorf("project %s not found", projectID)
+			}
+			return proj.WorkspacePath, nil
+		})
+	}
+
+	// Pre-load projects and sessions and emit to frontend AFTER the project
+	// resolver is wired, so that lazy session restoration works if the user
+	// interacts with a session before backend:ready fires.
+	if a.projectManager != nil {
+		projects, pErr := a.projectManager.ListProjects()
+		if pErr == nil && len(projects) > 0 {
+			// Activate the first project so ListSessions works immediately,
+			// even before the frontend calls SwitchProject.
+			a.activeProjectMu.Lock()
+			a.activeProjectID = projects[0].ID
+			a.activeProjectPath = projects[0].WorkspacePath
+			a.activeProjectMu.Unlock()
+
+			wailsRuntime.EventsEmit(a.ctx, "projects:loaded", projects)
+
+			// Also pre-load sessions for the most recent project
+			if a.store != nil {
+				sessions, sErr := a.store.ListSessionsByProject(projects[0].ID)
+				if sErr == nil {
+					wailsRuntime.EventsEmit(a.ctx, "sessions:loaded", sessions)
+				} else {
+					log.Warn("failed to pre-load sessions for early emit", "error", sErr)
+				}
+			}
+		} else if pErr != nil {
+			log.Warn("failed to pre-load projects for early emit", "error", pErr)
+		}
+	}
 
 	// Filter out codebase-memory-mcp management tools that should not be exposed to the LLM.
 	a.app.Builder().ToolRegistry().SetToolFilter(func(toolName, source string) bool {
@@ -313,11 +369,6 @@ func (a *App) Startup(ctx context.Context) {
 			"message": "no active LLM provider configured - check your config.yaml",
 			"error":   "config has no active_provider defined under llm",
 		})
-	}
-
-	// Initialize project manager
-	if a.projStore != nil {
-		a.projectManager = project.NewManager(a.projStore, a.projectsDir)
 	}
 
 	// --- Wire Wails event listeners ---
@@ -449,11 +500,14 @@ func (a *App) Startup(ctx context.Context) {
 
 			log.Debug("judge: goroutine started", "confirm_id", confirmID, "tool", pendingData.toolName)
 
+			judgeCtx, judgeCancel := context.WithTimeout(a.ctx, 120*time.Second)
+			defer judgeCancel()
+
 			responsePayload := session.JudgeResponsePayload{
 				ConfirmID: confirmID,
 			}
 
-			_, reasoning, err := a.app.EvaluateJudge(a.ctx, pendingData.toolName, pendingData.input, pendingData.taskContext)
+			_, reasoning, err := a.app.EvaluateJudge(judgeCtx, pendingData.toolName, pendingData.input, pendingData.taskContext)
 			if err != nil {
 				log.Warn("judge: evaluation failed", "confirm_id", confirmID, "tool", pendingData.toolName, "error", err)
 				responsePayload.Error = fmt.Sprintf("Judge evaluation failed: %v", err)

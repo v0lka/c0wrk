@@ -114,3 +114,79 @@ func TestToolCallRoundTrip(t *testing.T) {
 		t.Errorf("Input mismatch: expected %s, got %s", string(original.Input), string(restored.Input))
 	}
 }
+
+func TestNormalizeResponse(t *testing.T) {
+	tests := []struct {
+		name            string
+		content         string
+		reasoning       string
+		wantContent     string
+		wantReasoning   string
+	}{
+		{
+			name:          "trims trailing mixed whitespace from content and reasoning",
+			content:       "Hello world\n\r\t ",
+			reasoning:     "Think step by step\n\n",
+			wantContent:   "Hello world",
+			wantReasoning: "Think step by step",
+		},
+		{
+			name:          "preserves leading whitespace",
+			content:       "  \tleading spaces",
+			reasoning:     "\n\tleading newline",
+			wantContent:   "  \tleading spaces",
+			wantReasoning: "\n\tleading newline",
+		},
+		{
+			name:          "preserves internal newlines",
+			content:       "line1\nline2\nline3",
+			reasoning:     "step1\n\nstep2",
+			wantContent:   "line1\nline2\nline3",
+			wantReasoning: "step1\n\nstep2",
+		},
+		{
+			name:          "empty content remains empty",
+			content:       "",
+			reasoning:     "",
+			wantContent:   "",
+			wantReasoning: "",
+		},
+		{
+			name:          "no trailing whitespace unchanged",
+			content:       "clean content",
+			reasoning:     "clean reasoning",
+			wantContent:   "clean content",
+			wantReasoning: "clean reasoning",
+		},
+		{
+			name:          "trims form feed and vertical tab",
+			content:       "text\f\v",
+			reasoning:     "think\v\f",
+			wantContent:   "text",
+			wantReasoning: "think",
+		},
+		{
+			name:          "whitespace-only content becomes empty",
+			content:       "\n\r\t \f\v",
+			reasoning:     "  \n",
+			wantContent:   "",
+			wantReasoning: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &ChatResponse{
+				Message:   Message{Content: tt.content},
+				Reasoning: tt.reasoning,
+			}
+			normalizeResponse(resp)
+			if resp.Message.Content != tt.wantContent {
+				t.Errorf("Content = %q, want %q", resp.Message.Content, tt.wantContent)
+			}
+			if resp.Reasoning != tt.wantReasoning {
+				t.Errorf("Reasoning = %q, want %q", resp.Reasoning, tt.wantReasoning)
+			}
+		})
+	}
+}

@@ -16,12 +16,12 @@ import (
 	"github.com/user/agent/backend/workspace"
 )
 
-// checkCodebaseMemoryFn is the function used to check codebase-memory-mcp installation.
+// checkCodebaseMemoryFunc is the function used to check codebase-memory-mcp installation.
 // It can be overridden in tests.
-var checkCodebaseMemoryFn = mcp.CheckCodebaseMemoryMCP
+var checkCodebaseMemoryFunc = mcp.CheckCodebaseMemoryMCP
 
-// execCommandFn is used to create exec commands. It can be overridden in tests.
-var execCommandFn = exec.CommandContext
+// execCommandFunc is used to create exec commands. It can be overridden in tests.
+var execCommandFunc = exec.CommandContext
 
 // CreateProject creates a new project. If externalPath is empty, an internal workspace is created.
 func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, error) {
@@ -34,7 +34,14 @@ func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, er
 	}
 
 	// Trigger async codebase indexing (non-blocking, non-fatal)
-	go a.triggerCodebaseIndexing(p.WorkspacePath)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("panic in codebase indexing", "recover", r)
+			}
+		}()
+		a.triggerCodebaseIndexing(p.WorkspacePath)
+	}()
 
 	wailsRuntime.EventsEmit(a.ctx, "project:created", p)
 
@@ -64,17 +71,21 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 		a.indexingMu.Unlock()
 	}()
 
-	status := checkCodebaseMemoryFn()
+	status := checkCodebaseMemoryFunc()
 	if !status.Installed {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
 	defer cancel()
 
 	jsonArg := fmt.Sprintf(`{"workspace_path": %q}`, workspacePath)
 
-	cmd := execCommandFn(ctx, status.Path, "cli", "index_repository", jsonArg)
+	cmd := execCommandFunc(ctx, status.Path, "cli", "index_repository", jsonArg)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		slog.Warn("codebase-memory-mcp indexing failed",
@@ -93,15 +104,19 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 // that matches the given workspace path. The result is stored in codebaseProjectName.
 // Errors are logged as warnings and are non-fatal.
 func (a *App) resolveCodebaseProjectName(workspacePath string) {
-	status := checkCodebaseMemoryFn()
+	status := checkCodebaseMemoryFunc()
 	if !status.Installed {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 	defer cancel()
 
-	cmd := execCommandFn(ctx, status.Path, "cli", "list_projects")
+	cmd := execCommandFunc(ctx, status.Path, "cli", "list_projects")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Warn("failed to list codebase-memory-mcp projects", "error", err)
@@ -168,7 +183,7 @@ func (a *App) DeleteProject(id string) error {
 
 	// Stop watcher if this was the active project
 	if wasActive && a.watcher != nil {
-		_ = a.watcher.Close()
+		_ = a.watcher.Close() // Best-effort cleanup; error is non-critical.
 		a.watcher = nil
 	}
 
@@ -222,15 +237,20 @@ func (a *App) SwitchProject(id string) error {
 	a.codebaseProjectName = "" // clear stale name
 	a.activeProjectMu.Unlock()
 
+	// Set MCP working directory to the new project workspace
+	if a.app != nil {
+		a.app.Builder().SetMCPWorkDir(p.WorkspacePath)
+	}
+
 	// Resolve codebase-memory-mcp project name for new project (fast CLI call)
 	a.resolveCodebaseProjectName(p.WorkspacePath)
 
 	// Update project activity timestamp
-	_ = a.projStore.UpdateProjectActivity(id)
+	_ = a.projStore.UpdateProjectActivity(id) // Best-effort; error is non-critical.
 
 	// Recreate file watcher for the new project workspace
 	if a.watcher != nil {
-		_ = a.watcher.Close()
+		_ = a.watcher.Close() // Best-effort cleanup; error is non-critical.
 		a.watcher = nil
 	}
 

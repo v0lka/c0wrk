@@ -29,6 +29,12 @@ type Config struct {
 	// Allows consumers to inject task-specific context (e.g., SetTask) into the CM.
 	ContextSetup func(cm agent.ContextManager, taskDesc string)
 
+	// CallerForStep returns a step-local LLMCaller for the given ContextManager.
+	// When set, the orchestrator uses this instead of the shared LLM field to create
+	// per-step executors, ensuring parallel steps get independent context trackers.
+	// If nil, o.cfg.LLM is used for all steps.
+	CallerForStep func(cm agent.ContextManager) agent.LLMCaller
+
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
 	StepLimitFunc agent.StepLimitFunc

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { GetConfig, UpdateLLMSettings, ListProviderModels } from '../../../wailsjs/go/desktop/App'
 import { desktop } from '../../../wailsjs/go/models'
 import { logger } from '@/lib/logger'
+import { MASKED_API_KEY } from '@/constants/api'
 import { ProviderSelector } from './ProviderSelector'
 import { ProviderConfigForm } from './ProviderConfigForm'
 import { ModelSelector } from './ModelSelector'
@@ -177,11 +178,11 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
       case 'anthropic':
       case 'gemini':
       case 'chatgpt':
-        return !config.api_key && config.api_key !== '***configured***'
+        return !config.api_key && config.api_key !== MASKED_API_KEY
       case 'lmstudio':
         return !config.base_url
       case 'openai_compatible':
-        return !config.base_url || (!config.api_key && config.api_key !== '***configured***')
+        return !config.base_url || (!config.api_key && config.api_key !== MASKED_API_KEY)
       default:
         return true
     }

@@ -134,10 +134,10 @@ type BuilderToolOutputPruning struct {
 
 // BuilderCircuitBreaker holds circuit-breaker thresholds.
 type BuilderCircuitBreaker struct {
-	RepeatNudgeThreshold     int
-	RepeatAbortThreshold     int
-	TruncationAbortThreshold int
-	ParseErrorAbortThreshold int
+	RepeatNudgeThreshold         int
+	RepeatAbortThreshold         int
+	TruncationAbortThreshold     int
+	ParseErrorAbortThreshold     int
 	FruitlessNudgeThreshold      int
 	FruitlessAbortThreshold      int
 	FruitlessMaxResultLen        int
@@ -179,7 +179,8 @@ type BuilderSearchConfig struct {
 
 // BuilderMCPConfig holds MCP server definitions.
 type BuilderMCPConfig struct {
-	Servers map[string]BuilderMCPServer
+	Servers        map[string]BuilderMCPServer
+	DefaultWorkDir string
 }
 
 // BuilderMCPServer defines how to connect to an MCP server.
@@ -190,6 +191,7 @@ type BuilderMCPServer struct {
 	Env       map[string]string
 	URL       string
 	Headers   map[string]string
+	WorkDir   string
 }
 
 // ---------------------------------------------------------------------------
@@ -202,8 +204,6 @@ type BuilderOrchestrationConfig struct {
 	MaxDependencyContextChars int
 	MaxJudgeCacheSize         int
 	MaxPlannerExploreSteps    int // Max steps for planner exploration. Default: 7
-	SimpleComplexityThreshold int // max routing complexity for unified ReAct mode (default: 2)
-	SimpleMaxSteps            int // max plan steps for unified ReAct mode (default: 2)
 }
 
 // ---------------------------------------------------------------------------
@@ -223,9 +223,6 @@ type BuilderToolLimitsConfig struct {
 
 	WebSearchMaxResults int
 	WebFetchMaxBodySize int
-
-	BatchMaxConcurrency int
-	BatchMaxResultSize  int
 }
 
 // ---------------------------------------------------------------------------

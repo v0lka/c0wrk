@@ -10,7 +10,8 @@ import (
 	"github.com/user/agent/sdk/orchestration"
 )
 
-// defaultPersistenceTimeout is the default maximum time allowed for a single persistence operation.
+// defaultPersistenceTimeout is the maximum time allowed for a single
+// blackboard write operation to the database.
 const defaultPersistenceTimeout = 5 * time.Second
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,8 @@ var _ core.PersistableBlackboard = (*PersistentBlackboard)(nil)
 // All persistence calls are best-effort: errors are logged but do not propagate to callers.
 // Persistence operations are guarded by a timeout and panic recovery to prevent hangs.
 type PersistentBlackboard struct {
+	// *core.MapBlackboard is embedded for in-memory read operations.
+	// Write operations are intercepted to persist changes to the database.
 	*core.MapBlackboard
 	taskID             string
 	sessionID          string

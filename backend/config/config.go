@@ -131,10 +131,10 @@ type ToolOutputPruningConfig struct {
 
 // CircuitBreakerConfig holds circuit breaker thresholds for executor protection.
 type CircuitBreakerConfig struct {
-	RepeatNudgeThreshold     int `yaml:"repeatNudgeThreshold"`     // consecutive identical tool calls before nudge
-	RepeatAbortThreshold     int `yaml:"repeatAbortThreshold"`     // consecutive identical tool calls before abort
-	TruncationAbortThreshold int `yaml:"truncationAbortThreshold"` // consecutive truncated responses before abort
-	ParseErrorAbortThreshold int `yaml:"parseErrorAbortThreshold"` // consecutive parse errors before abort
+	RepeatNudgeThreshold         int `yaml:"repeatNudgeThreshold"`         // consecutive identical tool calls before nudge
+	RepeatAbortThreshold         int `yaml:"repeatAbortThreshold"`         // consecutive identical tool calls before abort
+	TruncationAbortThreshold     int `yaml:"truncationAbortThreshold"`     // consecutive truncated responses before abort
+	ParseErrorAbortThreshold     int `yaml:"parseErrorAbortThreshold"`     // consecutive parse errors before abort
 	FruitlessNudgeThreshold      int `yaml:"fruitlessNudgeThreshold"`      // consecutive minimal-result calls before nudge (default: 4)
 	FruitlessAbortThreshold      int `yaml:"fruitlessAbortThreshold"`      // consecutive minimal-result calls before abort (default: 6)
 	FruitlessMaxResultLen        int `yaml:"fruitlessMaxResultLen"`        // result length at or below which a call is "fruitless" (default: 32)
@@ -156,13 +156,13 @@ type ExecutorConfig struct {
 
 // CompactionConfig holds context compaction settings.
 type CompactionConfig struct {
-	SlidingWindow          SlidingWindowConfig  `yaml:"sliding_window"`
-	Summarization          SummarizationConfig  `yaml:"summarization"`
-	Hierarchical           HierarchicalConfig   `yaml:"hierarchical"`
-	Thresholds             CompactionThresholds `yaml:"thresholds"`
-	MaxSummarizeTokens     int                  `yaml:"maxSummarizeTokens"`     // max tokens for summarization LLM calls (default: 16000)
-	ObservationTruncate    int                  `yaml:"observationTruncate"`    // chars to truncate observations in summaries (default: 500)
-	SafetyMarginPercent    int                  `yaml:"safetyMarginPercent"`    // % of context window reserved as safety margin (default: 5)
+	SlidingWindow       SlidingWindowConfig  `yaml:"sliding_window"`
+	Summarization       SummarizationConfig  `yaml:"summarization"`
+	Hierarchical        HierarchicalConfig   `yaml:"hierarchical"`
+	Thresholds          CompactionThresholds `yaml:"thresholds"`
+	MaxSummarizeTokens  int                  `yaml:"maxSummarizeTokens"`  // max tokens for summarization LLM calls (default: 16000)
+	ObservationTruncate int                  `yaml:"observationTruncate"` // chars to truncate observations in summaries (default: 500)
+	SafetyMarginPercent int                  `yaml:"safetyMarginPercent"` // % of context window reserved as safety margin (default: 5)
 }
 
 // CompactionThresholds defines context window usage thresholds for compaction triggers.
@@ -233,10 +233,6 @@ type ToolLimitsConfig struct {
 
 	// Web fetch limit
 	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // max response body size in bytes (default: 102400)
-
-	// Batch limits
-	BatchMaxConcurrency int `yaml:"batchMaxConcurrency"` // max parallel tool executions (default: 10)
-	BatchMaxResultSize  int `yaml:"batchMaxResultSize"`  // total character budget across results (default: 50000)
 }
 
 // TimeoutsConfig holds configurable timeout values for various operations.
@@ -256,8 +252,6 @@ type OrchestrationConfig struct {
 	MaxHistoryMessages        int `yaml:"maxHistoryMessages"`        // default: 20
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
 	MaxPlannerExploreSteps    int `yaml:"maxPlannerExploreSteps"`    // default: 7
-	SimpleComplexityThreshold int `yaml:"simpleComplexityThreshold"` // default: 2
-	SimpleMaxSteps            int `yaml:"simpleMaxSteps"`            // default: 2
 }
 
 // ValidProviders is the canonical set of supported LLM provider names.

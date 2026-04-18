@@ -16,10 +16,10 @@ import (
 // ApplicationConfig holds all parameters needed to construct an Application.
 // Desktop provides the UI callbacks; everything else is derived from config.
 type ApplicationConfig struct {
-	Config     *config.Config
-	Logger     *slog.Logger
-	AgentDir   string // base agent directory (e.g. ~/.c0wrk)
-	LogDir     string // directory for session log files
+	Config      *config.Config
+	Logger      *slog.Logger
+	AgentDir    string // base agent directory (e.g. ~/.c0wrk)
+	LogDir      string // directory for session log files
 	ProjectsDir string // base directory for project temp dirs
 
 	// Persistence stores (optional — nil disables corresponding functionality).

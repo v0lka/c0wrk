@@ -99,10 +99,10 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				ProtectedTools: cfg.Executor.ToolOutputPruning.ProtectedTools,
 			},
 			CircuitBreaker: core.BuilderCircuitBreaker{
-				RepeatNudgeThreshold:     cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,
-				RepeatAbortThreshold:     cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
-				TruncationAbortThreshold: cfg.Executor.CircuitBreaker.TruncationAbortThreshold,
-				ParseErrorAbortThreshold: cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold,
+				RepeatNudgeThreshold:         cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,
+				RepeatAbortThreshold:         cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
+				TruncationAbortThreshold:     cfg.Executor.CircuitBreaker.TruncationAbortThreshold,
+				ParseErrorAbortThreshold:     cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold,
 				FruitlessNudgeThreshold:      cfg.Executor.CircuitBreaker.FruitlessNudgeThreshold,
 				FruitlessAbortThreshold:      cfg.Executor.CircuitBreaker.FruitlessAbortThreshold,
 				FruitlessMaxResultLen:        cfg.Executor.CircuitBreaker.FruitlessMaxResultLen,
@@ -128,8 +128,6 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 			MaxJudgeCacheSize:         cfg.Orchestration.MaxJudgeCacheSize,
 			MaxPlannerExploreSteps:    cfg.Orchestration.MaxPlannerExploreSteps,
-			SimpleComplexityThreshold: cfg.Orchestration.SimpleComplexityThreshold,
-			SimpleMaxSteps:            cfg.Orchestration.SimpleMaxSteps,
 		},
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:     cfg.ToolLimits.ReadDefaultLines,
@@ -141,8 +139,6 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			GlobMaxResults:       cfg.ToolLimits.GlobMaxResults,
 			WebSearchMaxResults:  cfg.ToolLimits.WebSearchMaxResults,
 			WebFetchMaxBodySize:  cfg.ToolLimits.WebFetchMaxBodySize,
-			BatchMaxConcurrency:  cfg.ToolLimits.BatchMaxConcurrency,
-			BatchMaxResultSize:   cfg.ToolLimits.BatchMaxResultSize,
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
 			BashMaxTimeout:   cfg.Timeouts.BashMaxTimeout,

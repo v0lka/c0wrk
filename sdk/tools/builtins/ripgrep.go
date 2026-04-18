@@ -37,7 +37,7 @@ func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool {
 			},
 			"path": {
 				"type": "string",
-				"description": "Absolute path to the directory to search recursively"
+				"description": "Directory to search recursively. Defaults to the project workspace when omitted."
 			},
 			"file_pattern": {
 				"type": "string",
@@ -60,7 +60,7 @@ func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool {
 				"description": "Include hidden files and directories in the search. Default: false."
 			}
 		},
-		"required": ["pattern", "path"]
+		"required": ["pattern"]
 	}`),
 		Policy: tools.PolicyAlwaysAllow,
 	},
@@ -80,10 +80,19 @@ type RipgrepInput struct {
 }
 
 // Execute performs the ripgrep search and returns formatted results.
-func (t *RipgrepTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params RipgrepInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)
+	}
+
+	if params.Path == "" {
+		params.Path = tools.WorkspacePathFrom(ctx)
+		if params.Path == "" {
+			return tools.ToolResult{Content: "path is required when no workspace is available", IsError: true}, nil
+		}
+	} else {
+		params.Path = resolvePath(ctx, params.Path)
 	}
 
 	// Apply defaults

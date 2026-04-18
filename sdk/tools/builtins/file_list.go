@@ -55,6 +55,8 @@ func (t *ListDirectoryTool) Execute(ctx context.Context, input json.RawMessage) 
 		return tools.ParseInputError(err)
 	}
 
+	params.Path = resolvePath(ctx, params.Path)
+
 	entries, err := os.ReadDir(params.Path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read directory: %v", err), IsError: true}, nil

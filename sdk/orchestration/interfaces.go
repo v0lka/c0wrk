@@ -42,6 +42,12 @@ type StepScopable interface {
 	WithStepID(id string) Events
 }
 
+// RetryScopable is an optional interface that Events implementations
+// can implement to tag events with a retry attempt number.
+type RetryScopable interface {
+	WithRetryAttempt(attempt int) Events
+}
+
 // ContextManagerFactory creates a ContextManager for a new task step.
 type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) agent.ContextManager
 

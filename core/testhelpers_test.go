@@ -246,7 +246,6 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 		outputTokens int
 	}{content, inputTokens, outputTokens})
 }
-func (m *mockEmitter) TokensUsed(_, _ int, _, _ string)             {}
 func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string)        {}
 func (m *mockEmitter) ContextCompaction(_, _ float64, _ string)      {}
 func (m *mockEmitter) Service(_ string)                             {}

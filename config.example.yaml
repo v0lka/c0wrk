@@ -198,11 +198,7 @@ toolLimits:
   webSearchMaxResults: 5 # Max web search results
 
   # Web fetch
-  webFetchMaxBodySize: 102400 # Max response body in bytes (100 KB)
-
-  # Batch execution
-  batchMaxConcurrency: 10 # Max parallel tool executions
-  batchMaxResultSize: 50000 # Total character budget across batch results
+  webFetchMaxBodySize: 2097152 # Max Markdown output size in bytes (after HTML conversion), default 2 MB
 
 # ---------------------------------------------------------------------------
 # Timeouts (in seconds)

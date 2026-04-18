@@ -70,6 +70,8 @@ func (t *SearchContentTool) Execute(ctx context.Context, input json.RawMessage) 
 		return tools.ParseInputError(err)
 	}
 
+	params.Path = resolvePath(ctx, params.Path)
+
 	re, err := regexp.Compile(params.Regex)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("invalid regex: %v", err), IsError: true}, nil

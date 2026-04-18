@@ -33,7 +33,7 @@ func main() {
 			app,
 		},
 		Debug: options.Debug{
-			OpenInspectorOnStartup: true,
+			OpenInspectorOnStartup: os.Getenv("C0WRK_DEBUG") != "",
 		},
 	})
 	if err != nil {

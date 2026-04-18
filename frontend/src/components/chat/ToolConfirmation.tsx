@@ -12,6 +12,21 @@ export interface ToolConfirmationMetadata {
   tool_msg_id?: string
 }
 
+interface JudgeResponse {
+  confirm_id: string
+  error?: string
+  reasoning?: string
+}
+
+function isJudgeResponse(data: unknown): data is JudgeResponse {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'confirm_id' in data &&
+    typeof (data as Record<string, unknown>).confirm_id === 'string'
+  )
+}
+
 interface ToolConfirmationProps {
   sessionId: string
   metadata?: Record<string, unknown>
@@ -68,8 +83,9 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
   useEffect(() => {
     if (!runtime || !confirmId || !sessionId) return
 
-    const cancel = runtime.EventsOn(`session:${sessionId}:tool_judge_response`, (data: any) => {
-      if (data?.confirm_id !== confirmId) return
+    const cancel = runtime.EventsOn(`session:${sessionId}:tool_judge_response`, (data: unknown) => {
+      if (!isJudgeResponse(data)) return
+      if (data.confirm_id !== confirmId) return
 
       // Clear timeout since we got a response
       if (judgeTimeoutRef.current) {

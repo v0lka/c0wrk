@@ -19,9 +19,10 @@ export function StepLimitPrompt({ sessionId, metadata }: StepLimitPromptProps) {
   const { runtime } = useWails()
   const [resolved, setResolved] = useState<'allow_once' | 'allow_always' | 'deny' | null>(null)
 
-  const requestId = typeof metadata?.request_id === 'string' ? metadata.request_id : undefined
-  const currentStep = typeof metadata?.current_step === 'number' ? metadata.current_step : 0
-  const maxSteps = typeof metadata?.max_steps === 'number' ? metadata.max_steps : 0
+  const stepMeta = metadata as StepLimitPromptMetadata | undefined
+  const requestId = stepMeta?.request_id
+  const currentStep = stepMeta?.current_step ?? 0
+  const maxSteps = stepMeta?.max_steps ?? 0
 
   const handleResponse = (response: 'allow_once' | 'allow_always' | 'deny') => {
     if (!runtime) return

@@ -29,9 +29,6 @@ type OrchestratorConfig struct {
 	MaxHistoryMessages        int // max conversation history messages to retain (default: 20)
 	MaxDependencyContextChars int // max chars for dependency context in step tasks (default: 8000)
 
-	SimpleComplexityThreshold int // max routing complexity for unified ReAct mode (default: 2)
-	SimpleMaxSteps            int // max plan steps for unified ReAct mode (default: 2)
-
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
 	StepLimitFunc agent.StepLimitFunc
@@ -62,8 +59,9 @@ type Orchestrator struct {
 	modelRegistry       *llm.ModelRegistry
 	bbFactory           BlackboardFactory
 	conversationHistory []llm.Message
-	taskStore           TaskPersistence        // optional, for ContinueTask blackboard restoration
-	bbRestoreFunc       BlackboardRestoreFunc  // optional, restores PersistableBlackboard from store
+	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
+	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
+	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -84,6 +82,7 @@ func NewOrchestrator(
 	toolResultBudget ToolResultBudget,
 	circuitBreaker CircuitBreakerConfig,
 	bbFactory BlackboardFactory, // optional, nil = default MapBlackboard
+	trackingCaller *llm.TrackingCaller, // optional, for per-step context tracker wiring
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
@@ -96,12 +95,6 @@ func NewOrchestrator(
 	}
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = 2 // default: 3 total attempts
-	}
-	if cfg.SimpleComplexityThreshold == 0 {
-		cfg.SimpleComplexityThreshold = 2
-	}
-	if cfg.SimpleMaxSteps == 0 {
-		cfg.SimpleMaxSteps = 2
 	}
 	if emitter == nil {
 		emitter = &noopEmitter{}
@@ -122,6 +115,17 @@ func NewOrchestrator(
 			if ccm, ok := cm.(interface{ SetTask(string) }); ok {
 				ccm.SetTask(taskDesc)
 			}
+		},
+		CallerForStep: func(cm agent.ContextManager) agent.LLMCaller {
+			if trackingCaller == nil {
+				return llmCaller
+			}
+			if ctm, ok := cm.(interface {
+				ContextTracker() *llm.ContextTokenTracker
+			}); ok {
+				return trackingCaller.WithContextTracker(ctm.ContextTracker())
+			}
+			return trackingCaller
 		},
 		Events:                    &emitterEventsAdapter{emitter},
 		SystemPrompt:              buildSystemPrompt,
@@ -167,6 +171,7 @@ func NewOrchestrator(
 		emitter:        emitter,
 		modelRegistry:  modelRegistry,
 		bbFactory:      bbFactory,
+		trackingCaller: trackingCaller,
 	}
 }
 
@@ -280,40 +285,9 @@ func (o *Orchestrator) Run(ctx context.Context, userMessage string) (*HandleResu
 	return o.Handle(ctx, userMessage)
 }
 
-// planIsSimple returns true if the plan can be executed as a unified ReAct cycle
-// instead of full Plan&Execute DAG execution.
-func planIsSimple(plan *orchestration.Plan, complexity, maxComplexity, maxSteps int) bool {
-	if complexity > maxComplexity {
-		return false
-	}
-	if len(plan.Steps) > maxSteps {
-		return false
-	}
-	return !hasBranching(plan)
-}
-
-// hasBranching returns true if the plan DAG contains parallel branches
-// (i.e., is not a simple linear chain).
-func hasBranching(plan *orchestration.Plan) bool {
-	if len(plan.Steps) <= 1 {
-		return false
-	}
-	for i := 1; i < len(plan.Steps); i++ {
-		deps := plan.Steps[i].DependsOn
-		if len(deps) != 1 || deps[0] != plan.Steps[i-1].ID {
-			return true
-		}
-	}
-	return false
-}
-
-
 // HandleMessage is the unified entry point for processing user messages.
 // It supports two flows: first message and continuation.
-// For first messages, a plan is always generated first, then mode is selected:
-//   - Simple plan → unified ReAct (single step)
-//   - Complex plan → full Plan&Execute DAG
-//
+// For first messages, a plan is always generated first, then executed via Plan&Execute.
 // For continuations (TaskID != ""), the P&E continuation path is used.
 //   - TaskID="": First message (create new blackboard)
 //   - TaskID!="": Continuation (restore existing blackboard)
@@ -426,55 +400,25 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		}
 		o.logDebug("orchestrator: plan generated", "steps", len(plan.Steps))
 
-		// Decide mode based on plan characteristics
-		simple := planIsSimple(plan, routing.Complexity, o.config.SimpleComplexityThreshold, o.config.SimpleMaxSteps)
-		o.logDebug("orchestrator: mode decision", "simple", simple, "complexity", routing.Complexity, "planSteps", len(plan.Steps))
+		// Execute in Plan&Execute mode
+		o.logDebug("orchestrator: executing in full Plan&Execute mode")
 
-		if simple {
-			// === Unified ReAct mode (simple plan) ===
-			// Route through the full retry/reflect loop with suppressed plan
-			// visualization events so the UI sees a single ReAct cycle, yet
-			// reflection, per-step retry, and replan all work identically to
-			// the complex P&E path.
-			o.logDebug("orchestrator: executing in unified ReAct mode")
+		// Store plan on blackboard for P&E execution.
+		bb.SetPlan(plan)
 
-			// Store plan on blackboard for the silent P&E loop.
-			bb.SetPlan(plan)
-
-			execResult, err = o.engine.ExecuteSilentPlan(ctx, bb)
-			if err != nil {
-				o.logDebug("orchestrator: ReAct silent plan failed", "error", err)
-				if pbb, ok := bb.(PersistableBlackboard); ok {
-					pbb.FailTask()
-				}
-				return nil, err
+		// Plan already set on blackboard; use Resume which picks up the existing plan.
+		execResult, err = o.engine.Resume(ctx, bb)
+		if err != nil {
+			o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
+			if pbb, ok := bb.(PersistableBlackboard); ok {
+				pbb.FailTask()
 			}
-
-			o.logDebug("orchestrator: ReAct silent plan completed", "attemptCount", execResult.AttemptCount)
-			output = execResult.Output
-			attemptCount = execResult.AttemptCount
-			reflections = execResult.Reflections
-		} else {
-			// === Full P&E DAG mode (complex plan) ===
-			o.logDebug("orchestrator: executing in full Plan&Execute mode")
-
-			// Store plan on blackboard for P&E execution.
-			bb.SetPlan(plan)
-
-			// Plan already set on blackboard; use Resume which picks up the existing plan.
-			execResult, err = o.engine.Resume(ctx, bb)
-			if err != nil {
-				o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
-				if pbb, ok := bb.(PersistableBlackboard); ok {
-					pbb.FailTask()
-				}
-				return nil, err
-			}
-			o.logDebug("orchestrator: SDK engine completed", "attemptCount", execResult.AttemptCount)
-			output = execResult.Output
-			attemptCount = execResult.AttemptCount
-			reflections = execResult.Reflections
+			return nil, err
 		}
+		o.logDebug("orchestrator: SDK engine completed", "attemptCount", execResult.AttemptCount)
+		output = execResult.Output
+		attemptCount = execResult.AttemptCount
+		reflections = execResult.Reflections
 
 	default:
 		// === Continuation (TaskID != "") ===
@@ -567,4 +511,3 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	return result, nil
 }
-

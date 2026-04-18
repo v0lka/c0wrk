@@ -710,3 +710,88 @@ func TestEventEmitterServiceWithMeta_NilMeta(t *testing.T) {
 		t.Errorf("expected content 'Simple service msg', got %v", data["content"])
 	}
 }
+
+// TestEventEmitterWithRetryAttempt verifies WithRetryAttempt returns a scoped emitter
+// that injects retry_attempt into map[string]any event data.
+func TestEventEmitterWithRetryAttempt(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	base := NewEventEmitter("test-session", emit)
+	scoped := base.WithRetryAttempt(2)
+
+	scopedEmitter, ok := scoped.(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithRetryAttempt")
+	}
+
+	// ToolCall emits map[string]any so retry_attempt should be injected
+	scopedEmitter.ToolCall(1, 0, "bash", "echo test", "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if data["retry_attempt"] != 2 {
+		t.Errorf("expected retry_attempt 2, got %v", data["retry_attempt"])
+	}
+}
+
+// TestEventEmitterWithRetryAttempt_ZeroOmitted verifies retry_attempt is not injected when 0.
+func TestEventEmitterWithRetryAttempt_ZeroOmitted(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	base := NewEventEmitter("test-session", emit)
+	// No WithRetryAttempt call; retryAttempt defaults to 0
+	base.ToolCall(1, 0, "bash", "echo test", "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if _, exists := data["retry_attempt"]; exists {
+		t.Error("retry_attempt should not be present when retryAttempt is 0")
+	}
+}
+
+// TestEventEmitterWithRetryAttempt_PreservedByWithPlanStepID verifies that
+// retryAttempt is preserved when creating a plan-step-scoped copy.
+func TestEventEmitterWithRetryAttempt_PreservedByWithPlanStepID(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	base := NewEventEmitter("test-session", emit)
+	retryScoped := base.WithRetryAttempt(3)
+
+	// Now scope by plan step — retryAttempt should be preserved
+	retryEmitter, ok := retryScoped.(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithRetryAttempt")
+	}
+	stepScoped := retryEmitter.WithPlanStepID("step-42")
+
+	stepEmitter, ok := stepScoped.(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithPlanStepID")
+	}
+
+	stepEmitter.ToolCall(1, 0, "bash", "echo test", "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if data["plan_step_id"] != "step-42" {
+		t.Errorf("expected plan_step_id 'step-42', got %v", data["plan_step_id"])
+	}
+	if data["retry_attempt"] != 3 {
+		t.Errorf("expected retry_attempt 3, got %v", data["retry_attempt"])
+	}
+}

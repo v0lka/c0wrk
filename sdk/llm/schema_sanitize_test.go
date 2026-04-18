@@ -178,13 +178,13 @@ func TestSanitizeSchemaForGemini(t *testing.T) {
 		}
 
 		// Verify nested enum conversion
-		props := parsed["properties"].(map[string]interface{})              //nolint:errcheck // test: schema structure is known
-		user := props["user"].(map[string]interface{})                     //nolint:errcheck // test: schema structure is known
-		userProps := user["properties"].(map[string]interface{})           //nolint:errcheck // test: schema structure is known
-		profile := userProps["profile"].(map[string]interface{})           //nolint:errcheck // test: schema structure is known
-		profileProps := profile["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		age := profileProps["age"].(map[string]interface{})                //nolint:errcheck // test: schema structure is known
-		enum := age["enum"].([]interface{})                                //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
+		user := props["user"].(map[string]interface{})                 //nolint:errcheck // test: schema structure is known
+		userProps := user["properties"].(map[string]interface{})       //nolint:errcheck // test: schema structure is known
+		profile := userProps["profile"].(map[string]interface{})       //nolint:errcheck // test: schema structure is known
+		profileProps := profile["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		age := profileProps["age"].(map[string]interface{})            //nolint:errcheck // test: schema structure is known
+		enum := age["enum"].([]interface{})                            //nolint:errcheck // test: schema structure is known
 
 		for i, v := range enum {
 			if _, ok := v.(string); !ok {
@@ -193,8 +193,8 @@ func TestSanitizeSchemaForGemini(t *testing.T) {
 		}
 
 		// Verify array items properties stripped from non-object
-		tags := props["tags"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
-		items := tags["items"].(map[string]interface{})        //nolint:errcheck // test: schema structure is known
+		tags := props["tags"].(map[string]interface{})  //nolint:errcheck // test: schema structure is known
+		items := tags["items"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
 		if _, exists := items["properties"]; exists {
 			t.Error("items properties should be stripped from string type")
 		}
@@ -250,9 +250,9 @@ func TestSanitizeSchemaForGemini(t *testing.T) {
 		}
 
 		// Verify anyOf enum conversion
-		anyOf := parsed["anyOf"].([]interface{})                      //nolint:errcheck // test: schema structure is known
-		first := anyOf[0].(map[string]interface{})                    //nolint:errcheck // test: schema structure is known
-		enum := first["enum"].([]interface{})                         //nolint:errcheck // test: schema structure is known
+		anyOf := parsed["anyOf"].([]interface{})   //nolint:errcheck // test: schema structure is known
+		first := anyOf[0].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		enum := first["enum"].([]interface{})      //nolint:errcheck // test: schema structure is known
 		for i, v := range enum {
 			if _, ok := v.(string); !ok {
 				t.Errorf("anyOf enum[%d] = %v (%T), expected string", i, v, v)
@@ -260,7 +260,7 @@ func TestSanitizeSchemaForGemini(t *testing.T) {
 		}
 
 		// Verify oneOf enum conversion
-		oneOf := parsed["oneOf"].([]interface{})                            //nolint:errcheck // test: schema structure is known
+		oneOf := parsed["oneOf"].([]interface{})                               //nolint:errcheck // test: schema structure is known
 		oneOfEnum := oneOf[0].(map[string]interface{})["enum"].([]interface{}) //nolint:errcheck // test: schema structure is known
 		for i, v := range oneOfEnum {
 			if _, ok := v.(string); !ok {
@@ -357,8 +357,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		// Nested user object
-		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		user := props["user"].(map[string]interface{})             //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		user := props["user"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
 		if user["additionalProperties"] != false {
 			t.Error("user should have additionalProperties: false")
 		}
@@ -371,8 +371,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		// Array items object
-		items := props["items"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
-		itemsSchema := items["items"].(map[string]interface{})   //nolint:errcheck // test: schema structure is known
+		items := props["items"].(map[string]interface{})       //nolint:errcheck // test: schema structure is known
+		itemsSchema := items["items"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
 		if itemsSchema["additionalProperties"] != false {
 			t.Error("array items should have additionalProperties: false")
 		}
@@ -577,8 +577,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		// Nested "outer" should have required: ["x", "y"]
-		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		outer := props["outer"].(map[string]interface{})           //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		outer := props["outer"].(map[string]interface{})       //nolint:errcheck // test: schema structure is known
 		nestedReq, ok := outer["required"].([]interface{})
 		if !ok {
 			t.Fatal("nested required should be created")
@@ -700,15 +700,15 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		// Verify anyOf has additionalProperties
-		anyOf := parsed["anyOf"].([]interface{})                      //nolint:errcheck // test: schema structure is known
-		anyOfObj := anyOf[0].(map[string]interface{})                 //nolint:errcheck // test: schema structure is known
+		anyOf := parsed["anyOf"].([]interface{})      //nolint:errcheck // test: schema structure is known
+		anyOfObj := anyOf[0].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
 		if anyOfObj["additionalProperties"] != false {
 			t.Error("anyOf object should have additionalProperties: false")
 		}
 
 		// Verify oneOf has additionalProperties
-		oneOf := parsed["oneOf"].([]interface{})                      //nolint:errcheck // test: schema structure is known
-		oneOfObj := oneOf[0].(map[string]interface{})                 //nolint:errcheck // test: schema structure is known
+		oneOf := parsed["oneOf"].([]interface{})      //nolint:errcheck // test: schema structure is known
+		oneOfObj := oneOf[0].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
 		if oneOfObj["additionalProperties"] != false {
 			t.Error("oneOf object should have additionalProperties: false")
 		}
@@ -818,8 +818,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		// trace property should be resolved
-		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		trace := props["trace"].(map[string]interface{})           //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		trace := props["trace"].(map[string]interface{})       //nolint:errcheck // test: schema structure is known
 		if _, exists := trace["$ref"]; exists {
 			t.Error("$ref should be resolved, not present")
 		}
@@ -865,8 +865,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 			t.Error("definitions should be removed from output")
 		}
 
-		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		item := props["item"].(map[string]interface{})             //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		item := props["item"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
 		if item["type"] != "object" {
 			t.Errorf("item.type = %v, expected 'object'", item["type"])
 		}
@@ -899,8 +899,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 			t.Error("$defs should be removed from output")
 		}
 
-		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		data := props["data"].(map[string]interface{})             //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		data := props["data"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
 		if data["type"] != "object" {
 			t.Errorf("data.type = %v, expected 'object' (safe fallback)", data["type"])
 		}
@@ -948,8 +948,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 			}
 		}
 
-		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		name := props["name"].(map[string]interface{})             //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		name := props["name"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
 		if _, exists := name["default"]; exists {
 			t.Error("properties.name should not have 'default'")
 		}
@@ -995,8 +995,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 			t.Error("root additionalProperties should be false")
 		}
 
-		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
-		config := props["config"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		config := props["config"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
 		if config["additionalProperties"] != false {
 			t.Error("config.additionalProperties should be false")
 		}
@@ -1053,9 +1053,9 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		// traces.items assertions
-		props := parsed["properties"].(map[string]interface{})                    //nolint:errcheck // test: schema structure is known
-		traces := props["traces"].(map[string]interface{})                        //nolint:errcheck // test: schema structure is known
-		tracesItems := traces["items"].(map[string]interface{})                   //nolint:errcheck // test: schema structure is known
+		props := parsed["properties"].(map[string]interface{})  //nolint:errcheck // test: schema structure is known
+		traces := props["traces"].(map[string]interface{})      //nolint:errcheck // test: schema structure is known
+		tracesItems := traces["items"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
 		if tracesItems["type"] != "object" {
 			t.Errorf("traces.items.type = %v, expected 'object' (inferred)", tracesItems["type"])
 		}
@@ -1071,14 +1071,14 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		// traces.items.properties.name should not have default
-		itemProps := tracesItems["properties"].(map[string]interface{})            //nolint:errcheck // test: schema structure is known
-		nameField := itemProps["name"].(map[string]interface{})                    //nolint:errcheck // test: schema structure is known
+		itemProps := tracesItems["properties"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
+		nameField := itemProps["name"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
 		if _, exists := nameField["default"]; exists {
 			t.Error("traces.items.properties.name should not have 'default'")
 		}
 
 		// traces.items.properties.metadata assertions
-		metadata := itemProps["metadata"].(map[string]interface{})                 //nolint:errcheck // test: schema structure is known
+		metadata := itemProps["metadata"].(map[string]interface{}) //nolint:errcheck // test: schema structure is known
 		if metadata["additionalProperties"] != false {
 			t.Error("metadata.additionalProperties should be false (forced from true)")
 		}

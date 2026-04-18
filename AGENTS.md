@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents working on **c0wrk** — a desktop LLM agent built with Wails v2 (Go backend + React 19 / Vite 6 / TS frontend).
+Guidance for coding agents working on **c0wrk** — a desktop AI coding-agent built with Wails v2 (Go backend + React 19 / Vite 6 / TS frontend).
 
 ## Project shape
 
@@ -24,12 +24,12 @@ Rule enforced by layout: **all SDK imports are confined to `core/`**. `backend/`
 
 Use the Makefile; it handles platform-specific ONNX Runtime bootstrap:
 
-- `make test`        — `go test ./...` (the ONLY repo-wide test command)
-- `make lint`        — `golangci-lint run` (config at `.golangci.yml`, v2 schema)
-- `make build`       — installs frontend deps, runs `wails build`, then `make fetch-onnx`
+- `make test` — `go test ./...` (the ONLY repo-wide test command)
+- `make lint` — `golangci-lint run` (config at `.golangci.yml`, v2 schema)
+- `make build` — installs frontend deps, runs `wails build`, then `make fetch-onnx`
 - `make dev-desktop` — Vite dev server only (`cd frontend && npm run dev`); for full hot-reload use `wails dev` from repo root
-- `make fetch-onnx`  — downloads ONNX Runtime 1.21.0 into `.cache/` and copies into `build/bin/c0wrk-desktop.app/Contents/MacOS/`. **Required after every `wails build`** or the app won't launch.
-- `make clean`       — removes `build/bin`, `.cache`, `frontend/dist`
+- `make fetch-onnx` — downloads ONNX Runtime 1.21.0 into `.cache/` and copies into `build/bin/c0wrk-desktop.app/Contents/MacOS/`. **Required after every `wails build`** or the app won't launch.
+- `make clean` — removes `build/bin`, `.cache`, `frontend/dist`
 
 Frontend-only: `cd frontend && npm run lint | build | dev`. There is **no** frontend test suite.
 

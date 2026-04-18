@@ -9,6 +9,15 @@ interface CodeMemoryStatus {
   path: string
 }
 
+function isCodeMemoryStatus(data: unknown): data is CodeMemoryStatus {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'installed' in data &&
+    typeof (data as Record<string, unknown>).installed === 'boolean'
+  )
+}
+
 const DISMISSED_KEY = 'codememory-banner-dismissed'
 
 export function CodebaseMemoryBanner() {
@@ -39,8 +48,9 @@ export function CodebaseMemoryBanner() {
     if (!runtime) return
 
     const unsubscribe = runtime.EventsOn('codememory:status', (data: unknown) => {
-      const statusData = data as CodeMemoryStatus
-      setStatus(statusData)
+      if (isCodeMemoryStatus(data)) {
+        setStatus(data)
+      }
     })
 
     return unsubscribe

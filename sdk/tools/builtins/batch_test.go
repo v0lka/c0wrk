@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -239,87 +238,6 @@ func TestBatchTool_InvalidJSON(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Errorf("expected IsError=true for invalid JSON")
-	}
-}
-
-func TestBatchTool_ConcurrencyCap(t *testing.T) {
-	const maxConc = 2
-	var running int64
-	var peak int64
-
-	d := &mockDispatcher{handler: func(_ context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
-		cur := atomic.AddInt64(&running, 1)
-		// Track peak concurrency.
-		for {
-			old := atomic.LoadInt64(&peak)
-			if cur <= old || atomic.CompareAndSwapInt64(&peak, old, cur) {
-				break
-			}
-		}
-		time.Sleep(50 * time.Millisecond) // ensure overlap window
-		atomic.AddInt64(&running, -1)
-		return tools.ToolResult{Content: "ok"}, nil
-	}}
-	bt := NewBatchTool(d, WithMaxConcurrency(maxConc))
-
-	calls := make([]BatchCall, 6)
-	for i := range calls {
-		calls[i] = BatchCall{Tool: fmt.Sprintf("t%d", i), Input: json.RawMessage(`{}`)}
-	}
-	input := newBatchInput(t, calls)
-
-	result, err := bt.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("unexpected error result: %s", result.Content)
-	}
-
-	observed := atomic.LoadInt64(&peak)
-	if observed > int64(maxConc) {
-		t.Errorf("peak concurrency %d exceeded max %d", observed, maxConc)
-	}
-	if observed < 2 {
-		t.Logf("warning: peak concurrency was %d, expected 2 (may be flaky on slow CI)", observed)
-	}
-}
-
-func TestBatchTool_ResultTruncation(t *testing.T) {
-	longContent := strings.Repeat("x", 200)
-
-	d := &mockDispatcher{handler: func(context.Context, string, json.RawMessage) (tools.ToolResult, error) {
-		return tools.ToolResult{Content: longContent}, nil
-	}}
-	bt := NewBatchTool(d, WithMaxResultSize(100))
-
-	input := newBatchInput(t, []BatchCall{
-		{Tool: "a", Input: json.RawMessage(`{}`)},
-		{Tool: "b", Input: json.RawMessage(`{}`)},
-	})
-
-	result, err := bt.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var out BatchOutput
-	if err := json.Unmarshal([]byte(result.Content), &out); err != nil {
-		t.Fatalf("failed to unmarshal output: %v", err)
-	}
-
-	for i, r := range out.Results {
-		if !r.Success {
-			t.Errorf("results[%d] expected success, got error: %s", i, r.Error)
-			continue
-		}
-		if !strings.Contains(r.Output, "...(truncated, original size: 200 chars)") {
-			t.Errorf("results[%d] expected truncation marker, got: %s", i, r.Output)
-		}
-		// Budget per call = 100/2 = 50, so output should start with 50 x's.
-		if !strings.HasPrefix(r.Output, strings.Repeat("x", 50)) {
-			t.Errorf("results[%d] expected 50 'x' chars before truncation", i)
-		}
 	}
 }
 

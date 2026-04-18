@@ -16,13 +16,140 @@ import { ActionPlaceholder } from './ActionPlaceholder'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ActivityIndicator } from './ActivityIndicator'
-import { CheckCircle2, BookOpen, Minimize2 } from 'lucide-react'
+import { CheckCircle2, BookOpen, Minimize2, ChevronDown, ChevronRight, Check, Loader2, X } from 'lucide-react'
+
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 
 interface ChatMessageRendererProps {
   displayItems: DisplayItem[]
   lastUserMessageId: string | null
   streamingText: string | null
 }
+
+const MEMORY_LABELS: Record<string, string> = {
+  read_evidence: 'Read evidence',
+  read_step_output: 'Read step output',
+  list_step_outputs: 'Listed step outputs',
+  store_fact: 'Stored fact',
+  search_facts: 'Searched facts',
+}
+
+interface MemoryBlockProps {
+  toolName: string
+  args: string
+  parsedArgs?: Record<string, unknown>
+  result?: string
+  resultLen?: number
+  status: 'running' | 'success' | 'error'
+}
+
+function formatMemoryResultLen(len: number): string {
+  if (len >= 1000) {
+    return (len / 1000).toFixed(1).replace(/\.0$/, '') + 'K chars'
+  }
+  return len + ' chars'
+}
+
+const MemoryBlock = React.memo(function MemoryBlock({ toolName, args, parsedArgs, result, resultLen, status }: MemoryBlockProps) {
+  const [isOpen, setIsOpen] = React.useState(false)
+  const [showFull, setShowFull] = React.useState(false)
+
+  const MAX_PREVIEW = 200
+  const label = MEMORY_LABELS[toolName] ?? 'Memory operation'
+
+  const argEntries: [string, unknown][] | null = (() => {
+    try {
+      const obj = parsedArgs ?? JSON.parse(args)
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        return Object.entries(obj)
+      }
+    } catch { /* fall through */ }
+    return null
+  })()
+
+  const formatValue = (v: unknown): string => {
+    if (v === null || v === undefined) return String(v)
+    if (typeof v === 'string') return v
+    if (typeof v === 'object') return JSON.stringify(v)
+    return String(v)
+  }
+
+  const formattedArgs = argEntries
+    ? argEntries.map(([k, v]) => `- ${k}: ${formatValue(v)}`).join('\n')
+    : args
+
+  const isArgsLong = formattedArgs.length > MAX_PREVIEW || formattedArgs.includes('\n')
+  const displayArgs = (!showFull && isArgsLong) ? formattedArgs.slice(0, MAX_PREVIEW) + '...' : formattedArgs
+
+  const isResultLong = !!result && (result.length > MAX_PREVIEW || result.includes('\n'))
+  const displayResult = result && (!showFull && isResultLong) ? result.slice(0, MAX_PREVIEW) + '...' : result
+
+  const hasLongContent = isArgsLong || isResultLong
+
+  const StatusIcon = status === 'success' ? Check : status === 'error' ? X : Loader2
+  const statusClass = status === 'success'
+    ? 'text-emerald-500'
+    : status === 'error'
+      ? 'text-red-500'
+      : 'text-muted-foreground animate-spin'
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
+        {isOpen ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5" />
+        )}
+        <StatusIcon className={`h-3.5 w-3.5 ${statusClass}`} />
+        <BookOpen className="h-3.5 w-3.5 text-violet-500" />
+        <span className="text-sm">{label}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-2 border-l-2 border-violet-500/30 bg-muted/30 rounded p-3 space-y-3 min-w-0">
+          {formattedArgs && (
+            <div>
+              <span className="text-xs text-muted-foreground font-medium">Arguments</span>
+              <pre className="mt-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                {displayArgs}
+              </pre>
+            </div>
+          )}
+          {result !== undefined && (
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground font-medium">Result</span>
+                {resultLen !== undefined && resultLen > 500 && (
+                  <span className="text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded">
+                    {formatMemoryResultLen(resultLen)}
+                  </span>
+                )}
+              </div>
+              <pre className="mt-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                {displayResult}
+              </pre>
+            </div>
+          )}
+          {hasLongContent && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setShowFull(!showFull)
+              }}
+              className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 active:bg-accent/70 rounded px-1 py-0.5 mt-1 transition-colors"
+            >
+              {showFull ? 'Show less' : 'Show more'}
+            </button>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+})
 
 // Recursive render function for DisplayItems (supports PlanStepBlock children)
 function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null): React.ReactNode {
@@ -40,7 +167,7 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
     case 'tool':
       return <ToolBlock key={item.id} toolName={item.toolName} args={item.args} parsedArgs={item.parsedArgs} result={item.result} resultLen={item.resultLen} status={item.status} source={item.source} />
     case 'plan_step':
-      return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} status={item.status} duration={item.duration} error={item.error} isRetry={item.isRetry} children={item.children} renderItem={(child) => renderDisplayItem(child, lastUserMessageId)} />
+      return <PlanStepBlock key={item.id} stepId={item.stepId} stepNum={item.stepNum} title={item.title} description={item.description} status={item.status} duration={item.duration} error={item.error} isRetry={item.isRetry} children={item.children} renderItem={(child) => renderDisplayItem(child, lastUserMessageId)} />
     case 'tool_confirm':
       return <ToolConfirmation key={item.message.id} sessionId={item.message.sessionId} metadata={item.message.metadata} />
     case 'ask_user':
@@ -61,12 +188,7 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
         </div>
       )
     case 'memory_read':
-      return (
-        <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <BookOpen className="h-3.5 w-3.5 text-violet-500" />
-          <span>Memory read</span>
-        </div>
-      )
+      return <MemoryBlock key={item.id} toolName={item.toolName} args={item.args} parsedArgs={item.parsedArgs} result={item.result} resultLen={item.resultLen} status={item.status} />
     case 'action_placeholder':
       return <ActionPlaceholder key={item.id} label={item.label} />
     case 'context_compaction':

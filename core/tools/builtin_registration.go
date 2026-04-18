@@ -16,7 +16,6 @@ type (
 	GlobLimits      = builtins.GlobLimits
 	WebFetchLimits  = builtins.WebFetchLimits
 	WebSearchLimits = builtins.WebSearchLimits
-	BatchLimits     = builtins.BatchLimits
 	BashTimeouts    = builtins.BashTimeouts
 )
 
@@ -27,7 +26,6 @@ type BuiltinToolsConfig struct {
 	GlobLimits      GlobLimits
 	WebFetchLimits  WebFetchLimits
 	WebSearchLimits WebSearchLimits
-	BatchLimits     BatchLimits
 	BashTimeouts    BashTimeouts
 	BashBlacklist   []string
 	RtkPath         string
@@ -82,7 +80,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	registry.Register(builtins.NewSearchFactsTool())
 
 	// Batch (must be registered after other tools since it dispatches to them)
-	registry.Register(builtins.NewBatchTool(registry, builtins.WithBatchLimits(cfg.BatchLimits)))
+	registry.Register(builtins.NewBatchTool(registry))
 
 	// Ask user (optional)
 	if cfg.AskUserFunc != nil {

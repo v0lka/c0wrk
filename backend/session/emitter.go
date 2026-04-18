@@ -36,10 +36,11 @@ type tokenState struct {
 
 // EventEmitter implements core.Emitter and routes events to a callback function.
 type EventEmitter struct {
-	sessionID  string
-	emit       func(Event)
-	mu         sync.Mutex
-	planStepID string // if set, injected into event Data for plan-step scoping
+	sessionID    string
+	emit         func(Event)
+	mu           sync.Mutex
+	planStepID   string // if set, injected into event Data for plan-step scoping
+	retryAttempt int    // if > 0, injected into event Data for retry disambiguation
 
 	// Plan progress tracking (guarded by mu)
 	planTotalSteps    int
@@ -63,7 +64,7 @@ func NewEventEmitter(sessionID string, emit func(Event)) *EventEmitter {
 }
 
 // SetTokenPersist sets a callback that is invoked with cumulative session token
-// totals each time TokensUsed fires. Use this to persist tokens to the store
+// totals each time the UsageTracker observer fires. Use this to persist tokens to the store
 // without introducing a direct store dependency in the emitter.
 func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int)) {
 	e.tokens.mu.Lock()
@@ -76,26 +77,46 @@ func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int)) {
 func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 	slog.Debug("emitter: creating plan-step-scoped emitter", "sessionID", e.sessionID, "planStepID", id)
 	return &EventEmitter{
-		sessionID:  e.sessionID,
-		emit:       e.emit,
-		planStepID: id,
-		tokens:     e.tokens, // share token accumulation state across copies
+		sessionID:    e.sessionID,
+		emit:         e.emit,
+		planStepID:   id,
+		retryAttempt: e.retryAttempt, // preserve retry attempt across copies
+		tokens:       e.tokens,       // share token accumulation state across copies
 	}
 }
 
-// ensure EventEmitter implements core.Emitter and core.PlanStepScopable at compile time.
+// WithRetryAttempt returns a shallow copy of the emitter with retryAttempt set.
+// Events emitted by the copy will include "retry_attempt" in their Data map when > 0.
+func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
+	slog.Debug("emitter: creating retry-scoped emitter", "sessionID", e.sessionID, "retryAttempt", attempt)
+	return &EventEmitter{
+		sessionID:    e.sessionID,
+		emit:         e.emit,
+		planStepID:   e.planStepID,
+		retryAttempt: attempt,
+		tokens:       e.tokens, // share token accumulation state across copies
+	}
+}
+
+// ensure EventEmitter implements core.Emitter, core.PlanStepScopable, and core.RetryAttemptScopable at compile time.
 var (
-	_ core.Emitter          = (*EventEmitter)(nil)
-	_ core.PlanStepScopable = (*EventEmitter)(nil)
+	_ core.Emitter              = (*EventEmitter)(nil)
+	_ core.PlanStepScopable     = (*EventEmitter)(nil)
+	_ core.RetryAttemptScopable = (*EventEmitter)(nil)
 )
 
-// emitEvent is a helper that emits an event, injecting plan_step_id if set.
+// emitEvent is a helper that emits an event, injecting plan_step_id and retry_attempt if set.
 func (e *EventEmitter) emitEvent(evt Event) {
 	slog.Debug("emitter: dispatching event", "type", evt.Type, "sessionID", e.sessionID, "planStepID", e.planStepID)
 	if e.planStepID != "" {
 		// Inject plan_step_id into Data if it's a map[string]any
 		if data, ok := evt.Data.(map[string]any); ok {
 			data["plan_step_id"] = e.planStepID
+		}
+	}
+	if e.retryAttempt > 0 {
+		if data, ok := evt.Data.(map[string]any); ok {
+			data["retry_attempt"] = e.retryAttempt
 		}
 	}
 	e.emit(evt)
@@ -395,11 +416,10 @@ func (e *EventEmitter) AssistantChunk(content string) {
 }
 
 // AssistantDone emits an assistant response completion event and resets the accumulator.
-// Token accumulation is handled separately by TokensUsed, which is called after every
-// LLM response regardless of suppression flags.
+// Token accumulation is handled by the UsageTracker; session totals are cached in tokenState.
 func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputTokens int) {
 	slog.Debug("emitter: completion (assistant done)", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens)
-	// Read current session totals (accumulated by TokensUsed).
+	// Read current session totals (cached by EmitSessionTokens).
 	e.tokens.mu.Lock()
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
@@ -437,24 +457,18 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	})
 }
 
-// TokensUsed accumulates session-wide token totals, persists them via callback,
-// and emits a "session_tokens" event. This is called after every LLM response
-// regardless of the suppressAssistantEvents flag, ensuring all tokens (including
-// from plan-step subagents) are counted.
-func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int, model, family string) {
-	slog.Debug("emitter: token usage", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "family", family)
+// EmitSessionTokens emits a "session_tokens" event with the given totals.
+// This is called by the UsageTracker observer — accumulation is handled externally.
+func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
+	slog.Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
 	e.tokens.mu.Lock()
-	e.tokens.sessionInputTokens += inputTokens
-	e.tokens.sessionOutputTokens += outputTokens
-	// Track latest model/family for display
+	// Update cached state for ContextFill enrichment
+	e.tokens.sessionInputTokens = totalIn
+	e.tokens.sessionOutputTokens = totalOut
 	if model != "" {
 		e.tokens.lastModel = model
 		e.tokens.lastFamily = family
 	}
-	totalIn := e.tokens.sessionInputTokens
-	totalOut := e.tokens.sessionOutputTokens
-	lastModel := e.tokens.lastModel
-	lastFamily := e.tokens.lastFamily
 	persist := e.tokens.tokenPersist
 	e.tokens.mu.Unlock()
 
@@ -468,8 +482,8 @@ func (e *EventEmitter) TokensUsed(inputTokens, outputTokens int, model, family s
 		Data: SessionTokensEventData{
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
-			Model:               lastModel,
-			Family:              lastFamily,
+			Model:               model,
+			Family:              family,
 		},
 	})
 }

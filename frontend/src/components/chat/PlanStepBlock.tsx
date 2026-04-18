@@ -5,6 +5,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore, type DisplayItem } from '@/stores/chatStore'
 
@@ -12,6 +13,7 @@ interface PlanStepBlockProps {
   stepId: string
   stepNum: number
   title: string
+  description?: string
   status: 'running' | 'completed' | 'failed'
   duration?: number
   error?: string
@@ -36,9 +38,11 @@ function getStatusColor(status: string): string {
   }
 }
 
-export function PlanStepBlock({ stepId, stepNum, title, status, duration, error, isRetry, children, renderItem }: PlanStepBlockProps) {
+export function PlanStepBlock({ stepId, stepNum, title, description, status, duration, error, children, renderItem }: PlanStepBlockProps) {
   const [isOpen, setIsOpen] = useState(status === 'running')
   const stepContextFill = useChatStore(s => s.stepContextFill[stepId])
+  const fullDesc = description || title
+  const hasTooltip = !!fullDesc && fullDesc.length > 80
 
   // Adjust isOpen during render when status changes (avoids extra render cycle from useEffect)
   const [prevStatus, setPrevStatus] = useState(status)
@@ -65,47 +69,60 @@ export function PlanStepBlock({ stepId, stepNum, title, status, duration, error,
       : 'text-red-500'
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen} data-step-id={stepId}>
-      <CollapsibleTrigger className="flex items-center gap-1.5 w-full text-muted-foreground hover:text-foreground transition-colors">
-        {isOpen ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0" />
-        )}
-        <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${iconClass}`} />
-        <span className="text-sm truncate">Step {stepNum}: {title}{isRetry ? ' (retry)' : ''}</span>
-        {status === 'failed' && error && (
-          <span className="text-xs text-red-400 truncate max-w-[300px]" title={error}>
-            — {error.length > 150 ? error.slice(0, 150) + '…' : error}
-          </span>
-        )}
-        {status === 'running' && stepContextFill && (
-          <span className={`text-xs ml-2 ${getStatusColor(stepContextFill.status)}`}>
-            {Math.round(stepContextFill.fillPercent)}%
-          </span>
-        )}
-        {duration !== undefined && (
-          <span className="ml-auto text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded shrink-0">
-            {formatDuration(duration)}
-          </span>
-        )}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className={`mt-2 border-l-2 ${borderColor} rounded pl-3 py-2 space-y-3 min-w-0`}>
-          {status === 'running' && stepContextFill && (
-            <div className="text-xs text-muted-foreground flex items-center gap-2">
-              <span>Context:</span>
-              <span className={getStatusColor(stepContextFill.status)}>
-                {Math.round(stepContextFill.fillPercent)}%
-              </span>
-              <span className="text-muted-foreground/60">
-                ({stepContextFill.usedTokens.toLocaleString()} / {stepContextFill.maxTokens.toLocaleString()} tokens)
-              </span>
-            </div>
+    <TooltipProvider delayDuration={400}>
+      <Collapsible open={isOpen} onOpenChange={setIsOpen} data-step-id={stepId}>
+        <CollapsibleTrigger className="flex items-center gap-1.5 w-full text-muted-foreground hover:text-foreground transition-colors">
+          {isOpen ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0" />
           )}
-          {children.map((child, idx) => renderItem(child, idx))}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+          <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${iconClass}`} />
+          {hasTooltip ? (
+            <Tooltip delayDuration={400}>
+              <TooltipTrigger asChild>
+                <span className="text-sm truncate">Step {stepNum}...</span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="start" className="max-w-md text-left whitespace-pre-line p-3 bg-background text-foreground border border-border shadow-md">
+                {fullDesc}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <span className="text-sm truncate">Step {stepNum}...</span>
+          )}
+          {status === 'failed' && error && (
+            <span className="text-xs text-red-400 truncate max-w-[300px]" title={error}>
+              — {error.length > 150 ? error.slice(0, 150) + '…' : error}
+            </span>
+          )}
+          {status === 'running' && stepContextFill && (
+            <span className={`text-xs ml-2 ${getStatusColor(stepContextFill.status)}`}>
+              {Math.round(stepContextFill.fillPercent)}%
+            </span>
+          )}
+          {duration !== undefined && (
+            <span className="ml-auto text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded shrink-0">
+              {formatDuration(duration)}
+            </span>
+          )}
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className={`mt-2 border-l-2 ${borderColor} rounded pl-3 py-2 space-y-3 min-w-0`}>
+            {status === 'running' && stepContextFill && (
+              <div className="text-xs text-muted-foreground flex items-center gap-2">
+                <span>Context:</span>
+                <span className={getStatusColor(stepContextFill.status)}>
+                  {Math.round(stepContextFill.fillPercent)}%
+                </span>
+                <span className="text-muted-foreground/60">
+                  ({stepContextFill.usedTokens.toLocaleString()} / {stepContextFill.maxTokens.toLocaleString()} tokens)
+                </span>
+              </div>
+            )}
+            {children.map((child, idx) => renderItem(child, idx))}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </TooltipProvider>
   )
 }

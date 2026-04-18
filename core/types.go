@@ -64,7 +64,7 @@ type StepLimitResponse = agent.StepLimitResponse
 
 // Step limit response constants.
 var (
-	StepLimitAllowOnce  = agent.StepLimitAllowOnce
+	StepLimitAllowOnce   = agent.StepLimitAllowOnce
 	StepLimitAllowAlways = agent.StepLimitAllowAlways
 	StepLimitDeny        = agent.StepLimitDeny
 )
@@ -140,6 +140,12 @@ type PlanStepScopable interface {
 	WithPlanStepID(id string) Emitter
 }
 
+// RetryAttemptScopable is an optional interface that Emitter implementations
+// can implement to tag events with a retry attempt number.
+type RetryAttemptScopable interface {
+	WithRetryAttempt(attempt int) Emitter
+}
+
 // noopEmitter is a no-op implementation of Emitter.
 // Used as a default when nil emitter is provided.
 type noopEmitter struct {
@@ -149,18 +155,17 @@ type noopEmitter struct {
 // ensure noopEmitter implements Emitter.
 var _ Emitter = (*noopEmitter)(nil)
 
-func (n *noopEmitter) Routing(_, _, _ string)                             {}
-func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)             {}
-func (n *noopEmitter) PlanStepStart(_, _ string)                          {}
+func (n *noopEmitter) Routing(_, _, _ string)                                       {}
+func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)                       {}
+func (n *noopEmitter) PlanStepStart(_, _ string)                                    {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
-func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)               {}
-func (n *noopEmitter) Retry(_, _ int)                                     {}
-func (n *noopEmitter) StepRetry(_ string, _, _ int)                       {}
-func (n *noopEmitter) TokensUsed(_, _ int, _, _ string)                   {}
-func (n *noopEmitter) Service(_ string)                                   {}
-func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)         {}
-func (n *noopEmitter) ReplanFailed(_ error)                               {}
-func (n *noopEmitter) FileRollbackError(_ string, _ error)                {}
+func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}
+func (n *noopEmitter) Retry(_, _ int)                                               {}
+func (n *noopEmitter) StepRetry(_ string, _, _ int)                                 {}
+func (n *noopEmitter) Service(_ string)                                             {}
+func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)                   {}
+func (n *noopEmitter) ReplanFailed(_ error)                                         {}
+func (n *noopEmitter) FileRollbackError(_ string, _ error)                          {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -209,6 +214,14 @@ func (a *emitterEventsAdapter) OnFileRollbackError(stepID string, err error) {
 func (a *emitterEventsAdapter) WithStepID(id string) orchestration.Events {
 	if s, ok := a.Emitter.(PlanStepScopable); ok {
 		return &emitterEventsAdapter{s.WithPlanStepID(id)}
+	}
+	return a
+}
+
+// WithRetryAttempt implements orchestration.RetryScopable.
+func (a *emitterEventsAdapter) WithRetryAttempt(attempt int) orchestration.Events {
+	if r, ok := a.Emitter.(RetryAttemptScopable); ok {
+		return &emitterEventsAdapter{r.WithRetryAttempt(attempt)}
 	}
 	return a
 }

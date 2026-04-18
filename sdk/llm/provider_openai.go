@@ -96,6 +96,7 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 
 	openaiReq := p.buildRequest(req)
 	openaiReq.Stream = true
+	openaiReq.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
 	if err != nil {
@@ -110,6 +111,7 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 
 		// Track tool call state across chunks
 		acc := NewStreamToolCallAccumulator()
+		var streamUsage *TokenUsage
 
 		for {
 			resp, err := stream.Recv()
@@ -120,6 +122,14 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 				// Send error as final chunk with stop reason
 				chunks <- ChatChunk{StopReason: "error"}
 				return
+			}
+
+			// Capture usage from the dedicated usage chunk (StreamOptions.IncludeUsage)
+			if resp.Usage != nil {
+				streamUsage = &TokenUsage{
+					InputTokens:  resp.Usage.PromptTokens,
+					OutputTokens: resp.Usage.CompletionTokens,
+				}
 			}
 
 			if len(resp.Choices) == 0 {
@@ -152,7 +162,7 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 			if choice.FinishReason != "" {
 				stopReason := MapStopReason(string(choice.FinishReason), openAIStopReasonMap)
 				acc.Emit(chunks)
-				chunks <- ChatChunk{StopReason: stopReason}
+				chunks <- ChatChunk{StopReason: stopReason, Usage: streamUsage}
 			}
 		}
 	}()

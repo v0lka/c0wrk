@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/user/agent/sdk/llm"
 	sdkmemory "github.com/user/agent/sdk/memory"
 )
 
@@ -39,6 +40,12 @@ func NewCoreContextManager(cw *sdkmemory.ContextWindow) *CoreContextManager {
 // SetTask sets the task into the context window.
 func (c *CoreContextManager) SetTask(task string) {
 	c.ContextWindow.SetTask(task)
+}
+
+// ContextTracker returns the underlying ContextTokenTracker for this context manager.
+// This allows the orchestrator to wire it to the TrackingCaller per step.
+func (c *CoreContextManager) ContextTracker() *llm.ContextTokenTracker {
+	return c.Tracker()
 }
 
 // SetPlanFromPlan sets the plan, formatting it into a system message.

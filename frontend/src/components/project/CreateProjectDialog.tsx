@@ -73,14 +73,11 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
     }
   }, [canSubmit, name, workspaceType, externalPath, api, addProject, setActiveProject, onOpenChange])
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && canSubmit) {
-        handleCreate()
-      }
-    },
-    [canSubmit, handleCreate]
-  )
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && canSubmit) {
+      handleCreate()
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

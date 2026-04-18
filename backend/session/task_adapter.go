@@ -23,15 +23,20 @@ func NewTaskStoreAdapter(store TaskStore) *TaskStoreAdapter {
 // compile-time check
 var _ core.TaskPersistence = (*TaskStoreAdapter)(nil)
 
+var (
+	emptyJSONObject = json.RawMessage("{}")
+	emptyJSONArray  = json.RawMessage("[]")
+)
+
 // PersistNewTask creates a new task record with status "in_progress".
 func (a *TaskStoreAdapter) PersistNewTask(taskID, sessionID, originalRequest string) error {
 	return a.store.SaveTask(TaskRecord{
 		ID:              taskID,
 		SessionID:       sessionID,
 		OriginalRequest: originalRequest,
-		RoutingDecision: json.RawMessage("{}"),
-		Plan:            json.RawMessage("{}"),
-		Reflections:     json.RawMessage("[]"),
+		RoutingDecision: emptyJSONObject,
+		Plan:            emptyJSONObject,
+		Reflections:     emptyJSONArray,
 		Status:          "in_progress",
 		CreatedAt:       time.Now(),
 	})

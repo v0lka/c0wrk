@@ -14,9 +14,10 @@ import (
 // Gateway manages connections to multiple MCP servers and provides
 // their tools to the agent through the ToolRegistry.
 type Gateway struct {
-	servers map[string]*Server
-	config  GatewayConfig
-	mu      sync.RWMutex
+	servers        map[string]*Server
+	config         GatewayConfig
+	defaultWorkDir string
+	mu             sync.RWMutex
 }
 
 // NewGateway creates a new Gateway instance.
@@ -24,6 +25,13 @@ func NewGateway() *Gateway {
 	return &Gateway{
 		servers: make(map[string]*Server),
 	}
+}
+
+// SetDefaultWorkDir updates the default working directory for new stdio server connections.
+func (g *Gateway) SetDefaultWorkDir(dir string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.defaultWorkDir = dir
 }
 
 // Start connects to all configured MCP servers and discovers their tools.
@@ -36,6 +44,10 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 	var errs []error
 
 	for name, cfg := range configs {
+		// Apply default working directory if not explicitly set
+		if cfg.WorkDir == "" && g.defaultWorkDir != "" {
+			cfg.WorkDir = g.defaultWorkDir
+		}
 		server := NewServer(name)
 
 		if err := server.Connect(ctx, cfg); err != nil {
@@ -161,6 +173,10 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 			headers[hk] = expandEnv(hv)
 		}
 
+		workDir := entry.WorkDir
+		if workDir == "" {
+			workDir = g.defaultWorkDir
+		}
 		newCfg := ServerConfig{
 			Transport: entry.Transport,
 			Command:   entry.Command,
@@ -168,6 +184,7 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 			Env:       env,
 			URL:       expandEnv(entry.URL),
 			Headers:   headers,
+			WorkDir:   workDir,
 		}
 
 		if currentNames[name] {
@@ -226,6 +243,9 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 
 	// Update stored config
 	g.config = newConfig
+	if newConfig.DefaultWorkDir != "" {
+		g.defaultWorkDir = newConfig.DefaultWorkDir
+	}
 
 	if len(errs) > 0 {
 		return &ReconfigureError{Errors: errs}
@@ -379,7 +399,8 @@ type ServerStatus struct {
 
 // GatewayConfig holds the raw MCP server entries for gateway initialization.
 type GatewayConfig struct {
-	Servers map[string]ServerEntry
+	Servers        map[string]ServerEntry
+	DefaultWorkDir string // fallback working directory for stdio servers
 }
 
 // ServerEntry describes how to launch a single MCP server.
@@ -390,6 +411,7 @@ type ServerEntry struct {
 	Env       map[string]string // stdio: environment variables (values may contain ${ENV_VAR} references)
 	URL       string            // http: server URL (may contain ${ENV_VAR} references)
 	Headers   map[string]string // http: custom headers (values may contain ${ENV_VAR} references)
+	WorkDir   string            // stdio: working directory for the server process
 }
 
 // StartGateway creates, configures, starts, and registers an Gateway.
@@ -419,11 +441,13 @@ func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRe
 			Env:       env,
 			URL:       expandEnv(entry.URL),
 			Headers:   headers,
+			WorkDir:   entry.WorkDir,
 		}
 	}
 
 	gateway := NewGateway()
 	gateway.config = cfg // Store the original config for diffing in Reconfigure
+	gateway.defaultWorkDir = cfg.DefaultWorkDir
 
 	if err := gateway.Start(ctx, mcpConfigs); err != nil {
 		if logger != nil {

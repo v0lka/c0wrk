@@ -5,6 +5,7 @@ import type { ChatMessageUI } from './chatStore'
 export interface PlanItem {
   id: string        // step_id from backend (1-indexed string)
   title: string     // step description
+  summary?: string  // short 5-7 word label for UI display
   status: 'pending' | 'running' | 'completed' | 'failed'
   duration?: number // milliseconds, from plan_step_complete
   dependsOn: string[] // DAG dependency IDs
@@ -47,6 +48,13 @@ interface PanelState {
   rebuildFromEvents: (messages: ChatMessageUI[]) => void
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+function isStepArray(v: unknown): v is Array<{ id?: string; description: string; status?: string }> {
+  return Array.isArray(v) && v.every(s => isRecord(s) && 'description' in s)
+}
+
 const validPlanStatuses = ['pending', 'running', 'completed', 'failed'] as const
 type ValidPlanStatus = typeof validPlanStatuses[number]
 function toValidStatus(s: unknown): ValidPlanStatus {
@@ -66,10 +74,11 @@ export const usePanelStore = create<PanelState>((set) => ({
       const newGroup: PlanGroup = {
         id: counter,
         items: steps.map((s, i) => ({
-          id: (s as { id?: string }).id || String(i + 1),
+          id: (isRecord(s) && typeof (s as Record<string, unknown>).id === 'string' ? (s as Record<string, unknown>).id as string : undefined) || String(i + 1),
           title: s.description,
+          summary: isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined,
           status: toValidStatus(s.status),
-          dependsOn: (s as { depends_on?: string[] }).depends_on || [],
+          dependsOn: isRecord(s) && Array.isArray((s as Record<string, unknown>).depends_on) ? (s as Record<string, unknown>).depends_on as string[] : [],
         })),
         progress: progress?.progress,
         completedCount: progress?.completed_count,
@@ -77,7 +86,7 @@ export const usePanelStore = create<PanelState>((set) => ({
       }
       return {
         _planGroupCounter: counter,
-        planGroups: [newGroup, ...state.planGroups],
+        planGroups: [newGroup],
       }
     })
   },
@@ -141,24 +150,25 @@ export const usePanelStore = create<PanelState>((set) => ({
     for (const msg of messages) {
       switch (msg.type) {
         case 'plan': {
-          const meta = msg.metadata as Record<string, unknown> | undefined
-          const rawSteps = (meta?.steps as Array<{ id?: string; description: string; status?: string }>) || []
+          const meta = isRecord(msg.metadata) ? msg.metadata : undefined
+          const rawSteps = isStepArray(meta?.steps) ? meta.steps : []
           const group: PlanGroup = {
             id: ++planCounter,
             items: rawSteps.map((s, i) => ({
               id: s.id || String(i + 1),
               title: s.description,
+              summary: isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined,
               status: toValidStatus(s.status),
-              dependsOn: (s as { depends_on?: string[] }).depends_on || [],
+              dependsOn: isRecord(s) && Array.isArray((s as Record<string, unknown>).depends_on) ? (s as Record<string, unknown>).depends_on as string[] : [],
             })),
           }
-          planGroups.push(group)
+          planGroups = [group]
           break
         }
 
         case 'plan_step_start': {
-          const meta = msg.metadata as Record<string, unknown> | undefined
-          const stepId = meta?.step_id as string | undefined
+          const meta = isRecord(msg.metadata) ? msg.metadata : undefined
+          const stepId = typeof meta?.step_id === 'string' ? meta.step_id : undefined
           if (planGroups.length > 0 && stepId) {
             const latest = planGroups[planGroups.length - 1]! // Safe: length > 0 checked
             const updatedItems = latest.items.map((s) =>
@@ -172,10 +182,10 @@ export const usePanelStore = create<PanelState>((set) => ({
         }
 
         case 'plan_step_complete': {
-          const meta = msg.metadata as Record<string, unknown> | undefined
-          const stepId = meta?.step_id as string | undefined
-          const success = meta?.success as boolean | undefined
-          const duration = meta?.duration as number | undefined
+          const meta = isRecord(msg.metadata) ? msg.metadata : undefined
+          const stepId = typeof meta?.step_id === 'string' ? meta.step_id : undefined
+          const success = typeof meta?.success === 'boolean' ? meta.success : undefined
+          const duration = typeof meta?.duration === 'number' ? meta.duration : undefined
           if (planGroups.length > 0 && stepId) {
             const latest = planGroups[planGroups.length - 1]! // Safe: length > 0 checked
             const updatedItems = latest.items.map((s) =>

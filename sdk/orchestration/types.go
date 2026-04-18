@@ -15,6 +15,7 @@ type Plan struct {
 // PlanStep is a single step in the execution plan.
 type PlanStep struct {
 	ID             string   `json:"id"`
+	Summary        string   `json:"summary"`
 	Description    string   `json:"description"`
 	DependsOn      []string `json:"depends_on"`
 	Parallelizable bool     `json:"parallelizable"`
@@ -73,6 +74,7 @@ type ExecutionResult struct {
 // PlanStepEvent represents a step in a plan for event emission.
 type PlanStepEvent struct {
 	ID          string   `json:"id"`
+	Summary     string   `json:"summary"`
 	Description string   `json:"description"`
 	Status      string   `json:"status"`
 	DependsOn   []string `json:"depends_on"`

@@ -8,6 +8,7 @@ import {
   CircleX,
   ChevronRight,
 } from 'lucide-react'
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import {
   usePanelStore,
   usePlanCompleted,
@@ -70,6 +71,7 @@ interface PlanContentProps {
 
 function PlanContent({ groups, onStepClick }: PlanContentProps) {
   return (
+    <TooltipProvider delayDuration={400}>
     <div className="max-h-48 overflow-y-auto px-3 pb-2">
       {groups.map((group, groupIdx) => (
         <div key={group.id}>
@@ -77,21 +79,36 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
           <div className="flex items-start">
             <DAGGraph items={group.items} />
             <div className="flex-1 min-w-0">
-              {group.items.map((item) => (
-                <button
-                  key={`${group.id}-${item.id}`}
-                  onClick={() => onStepClick?.(item.id)}
-                  className="flex items-center gap-2 h-[24px] px-1 -mx-1 w-full text-left rounded hover:bg-muted/50 transition-colors cursor-pointer"
-                >
-                  <PlanStatusIcon status={item.status} />
-                  <span className="text-xs text-muted-foreground truncate">{item.title}</span>
-                </button>
-              ))}
+              {group.items.map((item) => {
+                const hasTooltip = item.title.length > 40
+                return (
+                  <button
+                    key={`${group.id}-${item.id}`}
+                    onClick={() => onStepClick?.(item.id)}
+                    className="flex items-center gap-2 h-[24px] px-1 -mx-1 w-full text-left rounded hover:bg-muted/50 transition-colors cursor-pointer"
+                  >
+                    <PlanStatusIcon status={item.status} />
+                    {hasTooltip ? (
+                      <Tooltip delayDuration={400}>
+                        <TooltipTrigger asChild>
+                          <span className="text-xs text-muted-foreground truncate">{item.title}</span>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" align="start" className="max-w-md text-left whitespace-pre-line p-3 bg-background text-foreground border border-border shadow-md">
+                          {item.title}
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <span className="text-xs text-muted-foreground truncate">{item.title}</span>
+                    )}
+                  </button>
+                )
+              })}
             </div>
           </div>
         </div>
       ))}
     </div>
+    </TooltipProvider>
   )
 }
 

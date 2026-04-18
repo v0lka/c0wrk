@@ -60,6 +60,7 @@ func (t *EditFileTool) Judge(ctx context.Context, input json.RawMessage) (allowe
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, ""
 	}
+	params.Path = resolvePath(ctx, params.Path)
 	return judgeWriteInWorkspace(ctx, params.Path)
 }
 
@@ -69,6 +70,8 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)
 	}
+
+	params.Path = resolvePath(ctx, params.Path)
 
 	tracker := agent.FileTrackerFromContext(ctx)
 	if tracker != nil {

@@ -141,6 +141,10 @@ type lmStudioChatStart struct {
 	Model string `json:"model"`
 }
 
+type lmStudioChatEnd struct {
+	Stats lmStudioStats `json:"stats"`
+}
+
 // OpenAI-compatible types for /v1/chat/completions (used when tools are present)
 
 type lmsOpenAIRequest struct {
@@ -201,6 +205,7 @@ type lmsOpenAIUsage struct {
 
 type lmsOpenAIStreamResponse struct {
 	Choices []lmsOpenAIStreamChoice `json:"choices"`
+	Usage   *lmsOpenAIUsage         `json:"usage,omitempty"`
 }
 
 type lmsOpenAIStreamChoice struct {
@@ -358,6 +363,7 @@ func (p *LMStudioProvider) processSSEStream(body io.Reader, chunks chan<- ChatCh
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1MB max line size
 
 	var currentToolCall *ToolCall
+	var streamUsage *TokenUsage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -386,7 +392,7 @@ func (p *LMStudioProvider) processSSEStream(body io.Reader, chunks chan<- ChatCh
 				continue
 			}
 
-			p.handleSSEEvent(eventType, dataStr, chunks, &currentToolCall)
+			p.handleSSEEvent(eventType, dataStr, chunks, &currentToolCall, &streamUsage)
 		} else if strings.HasPrefix(line, "data: ") {
 			// Some SSE implementations skip the event line
 			dataStr := strings.TrimPrefix(line, "data: ")
@@ -394,7 +400,7 @@ func (p *LMStudioProvider) processSSEStream(body io.Reader, chunks chan<- ChatCh
 				continue
 			}
 
-			p.handleSSEEvent("", dataStr, chunks, &currentToolCall)
+			p.handleSSEEvent("", dataStr, chunks, &currentToolCall, &streamUsage)
 		}
 	}
 
@@ -404,7 +410,7 @@ func (p *LMStudioProvider) processSSEStream(body io.Reader, chunks chan<- ChatCh
 }
 
 // handleSSEEvent handles individual SSE events.
-func (p *LMStudioProvider) handleSSEEvent(eventType, dataStr string, chunks chan<- ChatChunk, currentToolCall **ToolCall) {
+func (p *LMStudioProvider) handleSSEEvent(eventType, dataStr string, chunks chan<- ChatChunk, currentToolCall **ToolCall, streamUsage **TokenUsage) {
 	switch eventType {
 	case "content.delta":
 		var delta lmStudioContentDelta
@@ -445,7 +451,14 @@ func (p *LMStudioProvider) handleSSEEvent(eventType, dataStr string, chunks chan
 		}
 
 	case "chat.end":
-		chunks <- ChatChunk{StopReason: "end_turn"}
+		var end lmStudioChatEnd
+		if err := json.Unmarshal([]byte(dataStr), &end); err == nil {
+			*streamUsage = &TokenUsage{
+				InputTokens:  end.Stats.InputTokens,
+				OutputTokens: end.Stats.TotalOutputTokens,
+			}
+		}
+		chunks <- ChatChunk{StopReason: "end_turn", Usage: *streamUsage}
 
 	case "error":
 		var lmErr lmStudioError
@@ -672,6 +685,7 @@ func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- 
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
 	acc := NewStreamToolCallAccumulator()
+	var streamUsage *TokenUsage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -690,6 +704,13 @@ func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- 
 		}
 
 		if len(streamResp.Choices) == 0 {
+			// Usage-only chunk (no choices) — capture usage
+			if streamResp.Usage != nil {
+				streamUsage = &TokenUsage{
+					InputTokens:  streamResp.Usage.PromptTokens,
+					OutputTokens: streamResp.Usage.CompletionTokens,
+				}
+			}
 			continue
 		}
 
@@ -715,7 +736,7 @@ func (p *LMStudioProvider) processOpenAISSEStream(body io.Reader, chunks chan<- 
 		if choice.FinishReason != nil {
 			stopReason := MapStopReason(*choice.FinishReason, openAIStopReasonMap)
 			acc.Emit(chunks)
-			chunks <- ChatChunk{StopReason: stopReason}
+			chunks <- ChatChunk{StopReason: stopReason, Usage: streamUsage}
 		}
 	}
 

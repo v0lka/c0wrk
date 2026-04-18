@@ -43,6 +43,7 @@ export interface ToolCallData {
   plan_step_id?: string
   source?: string  // "core" for built-in tools, MCP server name for MCP tools
   call_idx?: number  // 0-based index for parallel tool calls within a step
+  retry_attempt?: number  // > 0 only for retries
 }
 
 export interface ToolResultData {
@@ -52,6 +53,7 @@ export interface ToolResultData {
   result_preview?: string // legacy backward compat
   plan_step_id?: string
   call_idx?: number  // 0-based index for parallel tool calls within a step
+  retry_attempt?: number  // > 0 only for retries
 }
 
 export interface ThoughtData {

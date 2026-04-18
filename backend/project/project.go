@@ -1,4 +1,5 @@
-// Package project provides project-scoped persistence for the desktop UI.
+// Package project provides project-scoped persistence and lifecycle management
+// for the desktop UI layer.
 package project
 
 // ProjectInfo is the public-facing project metadata.

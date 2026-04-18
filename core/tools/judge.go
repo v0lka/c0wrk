@@ -123,9 +123,6 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 
 	// Build LLM request
 	inputStr := string(input)
-	if len(inputStr) > 2000 {
-		inputStr = inputStr[:2000] + "... (truncated)"
-	}
 
 	systemPrompt := prompts.JudgeSystem
 
@@ -179,6 +176,8 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 
 	// Cache the result under Lock (evict if cache is too large)
 	j.mu.Lock()
+	// Aggressive full-clear when cache is full. Acceptable because judge results
+	// are cheap to recompute and the cache is a best-effort optimization.
 	if len(j.cache) >= j.maxCacheSize {
 		j.cache = make(map[string]judgeResult)
 	}

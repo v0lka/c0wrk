@@ -29,10 +29,10 @@ export type DisplayItem =
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
   | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'status'; content: string; metadata?: Record<string, unknown> }
-  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; description?: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[] }
   | { kind: 'reflection'; id: string; summary: string; suggestedAction: string; rootCause: string; failureAnalysis: string; actionPlan: string; reasoning: string; hypotheses: string[]; attempt: number; maxAttempts: number }
   | { kind: 'step_finish'; id: string; stepNum?: number }
-  | { kind: 'memory_read'; id: string }
+  | { kind: 'memory_read'; id: string; toolName: string; args: string; parsedArgs?: Record<string, unknown>; result?: string; resultLen?: number; status: 'running' | 'success' | 'error' }
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
   | { kind: 'resume_action'; message: ChatMessageUI }
@@ -83,8 +83,8 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const toolItemsByStep = new Map<string, DisplayItem & { kind: 'tool' }>()
   // Buffer for tool_result messages that arrive before their matching tool_call
   const pendingResults = new Map<string, { result?: string; resultLen?: number; error?: boolean }>()
-  const makeToolKey = (planStepId: string | undefined, step: number | string, callIdx?: number | string): string =>
-    `${planStepId ?? ''}:${step}${callIdx !== undefined ? `:${callIdx}` : ''}`
+  const makeToolKey = (planStepId: string | undefined, step: number | string, callIdx?: number | string, retryAttempt?: number | string): string =>
+    `${planStepId ?? ''}:${step}${callIdx !== undefined ? `:${callIdx}` : ''}${retryAttempt ? `:r${retryAttempt}` : ''}`
 
   const pushItem = (item: DisplayItem, planStepId?: string) => {
     // Check plan step container
@@ -205,9 +205,34 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           pushItem({ kind: 'step_finish', id: msg.id, stepNum: planStepNum }, planStepId)
           break
         }
-        // Render memory/blackboard read tools as compact "Memory readed" message
-        if (['read_evidence', 'read_step_output', 'list_step_outputs'].includes(toolName)) {
-          pushItem({ kind: 'memory_read', id: msg.id }, planStepId)
+        // Render memory/blackboard tools as compact collapsible items
+        if (['read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts'].includes(toolName)) {
+          const hasMemResult = meta?.completed === true
+          const memoryItem: DisplayItem & { kind: 'memory_read' } = {
+            kind: 'memory_read',
+            id: msg.id,
+            toolName,
+            args: (meta?.args as string) || '',
+            parsedArgs: meta?.parsed_args as Record<string, unknown> | undefined,
+            result: hasMemResult ? ((meta?.result as string) ?? (meta?.result_preview as string)) : undefined,
+            resultLen: hasMemResult ? (meta?.result_len as number) : undefined,
+            status: hasMemResult ? 'success' : 'running',
+          }
+          const memStepNum = meta?.step as number | string
+          const memCallIdx = meta?.call_idx as number | undefined
+          const memRetryAttempt = meta?.retry_attempt as number | undefined
+          if (memStepNum !== undefined) {
+            const key = makeToolKey(planStepId, memStepNum, memCallIdx, memRetryAttempt)
+            toolItemsByStep.set(key, memoryItem as unknown as DisplayItem & { kind: 'tool' })
+            const pending = pendingResults.get(key)
+            if (pending) {
+              memoryItem.result = pending.result
+              memoryItem.resultLen = pending.resultLen
+              memoryItem.status = pending.error ? 'error' : 'success'
+              pendingResults.delete(key)
+            }
+          }
+          pushItem(memoryItem, planStepId)
           break
         }
         const isAwaiting = meta?.awaiting_confirmation === true
@@ -225,8 +250,9 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         }
         const stepNum = meta?.step as number | string
         const callIdx = meta?.call_idx as number | undefined
+        const retryAttempt = meta?.retry_attempt as number | undefined
         if (stepNum !== undefined) {
-          const key = makeToolKey(planStepId, stepNum, callIdx)
+          const key = makeToolKey(planStepId, stepNum, callIdx, retryAttempt)
           toolItemsByStep.set(key, toolItem)
           // Apply any pending result that arrived before this tool_call
           const pending = pendingResults.get(key)
@@ -245,8 +271,9 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         const stepNum = meta?.step as number | string
         const resultPlanStepId = meta?.plan_step_id as string | undefined
         const resultCallIdx = meta?.call_idx as number | undefined
+        const retryAttempt = meta?.retry_attempt as number | undefined
         if (stepNum !== undefined) {
-          const key = makeToolKey(resultPlanStepId, stepNum, resultCallIdx)
+          const key = makeToolKey(resultPlanStepId, stepNum, resultCallIdx, retryAttempt)
           const toolItem = toolItemsByStep.get(key)
           if (toolItem) {
             toolItem.result = (meta?.result as string) ?? (meta?.result_preview as string)

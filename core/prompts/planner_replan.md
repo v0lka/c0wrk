@@ -24,4 +24,4 @@ Create an updated plan following these rules:
 6. If previous session reflections show a repeating failure pattern with the same root cause across 2+ attempts, consider a broader structural change.
 
 Respond with a JSON Plan object:
-{"steps": [{"id": "step_1", "description": "...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"]}]}
+{"steps": [{"id": "step_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"]}]}

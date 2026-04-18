@@ -287,9 +287,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		// Parse response
 		thought := resp.Message.Content
 
-		// Always accumulate tokens regardless of suppressAssistantEvents
-		e.emitter.TokensUsed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Model, resp.Family)
-
 		// Emit thought event
 		if thought != "" || resp.Reasoning != "" {
 			e.emitter.Thought(stepNum, thought, resp.Reasoning)
@@ -708,11 +705,6 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			allSteps = append(allSteps, wrapUpStep)
 			cw.AddStep(wrapUpStep)
 			e.emitter.ExecutorDiagnostic(stepNum, "executor_wrapup_nudge", map[string]any{"remaining": e.maxSteps - stepNum})
-		}
-
-		// Correct token count with actual API usage
-		if resp.Usage.InputTokens > 0 {
-			cw.CorrectTokenCount(resp.Usage.InputTokens)
 		}
 
 		// Check for compaction using threshold-based logic

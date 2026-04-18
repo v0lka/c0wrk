@@ -13,6 +13,9 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
+// responseEventPrefix is the common prefix for Responses API streaming event types.
+const responseEventPrefix = "response."
+
 // newResponsesClient creates an official OpenAI SDK client for the Responses API.
 func newResponsesClient(apiKey, baseURL string) *oai.Client {
 	opts := []option.RequestOption{
@@ -56,40 +59,46 @@ func responsesAPIStream(ctx context.Context, client *oai.Client, req ChatRequest
 			event := stream.Current()
 
 			switch event.Type {
-			case "response.output_text.delta":
+			case responseEventPrefix + "output_text.delta":
 				if event.Delta.OfString != "" {
 					chunks <- ChatChunk{Delta: event.Delta.OfString}
 				}
 
-			case "response.reasoning_summary_text.delta":
+			case responseEventPrefix + "reasoning_summary_text.delta":
 				if event.Delta.OfString != "" {
 					chunks <- ChatChunk{Reasoning: event.Delta.OfString}
 				}
 
-			case "response.function_call_arguments.delta":
+			case responseEventPrefix + "function_call_arguments.delta":
 				acc.HandleDelta(toolIdx, event.ItemID, "", event.Delta.OfString)
 
-			case "response.function_call_arguments.done":
+			case responseEventPrefix + "function_call_arguments.done":
 				// The item is complete; pick up the name from the output_item.added event
 				// which was handled earlier. Just ensure the arguments are finalized.
 				acc.HandleDelta(toolIdx, "", "", "")
 
-			case "response.output_item.added":
+			case responseEventPrefix + "output_item.added":
 				if event.Item.Type == "function_call" {
 					acc.HandleDelta(toolIdx, event.Item.CallID, event.Item.Name, "")
 				}
 
-			case "response.output_item.done":
+			case responseEventPrefix + "output_item.done":
 				if event.Item.Type == "function_call" {
 					toolIdx++
 				}
 
-			case "response.completed":
+			case responseEventPrefix + "completed":
 				acc.Emit(chunks)
 				stopReason := mapResponsesStopReason(&event.Response)
-				chunks <- ChatChunk{StopReason: stopReason}
+				chunks <- ChatChunk{
+					StopReason: stopReason,
+					Usage: &TokenUsage{
+						InputTokens:  int(event.Response.Usage.InputTokens),
+						OutputTokens: int(event.Response.Usage.OutputTokens),
+					},
+				}
 
-			case "response.failed", "response.incomplete":
+			case responseEventPrefix + "failed", responseEventPrefix + "incomplete":
 				acc.Emit(chunks)
 				stopReason := mapResponsesStopReason(&event.Response)
 				chunks <- ChatChunk{StopReason: stopReason}

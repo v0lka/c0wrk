@@ -74,6 +74,9 @@ type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspa
 // The sessionID parameter identifies which session the tokens belong to.
 type TokenPersistFunc func(sessionID string, inputTokens, outputTokens int)
 
+// ProjectResolverFunc resolves a project ID to its workspace directory path.
+type ProjectResolverFunc func(projectID string) (workspacePath string, err error)
+
 // Manager manages multiple agent sessions.
 type Manager struct {
 	sessions            map[string]*Session
@@ -84,12 +87,13 @@ type Manager struct {
 	logLevel            string      // current log level for session loggers
 	projectsDir         string      // base directory for project temp dirs (~/.c0wrk/Projects)
 	tokenPersist        TokenPersistFunc
-	taskStore           TaskStore      // optional persistent task store
-	sessionStore        SessionStore   // optional persistent session store
+	taskStore           TaskStore       // optional persistent task store
+	sessionStore        SessionStore    // optional persistent session store
 	titleGen            *TitleGenerator // optional title generator for auto-naming
-	envInfo             *tools.EnvInfo // environment info for context injection
-	stopTimeout         time.Duration  // how long to wait for goroutine on cancel/delete
-	maxSummaryLen       int            // character limit for auto-generated step summaries
+	envInfo             *tools.EnvInfo  // environment info for context injection
+	stopTimeout         time.Duration   // how long to wait for goroutine on cancel/delete
+	maxSummaryLen       int             // character limit for auto-generated step summaries
+	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
 }
 
 // NewManager creates a new session Manager.
@@ -155,6 +159,168 @@ func (m *Manager) SetSessionStore(store SessionStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessionStore = store
+}
+
+// SetProjectResolver sets the function used to resolve a project ID to its
+// workspace path. This is required for lazy session restoration from the database.
+func (m *Manager) SetProjectResolver(fn ProjectResolverFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.projectResolver = fn
+}
+
+// getOrRestoreSession looks up a session in the in-memory map. If not found and
+// a session store + project resolver are configured, it lazily restores the
+// session from the database, creating a fully-functional Session object.
+// Returns (nil, nil) when the session genuinely does not exist.
+func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
+	// Fast path: check in-memory map.
+	m.mu.RLock()
+	if sess, ok := m.sessions[id]; ok {
+		m.mu.RUnlock()
+		return sess, nil
+	}
+	store := m.sessionStore
+	resolver := m.projectResolver
+	m.mu.RUnlock()
+
+	if store == nil {
+		slog.Warn("session restoration skipped: session store not configured", "session_id", id)
+		return nil, nil
+	}
+	if resolver == nil {
+		slog.Warn("session restoration skipped: project resolver not configured", "session_id", id)
+		return nil, nil
+	}
+
+	// Load session metadata from the persistent store.
+	info, err := store.LoadSession(id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load session from store: %w", err)
+	}
+	if info == nil {
+		return nil, nil // session does not exist in DB either
+	}
+
+	// Resolve workspace path for the session's project.
+	workspacePath, err := resolver(info.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve workspace for project %s: %w", info.ProjectID, err)
+	}
+
+	// Create session logger.
+	logger, logFile, err := m.createSessionLogger(id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session logger: %w", err)
+	}
+
+	// Create event emitter for the session.
+	emitter := NewEventEmitter(id, m.emitFunc)
+
+	// Snapshot mutable fields under read lock.
+	m.mu.RLock()
+	factory := m.orchestratorFactory
+	persistFn := m.tokenPersist
+	ts := m.taskStore
+	maxSumLen := m.maxSummaryLen
+	m.mu.RUnlock()
+
+	// Wire token persistence callback if configured.
+	if persistFn != nil {
+		emitter.SetTokenPersist(func(inputTokens, outputTokens int) {
+			persistFn(id, inputTokens, outputTokens)
+		})
+	}
+
+	// Build BlackboardFactory if task persistence is configured.
+	var bbFactory core.BlackboardFactory
+	var adapter *TaskStoreAdapter
+	if ts != nil {
+		adapter = NewTaskStoreAdapter(ts)
+		sessionID := id // capture for closure
+		bbFactory = func(taskID string) core.Blackboard {
+			if maxSumLen > 0 {
+				return NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+			}
+			return NewPersistentBlackboard(taskID, sessionID, adapter, logger)
+		}
+	}
+
+	// Create LLM dump file when DEBUG logging is enabled.
+	var dumpFile *os.File
+	if strings.EqualFold(m.logLevel, "DEBUG") {
+		dumpPath := filepath.Join(m.logDir, fmt.Sprintf("session_%s_llm_dump.jsonl", id))
+		dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			slog.Warn("failed to create LLM dump file", "session_id", id, "error", err)
+			dumpFile = nil
+		}
+	}
+
+	// Create orchestrator.
+	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile)
+	if err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		if dumpFile != nil {
+			_ = dumpFile.Close()
+		}
+		return nil, fmt.Errorf("failed to create orchestrator for restored session: %w", err)
+	}
+
+	// Wire task persistence into orchestrator.
+	if adapter != nil {
+		orchestrator.SetTaskStore(adapter)
+		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...core.MapBlackboardOption) (core.PersistableBlackboard, error) {
+			return RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+		})
+	}
+
+	// Parse creation time from stored info.
+	createdAt, parseErr := time.Parse(time.RFC3339, info.CreatedAt)
+	if parseErr != nil {
+		createdAt = time.Now()
+	}
+
+	// Create session temp directory.
+	tempDir := sessionTempDir(m.projectsDir, info.ProjectID, id)
+	if mkErr := os.MkdirAll(tempDir, 0o755); mkErr != nil {
+		slog.Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", mkErr)
+	}
+
+	sess := &Session{
+		ID:            id,
+		ProjectID:     info.ProjectID,
+		Name:          info.Name,
+		CreatedAt:     createdAt,
+		Archived:      info.Archived,
+		WorkspacePath: workspacePath,
+		TempDir:       tempDir,
+		orchestrator:  orchestrator,
+		logFile:       logFile,
+		dumpFile:      dumpFile,
+		active:        false,
+	}
+
+	// Double-check under write lock: another goroutine may have restored the same session.
+	m.mu.Lock()
+	if existing, ok := m.sessions[id]; ok {
+		m.mu.Unlock()
+		// Clean up the duplicate we just created.
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		if dumpFile != nil {
+			_ = dumpFile.Close()
+		}
+		return existing, nil
+	}
+	m.sessions[id] = sess
+	m.mu.Unlock()
+
+	slog.Info("restored session from database", "session_id", id, "project_id", info.ProjectID)
+	return sess, nil
 }
 
 // ListSessionsByProject returns sessions for a project, merging in-memory active
@@ -363,6 +529,11 @@ func (m *Manager) SetLogLevel(level string) {
 
 // DeleteSession removes a session, cancelling any active task.
 func (m *Manager) DeleteSession(id string) error {
+	// Try lazy restoration before checking the map.
+	if _, restoreErr := m.getOrRestoreSession(id); restoreErr != nil {
+		slog.Warn("failed to restore session for deletion", "session_id", id, "error", restoreErr)
+	}
+
 	m.mu.Lock()
 	session, exists := m.sessions[id]
 	if !exists {
@@ -427,19 +598,21 @@ func (m *Manager) DeleteSession(id string) error {
 }
 
 // GetSession returns a session by ID.
+// If the session is not in memory but exists in the persistent store,
+// it is lazily restored.
 func (m *Manager) GetSession(id string) (*Session, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	session, exists := m.sessions[id]
-	return session, exists
+	sess, err := m.getOrRestoreSession(id)
+	if err != nil {
+		slog.Warn("failed to restore session", "session_id", id, "error", err)
+		return nil, false
+	}
+	return sess, sess != nil
 }
 
 // GetSessionWorkspacePath returns the workspace path for a session.
 func (m *Manager) GetSessionWorkspacePath(id string) (string, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	sess, exists := m.sessions[id]
-	if !exists {
+	sess, ok := m.GetSession(id)
+	if !ok {
 		return "", false
 	}
 	return sess.WorkspacePath, true
@@ -475,11 +648,11 @@ func (m *Manager) ListSessions() []SessionInfo {
 
 // RenameSession changes a session's display name.
 func (m *Manager) RenameSession(id, name string) error {
-	m.mu.RLock()
-	session, exists := m.sessions[id]
-	m.mu.RUnlock()
-
-	if !exists {
+	session, err := m.getOrRestoreSession(id)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
@@ -504,11 +677,11 @@ func (m *Manager) RenameSession(id, name string) error {
 
 // ArchiveSession toggles the archived flag.
 func (m *Manager) ArchiveSession(id string) error {
-	m.mu.RLock()
-	session, exists := m.sessions[id]
-	m.mu.RUnlock()
-
-	if !exists {
+	session, err := m.getOrRestoreSession(id)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
@@ -545,14 +718,13 @@ func (m *Manager) ArchiveSession(id string) error {
 // Runs in a goroutine, results come via events.
 // Always uses Plan&Execute mode.
 func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
-	m.mu.RLock()
-	session, exists := m.sessions[id]
-	if !exists {
-		m.mu.RUnlock()
+	session, err := m.getOrRestoreSession(id)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-
-	m.mu.RUnlock()
 
 	session.mu.Lock()
 	// Check if already active (prevent double-send on the same session)
@@ -636,7 +808,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 		session.mu.Unlock()
 
 		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-			TaskID:    lastTaskID,
+			TaskID: lastTaskID,
 		})
 
 		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh
@@ -646,7 +818,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 			session.lastCompletedTaskID = "" // clear to avoid repeated failures
 			session.mu.Unlock()
 			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-				TaskID:    "",
+				TaskID: "",
 			})
 		}
 
@@ -750,10 +922,11 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		return nil // no task persistence — nothing to resume
 	}
 
-	m.mu.RLock()
-	session, exists := m.sessions[id]
-	m.mu.RUnlock()
-	if !exists {
+	session, restoreErr := m.getOrRestoreSession(id)
+	if restoreErr != nil {
+		return fmt.Errorf("failed to restore session: %w", restoreErr)
+	}
+	if session == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
@@ -916,11 +1089,11 @@ func (m *Manager) emitResumableIfUnfinished(sessionID string) {
 // CancelTask cancels the currently running task in a session.
 // It signals cancellation and waits (with timeout) for the task goroutine to finish.
 func (m *Manager) CancelTask(id string) error {
-	m.mu.RLock()
-	session, exists := m.sessions[id]
-	m.mu.RUnlock()
-
-	if !exists {
+	session, err := m.getOrRestoreSession(id)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
 

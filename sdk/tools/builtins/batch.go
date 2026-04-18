@@ -3,13 +3,12 @@ package builtins
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolBatchDescription = `Execute multiple independent tools in parallel. Runs up to 10 calls concurrently with a shared result budget of 50 000 characters (individual results are truncated proportionally). Recursive batch calls are not allowed.
+const toolBatchDescription = `Execute multiple independent tools in parallel. Recursive batch calls are not allowed.
 
 Use this tool to run several tool calls at once when they do NOT depend on each other's results and do NOT produce side effects that affect other tools in the same batch.
 
@@ -52,53 +51,15 @@ type BatchOutput struct {
 	Results []BatchCallResult `json:"results"`
 }
 
-// BatchOption configures a BatchTool.
-type BatchOption func(*BatchTool)
-
-// WithMaxConcurrency sets the maximum number of parallel tool executions.
-// Default: 10.
-func WithMaxConcurrency(n int) BatchOption {
-	return func(bt *BatchTool) {
-		if n > 0 {
-			bt.maxConcurrency = n
-		}
-	}
-}
-
-// WithMaxResultSize sets the total character budget across all results.
-// Default: 50000.
-func WithMaxResultSize(chars int) BatchOption {
-	return func(bt *BatchTool) {
-		if chars > 0 {
-			bt.maxResultSize = chars
-		}
-	}
-}
-
-// WithBatchLimits sets all limits from a BatchLimits struct.
-func WithBatchLimits(limits BatchLimits) BatchOption {
-	return func(bt *BatchTool) {
-		if limits.MaxConcurrency > 0 {
-			bt.maxConcurrency = limits.MaxConcurrency
-		}
-		if limits.MaxResultSize > 0 {
-			bt.maxResultSize = limits.MaxResultSize
-		}
-	}
-}
-
 // BatchTool executes multiple independent tools in parallel.
 type BatchTool struct {
 	*tools.BaseTool
-	dispatcher     toolDispatcher
-	maxConcurrency int
-	maxResultSize  int
+	dispatcher toolDispatcher
 }
 
-// NewBatchTool creates a new BatchTool with the given dispatcher and options.
-func NewBatchTool(dispatcher toolDispatcher, opts ...BatchOption) *BatchTool {
-	defaults := DefaultBatchLimits()
-	bt := &BatchTool{
+// NewBatchTool creates a new BatchTool with the given dispatcher.
+func NewBatchTool(dispatcher toolDispatcher) *BatchTool {
+	return &BatchTool{
 		BaseTool: &tools.BaseTool{
 			ToolName:        "batch",
 			ToolDescription: toolBatchDescription,
@@ -128,14 +89,8 @@ func NewBatchTool(dispatcher toolDispatcher, opts ...BatchOption) *BatchTool {
 }`),
 			Policy: tools.PolicyAlwaysAllow,
 		},
-		dispatcher:     dispatcher,
-		maxConcurrency: defaults.MaxConcurrency,
-		maxResultSize:  defaults.MaxResultSize,
+		dispatcher: dispatcher,
 	}
-	for _, opt := range opts {
-		opt(bt)
-	}
-	return bt
 }
 
 // Execute runs all calls in parallel, respecting concurrency limits, and returns aggregated results.
@@ -157,18 +112,12 @@ func (bt *BatchTool) Execute(ctx context.Context, input json.RawMessage) (tools.
 	}
 
 	results := make([]BatchCallResult, len(params.Calls))
-	budget := bt.maxResultSize / len(params.Calls)
-
-	sem := make(chan struct{}, bt.maxConcurrency)
 	var wg sync.WaitGroup
 
 	for i, call := range params.Calls {
 		wg.Add(1)
 		go func(idx int, c BatchCall) {
 			defer wg.Done()
-
-			sem <- struct{}{}
-			defer func() { <-sem }()
 
 			res, err := bt.dispatcher.Execute(ctx, c.Tool, c.Input)
 			if err != nil {
@@ -180,11 +129,7 @@ func (bt *BatchTool) Execute(ctx context.Context, input json.RawMessage) (tools.
 				return
 			}
 
-			output := res.Content
-			if len(output) > budget {
-				output = output[:budget] + fmt.Sprintf("...(truncated, original size: %d chars)", len(res.Content))
-			}
-			results[idx] = BatchCallResult{Tool: c.Tool, Success: true, Output: output}
+			results[idx] = BatchCallResult{Tool: c.Tool, Success: true, Output: res.Content}
 		}(i, call)
 	}
 

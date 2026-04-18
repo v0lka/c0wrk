@@ -26,8 +26,9 @@ export function ChatNewActivityBanner({
         }
       }}
       className="sticky bottom-2 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full bg-blue-500 text-white text-xs shadow-lg hover:bg-blue-600 active:bg-blue-700 transition-colors flex items-center gap-1.5"
+      aria-label="Jump to new activity"
     >
-      <span>↓</span>
+      <span aria-hidden="true">↓</span>
       <span>New activity</span>
     </button>
   )

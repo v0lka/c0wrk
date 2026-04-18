@@ -16,7 +16,7 @@ type FileNode struct {
 	IsDir bool   `json:"is_dir"`
 }
 
-// SessionTokensResponse holds token usage for a session.
+// SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {
 	TotalInputTokens  int `json:"total_input_tokens"`
 	TotalOutputTokens int `json:"total_output_tokens"`

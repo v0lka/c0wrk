@@ -172,10 +172,5 @@ func (r *Reflector) parseReflectionResponse(content string) (*Reflection, error)
 		reflection.Summary = "Execution analysis unavailable"
 	}
 
-	// Ensure hypotheses is non-nil
-	if reflection.Hypotheses == nil {
-		reflection.Hypotheses = []string{}
-	}
-
 	return &reflection, nil
 }

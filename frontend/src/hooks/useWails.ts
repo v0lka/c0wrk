@@ -45,12 +45,12 @@ declare global {
 }
 
 export function useWails() {
-  const api = typeof window !== 'undefined' ? window?.go?.desktop?.App : undefined
-  const runtime = typeof window !== 'undefined' ? window?.runtime : undefined
-
-  return useMemo(() => ({
-    api,
-    runtime,
-    isReady: !!api && !!runtime,
-  }), [api, runtime])
+  return useMemo(() => {
+    if (typeof window === 'undefined') {
+      return { api: undefined, runtime: undefined, isReady: false as const }
+    }
+    const api = window?.go?.desktop?.App
+    const runtime = window?.runtime
+    return { api, runtime, isReady: !!api && !!runtime }
+  }, [])
 }

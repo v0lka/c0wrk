@@ -110,7 +110,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard) (*ExecutionRes
 				status = "completed"
 			}
 		}
-		planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: status, DependsOn: s.DependsOn}
+		planStepEvents[i] = PlanStepEvent{ID: s.ID, Summary: s.Summary, Description: s.Description, Status: status, DependsOn: s.DependsOn}
 	}
 	o.events.OnPlanGenerated(len(plan.Steps), planStepEvents)
 
@@ -145,7 +145,7 @@ func (o *Orchestrator) runPlanExecute(
 
 		planStepEvents := make([]PlanStepEvent, len(plan.Steps))
 		for i, s := range plan.Steps {
-			planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: "pending", DependsOn: s.DependsOn}
+			planStepEvents[i] = PlanStepEvent{ID: s.ID, Summary: s.Summary, Description: s.Description, Status: "pending", DependsOn: s.DependsOn}
 		}
 		o.events.OnPlanGenerated(len(plan.Steps), planStepEvents)
 		bb.SetPlan(plan)
@@ -378,7 +378,7 @@ func (o *Orchestrator) executePlanWithSteps(
 
 		for _, step := range readySteps {
 			stepIndex := o.findStepIndex(plan, step.ID)
-			o.events.OnServiceMeta(fmt.Sprintf("Executing step %d/%d: %s", stepIndex+1, len(plan.Steps), step.Description), map[string]any{"phase": "orchestration"})
+			o.events.OnServiceMeta(fmt.Sprintf("Executing step %d/%d...", stepIndex+1, len(plan.Steps)), map[string]any{"phase": "orchestration"})
 			o.events.OnStepStarted(step.ID, step.Description)
 			stepStartTimes[step.ID] = time.Now()
 		}
@@ -409,7 +409,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			if o.cfg.ModelRegistry != nil {
 				modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
 			}
-			
+
 			// Build system prompt
 			var systemPrompt string
 			switch {
@@ -423,7 +423,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			if stepCfg.SystemPromptSuffix != "" {
 				systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
 			}
-			
+
 			// Create context manager
 			var cm agent.ContextManager
 			if o.cfg.ContextFactory != nil {
@@ -438,7 +438,8 @@ func (o *Orchestrator) executePlanWithSteps(
 			}
 
 			scopedEvents := o.scopeEvents(step.ID)
-			executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
+			stepCaller := o.callerForStep(cm)
+			executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 			if o.cfg.StepLimitFunc != nil {
 				executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
@@ -530,6 +531,7 @@ func (o *Orchestrator) executePlanWithSteps(
 						break stepRetryLoop
 					}
 					scopedEvents := o.scopeEvents(failedStepID)
+					scopedEvents = scopeRetryAttempt(scopedEvents, retryAttempt)
 					scopedEvents.OnStepRetry(failedStepID, retryAttempt, o.maxRetries+1)
 
 					// Reflect on failure if reflector is configured
@@ -594,7 +596,7 @@ func (o *Orchestrator) executePlanWithSteps(
 					if o.cfg.ModelRegistry != nil {
 						modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
 					}
-					
+
 					// Build system prompt
 					var systemPrompt string
 					switch {
@@ -608,7 +610,7 @@ func (o *Orchestrator) executePlanWithSteps(
 					if stepCfg.SystemPromptSuffix != "" {
 						systemPrompt += "\n\n" + stepCfg.SystemPromptSuffix
 					}
-					
+
 					// Create context manager
 					var cm agent.ContextManager
 					if o.cfg.ContextFactory != nil {
@@ -622,7 +624,8 @@ func (o *Orchestrator) executePlanWithSteps(
 						o.cfg.ContextSetup(cm, taskDef.task)
 					}
 
-					executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
+					retryCaller := o.callerForStep(cm)
+					executor := agent.NewExecutor(retryCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 					executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
 					if o.cfg.StepLimitFunc != nil {
 						executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
@@ -638,7 +641,7 @@ func (o *Orchestrator) executePlanWithSteps(
 					}
 
 					// Execute single step
-					o.events.OnServiceMeta(fmt.Sprintf("Retrying step %d/%d: %s", stepIndex+1, len(plan.Steps), failedPlanStep.Description), map[string]any{"phase": "orchestration"})
+					o.events.OnServiceMeta(fmt.Sprintf("Retrying step %d/%d...", stepIndex+1, len(plan.Steps)), map[string]any{"phase": "orchestration"})
 					o.events.OnStepStarted(failedStepID, failedPlanStep.Description)
 					stepStartTime := time.Now()
 
@@ -739,7 +742,17 @@ func (o *Orchestrator) executePlanWithSteps(
 		aggErr = errors.Join(stepErrors...)
 	}
 
-	return AggregateOutput(completedSteps, plan), completedList, sessionReflections, aggErr
+	// Build exclusion set from pre-completed step IDs so that only newly
+	// completed steps contribute to the aggregated output.
+	var preCompletedIDs map[string]bool
+	if len(preCompleted) > 0 {
+		preCompletedIDs = make(map[string]bool, len(preCompleted))
+		for id := range preCompleted {
+			preCompletedIDs[id] = true
+		}
+	}
+
+	return AggregateOutput(completedSteps, plan, preCompletedIDs), completedList, sessionReflections, aggErr
 }
 
 // stepTaskDef holds the result of buildStepTask.
@@ -771,13 +784,17 @@ func (o *Orchestrator) buildStepTask(
 	// Plan overview with markers
 	b.WriteString("Plan overview:\n")
 	for i, s := range plan.Steps {
+		label := s.Summary
+		if label == "" {
+			label = s.Description
+		}
 		switch {
 		case i < stepIndex:
-			fmt.Fprintf(&b, "  ✓ Step %d: %s\n", i+1, s.Description)
+			fmt.Fprintf(&b, "  ✓ Step %d: %s\n", i+1, label)
 		case i == stepIndex:
-			fmt.Fprintf(&b, "  → Step %d: %s (THIS STEP)\n", i+1, s.Description)
+			fmt.Fprintf(&b, "  → Step %d: %s (THIS STEP)\n", i+1, label)
 		default:
-			fmt.Fprintf(&b, "  · Step %d: %s\n", i+1, s.Description)
+			fmt.Fprintf(&b, "  · Step %d: %s\n", i+1, label)
 		}
 	}
 
@@ -797,6 +814,7 @@ func (o *Orchestrator) buildStepTask(
 
 	// Specific objective
 	fmt.Fprintf(&b, "\nYour specific objective: %s\n\n", step.Description)
+	b.WriteString("**Your primary objective is to satisfy the acceptance criteria defined in the step description above. Every action you take should be directed toward meeting these criteria. Do not consider this step complete until all acceptance criteria are met.**\n\n")
 	b.WriteString("Produce output that is scoped to this step only. Later steps will build on your output.\n")
 	b.WriteString("Pass your result through the finish tool. Write files ONLY if the file itself is the deliverable (code, config, etc.) — do NOT write files just to pass data to later steps.\n")
 
@@ -842,12 +860,29 @@ func (o *Orchestrator) buildStepTask(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+// callerForStep returns a step-local LLMCaller for the given ContextManager.
+// If CallerForStep is configured, it delegates to it; otherwise falls back to the shared LLM.
+func (o *Orchestrator) callerForStep(cm agent.ContextManager) agent.LLMCaller {
+	if o.cfg.CallerForStep != nil {
+		return o.cfg.CallerForStep(cm)
+	}
+	return o.cfg.LLM
+}
+
 // scopeEvents returns step-scoped events if the Events implementation supports it.
 func (o *Orchestrator) scopeEvents(stepID string) Events {
 	if s, ok := o.events.(StepScopable); ok {
 		return s.WithStepID(stepID)
 	}
 	return o.events
+}
+
+// scopeRetryAttempt returns retry-scoped events if the Events implementation supports it.
+func scopeRetryAttempt(events Events, attempt int) Events {
+	if r, ok := events.(RetryScopable); ok {
+		return r.WithRetryAttempt(attempt)
+	}
+	return events
 }
 
 // availableTools returns tool descriptors from the registry.
@@ -929,7 +964,7 @@ func (o *Orchestrator) emitPlanWithStatuses(plan *Plan, preCompleted map[string]
 				status = "completed"
 			}
 		}
-		planStepEvents[i] = PlanStepEvent{ID: s.ID, Description: s.Description, Status: status, DependsOn: s.DependsOn}
+		planStepEvents[i] = PlanStepEvent{ID: s.ID, Summary: s.Summary, Description: s.Description, Status: status, DependsOn: s.DependsOn}
 	}
 	o.events.OnPlanGenerated(len(plan.Steps), planStepEvents)
 }
@@ -968,26 +1003,6 @@ func terminalSteps(plan *Plan) []string {
 	return terminals
 }
 
-// ExecuteSilentPlan runs the plan-execute-reflect loop for a pre-planned blackboard
-// without emitting plan visualization events (OnPlanGenerated, OnStepStarted,
-// OnStepCompleted, OnStepRetry). This is used for simple plans executed as a
-// unified ReAct cycle where the plan is just guidance text, not a tracked DAG.
-// The blackboard must already have a plan set via SetPlan.
-func (o *Orchestrator) ExecuteSilentPlan(ctx context.Context, bb Blackboard) (*ExecutionResult, error) {
-	plan := bb.GetPlan()
-	if plan == nil {
-		return nil, errors.New("blackboard has no plan")
-	}
-	userMessage := bb.GetOriginalRequest()
-	availableTools := o.availableTools()
-
-	// Swap to silent events that suppress plan step visualization
-	saved := o.events
-	o.events = &silentPlanEvents{inner: saved}
-	defer func() { o.events = saved }()
-
-	return o.runPlanExecute(ctx, userMessage, availableTools, nil, bb, plan, nil)
-}
 
 // ExecuteAdHocStep executes a single ad-hoc step on an existing Blackboard,
 // using the same machinery as regular plan step execution.
@@ -1071,7 +1086,8 @@ func (o *Orchestrator) ExecuteAdHocStep(
 
 	// 4. Create executor infrastructure
 	scopedEvents := o.scopeEvents(step.ID)
-	executor := agent.NewExecutor(o.cfg.LLM, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
+	stepCaller := o.callerForStep(cm)
+	executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 	executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 	if o.cfg.StepLimitFunc != nil {
 		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)

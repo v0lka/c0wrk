@@ -14,7 +14,6 @@ type AgentEvents interface {
 	SubAgentComplete(stepID string, success bool, duration time.Duration)
 	AssistantChunk(content string)
 	AssistantDone(content string, inputTokens, outputTokens int)
-	TokensUsed(inputTokens, outputTokens int, model, family string)
 	ContextFill(fillPercent float64, usedTokens, maxTokens int, status string, stepID string)
 	ContextCompaction(beforePercent, afterPercent float64, stepID string)
 
@@ -38,7 +37,6 @@ func (n *NoopEvents) SubAgentLaunch(_, _ string)                         {}
 func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
 func (n *NoopEvents) AssistantChunk(_ string)                            {}
 func (n *NoopEvents) AssistantDone(_ string, _, _ int)                   {}
-func (n *NoopEvents) TokensUsed(_, _ int, _, _ string)                   {}
 func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)       {}
 func (*NoopEvents) ContextCompaction(_, _ float64, _ string)      {}
 func (*NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}

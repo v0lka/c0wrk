@@ -1,5 +1,4 @@
-import { Component, useState, useMemo } from 'react'
-import type { ReactNode, ErrorInfo } from 'react'
+import { useState, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
@@ -13,7 +12,7 @@ import hljs from 'highlight.js/lib/core'
 import markdown from 'highlight.js/lib/languages/markdown'
 import { Code, Eye } from 'lucide-react'
 import { customSchema, markdownComponents } from '@/lib/markdownConfig'
-import { logger } from '@/lib/logger'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 // Register markdown language for raw mode highlighting
 hljs.registerLanguage('markdown', markdown)
@@ -21,35 +20,6 @@ hljs.registerLanguage('markdown', markdown)
 interface AssistantMessageProps {
   content: string
   isStreaming?: boolean
-}
-
-class MarkdownErrorBoundary extends Component<
-  { children: ReactNode },
-  { hasError: boolean }
-> {
-  constructor(props: { children: ReactNode }) {
-    super(props)
-    this.state = { hasError: false }
-  }
-
-  static getDerivedStateFromError(): { hasError: boolean } {
-    return { hasError: true }
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    logger.error('Markdown render error:', error, info)
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="text-sm text-muted-foreground italic px-4 py-3">
-          Failed to render message content
-        </div>
-      )
-    }
-    return this.props.children
-  }
 }
 
 export function AssistantMessage({ content, isStreaming }: AssistantMessageProps) {
@@ -92,7 +62,7 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
             </pre>
           ) : (
             <div className="prose prose-sm dark:prose-invert max-w-full break-words min-w-0 bg-zinc-100 dark:bg-zinc-800 rounded-lg px-4 py-3">
-              <MarkdownErrorBoundary>
+              <ErrorBoundary fallback={<div className="text-sm text-muted-foreground italic px-4 py-3">Failed to render message content</div>}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkEmoji, remarkBreaks]}
                 rehypePlugins={[
@@ -106,7 +76,7 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
               >
                 {content}
               </ReactMarkdown>
-              </MarkdownErrorBoundary>
+              </ErrorBoundary>
             </div>
           )}
         </div>

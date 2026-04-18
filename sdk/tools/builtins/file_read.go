@@ -73,6 +73,8 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ParseInputError(err)
 	}
 
+	params.Path = resolvePath(ctx, params.Path)
+
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil

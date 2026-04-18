@@ -1323,3 +1323,111 @@ func TestReadFileTool_ReadFile_OutOfRangeClamp(t *testing.T) {
 		t.Errorf("expected metadata header with clamped line range, got: %s", result.Content)
 	}
 }
+
+// --- Relative path resolution with workspace context ---
+
+func TestFileTools_RelativePathWithWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	ctx := tools.WithWorkspacePath(context.Background(), workspace)
+
+	t.Run("read_file", func(t *testing.T) {
+		testContent := "hello workspace"
+		if err := os.WriteFile(filepath.Join(workspace, "test.txt"), []byte(testContent), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tool := NewReadFileTool()
+		input, _ := json.Marshal(ReadFileInput{Path: "test.txt"})
+		result, err := tool.Execute(ctx, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("unexpected error: %s", result.Content)
+		}
+		if !strings.Contains(result.Content, testContent) {
+			t.Errorf("expected content %q in result, got: %s", testContent, result.Content)
+		}
+	})
+
+	t.Run("write_file", func(t *testing.T) {
+		tool := NewWriteFileTool()
+		input, _ := json.Marshal(WriteFileInput{Path: "written.txt", Content: "workspace write"})
+		result, err := tool.Execute(ctx, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("unexpected error: %s", result.Content)
+		}
+		data, err := os.ReadFile(filepath.Join(workspace, "written.txt"))
+		if err != nil {
+			t.Fatalf("file not created at workspace path: %v", err)
+		}
+		if string(data) != "workspace write" {
+			t.Errorf("expected 'workspace write', got %q", string(data))
+		}
+	})
+
+	t.Run("edit_file", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(workspace, "edit.txt"), []byte("old content here"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tool := NewEditFileTool()
+		input, _ := json.Marshal(EditFileInput{Path: "edit.txt", OldString: "old", NewString: "new"})
+		result, err := tool.Execute(ctx, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("unexpected error: %s", result.Content)
+		}
+		data, err := os.ReadFile(filepath.Join(workspace, "edit.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "new content here" {
+			t.Errorf("expected 'new content here', got %q", string(data))
+		}
+	})
+
+	t.Run("list_directory", func(t *testing.T) {
+		subDir := filepath.Join(workspace, "mysubdir")
+		if err := os.Mkdir(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "a.txt"), []byte("a"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tool := NewListDirectoryTool()
+		input, _ := json.Marshal(ListDirectoryInput{Path: "mysubdir"})
+		result, err := tool.Execute(ctx, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("unexpected error: %s", result.Content)
+		}
+		if !strings.Contains(result.Content, "a.txt") {
+			t.Errorf("expected 'a.txt' in listing, got: %s", result.Content)
+		}
+	})
+
+	t.Run("delete_file", func(t *testing.T) {
+		delFile := filepath.Join(workspace, "todelete.txt")
+		if err := os.WriteFile(delFile, []byte("bye"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tool := NewDeleteFileTool()
+		input, _ := json.Marshal(DeleteFileInput{Path: "todelete.txt"})
+		result, err := tool.Execute(ctx, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("unexpected error: %s", result.Content)
+		}
+		if _, err := os.Stat(delFile); !os.IsNotExist(err) {
+			t.Error("expected file to be deleted")
+		}
+	})
+}

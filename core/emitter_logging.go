@@ -14,10 +14,11 @@ type loggingEmitter struct {
 	logger *slog.Logger
 }
 
-// ensure loggingEmitter implements Emitter and PlanStepScopable.
+// ensure loggingEmitter implements Emitter, PlanStepScopable, and RetryAttemptScopable.
 var (
-	_ Emitter          = (*loggingEmitter)(nil)
-	_ PlanStepScopable = (*loggingEmitter)(nil)
+	_ Emitter              = (*loggingEmitter)(nil)
+	_ PlanStepScopable     = (*loggingEmitter)(nil)
+	_ RetryAttemptScopable = (*loggingEmitter)(nil)
 )
 
 // NewLoggingEmitter wraps an Emitter to log all events via the given logger.
@@ -39,6 +40,19 @@ func (l *loggingEmitter) WithPlanStepID(id string) Emitter {
 	return &loggingEmitter{
 		inner:  scoped,
 		logger: l.logger.With("planStepID", id),
+	}
+}
+
+// WithRetryAttempt returns a new loggingEmitter wrapping the retry-scoped inner emitter,
+// with the retryAttempt added to the logger context.
+func (l *loggingEmitter) WithRetryAttempt(attempt int) Emitter {
+	scoped := l.inner
+	if r, ok := l.inner.(RetryAttemptScopable); ok {
+		scoped = r.WithRetryAttempt(attempt)
+	}
+	return &loggingEmitter{
+		inner:  scoped,
+		logger: l.logger.With("retryAttempt", attempt),
 	}
 }
 
@@ -89,11 +103,6 @@ func (l *loggingEmitter) AssistantChunk(content string) {
 func (l *loggingEmitter) AssistantDone(content string, inputTokens, outputTokens int) {
 	l.logger.Debug("executor: assistant done", "inputTokens", inputTokens, "outputTokens", outputTokens)
 	l.inner.AssistantDone(content, inputTokens, outputTokens)
-}
-
-func (l *loggingEmitter) TokensUsed(inputTokens, outputTokens int, model, family string) {
-	l.logger.Debug("executor: tokens used", "inputTokens", inputTokens, "outputTokens", outputTokens, "model", model, "family", family)
-	l.inner.TokensUsed(inputTokens, outputTokens, model, family)
 }
 
 func (l *loggingEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {

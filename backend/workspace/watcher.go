@@ -12,6 +12,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// defaultDebounce is the debounce interval for file system events.
+// 200ms balances responsiveness with avoiding excessive re-processing
+// of rapid consecutive file changes (e.g., editor save + format).
 const defaultDebounce = 200 * time.Millisecond
 
 // Watcher watches directories for file system changes and calls onChange when changes occur.

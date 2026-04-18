@@ -10,19 +10,19 @@ import (
 )
 
 func TestTriggerCodebaseIndexing_NotInstalled(t *testing.T) {
-	// Override checkCodebaseMemoryFn to simulate not installed
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	// Override checkCodebaseMemoryFunc to simulate not installed
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
 	var execCalled bool
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: false}
 	}
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		execCalled = true
 		return exec.CommandContext(ctx, "true")
 	}
@@ -51,21 +51,21 @@ func TestTriggerCodebaseIndexing_NotInstalled(t *testing.T) {
 }
 
 func TestTriggerCodebaseIndexing_Installed(t *testing.T) {
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
 	var mu sync.Mutex
 	var capturedName string
 	var capturedArgs []string
 
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
 	}
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		mu.Lock()
 		// Only capture the first call (index_repository)
 		if capturedName == "" {
@@ -118,18 +118,18 @@ func TestTriggerCodebaseIndexing_Installed(t *testing.T) {
 }
 
 func TestTriggerCodebaseIndexing_SkipsWhenAlreadyRunning(t *testing.T) {
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
 	var execCalled bool
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
 	}
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		execCalled = true
 		return exec.CommandContext(ctx, "true")
 	}
@@ -165,17 +165,17 @@ func TestTriggerCodebaseIndexing_SkipsWhenAlreadyRunning(t *testing.T) {
 }
 
 func TestTriggerCodebaseIndexing_CommandFailure(t *testing.T) {
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
 	}
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		// Return a command that will fail
 		return exec.CommandContext(ctx, "false")
 	}
@@ -186,20 +186,20 @@ func TestTriggerCodebaseIndexing_CommandFailure(t *testing.T) {
 }
 
 func TestResolveCodebaseProjectName_MatchFound(t *testing.T) {
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
 	}
 
 	mcpJSON := `{"content":[{"type":"text","text":"{\"projects\":[{\"name\":\"Test-Project\",\"root_path\":\"/tmp/test-workspace\"},{\"name\":\"Other-Project\",\"root_path\":\"/other/path\"}]}"}]}`
 
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "echo", mcpJSON)
 	}
 
@@ -216,20 +216,20 @@ func TestResolveCodebaseProjectName_MatchFound(t *testing.T) {
 }
 
 func TestResolveCodebaseProjectName_NoMatch(t *testing.T) {
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
 	}
 
 	mcpJSON := `{"content":[{"type":"text","text":"{\"projects\":[{\"name\":\"Test-Project\",\"root_path\":\"/tmp/test-workspace\"}]}"}]}`
 
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "echo", mcpJSON)
 	}
 
@@ -246,18 +246,18 @@ func TestResolveCodebaseProjectName_NoMatch(t *testing.T) {
 }
 
 func TestResolveCodebaseProjectName_NotInstalled(t *testing.T) {
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
 	var execCalled bool
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: false}
 	}
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		execCalled = true
 		return exec.CommandContext(ctx, "true")
 	}
@@ -278,14 +278,14 @@ func TestResolveCodebaseProjectName_NotInstalled(t *testing.T) {
 }
 
 func TestTriggerCodebaseIndexing_ResolvesProjectName(t *testing.T) {
-	origCheck := checkCodebaseMemoryFn
-	origExec := execCommandFn
+	origCheck := checkCodebaseMemoryFunc
+	origExec := execCommandFunc
 	t.Cleanup(func() {
-		checkCodebaseMemoryFn = origCheck
-		execCommandFn = origExec
+		checkCodebaseMemoryFunc = origCheck
+		execCommandFunc = origExec
 	})
 
-	checkCodebaseMemoryFn = func() mcp.CodeMemoryStatus {
+	checkCodebaseMemoryFunc = func() mcp.CodeMemoryStatus {
 		return mcp.CodeMemoryStatus{Installed: true, Path: "/usr/local/bin/codebase-memory-mcp"}
 	}
 
@@ -293,7 +293,7 @@ func TestTriggerCodebaseIndexing_ResolvesProjectName(t *testing.T) {
 
 	var callCount int
 	var mu sync.Mutex
-	execCommandFn = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 		mu.Lock()
 		defer mu.Unlock()
 		callCount++
@@ -319,7 +319,7 @@ func TestTriggerCodebaseIndexing_ResolvesProjectName(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	// Should have been called at least twice: once for index_repository, once for list_projects
-	// checkCodebaseMemoryFn is called twice too (once per method), but execCommandFn is what we count
+	// checkCodebaseMemoryFunc is called twice too (once per method), but execCommandFunc is what we count
 	if callCount < 2 {
 		t.Errorf("expected at least 2 exec calls (index + list_projects), got %d", callCount)
 	}

@@ -252,3 +252,40 @@ func TestGlobTool_DefaultMaxResults(t *testing.T) {
 		t.Errorf("expected truncation message for default max_results=200, got: %s", result.Content)
 	}
 }
+
+func TestGlobTool_WorkspaceFallback(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "hello.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := tools.WithWorkspacePath(context.Background(), workspace)
+	tool := NewGlobTool()
+
+	// Call with no path - should use workspace
+	input, _ := json.Marshal(GlobInput{Pattern: "*.txt"})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "hello.txt") {
+		t.Errorf("expected hello.txt in results, got: %s", result.Content)
+	}
+}
+
+func TestGlobTool_NoPathNoWorkspace(t *testing.T) {
+	ctx := context.Background() // no workspace
+	tool := NewGlobTool()
+
+	input, _ := json.Marshal(GlobInput{Pattern: "*.txt"})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error when no path and no workspace")
+	}
+}

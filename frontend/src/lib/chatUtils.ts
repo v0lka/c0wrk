@@ -89,7 +89,7 @@ function reconstructContent(
       const attempt = meta.attempt as number | undefined
       const maxAttempts = meta.max_attempts as number | undefined
       if (attempt !== undefined && maxAttempts !== undefined) {
-        return `Retrying step (attempt ${attempt}/${maxAttempts})`
+        return `Retrying step ${attempt}/${maxAttempts}...`
       }
       return rawContent
     }
@@ -156,8 +156,10 @@ function buildHistoryId(
       const planStepId = meta.plan_step_id as string | undefined
       const step = meta.step as number | string | undefined
       const callIdx = meta.call_idx as number | string | undefined
-      if (planStepId && step !== undefined) return `tool-${planStepId}-${step}${callIdx !== undefined ? `-${callIdx}` : ''}`
-      if (step !== undefined) return `tool-${step}${callIdx !== undefined ? `-${callIdx}` : ''}`
+      const retryAttempt = meta.retry_attempt as number | undefined
+      const retrySuffix = retryAttempt ? `-r${retryAttempt}` : ''
+      if (planStepId && step !== undefined) return `tool-${planStepId}-${step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
+      if (step !== undefined) return `tool-${step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
       return `history-${dbId}`
     }
     case 'tool_result': {

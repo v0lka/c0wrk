@@ -56,6 +56,7 @@ func (t *DeleteDirectoryTool) Judge(ctx context.Context, input json.RawMessage) 
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, ""
 	}
+	params.Path = resolvePath(ctx, params.Path)
 	return judgeWriteInWorkspace(ctx, params.Path)
 }
 
@@ -65,6 +66,8 @@ func (t *DeleteDirectoryTool) Execute(ctx context.Context, input json.RawMessage
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)
 	}
+
+	params.Path = resolvePath(ctx, params.Path)
 
 	info, err := os.Stat(params.Path)
 	if err != nil {

@@ -343,7 +343,7 @@ func TestParseReflectionResponse_Defaults(t *testing.T) {
 	if reflection.SuggestedAction != "retry" {
 		t.Errorf("expected 'retry' for unknown action, got '%s'", reflection.SuggestedAction)
 	}
-	if reflection.Hypotheses == nil {
-		t.Error("expected non-nil hypotheses slice")
+	if reflection.Hypotheses != nil {
+		t.Error("expected nil hypotheses slice")
 	}
 }

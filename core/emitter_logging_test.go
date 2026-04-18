@@ -34,7 +34,6 @@ func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration) {
 }
 func (s *spyEmitter) AssistantChunk(c string)             { s.record("AssistantChunk", c) }
 func (s *spyEmitter) AssistantDone(c string, in, out int) { s.record("AssistantDone", c, in, out) }
-func (s *spyEmitter) TokensUsed(in, out int, model, family string) { s.record("TokensUsed", in, out, model, family) }
 func (s *spyEmitter) ContextFill(p float64, u, m int, st, id string) {
 	s.record("ContextFill", p, u, m, st, id)
 }
@@ -101,7 +100,6 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"SubAgentComplete", func(e Emitter) { e.SubAgentComplete("s1", true, dur) }, "SubAgentComplete"},
 		{"AssistantChunk", func(e Emitter) { e.AssistantChunk("hi") }, "AssistantChunk"},
 		{"AssistantDone", func(e Emitter) { e.AssistantDone("hi", 10, 20) }, "AssistantDone"},
-		{"TokensUsed", func(e Emitter) { e.TokensUsed(10, 20, "gpt-4o", "openai_flagship") }, "TokensUsed"},
 		{"ContextFill", func(e Emitter) { e.ContextFill(0.5, 500, 1000, "ok", "s1") }, "ContextFill"},
 		{"ContextCompaction", func(e Emitter) { e.ContextCompaction(85.0, 30.0, "s1") }, "ContextCompaction"},
 		{"ExecutorDiagnostic", func(e Emitter) { e.ExecutorDiagnostic(1, "nudge", details) }, "ExecutorDiagnostic"},

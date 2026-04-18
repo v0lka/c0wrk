@@ -20,9 +20,9 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 	// Mock returns 3-step plan with dependencies: step_2 depends on step_1, step_3 depends on step_1
 	mockResponse := `{
 		"steps": [
-			{"id": "step_1", "description": "Initialize project", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash"]},
-			{"id": "step_2", "description": "Create main module", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"]},
-			{"id": "step_3", "description": "Create tests", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"]}
+			{"id": "step_1", "summary": "Initialize project", "description": "Initialize project", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash"]},
+			{"id": "step_2", "summary": "Create main module", "description": "Create main module", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"]},
+			{"id": "step_3", "summary": "Create tests", "description": "Create tests", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["file_write"]}
 		]
 	}`
 
@@ -548,6 +548,21 @@ func TestReplan_WorkspacePathSubstitution(t *testing.T) {
 	}
 	if !strings.Contains(systemPrompt, "/replan/workspace") {
 		t.Error("replan system prompt should contain the workspace path '/replan/workspace'")
+	}
+}
+
+func TestParsePlanResponse_ExtractsSummary(t *testing.T) {
+	p := &Planner{}
+	input := `{"steps": [{"id": "step_1", "summary": "Setup auth module", "description": "What: Create authentication module\nHow: Use JWT tokens\nWhere: auth/\nAcceptance Criteria:\n- Module compiles", "depends_on": [], "parallelizable": false}]}`
+	plan, err := p.parsePlanResponse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].Summary != "Setup auth module" {
+		t.Errorf("expected summary 'Setup auth module', got %q", plan.Steps[0].Summary)
 	}
 }
 

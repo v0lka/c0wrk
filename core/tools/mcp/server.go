@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"sync"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -25,6 +26,7 @@ type ServerConfig struct {
 	Env       map[string]string // stdio: environment variables
 	URL       string            // http: server URL
 	Headers   map[string]string // http: custom headers
+	WorkDir   string            // stdio: working directory for the server process
 }
 
 // Server represents a connection to an external MCP server process.
@@ -104,14 +106,30 @@ func (s *Server) connectStdio(ctx context.Context, cfg ServerConfig) (*mcpclient
 		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
 
+	// Build stdio options (e.g., custom working directory)
+	var opts []transport.StdioOption
+	if cfg.WorkDir != "" {
+		workDir := cfg.WorkDir // capture for closure
+		opts = append(opts, transport.WithCommandFunc(
+			func(cmdCtx context.Context, command string, cmdEnv []string, args []string) (*exec.Cmd, error) {
+				cmd := exec.CommandContext(cmdCtx, command, args...)
+				cmd.Env = cmdEnv
+				cmd.Dir = workDir
+				return cmd, nil
+			},
+		))
+	}
+
 	// Create stdio MCP client
-	client, err := mcpclient.NewStdioMCPClient(cfg.Command, env, cfg.Args...)
+	client, err := mcpclient.NewStdioMCPClientWithOptions(cfg.Command, env, cfg.Args, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stdio MCP client for %s: %w", s.name, err)
 	}
 
 	if err := s.initializeClient(ctx, client); err != nil {
-		_ = client.Close()
+		if closeErr := client.Close(); closeErr != nil {
+			slog.Debug("failed to close MCP client after connection failure", "error", closeErr)
+		}
 		return nil, err
 	}
 
@@ -137,7 +155,9 @@ func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.
 			return client, nil
 		}
 		// Initialization failed, close and try SSE fallback
-		_ = client.Close()
+		if closeErr := client.Close(); closeErr != nil {
+			slog.Debug("failed to close MCP client after connection failure", "error", closeErr)
+		}
 	}
 
 	// Fallback to SSE
@@ -152,7 +172,9 @@ func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.
 	}
 
 	if err := s.initializeClient(ctx, client); err != nil {
-		_ = client.Close()
+		if closeErr := client.Close(); closeErr != nil {
+			slog.Debug("failed to close MCP client after connection failure", "error", closeErr)
+		}
 		return nil, err
 	}
 

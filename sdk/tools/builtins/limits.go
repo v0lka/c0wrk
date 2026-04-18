@@ -91,17 +91,3 @@ func DefaultWebSearchLimits() WebSearchLimits {
 		Timeout:    30 * time.Second,
 	}
 }
-
-// BatchLimits holds configurable limits for the batch tool.
-type BatchLimits struct {
-	MaxConcurrency int // max parallel tool executions
-	MaxResultSize  int // total character budget across results
-}
-
-// DefaultBatchLimits returns the default limits for batch.
-func DefaultBatchLimits() BatchLimits {
-	return BatchLimits{
-		MaxConcurrency: 10,
-		MaxResultSize:  50000,
-	}
-}

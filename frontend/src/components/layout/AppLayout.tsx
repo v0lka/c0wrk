@@ -73,6 +73,14 @@ function useResizeHandle(
         }
       }
 
+      // Defensive: remove any existing handlers before adding new ones
+      if (moveHandlerRef.current) {
+        document.removeEventListener('mousemove', moveHandlerRef.current)
+      }
+      if (upHandlerRef.current) {
+        document.removeEventListener('mouseup', upHandlerRef.current)
+      }
+
       moveHandlerRef.current = onMouseMove
       upHandlerRef.current = onMouseUp
 

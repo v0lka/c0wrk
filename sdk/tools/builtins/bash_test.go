@@ -120,7 +120,6 @@ func TestBashExecTool_ConstructorWithRtkPath(t *testing.T) {
 	}
 }
 
-
 func TestBashExecTool_EchoHello(t *testing.T) {
 	tool := NewBashExecTool(nil)
 

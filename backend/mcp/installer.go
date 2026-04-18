@@ -92,7 +92,11 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 		progress("error")
 		return "", fmt.Errorf("failed to download: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Debug("failed to close file during extraction", "error", closeErr)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		progress("error")
@@ -107,7 +111,9 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	_, err = io.Copy(out, resp.Body)
-	_ = out.Close()
+	if closeErr := out.Close(); closeErr != nil {
+		slog.Debug("failed to close file during extraction", "error", closeErr)
+	}
 	if err != nil {
 		progress("error")
 		return "", fmt.Errorf("failed to save download: %w", err)
@@ -236,7 +242,11 @@ func ExtractZip(src, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = r.Close() }()
+	defer func() {
+		if closeErr := r.Close(); closeErr != nil {
+			slog.Debug("failed to close file during extraction", "error", closeErr)
+		}
+	}()
 
 	for _, f := range r.File {
 		fpath := filepath.Join(dest, f.Name)
@@ -264,13 +274,19 @@ func ExtractZip(src, dest string) error {
 
 		rc, err := f.Open()
 		if err != nil {
-			_ = outFile.Close()
+			if closeErr := outFile.Close(); closeErr != nil {
+				slog.Debug("failed to close file during extraction", "error", closeErr)
+			}
 			return err
 		}
 
 		_, err = io.Copy(outFile, rc)
-		_ = outFile.Close()
-		_ = rc.Close()
+		if closeErr := outFile.Close(); closeErr != nil {
+			slog.Debug("failed to close file during extraction", "error", closeErr)
+		}
+		if closeErr := rc.Close(); closeErr != nil {
+			slog.Debug("failed to close file during extraction", "error", closeErr)
+		}
 
 		if err != nil {
 			return err

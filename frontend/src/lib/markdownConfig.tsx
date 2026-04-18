@@ -2,6 +2,7 @@ import type { Components } from 'react-markdown'
 import { defaultSchema } from 'rehype-sanitize'
 import { cn } from '@/lib/utils'
 import { MermaidBlock } from '@/components/chat/MermaidBlock'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 // Custom sanitize schema that allows highlight.js classes, heading IDs, and link attributes
 export const customSchema = {
@@ -42,7 +43,11 @@ export const markdownComponents: Components = {
 
     // Check for mermaid diagram
     if (match?.[1] === 'mermaid') {
-      return <MermaidBlock code={codeContent} />
+      return (
+        <ErrorBoundary fallback={<div className="text-sm text-muted-foreground">Failed to render diagram</div>}>
+          <MermaidBlock code={codeContent} />
+        </ErrorBoundary>
+      )
     }
 
     return (

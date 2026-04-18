@@ -27,14 +27,9 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
   const [selections, setSelections] = useState<Map<string, Set<string>>>(new Map())
   const [customTexts, setCustomTexts] = useState<Map<string, string>>(new Map())
 
-  const requestId = typeof metadata?.request_id === 'string' ? metadata.request_id : undefined
-  const questions: Array<{
-    id: string
-    question: string
-    options: Array<{ label: string; value: string }>
-    multi_select?: boolean
-    recommended?: string[]
-  }> = Array.isArray(metadata?.questions) ? metadata.questions : []
+  const askMeta = metadata as AskUserPanelMetadata | undefined
+  const requestId = askMeta?.request_id
+  const questions = askMeta?.questions ?? []
 
   const toggleOption = (questionId: string, value: string) => {
     setSelections(prev => {

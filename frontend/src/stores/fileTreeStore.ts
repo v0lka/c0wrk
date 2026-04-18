@@ -157,10 +157,12 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
 
     if (get().projectWorkspacePath !== projectWorkspacePath) return // project changed during refresh
 
-    const newEntries = { ...get().entries }
-    for (const [dir, nodes] of results) {
-      newEntries[dir] = nodes
-    }
-    set({ entries: newEntries })
+    set((state) => {
+      const newEntries = { ...state.entries }
+      for (const [dir, nodes] of results) {
+        newEntries[dir] = nodes
+      }
+      return { entries: newEntries }
+    })
   },
 }))

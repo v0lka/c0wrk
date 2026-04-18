@@ -76,7 +76,7 @@ func (m *Manager) DeleteProject(id string) error {
 		return fmt.Errorf("failed to load project for deletion: %w", err)
 	}
 	if proj == nil {
-		return fmt.Errorf("project not found: %s", id)
+		return fmt.Errorf("project %q not found", id)
 	}
 
 	// Delete from store first (FK cascade handles sessions+messages)

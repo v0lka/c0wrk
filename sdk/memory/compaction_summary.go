@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	sdkagent "github.com/user/agent/sdk/agent"
@@ -12,12 +13,12 @@ import (
 // SummarizationStrategy groups the oldest steps into blocks and uses an LLM
 // to summarize each block into a compact summary message.
 type SummarizationStrategy struct {
-	blockSize            int // number of steps per summary block (default: 10)
-	keepLast             int // number of recent steps to preserve verbatim
-	observationTruncate  int // max chars for observations in summary blocks (default: 500)
-	summarizer           func(ctx context.Context, text string) (string, error)
-	tokenCounter         llm.TokenCounter
-	maxSummarizeTokens   int
+	blockSize           int // number of steps per summary block (default: 10)
+	keepLast            int // number of recent steps to preserve verbatim
+	observationTruncate int // max chars for observations in summary blocks (default: 500)
+	summarizer          func(ctx context.Context, text string) (string, error)
+	tokenCounter        llm.TokenCounter
+	maxSummarizeTokens  int
 }
 
 // NewSummarizationStrategy creates a new SummarizationStrategy.
@@ -92,6 +93,7 @@ func (s *SummarizationStrategy) Compact(ctx context.Context, steps []sdkagent.St
 			var err error
 			summary, err = s.summarizer(ctx, blockText)
 			if err != nil {
+				slog.Error("summary compaction: summarization failed", "error", err)
 				// Fallback to a simple indicator if summarization fails
 				summary = fmt.Sprintf("[Summary of steps %d-%d failed: %v]", i+1, end, err)
 			}

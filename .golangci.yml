@@ -7,6 +7,10 @@ linters:
   exclusions:
     paths:
       - "frontend/node_modules"
+    rules:
+      - linters: [revive]
+        text: "empty-block"
+        path: _test\.go
   enable:
     # Core: bug detection
     - errcheck

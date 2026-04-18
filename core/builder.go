@@ -19,7 +19,6 @@ import (
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	sdkmemory "github.com/user/agent/sdk/memory"
-	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/prompt"
 	"github.com/user/agent/sdk/tools/builtins"
 )
@@ -59,6 +58,8 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 	mcpCfg := configToGatewayConfig(cfg)
 	gw, err := mcp.StartGateway(context.Background(), mcpCfg, b.registry, cfg.ExpandEnvVars, logger)
 	if err != nil {
+		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable
+		// but the orchestrator can still operate with built-in tools.
 		slog.Warn("MCP gateway startup failed", "error", err)
 	}
 	b.gateway = gw
@@ -82,7 +83,8 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 	return b, nil
 }
 
-// ToolRegistry returns the shared tool registry.
+// ToolRegistry returns the shared tool registry. The registry is set once during
+// NewOrchestratorBuilder and never reassigned, so no lock is needed.
 func (b *OrchestratorBuilder) ToolRegistry() *tools.ToolRegistry {
 	return b.registry
 }
@@ -117,12 +119,25 @@ func (b *OrchestratorBuilder) Build(
 		return nil, errors.New("no active LLM provider configured - check your config.yaml")
 	}
 
+	// Create session-level UsageTracker and TrackingCaller
+	usageTracker := llm.NewUsageTracker()
+	trackingCaller := llm.NewTrackingCaller(router, usageTracker)
+
+	// Register emitter as observer for session token events and persistence
+	if te, ok := emitter.(interface {
+		EmitSessionTokens(totalIn, totalOut int, model, family string)
+	}); ok {
+		usageTracker.AddObserver(func(_ llm.TokenUsage, totalIn, totalOut int, model, family string) {
+			te.EmitSessionTokens(totalIn, totalOut, model, family)
+		})
+	}
+
 	// Build context factory
 	contextFactory := b.buildContextFactory(router, cfg, dumpWriter)
 
-	// Build core agents (router, planner, reflector) with token tracking
+	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, planner, reflector := b.buildCoreAgents(router, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter)
+	coreRouter, planner, reflector := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter)
 	if coreRouter == nil || planner == nil {
 		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
 	}
@@ -135,8 +150,6 @@ func (b *OrchestratorBuilder) Build(
 		MaxRetries:                cfg.Executor.MaxRetries,
 		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
-		SimpleComplexityThreshold: cfg.Orchestration.SimpleComplexityThreshold,
-		SimpleMaxSteps:            cfg.Orchestration.SimpleMaxSteps,
 		StepLimitFunc:             stepLimitFunc,
 	}
 
@@ -146,10 +159,10 @@ func (b *OrchestratorBuilder) Build(
 		MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
 	}
 	circuitBreaker := CircuitBreakerConfig{
-		RepeatNudgeThreshold:     cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,
-		RepeatAbortThreshold:     cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
-		TruncationAbortThreshold: cfg.Executor.CircuitBreaker.TruncationAbortThreshold,
-		ParseErrorAbortThreshold: cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold,
+		RepeatNudgeThreshold:         cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,
+		RepeatAbortThreshold:         cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
+		TruncationAbortThreshold:     cfg.Executor.CircuitBreaker.TruncationAbortThreshold,
+		ParseErrorAbortThreshold:     cfg.Executor.CircuitBreaker.ParseErrorAbortThreshold,
 		FruitlessNudgeThreshold:      cfg.Executor.CircuitBreaker.FruitlessNudgeThreshold,
 		FruitlessAbortThreshold:      cfg.Executor.CircuitBreaker.FruitlessAbortThreshold,
 		FruitlessMaxResultLen:        cfg.Executor.CircuitBreaker.FruitlessMaxResultLen,
@@ -158,8 +171,8 @@ func (b *OrchestratorBuilder) Build(
 		SameToolResultSizeDelta:      cfg.Executor.CircuitBreaker.SameToolResultSizeDelta,
 	}
 
-	// Logged LLM caller for step execution
-	loggedLLM := agent.NewLoggingLLMCaller(router, cfg.LLM.ActiveProvider, logger)
+	// Logged LLM caller for step execution (wraps trackingCaller)
+	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.ActiveProvider, logger)
 	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter)
 
 	return NewOrchestrator(
@@ -178,6 +191,7 @@ func (b *OrchestratorBuilder) Build(
 		toolResultBudget,
 		circuitBreaker,
 		bbFactory,
+		trackingCaller,
 	), nil
 }
 
@@ -262,10 +276,10 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		return "", errors.New("LLM router not available")
 	}
 
-	temp := 0.3
+	temp := 1.0
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
-			{Role: "system", Content: "Generate a concise title (3-7 words) for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."},
+			{Role: "system", Content: "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."},
 			{Role: "user", Content: userMessage},
 		},
 		MaxTokens:   30,
@@ -323,6 +337,17 @@ func (b *OrchestratorBuilder) StopGateway() error {
 	return nil
 }
 
+// SetMCPWorkDir updates the default working directory for MCP stdio server processes.
+// New or restarted MCP servers will use this directory as their cwd.
+func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
+	b.mu.RLock()
+	gw := b.gateway
+	b.mu.RUnlock()
+	if gw != nil {
+		gw.SetDefaultWorkDir(path)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -369,9 +394,9 @@ func (b *OrchestratorBuilder) buildRouter(cfg *BuilderConfig) (*llm.Router, *llm
 	return router, modelRegistry, nil
 }
 
-// buildCoreAgents creates the core Router, Planner, Reflector with token tracking.
+// buildCoreAgents creates the core Router, Planner, Reflector.
 func (b *OrchestratorBuilder) buildCoreAgents(
-	router *llm.Router,
+	caller agent.LLMCaller,
 	cfg *BuilderConfig,
 	emitter Emitter,
 	logger *slog.Logger,
@@ -380,15 +405,14 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	tokenCounter llm.TokenCounter,
 	dumpWriter io.Writer,
 ) (*Router, *Planner, *Reflector) {
-	if router == nil {
+	if caller == nil {
 		return nil, nil, nil
 	}
-	caller := orchestration.NewTokenTrackingCaller(router, emitter)
-	caller = agent.NewLoggingLLMCaller(caller, cfg.LLM.ActiveProvider, logger)
-	caller = agent.NewDumpCaller(caller, dumpWriter)
-	coreRouter := NewRouter(caller, cfg.Router.HistoryWindow)
-	planner := NewPlanner(caller)
-	reflector := NewReflector(caller)
+	loggedCaller := agent.NewLoggingLLMCaller(caller, cfg.LLM.ActiveProvider, logger)
+	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter)
+	coreRouter := NewRouter(loggedCaller, cfg.Router.HistoryWindow)
+	planner := NewPlanner(loggedCaller)
+	reflector := NewReflector(loggedCaller)
 
 	if modelRegistry != nil {
 		coreRouter.SetModelRegistry(modelRegistry)
@@ -560,10 +584,6 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 			Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 		},
-		BatchLimits: tools.BatchLimits{
-			MaxConcurrency: cfg.ToolLimits.BatchMaxConcurrency,
-			MaxResultSize:  cfg.ToolLimits.BatchMaxResultSize,
-		},
 		BashTimeouts: tools.BashTimeouts{
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
@@ -595,9 +615,13 @@ func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
 			Env:       srv.Env,
 			URL:       srv.URL,
 			Headers:   srv.Headers,
+			WorkDir:   srv.WorkDir,
 		}
 	}
-	return mcp.GatewayConfig{Servers: entries}
+	return mcp.GatewayConfig{
+		Servers:        entries,
+		DefaultWorkDir: cfg.MCP.DefaultWorkDir,
+	}
 }
 
 // ---------------------------------------------------------------------------

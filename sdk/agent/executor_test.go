@@ -16,16 +16,16 @@ import (
 // Note: Fruitless and SameTool thresholds are set high to avoid triggering in typical test scenarios.
 // Production defaults are: FruitlessNudge=5, FruitlessAbort=8, SameToolNudge=8, SameToolAbort=12.
 var defaultCircuitBreakerConfig = CircuitBreakerConfig{
-	RepeatNudgeThreshold:          3,
-	RepeatAbortThreshold:          4,
-	TruncationAbortThreshold:      3,
-	ParseErrorAbortThreshold:      3,
-	FruitlessNudgeThreshold:       50, // high to avoid triggering in tests
-	FruitlessAbortThreshold:       60,
-	FruitlessMaxResultLen:         32,
-	SameToolRepeatNudgeThreshold:  50, // high to avoid triggering in tests
-	SameToolRepeatAbortThreshold:  60,
-	SameToolResultSizeDelta:       64,
+	RepeatNudgeThreshold:         3,
+	RepeatAbortThreshold:         4,
+	TruncationAbortThreshold:     3,
+	ParseErrorAbortThreshold:     3,
+	FruitlessNudgeThreshold:      50, // high to avoid triggering in tests
+	FruitlessAbortThreshold:      60,
+	FruitlessMaxResultLen:        32,
+	SameToolRepeatNudgeThreshold: 50, // high to avoid triggering in tests
+	SameToolRepeatAbortThreshold: 60,
+	SameToolResultSizeDelta:      64,
 }
 
 // --- NewExecutor tests ---
@@ -1461,16 +1461,16 @@ func TestExecutor_Run_FruitlessDetector_Nudge(t *testing.T) {
 	// 5 consecutive tool calls returning minimal results (<= 32 chars) trigger a nudge.
 	// Use custom config with lower thresholds.
 	fruitlessConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       5,
-		FruitlessAbortThreshold:       8,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  50,
-		SameToolRepeatAbortThreshold:  60,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      5,
+		FruitlessAbortThreshold:      8,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 50,
+		SameToolRepeatAbortThreshold: 60,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 5 tool calls with minimal results, then finish
@@ -1519,16 +1519,16 @@ func TestExecutor_Run_FruitlessDetector_Nudge(t *testing.T) {
 func TestExecutor_Run_FruitlessDetector_Abort(t *testing.T) {
 	// 8 consecutive minimal-result calls trigger abort.
 	fruitlessConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       5,
-		FruitlessAbortThreshold:       8,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  50,
-		SameToolRepeatAbortThreshold:  60,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      5,
+		FruitlessAbortThreshold:      8,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 50,
+		SameToolRepeatAbortThreshold: 60,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 8 tool calls with minimal results (should abort at 8)
@@ -1570,16 +1570,16 @@ func TestExecutor_Run_FruitlessDetector_Abort(t *testing.T) {
 func TestExecutor_Run_FruitlessDetector_Reset(t *testing.T) {
 	// After some minimal results, a substantial result (> 32 chars) resets the counter.
 	fruitlessConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       5,
-		FruitlessAbortThreshold:       8,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  50,
-		SameToolRepeatAbortThreshold:  60,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      5,
+		FruitlessAbortThreshold:      8,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 50,
+		SameToolRepeatAbortThreshold: 60,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 3 minimal results -> 1 substantial result -> 4 more minimal results -> finish
@@ -1598,13 +1598,13 @@ func TestExecutor_Run_FruitlessDetector_Reset(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: responses}
 	mockTools := &countingToolExecutor{
 		results: map[int]tools.ToolResult{
-			1: {Content: "no", IsError: false},           // minimal
-			2: {Content: "no", IsError: false},           // minimal
-			3: {Content: "no", IsError: false},           // minimal
+			1: {Content: "no", IsError: false},                     // minimal
+			2: {Content: "no", IsError: false},                     // minimal
+			3: {Content: "no", IsError: false},                     // minimal
 			4: {Content: strings.Repeat("x", 100), IsError: false}, // substantial - resets counter
-			5: {Content: "no", IsError: false},           // minimal
-			6: {Content: "no", IsError: false},           // minimal
-			7: {Content: "no", IsError: false},           // minimal
+			5: {Content: "no", IsError: false},                     // minimal
+			6: {Content: "no", IsError: false},                     // minimal
+			7: {Content: "no", IsError: false},                     // minimal
 		},
 	}
 
@@ -1634,16 +1634,16 @@ func TestExecutor_Run_FruitlessDetector_Reset(t *testing.T) {
 func TestExecutor_Run_FruitlessDetector_IgnoresErrors(t *testing.T) {
 	// Error results (IsError=true) should NOT count toward the fruitless counter.
 	fruitlessConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       5,
-		FruitlessAbortThreshold:       8,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  50,
-		SameToolRepeatAbortThreshold:  60,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      5,
+		FruitlessAbortThreshold:      8,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 50,
+		SameToolRepeatAbortThreshold: 60,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 6 error results -> 4 minimal non-error results -> finish
@@ -1671,10 +1671,10 @@ func TestExecutor_Run_FruitlessDetector_IgnoresErrors(t *testing.T) {
 			4:  {Content: "error", IsError: true},
 			5:  {Content: "error", IsError: true},
 			6:  {Content: "error", IsError: true},
-			7:  {Content: "no", IsError: false},  // minimal non-error
-			8:  {Content: "no", IsError: false},  // minimal non-error
-			9:  {Content: "no", IsError: false},  // minimal non-error
-			10: {Content: "no", IsError: false},  // minimal non-error
+			7:  {Content: "no", IsError: false}, // minimal non-error
+			8:  {Content: "no", IsError: false}, // minimal non-error
+			9:  {Content: "no", IsError: false}, // minimal non-error
+			10: {Content: "no", IsError: false}, // minimal non-error
 		},
 	}
 
@@ -1706,16 +1706,16 @@ func TestExecutor_Run_FruitlessDetector_IgnoresErrors(t *testing.T) {
 func TestExecutor_Run_SameToolRepeat_Nudge(t *testing.T) {
 	// 8 calls to the same tool with different arguments but similar result sizes trigger nudge.
 	sameToolConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       50,
-		FruitlessAbortThreshold:       60,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  8,
-		SameToolRepeatAbortThreshold:  12,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      50,
+		FruitlessAbortThreshold:      60,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 8,
+		SameToolRepeatAbortThreshold: 12,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 8 tool calls with different args but similar result sizes, then finish
@@ -1764,16 +1764,16 @@ func TestExecutor_Run_SameToolRepeat_Nudge(t *testing.T) {
 func TestExecutor_Run_SameToolRepeat_Abort(t *testing.T) {
 	// 12 calls to the same tool with different arguments but similar result sizes trigger abort.
 	sameToolConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       50,
-		FruitlessAbortThreshold:       60,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  8,
-		SameToolRepeatAbortThreshold:  12,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      50,
+		FruitlessAbortThreshold:      60,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 8,
+		SameToolRepeatAbortThreshold: 12,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 12+ tool calls with different args but similar result sizes
@@ -1815,16 +1815,16 @@ func TestExecutor_Run_SameToolRepeat_Abort(t *testing.T) {
 func TestExecutor_Run_SameToolRepeat_ResetOnToolChange(t *testing.T) {
 	// Switching to a different tool resets the counter.
 	sameToolConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       50,
-		FruitlessAbortThreshold:       60,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  8,
-		SameToolRepeatAbortThreshold:  12,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      50,
+		FruitlessAbortThreshold:      60,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 8,
+		SameToolRepeatAbortThreshold: 12,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 5 calls to search -> 1 call to other_tool -> 5 more calls to search -> finish
@@ -1876,16 +1876,16 @@ func TestExecutor_Run_SameToolRepeat_ResetOnToolChange(t *testing.T) {
 func TestExecutor_Run_SameToolRepeat_ResetOnSizeChange(t *testing.T) {
 	// A result with significantly different size (> SameToolResultSizeDelta) resets the counter.
 	sameToolConfig := CircuitBreakerConfig{
-		RepeatNudgeThreshold:          3,
-		RepeatAbortThreshold:          4,
-		TruncationAbortThreshold:      3,
-		ParseErrorAbortThreshold:      3,
-		FruitlessNudgeThreshold:       50,
-		FruitlessAbortThreshold:       60,
-		FruitlessMaxResultLen:         32,
-		SameToolRepeatNudgeThreshold:  8,
-		SameToolRepeatAbortThreshold:  12,
-		SameToolResultSizeDelta:       64,
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      50,
+		FruitlessAbortThreshold:      60,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 8,
+		SameToolRepeatAbortThreshold: 12,
+		SameToolResultSizeDelta:      64,
 	}
 
 	// 5 calls with ~50 char results -> 1 call with 200 char result -> 5 more calls with ~50 char results -> finish

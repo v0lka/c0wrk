@@ -6,11 +6,11 @@ import (
 
 func TestDefaultSampling(t *testing.T) {
 	tests := []struct {
-		name        string
-		family      string
-		wantTemp    *float64 // nil means Temperature should be nil
-		wantTopP    *float64 // nil means TopP should be nil
-		wantMaxTok  bool     // whether MaxTokens should be set
+		name       string
+		family     string
+		wantTemp   *float64 // nil means Temperature should be nil
+		wantTopP   *float64 // nil means TopP should be nil
+		wantMaxTok bool     // whether MaxTokens should be set
 	}{
 		{
 			name:     "anthropic returns all nil (model self-selects)",

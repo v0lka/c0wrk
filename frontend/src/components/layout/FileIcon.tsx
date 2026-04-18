@@ -1,4 +1,3 @@
-import { useMemo } from 'react'
 
 // Nerd Font icon codes and seti color palette
 // We avoid importing @m234/nerd-fonts/fs-collections/seti because it depends on node:path
@@ -147,15 +146,9 @@ interface FileIconProps {
 }
 
 export function FileIcon({ name, isDir, isOpen }: FileIconProps) {
-  const { glyph, color } = useMemo(() => {
-    if (isDir) {
-      return {
-        glyph: isOpen ? FOLDER_OPEN : FOLDER_CLOSED,
-        color: FOLDER_COLOR,
-      }
-    }
-    return getFileIconDef(name)
-  }, [name, isDir, isOpen])
+  const { glyph, color } = isDir
+    ? { glyph: isOpen ? FOLDER_OPEN : FOLDER_CLOSED, color: FOLDER_COLOR }
+    : getFileIconDef(name)
 
   return (
     <span

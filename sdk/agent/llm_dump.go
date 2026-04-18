@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -40,21 +41,30 @@ func NewDumpCaller(inner LLMCaller, w io.Writer) LLMCaller {
 
 // Call delegates to the wrapped LLMCaller, writing request and response entries.
 func (d *dumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	reqJSON, _ := json.Marshal(req)
+	reqJSON, err := json.Marshal(req)
+	if err != nil {
+		slog.Debug("llm dump: failed to marshal request", "error", err)
+	}
 
 	d.mu.Lock()
-	_ = d.enc.Encode(dumpEntry{
+	if err := d.enc.Encode(dumpEntry{
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Direction: "request",
 		Data:      reqJSON,
-	})
+	}); err != nil {
+		slog.Debug("llm dump encode failed", "error", err)
+	}
 	d.mu.Unlock()
 
 	resp, err := d.inner.Call(ctx, req)
 
 	var respJSON json.RawMessage
 	if resp != nil {
-		respJSON, _ = json.Marshal(resp)
+		var marshalErr error
+		respJSON, marshalErr = json.Marshal(resp)
+		if marshalErr != nil {
+			slog.Debug("llm dump: failed to marshal response", "error", marshalErr)
+		}
 	} else {
 		respJSON = json.RawMessage("null")
 	}
@@ -69,7 +79,9 @@ func (d *dumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatRe
 	}
 
 	d.mu.Lock()
-	_ = d.enc.Encode(entry)
+	if err := d.enc.Encode(entry); err != nil {
+		slog.Debug("llm dump encode failed", "error", err)
+	}
 	d.mu.Unlock()
 
 	return resp, err

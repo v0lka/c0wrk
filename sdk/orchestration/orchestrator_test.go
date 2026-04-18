@@ -710,17 +710,17 @@ type mockContextManager struct {
 	taskDefinition string
 }
 
-func (m *mockContextManager) BuildPrompt() []llm.Message             { return nil }
-func (m *mockContextManager) AddStep(_ agent.Step)                   {}
-func (m *mockContextManager) NeedsCompaction() bool                  { return false }
+func (m *mockContextManager) BuildPrompt() []llm.Message                        { return nil }
+func (m *mockContextManager) AddStep(_ agent.Step)                              {}
+func (m *mockContextManager) NeedsCompaction() bool                             { return false }
 func (m *mockContextManager) Compact(_ context.Context) *agent.CompactionResult { return nil }
-func (m *mockContextManager) SetStrategy(_ agent.CompactionStrategy) {}
-func (m *mockContextManager) CheckFill() agent.FillCheck             { return agent.FillCheck{} }
-func (m *mockContextManager) CorrectTokenCount(_ int)                {}
-func (m *mockContextManager) FillPercent() float64                   { return 0 }
-func (m *mockContextManager) AvailableTokens() int                   { return 8000 }
-func (m *mockContextManager) OutputLimit() int                       { return 1000 }
-func (m *mockContextManager) SetTask(task string)                    { m.taskDefinition = task }
+func (m *mockContextManager) SetStrategy(_ agent.CompactionStrategy)            {}
+func (m *mockContextManager) CheckFill() agent.FillCheck                        { return agent.FillCheck{} }
+func (m *mockContextManager) CorrectTokenCount(_ int)                           {}
+func (m *mockContextManager) FillPercent() float64                              { return 0 }
+func (m *mockContextManager) AvailableTokens() int                              { return 8000 }
+func (m *mockContextManager) OutputLimit() int                                  { return 1000 }
+func (m *mockContextManager) SetTask(task string)                               { m.taskDefinition = task }
 
 // TestExecuteAdHocStep_AppendsToBlackboard verifies that ExecuteAdHocStep
 // stores the step result in the Blackboard and the result can be retrieved.
@@ -990,12 +990,12 @@ func TestExecute_ContextCancelled_ReturnsImmediately(t *testing.T) {
 		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
-		LLM: &mockLLMForAdHoc{},
-		Tools: &mockToolExecutor{},
+		LLM:          &mockLLMForAdHoc{},
+		Tools:        &mockToolExecutor{},
 		TokenCounter: llm.NewSimpleTokenCounter(),
-		MaxSteps: 10,
+		MaxSteps:     10,
 		ToolRegistry: tools.NewToolRegistry(),
-		Events: &recordingEvents{},
+		Events:       &recordingEvents{},
 	})
 	// Patch: we only care that the LLM is NOT called.
 	// The planner may or may not be called (planning happens before the

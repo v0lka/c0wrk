@@ -17,6 +17,10 @@ type TokenCounter interface {
 	CountMessages(msgs []Message) int
 }
 
+// estimatedTokensPerChar is the approximate ratio of characters to tokens
+// used for fast token count estimation.
+const estimatedTokensPerChar = 4
+
 // SimpleTokenCounter — approximate token counter using ~4 chars = 1 token rule.
 type SimpleTokenCounter struct{}
 
@@ -28,7 +32,7 @@ func (c *SimpleTokenCounter) Count(text string) int {
 	if text == "" {
 		return 0
 	}
-	return (len(text) + 3) / 4 // ceiling division
+	return (len(text) + estimatedTokensPerChar - 1) / estimatedTokensPerChar // ceiling division
 }
 
 func (c *SimpleTokenCounter) CountMessages(msgs []Message) int {

@@ -61,6 +61,8 @@ func (t *SearchFilesTool) Execute(ctx context.Context, input json.RawMessage) (t
 		return tools.ParseInputError(err)
 	}
 
+	params.Path = resolvePath(ctx, params.Path)
+
 	var matches []string
 
 	err := filepath.Walk(params.Path, func(path string, info os.FileInfo, err error) error {

@@ -4,9 +4,9 @@ import "testing"
 
 func TestResolveReasoning_Anthropic(t *testing.T) {
 	tests := []struct {
-		effort       ReasoningEffort
-		wantEnabled  bool
-		wantBudget   int
+		effort      ReasoningEffort
+		wantEnabled bool
+		wantBudget  int
 	}{
 		{ReasoningMinimal, true, 1024},
 		{ReasoningLow, true, 2000},
@@ -58,9 +58,9 @@ func TestResolveReasoning_OpenAI(t *testing.T) {
 
 func TestResolveReasoning_Gemini(t *testing.T) {
 	tests := []struct {
-		effort          ReasoningEffort
-		wantLevel       string
-		wantBudget      int
+		effort     ReasoningEffort
+		wantLevel  string
+		wantBudget int
 	}{
 		{ReasoningMinimal, "minimal", 0},
 		{ReasoningLow, "low", 2048},
@@ -99,9 +99,9 @@ func TestResolveReasoning_UnsupportedFamily(t *testing.T) {
 
 func TestAgentReasoningMode(t *testing.T) {
 	tests := []struct {
-		role       string
-		base       ReasoningEffort
-		expected   ReasoningEffort
+		role     string
+		base     ReasoningEffort
+		expected ReasoningEffort
 	}{
 		// Primary agents pass through base effort
 		{"orchestrator", ReasoningHigh, ReasoningHigh},

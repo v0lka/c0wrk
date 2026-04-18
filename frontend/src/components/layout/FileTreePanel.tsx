@@ -94,8 +94,9 @@ export function FileTreePanel() {
 
   // Listen for workspace:tree_changed events
   useEffect(() => {
-    if (!window?.runtime) return
-    const cleanup = window.runtime.EventsOn('workspace:tree_changed', () => {
+    const rt = window?.runtime
+    if (!rt) return () => {}
+    const cleanup = rt.EventsOn('workspace:tree_changed', () => {
       refreshVisibleDirs()
     })
     return cleanup

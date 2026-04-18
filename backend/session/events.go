@@ -101,7 +101,7 @@ type JudgeResponsePayload struct {
 
 // AskUserPayload is sent to the frontend when the agent asks the user questions.
 type AskUserPayload struct {
-	RequestID string                     `json:"request_id"`
+	RequestID string                  `json:"request_id"`
 	Questions []tools.AskUserQuestion `json:"questions"`
 }
 

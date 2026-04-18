@@ -3,6 +3,7 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,12 +209,15 @@ func TestWebFetchTool_HTTPError(t *testing.T) {
 }
 
 func TestWebFetchTool_BodySizeLimit(t *testing.T) {
-	// Create a test server that returns large content
-	largeContent := strings.Repeat("x", 3*1024*1024) // 3MB
+	// Create a test server that returns large HTML content.
+	// The raw HTML is 3 MB of repeated paragraphs; after Markdown conversion
+	// the output will still exceed MaxBodySize so truncation must kick in.
+	paragraph := "<p>" + strings.Repeat("x", 1000) + "</p>\n"
+	largeHTML := "<html><body>" + strings.Repeat(paragraph, 3000) + "</body></html>"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(largeContent))
+		_, _ = w.Write([]byte(largeHTML))
 	}))
 	defer server.Close()
 
@@ -229,9 +233,70 @@ func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 		t.Errorf("unexpected error result: %s", result.Content)
 	}
 
-	// Content should be truncated to ~2MB
-	if len(result.Content) > 2300000 { // Allow some overhead for markdown conversion (~2.2MB)
-		t.Errorf("expected content to be truncated to ~2MB, got %d bytes", len(result.Content))
+	maxBody := DefaultWebFetchLimits().MaxBodySize
+	// The result includes the truncation notice appended after MaxBodySize bytes,
+	// so it will be slightly larger than MaxBodySize but not by much.
+	if len(result.Content) > maxBody+200 {
+		t.Errorf("expected content to be truncated near %d bytes, got %d bytes", maxBody, len(result.Content))
+	}
+	if !strings.Contains(result.Content, "...(content truncated to") {
+		t.Error("expected truncation notice in output")
+	}
+}
+
+func TestWebFetchTool_TruncationAppliesToMarkdownNotHTML(t *testing.T) {
+	// Verify that the size limit is applied to the Markdown output, not the raw HTML.
+	// We craft HTML that is large in raw form but produces small Markdown.
+	// If truncation were applied to the raw HTML, the Markdown would be broken/incomplete.
+
+	// Build HTML with lots of attributes but little visible text.
+	// The raw HTML is large (~200 KB) but its Markdown is small (~10 KB).
+	var b strings.Builder
+	b.WriteString("<html><body><article>")
+	for i := range 500 {
+		// Each element adds ~400 bytes of HTML but only a short text line in Markdown.
+		b.WriteString(`<p data-x="` + strings.Repeat("a", 350) + `">`)
+		fmt.Fprintf(&b, "Line %d", i)
+		b.WriteString("</p>\n")
+	}
+	b.WriteString("<p>FINAL-SENTINEL</p>")
+	b.WriteString("</article></body></html>")
+	bigHTML := b.String()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(bigHTML))
+	}))
+	defer server.Close()
+
+	// Use a small MaxBodySize so truncation of raw HTML would be very visible.
+	limits := WebFetchLimits{
+		MaxBodySize: 50 * 1024, // 50 KB
+		Timeout:     DefaultWebFetchLimits().Timeout,
+	}
+	tool := NewWebFetchToolWithLimits(limits)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error result: %s", result.Content)
+	}
+
+	// The sentinel at the end of the HTML must survive because Markdown is small
+	// enough to fit within MaxBodySize. If truncation were on raw HTML, the
+	// sentinel would be lost.
+	if !strings.Contains(result.Content, "FINAL-SENTINEL") {
+		t.Error("expected FINAL-SENTINEL in output — truncation was applied to raw HTML instead of Markdown")
+	}
+
+	// The Markdown output should be well under the limit, so no truncation notice.
+	if strings.Contains(result.Content, "...(content truncated to") {
+		t.Error("did not expect truncation notice — Markdown output should fit within limit")
 	}
 }
 
@@ -360,6 +425,210 @@ func TestWebFetchTool_ReadabilityExtraction(t *testing.T) {
 	}
 	if strings.Contains(result.Content, "Privacy Policy") {
 		t.Errorf("expected footer content to be filtered out, but found 'Privacy Policy' in: %s", result.Content)
+	}
+}
+
+// multiLineServer creates a test server returning HTML with known multi-line markdown output.
+// Each <p> becomes a separate line in markdown.
+func multiLineServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body>
+<p>Line 1</p>
+<p>Line 2</p>
+<p>Line 3</p>
+<p>Line 4</p>
+<p>Line 5</p>
+</body></html>`))
+	}))
+}
+
+func TestWebFetchTool_StartLineEndLine(t *testing.T) {
+	server := multiLineServer()
+	defer server.Close()
+
+	limits := DefaultWebFetchLimits()
+	tool := NewWebFetchToolWithLimits(limits)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]any{"url": server.URL, "start_line": 2, "end_line": 4})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+
+	// Should have a header with line range
+	if !strings.Contains(result.Content, "[Lines 2-4 of") {
+		t.Errorf("expected line range header, got: %s", result.Content)
+	}
+	// Should have continuation hint since we didn't read to end
+	if !strings.Contains(result.Content, "[Use start_line=") {
+		t.Errorf("expected continuation hint, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_StartLineOnly(t *testing.T) {
+	server := multiLineServer()
+	defer server.Close()
+
+	limits := DefaultWebFetchLimits()
+	tool := NewWebFetchToolWithLimits(limits)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]any{"url": server.URL, "start_line": 3})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+
+	// Should start from line 3 to end
+	if !strings.Contains(result.Content, "[Lines 3-") {
+		t.Errorf("expected lines starting from 3, got: %s", result.Content)
+	}
+	// No continuation hint since we read to end
+	if strings.Contains(result.Content, "[Use start_line=") {
+		t.Errorf("expected no continuation hint when reading to end, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_EndLineOnly(t *testing.T) {
+	server := multiLineServer()
+	defer server.Close()
+
+	limits := DefaultWebFetchLimits()
+	tool := NewWebFetchToolWithLimits(limits)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]any{"url": server.URL, "end_line": 3})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+
+	// Should start from line 1 to line 3
+	if !strings.Contains(result.Content, "[Lines 1-3 of") {
+		t.Errorf("expected lines 1-3, got: %s", result.Content)
+	}
+	// Should have continuation hint
+	if !strings.Contains(result.Content, "[Use start_line=4") {
+		t.Errorf("expected continuation hint to line 4, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_LineRangeOutOfBounds(t *testing.T) {
+	server := multiLineServer()
+	defer server.Close()
+
+	limits := DefaultWebFetchLimits()
+	tool := NewWebFetchToolWithLimits(limits)
+	ctx := context.Background()
+
+	// Request lines way beyond actual content
+	input, _ := json.Marshal(map[string]any{"url": server.URL, "start_line": 100, "end_line": 200})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+
+	// Should be clamped — header should show valid range
+	if !strings.Contains(result.Content, "[Lines") {
+		t.Errorf("expected line header, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_TruncationShowsLineCount(t *testing.T) {
+	// Create a server with content that exceeds a small MaxBodySize
+	var b strings.Builder
+	b.WriteString("<html><body>")
+	for i := range 50 {
+		fmt.Fprintf(&b, "<p>Paragraph number %d with some extra text to bulk it up</p>\n", i)
+	}
+	b.WriteString("</body></html>")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(b.String()))
+	}))
+	defer server.Close()
+
+	limits := WebFetchLimits{
+		MaxBodySize: 50,
+		Timeout:     DefaultWebFetchLimits().Timeout,
+	}
+	tool := NewWebFetchToolWithLimits(limits)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+
+	// Should show line count in truncation message
+	if !strings.Contains(result.Content, "lines") {
+		t.Errorf("expected truncation message to include line count, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "start_line/end_line") {
+		t.Errorf("expected truncation message to mention start_line/end_line, got: %s", result.Content)
+	}
+}
+
+func TestWebFetchTool_LineRangeWithTruncation(t *testing.T) {
+	// Create a server with long lines that exceed small MaxBodySize when a range is requested
+	var b strings.Builder
+	b.WriteString("<html><body>")
+	for i := range 10 {
+		fmt.Fprintf(&b, "<p>%s line %d</p>\n", strings.Repeat("abcdefghij", 5), i)
+	}
+	b.WriteString("</body></html>")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(b.String()))
+	}))
+	defer server.Close()
+
+	limits := WebFetchLimits{
+		MaxBodySize: 50,
+		Timeout:     DefaultWebFetchLimits().Timeout,
+	}
+	tool := NewWebFetchToolWithLimits(limits)
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]any{"url": server.URL, "start_line": 1, "end_line": 5})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+
+	// Should have truncation notice within the line range
+	if !strings.Contains(result.Content, "truncated") {
+		t.Errorf("expected truncation notice in line range result, got: %s", result.Content)
+	}
+	// Should still have the header
+	if !strings.Contains(result.Content, "[Lines") {
+		t.Errorf("expected line header, got: %s", result.Content)
 	}
 }
 

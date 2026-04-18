@@ -49,9 +49,11 @@ build: frontend-deps
 
 test:
 	go test ./...
+	cd frontend && npm test
 
 lint:
 	golangci-lint run
+	cd frontend && npm run lint
 
 dev-desktop:
 	cd frontend && npm run dev

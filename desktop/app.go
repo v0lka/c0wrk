@@ -15,11 +15,11 @@ import (
 
 // App holds the Wails application state and exposes methods to the frontend.
 type App struct {
-	ctx     context.Context
-	app     *backend.Application // central ViewModel (owns builder, manager, persister)
-	manager *session.Manager     // convenience alias for app.Manager()
-	db      *sql.DB              // shared SQLite connection
-	store   *session.SQLiteSessionStore
+	ctx        context.Context
+	app        *backend.Application // central ViewModel (owns builder, manager, persister)
+	manager    *session.Manager     // convenience alias for app.Manager()
+	db         *sql.DB              // shared SQLite connection
+	store      *session.SQLiteSessionStore
 	projStore  *project.SQLiteProjectStore
 	config     *config.Config
 	configMu   sync.RWMutex // protects config and config-related state
@@ -40,15 +40,15 @@ type App struct {
 	watcher        *workspace.Watcher
 	projectManager *project.Manager
 
-	projectsDir       string       // ~/.c0wrk/Projects/
-	activeProjectID   string       // currently active project ID
-	activeProjectPath string       // workspace path of active project
-	activeProjectMu       sync.RWMutex // protects activeProjectID/Path and codebaseProjectName
-	codebaseProjectName   string       // resolved codebase-memory-mcp project name for active project
+	projectsDir         string       // ~/.c0wrk/Projects/
+	activeProjectID     string       // currently active project ID
+	activeProjectPath   string       // workspace path of active project
+	activeProjectMu     sync.RWMutex // protects activeProjectID/Path and codebaseProjectName
+	codebaseProjectName string       // resolved codebase-memory-mcp project name for active project
 
 	// Codebase indexing state
 	restoreAutoIndex func()        // called on Shutdown to restore original auto_index value
-	indexingDone     chan struct{}  // closed when indexing completes; nil if not indexing
+	indexingDone     chan struct{} // closed when indexing completes; nil if not indexing
 	indexingMu       sync.Mutex    // protects indexingDone
 }
 
@@ -56,3 +56,4 @@ type App struct {
 func NewApp() *App {
 	return &App{}
 }
+

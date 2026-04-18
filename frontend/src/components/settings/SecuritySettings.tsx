@@ -110,7 +110,18 @@ export function SecuritySettings() {
   const updateSettings = async (newSettings: SecuritySettings) => {
     setSettings(newSettings)
     try {
-      await UpdateSecuritySettings(newSettings as unknown as desktop.SecuritySettingsResponse)
+      const toolPolicies: Record<string, desktop.ToolPolicyResponse> = {}
+      for (const [name, data] of Object.entries(newSettings.tool_policies)) {
+        toolPolicies[name] = new desktop.ToolPolicyResponse({
+          policy: data.policy,
+          blacklist: data.blacklist,
+        })
+      }
+      const request = new desktop.SecuritySettingsResponse({
+        default_policy: newSettings.default_policy,
+        tool_policies: toolPolicies,
+      })
+      await UpdateSecuritySettings(request)
     } catch (error) {
       logger.error('Failed to update security settings:', error)
     }

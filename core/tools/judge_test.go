@@ -311,7 +311,7 @@ func TestTaskContextFrom_EmptyContext(t *testing.T) {
 	}
 }
 
-func TestJudge_InputTruncation(t *testing.T) {
+func TestJudge_FullInputPassedToLLM(t *testing.T) {
 	mockProvider := &mockLLMProvider{
 		response: &llm.ChatResponse{
 			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
@@ -319,7 +319,7 @@ func TestJudge_InputTruncation(t *testing.T) {
 	}
 	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
 
-	// Create a very long input
+	// Create a very long input (3000+ bytes)
 	longInput := make([]byte, 3000)
 	for i := range longInput {
 		longInput[i] = 'a'
@@ -332,14 +332,18 @@ func TestJudge_InputTruncation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify the input was truncated in the request
+	// Verify the full input is passed to the LLM without truncation
 	if mockProvider.lastRequest == nil {
 		t.Fatal("last request was not captured")
 	}
 	for _, msg := range mockProvider.lastRequest.Messages {
 		if msg.Role == "user" {
-			if !contains(msg.Content, "(truncated)") {
-				t.Error("expected truncated input to contain '(truncated)' marker")
+			if contains(msg.Content, "(truncated)") {
+				t.Error("input should not be truncated")
+			}
+			fullInput := string(longInput)
+			if !contains(msg.Content, fullInput) {
+				t.Error("expected LLM request to contain the full untruncated input")
 			}
 			break
 		}

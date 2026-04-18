@@ -927,14 +927,14 @@ func TestPruningSkipsNonToolSteps(t *testing.T) {
 	// Tool-result steps are at indices 0 and 2 (steps 1 and 3)
 	// KeepLastN=1 protects only the last tool-result step (step 3 at index 2)
 	cw.AddStep(makeStep("Thought 1", "Observation 1", 1)) // tool step (will be pruned)
-	cw.AddStep(sdkagent.Step{                              // non-tool step
+	cw.AddStep(sdkagent.Step{                             // non-tool step
 		Thought:     "Thought 2 (no tool)",
 		Action:      llm.ToolCall{}, // Empty action (no ID)
 		Observation: "",
 		TokensUsed:  100,
 	})
 	cw.AddStep(makeStep("Thought 3", "Observation 3", 3)) // tool step (NOT pruned)
-	cw.AddStep(sdkagent.Step{                              // non-tool step
+	cw.AddStep(sdkagent.Step{                             // non-tool step
 		Thought:     "Thought 4 (no tool)",
 		Action:      llm.ToolCall{},
 		Observation: "",

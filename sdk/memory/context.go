@@ -132,6 +132,11 @@ func (cw *ContextWindow) CorrectTokenCount(apiInputTokens int) {
 	cw.tracker.Correct(apiInputTokens)
 }
 
+// Tracker returns the underlying ContextTokenTracker.
+func (cw *ContextWindow) Tracker() *llm.ContextTokenTracker {
+	return cw.tracker
+}
+
 // SetTask sets the task content (user message in prompt).
 // The caller is responsible for formatting the task, including any criteria or context.
 func (cw *ContextWindow) SetTask(task string) {
@@ -197,6 +202,7 @@ func (cw *ContextWindow) BuildPrompt() []llm.Message {
 // invisibleChars is the cutset of trailing invisible characters to trim from message content.
 // Includes: spaces, tabs, newlines, carriage returns, null, zero-width space,
 // zero-width non-joiner, zero-width joiner, and BOM.
+// Contains: ' ', '\t', '\n', '\r', '\x00', U+200B, U+200C, U+200D, U+FEFF.
 const invisibleChars = " \t\n\r\x00\u200b\u200c\u200d\ufeff"
 
 // buildStepMessages returns messages for the step history.

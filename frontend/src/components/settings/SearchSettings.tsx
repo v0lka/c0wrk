@@ -3,6 +3,7 @@ import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { GetConfig, UpdateSearchSettings } from '../../../wailsjs/go/desktop/App'
 import { logger } from '@/lib/logger'
+import { MASKED_API_KEY } from '@/constants/api'
 
 interface SearchConfig {
   provider: string
@@ -40,7 +41,7 @@ export function SearchSettings() {
         if (searchConfig) {
           setConfig(searchConfig)
           // Initialize input with masked value if key exists
-          setApiKeyInput(searchConfig.api_key === '***configured***' ? '' : searchConfig.api_key)
+          setApiKeyInput(searchConfig.api_key === MASKED_API_KEY ? '' : searchConfig.api_key)
         }
       } catch (error) {
         logger.error('Failed to load search config:', error)
@@ -95,9 +96,9 @@ export function SearchSettings() {
 
   const handleApiKeyChange = (value: string) => {
     setApiKeyInput(value)
-    // If user clears the field, send "***configured***" to keep existing
+    // If user clears the field, send MASKED_API_KEY to keep existing
     // Otherwise send the new value
-    const apiKeyToSave = value.trim() === '' ? '***configured***' : value
+    const apiKeyToSave = value.trim() === '' ? MASKED_API_KEY : value
     const newConfig = { ...config, api_key: apiKeyToSave }
     setConfig(newConfig)
     debouncedSave(newConfig)
@@ -106,7 +107,7 @@ export function SearchSettings() {
   const handleApiKeyFocus = () => {
     setIsApiKeyFocused(true)
     // Clear the input when user starts typing (if it was masked)
-    if (config.api_key === '***configured***') {
+    if (config.api_key === MASKED_API_KEY) {
       setApiKeyInput('')
     }
   }
@@ -114,13 +115,13 @@ export function SearchSettings() {
   const handleApiKeyBlur = () => {
     setIsApiKeyFocused(false)
     // If user left field empty and there was a key, revert to masked state
-    if (apiKeyInput.trim() === '' && config.api_key === '***configured***') {
+    if (apiKeyInput.trim() === '' && config.api_key === MASKED_API_KEY) {
       setApiKeyInput('')
     }
   }
 
   const getApiKeyPlaceholder = () => {
-    if (config.api_key === '***configured***' && !isApiKeyFocused) {
+    if (config.api_key === MASKED_API_KEY && !isApiKeyFocused) {
       return '••••••••••••••••'
     }
     return 'Enter API key'
@@ -155,7 +156,7 @@ export function SearchSettings() {
       </div>
 
       {/* Warning if API key not configured */}
-      {config.api_key !== '***configured***' && apiKeyInput.trim() === '' && !NO_API_KEY_PROVIDERS.includes(config.provider) && (
+      {config.api_key !== MASKED_API_KEY && apiKeyInput.trim() === '' && !NO_API_KEY_PROVIDERS.includes(config.provider) && (
         <div className="flex items-start gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm">
           <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
           <p>Search provider API key is not configured. Web search will not function without it.</p>
@@ -178,7 +179,7 @@ export function SearchSettings() {
           />
         </div>
         <p className="text-xs text-muted-foreground">
-          {config.api_key === '***configured***'
+          {config.api_key === MASKED_API_KEY
             ? 'API key is configured. Enter a new value to change it.'
             : 'Enter your API key for the search provider.'}
         </p>

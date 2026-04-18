@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -399,6 +400,7 @@ func (t *FileChangeTracker) SnapshotWorkspace() map[string]fileInfo {
 	snapshot := make(map[string]fileInfo)
 	_ = filepath.WalkDir(t.workspaceRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			slog.Debug("file walk: skipping entry", "path", path, "error", err)
 			return nil //nolint:nilerr // intentionally skip unreadable files/dirs during walk
 		}
 		if d.IsDir() {
@@ -415,10 +417,12 @@ func (t *FileChangeTracker) SnapshotWorkspace() map[string]fileInfo {
 		}
 		rel, err := filepath.Rel(t.workspaceRoot, path)
 		if err != nil {
+			slog.Debug("file walk: skipping entry", "path", path, "error", err)
 			return nil //nolint:nilerr // intentionally skip unreadable files/dirs during walk
 		}
 		info, err := d.Info()
 		if err != nil {
+			slog.Debug("file walk: skipping entry", "path", path, "error", err)
 			return nil //nolint:nilerr // intentionally skip unreadable files/dirs during walk
 		}
 		snapshot[rel] = fileInfo{

@@ -55,6 +55,7 @@ func (t *WriteFileTool) Judge(ctx context.Context, input json.RawMessage) (allow
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, ""
 	}
+	params.Path = resolvePath(ctx, params.Path)
 	return judgeWriteInWorkspace(ctx, params.Path)
 }
 
@@ -64,6 +65,8 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (too
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)
 	}
+
+	params.Path = resolvePath(ctx, params.Path)
 
 	tracker := agent.FileTrackerFromContext(ctx)
 	if tracker != nil {

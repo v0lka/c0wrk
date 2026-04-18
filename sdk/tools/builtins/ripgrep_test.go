@@ -256,3 +256,39 @@ func TestRipgrepTool_LongLineTruncation(t *testing.T) {
 		}
 	}
 }
+
+func TestRipgrepTool_WorkspaceFallback(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "code.go"), []byte("func main() {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := tools.WithWorkspacePath(context.Background(), workspace)
+	tool := NewRipgrepTool()
+
+	input, _ := json.Marshal(RipgrepInput{Pattern: "func main"})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "func main") {
+		t.Errorf("expected 'func main' in results, got: %s", result.Content)
+	}
+}
+
+func TestRipgrepTool_NoPathNoWorkspace(t *testing.T) {
+	ctx := context.Background()
+	tool := NewRipgrepTool()
+
+	input, _ := json.Marshal(RipgrepInput{Pattern: "test"})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error when no path and no workspace")
+	}
+}

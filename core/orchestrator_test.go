@@ -92,6 +92,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
+		nil, // trackingCaller - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -208,6 +209,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
+		nil, // trackingCaller - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -281,6 +283,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
+		nil, // trackingCaller - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "test")
@@ -352,6 +355,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
+		nil, // trackingCaller - nil for tests
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -458,6 +462,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
+		nil, // trackingCaller - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -538,6 +543,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
+		nil, // trackingCaller - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -687,6 +693,7 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run the tests")
@@ -999,6 +1006,7 @@ func TestHandleMessage_Continuation(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	// Set up mock task persistence with a stored task
@@ -1102,6 +1110,7 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	// Set up mock task persistence with a stored task
@@ -1171,6 +1180,7 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 	// Note: taskStore is nil by default
 
@@ -1221,6 +1231,7 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	// Set up mock task persistence that returns nil (task not found)
@@ -1237,115 +1248,6 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "task not found") {
 		t.Errorf("expected 'task not found' error, got: %v", err)
-	}
-}
-
-// TestHandleMessage_SimpleFirstMessage tests the unified ReAct first message flow
-// when the plan is simple (low complexity, few steps, no branching).
-func TestHandleMessage_SimpleFirstMessage(t *testing.T) {
-	callIdx := 0
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			callIdx++
-			switch callIdx {
-			case 1: // Router - returns low complexity (simple)
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"domain": "code", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			case 2: // Planner - returns a single step (simple)
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"steps": [{"id": "step_1", "description": "Write hello world", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			default: // Executor for single step - finish
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Step completed",
-						ToolCalls: []llm.ToolCall{{
-							ID:    "call_1",
-							Name:  "finish",
-							Input: json.RawMessage(`{"answer": "Done"}`),
-						}},
-					},
-					StopReason: "tool_use",
-				}, nil
-			}
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
-
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-	)
-
-	result, err := orchestrator.HandleMessage(context.Background(), "Write a hello world program", "session-test", HandleOptions{})
-	if err != nil {
-		t.Fatalf("HandleMessage failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-
-	// Verify routing decision is present
-	if result.RoutingDecision == nil {
-		t.Error("expected RoutingDecision in result")
-	}
-
-	// Verify output is present
-	if result.Output == "" {
-		t.Error("expected non-empty output")
-	}
-
-	// Verify plan was created with single step
-	if result.Plan == nil {
-		t.Fatal("expected plan in result")
-	}
-
-	if len(result.Plan.Steps) != 1 {
-		t.Errorf("expected 1 step in plan, got %d", len(result.Plan.Steps))
-	}
-
-	// Verify the step ID is "step_1" for first message (unified ReAct)
-	if result.Plan.Steps[0].ID != "step_1" {
-		t.Errorf("expected step ID 'step_1', got %q", result.Plan.Steps[0].ID)
-	}
-
-	// Verify blackboard is present
-	if result.Blackboard == nil {
-		t.Error("expected blackboard in result")
-	}
-
-	// Verify attempt count
-	if result.AttemptCount != 1 {
-		t.Errorf("expected attempt count 1, got %d", result.AttemptCount)
 	}
 }
 
@@ -1412,6 +1314,7 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{})
@@ -1512,6 +1415,7 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	// Set up mock task persistence with a stored task
@@ -1633,6 +1537,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	// Create mock store that tracks ReactivateTask calls
@@ -1750,6 +1655,7 @@ func TestHandleMessage_Clarification(t *testing.T) {
 		ToolResultBudget{},
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
+		nil, // trackingCaller
 	)
 
 	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{})
@@ -1816,155 +1722,4 @@ func TestBuildSystemPrompt_ReactMode(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// planIsSimple / hasBranching helpers
-// ---------------------------------------------------------------------------
 
-func TestPlanIsSimple(t *testing.T) {
-	tests := []struct {
-		name          string
-		plan          *orchestration.Plan
-		complexity    int
-		maxComplexity int
-		maxSteps      int
-		want          bool
-	}{
-		{
-			name: "low complexity, few steps, linear → simple",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "step 1"},
-				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
-			}},
-			complexity:    1,
-			maxComplexity: 2,
-			maxSteps:      2,
-			want:          true,
-		},
-		{
-			name: "single step → simple",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "only step"},
-			}},
-			complexity:    1,
-			maxComplexity: 2,
-			maxSteps:      2,
-			want:          true,
-		},
-		{
-			name: "high complexity → not simple",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "step 1"},
-			}},
-			complexity:    3,
-			maxComplexity: 2,
-			maxSteps:      5,
-			want:          false,
-		},
-		{
-			name: "too many steps → not simple",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "step 1"},
-				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
-				{ID: "s3", Description: "step 3", DependsOn: []string{"s2"}},
-			}},
-			complexity:    1,
-			maxComplexity: 2,
-			maxSteps:      2,
-			want:          false,
-		},
-		{
-			name: "branching (fork) → not simple",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "step 1"},
-				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
-				{ID: "s3", Description: "step 3", DependsOn: []string{"s1"}},
-			}},
-			complexity:    1,
-			maxComplexity: 2,
-			maxSteps:      5,
-			want:          false,
-		},
-		{
-			name:          "empty plan → simple",
-			plan:          &orchestration.Plan{},
-			complexity:    1,
-			maxComplexity: 2,
-			maxSteps:      2,
-			want:          true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := planIsSimple(tc.plan, tc.complexity, tc.maxComplexity, tc.maxSteps)
-			if got != tc.want {
-				t.Errorf("planIsSimple() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestHasBranching(t *testing.T) {
-	tests := []struct {
-		name string
-		plan *orchestration.Plan
-		want bool
-	}{
-		{
-			name: "empty plan → no branching",
-			plan: &orchestration.Plan{},
-			want: false,
-		},
-		{
-			name: "single step → no branching",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "only step"},
-			}},
-			want: false,
-		},
-		{
-			name: "linear chain → no branching",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "step 1"},
-				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
-				{ID: "s3", Description: "step 3", DependsOn: []string{"s2"}},
-			}},
-			want: false,
-		},
-		{
-			name: "parallel roots → branching",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "step 1"},
-				{ID: "s2", Description: "step 2"},
-			}},
-			want: true,
-		},
-		{
-			name: "fork → branching",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "root"},
-				{ID: "s2", Description: "branch A", DependsOn: []string{"s1"}},
-				{ID: "s3", Description: "branch B", DependsOn: []string{"s1"}},
-			}},
-			want: true,
-		},
-		{
-			name: "convergence → branching",
-			plan: &orchestration.Plan{Steps: []orchestration.PlanStep{
-				{ID: "s1", Description: "step 1"},
-				{ID: "s2", Description: "step 2", DependsOn: []string{"s1"}},
-				{ID: "s3", Description: "step 3", DependsOn: []string{"s1", "s2"}},
-			}},
-			want: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := hasBranching(tc.plan)
-			if got != tc.want {
-				t.Errorf("hasBranching() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}

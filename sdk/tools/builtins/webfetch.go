@@ -15,7 +15,12 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. Response bodies are limited to 2MB, requests time out after 30 seconds, and up to 10 redirects are followed.`
+const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. Markdown output is limited to 2MB, requests time out after 30 seconds, and up to 10 redirects are followed. Supports optional start_line/end_line parameters for paginated reading of large pages.`
+
+// rawHTMLSafetyCapMultiplier is applied to MaxBodySize when reading raw HTML
+// as a safety net against absurdly large pages. The real limit is enforced
+// after Markdown conversion.
+const rawHTMLSafetyCapMultiplier = 10
 
 // WebFetchTool fetches web pages and converts HTML to markdown.
 type WebFetchTool struct {
@@ -37,6 +42,14 @@ func NewWebFetchToolWithLimits(limits WebFetchLimits) *WebFetchTool {
 			"url": {
 				"type": "string",
 				"description": "The URL to fetch. Must be an HTTP or HTTPS URL."
+			},
+			"start_line": {
+				"type": "integer",
+				"description": "1-based line number to start reading from. If omitted, content is returned from the beginning."
+			},
+			"end_line": {
+				"type": "integer",
+				"description": "1-based line number to stop reading at (inclusive). If omitted, content is returned until the end (subject to size limits). Values beyond the content length are clamped automatically."
 			}
 		},
 		"required": ["url"]
@@ -63,7 +76,9 @@ func NewWebFetchToolWithLimits(limits WebFetchLimits) *WebFetchTool {
 
 // webFetchInput represents the input parameters for web fetch.
 type webFetchInput struct {
-	URL string `json:"url"`
+	URL       string `json:"url"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 }
 
 // Execute fetches the URL and returns markdown content.
@@ -100,6 +115,57 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ToolResult{Content: fmt.Sprintf("failed to convert HTML to markdown: %v", err), IsError: true}, nil
 	}
 
+	// Split markdown into lines for line-range support and enhanced truncation messages
+	allLines := strings.Split(markdown, "\n")
+	totalLines := len(allLines)
+
+	// Determine if line range was requested
+	if params.StartLine > 0 || params.EndLine > 0 {
+		startLine := params.StartLine
+		endLine := params.EndLine
+
+		if startLine <= 0 {
+			startLine = 1
+		}
+		if endLine <= 0 {
+			endLine = totalLines
+		}
+		if startLine > totalLines {
+			startLine = totalLines
+		}
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+		if startLine < 1 {
+			startLine = 1
+		}
+
+		selectedLines := allLines[startLine-1 : endLine]
+		content := strings.Join(selectedLines, "\n")
+
+		// Check byte limit
+		if t.limits.MaxBodySize > 0 && len(content) > t.limits.MaxBodySize {
+			content = content[:t.limits.MaxBodySize] + "\n\n...(content truncated to configured limit)"
+		}
+
+		// Build header
+		header := fmt.Sprintf("[Lines %d-%d of %d | %d bytes]\n", startLine, endLine, totalLines, len(content))
+
+		// Add continuation hint if more lines remain
+		if endLine < totalLines {
+			content = header + content + fmt.Sprintf("\n[Use start_line=%d to continue reading]", endLine+1)
+		} else {
+			content = header + content
+		}
+
+		return tools.ToolResult{Content: content, IsError: false}, nil
+	}
+
+	// No line range — default behavior with enhanced truncation message
+	if t.limits.MaxBodySize > 0 && len(markdown) > t.limits.MaxBodySize {
+		markdown = markdown[:t.limits.MaxBodySize] + fmt.Sprintf("\n\n...(content truncated to %d bytes; original content has %d lines — use start_line/end_line to read specific sections)", t.limits.MaxBodySize, totalLines)
+	}
+
 	return tools.ToolResult{Content: markdown, IsError: false}, nil
 }
 
@@ -125,10 +191,10 @@ func (t *WebFetchTool) fetchPage(ctx context.Context, targetURL string) (string,
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Limit response body to configured max size
-	limitedReader := io.LimitReader(resp.Body, int64(t.limits.MaxBodySize))
-
-	body, err := io.ReadAll(limitedReader)
+	// Safety cap on raw HTML to protect memory; the real limit is enforced
+	// on the Markdown output after conversion.
+	safetyCap := int64(t.limits.MaxBodySize) * rawHTMLSafetyCapMultiplier
+	body, err := io.ReadAll(io.LimitReader(resp.Body, safetyCap))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
