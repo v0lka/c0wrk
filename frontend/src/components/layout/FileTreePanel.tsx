@@ -81,7 +81,7 @@ export function FileTreePanel() {
 
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const projects = useProjectStore((s) => s.projects)
-  const activeProject = projects.find((p) => p.id === activeProjectId)
+  const activeProject = projects?.find((p) => p.id === activeProjectId)
 
   // React to project changes
   useEffect(() => {

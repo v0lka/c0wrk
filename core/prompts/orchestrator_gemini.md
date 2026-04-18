@@ -26,3 +26,7 @@ Use built-in search tools for precise pattern matching. Fall back to bash_exec o
 ## Depth Over Breadth
 
 Prefer thorough analysis of the most relevant aspects over superficial coverage.
+
+## Tool Call Transparency
+
+When invoking tools, always include accompanying text content that: (1) summarizes key findings from previous tool results, and (2) states what you are about to do and why. Do not issue tool calls without this narrative — maintain a clear, visible chain of reasoning for the user.

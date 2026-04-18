@@ -166,6 +166,9 @@ func convertEnumToStrings(enumVal interface{}) []interface{} {
 }
 
 // SanitizeSchemaForOpenAI ensures strict mode compliance for OpenAI.
+//   - Resolves $ref references against $defs/definitions
+//   - Filters out forbidden JSON Schema keywords ($schema, $id, $comment, $defs, definitions, default, examples)
+//   - Infers "type": "object" when properties or required are present but type is missing
 //   - Adds "additionalProperties": false to all object-type schemas (recursively)
 //   - Ensures the required array contains ALL property names from properties
 //   - Removes required entries that reference non-existent properties
@@ -176,11 +179,11 @@ func SanitizeSchemaForOpenAI(raw json.RawMessage) json.RawMessage {
 
 	var schema map[string]interface{}
 	if err := json.Unmarshal(raw, &schema); err != nil {
-		// If parsing fails, return original unchanged
 		return raw
 	}
 
-	sanitized := sanitizeOpenAISchema(schema)
+	defs := extractDefs(schema)
+	sanitized := sanitizeOpenAISchemaWithDefs(schema, defs)
 	result, err := json.Marshal(sanitized)
 	if err != nil {
 		return raw
@@ -188,26 +191,150 @@ func SanitizeSchemaForOpenAI(raw json.RawMessage) json.RawMessage {
 	return result
 }
 
-// sanitizeOpenAISchema recursively processes a schema map for OpenAI strict mode.
-func sanitizeOpenAISchema(schema map[string]interface{}) map[string]interface{} {
+// extractDefs pulls $defs or definitions from the schema for $ref resolution.
+func extractDefs(schema map[string]interface{}) map[string]interface{} {
+	if d, ok := schema["$defs"].(map[string]interface{}); ok {
+		return d
+	}
+	if d, ok := schema["definitions"].(map[string]interface{}); ok {
+		return d
+	}
+	return nil
+}
+
+// resolveRef replaces a $ref schema with the referenced definition.
+// If the $ref target is not found, returns a safe strict-mode fallback.
+func resolveRef(schema, defs map[string]interface{}) map[string]interface{} {
+	ref, ok := schema["$ref"].(string)
+	if !ok || defs == nil {
+		return schema
+	}
+
+	// Parse JSON Pointer: "#/$defs/Name" or "#/definitions/Name"
+	parts := splitRefPath(ref)
+	if len(parts) == 0 {
+		return safeFallbackSchema()
+	}
+	name := parts[len(parts)-1]
+
+	defRaw, found := defs[name]
+	if !found {
+		return safeFallbackSchema()
+	}
+	defMap, ok := defRaw.(map[string]interface{})
+	if !ok {
+		return safeFallbackSchema()
+	}
+
+	// Return a copy so we don't mutate the definitions
+	cp := make(map[string]interface{}, len(defMap))
+	for k, v := range defMap {
+		cp[k] = v
+	}
+	return cp
+}
+
+// splitRefPath splits a $ref string like "#/$defs/Foo" into path segments after "#".
+func splitRefPath(ref string) []string {
+	// Trim leading "#/"
+	if len(ref) < 2 || ref[0] != '#' {
+		return nil
+	}
+	trimmed := ref[1:]
+	if trimmed != "" && trimmed[0] == '/' {
+		trimmed = trimmed[1:]
+	}
+	if trimmed == "" {
+		return nil
+	}
+
+	// Split on "/"
+	var parts []string
+	start := 0
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] == '/' {
+			if i > start {
+				parts = append(parts, trimmed[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(trimmed) {
+		parts = append(parts, trimmed[start:])
+	}
+	return parts
+}
+
+// safeFallbackSchema returns a minimal strict-mode-compatible object schema.
+func safeFallbackSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{},
+		"required":             []interface{}{},
+		"additionalProperties": false,
+	}
+}
+
+// sanitizeOpenAISchemaWithDefs recursively processes a schema map for OpenAI strict mode,
+// carrying top-level definitions for $ref resolution.
+func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[string]interface{} {
 	if schema == nil {
 		return nil
 	}
 
+	// Resolve $ref before processing
+	schema = resolveRef(schema, defs)
+
+	// Copy keys, filtering out forbidden keywords
 	result := make(map[string]interface{})
-	for k, v := range schema {
-		result[k] = v
+	for key, value := range schema {
+		switch key {
+		case "$schema", "$id", "$comment", "$defs", "definitions", "default", "examples":
+			continue
+		default:
+			result[key] = value
+		}
 	}
 
-	// Get the type(s)
+	// If the resolved schema itself had a $ref (e.g. nested), re-resolve and re-filter
+	if _, hasRef := result["$ref"]; hasRef {
+		resolved := resolveRef(result, defs)
+		result = make(map[string]interface{})
+		for key, value := range resolved {
+			switch key {
+			case "$schema", "$id", "$comment", "$defs", "definitions", "default", "examples":
+				continue
+			default:
+				result[key] = value
+			}
+		}
+	}
+
+	// Infer object type if type is missing/empty but has object indicators
 	typeVal := result["type"]
 	types := getTypes(typeVal)
+	_, hasProperties := result["properties"]
+	_, hasRequired := result["required"]
+
+	if (len(types) == 0 || (len(types) == 1 && types[0] == "")) && (hasProperties || hasRequired) {
+		result["type"] = "object"
+		types = []string{"object"}
+	}
+	// Clean up empty type string
+	if len(types) == 1 && types[0] == "" {
+		delete(result, "type")
+	}
+
 	isObjectType := len(types) == 1 && types[0] == "object"
 
-	// For object types, add additionalProperties: false if not already set
+	// For object types, enforce strict mode constraints
 	if isObjectType {
-		if _, exists := result["additionalProperties"]; !exists {
-			result["additionalProperties"] = false
+		// ALWAYS force additionalProperties to false
+		result["additionalProperties"] = false
+
+		// Ensure properties exists
+		if _, hasProps := result["properties"].(map[string]interface{}); !hasProps {
+			result["properties"] = map[string]interface{}{}
 		}
 
 		// Ensure required array contains ALL property names (strict mode).
@@ -244,8 +371,8 @@ func sanitizeOpenAISchema(schema map[string]interface{}) map[string]interface{} 
 			}
 			result["required"] = allRequired
 		} else {
-			// No properties or empty properties: remove required
-			delete(result, "required")
+			// No properties or empty properties: strict mode still requires the array
+			result["required"] = []interface{}{}
 		}
 	}
 
@@ -254,7 +381,7 @@ func sanitizeOpenAISchema(schema map[string]interface{}) map[string]interface{} 
 		newProps := make(map[string]interface{})
 		for propName, propVal := range props {
 			if propMap, ok := propVal.(map[string]interface{}); ok {
-				newProps[propName] = sanitizeOpenAISchema(propMap)
+				newProps[propName] = sanitizeOpenAISchemaWithDefs(propMap, defs)
 			} else {
 				newProps[propName] = propVal
 			}
@@ -266,13 +393,12 @@ func sanitizeOpenAISchema(schema map[string]interface{}) map[string]interface{} 
 	if items, ok := result["items"]; ok {
 		switch v := items.(type) {
 		case map[string]interface{}:
-			result["items"] = sanitizeOpenAISchema(v)
+			result["items"] = sanitizeOpenAISchemaWithDefs(v, defs)
 		case []interface{}:
-			// Tuple items - process each
 			newItems := make([]interface{}, len(v))
 			for i, item := range v {
 				if itemMap, ok := item.(map[string]interface{}); ok {
-					newItems[i] = sanitizeOpenAISchema(itemMap)
+					newItems[i] = sanitizeOpenAISchemaWithDefs(itemMap, defs)
 				} else {
 					newItems[i] = item
 				}
@@ -287,7 +413,7 @@ func sanitizeOpenAISchema(schema map[string]interface{}) map[string]interface{} 
 			newArr := make([]interface{}, len(arr))
 			for i, item := range arr {
 				if itemMap, ok := item.(map[string]interface{}); ok {
-					newArr[i] = sanitizeOpenAISchema(itemMap)
+					newArr[i] = sanitizeOpenAISchemaWithDefs(itemMap, defs)
 				} else {
 					newArr[i] = item
 				}

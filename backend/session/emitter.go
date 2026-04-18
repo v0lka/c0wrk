@@ -233,15 +233,16 @@ func (e *EventEmitter) Thought(stepNum int, content, reasoning string) {
 // ToolCall emits a tool call event.
 // If argsPreview is valid JSON, a pre-parsed map is included as "parsed_args"
 // so the frontend doesn't need to JSON.parse() at render time.
-func (e *EventEmitter) ToolCall(stepNum int, toolName, argsPreview, source string) {
-	slog.Debug("emitter: tool call", "sessionID", e.sessionID, "tool", toolName, "step", stepNum)
+func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, source string) {
+	slog.Debug("emitter: tool call", "sessionID", e.sessionID, "tool", toolName, "step", stepNum, "callIdx", callIdx)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	data := map[string]any{
-		"step":   stepNum,
-		"tool":   toolName,
-		"args":   argsPreview,
-		"source": source,
+		"step":     stepNum,
+		"call_idx": callIdx,
+		"tool":     toolName,
+		"args":     argsPreview,
+		"source":   source,
 	}
 	// Pre-parse JSON arguments for the frontend
 	if trimmed := strings.TrimSpace(argsPreview); trimmed != "" && trimmed[0] == '{' {
@@ -258,8 +259,8 @@ func (e *EventEmitter) ToolCall(stepNum int, toolName, argsPreview, source strin
 }
 
 // ToolResult emits a tool result event.
-func (e *EventEmitter) ToolResult(stepNum, resultLen int, preview string) {
-	slog.Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "resultLen", resultLen)
+func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string) {
+	slog.Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "callIdx", callIdx, "resultLen", resultLen)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emitEvent(Event{
@@ -267,6 +268,7 @@ func (e *EventEmitter) ToolResult(stepNum, resultLen int, preview string) {
 		Type:      "tool_result",
 		Data: map[string]any{
 			"step":       stepNum,
+			"call_idx":   callIdx,
 			"result_len": resultLen,
 			"result":     preview,
 		},

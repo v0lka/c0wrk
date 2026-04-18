@@ -117,9 +117,11 @@ function ResizeHandle({ onMouseDown, onResize }: ResizeHandleProps) {
 
 export function AppLayout() {
   const sidebar = useResizeHandle(SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, 'left')
-  const hasProjects = useProjectStore(s => s.projects.length > 0)
+  const projects = useProjectStore(s => s.projects)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
-  const showEmptyState = !hasProjects || !activeProjectId
+  const isLoading = projects === null
+  const hasProjects = projects !== null && projects.length > 0
+  const showEmptyState = !isLoading && (!hasProjects || !activeProjectId)
 
   return (
     <div className="h-screen w-screen flex overflow-hidden">

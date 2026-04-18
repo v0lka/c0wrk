@@ -212,8 +212,12 @@ func convertToResponsesTools(tools []ToolDefinition) []responses.ToolUnionParam 
 		if len(tool.InputSchema) > 0 {
 			sanitized := SanitizeSchemaForOpenAI(tool.InputSchema)
 			if err := json.Unmarshal(sanitized, &params); err != nil {
-				// Fallback: use raw schema as generic map
-				_ = json.Unmarshal(tool.InputSchema, &params)
+				params = map[string]any{
+					"type":                 "object",
+					"properties":           map[string]any{},
+					"required":             []any{},
+					"additionalProperties": false,
+				}
 			}
 		}
 		result = append(result, responses.ToolParamOfFunction(

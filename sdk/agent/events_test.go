@@ -14,8 +14,8 @@ func TestNoopEvents_NoPanic(t *testing.T) {
 	// Call every method — none should panic
 	n.StepStart(1)
 	n.Thought(1, "thinking", "reasoning")
-	n.ToolCall(1, "tool", `{"arg":"val"}`, "core")
-	n.ToolResult(1, 42, "preview")
+	n.ToolCall(1, 0, "tool", `{"arg":"val"}`, "core")
+	n.ToolResult(1, 0, 42, "preview")
 	n.StepComplete(1, 100*time.Millisecond)
 	n.SubAgentLaunch("step_1", "do something")
 	n.SubAgentComplete("step_1", true, 200*time.Millisecond)

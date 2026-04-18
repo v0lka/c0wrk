@@ -13,7 +13,7 @@ function sortProjectsByActivity(projects: ProjectInfo[]): ProjectInfo[] {
 }
 
 interface ProjectState {
-  projects: ProjectInfo[]
+  projects: ProjectInfo[] | null  // null = not yet loaded, [] = loaded but empty
   activeProjectId: string | null
   setProjects: (projects: ProjectInfo[]) => void
   addProject: (project: ProjectInfo) => void
@@ -23,20 +23,21 @@ interface ProjectState {
 }
 
 export const useProjectStore = create<ProjectState>((set) => ({
-  projects: [],
+  projects: null,
   activeProjectId: null,
   setProjects: (projects) => set({ projects }),  // backend returns pre-sorted
   addProject: (project) => set((s) => {
-    const updated = [project, ...s.projects]
+    const current = s.projects ?? []
+    const updated = [project, ...current]
     return { projects: sortProjectsByActivity(updated) }
   }),
   removeProject: (id) => set((s) => ({
-    projects: s.projects.filter(p => p.id !== id),
+    projects: (s.projects ?? []).filter(p => p.id !== id),
     activeProjectId: s.activeProjectId === id ? null : s.activeProjectId,
   })),
   setActiveProject: (id) => set({ activeProjectId: id }),
   updateProject: (id, updates) => set((s) => {
-    const updated = s.projects.map(p => p.id === id ? { ...p, ...updates } : p)
+    const updated = (s.projects ?? []).map(p => p.id === id ? { ...p, ...updates } : p)
     return { projects: sortProjectsByActivity(updated) }
   }),
 }))

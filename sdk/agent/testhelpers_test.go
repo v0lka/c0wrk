@@ -205,11 +205,11 @@ func (r *recordingEvents) Thought(stepNum int, content, reasoning string) {
 	r.record(fmt.Sprintf("Thought:%d", stepNum))
 }
 
-func (r *recordingEvents) ToolCall(stepNum int, toolName, argsPreview, source string) {
+func (r *recordingEvents) ToolCall(stepNum, callIdx int, toolName, argsPreview, source string) {
 	r.record(fmt.Sprintf("ToolCall:%d:%s:%s", stepNum, toolName, source))
 }
 
-func (r *recordingEvents) ToolResult(stepNum, resultLen int, preview string) {
+func (r *recordingEvents) ToolResult(stepNum, callIdx, resultLen int, preview string) {
 	r.record(fmt.Sprintf("ToolResult:%d", stepNum))
 }
 

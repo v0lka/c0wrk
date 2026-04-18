@@ -405,7 +405,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		// --- Truncation detection: max_tokens with tool calls ---
 		if resp.StopReason == "max_tokens" && len(resp.Message.ToolCalls) > 0 {
 			truncAction := resp.Message.ToolCalls[0]
-			e.emitter.ToolCall(stepNum, truncAction.Name, string(truncAction.Input), e.tools.GetToolSource(truncAction.Name))
+			e.emitter.ToolCall(stepNum, 0, truncAction.Name, string(truncAction.Input), e.tools.GetToolSource(truncAction.Name))
 
 			e.consecutiveTruncationCount++
 			if e.consecutiveTruncationCount >= e.circuitBreaker.TruncationAbortThreshold {
@@ -428,7 +428,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 			allSteps = append(allSteps, step)
 			cw.AddStep(step)
-			e.emitter.ToolResult(stepNum, len(truncObs), truncObs)
+			e.emitter.ToolResult(stepNum, 0, len(truncObs), truncObs)
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
 			continue
 		}
@@ -451,7 +451,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		for callIdx, action := range toolCalls {
 			// Emit tool call
-			e.emitter.ToolCall(stepNum, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
+			e.emitter.ToolCall(stepNum, callIdx, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
 
 			// --- Circuit breaker: detect repeated identical tool calls ---
 			toolKey := action.Name + ":" + compactJSON(action.Input)
@@ -526,7 +526,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				}
 				allSteps = append(allSteps, step)
 
-				e.emitter.ToolResult(stepNum, len(params.Answer), params.Answer)
+				e.emitter.ToolResult(stepNum, callIdx, len(params.Answer), params.Answer)
 
 				finishResult = &ExecutorResult{
 					Output:   params.Answer,
@@ -662,7 +662,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			observation = e.applyToolResultBudget(observation, cw, action.Name)
 
 			// Emit tool result
-			e.emitter.ToolResult(stepNum, len(observation), observation)
+			e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
 
 			// Create step - only first tool call in the group carries the Thought
 			stepThought := ""

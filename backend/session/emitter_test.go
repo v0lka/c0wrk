@@ -134,7 +134,7 @@ func TestEventEmitterToolCall(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.ToolCall(2, "bash", "ls -la", "core")
+	emitter.ToolCall(2, 0, "bash", "ls -la", "core")
 
 	if received.Type != "tool_call" {
 		t.Errorf("expected type 'tool_call', got %q", received.Type)
@@ -163,7 +163,7 @@ func TestEventEmitterToolResult(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.ToolResult(2, 1024, "preview content")
+	emitter.ToolResult(2, 0, 1024, "preview content")
 
 	if received.Type != "tool_result" {
 		t.Errorf("expected type 'tool_result', got %q", received.Type)
@@ -373,7 +373,7 @@ func TestEventEmitterThreadSafety(t *testing.T) {
 		go func(step int) {
 			defer wg.Done()
 			emitter.StepStart(step)
-			emitter.ToolCall(step, "bash", "echo test", "core")
+			emitter.ToolCall(step, 0, "bash", "echo test", "core")
 			emitter.StepComplete(step, time.Second)
 		}(i)
 	}
@@ -403,8 +403,8 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.PlanGenerated(5, []core.PlanStepEvent{{Description: "Step 1", Status: "pending"}})
 	emitter.StepStart(1)
 	emitter.Thought(1, "I need to think about this", "")
-	emitter.ToolCall(1, "bash", "ls", "core")
-	emitter.ToolResult(1, 100, "")
+	emitter.ToolCall(1, 0, "bash", "ls", "core")
+	emitter.ToolResult(1, 0, 100, "")
 	emitter.StepComplete(1, time.Second)
 	emitter.SubAgentLaunch("step_1", "Do something")
 	emitter.SubAgentComplete("step_1", true, time.Second)

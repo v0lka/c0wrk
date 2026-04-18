@@ -651,6 +651,22 @@ func (a *App) Startup(ctx context.Context) {
 	// Check rtk availability and emit status
 	rtkStatus := a.CheckRtk()
 	wailsRuntime.EventsEmit(a.ctx, "rtk:status", rtkStatus)
+
+	// Signal frontend that all backend subsystems are ready.
+	// Pre-load projects so the frontend doesn't need a separate round-trip.
+	if a.projectManager != nil {
+		projects, err := a.projectManager.ListProjects()
+		if err == nil && len(projects) > 0 {
+			wailsRuntime.EventsEmit(a.ctx, "backend:ready", projects)
+		} else {
+			if err != nil {
+				log.Warn("failed to pre-load projects for backend:ready", "error", err)
+			}
+			wailsRuntime.EventsEmit(a.ctx, "backend:ready")
+		}
+	} else {
+		wailsRuntime.EventsEmit(a.ctx, "backend:ready")
+	}
 }
 
 // Shutdown is called when the Wails app is shutting down.

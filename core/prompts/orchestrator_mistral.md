@@ -17,5 +17,6 @@ Use built-in search tools for code investigation, then bash_exec as a fallback.
 - Always read files before modifying them.
 - Verify command output rather than assuming success.
 - Be concise and action-oriented.
+- Always include brief text with tool calls — summarize findings and state your next move. No silent tool chains.
 
 When finished, use the finish tool with your result.

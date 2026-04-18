@@ -32,3 +32,7 @@ Actively use fact memory tools to maintain continuity across execution steps:
 ## Depth Over Breadth
 
 Prefer thorough analysis of the most relevant aspects over superficial coverage of many. When a task admits multiple approaches, briefly justify your choice.
+
+## Mandatory Tool Call Commentary
+
+**Critical**: You MUST include text content with every tool call — no exceptions. Before each tool invocation, briefly summarize what you have learned from prior results and state what you intend to do next and why. Silent chains of tool calls with no accompanying text are unacceptable. The user must always see your reasoning alongside your actions.

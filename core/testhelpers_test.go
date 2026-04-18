@@ -228,8 +228,8 @@ func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration tim
 }
 func (m *mockEmitter) StepStart(_ int)                                    {}
 func (m *mockEmitter) Thought(_ int, _, _ string)                         {}
-func (m *mockEmitter) ToolCall(_ int, _, _, _ string)                     {}
-func (m *mockEmitter) ToolResult(_, _ int, _ string)                      {}
+func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)              {}
+func (m *mockEmitter) ToolResult(_, _, _ int, _ string)                   {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
 func (m *mockEmitter) SubAgentLaunch(_, _ string)                         {}
 func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}

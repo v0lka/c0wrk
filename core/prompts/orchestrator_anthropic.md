@@ -13,3 +13,7 @@ Use `store_fact` to record key discoveries, decisions, and intermediate results 
 ## Output Style
 
 Be thorough but compact. Prefer depth over breadth in analysis.
+
+## Tool Call Narration
+
+Always accompany tool calls with brief content text. Summarize key findings so far and state your next action. Even when chaining multiple tools, never leave the user without visible reasoning.

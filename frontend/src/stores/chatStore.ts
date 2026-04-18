@@ -81,8 +81,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const stepIdCounts = new Map<string, number>()
   const stepIndexMap = new Map<string, { num: number; title: string }>()
   const toolItemsByStep = new Map<string, DisplayItem & { kind: 'tool' }>()
-  const makeToolKey = (planStepId: string | undefined, step: number | string): string =>
-    `${planStepId ?? ''}:${step}`
+  // Buffer for tool_result messages that arrive before their matching tool_call
+  const pendingResults = new Map<string, { result?: string; resultLen?: number; error?: boolean }>()
+  const makeToolKey = (planStepId: string | undefined, step: number | string, callIdx?: number | string): string =>
+    `${planStepId ?? ''}:${step}${callIdx !== undefined ? `:${callIdx}` : ''}`
 
   const pushItem = (item: DisplayItem, planStepId?: string) => {
     // Check plan step container
@@ -222,7 +224,19 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           source: meta?.source as string | undefined,
         }
         const stepNum = meta?.step as number | string
-        if (stepNum !== undefined) toolItemsByStep.set(makeToolKey(planStepId, stepNum), toolItem)
+        const callIdx = meta?.call_idx as number | undefined
+        if (stepNum !== undefined) {
+          const key = makeToolKey(planStepId, stepNum, callIdx)
+          toolItemsByStep.set(key, toolItem)
+          // Apply any pending result that arrived before this tool_call
+          const pending = pendingResults.get(key)
+          if (pending) {
+            toolItem.result = pending.result
+            toolItem.resultLen = pending.resultLen
+            toolItem.status = pending.error ? 'error' : 'success'
+            pendingResults.delete(key)
+          }
+        }
         pushItem(toolItem, planStepId)
         break
       }
@@ -230,12 +244,21 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       case 'tool_result': {
         const stepNum = meta?.step as number | string
         const resultPlanStepId = meta?.plan_step_id as string | undefined
+        const resultCallIdx = meta?.call_idx as number | undefined
         if (stepNum !== undefined) {
-          const toolItem = toolItemsByStep.get(makeToolKey(resultPlanStepId, stepNum))
+          const key = makeToolKey(resultPlanStepId, stepNum, resultCallIdx)
+          const toolItem = toolItemsByStep.get(key)
           if (toolItem) {
             toolItem.result = (meta?.result as string) ?? (meta?.result_preview as string)
             toolItem.resultLen = meta?.result_len as number
-            toolItem.status = 'success'
+            toolItem.status = (meta?.error === true) ? 'error' : 'success'
+          } else {
+            // tool_call hasn't been processed yet — buffer the result
+            pendingResults.set(key, {
+              result: (meta?.result as string) ?? (meta?.result_preview as string),
+              resultLen: meta?.result_len as number,
+              error: meta?.error === true,
+            })
           }
         }
         break

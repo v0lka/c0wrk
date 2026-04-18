@@ -23,7 +23,7 @@ import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { FileTreePanel } from './FileTreePanel'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
-import type { SessionInfo } from '@/lib/wails'
+import type { SessionInfo, ProjectInfo } from '@/lib/wails'
 import { useSettingsStore } from '@/stores/settingsStore'
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -253,34 +253,60 @@ export function Sidebar() {
   const { sessionsRatio, onMouseDown: onDividerMouseDown } = useVerticalResize(bodyRef)
 
   const activeProject = useMemo(
-    () => projects.find(p => p.id === activeProjectId) ?? null,
+    () => projects?.find(p => p.id === activeProjectId) ?? null,
     [projects, activeProjectId]
   )
 
-  // ── Load projects on mount ──
+  // ── Load projects (extracted so it can be triggered from multiple places) ──
   const projectFetchIdRef = useRef(0)
-  useEffect(() => {
+  const loadProjects = useCallback(async () => {
     const myId = ++projectFetchIdRef.current
-    const load = async () => {
-      try {
-        const list = await projectAPI.listProjects()
-        if (myId !== projectFetchIdRef.current) return // stale response
-        if (list && list.length > 0) {
-          setProjects(list)
-          // Auto-select the most recent project
+    try {
+      const list = await projectAPI.listProjects()
+      if (myId !== projectFetchIdRef.current) return // stale response
+      if (list) {
+        setProjects(list)
+        // Auto-select the most recent project when there are projects
+        if (list.length > 0) {
           const first = list[0]
           if (first) {
             setActiveProject(first.id)
             await projectAPI.switchProject(first.id)
           }
         }
-      } catch (err) {
-        if (myId !== projectFetchIdRef.current) return
-        logger.error('Failed to load projects:', err)
       }
+    } catch (err) {
+      if (myId !== projectFetchIdRef.current) return
+      logger.error('Failed to load projects:', err)
     }
-    load()
   }, [projectAPI, setProjects, setActiveProject])
+
+  // ── Load projects on mount + listen for backend:ready ──
+  useEffect(() => {
+    // Attempt immediately (works if backend is already up)
+    loadProjects()
+
+    // Also listen for the backend readiness event (covers the race where
+    // the component mounts before Go's OnStartup finishes).
+    // The backend may pre-emit project data alongside the event to avoid
+    // an extra round-trip.
+    if (!window?.runtime) return
+    const cancel = window.runtime.EventsOn('backend:ready', (data?: unknown) => {
+      if (Array.isArray(data) && data.length > 0) {
+        // Pre-emitted projects — use directly
+        setProjects(data as ProjectInfo[])
+        const first = data[0] as ProjectInfo
+        if (first) {
+          setActiveProject(first.id)
+          projectAPI.switchProject(first.id)
+        }
+      } else {
+        // No pre-emitted data — fetch manually
+        loadProjects()
+      }
+    })
+    return () => { cancel() }
+  }, [loadProjects, projectAPI, setActiveProject, setProjects])
 
   // ── Load sessions when active project changes ──
   const sessionFetchIdRef = useRef(0)
@@ -350,7 +376,7 @@ export function Sidebar() {
       await projectAPI.deleteProject(id)
       removeProject(id)
       // If we just deleted the active project, pick the next one
-      const remaining = useProjectStore.getState().projects
+      const remaining = useProjectStore.getState().projects ?? []
       if (remaining.length > 0) {
         handleSwitchProject(remaining[0]!.id)
       }
@@ -409,11 +435,11 @@ export function Sidebar() {
   }, [sessionAPI, removeSession])
 
   const [activeSessions, archivedSessions] = useMemo(() => [
-    sessions.filter(s => !s.archived),
-    sessions.filter(s => s.archived),
+    (sessions ?? []).filter(s => !s.archived),
+    (sessions ?? []).filter(s => s.archived),
   ], [sessions])
 
-  const hasProject = projects.length > 0 && activeProjectId
+  const hasProject = (projects?.length ?? 0) > 0 && activeProjectId
 
   // ── Render ──
 
@@ -432,7 +458,7 @@ export function Sidebar() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56">
-              {projects.map(p => (
+              {(projects ?? []).map(p => (
                 <DropdownMenuItem key={p.id} className="justify-between" onClick={() => handleSwitchProject(p.id)}>
                   <span className="truncate">{p.name}</span>
                   <div className="flex items-center gap-1 flex-shrink-0 ml-2">
@@ -599,6 +625,9 @@ export function Sidebar() {
             <FileTreePanel />
           </div>
         </div>
+      ) : projects === null ? (
+        /* ═══ Projects still loading — show nothing ═══ */
+        <div className="flex-1" />
       ) : (
         /* ═══ No-project empty state in sidebar ═══ */
         <div className="flex-1 flex items-center justify-center p-4">

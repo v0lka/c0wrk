@@ -12,7 +12,7 @@ export function StatusBar() {
   const isThinking = useChatStore(s => s.isThinking)
   const stats = usePanelStore(s => s.sessionStats)
 
-  const activeSession = sessions.find(s => s.id === activeSessionId)
+  const activeSession = sessions?.find(s => s.id === activeSessionId)
   const domainLabel = stats.routingDomain || 'idle'
 
   return (

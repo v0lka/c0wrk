@@ -56,14 +56,14 @@ func (l *loggingEmitter) Thought(stepNum int, content, reasoning string) {
 	l.inner.Thought(stepNum, content, reasoning)
 }
 
-func (l *loggingEmitter) ToolCall(stepNum int, toolName, argsPreview, source string) {
-	l.logger.Debug("executor: tool call", "stepNum", stepNum, "tool", toolName, "source", source)
-	l.inner.ToolCall(stepNum, toolName, argsPreview, source)
+func (l *loggingEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, source string) {
+	l.logger.Debug("executor: tool call", "stepNum", stepNum, "callIdx", callIdx, "tool", toolName, "source", source)
+	l.inner.ToolCall(stepNum, callIdx, toolName, argsPreview, source)
 }
 
-func (l *loggingEmitter) ToolResult(stepNum, resultLen int, preview string) {
-	l.logger.Debug("executor: tool result", "stepNum", stepNum, "resultLen", resultLen)
-	l.inner.ToolResult(stepNum, resultLen, preview)
+func (l *loggingEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string) {
+	l.logger.Debug("executor: tool result", "stepNum", stepNum, "callIdx", callIdx, "resultLen", resultLen)
+	l.inner.ToolResult(stepNum, callIdx, resultLen, preview)
 }
 
 func (l *loggingEmitter) StepComplete(stepNum int, duration time.Duration) {

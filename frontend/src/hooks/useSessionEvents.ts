@@ -175,15 +175,16 @@ export function useSessionEvents(sessionId: string | null) {
       const toolCall = data
       const isMemoryTool = ['read_evidence', 'read_step_output', 'list_step_outputs'].includes(toolCall.tool)
       if (isActiveSession()) useChatStore.getState().setActivityStatus(isMemoryTool ? 'Reading memory...' : `Running tool: ${toolCall.tool}...`)
+      const callIdx = toolCall.call_idx
       const toolMsgId = toolCall.plan_step_id
-        ? `tool-${toolCall.plan_step_id}-${toolCall.step}`
-        : `tool-${toolCall.step}`
+        ? `tool-${toolCall.plan_step_id}-${toolCall.step}${callIdx !== undefined ? `-${callIdx}` : ''}`
+        : `tool-${toolCall.step}${callIdx !== undefined ? `-${callIdx}` : ''}`
       useChatStore.getState().addMessage(sessionId, {
         id: toolMsgId,
         sessionId,
         type: 'tool_call',
         content: `${toolCall.tool}(${toolCall.args})`,
-        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id, source: toolCall.source },
+        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id, source: toolCall.source, call_idx: toolCall.call_idx },
         timestamp: Date.now(),
       })
     })
@@ -192,19 +193,44 @@ export function useSessionEvents(sessionId: string | null) {
       if (!mounted) return
       if (!isToolResultData(data)) return
       const toolResult = data
+      const resultCallIdx = toolResult.call_idx
       const toolMsgId = toolResult.plan_step_id
-        ? `tool-${toolResult.plan_step_id}-${toolResult.step}`
-        : `tool-${toolResult.step}`
-      useChatStore.getState().updateMessage(sessionId, toolMsgId, {
-        metadata: {
-          step: toolResult.step,
-          completed: true,
-          result: toolResult.result ?? toolResult.result_preview,
-          result_preview: toolResult.result_preview,
-          result_len: toolResult.result_len,
-          plan_step_id: toolResult.plan_step_id,
-        },
-      })
+        ? `tool-${toolResult.plan_step_id}-${toolResult.step}${resultCallIdx !== undefined ? `-${resultCallIdx}` : ''}`
+        : `tool-${toolResult.step}${resultCallIdx !== undefined ? `-${resultCallIdx}` : ''}`
+      // Try to update the existing tool_call message
+      const msgs = useChatStore.getState().messages[sessionId] || []
+      const exists = msgs.some(m => m.id === toolMsgId)
+      if (exists) {
+        useChatStore.getState().updateMessage(sessionId, toolMsgId, {
+          metadata: {
+            step: toolResult.step,
+            completed: true,
+            result: toolResult.result ?? toolResult.result_preview,
+            result_preview: toolResult.result_preview,
+            result_len: toolResult.result_len,
+            plan_step_id: toolResult.plan_step_id,
+            call_idx: toolResult.call_idx,
+          },
+        })
+      } else {
+        // tool_call message hasn't arrived yet — add as tool_result so groupMessages can buffer it
+        useChatStore.getState().addMessage(sessionId, {
+          id: `tool-result-${toolMsgId}`,
+          sessionId,
+          type: 'tool_result',
+          content: '',
+          metadata: {
+            step: toolResult.step,
+            completed: true,
+            result: toolResult.result ?? toolResult.result_preview,
+            result_preview: toolResult.result_preview,
+            result_len: toolResult.result_len,
+            plan_step_id: toolResult.plan_step_id,
+            call_idx: toolResult.call_idx,
+          },
+          timestamp: Date.now(),
+        })
+      }
     })
 
     on('tool_confirm', (data: unknown) => {

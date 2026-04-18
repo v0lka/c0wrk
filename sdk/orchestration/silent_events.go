@@ -38,8 +38,8 @@ func (s *silentPlanEvents) OnFileRollbackError(id string, err error) {
 
 func (s *silentPlanEvents) StepStart(n int)                                    { s.inner.StepStart(n) }
 func (s *silentPlanEvents) Thought(n int, c, r string)                         { s.inner.Thought(n, c, r) }
-func (s *silentPlanEvents) ToolCall(n int, name, args, src string)             { s.inner.ToolCall(n, name, args, src) }
-func (s *silentPlanEvents) ToolResult(n, l int, p string)                      { s.inner.ToolResult(n, l, p) }
+func (s *silentPlanEvents) ToolCall(n, ci int, name, args, src string)  { s.inner.ToolCall(n, ci, name, args, src) }
+func (s *silentPlanEvents) ToolResult(n, ci, l int, p string)              { s.inner.ToolResult(n, ci, l, p) }
 func (s *silentPlanEvents) StepComplete(n int, d time.Duration)                { s.inner.StepComplete(n, d) }
 func (s *silentPlanEvents) SubAgentLaunch(id, desc string)                     { s.inner.SubAgentLaunch(id, desc) }
 func (s *silentPlanEvents) SubAgentComplete(id string, ok bool, d time.Duration) {

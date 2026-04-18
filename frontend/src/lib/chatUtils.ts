@@ -155,8 +155,9 @@ function buildHistoryId(
     case 'tool_call': {
       const planStepId = meta.plan_step_id as string | undefined
       const step = meta.step as number | string | undefined
-      if (planStepId && step !== undefined) return `tool-${planStepId}-${step}`
-      if (step !== undefined) return `tool-${step}`
+      const callIdx = meta.call_idx as number | string | undefined
+      if (planStepId && step !== undefined) return `tool-${planStepId}-${step}${callIdx !== undefined ? `-${callIdx}` : ''}`
+      if (step !== undefined) return `tool-${step}${callIdx !== undefined ? `-${callIdx}` : ''}`
       return `history-${dbId}`
     }
     case 'tool_result': {

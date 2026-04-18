@@ -13,7 +13,7 @@ function sortSessionsByActivity(sessions: SessionInfo[]): SessionInfo[] {
 }
 
 interface SessionState {
-  sessions: SessionInfo[]
+  sessions: SessionInfo[] | null  // null = not yet loaded, [] = loaded but empty
   activeSessionId: string | null
   setSessions: (sessions: SessionInfo[]) => void
   addSession: (session: SessionInfo) => void
@@ -24,25 +24,26 @@ interface SessionState {
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
-  sessions: [],
+  sessions: null,
   activeSessionId: null,
   setSessions: (sessions) => set({ sessions }),  // backend returns pre-sorted
   addSession: (session) => set((s) => {
-    const updated = [session, ...s.sessions]
+    const current = s.sessions ?? []
+    const updated = [session, ...current]
     return { sessions: sortSessionsByActivity(updated) }
   }),
   removeSession: (id) => set((s) => ({
-    sessions: s.sessions.filter(sess => sess.id !== id),
+    sessions: (s.sessions ?? []).filter(sess => sess.id !== id),
     activeSessionId: s.activeSessionId === id ? null : s.activeSessionId,
   })),
   setActiveSession: (id) => set({ activeSessionId: id }),
   updateSession: (id, updates) => set((s) => {
-    const updated = s.sessions.map(sess => sess.id === id ? { ...sess, ...updates } : sess)
+    const updated = (s.sessions ?? []).map(sess => sess.id === id ? { ...sess, ...updates } : sess)
     return { sessions: sortSessionsByActivity(updated) }
   }),
   touchSession: (id) => set((s) => {
     const now = new Date().toISOString()
-    const updated = s.sessions.map(sess => 
+    const updated = (s.sessions ?? []).map(sess => 
       sess.id === id ? { ...sess, last_active_at: now } : sess
     )
     return { sessions: sortSessionsByActivity(updated) }

@@ -295,7 +295,7 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 	})
 
-	t.Run("OpenAIPreservesExistingAdditionalProperties", func(t *testing.T) {
+	t.Run("OpenAIForcesAdditionalPropertiesFalse", func(t *testing.T) {
 		schema := json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -312,8 +312,8 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 
 		additionalProps := parsed["additionalProperties"]
-		if additionalProps != true {
-			t.Errorf("additionalProperties = %v, expected true (should be preserved)", additionalProps)
+		if additionalProps != false {
+			t.Errorf("additionalProperties = %v, expected false (strict mode forces false)", additionalProps)
 		}
 	})
 
@@ -621,6 +621,57 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		}
 	})
 
+	t.Run("OpenAIEmptyRequiredForObjectWithoutProperties", func(t *testing.T) {
+		schema := json.RawMessage(`{"type": "object"}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should exist as an empty array for objects without properties")
+		}
+		if len(required) != 0 {
+			t.Errorf("required should be empty, got %v", required)
+		}
+		if parsed["additionalProperties"] != false {
+			t.Error("additionalProperties should be false")
+		}
+		props, ok := parsed["properties"].(map[string]interface{})
+		if !ok {
+			t.Fatal("properties should exist as an empty map for objects without properties")
+		}
+		if len(props) != 0 {
+			t.Errorf("properties should be empty, got %v", props)
+		}
+	})
+
+	t.Run("OpenAIEmptyRequiredForObjectWithEmptyProperties", func(t *testing.T) {
+		schema := json.RawMessage(`{"type": "object", "properties": {}}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should exist as an empty array for objects with empty properties")
+		}
+		if len(required) != 0 {
+			t.Errorf("required should be empty, got %v", required)
+		}
+		if parsed["additionalProperties"] != false {
+			t.Error("additionalProperties should be false")
+		}
+	})
+
 	t.Run("OpenAIHandlesAnyOfOneOfAllOf", func(t *testing.T) {
 		schema := json.RawMessage(`{
 			"anyOf": [
@@ -660,6 +711,380 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 		oneOfObj := oneOf[0].(map[string]interface{})                 //nolint:errcheck // test: schema structure is known
 		if oneOfObj["additionalProperties"] != false {
 			t.Error("oneOf object should have additionalProperties: false")
+		}
+	})
+
+	t.Run("OpenAIInfersObjectTypeFromProperties", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"properties": {
+				"name": {"type": "string"},
+				"age": {"type": "integer"}
+			},
+			"required": ["name"]
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		if parsed["type"] != "object" {
+			t.Errorf("type = %v, expected 'object' (inferred from properties)", parsed["type"])
+		}
+		if parsed["additionalProperties"] != false {
+			t.Error("additionalProperties should be false")
+		}
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should exist")
+		}
+		if len(required) != 2 || required[0] != "age" || required[1] != "name" {
+			t.Errorf("required = %v, expected [age, name]", required)
+		}
+		if _, ok := parsed["properties"].(map[string]interface{}); !ok {
+			t.Fatal("properties should be preserved")
+		}
+	})
+
+	t.Run("OpenAIInfersObjectTypeFromEmptyType", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "",
+			"properties": {
+				"traces": {"type": "array", "items": {"type": "string"}}
+			},
+			"required": ["traces"]
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		if parsed["type"] != "object" {
+			t.Errorf("type = %v, expected 'object' (inferred from empty type with properties)", parsed["type"])
+		}
+		if parsed["additionalProperties"] != false {
+			t.Error("additionalProperties should be false")
+		}
+		required, ok := parsed["required"].([]interface{})
+		if !ok {
+			t.Fatal("required should exist")
+		}
+		if len(required) != 1 || required[0] != "traces" {
+			t.Errorf("required = %v, expected [traces]", required)
+		}
+	})
+
+	t.Run("OpenAIResolvesRefFromDefs", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"trace": {"$ref": "#/$defs/Trace"}
+			},
+			"$defs": {
+				"Trace": {
+					"type": "object",
+					"properties": {
+						"name": {"type": "string"},
+						"duration": {"type": "number"}
+					}
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		// Root assertions
+		if parsed["additionalProperties"] != false {
+			t.Error("root should have additionalProperties: false")
+		}
+		rootReq, ok := parsed["required"].([]interface{})
+		if !ok || len(rootReq) != 1 || rootReq[0] != "trace" {
+			t.Errorf("root required = %v, expected [trace]", rootReq)
+		}
+
+		// $defs should be removed
+		if _, exists := parsed["$defs"]; exists {
+			t.Error("$defs should be removed from output")
+		}
+
+		// trace property should be resolved
+		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
+		trace := props["trace"].(map[string]interface{})           //nolint:errcheck // test: schema structure is known
+		if _, exists := trace["$ref"]; exists {
+			t.Error("$ref should be resolved, not present")
+		}
+		if trace["type"] != "object" {
+			t.Errorf("trace.type = %v, expected 'object'", trace["type"])
+		}
+		if trace["additionalProperties"] != false {
+			t.Error("trace should have additionalProperties: false")
+		}
+		traceReq, ok := trace["required"].([]interface{})
+		if !ok || len(traceReq) != 2 {
+			t.Fatalf("trace.required should have 2 elements, got %v", traceReq)
+		}
+		if traceReq[0] != "duration" || traceReq[1] != "name" {
+			t.Errorf("trace.required = %v, expected [duration, name]", traceReq)
+		}
+	})
+
+	t.Run("OpenAIResolvesRefFromDefinitions", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"item": {"$ref": "#/definitions/Item"}
+			},
+			"definitions": {
+				"Item": {
+					"type": "object",
+					"properties": {
+						"id": {"type": "string"}
+					}
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		if _, exists := parsed["definitions"]; exists {
+			t.Error("definitions should be removed from output")
+		}
+
+		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
+		item := props["item"].(map[string]interface{})             //nolint:errcheck // test: schema structure is known
+		if item["type"] != "object" {
+			t.Errorf("item.type = %v, expected 'object'", item["type"])
+		}
+		if item["additionalProperties"] != false {
+			t.Error("item should have additionalProperties: false")
+		}
+		itemReq, ok := item["required"].([]interface{})
+		if !ok || len(itemReq) != 1 || itemReq[0] != "id" {
+			t.Errorf("item.required = %v, expected [id]", itemReq)
+		}
+	})
+
+	t.Run("OpenAIHandlesUnresolvableRef", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"data": {"$ref": "#/$defs/NonExistent"}
+			},
+			"$defs": {}
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		if _, exists := parsed["$defs"]; exists {
+			t.Error("$defs should be removed from output")
+		}
+
+		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
+		data := props["data"].(map[string]interface{})             //nolint:errcheck // test: schema structure is known
+		if data["type"] != "object" {
+			t.Errorf("data.type = %v, expected 'object' (safe fallback)", data["type"])
+		}
+		dataProps, ok := data["properties"].(map[string]interface{})
+		if !ok {
+			t.Fatal("data.properties should exist")
+		}
+		if len(dataProps) != 0 {
+			t.Errorf("data.properties should be empty, got %v", dataProps)
+		}
+		dataReq, ok := data["required"].([]interface{})
+		if !ok || len(dataReq) != 0 {
+			t.Errorf("data.required should be empty array, got %v", dataReq)
+		}
+		if data["additionalProperties"] != false {
+			t.Error("data should have additionalProperties: false")
+		}
+	})
+
+	t.Run("OpenAIRemovesForbiddenKeywords", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"$schema": "http://json-schema.org/draft-07/schema#",
+			"$id": "test-schema",
+			"$comment": "a comment",
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"default": "unnamed",
+					"examples": ["foo", "bar"]
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		for _, key := range []string{"$schema", "$id", "$comment"} {
+			if _, exists := parsed[key]; exists {
+				t.Errorf("root key %q should be removed", key)
+			}
+		}
+
+		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
+		name := props["name"].(map[string]interface{})             //nolint:errcheck // test: schema structure is known
+		if _, exists := name["default"]; exists {
+			t.Error("properties.name should not have 'default'")
+		}
+		if _, exists := name["examples"]; exists {
+			t.Error("properties.name should not have 'examples'")
+		}
+
+		if parsed["type"] != "object" {
+			t.Errorf("type should be 'object', got %v", parsed["type"])
+		}
+		if parsed["additionalProperties"] != false {
+			t.Error("additionalProperties should be false")
+		}
+		required, ok := parsed["required"].([]interface{})
+		if !ok || len(required) != 1 || required[0] != "name" {
+			t.Errorf("required = %v, expected [name]", required)
+		}
+	})
+
+	t.Run("OpenAIForcesAdditionalPropertiesFalseOnNested", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"config": {
+					"type": "object",
+					"additionalProperties": true,
+					"properties": {
+						"key": {"type": "string"}
+					}
+				}
+			},
+			"additionalProperties": true
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		if parsed["additionalProperties"] != false {
+			t.Error("root additionalProperties should be false")
+		}
+
+		props := parsed["properties"].(map[string]interface{})     //nolint:errcheck // test: schema structure is known
+		config := props["config"].(map[string]interface{})         //nolint:errcheck // test: schema structure is known
+		if config["additionalProperties"] != false {
+			t.Error("config.additionalProperties should be false")
+		}
+	})
+
+	t.Run("OpenAIDeeplyNestedMCPSchema", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "",
+			"properties": {
+				"traces": {
+					"type": "array",
+					"items": {
+						"properties": {
+							"name": {"type": "string", "default": "unknown"},
+							"metadata": {
+								"type": "object",
+								"additionalProperties": true,
+								"properties": {
+									"tags": {
+										"type": "array",
+										"items": {"type": "string"}
+									}
+								}
+							}
+						},
+						"required": ["name"]
+					}
+				}
+			},
+			"required": ["traces"],
+			"$comment": "MCP tool schema"
+		}`)
+
+		result := SanitizeSchemaForOpenAI(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		// Root assertions
+		if parsed["type"] != "object" {
+			t.Errorf("root type = %v, expected 'object'", parsed["type"])
+		}
+		if parsed["additionalProperties"] != false {
+			t.Error("root should have additionalProperties: false")
+		}
+		rootReq, ok := parsed["required"].([]interface{})
+		if !ok || len(rootReq) != 1 || rootReq[0] != "traces" {
+			t.Errorf("root required = %v, expected [traces]", rootReq)
+		}
+		if _, exists := parsed["$comment"]; exists {
+			t.Error("$comment should be removed")
+		}
+
+		// traces.items assertions
+		props := parsed["properties"].(map[string]interface{})                    //nolint:errcheck // test: schema structure is known
+		traces := props["traces"].(map[string]interface{})                        //nolint:errcheck // test: schema structure is known
+		tracesItems := traces["items"].(map[string]interface{})                   //nolint:errcheck // test: schema structure is known
+		if tracesItems["type"] != "object" {
+			t.Errorf("traces.items.type = %v, expected 'object' (inferred)", tracesItems["type"])
+		}
+		if tracesItems["additionalProperties"] != false {
+			t.Error("traces.items should have additionalProperties: false")
+		}
+		itemsReq, ok := tracesItems["required"].([]interface{})
+		if !ok || len(itemsReq) != 2 {
+			t.Fatalf("traces.items.required should have 2 elements, got %v", itemsReq)
+		}
+		if itemsReq[0] != "metadata" || itemsReq[1] != "name" {
+			t.Errorf("traces.items.required = %v, expected [metadata, name]", itemsReq)
+		}
+
+		// traces.items.properties.name should not have default
+		itemProps := tracesItems["properties"].(map[string]interface{})            //nolint:errcheck // test: schema structure is known
+		nameField := itemProps["name"].(map[string]interface{})                    //nolint:errcheck // test: schema structure is known
+		if _, exists := nameField["default"]; exists {
+			t.Error("traces.items.properties.name should not have 'default'")
+		}
+
+		// traces.items.properties.metadata assertions
+		metadata := itemProps["metadata"].(map[string]interface{})                 //nolint:errcheck // test: schema structure is known
+		if metadata["additionalProperties"] != false {
+			t.Error("metadata.additionalProperties should be false (forced from true)")
+		}
+		metaReq, ok := metadata["required"].([]interface{})
+		if !ok || len(metaReq) != 1 || metaReq[0] != "tags" {
+			t.Errorf("metadata.required = %v, expected [tags]", metaReq)
 		}
 	})
 }
