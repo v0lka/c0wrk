@@ -6,6 +6,7 @@ import { useWails } from '@/hooks/useWails'
 import { AlertCircle, X } from 'lucide-react'
 import { CodebaseMemoryBanner } from '@/components/CodebaseMemoryBanner'
 import { RtkBanner } from '@/components/RtkBanner'
+import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 
 interface StartupError {
   message: string
@@ -24,6 +25,25 @@ function App() {
     const unsubscribe = runtime.EventsOn('startup_error', (data: unknown) => {
       const errorData = data as StartupError
       setStartupError(errorData)
+    })
+
+    return unsubscribe
+  }, [runtime])
+
+  // Listen for vector index status (non-session-scoped)
+  useEffect(() => {
+    if (!runtime) return
+
+    const unsubscribe = runtime.EventsOn('vector_index:status', (data: unknown) => {
+      const payload = data as {
+        state: string
+        progress: number
+        files_indexed: number
+        total_files: number
+        current_file: string
+        branch: string
+      }
+      useVectorIndexStore.getState().updateFromEvent(payload)
     })
 
     return unsubscribe

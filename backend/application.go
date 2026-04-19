@@ -11,6 +11,7 @@ import (
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/core"
+	"github.com/user/agent/core/tools"
 )
 
 // ApplicationConfig holds all parameters needed to construct an Application.
@@ -31,6 +32,10 @@ type ApplicationConfig struct {
 	AskUserFunc   AskUserFunc         // ask_user tool callback
 	ConfirmFunc   ConfirmFunc         // tool confirmation callback
 	StepLimitFunc StepLimitFunc       // step limit callback
+
+	// Vector search callbacks (optional — nil disables semantic_search tool).
+	VectorSearchFunc     tools.VectorSearchFunc
+	VectorSearchWaitFunc tools.VectorSearchWaitFunc
 }
 
 // Application is the central ViewModel that ties together the OrchestratorBuilder,
@@ -78,6 +83,11 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		return nil, err
 	}
 	app.builder = builder
+
+	// 3a. Vector search (optional — registered after builder creation)
+	if cfg.VectorSearchFunc != nil {
+		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc)
+	}
 
 	// 4. Set confirmation function on the shared registry.
 	if cfg.ConfirmFunc != nil {

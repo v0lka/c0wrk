@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { ContextBadge } from '@/components/chat/ContextBadge'
 import { Cpu, Activity, Loader2 } from 'lucide-react'
+import { IndexingStatus } from './IndexingStatus'
 
 export function StatusBar() {
   const sessions = useSessionStore(s => s.sessions)
@@ -52,6 +53,9 @@ export function StatusBar() {
       <div className="flex items-center gap-2">
         <ContextBadge />
       </div>
+
+      {/* Vector index status */}
+      <IndexingStatus />
 
       {/* Spacer */}
       <div className="flex-1" />

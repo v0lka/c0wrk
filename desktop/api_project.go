@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"sync"
 	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
+	"github.com/user/agent/backend/vectorindex"
 	"github.com/user/agent/backend/workspace"
+	"github.com/user/agent/sdk/embedding"
 )
 
 // checkCodebaseMemoryFunc is the function used to check codebase-memory-mcp installation.
@@ -254,13 +257,130 @@ func (a *App) SwitchProject(id string) error {
 		a.watcher = nil
 	}
 
+	// Debounce timer for incremental indexing triggered by file changes.
+	var indexDebounce *time.Timer
+	var indexDebounceMu sync.Mutex
+
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
+		// Existing behavior: emit workspace tree change.
 		wailsRuntime.EventsEmit(a.ctx, "workspace:tree_changed", nil)
+
+		// Trigger incremental indexing with 1s debounce.
+		a.vectorMu.RLock()
+		idx := a.vectorIndexer
+		a.vectorMu.RUnlock()
+
+		if idx != nil {
+			indexDebounceMu.Lock()
+			if indexDebounce != nil {
+				indexDebounce.Stop()
+			}
+			indexDebounce = time.AfterFunc(1*time.Second, func() {
+				if idxErr := idx.IndexIncremental(context.Background(), p.WorkspacePath); idxErr != nil {
+					slog.Warn("incremental indexing failed", "error", idxErr)
+				}
+			})
+			indexDebounceMu.Unlock()
+		}
 	})
 	if err != nil {
 		slog.Warn("failed to start workspace file watcher", "project", id, "error", err)
 	} else {
 		a.watcher = watcher
+	}
+
+	// --- Vector index wiring ---
+	if a.vectorService != nil {
+		if setErr := a.vectorService.SetProject(p.ID); setErr != nil {
+			slog.Warn("vector index project setup failed", "error", setErr)
+		} else {
+			branch, branchErr := vectorindex.CurrentBranch(p.WorkspacePath)
+			if branchErr != nil {
+				slog.Warn("failed to detect git branch for vector index", "error", branchErr)
+				branch = vectorindex.DefaultBranch
+			}
+
+			// Create chunker adapter (bridges sdk/embedding to backend/vectorindex interface).
+			chunkFunc := func(filePath string, content []byte, maxSize, overlap int) ([]vectorindex.ChunkResult, error) {
+				chunks, chunkErr := embedding.ChunkFile(filePath, content, embedding.ChunkerConfig{
+					MaxChunkSize: maxSize,
+					Overlap:      overlap,
+				})
+				if chunkErr != nil {
+					return nil, chunkErr
+				}
+				results := make([]vectorindex.ChunkResult, len(chunks))
+				for i, c := range chunks {
+					results[i] = vectorindex.ChunkResult{
+						Content:   c.Content,
+						StartLine: c.StartLine,
+						EndLine:   c.EndLine,
+						Language:  c.Language,
+					}
+				}
+				return results, nil
+			}
+
+			// Create indexer with progress callback that emits Wails events.
+			capturedBranch := branch
+			indexer := vectorindex.NewIndexer(vectorindex.IndexerConfig{
+				Service: a.vectorService,
+				ChunkFn: chunkFunc,
+				HashFn:  embedding.ComputeFileHash,
+				OnProgress: func(state vectorindex.IndexState, indexed, total int, file string) {
+					wailsRuntime.EventsEmit(a.ctx, "vector_index:status", map[string]any{
+						"state":         string(state),
+						"progress":      progressPercent(indexed, total),
+						"files_indexed": indexed,
+						"total_files":   total,
+						"current_file":  file,
+						"branch":        capturedBranch,
+					})
+				},
+				Logger: slog.Default(),
+			})
+			a.vectorMu.Lock()
+			a.vectorIndexer = indexer
+			a.vectorMu.Unlock()
+
+			// Switch to branch collection.
+			if switchErr := a.vectorService.SwitchBranch(context.Background(), branch); switchErr != nil {
+				slog.Warn("vector index branch switch failed", "error", switchErr)
+			}
+
+			// Start background indexing.
+			go func() {
+				if idxErr := indexer.IndexFull(context.Background(), p.WorkspacePath); idxErr != nil {
+					slog.Warn("vector indexing failed", "error", idxErr)
+				}
+			}()
+
+			// Start git branch monitor.
+			if gitMon, monErr := vectorindex.NewGitMonitor(
+				p.WorkspacePath,
+				func(newBranch string) {
+					go func() {
+						if bsErr := indexer.HandleBranchSwitch(context.Background(), p.WorkspacePath, newBranch); bsErr != nil {
+							slog.Warn("branch switch indexing failed", "error", bsErr)
+						}
+					}()
+				},
+				slog.Default(),
+			); monErr == nil {
+				// Stop previous git monitor if any.
+				a.vectorMu.Lock()
+				if a.gitMonitor != nil {
+					_ = a.gitMonitor.Stop()
+				}
+				a.gitMonitor = gitMon
+				a.vectorMu.Unlock()
+				if startErr := gitMon.Start(); startErr != nil {
+					slog.Warn("failed to start git monitor", "error", startErr)
+				}
+			} else {
+				slog.Warn("failed to create git monitor", "error", monErr)
+			}
+		}
 	}
 
 	wailsRuntime.EventsEmit(a.ctx, "project:switched", p)

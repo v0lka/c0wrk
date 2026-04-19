@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"strings"
 
 	"github.com/user/agent/core/prompts"
 	"github.com/user/agent/sdk/agent"
@@ -17,6 +18,36 @@ type codebaseMemoryKeyType struct{}
 // to buildSystemPrompt. When present and true, the codebase-memory guidance block
 // is appended to the system prompt.
 var codebaseMemoryKey = codebaseMemoryKeyType{}
+
+// vectorSearchHintsKeyType is the context key for auto-RAG hints.
+type vectorSearchHintsKeyType struct{}
+
+var vectorSearchHintsKey = vectorSearchHintsKeyType{}
+
+// VectorSearchHints represents auto-RAG results to inject into prompts.
+type VectorSearchHints struct {
+	Files []VectorSearchHint
+}
+
+// VectorSearchHint is a single file hint from the vector index.
+type VectorSearchHint struct {
+	FilePath string
+	Summary  string // first line or chunk preview
+}
+
+// WithVectorSearchHints returns a context with vector search hints attached.
+func WithVectorSearchHints(ctx context.Context, hints *VectorSearchHints) context.Context {
+	return context.WithValue(ctx, vectorSearchHintsKey, hints)
+}
+
+// VectorSearchHintsFromContext extracts vector search hints from the context.
+// Returns nil if not present.
+func VectorSearchHintsFromContext(ctx context.Context) *VectorSearchHints {
+	if hints, ok := ctx.Value(vectorSearchHintsKey).(*VectorSearchHints); ok {
+		return hints
+	}
+	return nil
+}
 
 // codebaseMemoryBlock is the standardized guidance block injected when codebase-memory
 // MCP tools are available at runtime.
@@ -85,6 +116,18 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	// Append codebase-memory guidance when MCP tools are available.
 	if ctx.Value(codebaseMemoryKey) != nil {
 		result += "\n\n" + codebaseMemoryBlock
+	}
+
+	// Append auto-RAG vector search hints when available.
+	if hints, ok := ctx.Value(vectorSearchHintsKey).(*VectorSearchHints); ok && hints != nil && len(hints.Files) > 0 {
+		var sb strings.Builder
+		sb.WriteString("\n\n## Relevant Project Files (auto-detected)\n")
+		sb.WriteString("Based on your query, these files may be relevant:\n")
+		for _, h := range hints.Files {
+			sb.WriteString("- " + h.FilePath + ": " + h.Summary + "\n")
+		}
+		sb.WriteString("\nUse semantic_search tool for deeper investigation.")
+		result += sb.String()
 	}
 
 	return result

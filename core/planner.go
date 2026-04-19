@@ -386,12 +386,13 @@ func (p *Planner) planWithExploration(
 
 // fsToolNames is the set of well-known file-system tool names included for the planner.
 var fsToolNames = map[string]bool{
-	"list_directory": true,
-	"glob":           true,
-	"ripgrep":        true,
-	"read_file":      true,
-	"search_files":   true,
-	"batch":          true,
+	"list_directory":  true,
+	"glob":            true,
+	"ripgrep":         true,
+	"read_file":       true,
+	"search_files":    true,
+	"semantic_search": true,
+	"batch":           true,
 }
 
 // getPlannerTools assembles the two-tier tool set for the planner.
@@ -481,6 +482,9 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
 		result += "\n\n" + envBlock
 	}
+
+	// Append auto-RAG hints when available.
+	result += formatVectorSearchHints(ctx)
 
 	return result
 }
@@ -605,6 +609,9 @@ func (p *Planner) buildPlanSystemPrompt(
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
 		result += "\n\n" + envBlock
 	}
+
+	// Append auto-RAG hints when available.
+	result += formatVectorSearchHints(ctx)
 
 	return result
 }
@@ -792,6 +799,27 @@ func formatWorkspacePath(ctx context.Context) string {
 		return ""
 	}
 	return fmt.Sprintf("Session workspace: %s\nWhen steps produce file artifacts, they must be created inside this workspace unless the task explicitly specifies an external location.", wp)
+}
+
+// formatVectorSearchHints returns a prompt section with auto-RAG file hints,
+// or an empty string when no hints are available in the context.
+func formatVectorSearchHints(ctx context.Context) string {
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints == nil || len(hints.Files) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Relevant Project Files (auto-detected)\n")
+	sb.WriteString("Based on the task, these files may be relevant:\n")
+	for _, h := range hints.Files {
+		sb.WriteString("- " + h.FilePath)
+		if h.Summary != "" {
+			sb.WriteString(": " + h.Summary)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 // parsePlanResponse extracts a Plan from the LLM response content.

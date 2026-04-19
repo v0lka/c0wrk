@@ -1,4 +1,4 @@
-.PHONY: build test lint dev-desktop fetch-onnx clean-onnx clean frontend-deps
+.PHONY: build test lint dev-desktop fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
 
 # ONNX Runtime version
 ONNX_VERSION := 1.21.0
@@ -39,6 +39,14 @@ ONNX_CACHE_DIR := .cache
 # Target directory inside the .app bundle
 APP_BUNDLE_DIR := build/bin/c0wrk-desktop.app/Contents/MacOS
 
+# Embedding model configuration
+MODELS_CACHE_DIR := .cache/models
+APP_MODELS_DIR := build/bin/c0wrk-desktop.app/Contents/Resources/models
+EMBEDDING_MODEL_URL := https://huggingface.co/jinaai/jina-embeddings-v2-small-en/resolve/main/onnx/model.onnx
+EMBEDDING_TOKENIZER_URL := https://huggingface.co/jinaai/jina-embeddings-v2-small-en/resolve/main/tokenizer.json
+EMBEDDING_MODEL_NAME := jina-v2-small.onnx
+EMBEDDING_TOKENIZER_NAME := jina-v2-small-tokenizer.json
+
 # Install frontend dependencies
 frontend-deps:
 	cd frontend && npm install
@@ -46,6 +54,7 @@ frontend-deps:
 build: frontend-deps
 	wails build
 	$(MAKE) fetch-onnx
+	$(MAKE) fetch-embedding-model
 
 test:
 	go test ./...
@@ -83,6 +92,27 @@ fetch-onnx:
 		fi; \
 		rm -rf /tmp/$(ONNX_ARCHIVE) /tmp/$(ONNX_DIR); \
 		echo "ONNX Runtime library installed to $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT)"; \
+	fi
+
+# Download embedding model and tokenizer to the .app bundle
+fetch-embedding-model:
+	@mkdir -p $(APP_MODELS_DIR); \
+	if [ -f "$(APP_MODELS_DIR)/$(EMBEDDING_MODEL_NAME)" ] && [ -f "$(APP_MODELS_DIR)/$(EMBEDDING_TOKENIZER_NAME)" ]; then \
+		echo "Embedding model already exists at $(APP_MODELS_DIR)/"; \
+	elif [ -f "$(MODELS_CACHE_DIR)/$(EMBEDDING_MODEL_NAME)" ] && [ -f "$(MODELS_CACHE_DIR)/$(EMBEDDING_TOKENIZER_NAME)" ]; then \
+		echo "Using cached embedding model..."; \
+		cp $(MODELS_CACHE_DIR)/$(EMBEDDING_MODEL_NAME) $(APP_MODELS_DIR)/$(EMBEDDING_MODEL_NAME); \
+		cp $(MODELS_CACHE_DIR)/$(EMBEDDING_TOKENIZER_NAME) $(APP_MODELS_DIR)/$(EMBEDDING_TOKENIZER_NAME); \
+		echo "Embedding model installed to $(APP_MODELS_DIR)/"; \
+	else \
+		mkdir -p $(MODELS_CACHE_DIR); \
+		echo "Downloading embedding model..."; \
+		curl -L -o $(MODELS_CACHE_DIR)/$(EMBEDDING_MODEL_NAME) $(EMBEDDING_MODEL_URL); \
+		echo "Downloading tokenizer..."; \
+		curl -L -o $(MODELS_CACHE_DIR)/$(EMBEDDING_TOKENIZER_NAME) $(EMBEDDING_TOKENIZER_URL); \
+		cp $(MODELS_CACHE_DIR)/$(EMBEDDING_MODEL_NAME) $(APP_MODELS_DIR)/$(EMBEDDING_MODEL_NAME); \
+		cp $(MODELS_CACHE_DIR)/$(EMBEDDING_TOKENIZER_NAME) $(APP_MODELS_DIR)/$(EMBEDDING_TOKENIZER_NAME); \
+		echo "Embedding model installed to $(APP_MODELS_DIR)/"; \
 	fi
 
 # Remove downloaded ONNX Runtime files

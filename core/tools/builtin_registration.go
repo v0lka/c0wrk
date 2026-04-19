@@ -11,12 +11,15 @@ import (
 // Limit type re-exports so backend can populate BuiltinToolsConfig
 // without importing sdk/tools/builtins.
 type (
-	FileLimits      = builtins.FileLimits
-	RipgrepLimits   = builtins.RipgrepLimits
-	GlobLimits      = builtins.GlobLimits
-	WebFetchLimits  = builtins.WebFetchLimits
-	WebSearchLimits = builtins.WebSearchLimits
-	BashTimeouts    = builtins.BashTimeouts
+	FileLimits           = builtins.FileLimits
+	RipgrepLimits        = builtins.RipgrepLimits
+	GlobLimits           = builtins.GlobLimits
+	WebFetchLimits       = builtins.WebFetchLimits
+	WebSearchLimits      = builtins.WebSearchLimits
+	BashTimeouts         = builtins.BashTimeouts
+	VectorSearchFunc     = builtins.VectorSearchFunc
+	VectorSearchWaitFunc = builtins.VectorSearchWaitFunc
+	VectorSearchResult   = builtins.VectorSearchResult
 )
 
 // BuiltinToolsConfig holds configuration for registering built-in tools.
@@ -38,6 +41,13 @@ type BuiltinToolsConfig struct {
 	// AskUserFunc is the callback for the ask_user tool.
 	// If nil, the ask_user tool is not registered.
 	AskUserFunc AskUserFunc
+
+	// VectorSearchFunc is the callback for the semantic_search tool.
+	// If nil, the semantic_search tool is not registered.
+	VectorSearchFunc VectorSearchFunc
+
+	// VectorSearchWaitFunc blocks until the vector index is ready.
+	VectorSearchWaitFunc VectorSearchWaitFunc
 }
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
@@ -78,6 +88,11 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	// Fact memory tools
 	registry.Register(builtins.NewStoreFactTool())
 	registry.Register(builtins.NewSearchFactsTool())
+
+	// Semantic search (optional — requires vector index backend)
+	if cfg.VectorSearchFunc != nil {
+		registry.Register(builtins.NewVectorSearchTool(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc))
+	}
 
 	// Batch (must be registered after other tools since it dispatches to them)
 	registry.Register(builtins.NewBatchTool(registry))

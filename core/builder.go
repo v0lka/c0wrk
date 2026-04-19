@@ -337,6 +337,19 @@ func (b *OrchestratorBuilder) StopGateway() error {
 	return nil
 }
 
+// RegisterVectorSearch adds the semantic_search tool to the shared registry.
+// This must be called after NewOrchestratorBuilder when the vector index backend
+// is available. The searchFunc and waitFunc are provided by the desktop layer.
+func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc tools.VectorSearchFunc, waitFunc tools.VectorSearchWaitFunc) {
+	if searchFunc == nil {
+		return
+	}
+	b.registry.Register(builtins.NewVectorSearchTool(searchFunc, waitFunc))
+	if b.logger != nil {
+		b.logger.Info("registered semantic_search tool")
+	}
+}
+
 // SetMCPWorkDir updates the default working directory for MCP stdio server processes.
 // New or restarted MCP servers will use this directory as their cwd.
 func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {

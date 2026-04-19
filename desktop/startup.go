@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,9 @@ import (
 	beMcp "github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/session"
+	"github.com/user/agent/backend/vectorindex"
+	"github.com/user/agent/core/tools"
+	"github.com/user/agent/sdk/embedding"
 
 	_ "modernc.org/sqlite" // register SQLite driver
 )
@@ -244,6 +248,43 @@ func (a *App) Startup(ctx context.Context) {
 
 	// --- Create backend Application (owns builder, manager, persister) ---
 
+	// --- Vector Search Initialization ---
+	var vectorSvc *vectorindex.Service
+	var embdr *embedding.Embedder
+
+	modelPath := resolveModelPath("jina-v2-small.onnx", agentDir)
+	tokenizerPath := resolveModelPath("jina-v2-small-tokenizer.json", agentDir)
+	libraryPath := resolveONNXLibPath()
+
+	if modelPath != "" && tokenizerPath != "" && libraryPath != "" {
+		embdr, err = embedding.NewEmbedder(embedding.EmbedderConfig{
+			ModelPath:     modelPath,
+			TokenizerPath: tokenizerPath,
+			LibraryPath:   libraryPath,
+			MaxSeqLength:  512,
+			Logger:        log,
+		})
+		if err != nil {
+			log.Warn("vector search unavailable: embedder init failed", "error", err)
+			embdr = nil
+		} else {
+			vectorSvc, err = vectorindex.NewService(vectorindex.ServiceConfig{
+				PersistPath:   filepath.Join(agentDir, "vector_index"),
+				EmbeddingFunc: embdr.EmbeddingFunc(),
+				Logger:        log,
+			})
+			if err != nil {
+				log.Warn("vector search unavailable: service init failed", "error", err)
+				if closeErr := embdr.Close(); closeErr != nil {
+					log.Warn("failed to close embedder after service init failure", "error", closeErr)
+				}
+				embdr = nil
+			}
+		}
+	}
+	a.vectorService = vectorSvc
+	a.embedder = embdr
+
 	logDir := filepath.Join(agentDir, "logs")
 	a.projectsDir = filepath.Join(agentDir, "Projects")
 	if err := os.MkdirAll(a.projectsDir, 0o755); err != nil {
@@ -257,6 +298,32 @@ func (a *App) Startup(ctx context.Context) {
 		a.projectManager = project.NewManager(a.projStore, a.projectsDir)
 	}
 
+	// Wire vector search callbacks into Application config.
+	var vectorSearchFunc tools.VectorSearchFunc
+	var vectorSearchWaitFunc tools.VectorSearchWaitFunc
+	if vectorSvc != nil {
+		vectorSearchFunc = func(ctx context.Context, query string, topK int, fileFilter string) ([]tools.VectorSearchResult, error) {
+			results, searchErr := vectorSvc.SearchWithFilter(ctx, query, topK, fileFilter)
+			if searchErr != nil {
+				return nil, searchErr
+			}
+			out := make([]tools.VectorSearchResult, len(results))
+			for i, r := range results {
+				out[i] = tools.VectorSearchResult{
+					FilePath:  r.FilePath,
+					FileName:  r.FileName,
+					Content:   r.Content,
+					Score:     r.Score,
+					StartLine: r.StartLine,
+					EndLine:   r.EndLine,
+					Language:  r.Language,
+				}
+			}
+			return out, nil
+		}
+		vectorSearchWaitFunc = vectorSvc.WaitReady
+	}
+
 	application, err := backend.NewApplication(backend.ApplicationConfig{
 		Config:        a.config,
 		Logger:        log,
@@ -267,8 +334,10 @@ func (a *App) Startup(ctx context.Context) {
 		TaskStore:     a.store,
 		UIEmitFunc:    uiEmitFunc,
 		AskUserFunc:   askUserFunc,
-		ConfirmFunc:   confirmFunc,
-		StepLimitFunc: stepLimitFunc,
+		ConfirmFunc:          confirmFunc,
+		StepLimitFunc:        stepLimitFunc,
+		VectorSearchFunc:     vectorSearchFunc,
+		VectorSearchWaitFunc: vectorSearchWaitFunc,
 	})
 	if err != nil {
 		log.Error("failed to create backend application", "error", err)
@@ -730,6 +799,29 @@ func (a *App) Shutdown(ctx context.Context) {
 		a.restoreAutoIndex()
 	}
 
+	// Stop git monitor before closing vector resources.
+	if a.gitMonitor != nil {
+		if err := a.gitMonitor.Stop(); err != nil {
+			slog.Error("failed to stop git monitor", "error", err)
+		}
+		a.gitMonitor = nil
+	}
+
+	// Close vector service before embedder (service depends on embedding func).
+	if a.vectorService != nil {
+		if err := a.vectorService.Close(); err != nil {
+			slog.Error("failed to close vector service", "error", err)
+		}
+		a.vectorService = nil
+	}
+
+	if a.embedder != nil {
+		if err := a.embedder.Close(); err != nil {
+			slog.Error("failed to close embedder", "error", err)
+		}
+		a.embedder = nil
+	}
+
 	if a.watcher != nil {
 		if err := a.watcher.Close(); err != nil {
 			slog.Error("failed to close workspace watcher", "error", err)
@@ -764,4 +856,61 @@ func (a *App) Shutdown(ctx context.Context) {
 			slog.Error("failed to close session logger", "error", err)
 		}
 	}
+}
+
+// resolveModelPath checks the app bundle Resources/models/ first, then <agentDir>/models/.
+// Returns empty string if the file is not found in either location.
+func resolveModelPath(filename, agentDir string) string {
+	exePath, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exePath)
+		// macOS app bundle: <app>/Contents/MacOS/../Resources/models/<filename>
+		bundlePath := filepath.Join(exeDir, "..", "Resources", "models", filename)
+		if _, statErr := os.Stat(bundlePath); statErr == nil {
+			return bundlePath
+		}
+	}
+
+	// Fallback: <agentDir>/models/<filename>
+	userPath := filepath.Join(agentDir, "models", filename)
+	if _, statErr := os.Stat(userPath); statErr == nil {
+		return userPath
+	}
+
+	return ""
+}
+
+// resolveONNXLibPath finds the ONNX Runtime shared library next to the executable.
+func resolveONNXLibPath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	exeDir := filepath.Dir(exePath)
+
+	var libName string
+	switch runtime.GOOS {
+	case "darwin":
+		libName = "libonnxruntime.dylib"
+	case "linux":
+		libName = "libonnxruntime.so"
+	case "windows":
+		libName = "onnxruntime.dll"
+	default:
+		return ""
+	}
+
+	libPath := filepath.Join(exeDir, libName)
+	if _, statErr := os.Stat(libPath); statErr == nil {
+		return libPath
+	}
+	return ""
+}
+
+// progressPercent calculates a percentage value for indexing progress.
+func progressPercent(indexed, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(indexed) / float64(total) * 100
 }

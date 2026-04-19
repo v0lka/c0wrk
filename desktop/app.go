@@ -10,7 +10,9 @@ import (
 	"github.com/user/agent/backend/logger"
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/session"
+	"github.com/user/agent/backend/vectorindex"
 	"github.com/user/agent/backend/workspace"
+	"github.com/user/agent/sdk/embedding"
 )
 
 // App holds the Wails application state and exposes methods to the frontend.
@@ -50,6 +52,13 @@ type App struct {
 	restoreAutoIndex func()        // called on Shutdown to restore original auto_index value
 	indexingDone     chan struct{} // closed when indexing completes; nil if not indexing
 	indexingMu       sync.Mutex    // protects indexingDone
+
+	// Vector search state
+	vectorMu      sync.RWMutex // protects vectorIndexer and gitMonitor
+	vectorService *vectorindex.Service
+	vectorIndexer *vectorindex.Indexer
+	embedder      *embedding.Embedder
+	gitMonitor    *vectorindex.GitMonitor
 }
 
 // NewApp creates a new App instance.
