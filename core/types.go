@@ -26,11 +26,11 @@ type SubAgentResult = agent.SubAgentResult
 // FillCheck represents the result of a context window fill check.
 type FillCheck = agent.FillCheck
 
-// SharedWorkspace provides inter-agent communication via named artifacts.
-type SharedWorkspace = agent.SharedWorkspace
+// StepOutputStore provides read access to completed step outputs.
+type StepOutputStore = agent.StepOutputStore
 
-// Artifact represents a named output produced by an agent step.
-type Artifact = agent.Artifact
+// StepOutputEntry describes a completed step's output for listing.
+type StepOutputEntry = agent.StepOutputEntry
 
 // FileChange represents a filesystem modification made by an agent step.
 type FileChange = agent.FileChange
@@ -52,9 +52,6 @@ type CompactionStrategy = agent.CompactionStrategy
 
 // CompactionResult holds before/after fill percentages from a compaction operation.
 type CompactionResult = agent.CompactionResult
-
-// NewSharedWorkspace creates a new empty SharedWorkspace.
-var NewSharedWorkspace = agent.NewSharedWorkspace
 
 // StepLimitFunc is called when an executor reaches its step limit.
 type StepLimitFunc = agent.StepLimitFunc
@@ -119,7 +116,7 @@ type Emitter interface {
 	// c0wrk-specific orchestration events
 	Routing(mode, domain, complexity string)
 	PlanGenerated(stepCount int, steps []PlanStepEvent)
-	PlanStepStart(stepID string, description string)
+	PlanStepStart(stepID string, description, summary string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string)
 	Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
@@ -158,7 +155,7 @@ var _ Emitter = (*noopEmitter)(nil)
 
 func (n *noopEmitter) Routing(_, _, _ string)                                       {}
 func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)                       {}
-func (n *noopEmitter) PlanStepStart(_, _ string)                                    {}
+func (n *noopEmitter) PlanStepStart(_, _, _ string)                                {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
 func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}
 func (n *noopEmitter) Retry(_, _ int)                                               {}
@@ -189,8 +186,8 @@ var _ orchestration.Events = (*emitterEventsAdapter)(nil)
 func (a *emitterEventsAdapter) OnPlanGenerated(n int, steps []PlanStepEvent) {
 	a.PlanGenerated(n, steps)
 }
-func (a *emitterEventsAdapter) OnStepStarted(id, desc string) {
-	a.PlanStepStart(id, desc)
+func (a *emitterEventsAdapter) OnStepStarted(id, desc, summary string) {
+	a.PlanStepStart(id, desc, summary)
 }
 func (a *emitterEventsAdapter) OnStepCompleted(id string, ok bool, d time.Duration, errMsg string) {
 	a.PlanStepComplete(id, ok, d, errMsg)

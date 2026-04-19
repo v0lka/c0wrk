@@ -1,110 +1,75 @@
 package agent
 
 import (
-	"sync"
+	"context"
 	"testing"
 )
 
-func TestSharedWorkspace_StoreAndGet(t *testing.T) {
-	ws := NewSharedWorkspace()
+// mockStepOutputStore implements StepOutputStore for testing.
+type mockStepOutputStore struct {
+	entries []StepOutputEntry
+}
 
-	ws.Store("key1", "content1", "step_1")
-	a, ok := ws.Get("key1")
+func (m *mockStepOutputStore) GetStepOutput(stepID string) (string, bool) {
+	for _, e := range m.entries {
+		if e.StepID == stepID {
+			return e.FullOutput, true
+		}
+	}
+	return "", false
+}
+
+func (m *mockStepOutputStore) ListStepOutputs() []StepOutputEntry {
+	return m.entries
+}
+
+func TestStepOutputStore_ContextRoundTrip(t *testing.T) {
+	store := &mockStepOutputStore{
+		entries: []StepOutputEntry{
+			{StepID: "step_1", FullOutput: "output from step 1"},
+		},
+	}
+	ctx := WithStepOutputStore(context.Background(), store)
+
+	got := StepOutputStoreFromContext(ctx)
+	if got == nil {
+		t.Fatal("expected StepOutputStore in context")
+	}
+
+	output, ok := got.GetStepOutput("step_1")
 	if !ok {
-		t.Fatal("expected key1 to exist")
+		t.Fatal("expected step_1 to exist")
 	}
-	if a.Key != "key1" || a.Content != "content1" || a.ProducedBy != "step_1" {
-		t.Errorf("unexpected artifact: %+v", a)
-	}
-	if a.CreatedAt.IsZero() {
-		t.Error("CreatedAt should be set")
+	if output != "output from step 1" {
+		t.Errorf("got %q, want %q", output, "output from step 1")
 	}
 }
 
-func TestSharedWorkspace_GetMissing(t *testing.T) {
-	ws := NewSharedWorkspace()
-	_, ok := ws.Get("nonexistent")
+func TestStepOutputStoreFromContext_Nil(t *testing.T) {
+	ctx := context.Background()
+	got := StepOutputStoreFromContext(ctx)
+	if got != nil {
+		t.Error("expected nil when no StepOutputStore in context")
+	}
+}
+
+func TestMockStepOutputStore_GetStepOutput_Missing(t *testing.T) {
+	store := &mockStepOutputStore{}
+	_, ok := store.GetStepOutput("nonexistent")
 	if ok {
-		t.Error("expected ok=false for missing key")
+		t.Error("expected ok=false for missing step")
 	}
 }
 
-func TestSharedWorkspace_Overwrite(t *testing.T) {
-	ws := NewSharedWorkspace()
-	ws.Store("k", "v1", "s1")
-	ws.Store("k", "v2", "s2")
-	a, ok := ws.Get("k")
-	if !ok {
-		t.Fatal("expected key to exist")
+func TestMockStepOutputStore_ListStepOutputs(t *testing.T) {
+	store := &mockStepOutputStore{
+		entries: []StepOutputEntry{
+			{StepID: "step_1", FullOutput: "a"},
+			{StepID: "step_2", FullOutput: "b"},
+		},
 	}
-	if a.Content != "v2" {
-		t.Errorf("Content = %q, want %q", a.Content, "v2")
+	entries := store.ListStepOutputs()
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(entries))
 	}
-}
-
-func TestSharedWorkspace_List(t *testing.T) {
-	ws := NewSharedWorkspace()
-	ws.Store("a", "1", "s1")
-	ws.Store("b", "2", "s1")
-	ws.Store("c", "3", "s2")
-
-	items := ws.List()
-	if len(items) != 3 {
-		t.Errorf("List() returned %d items, want 3", len(items))
-	}
-}
-
-func TestSharedWorkspace_GetByProducer(t *testing.T) {
-	ws := NewSharedWorkspace()
-	ws.Store("a", "1", "s1")
-	ws.Store("b", "2", "s2")
-	ws.Store("c", "3", "s1")
-
-	items := ws.GetByProducer("s1")
-	if len(items) != 2 {
-		t.Errorf("GetByProducer(s1) returned %d items, want 2", len(items))
-	}
-
-	items = ws.GetByProducer("nonexistent")
-	if len(items) != 0 {
-		t.Errorf("GetByProducer(nonexistent) returned %d items, want 0", len(items))
-	}
-}
-
-func TestSharedWorkspace_Clear(t *testing.T) {
-	ws := NewSharedWorkspace()
-	ws.Store("a", "1", "s1")
-	ws.Clear()
-	items := ws.List()
-	if len(items) != 0 {
-		t.Errorf("List() after Clear() returned %d items, want 0", len(items))
-	}
-}
-
-func TestSharedWorkspace_ConcurrentAccess(t *testing.T) {
-	ws := NewSharedWorkspace()
-	var wg sync.WaitGroup
-
-	// Concurrent writes
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			key := "k" + string(rune('A'+i%26))
-			ws.Store(key, "val", "step")
-		}(i)
-	}
-
-	// Concurrent reads
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ws.List()
-			ws.Get("kA")
-			ws.GetByProducer("step")
-		}()
-	}
-
-	wg.Wait()
 }

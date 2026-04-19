@@ -903,7 +903,12 @@ func (p *Planner) parsePlanResponse(content string) (*Plan, error) {
 	if err := json.Unmarshal([]byte(jsonContent), &plan); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal plan JSON: %w", err)
 	}
-
+	p.log().Debug("planner: parsePlanResponse parsed", "steps", len(plan.Steps), "firstStepSummary", func() string {
+		if len(plan.Steps) > 0 {
+			return plan.Steps[0].Summary
+		}
+		return ""
+	}())
 	return &plan, nil
 }
 

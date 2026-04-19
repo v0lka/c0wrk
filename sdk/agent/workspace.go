@@ -2,96 +2,42 @@ package agent
 
 import (
 	"context"
-	"sync"
-	"time"
 )
 
-// Artifact represents a named output produced by an agent step.
-type Artifact struct {
-	Key        string    `json:"key"`
-	Content    string    `json:"content"`
-	ProducedBy string    `json:"produced_by"` // step ID that created it
-	CreatedAt  time.Time `json:"created_at"`
+// ---------------------------------------------------------------------------
+// StepOutputStore — read-only access to completed step outputs
+// ---------------------------------------------------------------------------
+
+// StepOutputStore provides read access to completed step outputs.
+// Implementations must be safe for concurrent use.
+// This interface lives in sdk/agent to avoid a cyclic import between
+// sdk/tools and sdk/orchestration; the concrete adapter wraps Blackboard.
+type StepOutputStore interface {
+	// GetStepOutput returns the full output of a completed step.
+	// Returns ("", false) if the step has no output or does not exist.
+	GetStepOutput(stepID string) (string, bool)
+	// ListStepOutputs returns entries for all completed steps that produced output.
+	// The order is deterministic (sorted by step ID).
+	ListStepOutputs() []StepOutputEntry
 }
 
-// SharedWorkspace provides inter-agent communication via named artifacts.
-// It is safe for concurrent use.
-type SharedWorkspace struct {
-	mu        sync.RWMutex
-	artifacts map[string]Artifact
+// StepOutputEntry describes a completed step's output for listing.
+type StepOutputEntry struct {
+	StepID     string
+	FullOutput string
 }
 
-// NewSharedWorkspace creates a new empty SharedWorkspace.
-func NewSharedWorkspace() *SharedWorkspace {
-	return &SharedWorkspace{
-		artifacts: make(map[string]Artifact),
-	}
+type stepOutputStoreKey struct{}
+
+// WithStepOutputStore returns a context carrying the given StepOutputStore.
+func WithStepOutputStore(ctx context.Context, store StepOutputStore) context.Context {
+	return context.WithValue(ctx, stepOutputStoreKey{}, store)
 }
 
-// Store saves an artifact in the workspace.
-func (sw *SharedWorkspace) Store(key, content, producedBy string) {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	sw.artifacts[key] = Artifact{
-		Key:        key,
-		Content:    content,
-		ProducedBy: producedBy,
-		CreatedAt:  time.Now(),
-	}
-}
-
-// Get retrieves an artifact by key.
-func (sw *SharedWorkspace) Get(key string) (Artifact, bool) {
-	sw.mu.RLock()
-	defer sw.mu.RUnlock()
-	a, ok := sw.artifacts[key]
-	return a, ok
-}
-
-// List returns all artifacts.
-func (sw *SharedWorkspace) List() []Artifact {
-	sw.mu.RLock()
-	defer sw.mu.RUnlock()
-	result := make([]Artifact, 0, len(sw.artifacts))
-	for _, a := range sw.artifacts {
-		result = append(result, a)
-	}
-	return result
-}
-
-// GetByProducer returns all artifacts produced by a specific step.
-func (sw *SharedWorkspace) GetByProducer(stepID string) []Artifact {
-	sw.mu.RLock()
-	defer sw.mu.RUnlock()
-	var result []Artifact
-	for _, a := range sw.artifacts {
-		if a.ProducedBy == stepID {
-			result = append(result, a)
-		}
-	}
-	return result
-}
-
-// Clear removes all artifacts from the workspace.
-func (sw *SharedWorkspace) Clear() {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	sw.artifacts = make(map[string]Artifact)
-}
-
-// sharedWorkspaceKey is the context key for passing SharedWorkspace through context.Context.
-type sharedWorkspaceKey struct{}
-
-// WithSharedWorkspace returns a new context with the SharedWorkspace attached.
-func WithSharedWorkspace(ctx context.Context, ws *SharedWorkspace) context.Context {
-	return context.WithValue(ctx, sharedWorkspaceKey{}, ws)
-}
-
-// SharedWorkspaceFromContext extracts the SharedWorkspace from the context.
-// Returns nil if not found.
-func SharedWorkspaceFromContext(ctx context.Context) *SharedWorkspace {
-	if ws, ok := ctx.Value(sharedWorkspaceKey{}).(*SharedWorkspace); ok {
-		return ws
+// StepOutputStoreFromContext returns the StepOutputStore from context, or nil.
+func StepOutputStoreFromContext(ctx context.Context) StepOutputStore {
+	if s, ok := ctx.Value(stepOutputStoreKey{}).(StepOutputStore); ok {
+		return s
 	}
 	return nil
 }

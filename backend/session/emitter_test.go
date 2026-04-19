@@ -518,7 +518,7 @@ func TestEventEmitterPlanStepStart(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.PlanStepStart("step-1", "Install dependencies")
+	emitter.PlanStepStart("step-1", "Install dependencies", "Install deps")
 
 	if received.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", received.SessionID)

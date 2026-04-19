@@ -46,7 +46,7 @@ func (s *spyEmitter) ExecutorDiagnostic(n int, e string, d map[string]any) {
 }
 func (s *spyEmitter) Routing(m, d, c string)                     { s.record("Routing", m, d, c) }
 func (s *spyEmitter) PlanGenerated(n int, steps []PlanStepEvent) { s.record("PlanGenerated", n, steps) }
-func (s *spyEmitter) PlanStepStart(id, desc string)              { s.record("PlanStepStart", id, desc) }
+func (s *spyEmitter) PlanStepStart(id, desc, summary string)     { s.record("PlanStepStart", id, desc, summary) }
 func (s *spyEmitter) PlanStepComplete(id string, ok bool, d time.Duration, errMsg string) {
 	s.record("PlanStepComplete", id, ok, d, errMsg)
 }
@@ -110,7 +110,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"Finishing", func(e Emitter) { e.Finishing(1, "done") }, "Finishing"},
 		{"Routing", func(e Emitter) { e.Routing("plan", "code", "3") }, "Routing"},
 		{"PlanGenerated", func(e Emitter) { e.PlanGenerated(1, steps) }, "PlanGenerated"},
-		{"PlanStepStart", func(e Emitter) { e.PlanStepStart("s1", "do it") }, "PlanStepStart"},
+		{"PlanStepStart", func(e Emitter) { e.PlanStepStart("s1", "do it", "summary") }, "PlanStepStart"},
 		{"PlanStepComplete", func(e Emitter) { e.PlanStepComplete("s1", true, dur, "") }, "PlanStepComplete"},
 		{"Reflection", func(e Emitter) { e.Reflection(&orchestration.Reflection{Summary: "sum"}, 1, 3) }, "Reflection"},
 		{"Retry", func(e Emitter) { e.Retry(1, 3) }, "Retry"},

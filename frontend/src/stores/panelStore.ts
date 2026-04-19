@@ -76,7 +76,7 @@ export const usePanelStore = create<PanelState>((set) => ({
         id: counter,
         items: steps.map((s, i) => ({
           id: (isRecord(s) && typeof (s as Record<string, unknown>).id === 'string' ? (s as Record<string, unknown>).id as string : undefined) || String(i + 1),
-          title: (isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined) || s.description,
+          title: (isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' && ((s as Record<string, unknown>).summary as string).trim() ? (s as Record<string, unknown>).summary as string : undefined) || s.description,
           description: s.description,
           summary: isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined,
           status: toValidStatus(s.status),

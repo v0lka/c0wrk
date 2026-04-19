@@ -206,7 +206,7 @@ type mockEmitter struct {
 		content                   string
 		inputTokens, outputTokens int
 	}
-	planStepStarts    []struct{ stepID, description string }
+	planStepStarts    []struct{ stepID, description, summary string }
 	planStepCompletes []struct {
 		stepID   string
 		success  bool
@@ -216,8 +216,8 @@ type mockEmitter struct {
 
 func (m *mockEmitter) Routing(_, _, _ string)                 {}
 func (m *mockEmitter) PlanGenerated(_ int, _ []PlanStepEvent) {}
-func (m *mockEmitter) PlanStepStart(stepID, description string) {
-	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description string }{stepID, description})
+func (m *mockEmitter) PlanStepStart(stepID, description, summary string) {
+	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description, summary string }{stepID, description, summary})
 }
 func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
 	m.planStepCompletes = append(m.planStepCompletes, struct {

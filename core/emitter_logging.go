@@ -139,9 +139,9 @@ func (l *loggingEmitter) PlanGenerated(stepCount int, steps []PlanStepEvent) {
 	l.inner.PlanGenerated(stepCount, steps)
 }
 
-func (l *loggingEmitter) PlanStepStart(stepID, description string) {
-	l.logger.Info("plan step start", "stepID", stepID, "description", description)
-	l.inner.PlanStepStart(stepID, description)
+func (l *loggingEmitter) PlanStepStart(stepID, description, summary string) {
+	l.logger.Info("plan step start", "stepID", stepID, "description", description, "summary", summary)
+	l.inner.PlanStepStart(stepID, description, summary)
 }
 
 func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {

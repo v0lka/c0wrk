@@ -105,7 +105,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     if (msg.type === 'plan') {
       const steps = (meta?.steps as Array<{ id?: string; summary?: string; description: string }>) || []
       steps.forEach((s, i) => {
-        if (s.id) stepIndexMap.set(s.id, { num: i + 1, title: s.summary || s.description, description: s.description })
+        if (s.id) stepIndexMap.set(s.id, { num: i + 1, title: s.summary?.trim() || s.description, description: s.description })
       })
       continue
     }
@@ -114,7 +114,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     if (msg.type === 'plan_step_start') {
       const stepId = (meta?.step_id as string) || ''
       const fallbackDesc = (meta?.description as string) || stepId
-      const fallbackSummary = (meta?.summary as string) || fallbackDesc
+      const fallbackSummary = (meta?.summary as string)?.trim() || fallbackDesc
       const info = stepIndexMap.get(stepId) || { num: 0, title: fallbackSummary, description: fallbackDesc }
       const count = (stepIdCounts.get(stepId) ?? 0) + 1
       stepIdCounts.set(stepId, count)

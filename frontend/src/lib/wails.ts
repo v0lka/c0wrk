@@ -72,6 +72,7 @@ export interface StepData {
 export interface PlanStepData {
   id?: string
   description: string
+  summary?: string
   status: string // "pending" | "running" | "completed" | "failed"
   depends_on?: string[]
 }
@@ -140,6 +141,7 @@ export interface ToolConfirmData {
 export interface PlanStepStartData {
   step_id: string
   description: string
+  summary?: string
 }
 
 export interface PlanStepCompleteData {

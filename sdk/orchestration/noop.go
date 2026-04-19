@@ -15,7 +15,7 @@ type NoopEvents struct {
 var _ Events = (*NoopEvents)(nil)
 
 func (*NoopEvents) OnPlanGenerated(_ int, _ []PlanStepEvent)                    {}
-func (*NoopEvents) OnStepStarted(_, _ string)                                   {}
+func (*NoopEvents) OnStepStarted(_, _, _ string)                               {}
 func (*NoopEvents) OnStepCompleted(_ string, _ bool, _ time.Duration, _ string) {}
 func (*NoopEvents) OnReflected(_ *Reflection, _, _ int)                         {}
 func (*NoopEvents) OnRetry(_, _ int)                                            {}

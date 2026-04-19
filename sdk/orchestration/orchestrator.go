@@ -119,6 +119,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard) (*ExecutionRes
 		}
 		planStepEvents[i] = PlanStepEvent{ID: s.ID, Summary: s.Summary, Description: s.Description, Status: status, DependsOn: s.DependsOn}
 	}
+	o.log().Debug("orchestrator: OnPlanGenerated", "stepCount", len(plan.Steps), "steps", planStepEvents)
 	o.events.OnPlanGenerated(len(plan.Steps), planStepEvents)
 
 	return o.runPlanExecute(ctx, userMessage, availableTools, reflections, bb, plan, preCompleted)
@@ -149,6 +150,12 @@ func (o *Orchestrator) runPlanExecute(
 		if err != nil {
 			return nil, fmt.Errorf("planning failed: %w", err)
 		}
+		o.log().Debug("orchestrator: Planner.Plan returned", "steps", len(plan.Steps), "firstStepSummary", func() string {
+			if len(plan.Steps) > 0 {
+				return plan.Steps[0].Summary
+			}
+			return ""
+		}())
 
 		planStepEvents := make([]PlanStepEvent, len(plan.Steps))
 		for i, s := range plan.Steps {
@@ -161,8 +168,6 @@ func (o *Orchestrator) runPlanExecute(
 
 	var lastOutput string
 	var stepRetryContext string
-
-	sharedWS := agent.NewSharedWorkspace()
 
 	// Create file change tracker for artifact tracking and rollback
 	var tracker *agent.FileChangeTracker
@@ -188,7 +193,7 @@ func (o *Orchestrator) runPlanExecute(
 
 		// Execute the current plan
 		o.events.OnServiceMeta("executing plan", map[string]any{"steps": len(currentPlan.Steps), "preCompleted": len(preCompleted)})
-		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, availableTools, preCompleted, sharedWS, tracker, userMessage, stepRetryContext, bb, sessionReflections)
+		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, availableTools, preCompleted, tracker, userMessage, stepRetryContext, bb, sessionReflections)
 		o.events.OnServiceMeta("plan execution finished", map[string]any{"completedSteps": len(completedSteps), "hasError": execErr != nil})
 		sessionReflections = updatedReflections
 		lastOutput = finalOutput
@@ -309,7 +314,6 @@ func (o *Orchestrator) runPlanExecute(
 					bb.SetPlan(currentPlan)
 					preCompleted = BuildCarryForward(prevCompletedSteps, newPlan)
 					stepRetryContext = ""
-					sharedWS.Clear()
 					o.emitPlanWithStatuses(currentPlan, preCompleted)
 				} else {
 					// Step-level retry - retry all failed steps
@@ -348,7 +352,6 @@ func (o *Orchestrator) executePlanWithSteps(
 	plan *Plan,
 	availableTools []tools.ToolDescriptor,
 	preCompleted map[string]CompletedStep,
-	sharedWS *agent.SharedWorkspace,
 	tracker *agent.FileChangeTracker,
 	userMessage, retryContext string,
 	bb Blackboard,
@@ -386,7 +389,8 @@ func (o *Orchestrator) executePlanWithSteps(
 		for _, step := range readySteps {
 			stepIndex := o.findStepIndex(plan, step.ID)
 			o.events.OnServiceMeta(fmt.Sprintf("Executing step %d/%d...", stepIndex+1, len(plan.Steps)), map[string]any{"phase": "orchestration"})
-			o.events.OnStepStarted(step.ID, step.Description)
+			o.log().Debug("orchestrator: OnStepStarted", "stepID", step.ID, "summary", step.Summary, "description", step.Description)
+			o.events.OnStepStarted(step.ID, step.Description, step.Summary)
 			stepStartTimes[step.ID] = time.Now()
 		}
 
@@ -459,8 +463,8 @@ func (o *Orchestrator) executePlanWithSteps(
 			})
 		}
 
-		// Inject SharedWorkspace into context so tools can access step outputs
-		ctx = agent.WithSharedWorkspace(ctx, sharedWS)
+		// Inject StepOutputStore into context so tools can read step outputs
+		ctx = agent.WithStepOutputStore(ctx, NewStepOutputStore(bb))
 
 		// Inject FactStore into context so tools can access fact memory
 		ctx = agent.WithFactStore(ctx, NewFactStore(bb))
@@ -479,11 +483,6 @@ func (o *Orchestrator) executePlanWithSteps(
 				o.events.OnStepCompleted(r.StepID, false, duration, r.Error.Error())
 			} else {
 				o.events.OnStepCompleted(r.StepID, true, duration, "")
-			}
-
-			if sharedWS != nil && r.Error == nil {
-				o.events.OnServiceMeta("storing step output", map[string]any{"stepID": r.StepID})
-				sharedWS.Store(r.StepID+"/output", r.Output, r.StepID)
 			}
 
 			cs := CompletedStep{
@@ -643,7 +642,7 @@ func (o *Orchestrator) executePlanWithSteps(
 
 					// Execute single step
 					o.events.OnServiceMeta(fmt.Sprintf("Retrying step %d/%d...", stepIndex+1, len(plan.Steps)), map[string]any{"phase": "orchestration"})
-					o.events.OnStepStarted(failedStepID, failedPlanStep.Description)
+					o.events.OnStepStarted(failedStepID, failedPlanStep.Description, failedPlanStep.Summary)
 					stepStartTime := time.Now()
 
 					retryTasks := []agent.SubAgentTask{retryTask}
@@ -657,10 +656,6 @@ func (o *Orchestrator) executePlanWithSteps(
 						}
 
 						if rr.Error == nil {
-							// Step succeeded on retry
-							if sharedWS != nil {
-								sharedWS.Store(rr.StepID+"/output", rr.Output, rr.StepID)
-							}
 							cs := CompletedStep{
 								StepID: rr.StepID,
 								Output: rr.Output,
@@ -1039,9 +1034,8 @@ func (o *Orchestrator) ExecuteAdHocStep(
 		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
 	}
 
-	// 5. Set up SharedWorkspace for inter-step communication
-	sharedWS := agent.NewSharedWorkspace()
-	ctx = agent.WithSharedWorkspace(ctx, sharedWS)
+	// 5. Inject StepOutputStore into context so tools can read step outputs
+	ctx = agent.WithStepOutputStore(ctx, NewStepOutputStore(bb))
 
 	// Inject FactStore into context so tools can access fact memory
 	ctx = agent.WithFactStore(ctx, NewFactStore(bb))
@@ -1054,7 +1048,8 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	}
 
 	// 7. Build and execute the task
-	o.events.OnStepStarted(step.ID, step.Description)
+	o.log().Debug("orchestrator: OnStepStarted (subagent)", "stepID", step.ID, "summary", step.Summary, "description", step.Description)
+	o.events.OnStepStarted(step.ID, step.Description, step.Summary)
 	stepStartTime := time.Now()
 
 	tasks := []agent.SubAgentTask{{
@@ -1084,11 +1079,6 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	// Propagate context cancellation as a function-level error (ReAct mode).
 	if r.Error != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
-	}
-
-	// Store step output in SharedWorkspace
-	if r.Error == nil {
-		sharedWS.Store(r.StepID+"/output", r.Output, r.StepID)
 	}
 
 	// 9. Store results in Blackboard

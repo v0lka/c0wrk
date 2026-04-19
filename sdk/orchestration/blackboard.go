@@ -531,6 +531,7 @@ func copyPlan(p *Plan) *Plan {
 	for i, s := range p.Steps {
 		out.Steps[i] = PlanStep{
 			ID:             s.ID,
+			Summary:        s.Summary,
 			Description:    s.Description,
 			Parallelizable: s.Parallelizable,
 			Profile:        s.Profile, // opaque value; simple assignment

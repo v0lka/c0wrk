@@ -83,7 +83,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	registry.Register(builtins.NewGlobToolWithLimits(cfg.GlobLimits))
 	registry.Register(builtins.NewRipgrepToolWithLimits(cfg.RipgrepLimits))
 
-	// SharedWorkspace tools
+	// Step output tools
 	registry.Register(builtins.NewReadStepOutputTool())
 	registry.Register(builtins.NewListStepOutputsTool())
 

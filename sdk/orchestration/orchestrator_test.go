@@ -56,7 +56,7 @@ type recordingEvents struct {
 }
 
 func (r *recordingEvents) OnPlanGenerated(stepCount int, steps []PlanStepEvent) { r.planGenerated++ }
-func (r *recordingEvents) OnStepStarted(stepID, description string)             { r.stepStarted++ }
+func (r *recordingEvents) OnStepStarted(stepID, description, summary string)    { r.stepStarted++ }
 func (r *recordingEvents) OnStepCompleted(stepID string, success bool, duration time.Duration, errMsg string) {
 	r.stepCompleted++
 }

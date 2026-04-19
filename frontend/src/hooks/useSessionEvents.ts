@@ -407,7 +407,7 @@ export function useSessionEvents(sessionId: string | null) {
         sessionId,
         type: 'plan_step_start',
         content: stepData.description || '',
-        metadata: { step_id: stepData.step_id, description: stepData.description },
+        metadata: { step_id: stepData.step_id, description: stepData.description, summary: stepData.summary },
         timestamp: Date.now(),
       })
     })

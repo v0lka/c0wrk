@@ -196,8 +196,8 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []core.PlanStepEvent) 
 }
 
 // PlanStepStart emits a plan step start event with progress info.
-func (e *EventEmitter) PlanStepStart(stepID, description string) {
-	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description)
+func (e *EventEmitter) PlanStepStart(stepID, description, summary string) {
+	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description, "summary", summary)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.planCurrentStepID = stepID
@@ -208,6 +208,7 @@ func (e *EventEmitter) PlanStepStart(stepID, description string) {
 		Data: map[string]any{
 			"step_id":            stepID,
 			"description":        description,
+			"summary":            summary,
 			"progress":           e.computeProgress(completedCount),
 			"current_step_index": completedCount, // 0-based index of current step
 			"completed_count":    completedCount,

@@ -14,7 +14,7 @@ const toolReadStepOutputDescription = "Read the complete output of a specific co
 
 const toolListStepOutputsDescription = "List all available step outputs with short previews (up to 200 characters each). Use this to discover which completed step results are available before fetching a specific one with read_step_output."
 
-// ReadStepOutputTool reads the full output of a completed step from SharedWorkspace.
+// ReadStepOutputTool reads the full output of a completed step from StepOutputStore.
 type ReadStepOutputTool struct {
 	*tools.BaseTool
 }
@@ -43,24 +43,24 @@ type ReadStepOutputInput struct {
 	StepID string `json:"step_id"`
 }
 
-// Execute reads the step output from SharedWorkspace.
+// Execute reads the step output from StepOutputStore.
 func (t *ReadStepOutputTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params ReadStepOutputInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)
 	}
 
-	ws := agent.SharedWorkspaceFromContext(ctx)
-	if ws == nil {
-		return tools.ErrorResult("Workspace not available"), nil
+	store := agent.StepOutputStoreFromContext(ctx)
+	if store == nil {
+		return tools.ErrorResult("Step output store not available"), nil
 	}
 
-	artifact, ok := ws.Get(params.StepID + "/output")
+	output, ok := store.GetStepOutput(params.StepID)
 	if !ok {
 		return tools.ErrorResult("No output found for step: %s", params.StepID), nil
 	}
 
-	return tools.ToolResult{Content: artifact.Content}, nil
+	return tools.ToolResult{Content: output}, nil
 }
 
 // ListStepOutputsTool lists all available step outputs with previews.
@@ -87,7 +87,7 @@ type ListStepOutputsInput struct{}
 
 const previewMaxLen = 200
 
-// Execute lists all step outputs from SharedWorkspace with previews.
+// Execute lists all step outputs from StepOutputStore with previews.
 func (t *ListStepOutputsTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	// Validate input (should be empty object)
 	var params ListStepOutputsInput
@@ -95,32 +95,26 @@ func (t *ListStepOutputsTool) Execute(ctx context.Context, input json.RawMessage
 		return tools.ParseInputError(err)
 	}
 
-	ws := agent.SharedWorkspaceFromContext(ctx)
-	if ws == nil {
-		return tools.ErrorResult("Workspace not available"), nil
+	store := agent.StepOutputStoreFromContext(ctx)
+	if store == nil {
+		return tools.ErrorResult("Step output store not available"), nil
 	}
 
-	artifacts := ws.List()
-	if len(artifacts) == 0 {
+	entries := store.ListStepOutputs()
+	if len(entries) == 0 {
 		return tools.ToolResult{Content: "No step outputs available yet"}, nil
 	}
 
 	var b strings.Builder
-	for _, artifact := range artifacts {
-		// Extract step ID from key (format: "stepID/output")
-		stepID := artifact.Key
-		if idx := strings.LastIndex(stepID, "/output"); idx != -1 {
-			stepID = stepID[:idx]
-		}
-
-		preview := artifact.Content
+	for _, e := range entries {
+		preview := e.FullOutput
 		if len(preview) > previewMaxLen {
 			preview = preview[:previewMaxLen] + "..."
 		}
 		preview = strings.ReplaceAll(preview, "\n", " ")
 		preview = strings.TrimSpace(preview)
 
-		fmt.Fprintf(&b, "- %s: %s\n", stepID, preview)
+		fmt.Fprintf(&b, "- %s: %s\n", e.StepID, preview)
 	}
 
 	return tools.ToolResult{Content: b.String()}, nil

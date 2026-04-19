@@ -25,7 +25,7 @@ type Reflector interface {
 type Events interface {
 	agent.AgentEvents
 	OnPlanGenerated(stepCount int, steps []PlanStepEvent)
-	OnStepStarted(stepID, description string)
+	OnStepStarted(stepID, description, summary string)
 	OnStepCompleted(stepID string, success bool, duration time.Duration, errMsg string)
 	OnReflected(reflection *Reflection, attempt, maxAttempts int)
 	OnRetry(attempt, maxAttempts int)
