@@ -18,6 +18,7 @@ require (
 require github.com/fsnotify/fsnotify v1.9.0
 
 require (
+	github.com/go-git/go-git/v6 v6.0.0-alpha.2
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/sergi/go-diff v1.4.0
 	github.com/sugarme/tokenizer v0.3.0
@@ -32,7 +33,6 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
 	github.com/go-git/go-billy/v6 v6.0.0-20260328065524-593ae452e14d // indirect
-	github.com/go-git/go-git/v6 v6.0.0-alpha.2 // indirect
 	github.com/kevinburke/ssh_config v1.6.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect

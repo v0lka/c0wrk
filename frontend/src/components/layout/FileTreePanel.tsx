@@ -1,16 +1,77 @@
-import { useEffect, useCallback } from 'react'
-import { ChevronRight, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { ChevronRight, Loader2, X, Regex, Asterisk } from 'lucide-react'
+import picomatch from 'picomatch'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useFileTreeStore, type FileNode } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { FileIcon } from './FileIcon'
 
+type FilterMode = 'glob' | 'regex'
+
+function buildMatcher(
+  filterText: string,
+  filterMode: FilterMode,
+): ((name: string) => boolean) | null {
+  const trimmed = filterText.trim()
+  if (!trimmed) return null
+
+  if (filterMode === 'glob') {
+    try {
+      const isMatch = picomatch(trimmed, { nocase: true })
+      return isMatch
+    } catch {
+      return () => false
+    }
+  }
+
+  // regex mode
+  try {
+    const re = new RegExp(trimmed, 'i')
+    return (name: string) => re.test(name)
+  } catch {
+    return () => false
+  }
+}
+
+function useNodeVisibility(
+  entries: Record<string, FileNode[]>,
+  matcher: ((name: string) => boolean) | null,
+) {
+  return useMemo(() => {
+    if (!matcher) return null // no filter active — everything visible
+
+    const visible = new Set<string>()
+
+    function walk(nodes: FileNode[] | undefined): boolean {
+      if (!nodes) return false
+      let any = false
+      for (const node of nodes) {
+        const selfMatch = matcher!(node.name)
+        const childMatch = node.is_dir ? walk(entries[node.path]) : false
+        if (selfMatch || childMatch) {
+          visible.add(node.path)
+          any = true
+        }
+      }
+      return any
+    }
+
+    // Walk from every known parent
+    for (const key of Object.keys(entries)) {
+      walk(entries[key])
+    }
+
+    return visible
+  }, [entries, matcher])
+}
+
 interface TreeNodeProps {
   node: FileNode
   depth: number
+  visiblePaths: Set<string> | null
 }
 
-function TreeNode({ node, depth }: TreeNodeProps) {
+function TreeNode({ node, depth, visiblePaths }: TreeNodeProps) {
   const expandedDirs = useFileTreeStore((s) => s.expandedDirs)
   const loadingDirs = useFileTreeStore((s) => s.loadingDirs)
   const entries = useFileTreeStore((s) => s.entries)
@@ -26,6 +87,9 @@ function TreeNode({ node, depth }: TreeNodeProps) {
       toggleDir(node.path)
     }
   }, [node.is_dir, node.path, toggleDir])
+
+  // If filter is active and this path isn't visible, hide it
+  if (visiblePaths && !visiblePaths.has(node.path)) return null
 
   return (
     <>
@@ -64,7 +128,7 @@ function TreeNode({ node, depth }: TreeNodeProps) {
       {isExpanded && children && (
         <>
           {children.map((child) => (
-            <TreeNode key={child.path} node={child} depth={depth + 1} />
+            <TreeNode key={child.path} node={child} depth={depth + 1} visiblePaths={visiblePaths} />
           ))}
         </>
       )}
@@ -82,6 +146,24 @@ export function FileTreePanel() {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const projects = useProjectStore((s) => s.projects)
   const activeProject = projects?.find((p) => p.id === activeProjectId)
+
+  const [filterText, setFilterText] = useState('')
+  const [filterMode, setFilterMode] = useState<FilterMode>('glob')
+
+  const matcher = useMemo(
+    () => buildMatcher(filterText, filterMode),
+    [filterText, filterMode],
+  )
+  const visiblePaths = useNodeVisibility(entries, matcher)
+
+  const handleToggleMode = useCallback(() => {
+    setFilterMode((prev) => (prev === 'glob' ? 'regex' : 'glob'))
+    setFilterText('')
+  }, [])
+
+  const handleClearFilter = useCallback(() => {
+    setFilterText('')
+  }, [])
 
   // React to project changes
   useEffect(() => {
@@ -123,6 +205,42 @@ export function FileTreePanel() {
       <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-border flex-shrink-0">
         WORKSPACE
       </div>
+
+      {/* Filter bar */}
+      <div className="px-2 py-1.5 flex items-center gap-1 border-b border-zinc-800 flex-shrink-0">
+        <input
+          type="text"
+          value={filterText}
+          onChange={(e) => setFilterText(e.target.value)}
+          placeholder={`Filter (${filterMode})…`}
+          className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-zinc-500 transition-colors"
+        />
+        {filterText && (
+          <button
+            onClick={handleClearFilter}
+            className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 transition-colors"
+            title="Clear filter"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+        <button
+          onClick={handleToggleMode}
+          className={`p-0.5 rounded hover:bg-zinc-700 transition-colors ${
+            filterMode === 'regex'
+              ? 'text-blue-400 hover:text-blue-300'
+              : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+          title={`Mode: ${filterMode} (click to toggle)`}
+        >
+          {filterMode === 'regex' ? (
+            <Regex className="h-3.5 w-3.5" />
+          ) : (
+            <Asterisk className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+
       <ScrollArea className="flex-1">
         <div className="py-1" role="tree">
           {rootEntries === undefined ? (
@@ -133,7 +251,7 @@ export function FileTreePanel() {
             </div>
           ) : (
             rootEntries.map((node) => (
-              <TreeNode key={node.path} node={node} depth={0} />
+              <TreeNode key={node.path} node={node} depth={0} visiblePaths={visiblePaths} />
             ))
           )}
         </div>
