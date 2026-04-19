@@ -25,13 +25,15 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ content, reasonin
   return (
     <div>
       {hasReasoning && (
-        <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-          <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors group">
-            {isOpen ? (
-              <ChevronDown className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5" />
-            )}
+        <Collapsible open={isOpen} onOpenChange={setIsOpen} className="group">
+          <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
+            <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
+              {isOpen ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+            </span>
             <BrainCircuit className="h-3.5 w-3.5" />
             <span className="text-sm">Thought</span>
           </CollapsibleTrigger>

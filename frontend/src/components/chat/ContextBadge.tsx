@@ -9,7 +9,18 @@ export function ContextBadge() {
   const sessionFamily = useChatStore(s => s.sessionFamily)
 
   const hasTokens = sessionInputTokens > 0 || sessionOutputTokens > 0
-  if (!hasTokens) return null
+  const hasModel = sessionModel && sessionModel !== ''
+  const hasFamily = sessionFamily && sessionFamily !== ''
+
+  // Minimal state: no model and no tokens
+  if (!hasTokens && !hasModel) {
+    return (
+      <span className="text-xs whitespace-nowrap text-muted-foreground/50 flex items-center gap-1">
+        <BrainCircuit className="h-3 w-3" />
+        <span>No activity yet</span>
+      </span>
+    )
+  }
 
   const tooltipParts = [
     `Model: ${sessionModel || 'unknown'}`,
@@ -17,10 +28,6 @@ export function ContextBadge() {
     `Session input: ${sessionInputTokens.toLocaleString()} tokens`,
     `Session output: ${sessionOutputTokens.toLocaleString()} tokens`,
   ]
-
-  // Build display: <icon> <model> (family): in <input> / out <output>
-  const hasModel = sessionModel && sessionModel !== ''
-  const hasFamily = sessionFamily && sessionFamily !== ''
 
   return (
     <span
@@ -34,10 +41,14 @@ export function ContextBadge() {
       {hasModel && hasFamily && (
         <span className="text-muted-foreground/70">({sessionFamily})</span>
       )}
-      <span>:</span>
-      <span>{formatTokenCount(sessionInputTokens)} in</span>
-      <span>/</span>
-      <span>{formatTokenCount(sessionOutputTokens)} out</span>
+      {hasTokens && (
+        <>
+          <span>:</span>
+          <span>{formatTokenCount(sessionInputTokens)} in</span>
+          <span>/</span>
+          <span>{formatTokenCount(sessionOutputTokens)} out</span>
+        </>
+      )}
     </span>
   )
 }

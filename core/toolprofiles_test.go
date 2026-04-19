@@ -13,8 +13,8 @@ func TestToolProfilesMapContent(t *testing.T) {
 		expectNil   bool
 	}{
 		{"router", 0, true, false},     // empty slice
-		{"planner", 6, true, false},    // 6 tools
-		{"reflector", 7, true, false},  // 7 tools
+		{"planner", 7, true, false},    // 7 tools
+		{"reflector", 8, true, false},  // 8 tools
 		{"evaluator", 0, false, false}, // should not exist
 		{"executor", 0, false, true},   // should not exist (gets all tools via nil)
 		{"unknown", 0, false, false},   // should not exist
@@ -57,12 +57,13 @@ func TestPlannerProfileContent(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"read_file":      true,
-		"list_directory": true,
-		"search_files":   true,
-		"search_content": true,
-		"ripgrep":        true,
-		"glob":           true,
+		"read_file":        true,
+		"list_directory":   true,
+		"search_files":     true,
+		"search_content":   true,
+		"ripgrep":          true,
+		"glob":             true,
+		"semantic_search":  true,
 	}
 
 	if len(profile) != len(expectedTools) {
@@ -84,13 +85,14 @@ func TestReflectorProfileContent(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"read_file":      true,
-		"list_directory": true,
-		"search_files":   true,
-		"search_content": true,
-		"ripgrep":        true,
-		"glob":           true,
-		"read_evidence":  true,
+		"read_file":        true,
+		"list_directory":   true,
+		"search_files":     true,
+		"search_content":   true,
+		"ripgrep":          true,
+		"glob":             true,
+		"read_evidence":    true,
+		"semantic_search":  true,
 	}
 
 	if len(profile) != len(expectedTools) {

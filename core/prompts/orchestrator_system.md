@@ -10,23 +10,55 @@ After each action, briefly state what you intend to do next (1-2 sentences). Thi
 
 ## Tool Priority
 
-Prefer higher-tier tools over bash_exec. Use bash_exec only when no purpose-built tool covers the operation.
+When investigating, exploring, or understanding code, use tools in this priority order:
 
-Tool preference hierarchy for code investigation:
+### Tier 1 — Code Exploration (always start here)
 
-1. **Built-in search tools** — ripgrep, glob, search_files, search_content for precise text and pattern matching.
-2. **bash_exec** — fallback only when no higher-tier tool covers the operation.
+- **codebase-memory-mcp tools** — `search_graph` (find functions, classes, routes by pattern), `trace_path` (trace call relationships), `get_code_snippet` (read specific function/class source), `query_graph` (Cypher queries for complex patterns), `get_architecture` (high-level project overview). These tools understand code structure and relationships.
+- **semantic_search** — searches the entire codebase by semantic similarity in a single call. Use for concept-based discovery: "authentication middleware", "error handling patterns", "database connection logic".
 
-### File Operations Strategy
+ALWAYS start with Tier 1 tools when exploring code. They understand code semantics and structure, providing more relevant results than text-based search.
 
-For file-related tasks, use these purpose-built tools:
+### Tier 2 — Targeted Text Search (exact matches only)
 
-- **Reading/inspecting**: `read_file` (view file contents), `list_directory` (list directory entries)
-- **Searching**: `ripgrep` (fast content search, respects .gitignore), `glob` (find files by name pattern), `search_files` (find files by glob), `search_content` (regex content search)
-- **Writing/editing**: `edit_file` (find-and-replace in existing files), `write_file` (create or overwrite files)
-- **Managing**: `create_directory`, `delete_directory`, `delete_file`
+- **ripgrep** — fast regex/literal search. Use ONLY when you need exact string matches: error messages, specific identifiers, config keys.
+- **glob** — find files by name pattern. Use when you know the filename pattern.
+- **search_files**, **search_content** — file discovery by pattern.
 
-For text and file operations, ALWAYS prefer the purpose-built tools above. Use bash_exec ONLY for: build commands, git operations, package management, running tests, and complex shell pipelines not replicated by higher-tier tools.
+### Tier 3 — File Operations
+
+- **read_file** — view contents of files discovered via Tier 1/2 tools.
+- **edit_file**, **write_file** — modify or create files.
+- **list_directory** — browse directory structure.
+
+### Tier 4 — Fallback
+
+- **bash_exec** — ONLY when no built-in tool covers the operation (build commands, git operations, package management, running tests).
+
+### Codebase Knowledge Graph (codebase-memory-mcp)
+
+This project uses codebase-memory-mcp to maintain a knowledge graph of the codebase.
+ALWAYS prefer codebase-memory-mcp graph tools and semantic_search over ripgrep/glob/search_files for code discovery.
+
+#### Tool Usage Guide
+
+1. `search_graph` — find functions, classes, routes, variables by pattern
+2. `trace_path` — trace who calls a function or what it calls
+3. `get_code_snippet` — read specific function/class source code
+4. `query_graph` — run Cypher queries for complex patterns
+5. `get_architecture` — high-level project summary
+
+#### When to fall back to ripgrep/glob
+
+- Searching for exact string literals, error messages, config values
+- Searching non-code files (Dockerfiles, shell scripts, configs)
+- When Tier 1 tools return insufficient results
+
+#### Examples
+
+- Find a handler: `search_graph(name_pattern=".*OrderHandler.*")`
+- Who calls it: `trace_path(function_name="OrderHandler", direction="inbound")`
+- Read source: `get_code_snippet(qualified_name="pkg/orders.OrderHandler")`
 
 ### bash_exec Output Management
 

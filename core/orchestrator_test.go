@@ -10,6 +10,7 @@ import (
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
 	tools "github.com/user/agent/sdk/tools"
+	"github.com/user/agent/sdk/tools/builtins"
 )
 
 // mockTool implements tools.Tool for testing.
@@ -93,6 +94,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
+		nil, // vectorSearchFunc - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -210,6 +212,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
+		nil, // vectorSearchFunc - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -284,6 +287,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
+		nil, // vectorSearchFunc - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "test")
@@ -356,6 +360,7 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
+		nil, // vectorSearchFunc - nil for tests
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -463,6 +468,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
+		nil, // vectorSearchFunc - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -544,6 +550,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
+		nil, // vectorSearchFunc - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -694,6 +701,7 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Run the tests")
@@ -1007,6 +1015,7 @@ func TestHandleMessage_Continuation(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	// Set up mock task persistence with a stored task
@@ -1111,6 +1120,7 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	// Set up mock task persistence with a stored task
@@ -1181,6 +1191,7 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 	// Note: taskStore is nil by default
 
@@ -1232,6 +1243,7 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	// Set up mock task persistence that returns nil (task not found)
@@ -1315,6 +1327,7 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{})
@@ -1416,6 +1429,7 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	// Set up mock task persistence with a stored task
@@ -1538,6 +1552,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	// Create mock store that tracks ReactivateTask calls
@@ -1656,6 +1671,7 @@ func TestHandleMessage_Clarification(t *testing.T) {
 		defaultCircuitBreakerConfig,
 		nil, // bbFactory
 		nil, // trackingCaller
+		nil, // vectorSearchFunc
 	)
 
 	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{})
@@ -1722,4 +1738,147 @@ func TestBuildSystemPrompt_ReactMode(t *testing.T) {
 	}
 }
 
+// TestOrchestrator_VectorSearchHints_NilFunc verifies that when vectorSearchFunc is nil,
+// HandleMessage works normally without injecting hints (no panic).
+func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Verify no vector search hints in system prompt
+			for _, msg := range req.Messages {
+				if msg.Role == "system" && strings.Contains(msg.Content, "Relevant Project Files") {
+					t.Error("system prompt should NOT contain vector search hints when func is nil")
+				}
+			}
+			// Router returns needs_clarification to short-circuit
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": true}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
 
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	orchestrator := NewOrchestrator(
+		NewRouter(mockLLM, 5),
+		NewPlanner(mockLLM),
+		mockLLM,
+		registry,
+		registry,
+		counter,
+		OrchestratorConfig{MaxSteps: 10},
+		testContextFactory,
+		nil, // reflector
+		nil, // logger
+		nil, // emitter
+		nil, // modelRegistry
+		ToolResultBudget{},
+		defaultCircuitBreakerConfig,
+		nil, // bbFactory
+		nil, // trackingCaller
+		nil, // vectorSearchFunc - nil means no RAG hints
+	)
+
+	result, err := orchestrator.Handle(context.Background(), "test query")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+// TestOrchestrator_VectorSearchHints_WithResults verifies that when vectorSearchFunc
+// returns results, hints are injected into the context and available downstream.
+func TestOrchestrator_VectorSearchHints_WithResults(t *testing.T) {
+	// Create a vector search function that returns test results
+	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+		return []builtins.VectorSearchResult{
+			{
+				FilePath: "src/main.go",
+				FileName: "main.go",
+				Content:  "package main\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}",
+				Score:    0.95,
+			},
+			{
+				FilePath: "src/handler.go",
+				FileName: "handler.go",
+				Content:  "func handleRequest(w http.ResponseWriter, r *http.Request) {\n\tw.WriteHeader(200)\n}",
+				Score:    0.85,
+			},
+		}, nil
+	}
+
+	// Test the hint injection directly via injectVectorSearchHints
+	o := &Orchestrator{
+		vectorSearchFunc: searchFunc,
+	}
+
+	ctx := context.Background()
+	ctx = o.injectVectorSearchHints(ctx, "how does the main function work")
+
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints == nil {
+		t.Fatal("expected vector search hints in context")
+	}
+	if len(hints.Files) != 2 {
+		t.Fatalf("expected 2 hints, got %d", len(hints.Files))
+	}
+	if hints.Files[0].FilePath != "src/main.go" {
+		t.Errorf("expected first hint path 'src/main.go', got %q", hints.Files[0].FilePath)
+	}
+	if hints.Files[1].FilePath != "src/handler.go" {
+		t.Errorf("expected second hint path 'src/handler.go', got %q", hints.Files[1].FilePath)
+	}
+}
+
+// TestOrchestrator_VectorSearchHints_ContentTruncation verifies that hint summaries
+// are truncated to 100 characters.
+func TestOrchestrator_VectorSearchHints_ContentTruncation(t *testing.T) {
+	longContent := strings.Repeat("a", 200)
+	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+		return []builtins.VectorSearchResult{
+			{
+				FilePath: "long.go",
+				FileName: "long.go",
+				Content:  longContent,
+				Score:    0.9,
+			},
+		}, nil
+	}
+
+	o := &Orchestrator{
+		vectorSearchFunc: searchFunc,
+	}
+
+	ctx := o.injectVectorSearchHints(context.Background(), "query")
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints == nil {
+		t.Fatal("expected hints")
+	}
+	if len(hints.Files[0].Summary) != 100 {
+		t.Errorf("expected summary length 100, got %d", len(hints.Files[0].Summary))
+	}
+}
+
+// TestOrchestrator_VectorSearchHints_ErrorSkipped verifies that when the vector search
+// function returns an error, hints are silently skipped.
+func TestOrchestrator_VectorSearchHints_ErrorSkipped(t *testing.T) {
+	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+		return nil, context.DeadlineExceeded
+	}
+
+	o := &Orchestrator{
+		vectorSearchFunc: searchFunc,
+	}
+
+	ctx := o.injectVectorSearchHints(context.Background(), "query")
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints != nil {
+		t.Error("expected nil hints when search returns error")
+	}
+}

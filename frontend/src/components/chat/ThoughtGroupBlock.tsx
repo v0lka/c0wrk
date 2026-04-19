@@ -14,13 +14,15 @@ export function ThoughtGroupBlock({ thoughts }: ThoughtGroupBlockProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+    <Collapsible open={isOpen} onOpenChange={setIsOpen} className="group">
       <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
-        {isOpen ? (
-          <ChevronDown className="h-3.5 w-3.5" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5" />
-        )}
+        <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
+          {isOpen ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </span>
         <BrainCircuit className="h-3.5 w-3.5" />
         <span className="text-sm">Reasoning ({thoughts.length})</span>
       </CollapsibleTrigger>

@@ -74,29 +74,36 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 	// Track which stored files we've seen on disk.
 	seen := make(map[string]bool, len(storedHashes))
 
-	// Walk workspace files.
-	walkErr := filepath.WalkDir(workspacePath, func(path string, d fs.DirEntry, walkDirErr error) error {
+	// Walk workspace files using the same filtering as walkProjectFiles.
+	absRoot, absErr := filepath.Abs(workspacePath)
+	if absErr != nil {
+		return nil, nil, nil, fmt.Errorf("resolving workspace path: %w", absErr)
+	}
+	gitignorePatterns := loadGitignorePatterns(absRoot)
+
+	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {
 		if walkDirErr != nil {
 			return walkDirErr
 		}
 
-		// Skip hidden directories and common non-source directories.
 		if d.IsDir() {
-			base := filepath.Base(path)
-			if strings.HasPrefix(base, ".") || base == "node_modules" || base == "vendor" || base == "__pycache__" {
+			if isIgnoredDir(path, absRoot, gitignorePatterns) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		// Skip non-regular files.
 		if !d.Type().IsRegular() {
 			return nil
 		}
 
-		absPath, absErr := filepath.Abs(path)
-		if absErr != nil {
-			return nil //nolint:nilerr // skip files we can't resolve
+		if isIgnoredFile(path, absRoot, gitignorePatterns) {
+			return nil
+		}
+
+		absPath, pathErr := filepath.Abs(path)
+		if pathErr != nil {
+			return nil //nolint:nilerr // skip unresolvable paths
 		}
 
 		content, readErr := os.ReadFile(absPath)
@@ -237,6 +244,16 @@ func DocumentID(filePath string, chunkIndex int) string {
 	h := sha256.Sum256([]byte(filePath))
 	pathHash := hex.EncodeToString(h[:8]) // first 8 bytes = 16 hex chars
 	return fmt.Sprintf("%s:%d", pathHash, chunkIndex)
+}
+
+// collectionUniqueFileCount returns the number of unique files in the collection.
+// Caller must hold at least s.mu (read or write).
+func (s *Service) collectionUniqueFileCount() int {
+	hashes, err := s.getCollectionFileHashes()
+	if err != nil {
+		return 0
+	}
+	return len(hashes)
 }
 
 // computeHash returns the SHA-256 hex digest of the content.

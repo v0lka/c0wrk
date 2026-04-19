@@ -11,14 +11,6 @@ import (
 	tools "github.com/user/agent/sdk/tools"
 )
 
-// codebaseMemoryKeyType is the context key for signaling codebase-memory MCP availability.
-type codebaseMemoryKeyType struct{}
-
-// codebaseMemoryKey is used to pass codebase-memory availability through context
-// to buildSystemPrompt. When present and true, the codebase-memory guidance block
-// is appended to the system prompt.
-var codebaseMemoryKey = codebaseMemoryKeyType{}
-
 // vectorSearchHintsKeyType is the context key for auto-RAG hints.
 type vectorSearchHintsKeyType struct{}
 
@@ -48,32 +40,6 @@ func VectorSearchHintsFromContext(ctx context.Context) *VectorSearchHints {
 	}
 	return nil
 }
-
-// codebaseMemoryBlock is the standardized guidance block injected when codebase-memory
-// MCP tools are available at runtime.
-const codebaseMemoryBlock = `<!-- codebase-memory-mcp:start -->
-# Codebase Knowledge Graph (codebase-memory-mcp)
-
-This project uses codebase-memory-mcp to maintain a knowledge graph of the codebase.
-ALWAYS prefer MCP graph tools over grep/glob/file-search for code discovery.
-
-## Priority Order
-1. ` + "`search_graph`" + ` — find functions, classes, routes, variables by pattern
-2. ` + "`trace_path`" + ` — trace who calls a function or what it calls
-3. ` + "`get_code_snippet`" + ` — read specific function/class source code
-4. ` + "`query_graph`" + ` — run Cypher queries for complex patterns
-5. ` + "`get_architecture`" + ` — high-level project summary
-
-## When to fall back to grep/glob
-- Searching for string literals, error messages, config values
-- Searching non-code files (Dockerfiles, shell scripts, configs)
-- When MCP tools return insufficient results
-
-## Examples
-- Find a handler: ` + "`search_graph(name_pattern=\".*OrderHandler.*\")`" + `
-- Who calls it: ` + "`trace_path(function_name=\"OrderHandler\", direction=\"inbound\")`" + `
-- Read source: ` + "`get_code_snippet(qualified_name=\"pkg/orders.OrderHandler\")`" + `
-<!-- codebase-memory-mcp:end -->`
 
 // buildSystemPrompt creates the system prompt for executors.
 func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
@@ -111,11 +77,6 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	// Append environment context if available.
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
 		result += "\n\n" + envBlock
-	}
-
-	// Append codebase-memory guidance when MCP tools are available.
-	if ctx.Value(codebaseMemoryKey) != nil {
-		result += "\n\n" + codebaseMemoryBlock
 	}
 
 	// Append auto-RAG vector search hints when available.

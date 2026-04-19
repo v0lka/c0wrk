@@ -188,8 +188,12 @@ func TestIndexIncremental(t *testing.T) {
 	}
 
 	var progressStates []IndexState
+	var readyTotalFiles int
 	indexer.onProgress = func(state IndexState, filesIndexed, totalFiles int, currentFile string) {
 		progressStates = append(progressStates, state)
+		if state == IndexStateReady {
+			readyTotalFiles = totalFiles
+		}
 	}
 
 	if err := indexer.IndexIncremental(context.Background(), wsDir); err != nil {
@@ -216,6 +220,13 @@ func TestIndexIncremental(t *testing.T) {
 	_ = initialCount
 	if finalCount == 0 {
 		t.Error("expected non-zero document count after incremental index")
+	}
+
+	// The ready callback should report total files in the collection, not just changed files.
+	// The workspace has 4 files: main.go, lib/utils.go, config.yaml, new_file.go
+	// (README.md was deleted, so 4 original - 1 deleted + 1 new = 4)
+	if readyTotalFiles < 3 {
+		t.Errorf("expected readyTotalFiles to reflect total collection size (>= 3), got %d", readyTotalFiles)
 	}
 }
 

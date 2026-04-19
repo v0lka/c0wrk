@@ -135,9 +135,11 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 		batch = append(batch, docs...)
 
 		if len(batch) >= addDocumentBatchSize {
+			idx.logger.Debug("embedding document batch", "batchSize", len(batch), "indexed", indexed, "total", totalFiles)
 			if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
 				return fmt.Errorf("adding document batch: %w", addErr)
 			}
+			idx.logger.Debug("batch embedded successfully")
 			batch = batch[:0]
 		}
 
@@ -147,9 +149,11 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 
 	// Flush remaining documents.
 	if len(batch) > 0 {
+		idx.logger.Debug("embedding final document batch", "batchSize", len(batch), "indexed", indexed, "total", totalFiles)
 		if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
 			return fmt.Errorf("adding final document batch: %w", addErr)
 		}
+		idx.logger.Debug("final batch embedded successfully")
 	}
 
 	idx.service.SetReady(true)
@@ -180,6 +184,16 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	idx.logger.Info("incremental index starting",
 		"stale", len(stale), "new", len(newFiles), "deleted", len(deleted))
 
+	if len(stale) > 0 {
+		idx.logger.Info("stale files detected", "files", stale)
+	}
+	if len(newFiles) > 0 {
+		idx.logger.Info("new files detected", "files", newFiles)
+	}
+	if len(deleted) > 0 {
+		idx.logger.Info("deleted files detected", "files", deleted)
+	}
+
 	idx.service.AcquireWriteLock()
 	defer idx.service.ReleaseWriteLock()
 
@@ -202,6 +216,10 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		}
 	}
 
+	if len(filesToDelete) > 0 {
+		idx.onProgress(IndexStateReindexing, len(deleted), totalChanges, "")
+	}
+
 	// Re-index stale + new files.
 	filesToIndex := make([]string, 0, len(stale)+len(newFiles))
 	filesToIndex = append(filesToIndex, stale...)
@@ -215,6 +233,8 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 			return fmt.Errorf("incremental indexing cancelled: %w", err)
 		}
 
+		idx.logger.Debug("processing file", "path", filePath, "progress", progress+1, "total", totalChanges)
+
 		docs, chunkErr := idx.processFile(filePath)
 		if chunkErr != nil {
 			idx.logger.Warn("skipping file during incremental index", "path", filePath, "error", chunkErr)
@@ -225,9 +245,11 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		batch = append(batch, docs...)
 
 		if len(batch) >= addDocumentBatchSize {
+			idx.logger.Debug("embedding document batch (incremental)", "batchSize", len(batch), "progress", progress, "total", totalChanges)
 			if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
 				return fmt.Errorf("adding document batch: %w", addErr)
 			}
+			idx.logger.Debug("batch embedded successfully")
 			batch = batch[:0]
 		}
 
@@ -236,14 +258,17 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	}
 
 	if len(batch) > 0 {
+		idx.logger.Debug("embedding final document batch (incremental)", "batchSize", len(batch), "progress", progress, "total", totalChanges)
 		if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
 			return fmt.Errorf("adding final document batch: %w", addErr)
 		}
+		idx.logger.Debug("final batch embedded successfully")
 	}
 
 	idx.service.SetReady(true)
-	idx.onProgress(IndexStateReady, totalChanges, totalChanges, "")
-	idx.logger.Info("incremental index complete", "changes", totalChanges)
+	totalInIndex := idx.service.collectionUniqueFileCount()
+	idx.onProgress(IndexStateReady, totalChanges, totalInIndex, "")
+	idx.logger.Info("incremental index complete", "changes", totalChanges, "totalFiles", totalInIndex)
 	return nil
 }
 

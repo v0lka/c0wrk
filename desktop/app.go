@@ -54,11 +54,12 @@ type App struct {
 	indexingMu       sync.Mutex    // protects indexingDone
 
 	// Vector search state
-	vectorMu      sync.RWMutex // protects vectorIndexer and gitMonitor
+	vectorMu      sync.RWMutex // protects vectorIndexer, gitMonitor, and indexCancel
 	vectorService *vectorindex.Service
 	vectorIndexer *vectorindex.Indexer
 	embedder      *embedding.Embedder
 	gitMonitor    *vectorindex.GitMonitor
+	indexCancel   context.CancelFunc // cancels in-flight IndexFull goroutine
 }
 
 // NewApp creates a new App instance.

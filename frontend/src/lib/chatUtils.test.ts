@@ -234,7 +234,15 @@ describe('buildHistoryId (via chatMessageToUI)', () => {
     expect(result.id).toMatch(/^tool-/)
   })
 
-  it('tool_call with plan_step_id, step, call_idx → "tool-ps1-1-0"', () => {
+  it('tool_call with tool_call_id → "tool-{tool_call_id}"', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'tool_call',
+      metadata: JSON.stringify({ tool_call_id: 'tc_999_5', step: 1, tool: 'bash' }),
+    }))
+    expect(result.id).toBe('tool-tc_999_5')
+  })
+
+  it('tool_call with plan_step_id, step, call_idx → "tool-ps1-1-0" (no tool_call_id)', () => {
     const result = chatMessageToUI(makeMsg({
       role: 'tool_call',
       metadata: JSON.stringify({ plan_step_id: 'ps1', step: 1, call_idx: 0 }),

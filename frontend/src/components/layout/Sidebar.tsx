@@ -20,7 +20,7 @@ import { useSessionAPI } from '@/hooks/useSession'
 import { useProjectAPI } from '@/hooks/useProject'
 import { SettingsModal } from '@/components/settings/SettingsModal'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
-import { FileTreePanel } from './FileTreePanel'
+import { WorkspacePanel } from './WorkspacePanel'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import type { SessionInfo, ProjectInfo } from '@/lib/wails'
@@ -576,7 +576,7 @@ export function Sidebar() {
       {/* ═══ Body: file tree only ═══ */}
       {hasProject ? (
         <div className="flex-1 min-h-0 overflow-hidden">
-          <FileTreePanel />
+          <WorkspacePanel />
         </div>
       ) : projects === null ? (
         /* ═══ Projects still loading — show nothing ═══ */

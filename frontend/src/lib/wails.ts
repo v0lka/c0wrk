@@ -36,6 +36,7 @@ export interface RoutingData {
 }
 
 export interface ToolCallData {
+  tool_call_id?: string  // unique backend-generated ID for correlation
   step: number
   tool: string
   args: string
@@ -47,6 +48,7 @@ export interface ToolCallData {
 }
 
 export interface ToolResultData {
+  tool_call_id?: string  // matches the tool_call_id from the corresponding ToolCallData
   step: number
   result_len: number
   result: string

@@ -751,12 +751,12 @@ func TestUpdateSessionTokens(t *testing.T) {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
-	// Update tokens
-	if err := store.UpdateSessionTokens(session.ID, 10000, 7500); err != nil {
+	// Update tokens with model info
+	if err := store.UpdateSessionTokens(session.ID, 10000, 7500, "claude-3-opus", "anthropic"); err != nil {
 		t.Fatalf("failed to update session tokens: %v", err)
 	}
 
-	// Verify tokens were updated
+	// Verify tokens and model info were updated
 	loaded, err := store.LoadSession(session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
@@ -770,9 +770,15 @@ func TestUpdateSessionTokens(t *testing.T) {
 	if loaded.TotalOutputTokens != 7500 {
 		t.Errorf("output tokens mismatch: got %d, want %d", loaded.TotalOutputTokens, 7500)
 	}
+	if loaded.Model != "claude-3-opus" {
+		t.Errorf("model mismatch: got %q, want %q", loaded.Model, "claude-3-opus")
+	}
+	if loaded.Family != "anthropic" {
+		t.Errorf("family mismatch: got %q, want %q", loaded.Family, "anthropic")
+	}
 
 	// Update again (overwrite)
-	if err := store.UpdateSessionTokens(session.ID, 20000, 15000); err != nil {
+	if err := store.UpdateSessionTokens(session.ID, 20000, 15000, "gpt-4o", "openai"); err != nil {
 		t.Fatalf("failed to update session tokens again: %v", err)
 	}
 
@@ -785,6 +791,12 @@ func TestUpdateSessionTokens(t *testing.T) {
 	}
 	if loaded.TotalOutputTokens != 15000 {
 		t.Errorf("output tokens after update: got %d, want %d", loaded.TotalOutputTokens, 15000)
+	}
+	if loaded.Model != "gpt-4o" {
+		t.Errorf("model after update: got %q, want %q", loaded.Model, "gpt-4o")
+	}
+	if loaded.Family != "openai" {
+		t.Errorf("family after update: got %q, want %q", loaded.Family, "openai")
 	}
 }
 
@@ -1594,5 +1606,117 @@ func TestReactivateTask(t *testing.T) {
 	}
 	if reactivated.CompletedAt != nil {
 		t.Errorf("expected CompletedAt to be nil after reactivation, got %v", reactivated.CompletedAt)
+	}
+}
+
+// TestSaveAndLoadSessionModelFamily verifies model and family are persisted and loaded.
+func TestSaveAndLoadSessionModelFamily(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	session := SessionInfo{
+		ID:        "model-family-test",
+		ProjectID: testProjectID,
+		Name:      "Model Family Test",
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Model:     "claude-3-sonnet",
+		Family:    "anthropic",
+	}
+
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded session should not be nil")
+	}
+	if loaded.Model != "claude-3-sonnet" {
+		t.Errorf("model mismatch: got %q, want %q", loaded.Model, "claude-3-sonnet")
+	}
+	if loaded.Family != "anthropic" {
+		t.Errorf("family mismatch: got %q, want %q", loaded.Family, "anthropic")
+	}
+}
+
+// TestModelFamilyDefaultsEmpty verifies model and family default to empty strings.
+func TestModelFamilyDefaultsEmpty(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	session := SessionInfo{
+		ID:        "model-default-test",
+		ProjectID: testProjectID,
+		Name:      "Default Model Test",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	loaded, err := store.LoadSession(session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded session should not be nil")
+	}
+	if loaded.Model != "" {
+		t.Errorf("model should default to empty: got %q", loaded.Model)
+	}
+	if loaded.Family != "" {
+		t.Errorf("family should default to empty: got %q", loaded.Family)
+	}
+}
+
+// TestListSessionsIncludesModelFamily verifies list queries return model and family.
+func TestListSessionsIncludesModelFamily(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	session := SessionInfo{
+		ID:        "list-model-test",
+		ProjectID: testProjectID,
+		Name:      "List Model Test",
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Model:     "gpt-4o",
+		Family:    "openai",
+	}
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	// Test ListSessions
+	listed, err := store.ListSessions()
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(listed))
+	}
+	if listed[0].Model != "gpt-4o" {
+		t.Errorf("listed model mismatch: got %q, want %q", listed[0].Model, "gpt-4o")
+	}
+	if listed[0].Family != "openai" {
+		t.Errorf("listed family mismatch: got %q, want %q", listed[0].Family, "openai")
+	}
+
+	// Test ListSessionsByProject
+	byProject, err := store.ListSessionsByProject(testProjectID)
+	if err != nil {
+		t.Fatalf("failed to list sessions by project: %v", err)
+	}
+	if len(byProject) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(byProject))
+	}
+	if byProject[0].Model != "gpt-4o" {
+		t.Errorf("by-project model mismatch: got %q, want %q", byProject[0].Model, "gpt-4o")
+	}
+	if byProject[0].Family != "openai" {
+		t.Errorf("by-project family mismatch: got %q, want %q", byProject[0].Family, "openai")
 	}
 }

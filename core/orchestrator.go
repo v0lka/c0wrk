@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
-	tools "github.com/user/agent/sdk/tools"
+	sdktools "github.com/user/agent/sdk/tools"
 )
 
 type planModeKeyType struct{}
@@ -51,7 +53,7 @@ type Orchestrator struct {
 	planner             *Planner                    // for PlanContinuation in P&E continuations
 	router              *Router
 	llm                 LLMCaller
-	toolRegistry        *tools.ToolRegistry
+	toolRegistry        *sdktools.ToolRegistry
 	config              OrchestratorConfig
 	contextFactory      ContextManagerFactory
 	logger              *slog.Logger
@@ -62,6 +64,7 @@ type Orchestrator struct {
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
 	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
+	vectorSearchFunc    tools.VectorSearchFunc
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -71,7 +74,7 @@ func NewOrchestrator(
 	planner *Planner,
 	llmCaller LLMCaller,
 	toolExec ToolExecutor,
-	toolReg *tools.ToolRegistry,
+	toolReg *sdktools.ToolRegistry,
 	counter llm.TokenCounter,
 	cfg OrchestratorConfig,
 	contextFactory ContextManagerFactory,
@@ -83,6 +86,7 @@ func NewOrchestrator(
 	circuitBreaker CircuitBreakerConfig,
 	bbFactory BlackboardFactory, // optional, nil = default MapBlackboard
 	trackingCaller *llm.TrackingCaller, // optional, for per-step context tracker wiring
+	vectorSearchFunc tools.VectorSearchFunc, // optional, for auto-RAG hint generation
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
@@ -160,18 +164,19 @@ func NewOrchestrator(
 	engine := orchestration.New(sdkCfg)
 
 	return &Orchestrator{
-		engine:         engine,
-		planner:        planner,
-		router:         router,
-		llm:            llmCaller,
-		toolRegistry:   toolReg,
-		config:         cfg,
-		contextFactory: contextFactory,
-		logger:         logger,
-		emitter:        emitter,
-		modelRegistry:  modelRegistry,
-		bbFactory:      bbFactory,
-		trackingCaller: trackingCaller,
+		engine:           engine,
+		planner:          planner,
+		router:           router,
+		llm:              llmCaller,
+		toolRegistry:     toolReg,
+		config:           cfg,
+		contextFactory:   contextFactory,
+		logger:           logger,
+		emitter:          emitter,
+		modelRegistry:    modelRegistry,
+		bbFactory:        bbFactory,
+		trackingCaller:   trackingCaller,
+		vectorSearchFunc: vectorSearchFunc,
 	}
 }
 
@@ -201,9 +206,9 @@ func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleR
 func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *RoutingDecision) (*HandleResult, error) {
 	o.logDebug("orchestrator: resume started")
 
-	// Inject codebase-memory MCP availability into context for system prompt assembly.
-	if o.toolRegistry != nil && o.toolRegistry.HasSourceContaining("codebase-memory") {
-		ctx = context.WithValue(ctx, codebaseMemoryKey, true)
+	// Generate RAG hints from vector index using the original request.
+	if origReq := bb.GetOriginalRequest(); origReq != "" {
+		ctx = o.injectVectorSearchHints(ctx, origReq)
 	}
 
 	// Wire emitter into restored PersistentBlackboard so persistence warnings
@@ -255,6 +260,42 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	return result, nil
 }
 
+// injectVectorSearchHints queries the vector index for relevant files and
+// attaches the results as VectorSearchHints on the returned context.
+// If the vector search function is nil or the search fails, the original
+// context is returned unchanged (hints are a nice-to-have, not critical).
+func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string) context.Context {
+	if o.vectorSearchFunc == nil {
+		return ctx
+	}
+
+	ragCtx, ragCancel := context.WithTimeout(ctx, 2*time.Second)
+	results, err := o.vectorSearchFunc(ragCtx, query, 5, "")
+	ragCancel()
+
+	if err != nil {
+		o.logDebug("vector search hints skipped", "error", err)
+		return ctx
+	}
+	if len(results) == 0 {
+		return ctx
+	}
+
+	hints := &VectorSearchHints{}
+	for _, r := range results {
+		summary := r.Content
+		if len(summary) > 100 {
+			summary = summary[:100]
+		}
+		hints.Files = append(hints.Files, VectorSearchHint{
+			FilePath: r.FilePath,
+			Summary:  summary,
+		})
+	}
+	o.logDebug("vector search hints injected", "count", len(hints.Files))
+	return WithVectorSearchHints(ctx, hints)
+}
+
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.
 func (o *Orchestrator) emitInitialContextFill() {
 	var effectiveMax int
@@ -295,10 +336,8 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// 0. Always set plan mode context key (planning always happens first).
 	ctx = context.WithValue(ctx, PlanModeKey, true)
 
-	// Inject codebase-memory MCP availability into context for system prompt assembly.
-	if o.toolRegistry != nil && o.toolRegistry.HasSourceContaining("codebase-memory") {
-		ctx = context.WithValue(ctx, codebaseMemoryKey, true)
-	}
+	// Generate RAG hints from vector index (non-blocking, 2s timeout).
+	ctx = o.injectVectorSearchHints(ctx, message)
 
 	// 1. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)

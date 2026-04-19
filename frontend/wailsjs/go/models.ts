@@ -242,6 +242,8 @@ export namespace desktop {
 	export class SessionTokensResponse {
 	    total_input_tokens: number;
 	    total_output_tokens: number;
+	    model: string;
+	    family: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionTokensResponse(source);
@@ -251,6 +253,8 @@ export namespace desktop {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total_input_tokens = source["total_input_tokens"];
 	        this.total_output_tokens = source["total_output_tokens"];
+	        this.model = source["model"];
+	        this.family = source["family"];
 	    }
 	}
 	export class ToolInfo {
@@ -397,6 +401,8 @@ export namespace session {
 	    active: boolean;
 	    total_input_tokens: number;
 	    total_output_tokens: number;
+	    model: string;
+	    family: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -413,6 +419,8 @@ export namespace session {
 	        this.active = source["active"];
 	        this.total_input_tokens = source["total_input_tokens"];
 	        this.total_output_tokens = source["total_output_tokens"];
+	        this.model = source["model"];
+	        this.family = source["family"];
 	    }
 	}
 

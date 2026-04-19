@@ -221,15 +221,17 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
           const memStepNum = meta?.step as number | string
           const memCallIdx = meta?.call_idx as number | undefined
           const memRetryAttempt = meta?.retry_attempt as number | undefined
-          if (memStepNum !== undefined) {
-            const key = makeToolKey(planStepId, memStepNum, memCallIdx, memRetryAttempt)
-            toolItemsByStep.set(key, memoryItem as unknown as DisplayItem & { kind: 'tool' })
-            const pending = pendingResults.get(key)
+          const memToolCallId = meta?.tool_call_id as string | undefined
+          // Prefer tool_call_id for matching, fall back to composite key
+          const memKey = memToolCallId || (memStepNum !== undefined ? makeToolKey(planStepId, memStepNum, memCallIdx, memRetryAttempt) : undefined)
+          if (memKey) {
+            toolItemsByStep.set(memKey, memoryItem as unknown as DisplayItem & { kind: 'tool' })
+            const pending = pendingResults.get(memKey)
             if (pending) {
               memoryItem.result = pending.result
               memoryItem.resultLen = pending.resultLen
               memoryItem.status = pending.error ? 'error' : 'success'
-              pendingResults.delete(key)
+              pendingResults.delete(memKey)
             }
           }
           pushItem(memoryItem, planStepId)
@@ -251,8 +253,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         const stepNum = meta?.step as number | string
         const callIdx = meta?.call_idx as number | undefined
         const retryAttempt = meta?.retry_attempt as number | undefined
-        if (stepNum !== undefined) {
-          const key = makeToolKey(planStepId, stepNum, callIdx, retryAttempt)
+        const toolCallId = meta?.tool_call_id as string | undefined
+        // Prefer tool_call_id for matching, fall back to composite key
+        const key = toolCallId || (stepNum !== undefined ? makeToolKey(planStepId, stepNum, callIdx, retryAttempt) : undefined)
+        if (key) {
           toolItemsByStep.set(key, toolItem)
           // Apply any pending result that arrived before this tool_call
           const pending = pendingResults.get(key)
@@ -272,8 +276,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         const resultPlanStepId = meta?.plan_step_id as string | undefined
         const resultCallIdx = meta?.call_idx as number | undefined
         const retryAttempt = meta?.retry_attempt as number | undefined
-        if (stepNum !== undefined) {
-          const key = makeToolKey(resultPlanStepId, stepNum, resultCallIdx, retryAttempt)
+        const toolCallId = meta?.tool_call_id as string | undefined
+        // Prefer tool_call_id for matching, fall back to composite key
+        const key = toolCallId || (stepNum !== undefined ? makeToolKey(resultPlanStepId, stepNum, resultCallIdx, retryAttempt) : undefined)
+        if (key) {
           const toolItem = toolItemsByStep.get(key)
           if (toolItem) {
             toolItem.result = (meta?.result as string) ?? (meta?.result_preview as string)

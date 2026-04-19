@@ -9,7 +9,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolVectorSearchDescription = `Search the project codebase using semantic similarity. Finds code, configs, and documentation related to a natural language query. Results include file paths, line ranges, and content previews. Use this when you need to find code related to a concept but don't know the exact text to search for.`
+const toolVectorSearchDescription = `Recommended first choice for codebase investigation and discovery. Searches the entire project in a single call using semantic understanding — far more efficient than multiple grep or glob calls. Understands code intent, concepts, and relationships, not just text patterns. Excels at: finding implementations of a concept (e.g. "authentication middleware"), locating related functionality across files, discovering architecture patterns and data flows, and understanding how subsystems connect. Returns file paths, line ranges, relevance scores, and content previews. Prefer ripgrep/glob only for exact string literals, specific error messages, or known file-name patterns.`
 
 // VectorSearchResult represents a single search result.
 type VectorSearchResult struct {
@@ -43,7 +43,7 @@ const maxVectorSearchTopK = 50
 const defaultVectorSearchTopK = 10
 
 // maxContentPreview is the maximum number of characters shown for each result's content.
-const maxContentPreview = 200
+const maxContentPreview = 500
 
 // NewVectorSearchTool creates a new VectorSearchTool instance.
 func NewVectorSearchTool(searchFunc VectorSearchFunc, waitFunc VectorSearchWaitFunc) *VectorSearchTool {
@@ -56,16 +56,16 @@ func NewVectorSearchTool(searchFunc VectorSearchFunc, waitFunc VectorSearchWaitF
 		"properties": {
 			"query": {
 				"type": "string",
-				"description": "Natural language description of what you're looking for"
+				"description": "Natural language description of the code concept, functionality, or pattern you're looking for. Examples: 'authentication middleware', 'database connection pooling', 'error handling in HTTP handlers', 'WebSocket event dispatching logic'"
 			},
 			"top_k": {
 				"type": "integer",
-				"description": "Number of results to return (default: 10, max: 50)",
+				"description": "Number of results to return. Use 10 for focused lookups, 20-30 for broad exploration of a feature area. Default: 10, max: 50",
 				"default": 10
 			},
 			"file_pattern": {
 				"type": "string",
-				"description": "Optional glob pattern to filter files (e.g., '**/*.go', 'src/**/*.ts')"
+				"description": "Optional glob pattern to narrow results to specific file types or directories. Examples: '**/*.go' (Go files only), 'src/**/*.ts' (TypeScript in src), 'backend/**' (backend directory). Omit for whole-codebase search."
 			}
 		},
 		"required": ["query"]

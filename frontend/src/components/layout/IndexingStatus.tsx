@@ -2,11 +2,6 @@ import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { Database, Loader2, CheckCircle2 } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
 
-function truncateFile(path: string, maxLen = 40): string {
-  if (path.length <= maxLen) return path
-  return '…' + path.slice(-maxLen)
-}
-
 function formatCount(n: number): string {
   return n.toLocaleString()
 }
@@ -42,7 +37,7 @@ export function IndexingStatus() {
           </div>
           {currentFile && (
             <span className="text-muted-foreground/60 truncate max-w-[160px] text-[10px]" title={currentFile}>
-              {truncateFile(currentFile)}
+              {currentFile.split('/').pop()}
             </span>
           )}
         </div>
@@ -54,9 +49,23 @@ export function IndexingStatus() {
     return (
       <>
         <Separator orientation="vertical" className="h-4" />
-        <div className="flex items-center gap-1.5">
-          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-          <span className="text-muted-foreground">Updating index…</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <Loader2 className="h-3 w-3 animate-spin text-amber-500" />
+          <span className="text-muted-foreground whitespace-nowrap">
+            Updating: {formatCount(filesIndexed)}/{formatCount(totalFiles)} ({Math.round(progress)}%)
+          </span>
+          {/* Progress bar */}
+          <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+            <div
+              className="h-full rounded-full bg-amber-500 transition-all duration-300 ease-out"
+              style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+            />
+          </div>
+          {currentFile && (
+            <span className="text-muted-foreground/60 truncate max-w-[160px] text-[10px]" title={currentFile}>
+              {currentFile.split('/').pop()}
+            </span>
+          )}
         </div>
       </>
     )

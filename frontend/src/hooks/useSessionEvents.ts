@@ -110,7 +110,12 @@ export function useSessionEvents(sessionId: string | null) {
     // Load persisted session token totals
     GetSessionTokens(sessionId).then((resp) => {
       if (!mounted || !isActiveSession()) return
-      useChatStore.getState().setSessionTokens(resp.total_input_tokens ?? 0, resp.total_output_tokens ?? 0)
+      useChatStore.getState().setSessionTokens(
+        resp.total_input_tokens ?? 0,
+        resp.total_output_tokens ?? 0,
+        resp.model ?? '',
+        resp.family ?? ''
+      )
     }).catch(() => { }) // Ignore errors, will show 0
 
     // Reset panel data for new session (before any events arrive)
@@ -175,18 +180,25 @@ export function useSessionEvents(sessionId: string | null) {
       const toolCall = data
       const isMemoryTool = ['read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts'].includes(toolCall.tool)
       if (isActiveSession()) useChatStore.getState().setActivityStatus(isMemoryTool ? 'Using memory...' : `Running tool: ${toolCall.tool}...`)
-      const callIdx = toolCall.call_idx
-      const retryAttempt = toolCall.retry_attempt
-      const retrySuffix = retryAttempt ? `-r${retryAttempt}` : ''
-      const toolMsgId = toolCall.plan_step_id
-        ? `tool-${toolCall.plan_step_id}-${toolCall.step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
-        : `tool-${toolCall.step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
+      // Primary: use backend-generated tool_call_id for unambiguous correlation
+      // Fallback: reconstruct composite ID for backward compat with old events
+      let toolMsgId: string
+      if (toolCall.tool_call_id) {
+        toolMsgId = `tool-${toolCall.tool_call_id}`
+      } else {
+        const callIdx = toolCall.call_idx
+        const retryAttempt = toolCall.retry_attempt
+        const retrySuffix = retryAttempt ? `-r${retryAttempt}` : ''
+        toolMsgId = toolCall.plan_step_id
+          ? `tool-${toolCall.plan_step_id}-${toolCall.step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
+          : `tool-${toolCall.step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
+      }
       useChatStore.getState().addMessage(sessionId, {
         id: toolMsgId,
         sessionId,
         type: 'tool_call',
         content: `${toolCall.tool}(${toolCall.args})`,
-        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id, source: toolCall.source, call_idx: toolCall.call_idx, retry_attempt: toolCall.retry_attempt },
+        metadata: { step: toolCall.step, tool: toolCall.tool, args: toolCall.args, parsed_args: toolCall.parsed_args, plan_step_id: toolCall.plan_step_id, source: toolCall.source, call_idx: toolCall.call_idx, retry_attempt: toolCall.retry_attempt, tool_call_id: toolCall.tool_call_id },
         timestamp: Date.now(),
       })
     })
@@ -195,12 +207,19 @@ export function useSessionEvents(sessionId: string | null) {
       if (!mounted) return
       if (!isToolResultData(data)) return
       const toolResult = data
-      const resultCallIdx = toolResult.call_idx
-      const resultRetryAttempt = toolResult.retry_attempt
-      const resultRetrySuffix = resultRetryAttempt ? `-r${resultRetryAttempt}` : ''
-      const toolMsgId = toolResult.plan_step_id
-        ? `tool-${toolResult.plan_step_id}-${toolResult.step}${resultCallIdx !== undefined ? `-${resultCallIdx}` : ''}${resultRetrySuffix}`
-        : `tool-${toolResult.step}${resultCallIdx !== undefined ? `-${resultCallIdx}` : ''}${resultRetrySuffix}`
+      // Primary: use backend-generated tool_call_id for unambiguous correlation
+      // Fallback: reconstruct composite ID for backward compat
+      let toolMsgId: string
+      if (toolResult.tool_call_id) {
+        toolMsgId = `tool-${toolResult.tool_call_id}`
+      } else {
+        const resultCallIdx = toolResult.call_idx
+        const resultRetryAttempt = toolResult.retry_attempt
+        const resultRetrySuffix = resultRetryAttempt ? `-r${resultRetryAttempt}` : ''
+        toolMsgId = toolResult.plan_step_id
+          ? `tool-${toolResult.plan_step_id}-${toolResult.step}${resultCallIdx !== undefined ? `-${resultCallIdx}` : ''}${resultRetrySuffix}`
+          : `tool-${toolResult.step}${resultCallIdx !== undefined ? `-${resultCallIdx}` : ''}${resultRetrySuffix}`
+      }
       // Try to update the existing tool_call message
       const msgs = useChatStore.getState().messages[sessionId] || []
       const exists = msgs.some(m => m.id === toolMsgId)
@@ -215,6 +234,7 @@ export function useSessionEvents(sessionId: string | null) {
             plan_step_id: toolResult.plan_step_id,
             call_idx: toolResult.call_idx,
             retry_attempt: toolResult.retry_attempt,
+            tool_call_id: toolResult.tool_call_id,
           },
         })
       } else {
@@ -233,6 +253,7 @@ export function useSessionEvents(sessionId: string | null) {
             plan_step_id: toolResult.plan_step_id,
             call_idx: toolResult.call_idx,
             retry_attempt: toolResult.retry_attempt,
+            tool_call_id: toolResult.tool_call_id,
           },
           timestamp: Date.now(),
         })

@@ -50,6 +50,7 @@ type Embedder struct {
 	hiddenDim int
 	logger    *slog.Logger
 	mu        sync.Mutex
+	sess      *onnxSession // persistent session for batchSize=1 (fast path)
 }
 
 // NewEmbedder creates a new Embedder by loading the tokenizer and initializing
@@ -93,6 +94,13 @@ func NewEmbedder(cfg EmbedderConfig) (*Embedder, error) {
 		return nil, fmt.Errorf("loading tokenizer: %w", err)
 	}
 
+	logger.Info("creating persistent ONNX session", "model", cfg.ModelPath)
+	sess, err := newONNXSession(cfg.ModelPath, maxSeqLen, hiddenDim)
+	if err != nil {
+		_ = destroyONNXRuntime()
+		return nil, fmt.Errorf("creating persistent ONNX session: %w", err)
+	}
+
 	logger.Info("embedder initialized",
 		"model", cfg.ModelPath,
 		"maxSeqLen", maxSeqLen,
@@ -105,6 +113,7 @@ func NewEmbedder(cfg EmbedderConfig) (*Embedder, error) {
 		maxSeqLen: maxSeqLen,
 		hiddenDim: hiddenDim,
 		logger:    logger,
+		sess:      sess,
 	}, nil
 }
 
@@ -126,9 +135,20 @@ func (e *Embedder) EmbedDocuments(ctx context.Context, texts []string) ([][]floa
 	batchSize := len(texts)
 	inputIDs, attentionMask, tokenTypeIDs := e.tokenizer.EncodeBatch(texts, e.maxSeqLen)
 
-	e.logger.Debug("running inference", "batchSize", batchSize, "seqLen", e.maxSeqLen)
+	// Fast path: use the persistent session for single-text embedding.
+	// This is the common case when chromem-go calls EmbeddingFunc one text at a time.
+	if batchSize == 1 && e.sess != nil {
+		e.logger.Debug("running inference (persistent session)", "seqLen", e.maxSeqLen)
+		vec, err := e.sess.run(inputIDs, attentionMask, tokenTypeIDs)
+		if err != nil {
+			return nil, fmt.Errorf("embedding document: %w", err)
+		}
+		return [][]float32{vec}, nil
+	}
 
-	embeddings, err := runInference(e.modelPath, batchSize, e.maxSeqLen, e.hiddenDim, inputIDs, attentionMask, tokenTypeIDs)
+	// Batch path: create a temporary session for larger batches.
+	e.logger.Debug("running inference (batch session)", "batchSize", batchSize, "seqLen", e.maxSeqLen)
+	embeddings, err := runInferenceBatch(e.modelPath, batchSize, e.maxSeqLen, e.hiddenDim, inputIDs, attentionMask, tokenTypeIDs)
 	if err != nil {
 		return nil, fmt.Errorf("embedding batch of %d documents: %w", batchSize, err)
 	}
@@ -162,6 +182,10 @@ func (e *Embedder) Close() error {
 	defer e.mu.Unlock()
 
 	e.logger.Info("closing embedder, destroying ONNX Runtime environment")
+	if e.sess != nil {
+		e.sess.destroy()
+		e.sess = nil
+	}
 	if err := destroyONNXRuntime(); err != nil {
 		return fmt.Errorf("destroying ONNX Runtime environment: %w", err)
 	}

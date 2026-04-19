@@ -58,12 +58,18 @@ For each step:
 
 	planModeAgentProfiles = `
 Assign specialized profiles when it adds clear value. Omit profile for simple tasks.
-Prefer higher-tier tools over bash_exec in all profiles:
 
-- "researcher": information gathering, analysis (tools: web_search, web_fetch, ripgrep, glob, read_file, list_directory, search_files, search_content)
-- "coder": implementation, file operations (tools: read_file, write_file, edit_file, list_directory, ripgrep, glob; bash_exec for build/run/test)
-- "tester": test execution, verification (tools: bash_exec, ripgrep, glob, read_file, list_directory, search_files, search_content)
-- "executor": general purpose (default, all tools — follow tool priority tiers)`
+Tool Priority for ALL profiles:
+1. codebase-memory-mcp tools (search_graph, trace_path, get_code_snippet) + semantic_search — ALWAYS use first for code exploration
+2. ripgrep, glob — ONLY for exact text/pattern matching
+3. read_file, write_file, edit_file — for reading and modifying specific files
+4. bash_exec — fallback for build/run/test commands
+
+Profiles:
+- "researcher": information gathering, analysis (primary: search_graph, trace_path, get_code_snippet, semantic_search; secondary: ripgrep, glob, read_file, list_directory; web: web_search, web_fetch)
+- "coder": implementation, file operations (primary: search_graph, semantic_search, read_file, write_file, edit_file; secondary: ripgrep, glob, list_directory; bash_exec for build/run/test)
+- "tester": test execution, verification (primary: bash_exec for test runs; discovery: search_graph, semantic_search, ripgrep, glob, read_file)
+- "executor": general purpose (default, all tools — follow tool priority order above)`
 
 	planModeExtraSections = `
 ## Step Description Format
@@ -94,6 +100,16 @@ Steps are parallelizable when they have NO data dependencies — step B can run 
 ## Fields
 
 - ` + "`estimated_tools`" + `: Informational hint about likely tools. Not a constraint — the executor may use any available tool.
+
+## Tool Priority for Step Executors
+
+Step executors have access to codebase-memory-mcp and semantic_search tools. When writing step descriptions, direct executors to:
+1. Use search_graph, trace_path, get_code_snippet, semantic_search FIRST for understanding code
+2. Use ripgrep/glob ONLY for exact string/pattern matches
+3. Use read_file to examine specific files after discovery
+4. Use bash_exec as fallback for build/test/git commands
+
+Do NOT write steps like "use ripgrep to find..." when the intent is conceptual code exploration — use "use search_graph/semantic_search to find..." instead.
 `
 
 	planModeTail = "REFLECTIONS\n"
@@ -143,10 +159,17 @@ Choose the domain that matches the **primary activity** of the step.
 	continuationModeAgentProfiles = `
 Assign specialized profiles when it adds clear value. Omit profile for simple tasks.
 
-- "researcher": information gathering, analysis (tools: web_search, web_fetch, ripgrep, glob, read_file, list_directory, search_files, search_content)
-- "coder": implementation, file operations (tools: read_file, write_file, edit_file, list_directory, ripgrep, glob; bash_exec for build/run/test)
-- "tester": test execution, verification (tools: bash_exec, ripgrep, glob, read_file, list_directory, search_files, search_content)
-- "executor": general purpose (default, all tools)`
+Tool Priority for ALL profiles:
+1. codebase-memory-mcp tools (search_graph, trace_path, get_code_snippet) + semantic_search — ALWAYS use first for code exploration
+2. ripgrep, glob — ONLY for exact text/pattern matching
+3. read_file, write_file, edit_file — for reading and modifying specific files
+4. bash_exec — fallback for build/run/test commands
+
+Profiles:
+- "researcher": information gathering, analysis (primary: search_graph, trace_path, get_code_snippet, semantic_search; secondary: ripgrep, glob, read_file, list_directory; web: web_search, web_fetch)
+- "coder": implementation, file operations (primary: search_graph, semantic_search, read_file, write_file, edit_file; secondary: ripgrep, glob, list_directory; bash_exec for build/run/test)
+- "tester": test execution, verification (primary: bash_exec for test runs; discovery: search_graph, semantic_search, ripgrep, glob, read_file)
+- "executor": general purpose (default, all tools — follow tool priority order above)`
 
 	continuationModeExtraSections = ""
 	continuationModeTail          = ""

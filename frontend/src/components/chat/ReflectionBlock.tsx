@@ -58,13 +58,15 @@ export function ReflectionBlock({
       </div>
 
       {hasDetails && (
-        <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <Collapsible open={isOpen} onOpenChange={setIsOpen} className="group">
           <CollapsibleTrigger className="flex items-center gap-1 mt-1.5 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors">
-            {isOpen ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronRight className="h-3 w-3" />
-            )}
+            <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
+              {isOpen ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+            </span>
             <span>Details</span>
           </CollapsibleTrigger>
           <CollapsibleContent>

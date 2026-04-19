@@ -51,11 +51,13 @@ function PanelHeader({ isOpen, onToggle, icon, title, completed, total, verb }: 
       onClick={onToggle}
       className="flex items-center gap-2 w-full px-3 py-2 text-left text-foreground hover:bg-muted transition-colors rounded-sm"
     >
-      {isOpen ? (
-        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-      ) : (
-        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-      )}
+      <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
+        {isOpen ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+      </span>
       {icon}
       <span className="text-sm font-medium">{title}</span>
       <span className="text-xs text-muted-foreground">{completed}/{total} {verb}</span>
@@ -132,7 +134,7 @@ export function ExecutionPanels() {
   return (
     <div className="border-t border-border bg-card">
       {/* Execution plan panel */}
-      <div>
+      <div className="group">
         <PanelHeader
           isOpen={planOpen}
           onToggle={() => setPlanOpen(!planOpen)}

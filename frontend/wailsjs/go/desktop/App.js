@@ -82,6 +82,10 @@ export function ListDirectory(arg1) {
   return window['go']['desktop']['App']['ListDirectory'](arg1);
 }
 
+export function ListDirectoryRecursive(arg1) {
+  return window['go']['desktop']['App']['ListDirectoryRecursive'](arg1);
+}
+
 export function ListProjects() {
   return window['go']['desktop']['App']['ListProjects']();
 }
@@ -146,8 +150,8 @@ export function UpdateSecuritySettings(arg1) {
   return window['go']['desktop']['App']['UpdateSecuritySettings'](arg1);
 }
 
-export function UpdateSessionTokens(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['UpdateSessionTokens'](arg1, arg2, arg3);
+export function UpdateSessionTokens(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['desktop']['App']['UpdateSessionTokens'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function WatchDirectory(arg1) {

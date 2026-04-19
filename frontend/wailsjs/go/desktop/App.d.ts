@@ -47,6 +47,8 @@ export function InstallRtk():Promise<void>;
 
 export function ListDirectory(arg1:string):Promise<Array<desktop.FileNode>>;
 
+export function ListDirectoryRecursive(arg1:string):Promise<Array<desktop.FileNode>>;
+
 export function ListProjects():Promise<Array<project.ProjectInfo>>;
 
 export function ListProviderModels(arg1:string):Promise<Array<string>>;
@@ -79,6 +81,6 @@ export function UpdateSearchSettings(arg1:desktop.SearchSettingsRequest):Promise
 
 export function UpdateSecuritySettings(arg1:desktop.SecuritySettingsResponse):Promise<void>;
 
-export function UpdateSessionTokens(arg1:string,arg2:number,arg3:number):Promise<void>;
+export function UpdateSessionTokens(arg1:string,arg2:number,arg3:number,arg4:string,arg5:string):Promise<void>;
 
 export function WatchDirectory(arg1:string):Promise<void>;

@@ -470,8 +470,10 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 			if e.consecutiveRepeatCount >= abortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
+				abortMsg := fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount)
+				e.emitter.ToolResult(stepNum, callIdx, len(abortMsg), abortMsg)
 				return &ExecutorResult{
-					Output:   fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount),
+					Output:   abortMsg,
 					Steps:    allSteps,
 					Finished: false,
 				}, nil
@@ -483,6 +485,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 					nudgeMsg = repeatErrorNudgeMessage
 				}
 				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_nudge", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
+				e.emitter.ToolResult(stepNum, callIdx, len(nudgeMsg), nudgeMsg)
 				stepThought := ""
 				if callIdx == 0 {
 					stepThought = thought
@@ -560,6 +563,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			// Check fruitless thresholds (skip if threshold is 0 = disabled)
 			if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
+				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
 				return &ExecutorResult{
 					Output:   fmt.Sprintf("Aborted: %d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount),
 					Steps:    allSteps,
@@ -570,6 +574,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			if e.circuitBreaker.FruitlessNudgeThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessNudgeThreshold && !e.fruitlessNudgeAttempted {
 				e.fruitlessNudgeAttempted = true
 				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
+				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
 				nudgeStep := Step{
 					Observation: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
 				}
@@ -604,6 +609,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			// Check same-tool thresholds (skip if threshold is 0 = disabled)
 			if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
 				return &ExecutorResult{
 					Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
 					Steps:    allSteps,
@@ -614,6 +620,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
 				e.sameToolNudgeAttempted = true
 				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
 				nudgeStep := Step{
 					Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
 				}
@@ -640,6 +647,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 				if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
 					e.emitter.ExecutorDiagnostic(stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
+					e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
 					return &ExecutorResult{
 						Output:   fmt.Sprintf("Aborted: tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount),
 						Steps:    allSteps,

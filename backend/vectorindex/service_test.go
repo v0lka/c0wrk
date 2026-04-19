@@ -411,6 +411,25 @@ func TestValidateCollection(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Create files that should be ignored by the filtering logic.
+	// Ignored extension (.png is in defaultIgnoreExtensions).
+	ignoredByExt := filepath.Join(wsDir, "image.png")
+	if err := os.WriteFile(ignoredByExt, []byte("fake png data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Ignored directory ("build" is in defaultIgnoreDirs).
+	buildDir := filepath.Join(wsDir, "build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "output.txt"), []byte("build output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Ignored file name ("go.sum" is in defaultIgnoreFileNames).
+	if err := os.WriteFile(filepath.Join(wsDir, "go.sum"), []byte("checksum data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	hash1 := computeHash([]byte("package main"))
 	hash2 := computeHash([]byte("package utils"))
 
@@ -487,6 +506,14 @@ func TestValidateCollection(t *testing.T) {
 	}
 
 	_ = hash2 // used for documentation clarity
+
+	// Verify ignored files are not reported as new.
+	for _, nf := range newFiles {
+		base := filepath.Base(nf)
+		if base == "image.png" || base == "output.txt" || base == "go.sum" {
+			t.Errorf("ignored file should not be in newFiles: %s", nf)
+		}
+	}
 }
 
 func TestRebuildCollection(t *testing.T) {

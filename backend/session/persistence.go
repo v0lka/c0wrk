@@ -21,6 +21,8 @@ type SessionInfo struct {
 	Active            bool   `json:"active"`
 	TotalInputTokens  int    `json:"total_input_tokens"`
 	TotalOutputTokens int    `json:"total_output_tokens"`
+	Model             string `json:"model"`
+	Family            string `json:"family"`
 }
 
 // ChatMessage represents a stored chat message.
@@ -45,7 +47,7 @@ type SessionStore interface {
 	RenameSession(id, name string) error
 
 	// Token tracking
-	UpdateSessionTokens(id string, inputTokens, outputTokens int) error
+	UpdateSessionTokens(id string, inputTokens, outputTokens int, model, family string) error
 
 	// Activity tracking
 	UpdateSessionActivity(id string) error
@@ -74,6 +76,10 @@ func NewSQLiteSessionStore(db *sql.DB) (*SQLiteSessionStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
+	if err := store.runMigrations(); err != nil {
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	}
+
 	return store, nil
 }
 
@@ -88,7 +94,9 @@ func (s *SQLiteSessionStore) createTables() error {
 		last_active_at TIMESTAMP,
 		archived BOOLEAN DEFAULT FALSE,
 		total_input_tokens INTEGER DEFAULT 0,
-		total_output_tokens INTEGER DEFAULT 0
+		total_output_tokens INTEGER DEFAULT 0,
+		model TEXT DEFAULT '',
+		family TEXT DEFAULT ''
 	);
 
 	CREATE TABLE IF NOT EXISTS session_messages (
@@ -147,6 +155,43 @@ func (s *SQLiteSessionStore) createTables() error {
 	return err
 }
 
+// runMigrations applies incremental schema changes for existing databases.
+func (s *SQLiteSessionStore) runMigrations() error {
+	migrations := []string{
+		"ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''",
+		"ALTER TABLE sessions ADD COLUMN family TEXT DEFAULT ''",
+	}
+	for _, m := range migrations {
+		if _, err := s.db.ExecContext(context.Background(), m); err != nil {
+			// Ignore "duplicate column" errors — the column already exists.
+			if isDuplicateColumnError(err) {
+				continue
+			}
+			return fmt.Errorf("migration failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// isDuplicateColumnError returns true if the error indicates a column already exists.
+func isDuplicateColumnError(err error) bool {
+	return err != nil && contains(err.Error(), "duplicate column")
+}
+
+// contains reports whether s contains substr (avoids importing strings).
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 // SaveSession saves or updates a session.
 func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 	// Use created_at as fallback for last_active_at if not set
@@ -155,15 +200,17 @@ func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 		lastActiveAt = info.CreatedAt
 	}
 	_, err := s.db.ExecContext(context.Background(), `
-		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			last_active_at = excluded.last_active_at,
 			archived = excluded.archived,
 			total_input_tokens = excluded.total_input_tokens,
-			total_output_tokens = excluded.total_output_tokens`,
-		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens,
+			total_output_tokens = excluded.total_output_tokens,
+			model = excluded.model,
+			family = excluded.family`,
+		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -175,9 +222,9 @@ func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
 	var info SessionInfo
 	err := s.db.QueryRowContext(context.Background(), `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions WHERE id = ?`,
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions WHERE id = ?`,
 		id,
-	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens)
+	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -196,7 +243,9 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 		       COALESCE(last_active_at, created_at),
 		       archived,
 		       COALESCE(total_input_tokens, 0),
-		       COALESCE(total_output_tokens, 0)
+		       COALESCE(total_output_tokens, 0),
+		       COALESCE(model, ''),
+		       COALESCE(family, '')
 		FROM sessions
 		ORDER BY COALESCE(last_active_at, created_at) DESC`)
 	if err != nil {
@@ -211,7 +260,7 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -232,7 +281,7 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 // ListSessionsByProject returns all sessions for a given project, ordered by last activity (newest first).
 func (s *SQLiteSessionStore) ListSessionsByProject(projectID string) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(context.Background(), `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0) FROM sessions
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions
 		WHERE project_id = ?
 		ORDER BY COALESCE(last_active_at, created_at) DESC`, projectID)
 	if err != nil {
@@ -247,7 +296,7 @@ func (s *SQLiteSessionStore) ListSessionsByProject(projectID string) ([]SessionI
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -289,11 +338,11 @@ func (s *SQLiteSessionStore) RenameSession(id, name string) error {
 	return nil
 }
 
-// UpdateSessionTokens updates the accumulated token counts for a session.
-func (s *SQLiteSessionStore) UpdateSessionTokens(id string, inputTokens, outputTokens int) error {
+// UpdateSessionTokens updates the accumulated token counts and model info for a session.
+func (s *SQLiteSessionStore) UpdateSessionTokens(id string, inputTokens, outputTokens int, model, family string) error {
 	_, err := s.db.ExecContext(context.Background(), `
-		UPDATE sessions SET total_input_tokens = ?, total_output_tokens = ? WHERE id = ?`,
-		inputTokens, outputTokens, id,
+		UPDATE sessions SET total_input_tokens = ?, total_output_tokens = ?, model = ?, family = ? WHERE id = ?`,
+		inputTokens, outputTokens, model, family, id,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update session tokens: %w", err)

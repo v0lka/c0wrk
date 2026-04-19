@@ -1157,7 +1157,7 @@ func (m *mockSessionStoreForRestore) ListSessionsByProject(_ string) ([]SessionI
 func (m *mockSessionStoreForRestore) DeleteSession(_ string) error      { return nil }
 func (m *mockSessionStoreForRestore) ArchiveSession(_ string, _ bool) error { return nil }
 func (m *mockSessionStoreForRestore) RenameSession(_, _ string) error   { return nil }
-func (m *mockSessionStoreForRestore) UpdateSessionTokens(_ string, _, _ int) error {
+func (m *mockSessionStoreForRestore) UpdateSessionTokens(_ string, _, _ int, _, _ string) error {
 	return nil
 }
 func (m *mockSessionStoreForRestore) UpdateSessionActivity(_ string) error { return nil }

@@ -226,6 +226,16 @@ func (a *App) SwitchProject(id string) error {
 	if a.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
+
+	// Idempotency: skip if the same project is already active.
+	a.activeProjectMu.RLock()
+	alreadyActive := a.activeProjectID == id
+	a.activeProjectMu.RUnlock()
+	if alreadyActive {
+		slog.Info("SwitchProject: project already active, skipping", "project", id)
+		return nil
+	}
+
 	p, err := a.projectManager.GetProject(id)
 	if err != nil {
 		return err
@@ -233,6 +243,14 @@ func (a *App) SwitchProject(id string) error {
 	if p == nil {
 		return fmt.Errorf("project not found: %s", id)
 	}
+
+	// Cancel any in-flight indexing from a previous project.
+	a.vectorMu.Lock()
+	if a.indexCancel != nil {
+		a.indexCancel()
+		a.indexCancel = nil
+	}
+	a.vectorMu.Unlock()
 
 	a.activeProjectMu.Lock()
 	a.activeProjectID = p.ID
@@ -348,10 +366,30 @@ func (a *App) SwitchProject(id string) error {
 				slog.Warn("vector index branch switch failed", "error", switchErr)
 			}
 
-			// Start background indexing.
+			// Start background indexing with a cancellable context.
+			indexCtx, indexCancel := context.WithCancel(context.Background())
+			a.vectorMu.Lock()
+			a.indexCancel = indexCancel
+			a.vectorMu.Unlock()
+
 			go func() {
-				if idxErr := indexer.IndexFull(context.Background(), p.WorkspacePath); idxErr != nil {
-					slog.Warn("vector indexing failed", "error", idxErr)
+				// Use incremental indexing when the collection already has data;
+				// fall back to full indexing only on first run (empty/nil collection).
+				col := a.vectorService.GetCollection()
+				var idxErr error
+				if col == nil || col.Count() == 0 {
+					slog.Info("empty collection, running full index", "project", p.ID)
+					idxErr = indexer.IndexFull(indexCtx, p.WorkspacePath)
+				} else {
+					slog.Info("existing collection found, running incremental index", "project", p.ID)
+					idxErr = indexer.IndexIncremental(indexCtx, p.WorkspacePath)
+				}
+				if idxErr != nil {
+					if context.Cause(indexCtx) != nil {
+						slog.Info("vector indexing cancelled", "project", p.ID)
+					} else {
+						slog.Warn("vector indexing failed", "error", idxErr)
+					}
 				}
 			}()
 

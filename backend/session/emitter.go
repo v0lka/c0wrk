@@ -3,9 +3,11 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/user/agent/core"
@@ -29,9 +31,21 @@ type tokenState struct {
 	lastUsedTokens      int
 	lastMaxTokens       int
 	lastFillStatus      string
-	lastModel           string // last model used
-	lastFamily          string // last model family used
-	tokenPersist        func(inputTokens, outputTokens int) // callback to persist tokens
+	lastModel           string                                                    // last model used
+	lastFamily          string                                                    // last model family used
+	tokenPersist        func(inputTokens, outputTokens int, model, family string) // callback to persist tokens
+}
+
+// toolCallIDGen holds a shared monotonic counter for generating unique tool_call_id values
+// across all emitter copies (plan-step, retry scopes) within a session.
+type toolCallIDGen struct {
+	counter atomic.Int64
+	epoch   int64 // millisecond timestamp at creation, ensures uniqueness across session reloads
+}
+
+func (g *toolCallIDGen) next() string {
+	n := g.counter.Add(1)
+	return fmt.Sprintf("tc_%d_%d", g.epoch, n)
 }
 
 // EventEmitter implements core.Emitter and routes events to a callback function.
@@ -52,21 +66,30 @@ type EventEmitter struct {
 
 	// Shared token accumulation (shared across WithPlanStepID copies)
 	tokens *tokenState
+
+	// Tool call ID generation (shared across WithPlanStepID copies)
+	toolCallIDs *toolCallIDGen
+
+	// Per-copy mapping of (stepNum:callIdx) -> tool_call_id
+	// Each scoped emitter copy gets its own map (not shared),
+	// since each executor starts stepNum from 1.
+	localToolIDs map[string]string
 }
 
 // NewEventEmitter creates a new EventEmitter for a session.
 func NewEventEmitter(sessionID string, emit func(Event)) *EventEmitter {
 	return &EventEmitter{
-		sessionID: sessionID,
-		emit:      emit,
-		tokens:    &tokenState{lastFillStatus: "ok"},
+		sessionID:   sessionID,
+		emit:        emit,
+		tokens:      &tokenState{lastFillStatus: "ok"},
+		toolCallIDs: &toolCallIDGen{epoch: time.Now().UnixMilli()},
 	}
 }
 
 // SetTokenPersist sets a callback that is invoked with cumulative session token
 // totals each time the UsageTracker observer fires. Use this to persist tokens to the store
 // without introducing a direct store dependency in the emitter.
-func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int)) {
+func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, model, family string)) {
 	e.tokens.mu.Lock()
 	defer e.tokens.mu.Unlock()
 	e.tokens.tokenPersist = fn
@@ -82,6 +105,7 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 		planStepID:   id,
 		retryAttempt: e.retryAttempt, // preserve retry attempt across copies
 		tokens:       e.tokens,       // share token accumulation state across copies
+		toolCallIDs:  e.toolCallIDs,  // share tool call ID counter across copies
 	}
 }
 
@@ -94,7 +118,8 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 		emit:         e.emit,
 		planStepID:   e.planStepID,
 		retryAttempt: attempt,
-		tokens:       e.tokens, // share token accumulation state across copies
+		tokens:       e.tokens,      // share token accumulation state across copies
+		toolCallIDs:  e.toolCallIDs, // share tool call ID counter across copies
 	}
 }
 
@@ -258,12 +283,22 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 	slog.Debug("emitter: tool call", "sessionID", e.sessionID, "tool", toolName, "step", stepNum, "callIdx", callIdx)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Generate unique tool_call_id
+	toolCallID := e.toolCallIDs.next()
+	key := fmt.Sprintf("%d:%d", stepNum, callIdx)
+	if e.localToolIDs == nil {
+		e.localToolIDs = make(map[string]string)
+	}
+	e.localToolIDs[key] = toolCallID
+
 	data := map[string]any{
-		"step":     stepNum,
-		"call_idx": callIdx,
-		"tool":     toolName,
-		"args":     argsPreview,
-		"source":   source,
+		"tool_call_id": toolCallID,
+		"step":         stepNum,
+		"call_idx":     callIdx,
+		"tool":         toolName,
+		"args":         argsPreview,
+		"source":       source,
 	}
 	// Pre-parse JSON arguments for the frontend
 	if trimmed := strings.TrimSpace(argsPreview); trimmed != "" && trimmed[0] == '{' {
@@ -284,15 +319,24 @@ func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview strin
 	slog.Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "callIdx", callIdx, "resultLen", resultLen)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Look up tool_call_id from this executor's local map
+	key := fmt.Sprintf("%d:%d", stepNum, callIdx)
+	toolCallID := e.localToolIDs[key]
+
+	data := map[string]any{
+		"step":       stepNum,
+		"call_idx":   callIdx,
+		"result_len": resultLen,
+		"result":     preview,
+	}
+	if toolCallID != "" {
+		data["tool_call_id"] = toolCallID
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "tool_result",
-		Data: map[string]any{
-			"step":       stepNum,
-			"call_idx":   callIdx,
-			"result_len": resultLen,
-			"result":     preview,
-		},
+		Data:      data,
 	})
 }
 
@@ -473,7 +517,7 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 	e.tokens.mu.Unlock()
 
 	if persist != nil {
-		persist(totalIn, totalOut)
+		persist(totalIn, totalOut, model, family)
 	}
 
 	e.emitEvent(Event{

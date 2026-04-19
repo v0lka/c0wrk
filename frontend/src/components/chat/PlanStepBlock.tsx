@@ -70,13 +70,15 @@ export function PlanStepBlock({ stepId, stepNum, title, description, status, dur
 
   return (
     <TooltipProvider delayDuration={400}>
-      <Collapsible open={isOpen} onOpenChange={setIsOpen} data-step-id={stepId}>
+      <Collapsible open={isOpen} onOpenChange={setIsOpen} data-step-id={stepId} className="group">
         <CollapsibleTrigger className="flex items-center gap-1.5 w-full text-muted-foreground hover:text-foreground transition-colors">
-          {isOpen ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0" />
-          )}
+          <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
+            {isOpen ? (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+            )}
+          </span>
           <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${iconClass}`} />
           {hasTooltip ? (
             <Tooltip delayDuration={400}>

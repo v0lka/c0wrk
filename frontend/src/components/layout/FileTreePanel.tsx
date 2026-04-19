@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { ChevronRight, Loader2, X, Regex, Asterisk } from 'lucide-react'
 import picomatch from 'picomatch'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -33,12 +33,87 @@ function buildMatcher(
   }
 }
 
+/**
+ * Computes visibility and match info for the full recursive tree when a filter is active.
+ *
+ * Returns:
+ * - matchedPaths: set of node paths that directly match the filter
+ * - visiblePaths: set of node paths that should be rendered (matches + ancestors)
+ * - expandedByFilter: set of directory paths that should be force-expanded
+ */
+function useRecursiveFilterState(
+  recursiveEntries: Record<string, FileNode[]>,
+  rootPath: string,
+  matcher: ((name: string) => boolean) | null,
+) {
+  return useMemo(() => {
+    if (!matcher || !rootPath) return null
+
+    const matchedPaths = new Set<string>()
+    const visiblePaths = new Set<string>()
+    const expandedByFilter = new Set<string>()
+
+    // First pass: find all directly matched nodes
+    for (const children of Object.values(recursiveEntries)) {
+      for (const node of children) {
+        if (matcher(node.name)) {
+          matchedPaths.add(node.path)
+        }
+      }
+    }
+
+    // For each matched node, mark ancestors visible & expanded
+    for (const matchedPath of matchedPaths) {
+      visiblePaths.add(matchedPath)
+
+      // Walk up the path to mark ancestors
+      let current = matchedPath
+      while (true) {
+        const lastSep = current.lastIndexOf('/')
+        if (lastSep <= 0) break
+        const parent = current.substring(0, lastSep)
+        if (parent === rootPath || parent.length < rootPath.length) break
+        visiblePaths.add(parent)
+        expandedByFilter.add(parent)
+        current = parent
+      }
+
+      // If matched node is a directory, expand it and show all descendants
+      if (recursiveEntries[matchedPath]) {
+        expandedByFilter.add(matchedPath)
+        markAllDescendants(matchedPath, recursiveEntries, visiblePaths, expandedByFilter)
+      }
+    }
+
+    return { matchedPaths, visiblePaths, expandedByFilter }
+  }, [recursiveEntries, rootPath, matcher])
+}
+
+/** Recursively mark all descendants of a directory as visible, expanding subdirectories */
+function markAllDescendants(
+  dirPath: string,
+  entries: Record<string, FileNode[]>,
+  visiblePaths: Set<string>,
+  expandedByFilter: Set<string>,
+) {
+  const children = entries[dirPath]
+  if (!children) return
+  for (const child of children) {
+    visiblePaths.add(child.path)
+    if (child.is_dir) {
+      expandedByFilter.add(child.path)
+      markAllDescendants(child.path, entries, visiblePaths, expandedByFilter)
+    }
+  }
+}
+
+/** Visibility computation for the non-filtered (lazy) tree — unchanged from original */
 function useNodeVisibility(
   entries: Record<string, FileNode[]>,
   matcher: ((name: string) => boolean) | null,
 ) {
   return useMemo(() => {
-    if (!matcher) return null // no filter active — everything visible
+    if (!matcher) return null
 
     const visible = new Set<string>()
 
@@ -56,7 +131,6 @@ function useNodeVisibility(
       return any
     }
 
-    // Walk from every known parent
     for (const key of Object.keys(entries)) {
       walk(entries[key])
     }
@@ -68,18 +142,33 @@ function useNodeVisibility(
 interface TreeNodeProps {
   node: FileNode
   depth: number
+  isFilterActive: boolean
+  matchedPaths: Set<string> | null
   visiblePaths: Set<string> | null
+  expandedByFilter: Set<string> | null
+  entriesSource: Record<string, FileNode[]>
 }
 
-function TreeNode({ node, depth, visiblePaths }: TreeNodeProps) {
+function TreeNode({
+  node,
+  depth,
+  isFilterActive,
+  matchedPaths,
+  visiblePaths,
+  expandedByFilter,
+  entriesSource,
+}: TreeNodeProps) {
   const expandedDirs = useFileTreeStore((s) => s.expandedDirs)
   const loadingDirs = useFileTreeStore((s) => s.loadingDirs)
   const entries = useFileTreeStore((s) => s.entries)
   const toggleDir = useFileTreeStore((s) => s.toggleDir)
 
-  const isExpanded = node.is_dir && expandedDirs.has(node.path)
+  const isMatch = isFilterActive && matchedPaths !== null && matchedPaths.has(node.path)
+  const forceExpanded = isFilterActive && expandedByFilter !== null && expandedByFilter.has(node.path)
+  const isExpanded = node.is_dir && (forceExpanded || expandedDirs.has(node.path))
   const isLoading = node.is_dir && loadingDirs.has(node.path)
-  const children = entries[node.path]
+  // Use the appropriate entries source for children
+  const children = isFilterActive ? entriesSource[node.path] : entries[node.path]
   const isHidden = node.name.startsWith('.')
 
   const handleClick = useCallback(() => {
@@ -91,10 +180,16 @@ function TreeNode({ node, depth, visiblePaths }: TreeNodeProps) {
   // If filter is active and this path isn't visible, hide it
   if (visiblePaths && !visiblePaths.has(node.path)) return null
 
+  // Determine text color: yellow for matched nodes, default otherwise
+  let textColorClass = isHidden ? 'text-zinc-500' : 'text-zinc-300'
+  if (isMatch) {
+    textColorClass = 'text-yellow-400'
+  }
+
   return (
     <>
       <div
-        className={`flex items-center gap-1 px-2 py-0.5 text-sm hover:bg-zinc-800/50 cursor-default select-none ${isHidden ? 'text-zinc-500' : 'text-zinc-300'}`}
+        className={`flex items-center gap-1 px-2 py-0.5 text-sm hover:bg-zinc-800/50 cursor-default select-none ${textColorClass}`}
         style={{ paddingLeft: depth * 16 + 8 }}
         onClick={handleClick}
         role={node.is_dir ? 'treeitem' : undefined}
@@ -128,7 +223,16 @@ function TreeNode({ node, depth, visiblePaths }: TreeNodeProps) {
       {isExpanded && children && (
         <>
           {children.map((child) => (
-            <TreeNode key={child.path} node={child} depth={depth + 1} visiblePaths={visiblePaths} />
+            <TreeNode
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              isFilterActive={isFilterActive}
+              matchedPaths={matchedPaths}
+              visiblePaths={visiblePaths}
+              expandedByFilter={expandedByFilter}
+              entriesSource={entriesSource}
+            />
           ))}
         </>
       )}
@@ -139,30 +243,67 @@ function TreeNode({ node, depth, visiblePaths }: TreeNodeProps) {
 export function FileTreePanel() {
   const rootPath = useFileTreeStore((s) => s.rootPath)
   const entries = useFileTreeStore((s) => s.entries)
+  const recursiveEntries = useFileTreeStore((s) => s.recursiveEntries)
+  const recursiveLoading = useFileTreeStore((s) => s.recursiveLoading)
   const initForProject = useFileTreeStore((s) => s.initForProject)
   const clearTree = useFileTreeStore((s) => s.clearTree)
   const refreshVisibleDirs = useFileTreeStore((s) => s.refreshVisibleDirs)
+  const fetchRecursiveTree = useFileTreeStore((s) => s.fetchRecursiveTree)
+  const clearRecursiveEntries = useFileTreeStore((s) => s.clearRecursiveEntries)
 
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const projects = useProjectStore((s) => s.projects)
   const activeProject = projects?.find((p) => p.id === activeProjectId)
 
   const [filterText, setFilterText] = useState('')
+  const [debouncedFilter, setDebouncedFilter] = useState('')
   const [filterMode, setFilterMode] = useState<FilterMode>('glob')
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Debounce filter text (300ms)
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      setDebouncedFilter(filterText)
+    }, 300)
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [filterText])
 
   const matcher = useMemo(
-    () => buildMatcher(filterText, filterMode),
-    [filterText, filterMode],
+    () => buildMatcher(debouncedFilter, filterMode),
+    [debouncedFilter, filterMode],
   )
-  const visiblePaths = useNodeVisibility(entries, matcher)
+
+  const isFilterActive = matcher !== null
+  const hasRecursiveData = Object.keys(recursiveEntries).length > 0
+
+  // Fetch recursive tree when filter becomes active
+  useEffect(() => {
+    if (isFilterActive && rootPath && !hasRecursiveData && !recursiveLoading) {
+      fetchRecursiveTree(rootPath)
+    }
+    if (!isFilterActive && hasRecursiveData) {
+      clearRecursiveEntries()
+    }
+  }, [isFilterActive, rootPath, hasRecursiveData, recursiveLoading, fetchRecursiveTree, clearRecursiveEntries])
+
+  // Recursive filter visibility (used when filter is active and recursive data loaded)
+  const recursiveFilterState = useRecursiveFilterState(recursiveEntries, rootPath, matcher)
+
+  // Fallback visibility for lazy-loaded entries (used before recursive data loads)
+  const lazyVisiblePaths = useNodeVisibility(entries, matcher)
 
   const handleToggleMode = useCallback(() => {
     setFilterMode((prev) => (prev === 'glob' ? 'regex' : 'glob'))
     setFilterText('')
+    setDebouncedFilter('')
   }, [])
 
   const handleClearFilter = useCallback(() => {
     setFilterText('')
+    setDebouncedFilter('')
   }, [])
 
   // React to project changes
@@ -180,9 +321,13 @@ export function FileTreePanel() {
     if (!rt) return () => {}
     const cleanup = rt.EventsOn('workspace:tree_changed', () => {
       refreshVisibleDirs()
+      // If filter is active, also re-fetch recursive tree
+      if (isFilterActive && rootPath) {
+        fetchRecursiveTree(rootPath)
+      }
     })
     return cleanup
-  }, [refreshVisibleDirs])
+  }, [refreshVisibleDirs, isFilterActive, rootPath, fetchRecursiveTree])
 
   // No project selected
   if (!activeProjectId) {
@@ -198,14 +343,17 @@ export function FileTreePanel() {
     )
   }
 
-  const rootEntries = rootPath ? entries[rootPath] : undefined
+  // Choose data source and visibility based on filter state
+  const useRecursive = isFilterActive && hasRecursiveData
+  const entriesSource = useRecursive ? recursiveEntries : entries
+  const rootEntries = rootPath ? entriesSource[rootPath] : undefined
+
+  const currentMatchedPaths = useRecursive ? (recursiveFilterState?.matchedPaths ?? null) : null
+  const currentVisiblePaths = useRecursive ? (recursiveFilterState?.visiblePaths ?? null) : lazyVisiblePaths
+  const currentExpandedByFilter = useRecursive ? (recursiveFilterState?.expandedByFilter ?? null) : null
 
   return (
     <div className="h-full bg-card flex flex-col">
-      <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-border flex-shrink-0">
-        WORKSPACE
-      </div>
-
       {/* Filter bar */}
       <div className="px-2 py-1.5 flex items-center gap-1 border-b border-zinc-800 flex-shrink-0">
         <input
@@ -244,14 +392,25 @@ export function FileTreePanel() {
       <ScrollArea className="flex-1">
         <div className="py-1" role="tree">
           {rootEntries === undefined ? (
-            <div className="px-3 py-2 text-xs text-zinc-500">Loading…</div>
+            <div className="px-3 py-2 text-xs text-zinc-500">
+              {isFilterActive && recursiveLoading ? 'Searching…' : 'Loading…'}
+            </div>
           ) : rootEntries.length === 0 ? (
             <div className="px-3 py-4 text-xs text-zinc-600 text-center">
-              No files created yet
+              {isFilterActive ? 'No matches found' : 'No files created yet'}
             </div>
           ) : (
             rootEntries.map((node) => (
-              <TreeNode key={node.path} node={node} depth={0} visiblePaths={visiblePaths} />
+              <TreeNode
+                key={node.path}
+                node={node}
+                depth={0}
+                isFilterActive={isFilterActive}
+                matchedPaths={currentMatchedPaths}
+                visiblePaths={currentVisiblePaths}
+                expandedByFilter={currentExpandedByFilter}
+                entriesSource={entriesSource}
+              />
             ))
           )}
         </div>

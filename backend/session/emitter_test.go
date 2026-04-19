@@ -759,6 +759,151 @@ func TestEventEmitterWithRetryAttempt_ZeroOmitted(t *testing.T) {
 	}
 }
 
+// TestEventEmitterToolCallID verifies ToolCall events contain tool_call_id and
+// ToolResult events contain the matching tool_call_id.
+func TestEventEmitterToolCallID(t *testing.T) {
+	var events []Event
+	emit := func(e Event) {
+		events = append(events, e)
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.ToolCall(1, 0, "bash", "ls -la", "core")
+	emitter.ToolResult(1, 0, 100, "file listing")
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	// Verify ToolCall has tool_call_id
+	callData, ok := events[0].Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", events[0].Data)
+	}
+	toolCallID, ok := callData["tool_call_id"].(string)
+	if !ok || toolCallID == "" {
+		t.Fatal("expected non-empty tool_call_id in tool_call event")
+	}
+
+	// Verify ToolResult has matching tool_call_id
+	resultData, ok := events[1].Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", events[1].Data)
+	}
+	resultToolCallID, ok := resultData["tool_call_id"].(string)
+	if !ok || resultToolCallID == "" {
+		t.Fatal("expected non-empty tool_call_id in tool_result event")
+	}
+	if resultToolCallID != toolCallID {
+		t.Errorf("tool_call_id mismatch: call=%q result=%q", toolCallID, resultToolCallID)
+	}
+}
+
+// TestEventEmitterToolCallID_UniquePerCall verifies different (stepNum, callIdx)
+// pairs get different tool_call_id values.
+func TestEventEmitterToolCallID_UniquePerCall(t *testing.T) {
+	var events []Event
+	emit := func(e Event) {
+		events = append(events, e)
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.ToolCall(1, 0, "bash", "ls", "core")
+	emitter.ToolCall(1, 1, "bash", "pwd", "core")
+	emitter.ToolCall(2, 0, "bash", "cat", "core")
+
+	ids := make(map[string]bool)
+	for _, evt := range events {
+		data, ok := evt.Data.(map[string]any)
+		if !ok {
+			t.Fatal("expected Data to be map[string]any")
+		}
+		id, ok := data["tool_call_id"].(string)
+		if !ok {
+			t.Fatal("expected tool_call_id to be string")
+		}
+		if ids[id] {
+			t.Errorf("duplicate tool_call_id: %q", id)
+		}
+		ids[id] = true
+	}
+	if len(ids) != 3 {
+		t.Errorf("expected 3 unique IDs, got %d", len(ids))
+	}
+}
+
+// TestEventEmitterToolCallID_SharedAcrossScopes verifies scoped copies share the
+// same counter so IDs are globally unique within a session.
+func TestEventEmitterToolCallID_SharedAcrossScopes(t *testing.T) {
+	var events []Event
+	var mu sync.Mutex
+	emit := func(e Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	}
+
+	base := NewEventEmitter("test-session", emit)
+
+	// Create scoped copies
+	stepScoped, ok := base.WithPlanStepID("step-1").(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithPlanStepID")
+	}
+	retryScoped, ok := base.WithRetryAttempt(2).(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithRetryAttempt")
+	}
+
+	// Emit from different scopes
+	base.ToolCall(1, 0, "bash", "ls", "core")
+	stepScoped.ToolCall(1, 0, "bash", "pwd", "core")
+	retryScoped.ToolCall(1, 0, "bash", "cat", "core")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	ids := make(map[string]bool)
+	for _, evt := range events {
+		data, ok := evt.Data.(map[string]any)
+		if !ok {
+			t.Fatal("expected Data to be map[string]any")
+		}
+		id, ok := data["tool_call_id"].(string)
+		if !ok {
+			t.Fatal("expected tool_call_id to be string")
+		}
+		if ids[id] {
+			t.Errorf("duplicate tool_call_id across scopes: %q", id)
+		}
+		ids[id] = true
+	}
+	if len(ids) != 3 {
+		t.Errorf("expected 3 unique IDs across scopes, got %d", len(ids))
+	}
+}
+
+// TestEventEmitterToolResult_NoToolCallID verifies ToolResult without prior
+// ToolCall omits tool_call_id rather than including empty string.
+func TestEventEmitterToolResult_NoToolCallID(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	// Call ToolResult without prior ToolCall for this (step, callIdx)
+	emitter.ToolResult(99, 0, 50, "orphan result")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if _, exists := data["tool_call_id"]; exists {
+		t.Error("tool_call_id should not be present when no prior ToolCall was made")
+	}
+}
+
 // TestEventEmitterWithRetryAttempt_PreservedByWithPlanStepID verifies that
 // retryAttempt is preserved when creating a plan-step-scoped copy.
 func TestEventEmitterWithRetryAttempt_PreservedByWithPlanStepID(t *testing.T) {

@@ -289,7 +289,7 @@ func TestVectorSearchTool_Execute_SearchError(t *testing.T) {
 }
 
 func TestVectorSearchTool_Execute_ContentTruncation(t *testing.T) {
-	longContent := strings.Repeat("x", 300)
+	longContent := strings.Repeat("x", 600)
 	searchFunc := func(_ context.Context, _ string, _ int, _ string) ([]VectorSearchResult, error) {
 		return []VectorSearchResult{
 			{FilePath: "big.go", Content: longContent, Score: 0.9, StartLine: 1, EndLine: 10, Language: "go"},

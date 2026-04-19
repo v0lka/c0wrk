@@ -102,8 +102,8 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 6. Session manager.
 	manager := session.NewManager(factory, emitFunc, cfg.LogDir, cfg.ProjectsDir)
 	if cfg.SessionStore != nil {
-		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int) {
-			if err := cfg.SessionStore.UpdateSessionTokens(sessionID, inputTokens, outputTokens); err != nil {
+		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string) {
+			if err := cfg.SessionStore.UpdateSessionTokens(sessionID, inputTokens, outputTokens, model, family); err != nil {
 				slog.Warn("failed to persist session tokens", "session", sessionID, "error", err)
 			}
 		})

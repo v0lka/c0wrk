@@ -371,12 +371,11 @@ func (a *App) Startup(ctx context.Context) {
 	if a.projectManager != nil {
 		projects, pErr := a.projectManager.ListProjects()
 		if pErr == nil && len(projects) > 0 {
-			// Activate the first project so ListSessions works immediately,
-			// even before the frontend calls SwitchProject.
-			a.activeProjectMu.Lock()
-			a.activeProjectID = projects[0].ID
-			a.activeProjectPath = projects[0].WorkspacePath
-			a.activeProjectMu.Unlock()
+			// NOTE: We intentionally do NOT set activeProjectID here.
+			// Setting it prematurely causes SwitchProject's idempotency guard
+			// to reject the frontend's first call, which skips vector index
+			// initialization entirely. The frontend will call SwitchProject
+			// after receiving this event, which sets activeProjectID properly.
 
 			wailsRuntime.EventsEmit(a.ctx, "projects:loaded", projects)
 

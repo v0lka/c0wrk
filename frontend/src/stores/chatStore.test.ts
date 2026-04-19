@@ -35,14 +35,14 @@ describe('groupMessages', () => {
     expect(result.items[0]!.kind).toBe('assistant')
   })
 
-  it('pairs tool_call with matching tool_result by step key', () => {
+  it('pairs tool_call with matching tool_result by tool_call_id', () => {
     const call = makeUI({
       type: 'tool_call',
-      metadata: { tool: 'read_file', args: '/foo', step: 1 },
+      metadata: { tool: 'read_file', args: '/foo', step: 1, tool_call_id: 'tc_123_1' },
     })
     const result = makeUI({
       type: 'tool_result',
-      metadata: { step: 1, result: 'file contents', result_len: 13 },
+      metadata: { step: 1, result: 'file contents', result_len: 13, tool_call_id: 'tc_123_1' },
     })
     const grouped = groupMessages([call, result])
     const tools = grouped.items.filter(i => i.kind === 'tool')
@@ -53,20 +53,37 @@ describe('groupMessages', () => {
     expect(tool.status).toBe('success')
   })
 
-  it('buffers tool_result arriving before tool_call', () => {
+  it('buffers tool_result arriving before tool_call (with tool_call_id)', () => {
     const result = makeUI({
       type: 'tool_result',
-      metadata: { step: 5, result: 'early result', result_len: 12 },
+      metadata: { step: 5, result: 'early result', result_len: 12, tool_call_id: 'tc_456_1' },
     })
     const call = makeUI({
       type: 'tool_call',
-      metadata: { tool: 'bash', args: 'ls', step: 5 },
+      metadata: { tool: 'bash', args: 'ls', step: 5, tool_call_id: 'tc_456_1' },
     })
     const grouped = groupMessages([result, call])
     const tools = grouped.items.filter(i => i.kind === 'tool')
     expect(tools).toHaveLength(1)
     const tool = tools[0]! as DisplayItem & { kind: 'tool' }
     expect(tool.result).toBe('early result')
+    expect(tool.status).toBe('success')
+  })
+
+  it('falls back to composite key when tool_call_id is absent (backward compat)', () => {
+    const call = makeUI({
+      type: 'tool_call',
+      metadata: { tool: 'read_file', args: '/foo', step: 1 },
+    })
+    const result = makeUI({
+      type: 'tool_result',
+      metadata: { step: 1, result: 'old data', result_len: 8 },
+    })
+    const grouped = groupMessages([call, result])
+    const tools = grouped.items.filter(i => i.kind === 'tool')
+    expect(tools).toHaveLength(1)
+    const tool = tools[0]! as DisplayItem & { kind: 'tool' }
+    expect(tool.result).toBe('old data')
     expect(tool.status).toBe('success')
   })
 
@@ -127,14 +144,14 @@ describe('groupMessages', () => {
     expect(item.toolName).toBe('search_facts')
   })
 
-  it('pairs memory_read tool with tool_result', () => {
+  it('pairs memory_read tool with tool_result via tool_call_id', () => {
     const call = makeUI({
       type: 'tool_call',
-      metadata: { tool: 'search_facts', args: '{"query":"test"}', step: 4 },
+      metadata: { tool: 'search_facts', args: '{"query":"test"}', step: 4, tool_call_id: 'tc_789_1' },
     })
     const result = makeUI({
       type: 'tool_result',
-      metadata: { step: 4, result: 'found facts', result_len: 11 },
+      metadata: { step: 4, result: 'found facts', result_len: 11, tool_call_id: 'tc_789_1' },
     })
     const grouped = groupMessages([call, result])
     expect(grouped.items).toHaveLength(1)

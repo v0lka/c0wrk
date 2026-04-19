@@ -153,6 +153,10 @@ function buildHistoryId(
       return `thought-${stepNum ?? 0}-${timestamp}`
     }
     case 'tool_call': {
+      // Prefer tool_call_id when available (new mechanism)
+      const toolCallId = meta.tool_call_id as string | undefined
+      if (toolCallId) return `tool-${toolCallId}`
+      // Fallback to composite ID for old persisted events
       const planStepId = meta.plan_step_id as string | undefined
       const step = meta.step as number | string | undefined
       const callIdx = meta.call_idx as number | string | undefined
@@ -163,8 +167,8 @@ function buildHistoryId(
       return `history-${dbId}`
     }
     case 'tool_result': {
-      // tool_result doesn't need a matching ID since groupMessages
-      // matches by step number from metadata, not by message ID
+      // tool_result matching is handled by tool_call_id (or step metadata fallback)
+      // in groupMessages, not by message ID
       return `history-${dbId}`
     }
     case 'plan':

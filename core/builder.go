@@ -30,12 +30,13 @@ import (
 // OrchestratorBuilder lives in core so that all SDK imports are confined to
 // the core layer. The backend.Application wraps it without importing the SDK.
 type OrchestratorBuilder struct {
-	mu            sync.RWMutex
-	registry      *tools.ToolRegistry
-	gateway       *mcp.Gateway
-	llmRouter     *llm.Router
-	modelRegistry *llm.ModelRegistry
-	logger        *slog.Logger
+	mu               sync.RWMutex
+	registry         *tools.ToolRegistry
+	gateway          *mcp.Gateway
+	llmRouter        *llm.Router
+	modelRegistry    *llm.ModelRegistry
+	logger           *slog.Logger
+	vectorSearchFunc tools.VectorSearchFunc
 }
 
 // NewOrchestratorBuilder creates the shared infrastructure: tool registry,
@@ -192,6 +193,7 @@ func (b *OrchestratorBuilder) Build(
 		circuitBreaker,
 		bbFactory,
 		trackingCaller,
+		b.vectorSearchFunc,
 	), nil
 }
 
@@ -344,6 +346,7 @@ func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc tools.VectorSearch
 	if searchFunc == nil {
 		return
 	}
+	b.vectorSearchFunc = searchFunc
 	b.registry.Register(builtins.NewVectorSearchTool(searchFunc, waitFunc))
 	if b.logger != nil {
 		b.logger.Info("registered semantic_search tool")

@@ -13,6 +13,8 @@ interface FileTreeState {
   entries: Record<string, FileNode[]>
   expandedDirs: Set<string>
   loadingDirs: Set<string>
+  recursiveEntries: Record<string, FileNode[]>
+  recursiveLoading: boolean
 
   initForProject: (workspacePath: string) => void
   clearTree: () => void
@@ -21,6 +23,8 @@ interface FileTreeState {
   collapseDir: (path: string) => void
   setLoading: (path: string, loading: boolean) => void
   refreshVisibleDirs: () => void
+  fetchRecursiveTree: (rootPath: string) => void
+  clearRecursiveEntries: () => void
 }
 
 async function listDirectory(path: string): Promise<FileNode[]> {
@@ -29,6 +33,16 @@ async function listDirectory(path: string): Promise<FileNode[]> {
     return await window.go.desktop.App.ListDirectory(path)
   } catch (err) {
     logger.error(`[fileTreeStore] Failed to list directory ${path}:`, err)
+    return []
+  }
+}
+
+async function listDirectoryRecursive(path: string): Promise<FileNode[]> {
+  if (!window?.go?.desktop?.App?.ListDirectoryRecursive) return []
+  try {
+    return await window.go.desktop.App.ListDirectoryRecursive(path)
+  } catch (err) {
+    logger.error(`[fileTreeStore] Failed to list directory recursively ${path}:`, err)
     return []
   }
 }
@@ -49,6 +63,8 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
   entries: {},
   expandedDirs: new Set<string>(),
   loadingDirs: new Set<string>(),
+  recursiveEntries: {},
+  recursiveLoading: false,
 
   initForProject: async (workspacePath: string) => {
     const { rootPath: currentRoot } = get()
@@ -72,6 +88,8 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       entries: {},
       expandedDirs: new Set<string>(),
       loadingDirs: new Set<string>(),
+      recursiveEntries: {},
+      recursiveLoading: false,
     })
 
     if (!workspacePath) return
@@ -103,6 +121,8 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       entries: {},
       expandedDirs: new Set<string>(),
       loadingDirs: new Set<string>(),
+      recursiveEntries: {},
+      recursiveLoading: false,
     })
   },
 
@@ -142,6 +162,29 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       if (loading) next.add(path); else next.delete(path)
       return { loadingDirs: next }
     }),
+
+  fetchRecursiveTree: async (rootPath: string) => {
+    const { projectWorkspacePath, recursiveLoading } = get()
+    if (!rootPath || !projectWorkspacePath || recursiveLoading) return
+
+    set({ recursiveLoading: true })
+    const flatNodes = await listDirectoryRecursive(rootPath)
+    if (get().projectWorkspacePath !== projectWorkspacePath) return // project changed
+
+    // Group flat nodes by parent directory
+    const grouped: Record<string, FileNode[]> = {}
+    for (const node of flatNodes) {
+      const lastSep = node.path.lastIndexOf('/')
+      const parent = lastSep > 0 ? node.path.substring(0, lastSep) : rootPath
+      if (!grouped[parent]) grouped[parent] = []
+      grouped[parent].push(node)
+    }
+    set({ recursiveEntries: grouped, recursiveLoading: false })
+  },
+
+  clearRecursiveEntries: () => {
+    set({ recursiveEntries: {}, recursiveLoading: false })
+  },
 
   refreshVisibleDirs: async () => {
     const { rootPath, expandedDirs, projectWorkspacePath } = get()

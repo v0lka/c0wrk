@@ -73,13 +73,15 @@ export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedA
         : 'text-muted-foreground animate-spin'
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+    <Collapsible open={isOpen} onOpenChange={setIsOpen} className="group">
       <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
-        {isOpen ? (
-          <ChevronDown className="h-3.5 w-3.5" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5" />
-        )}
+        <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
+          {isOpen ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </span>
         <StatusIcon className={`h-3.5 w-3.5 ${statusClass}`} />
         <Wrench className="h-3.5 w-3.5" />
         <span className="text-sm">Tool called: <span className="text-muted-foreground/60">{toolName}</span></span>
