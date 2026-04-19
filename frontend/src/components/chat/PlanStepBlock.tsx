@@ -83,14 +83,14 @@ export function PlanStepBlock({ stepId, stepNum, title, description, status, dur
           {hasTooltip ? (
             <Tooltip delayDuration={400}>
               <TooltipTrigger asChild>
-                <span className="text-sm truncate">Step {stepNum}...</span>
+                <span className="text-sm truncate">{`Step ${stepNum}: ${title}`}</span>
               </TooltipTrigger>
               <TooltipContent side="bottom" align="start" className="max-w-md text-left whitespace-pre-line p-3 bg-background text-foreground border border-border shadow-md">
                 {fullDesc}
               </TooltipContent>
             </Tooltip>
           ) : (
-            <span className="text-sm truncate">Step {stepNum}...</span>
+            <span className="text-sm truncate">{`Step ${stepNum}: ${title}`}</span>
           )}
           {status === 'failed' && error && (
             <span className="text-xs text-red-400 truncate max-w-[300px]" title={error}>

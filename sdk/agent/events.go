@@ -17,6 +17,8 @@ type AgentEvents interface {
 	ContextFill(fillPercent float64, usedTokens, maxTokens int, status string, stepID string)
 	ContextCompaction(beforePercent, afterPercent float64, stepID string)
 
+	Finishing(stepNum int, summary string)
+
 	// ExecutorDiagnostic reports internal executor lifecycle events (nudges, circuit breakers,
 	// truncation, compaction errors, parse errors). The event parameter identifies
 	// what happened and details carries structured data.
@@ -30,7 +32,7 @@ var _ AgentEvents = (*NoopEvents)(nil)
 
 func (n *NoopEvents) StepStart(_ int)                                    {}
 func (n *NoopEvents) Thought(_ int, _, _ string)                         {}
-func (n *NoopEvents) ToolCall(_, _ int, _, _, _ string)              {}
+func (n *NoopEvents) ToolCall(_, _ int, _, _, _ string)                  {}
 func (n *NoopEvents) ToolResult(_, _, _ int, _ string)                   {}
 func (n *NoopEvents) StepComplete(_ int, _ time.Duration)                {}
 func (n *NoopEvents) SubAgentLaunch(_, _ string)                         {}
@@ -38,5 +40,6 @@ func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
 func (n *NoopEvents) AssistantChunk(_ string)                            {}
 func (n *NoopEvents) AssistantDone(_ string, _, _ int)                   {}
 func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)       {}
-func (*NoopEvents) ContextCompaction(_, _ float64, _ string)      {}
+func (*NoopEvents) Finishing(_ int, _ string)                            {}
+func (*NoopEvents) ContextCompaction(_, _ float64, _ string)             {}
 func (*NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}

@@ -57,13 +57,13 @@ func TestPlannerProfileContent(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"read_file":        true,
-		"list_directory":   true,
-		"search_files":     true,
-		"search_content":   true,
-		"ripgrep":          true,
-		"glob":             true,
-		"semantic_search":  true,
+		"read_file":       true,
+		"list_directory":  true,
+		"search_files":    true,
+		"search_content":  true,
+		"ripgrep":         true,
+		"glob":            true,
+		"semantic_search": true,
 	}
 
 	if len(profile) != len(expectedTools) {
@@ -85,14 +85,14 @@ func TestReflectorProfileContent(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"read_file":        true,
-		"list_directory":   true,
-		"search_files":     true,
-		"search_content":   true,
-		"ripgrep":          true,
-		"glob":             true,
-		"read_evidence":    true,
-		"semantic_search":  true,
+		"read_file":       true,
+		"list_directory":  true,
+		"search_files":    true,
+		"search_content":  true,
+		"ripgrep":         true,
+		"glob":            true,
+		"read_evidence":   true,
+		"semantic_search": true,
 	}
 
 	if len(profile) != len(expectedTools) {

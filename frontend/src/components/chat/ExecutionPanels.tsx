@@ -82,7 +82,8 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
             <DAGGraph items={group.items} />
             <div className="flex-1 min-w-0">
               {group.items.map((item) => {
-                const hasTooltip = item.title.length > 40
+                const tooltipText = item.description || item.title
+                const hasTooltip = tooltipText.length > 40
                 return (
                   <button
                     key={`${group.id}-${item.id}`}
@@ -96,7 +97,7 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
                           <span className="text-xs text-muted-foreground truncate">{item.title}</span>
                         </TooltipTrigger>
                         <TooltipContent side="bottom" align="start" className="max-w-md text-left whitespace-pre-line p-3 bg-background text-foreground border border-border shadow-md">
-                          {item.title}
+                          {tooltipText}
                         </TooltipContent>
                       </Tooltip>
                     ) : (

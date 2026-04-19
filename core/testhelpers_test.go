@@ -228,12 +228,12 @@ func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration tim
 }
 func (m *mockEmitter) StepStart(_ int)                                    {}
 func (m *mockEmitter) Thought(_ int, _, _ string)                         {}
-func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)              {}
+func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)                  {}
 func (m *mockEmitter) ToolResult(_, _, _ int, _ string)                   {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
 func (m *mockEmitter) SubAgentLaunch(_, _ string)                         {}
 func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
-func (m *mockEmitter) Reflection(_ *orchestration.Reflection, _, _ int)          {}
+func (m *mockEmitter) Reflection(_ *orchestration.Reflection, _, _ int)   {}
 func (m *mockEmitter) Retry(_, _ int)                                     {}
 func (m *mockEmitter) StepRetry(_ string, _, _ int)                       {}
 func (m *mockEmitter) AssistantChunk(content string) {
@@ -246,14 +246,15 @@ func (m *mockEmitter) AssistantDone(content string, inputTokens, outputTokens in
 		outputTokens int
 	}{content, inputTokens, outputTokens})
 }
-func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string)        {}
-func (m *mockEmitter) ContextCompaction(_, _ float64, _ string)      {}
+func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string) {}
+func (m *mockEmitter) ContextCompaction(_, _ float64, _ string)     {}
 func (m *mockEmitter) Service(_ string)                             {}
 func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
 
 func (m *mockEmitter) ReplanFailed(_ error)                                 {}
 func (m *mockEmitter) FileRollbackError(_ string, _ error)                  {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
+func (m *mockEmitter) Finishing(_ int, _ string)                            {}
 
 // ---------------------------------------------------------------------------
 // testPersistableBlackboard — a minimal PersistableBlackboard for core tests
@@ -263,8 +264,8 @@ func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 // Used by orchestrator tests that exercise continuation/restore flows.
 type testPersistableBlackboard struct {
 	*MapBlackboard
-	taskID    string
-	store     TaskPersistence
+	taskID string
+	store  TaskPersistence
 
 	reactivated bool
 	completed   bool

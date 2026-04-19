@@ -25,11 +25,20 @@ type Watcher struct {
 	mu       sync.Mutex
 	watched  map[string]bool
 	done     chan struct{}
+	logger   *slog.Logger
+}
+
+// log returns the logger, falling back to slog.Default() if nil.
+func (w *Watcher) log() *slog.Logger {
+	if w.logger != nil {
+		return w.logger
+	}
+	return slog.Default()
 }
 
 // NewWatcher creates a Watcher that watches the root directory and calls onChange
 // (debounced at 200ms) on any change.
-func NewWatcher(root string, onChange func()) (*Watcher, error) {
+func NewWatcher(root string, onChange func(), loggers ...*slog.Logger) (*Watcher, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve root path: %w", err)
@@ -40,12 +49,18 @@ func NewWatcher(root string, onChange func()) (*Watcher, error) {
 		return nil, fmt.Errorf("failed to create fsnotify watcher: %w", err)
 	}
 
+	var logger *slog.Logger
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
+
 	w := &Watcher{
 		root:     absRoot,
 		watcher:  fsw,
 		onChange: onChange,
 		watched:  make(map[string]bool),
 		done:     make(chan struct{}),
+		logger:   logger,
 	}
 
 	// Watch the root directory itself.
@@ -82,7 +97,7 @@ func (w *Watcher) eventLoop() {
 			if !ok {
 				return
 			}
-			slog.Debug("fsnotify watcher error", "error", watchErr)
+			w.log().Debug("fsnotify watcher error", "error", watchErr)
 		}
 	}
 }

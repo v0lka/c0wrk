@@ -17,6 +17,7 @@ type Gateway struct {
 	servers        map[string]*Server
 	config         GatewayConfig
 	defaultWorkDir string
+	logger         *slog.Logger
 	mu             sync.RWMutex
 }
 
@@ -25,6 +26,13 @@ func NewGateway() *Gateway {
 	return &Gateway{
 		servers: make(map[string]*Server),
 	}
+}
+
+func (g *Gateway) log() *slog.Logger {
+	if g.logger != nil {
+		return g.logger
+	}
+	return slog.Default()
 }
 
 // SetDefaultWorkDir updates the default working directory for new stdio server connections.
@@ -49,6 +57,7 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 			cfg.WorkDir = g.defaultWorkDir
 		}
 		server := NewServer(name)
+		server.logger = g.logger
 
 		if err := server.Connect(ctx, cfg); err != nil {
 			errs = append(errs, fmt.Errorf("server %s: %w", name, err))
@@ -64,7 +73,7 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 		}
 
 		g.servers[name] = server
-		slog.Debug("MCP server started", "server", name, "tools", len(server.Tools()))
+		g.log().Debug("MCP server started", "server", name, "tools", len(server.Tools()))
 	}
 
 	if len(errs) > 0 {
@@ -90,7 +99,7 @@ func (g *Gateway) RegisterTools(registry *tools.ToolRegistry) error {
 		for i, t := range server.Tools() {
 			toolNames[i] = t.Name
 		}
-		slog.Debug("MCP tools registered", "server", name, "count", len(toolNames), "tools", toolNames)
+		g.log().Debug("MCP tools registered", "server", name, "count", len(toolNames), "tools", toolNames)
 	}
 
 	return nil
@@ -211,6 +220,7 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 
 		// Connect new server
 		server := NewServer(name)
+		server.logger = g.logger
 		if err := server.Connect(ctx, newCfg); err != nil {
 			errs = append(errs, fmt.Errorf("server %s: connect: %w", name, err))
 			continue
@@ -448,6 +458,7 @@ func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRe
 	gateway := NewGateway()
 	gateway.config = cfg // Store the original config for diffing in Reconfigure
 	gateway.defaultWorkDir = cfg.DefaultWorkDir
+	gateway.logger = logger
 
 	if err := gateway.Start(ctx, mcpConfigs); err != nil {
 		if logger != nil {

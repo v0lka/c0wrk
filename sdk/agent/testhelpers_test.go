@@ -233,6 +233,10 @@ func (r *recordingEvents) AssistantDone(content string, inputTokens, outputToken
 	r.record("AssistantDone")
 }
 
+func (r *recordingEvents) Finishing(stepNum int, summary string) {
+	r.record(fmt.Sprintf("Finishing:%d", stepNum))
+}
+
 func (r *recordingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
 	r.record("ContextFill:" + status)
 }

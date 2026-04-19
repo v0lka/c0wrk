@@ -23,6 +23,17 @@ type HierarchicalStrategy struct {
 	summarizer          func(ctx context.Context, text string) (string, error)
 	tokenCounter        llm.TokenCounter
 	maxSummarizeTokens  int
+	logger *slog.Logger
+}
+
+// SetLogger sets the logger for the strategy. If nil, slog.Default() is used.
+func (h *HierarchicalStrategy) SetLogger(l *slog.Logger) { h.logger = l }
+
+func (h *HierarchicalStrategy) log() *slog.Logger {
+	if h.logger != nil {
+		return h.logger
+	}
+	return slog.Default()
 }
 
 // NewHierarchicalStrategy creates a new HierarchicalStrategy.
@@ -144,7 +155,7 @@ func (h *HierarchicalStrategy) summarizeZone(ctx context.Context, steps []sdkage
 			var err error
 			summary, err = h.summarizer(ctx, blockText)
 			if err != nil {
-				slog.Error("hierarchy compaction: summarization failed", "error", err)
+				h.log().Error("hierarchy compaction: summarization failed", "error", err)
 				// Fallback to a simple indicator if summarization fails
 				summary = fmt.Sprintf("[%s zone: %d steps summarized (error: %v)]", zoneName, len(block), err)
 			}

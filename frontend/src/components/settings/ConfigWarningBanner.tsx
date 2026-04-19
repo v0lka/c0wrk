@@ -55,7 +55,7 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
             <span className="font-medium text-destructive">Configuration warning</span>
             <ul className="text-muted-foreground list-disc list-inside">
               {errors.map((error, index) => (
-                <li key={index}>{error}</li>
+                <li key={`${index}-${error}`}>{error}</li>
               ))}
             </ul>
           </div>

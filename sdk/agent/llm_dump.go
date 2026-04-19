@@ -22,20 +22,25 @@ type dumpEntry struct {
 // dumpCaller wraps an LLMCaller and writes full, untruncated JSON dumps of
 // every LLM request and response to an io.Writer in JSONL format.
 type dumpCaller struct {
-	inner LLMCaller
-	mu    sync.Mutex
-	enc   *json.Encoder
+	inner  LLMCaller
+	mu     sync.Mutex
+	enc    *json.Encoder
+	logger *slog.Logger
 }
 
 // NewDumpCaller decorates inner so that every Call writes the full ChatRequest
 // and ChatResponse as JSONL entries to w. If w is nil, returns inner unchanged.
-func NewDumpCaller(inner LLMCaller, w io.Writer) LLMCaller {
+func NewDumpCaller(inner LLMCaller, w io.Writer, logger *slog.Logger) LLMCaller {
 	if w == nil {
 		return inner
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &dumpCaller{
-		inner: inner,
-		enc:   json.NewEncoder(w),
+		inner:  inner,
+		enc:    json.NewEncoder(w),
+		logger: logger,
 	}
 }
 
@@ -43,7 +48,7 @@ func NewDumpCaller(inner LLMCaller, w io.Writer) LLMCaller {
 func (d *dumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
-		slog.Debug("llm dump: failed to marshal request", "error", err)
+		d.logger.Debug("llm dump: failed to marshal request", "error", err)
 	}
 
 	d.mu.Lock()
@@ -52,7 +57,7 @@ func (d *dumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatRe
 		Direction: "request",
 		Data:      reqJSON,
 	}); err != nil {
-		slog.Debug("llm dump encode failed", "error", err)
+		d.logger.Debug("llm dump encode failed", "error", err)
 	}
 	d.mu.Unlock()
 
@@ -63,7 +68,7 @@ func (d *dumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatRe
 		var marshalErr error
 		respJSON, marshalErr = json.Marshal(resp)
 		if marshalErr != nil {
-			slog.Debug("llm dump: failed to marshal response", "error", marshalErr)
+			d.logger.Debug("llm dump: failed to marshal response", "error", marshalErr)
 		}
 	} else {
 		respJSON = json.RawMessage("null")
@@ -80,7 +85,7 @@ func (d *dumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatRe
 
 	d.mu.Lock()
 	if err := d.enc.Encode(entry); err != nil {
-		slog.Debug("llm dump encode failed", "error", err)
+		d.logger.Debug("llm dump encode failed", "error", err)
 	}
 	d.mu.Unlock()
 

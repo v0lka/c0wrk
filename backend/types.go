@@ -110,6 +110,19 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// Vector search types (from core/tools)
+// ---------------------------------------------------------------------------
+
+// VectorSearchFunc is the callback for the semantic_search tool.
+type VectorSearchFunc = tools.VectorSearchFunc
+
+// VectorSearchWaitFunc blocks until the vector index is ready.
+type VectorSearchWaitFunc = tools.VectorSearchWaitFunc
+
+// VectorSearchResult holds a single vector search hit.
+type VectorSearchResult = tools.VectorSearchResult
+
+// ---------------------------------------------------------------------------
 // MCP types (from core/tools/mcp)
 // ---------------------------------------------------------------------------
 

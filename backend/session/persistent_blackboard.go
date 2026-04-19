@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/user/agent/core"
-	"github.com/user/agent/sdk/orchestration"
 )
 
 // defaultPersistenceTimeout is the maximum time allowed for a single
@@ -137,7 +136,7 @@ func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, 
 	if maxLen == 0 {
 		maxLen = 500
 	}
-	summary := orchestration.GenerateSummary(output, maxLen)
+	summary := core.GenerateSummary(output, maxLen)
 	// Apply the same token-budget cap as MapBlackboard.
 	if pb.MaxSummaryTokens() > 0 {
 		maxChars := pb.MaxSummaryTokens() * 4

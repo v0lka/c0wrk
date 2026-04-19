@@ -46,6 +46,13 @@ func New(cfg Config) *Orchestrator {
 	}
 }
 
+func (o *Orchestrator) log() *slog.Logger {
+	if o.cfg.Logger != nil {
+		return o.cfg.Logger
+	}
+	return slog.Default()
+}
+
 // Execute runs the full Plan&Execute loop for a user request.
 func (o *Orchestrator) Execute(ctx context.Context, userMessage string) (*ExecutionResult, error) {
 	// 1. Create blackboard
@@ -267,7 +274,7 @@ func (o *Orchestrator) runPlanExecute(
 						outerFailedIDs = append(outerFailedIDs, cs.StepID)
 					}
 				}
-				slog.Info("reflection completed",
+				o.log().Info("reflection completed",
 					"failed_steps", outerFailedIDs,
 					"summary", reflection.Summary,
 					"suggested_action", reflection.SuggestedAction,
@@ -282,7 +289,7 @@ func (o *Orchestrator) runPlanExecute(
 				bb.AddReflection(*reflection)
 
 				if reflection.SuggestedAction == "replan" {
-					slog.Info("replan triggered by reflection",
+					o.log().Info("replan triggered by reflection",
 						"suggested_action", reflection.SuggestedAction,
 						"root_cause", reflection.RootCause,
 						"action_plan", reflection.ActionPlan,
@@ -392,7 +399,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			if len(stepTools) == 0 {
 				stepTools = availableTools
 			}
-			slog.Debug("orchestrator: step tools resolved",
+			o.log().Debug("orchestrator: step tools resolved",
 				"step", step.ID,
 				"tool_count", len(stepTools),
 				"using_full_set", len(stepCfg.AllowedTools) == 0,
@@ -405,10 +412,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, retryContext, maxSteps)
 
 			// Resolve model metadata
-			var modelMeta llm.ModelMetadata
-			if o.cfg.ModelRegistry != nil {
-				modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
-			}
+			modelMeta := o.resolveModelMeta()
 
 			// Build system prompt
 			var systemPrompt string
@@ -501,7 +505,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			}
 
 			if r.Error != nil {
-				slog.Info("plan step failed",
+				o.log().Info("plan step failed",
 					"step_id", r.StepID,
 					"error", r.Error.Error(),
 					"output_length", len(r.Output),
@@ -547,7 +551,7 @@ func (o *Orchestrator) executePlanWithSteps(
 								break stepRetryLoop // abort retry for this step
 							}
 
-							slog.Info("reflection completed",
+							o.log().Info("reflection completed",
 								"step_id", failedStepID,
 								"summary", reflection.Summary,
 								"suggested_action", reflection.SuggestedAction,
@@ -592,10 +596,7 @@ func (o *Orchestrator) executePlanWithSteps(
 					taskDef := o.buildStepTask(failedPlanStep, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, stepRetryContext, maxSteps)
 
 					// Resolve model metadata
-					var modelMeta llm.ModelMetadata
-					if o.cfg.ModelRegistry != nil {
-						modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
-					}
+					modelMeta := o.resolveModelMeta()
 
 					// Build system prompt
 					var systemPrompt string
@@ -861,6 +862,21 @@ func (o *Orchestrator) buildStepTask(
 // ---------------------------------------------------------------------------
 
 // callerForStep returns a step-local LLMCaller for the given ContextManager.
+// resolveModelMeta returns model metadata for the active model.
+// Uses cfg.Model to look up the registry; falls back to sensible defaults if unavailable.
+func (o *Orchestrator) resolveModelMeta() llm.ModelMetadata {
+	if o.cfg.ModelRegistry != nil && o.cfg.Model != "" {
+		meta, _ := o.cfg.ModelRegistry.Resolve(o.cfg.Model)
+		return meta
+	}
+	if o.cfg.ModelRegistry != nil {
+		// Fallback: empty model still goes through registry (returns defaults)
+		meta, _ := o.cfg.ModelRegistry.Resolve("")
+		return meta
+	}
+	return llm.ModelMetadata{}
+}
+
 // If CallerForStep is configured, it delegates to it; otherwise falls back to the shared LLM.
 func (o *Orchestrator) callerForStep(cm agent.ContextManager) agent.LLMCaller {
 	if o.cfg.CallerForStep != nil {
@@ -914,46 +930,6 @@ func (o *Orchestrator) resolveStepConfig(step PlanStep, allTools []tools.ToolDes
 	return StepConfig{MaxSteps: o.maxSteps}
 }
 
-// isLastTerminalStep checks whether the given step is the last terminal step in plan order.
-func (o *Orchestrator) isLastTerminalStep(step PlanStep, stepIndex int, plan Plan) bool {
-	// Check if this step is terminal (no other step depends on it)
-	isTerminal := true
-	for _, s := range plan.Steps {
-		for _, dep := range s.DependsOn {
-			if dep == step.ID {
-				isTerminal = false
-				break
-			}
-		}
-		if !isTerminal {
-			break
-		}
-	}
-	if !isTerminal {
-		return false
-	}
-	// Check if any later step is also terminal
-	for i := stepIndex + 1; i < len(plan.Steps); i++ {
-		laterStep := plan.Steps[i]
-		laterIsTerminal := true
-		for _, s := range plan.Steps {
-			for _, dep := range s.DependsOn {
-				if dep == laterStep.ID {
-					laterIsTerminal = false
-					break
-				}
-			}
-			if !laterIsTerminal {
-				break
-			}
-		}
-		if laterIsTerminal {
-			return false // a later terminal step exists
-		}
-	}
-	return true
-}
-
 // emitPlanWithStatuses emits a plan with correct step statuses.
 func (o *Orchestrator) emitPlanWithStatuses(plan *Plan, preCompleted map[string]CompletedStep) {
 	planStepEvents := make([]PlanStepEvent, len(plan.Steps))
@@ -976,33 +952,6 @@ func defaultSystemPrompt(_ context.Context, stepDescription string) string {
 	b.WriteString("Your task: " + stepDescription + "\n")
 	return b.String()
 }
-
-// terminalSteps returns the IDs of steps that are "terminal" in the plan -
-// i.e., no other step in the plan lists them in its DependsOn.
-// These are the leaf nodes of the DAG.
-func terminalSteps(plan *Plan) []string {
-	if plan == nil || len(plan.Steps) == 0 {
-		return nil
-	}
-
-	// Build set of all steps that are dependencies of other steps
-	dependedOn := make(map[string]bool)
-	for _, step := range plan.Steps {
-		for _, depID := range step.DependsOn {
-			dependedOn[depID] = true
-		}
-	}
-
-	// Terminal steps are those not depended on by any other step
-	var terminals []string
-	for _, step := range plan.Steps {
-		if !dependedOn[step.ID] {
-			terminals = append(terminals, step.ID)
-		}
-	}
-	return terminals
-}
-
 
 // ExecuteAdHocStep executes a single ad-hoc step on an existing Blackboard,
 // using the same machinery as regular plan step execution.
@@ -1052,10 +1001,7 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, "", maxSteps)
 
 	// Resolve model metadata
-	var modelMeta llm.ModelMetadata
-	if o.cfg.ModelRegistry != nil {
-		modelMeta, _ = o.cfg.ModelRegistry.Resolve("")
-	}
+	modelMeta := o.resolveModelMeta()
 
 	// 3. Build system prompt with role suffix from step's profile (if present)
 	var systemPrompt string

@@ -9,7 +9,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolCreateDirectoryDescription = `Creates a directory at the specified path, including any necessary parent directories. Succeeds silently if the directory already exists.`
+const toolCreateDirectoryDescription = `Creates a directory at the specified path, including any necessary parent directories (like mkdir -p). Succeeds silently if the directory already exists. Use this to set up directory structure before writing files into it.`
 
 // CreateDirectoryTool creates directories.
 type CreateDirectoryTool struct {

@@ -37,6 +37,7 @@ type Server struct {
 	connected     bool
 	lastError     string
 	transportType string
+	logger        *slog.Logger
 	mu            sync.RWMutex
 }
 
@@ -53,6 +54,13 @@ func NewServer(name string) *Server {
 		name:  name,
 		tools: make([]ToolInfo, 0),
 	}
+}
+
+func (s *Server) log() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 // Name returns the server's configured name.
@@ -94,7 +102,7 @@ func (s *Server) Connect(ctx context.Context, cfg ServerConfig) error {
 	s.transportType = transportType
 	s.connected = true
 	s.lastError = ""
-	slog.Debug("MCP server connected", "server", s.name, "transport", transportType)
+	s.log().Debug("MCP server connected", "server", s.name, "transport", transportType)
 	return nil
 }
 
@@ -128,7 +136,7 @@ func (s *Server) connectStdio(ctx context.Context, cfg ServerConfig) (*mcpclient
 
 	if err := s.initializeClient(ctx, client); err != nil {
 		if closeErr := client.Close(); closeErr != nil {
-			slog.Debug("failed to close MCP client after connection failure", "error", closeErr)
+			s.log().Debug("failed to close MCP client after connection failure", "error", closeErr)
 		}
 		return nil, err
 	}
@@ -139,7 +147,7 @@ func (s *Server) connectStdio(ctx context.Context, cfg ServerConfig) (*mcpclient
 // connectHTTP creates an HTTP MCP client with fallback from Streamable HTTP to SSE.
 func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.Client, error) {
 	if cfg.URL == "" {
-		return nil, fmt.Errorf("HTTP transport requires URL for MCP server %s", s.name)
+		return nil, fmt.Errorf("http transport requires URL for MCP server %s", s.name)
 	}
 
 	// Prepare headers option
@@ -156,7 +164,7 @@ func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.
 		}
 		// Initialization failed, close and try SSE fallback
 		if closeErr := client.Close(); closeErr != nil {
-			slog.Debug("failed to close MCP client after connection failure", "error", closeErr)
+			s.log().Debug("failed to close MCP client after connection failure", "error", closeErr)
 		}
 	}
 
@@ -173,7 +181,7 @@ func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.
 
 	if err := s.initializeClient(ctx, client); err != nil {
 		if closeErr := client.Close(); closeErr != nil {
-			slog.Debug("failed to close MCP client after connection failure", "error", closeErr)
+			s.log().Debug("failed to close MCP client after connection failure", "error", closeErr)
 		}
 		return nil, err
 	}
@@ -214,7 +222,7 @@ func (s *Server) DiscoverTools(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	if s.client == nil {
-		return fmt.Errorf("MCP server %s is not connected", s.name)
+		return fmt.Errorf("mcp server %s is not connected", s.name)
 	}
 
 	// List all tools from the MCP server
@@ -248,7 +256,7 @@ func (s *Server) DiscoverTools(ctx context.Context) error {
 	for i, t := range s.tools {
 		toolNames[i] = t.Name
 	}
-	slog.Debug("MCP tools discovered", "server", s.name, "count", len(s.tools), "tools", toolNames)
+	s.log().Debug("MCP tools discovered", "server", s.name, "count", len(s.tools), "tools", toolNames)
 
 	return nil
 }
@@ -271,7 +279,7 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments map[string
 	s.mu.RUnlock()
 
 	if client == nil {
-		return nil, fmt.Errorf("MCP server %s is not connected", s.name)
+		return nil, fmt.Errorf("mcp server %s is not connected", s.name)
 	}
 
 	req := mcp.CallToolRequest{

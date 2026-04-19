@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -161,7 +160,7 @@ func (a *App) UpdateMCPServers(servers map[string]config.MCPServerConfig) error 
 
 	// Persist config
 	if err := a.persistConfig(); err != nil {
-		slog.Warn("failed to persist MCP server settings", "error", err)
+		a.log().Warn("failed to persist MCP server settings", "error", err)
 	}
 
 	// Reconfigure MCP gateway via the backend builder.
@@ -184,14 +183,14 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 	switch transport {
 	case "stdio":
 		if cfg.Command == "" {
-			return errors.New("stdio transport requires a command")
+			return fmt.Errorf("server %q: stdio transport requires a command", name)
 		}
 	case "http":
 		if cfg.URL == "" {
-			return errors.New("http transport requires a URL")
+			return fmt.Errorf("server %q: http transport requires a URL", name)
 		}
 	default:
-		return fmt.Errorf("unsupported transport: %q", transport)
+		return fmt.Errorf("server %q: unsupported transport: %q", name, transport)
 	}
 
 	return nil
@@ -205,16 +204,16 @@ func (a *App) CheckCodebaseMemoryMCP() beMcp.CodeMemoryStatus {
 // InstallCodebaseMemoryMCP downloads and installs the codebase-memory-mcp binary.
 func (a *App) InstallCodebaseMemoryMCP() error {
 	progress := func(status string) {
-		wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", status)
+		wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, status)
 	}
 
-	installPath, err := beMcp.InstallCodebaseMemoryMCP(progress)
+	installPath, err := beMcp.InstallCodebaseMemoryMCP(progress, nil)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("codebase-memory-mcp installed", "path", installPath)
-	wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "configuring")
+	a.log().Info("codebase-memory-mcp installed", "path", installPath)
+	wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, "configuring")
 
 	// Add MCP config entry
 	a.configMu.Lock()
@@ -230,17 +229,17 @@ func (a *App) InstallCodebaseMemoryMCP() error {
 
 	// Persist config
 	if err := a.persistConfig(); err != nil {
-		slog.Warn("failed to persist MCP server settings", "error", err)
+		a.log().Warn("failed to persist MCP server settings", "error", err)
 	}
 
 	// Reconfigure MCP gateway via the backend builder.
 	if a.app != nil {
 		if err := a.app.Builder().ReconfigureMCP(context.Background(), backend.ToBuilderConfig(a.config)); err != nil {
-			wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "error")
+			wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, "error")
 			return fmt.Errorf("failed to reconfigure MCP gateway: %w", err)
 		}
 	}
 
-	wailsRuntime.EventsEmit(a.ctx, "codememory:install-progress", "done")
+	wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, "done")
 	return nil
 }

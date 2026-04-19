@@ -65,10 +65,10 @@ func createTestWorkspace(t *testing.T) string {
 	dir := t.TempDir()
 
 	files := map[string]string{
-		"main.go":          "package main\n\nfunc main() {}\n",
-		"lib/utils.go":     "package lib\n\nfunc Add(a, b int) int { return a + b }\n",
-		"README.md":        "# Test Project\n\nSome content.\n",
-		"config.yaml":      "key: value\n",
+		"main.go":      "package main\n\nfunc main() {}\n",
+		"lib/utils.go": "package lib\n\nfunc Add(a, b int) int { return a + b }\n",
+		"README.md":    "# Test Project\n\nSome content.\n",
+		"config.yaml":  "key: value\n",
 	}
 
 	for relPath, content := range files {
@@ -320,18 +320,18 @@ func TestWalkProjectFiles(t *testing.T) {
 
 	// Create various files and directories.
 	structure := map[string]string{
-		"main.go":                  "package main",
-		"lib/utils.go":             "package lib",
-		".git/config":              "git config",
+		"main.go":                   "package main",
+		"lib/utils.go":              "package lib",
+		".git/config":               "git config",
 		"node_modules/pkg/index.js": "module.exports = {}",
-		"vendor/lib/vendor.go":     "package vendor",
-		"build/output.bin":         "binary",
-		"image.png":                "fake png",
-		".hidden_file":             "hidden",
-		".hidden_dir/file.go":      "hidden dir",
-		"data.json":                `{"key": "value"}`,
-		"go.sum":                   "checksum file",
-		"package-lock.json":        "lock file",
+		"vendor/lib/vendor.go":      "package vendor",
+		"build/output.bin":          "binary",
+		"image.png":                 "fake png",
+		".hidden_file":              "hidden",
+		".hidden_dir/file.go":       "hidden dir",
+		"data.json":                 `{"key": "value"}`,
+		"go.sum":                    "checksum file",
+		"package-lock.json":         "lock file",
 	}
 
 	for relPath, content := range structure {
@@ -395,11 +395,11 @@ func TestWalkProjectFiles_WithGitignore(t *testing.T) {
 	}
 
 	structure := map[string]string{
-		"main.go":          "package main",
-		"debug.log":        "log content",
-		"tmp/cache.txt":    "temp data",
-		"custom_dir/a.go":  "custom",
-		"src/app.go":       "package src",
+		"main.go":         "package main",
+		"debug.log":       "log content",
+		"tmp/cache.txt":   "temp data",
+		"custom_dir/a.go": "custom",
+		"src/app.go":      "package src",
 	}
 
 	for relPath, content := range structure {

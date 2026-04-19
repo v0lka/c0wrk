@@ -19,6 +19,7 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"ReflectorInstructions", ReflectorInstructions},
 		{"RouterSystem", RouterSystem},
 		{"RouterInstructions", RouterInstructions},
+		{"VerificationMandate", VerificationMandate},
 		{"CompactionSummarize", CompactionSummarize},
 		// Family-specific orchestrator prompts
 		{"OrchestratorDefault", OrchestratorDefault},
@@ -28,6 +29,8 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"OrchestratorGemini", OrchestratorGemini},
 		{"OrchestratorDeepSeek", OrchestratorDeepSeek},
 		{"OrchestratorMistral", OrchestratorMistral},
+		{"OrchestratorKimi", OrchestratorKimi},
+		{"OrchestratorOpenAICodex", OrchestratorOpenAICodex},
 		// Family-specific planner prompts
 		{"PlannerDefault", PlannerDefault},
 		{"PlannerAnthropic", PlannerAnthropic},
@@ -36,6 +39,8 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"PlannerGemini", PlannerGemini},
 		{"PlannerDeepSeek", PlannerDeepSeek},
 		{"PlannerMistral", PlannerMistral},
+		{"PlannerKimi", PlannerKimi},
+		{"PlannerOpenAICodex", PlannerOpenAICodex},
 	}
 
 	for _, tt := range tests {
@@ -95,7 +100,7 @@ func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 }
 
 func TestFamilyPrompt_Orchestrator(t *testing.T) {
-	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "default"}
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "kimi", "openai_codex", "default"}
 	for _, fam := range families {
 		t.Run(fam, func(t *testing.T) {
 			result := FamilyPrompt("orchestrator", fam)
@@ -107,7 +112,7 @@ func TestFamilyPrompt_Orchestrator(t *testing.T) {
 }
 
 func TestFamilyPrompt_Planner(t *testing.T) {
-	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "default"}
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "kimi", "openai_codex", "default"}
 	for _, fam := range families {
 		t.Run(fam, func(t *testing.T) {
 			result := FamilyPrompt("planner", fam)

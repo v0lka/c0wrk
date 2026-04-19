@@ -52,6 +52,13 @@ type Application struct {
 	stepLimitFunc StepLimitFunc
 }
 
+func (app *Application) log() *slog.Logger {
+	if app.logger != nil {
+		return app.logger
+	}
+	return slog.Default()
+}
+
 // NewApplication creates a fully-initialized Application.
 // It builds the shared tool registry, MCP gateway, LLM router, session manager,
 // and event persister from the given configuration.
@@ -104,7 +111,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	if cfg.SessionStore != nil {
 		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string) {
 			if err := cfg.SessionStore.UpdateSessionTokens(sessionID, inputTokens, outputTokens, model, family); err != nil {
-				slog.Warn("failed to persist session tokens", "session", sessionID, "error", err)
+				app.log().Warn("failed to persist session tokens", "session", sessionID, "error", err)
 			}
 		})
 	}
@@ -237,7 +244,7 @@ func (app *Application) Shutdown() {
 	}
 	if app.builder != nil {
 		if err := app.builder.StopGateway(); err != nil {
-			slog.Error("failed to stop MCP gateway", "error", err)
+			app.log().Error("failed to stop MCP gateway", "error", err)
 		}
 	}
 }

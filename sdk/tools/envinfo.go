@@ -142,7 +142,7 @@ func detectDotNetVersion() string {
 // detectJavaVersion parses "21.0.1" from "java -version" output (first line).
 // Example: "openjdk version \"21.0.1\" 2023-10-17" or "java version \"1.8.0_391\""
 func detectJavaVersion() string {
-	out := runVersionCmd("java", "-version")
+	out := runVersionCmdCombined("java", "-version")
 	if out == "" {
 		return ""
 	}
@@ -197,6 +197,23 @@ func runVersionCmd(name string, args ...string) string {
 		return ""
 	}
 	return strings.TrimSpace(stdout.String())
+}
+
+// runVersionCmdCombined executes a command with a 2-second timeout and returns trimmed
+// combined stdout+stderr output. Needed for tools like `java -version` that write to stderr.
+func runVersionCmdCombined(name string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(buf.String())
 }
 
 // envInfoKey is the context key for EnvInfo.

@@ -25,7 +25,7 @@ func TestDumpCaller_Success_WritesBothEntries(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	caller := NewDumpCaller(mock, &buf)
+	caller := NewDumpCaller(mock, &buf, nil)
 
 	req := llm.ChatRequest{
 		Model: "test-model",
@@ -116,7 +116,7 @@ func TestDumpCaller_Error_WritesErrorEntry(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	caller := NewDumpCaller(mock, &buf)
+	caller := NewDumpCaller(mock, &buf, nil)
 
 	req := llm.ChatRequest{Model: "m"}
 	_, gotErr := caller.Call(t.Context(), req)
@@ -156,7 +156,7 @@ func TestDumpCaller_Error_WritesErrorEntry(t *testing.T) {
 
 func TestDumpCaller_NilWriter_ReturnsInner(t *testing.T) {
 	mock := &mockLLMCaller{}
-	got := NewDumpCaller(mock, nil)
+	got := NewDumpCaller(mock, nil, nil)
 	if got != mock {
 		t.Error("NewDumpCaller with nil writer should return inner unchanged")
 	}
@@ -176,7 +176,7 @@ func TestDumpCaller_ConcurrentSafety(t *testing.T) {
 	mock := &mockLLMCaller{responses: responses}
 
 	var buf bytes.Buffer
-	caller := NewDumpCaller(mock, &buf)
+	caller := NewDumpCaller(mock, &buf, nil)
 	req := llm.ChatRequest{Model: "m"}
 
 	var wg sync.WaitGroup

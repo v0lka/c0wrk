@@ -43,7 +43,7 @@ func TestServer_CallTool_NilClient(t *testing.T) {
 		t.Fatal("expected error when calling tool on disconnected server")
 	}
 
-	expected := "MCP server test is not connected"
+	expected := "mcp server test is not connected"
 	if err.Error() != expected {
 		t.Errorf("error = %q, want %q", err.Error(), expected)
 	}
@@ -61,7 +61,7 @@ func TestServer_CallTool_NilClientWithArgs(t *testing.T) {
 		t.Fatal("expected error when calling tool on disconnected server")
 	}
 
-	if err.Error() != "MCP server my-server is not connected" {
+	if err.Error() != "mcp server my-server is not connected" {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -74,7 +74,7 @@ func TestServer_DiscoverTools_NilClient(t *testing.T) {
 		t.Fatal("expected error when discovering tools on disconnected server")
 	}
 
-	expected := "MCP server test is not connected"
+	expected := "mcp server test is not connected"
 	if err.Error() != expected {
 		t.Errorf("error = %q, want %q", err.Error(), expected)
 	}
@@ -213,7 +213,7 @@ func TestServer_Connect_HTTP_MissingURL(t *testing.T) {
 		t.Fatal("expected error for HTTP transport without URL")
 	}
 
-	expected := "HTTP transport requires URL for MCP server test"
+	expected := "http transport requires URL for MCP server test"
 	if err.Error() != expected {
 		t.Errorf("error = %q, want %q", err.Error(), expected)
 	}

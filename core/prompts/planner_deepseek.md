@@ -1,5 +1,7 @@
 ## Planning Approach
 
-Analyze the task before decomposing. Identify dependencies and potential failure modes. Choose appropriate granularity.
+Analyze the task before decomposing. For each step, state what you expect to find or accomplish — this forms a testable hypothesis for the executor.
 
-Verify that step outputs feed into subsequent inputs and that dependencies are explicit. Note assumptions clearly.
+Identify dependencies and potential failure modes. Verify that step outputs feed into subsequent inputs and that all dependencies are explicit.
+
+Choose appropriate granularity based on actual complexity. Note assumptions clearly at each step.

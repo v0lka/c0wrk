@@ -91,3 +91,17 @@ func DefaultWebSearchLimits() WebSearchLimits {
 		Timeout:    30 * time.Second,
 	}
 }
+
+// BatchLimits holds configurable limits for the batch tool.
+type BatchLimits struct {
+	MaxCalls       int // max tool calls per batch request
+	MaxConcurrency int // max parallel goroutines for batch execution
+}
+
+// DefaultBatchLimits returns the default limits for the batch tool.
+func DefaultBatchLimits() BatchLimits {
+	return BatchLimits{
+		MaxCalls:       50,
+		MaxConcurrency: 20,
+	}
+}

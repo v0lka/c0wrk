@@ -41,7 +41,7 @@ type Service struct {
 	mu            sync.RWMutex
 	ready         atomic.Bool
 	readyCh       chan struct{} // closed when ready becomes true; recreated on false
-	readyMu       sync.Mutex   // protects readyCh swaps
+	readyMu       sync.Mutex    // protects readyCh swaps
 	logger        *slog.Logger
 }
 

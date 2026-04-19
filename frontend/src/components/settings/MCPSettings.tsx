@@ -67,8 +67,14 @@ interface ServerFormData {
 }
 
 interface KeyValueEntry {
+  id: number
   key: string
   value: string
+}
+
+let nextEntryId = 1
+function makeEntry(key = '', value = ''): KeyValueEntry {
+  return { id: nextEntryId++, key, value }
 }
 
 const emptyFormData: ServerFormData = {
@@ -317,10 +323,10 @@ function useMCPForm(): UseMCPFormReturn {
       headers: cfg?.headers || {},
     })
     setEnvEntries(
-      Object.entries(cfg?.env || {}).map(([key, value]) => ({ key, value: String(value) }))
+      Object.entries(cfg?.env || {}).map(([key, value]) => makeEntry(key, String(value)))
     )
     setHeaderEntries(
-      Object.entries(cfg?.headers || {}).map(([key, value]) => ({ key, value: String(value) }))
+      Object.entries(cfg?.headers || {}).map(([key, value]) => makeEntry(key, String(value)))
     )
     setFormError(null)
     setIsFormOpen(true)
@@ -331,7 +337,7 @@ function useMCPForm(): UseMCPFormReturn {
   }
 
   const addEnvEntry = () => {
-    setEnvEntries([...envEntries, { key: '', value: '' }])
+    setEnvEntries([...envEntries, makeEntry()])
   }
 
   const updateEnvEntry = (index: number, field: 'key' | 'value', value: string) => {
@@ -343,7 +349,7 @@ function useMCPForm(): UseMCPFormReturn {
   }
 
   const addHeaderEntry = () => {
-    setHeaderEntries([...headerEntries, { key: '', value: '' }])
+    setHeaderEntries([...headerEntries, makeEntry()])
   }
 
   const updateHeaderEntry = (index: number, field: 'key' | 'value', value: string) => {
@@ -432,19 +438,18 @@ export function MCPSettings() {
     if (!runtime) return
 
     const unsubProgress = runtime.EventsOn('codememory:install-progress', (data: unknown) => {
-      const progress = data as string
-      setInstallProgress(progress)
-      if (progress === 'done') {
-        setInstallProgress(null)
-      } else if (progress === 'error') {
+      if (typeof data !== 'string') return
+      setInstallProgress(data)
+      if (data === 'done' || data === 'error') {
         setInstallProgress(null)
       }
     })
 
     const unsubStatus = runtime.EventsOn('codememory:status', (data: unknown) => {
+      if (typeof data !== 'object' || data === null || typeof (data as Record<string, unknown>).installed !== 'boolean') return
       const status = data as { installed: boolean; path: string }
       setCmInstalled(status.installed)
-      setCmPath(status.path)
+      setCmPath(status.path ?? '')
       if (status.installed) {
         setInstallProgress(null)
         setInstallError(null)
@@ -462,9 +467,9 @@ export function MCPSettings() {
     if (!runtime) return
 
     const unsubProgress = runtime.EventsOn('rtk:install-progress', (data: unknown) => {
-      const progress = data as string
-      setRtkInstallProgress(progress)
-      if (progress === 'done') {
+      if (typeof data !== 'string') return
+      setRtkInstallProgress(data)
+      if (data === 'done') {
         setRtkInstallProgress(null)
         // Re-check status after install
         CheckRtk().then((result) => {
@@ -472,16 +477,17 @@ export function MCPSettings() {
           setRtkPath(result.path)
           setRtkVersion(result.version)
         }).catch((err) => { logger.warn('Failed to re-check RTK status:', err) })
-      } else if (progress === 'error') {
+      } else if (data === 'error') {
         setRtkInstallProgress(null)
       }
     })
 
     const unsubStatus = runtime.EventsOn('rtk:status', (data: unknown) => {
+      if (typeof data !== 'object' || data === null || typeof (data as Record<string, unknown>).installed !== 'boolean') return
       const status = data as { installed: boolean; path: string; version: string }
       setRtkInstalled(status.installed)
-      setRtkPath(status.path)
-      setRtkVersion(status.version)
+      setRtkPath(status.path ?? '')
+      setRtkVersion(status.version ?? '')
       if (status.installed) {
         setRtkInstallProgress(null)
         setRtkInstallError(null)
@@ -870,7 +876,7 @@ export function MCPSettings() {
                 <div className="space-y-2">
                   <label className="text-xs text-muted-foreground">Environment Variables</label>
                   {mcpForm.envEntries.map((entry, index) => (
-                    <div key={index} className="flex gap-2">
+                    <div key={entry.id} className="flex gap-2">
                       <Input
                         placeholder="KEY"
                         value={entry.key}
@@ -919,7 +925,7 @@ export function MCPSettings() {
                     Headers (use {'${VAR}'} for env vars)
                   </label>
                   {mcpForm.headerEntries.map((entry, index) => (
-                    <div key={index} className="flex gap-2">
+                    <div key={entry.id} className="flex gap-2">
                       <Input
                         placeholder="Authorization"
                         value={entry.key}

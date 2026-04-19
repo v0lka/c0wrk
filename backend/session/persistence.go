@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -63,7 +65,21 @@ type SessionStore interface {
 
 // SQLiteSessionStore implements SessionStore using SQLite.
 type SQLiteSessionStore struct {
-	db *sql.DB
+	db     *sql.DB
+	logger *slog.Logger
+}
+
+// log returns the store's logger, falling back to slog.Default().
+func (s *SQLiteSessionStore) log() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
+}
+
+// SetLogger sets the logger for the session store.
+func (s *SQLiteSessionStore) SetLogger(l *slog.Logger) {
+	s.logger = l
 }
 
 // NewSQLiteSessionStore wraps an existing *sql.DB and auto-creates tables.
@@ -175,21 +191,7 @@ func (s *SQLiteSessionStore) runMigrations() error {
 
 // isDuplicateColumnError returns true if the error indicates a column already exists.
 func isDuplicateColumnError(err error) bool {
-	return err != nil && contains(err.Error(), "duplicate column")
-}
-
-// contains reports whether s contains substr (avoids importing strings).
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return err != nil && strings.Contains(err.Error(), "duplicate column")
 }
 
 // SaveSession saves or updates a session.
@@ -226,7 +228,7 @@ func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
 		id,
 	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -253,7 +255,7 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Warn("failed to close database rows", "error", err)
+			s.log().Warn("failed to close database rows", "error", err)
 		}
 	}()
 
@@ -289,7 +291,7 @@ func (s *SQLiteSessionStore) ListSessionsByProject(projectID string) ([]SessionI
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Warn("failed to close database rows", "error", err)
+			s.log().Warn("failed to close database rows", "error", err)
 		}
 	}()
 
@@ -390,7 +392,7 @@ func (s *SQLiteSessionStore) LoadMessages(sessionID string) ([]ChatMessage, erro
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Warn("failed to close database rows", "error", err)
+			s.log().Warn("failed to close database rows", "error", err)
 		}
 	}()
 
@@ -627,7 +629,7 @@ func (s *SQLiteSessionStore) LoadTask(taskID string) (*TaskRecord, error) {
 		&task.CreatedAt, &completedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -658,7 +660,7 @@ func (s *SQLiteSessionStore) LoadTaskSteps(taskID string) ([]TaskStepRecord, err
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Warn("failed to close database rows", "error", err)
+			s.log().Warn("failed to close database rows", "error", err)
 		}
 	}()
 
@@ -715,7 +717,7 @@ func (s *SQLiteSessionStore) LoadStepFileChanges(taskID string) (map[string]json
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Warn("failed to close database rows", "error", err)
+			s.log().Warn("failed to close database rows", "error", err)
 		}
 	}()
 
@@ -791,7 +793,7 @@ func (s *SQLiteSessionStore) LoadFacts(taskID string) (json.RawMessage, error) {
 	err := s.db.QueryRowContext(context.Background(), `
 		SELECT facts FROM task_facts WHERE task_id = ?`, taskID,
 	).Scan(&factsStr)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

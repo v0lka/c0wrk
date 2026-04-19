@@ -111,7 +111,7 @@ func TestTriggerCodebaseIndexing_Installed(t *testing.T) {
 		t.Errorf("expected second arg %q, got %q", "index_repository", capturedArgs[1])
 	}
 
-	expectedJSON := `{"workspace_path": "/tmp/test-workspace"}`
+	expectedJSON := `{"workspace_path":"/tmp/test-workspace"}`
 	if capturedArgs[2] != expectedJSON {
 		t.Errorf("expected JSON arg %q, got %q", expectedJSON, capturedArgs[2])
 	}

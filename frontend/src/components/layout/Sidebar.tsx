@@ -28,6 +28,22 @@ import { useSettingsStore } from '@/stores/settingsStore'
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+function isProjectInfo(v: unknown): v is ProjectInfo {
+  return typeof v === 'object' && v !== null && typeof (v as Record<string, unknown>).id === 'string' && typeof (v as Record<string, unknown>).name === 'string'
+}
+
+function isSessionInfo(v: unknown): v is SessionInfo {
+  return typeof v === 'object' && v !== null && typeof (v as Record<string, unknown>).id === 'string' && typeof (v as Record<string, unknown>).name === 'string'
+}
+
+function isProjectInfoArray(data: unknown): data is ProjectInfo[] {
+  return Array.isArray(data) && data.every(isProjectInfo)
+}
+
+function isSessionInfoArray(data: unknown): data is SessionInfo[] {
+  return Array.isArray(data) && data.every(isSessionInfo)
+}
+
 function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr)
   const now = new Date()
@@ -108,13 +124,12 @@ export function Sidebar() {
   useEffect(() => {
     if (!window?.runtime) return
     const cancel = window.runtime.EventsOn('projects:loaded', (data: unknown) => {
-      if (Array.isArray(data) && data.length > 0) {
-        setProjects(data as ProjectInfo[])
-        const first = data[0] as ProjectInfo
-        if (first) {
-          setActiveProject(first.id)
-          projectAPI.switchProject(first.id)
-        }
+      if (!isProjectInfoArray(data) || data.length === 0) return
+      setProjects(data)
+      const first = data[0]
+      if (first) {
+        setActiveProject(first.id)
+        projectAPI.switchProject(first.id)
       }
     })
     return () => { cancel() }
@@ -124,14 +139,11 @@ export function Sidebar() {
   useEffect(() => {
     if (!window?.runtime) return
     const cancel = window.runtime.EventsOn('sessions:loaded', (data: unknown) => {
-      if (Array.isArray(data)) {
-        setSessions(data as SessionInfo[])
-        if (data.length > 0) {
-          const first = data[0] as SessionInfo
-          if (first) {
-            setActiveSession(first.id)
-          }
-        }
+      if (!isSessionInfoArray(data)) return
+      setSessions(data)
+      const first = data[0]
+      if (first) {
+        setActiveSession(first.id)
       }
     })
     return () => { cancel() }
@@ -148,10 +160,10 @@ export function Sidebar() {
     // an extra round-trip.
     if (!window?.runtime) return
     const cancel = window.runtime.EventsOn('backend:ready', (data?: unknown) => {
-      if (Array.isArray(data) && data.length > 0) {
+      if (isProjectInfoArray(data) && data.length > 0) {
         // Pre-emitted projects — use directly
-        setProjects(data as ProjectInfo[])
-        const first = data[0] as ProjectInfo
+        setProjects(data)
+        const first = data[0]
         if (first) {
           setActiveProject(first.id)
           projectAPI.switchProject(first.id)
@@ -195,21 +207,23 @@ export function Sidebar() {
     if (!window?.runtime) return
     const unsubs = [
       window.runtime.EventsOn('project:created', (data: unknown) => {
-        if (typeof data !== 'object' || data === null || !('id' in data) || !('name' in data)) return
-        addProject(data as import('@/lib/wails').ProjectInfo)
+        if (!isProjectInfo(data)) return
+        addProject(data)
       }),
       window.runtime.EventsOn('project:deleted', (data: unknown) => {
         if (typeof data !== 'string') return
         removeProject(data)
       }),
       window.runtime.EventsOn('project:renamed', (data: unknown) => {
-        if (typeof data !== 'object' || data === null || !('id' in data) || !('name' in data)) return
-        const d = data as { id: string; name: string }
+        if (typeof data !== 'object' || data === null) return
+        const d = data as Record<string, unknown>
+        if (typeof d.id !== 'string' || typeof d.name !== 'string') return
         updateProject(d.id, { name: d.name })
       }),
       window.runtime.EventsOn('project:switched', (data: unknown) => {
-        if (typeof data !== 'object' || data === null || !('id' in data)) return
-        const p = data as { id: string }
+        if (typeof data !== 'object' || data === null) return
+        const p = data as Record<string, unknown>
+        if (typeof p.id !== 'string') return
         setActiveProject(p.id)
       }),
     ]

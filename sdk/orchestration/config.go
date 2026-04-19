@@ -1,6 +1,8 @@
 package orchestration
 
 import (
+	"log/slog"
+
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/tools"
@@ -14,6 +16,11 @@ type Config struct {
 	Tools        agent.ToolExecutor
 	ToolRegistry *tools.ToolRegistry
 	TokenCounter llm.TokenCounter
+
+	// Model is the active model name used for ModelRegistry.Resolve() calls.
+	// Must match the model name configured on the LLM router so that context
+	// window management uses correct metadata (context size, output limit, tokenizer).
+	Model string
 
 	// Optional infrastructure
 	ModelRegistry  *llm.ModelRegistry
@@ -49,6 +56,9 @@ type Config struct {
 	// StepConfigurator resolves step-specific execution parameters from a PlanStep.
 	// If nil, default values are used (all tools, cfg.MaxSteps, no custom prompt).
 	StepConfigurator StepConfigurator
+
+	// Logger is the structured logger for the orchestrator. If nil, slog.Default() is used.
+	Logger *slog.Logger
 }
 
 // StepConfigurator resolves step-specific execution parameters from a PlanStep.

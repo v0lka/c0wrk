@@ -15,7 +15,11 @@ import (
 // This is necessary on macOS where apps launched from Finder/Dock don't inherit
 // shell environment variables (like those set in .zshrc/.bash_profile).
 // The function is best-effort: failures are logged but don't block startup.
-func LoadShellEnvironment() {
+func LoadShellEnvironment(logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	// Only needed on macOS; Linux inherits environment normally
 	if runtime.GOOS != "darwin" {
 		return
@@ -38,9 +42,9 @@ func LoadShellEnvironment() {
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			slog.Warn("timeout loading shell environment", "shell", shell)
+			logger.Warn("timeout loading shell environment", "shell", shell)
 		} else {
-			slog.Warn("failed to load shell environment", "shell", shell, "error", err)
+			logger.Warn("failed to load shell environment", "shell", shell, "error", err)
 		}
 		return
 	}
@@ -78,17 +82,17 @@ func LoadShellEnvironment() {
 		if err := os.Setenv(key, value); err != nil {
 			setErrors++
 			// Log but continue - some vars may not be settable
-			slog.Debug("failed to set env var", "key", key, "error", err)
+			logger.Debug("failed to set env var", "key", key, "error", err)
 			continue
 		}
 		loaded++
 	}
 
 	if setErrors > 0 {
-		slog.Warn("some shell environment variables could not be set", "failed", setErrors, "loaded", loaded)
+		logger.Warn("some shell environment variables could not be set", "failed", setErrors, "loaded", loaded)
 	}
 
 	if loaded > 0 {
-		slog.Debug("loaded shell environment variables", "count", loaded, "shell", shell)
+		logger.Debug("loaded shell environment variables", "count", loaded, "shell", shell)
 	}
 }

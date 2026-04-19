@@ -62,7 +62,10 @@ func captureVersion(binPath string) string {
 // InstallRtk downloads and installs the rtk CLI binary.
 // The progress callback is called with status updates; it may be nil.
 // Returns the install path on success.
-func InstallRtk(progress ProgressFunc) (string, error) {
+func InstallRtk(progress ProgressFunc, logger *slog.Logger) (string, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if progress == nil {
 		progress = func(string) {} // noop
 	}
@@ -73,7 +76,7 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 		return "", err
 	}
 
-	slog.Info("downloading rtk", "url", url)
+	logger.Info("downloading rtk", "url", url)
 	progress("downloading")
 
 	// Create temp directory
@@ -99,7 +102,7 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			slog.Debug("failed to close file during extraction", "error", closeErr)
+			logger.Debug("failed to close file during extraction", "error", closeErr)
 		}
 	}()
 
@@ -117,14 +120,14 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 	}
 	_, err = io.Copy(out, resp.Body)
 	if closeErr := out.Close(); closeErr != nil {
-		slog.Debug("failed to close file during extraction", "error", closeErr)
+		logger.Debug("failed to close file during extraction", "error", closeErr)
 	}
 	if err != nil {
 		progress("error")
 		return "", fmt.Errorf("failed to save download: %w", err)
 	}
 
-	slog.Info("extracting rtk")
+	logger.Info("extracting rtk")
 	progress("installing")
 
 	// Extract archive
@@ -135,7 +138,7 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 	}
 
 	if ext == "zip" {
-		if err := mcp.ExtractZip(archivePath, extractDir); err != nil {
+		if err := mcp.ExtractZip(archivePath, extractDir, logger); err != nil {
 			progress("error")
 			return "", fmt.Errorf("failed to extract zip: %w", err)
 		}
@@ -171,7 +174,7 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 	}
 	destPath := filepath.Join(destDir, binaryName)
 
-	if err := copyFile(srcBinary, destPath); err != nil {
+	if err := copyFile(srcBinary, destPath, logger); err != nil {
 		progress("error")
 		return "", fmt.Errorf("failed to copy rtk binary: %w", err)
 	}
@@ -191,7 +194,7 @@ func InstallRtk(progress ProgressFunc) (string, error) {
 		return "", errors.New("installation verification failed: binary not found after install")
 	}
 
-	slog.Info("rtk installed", "path", installPath)
+	logger.Info("rtk installed", "path", installPath)
 	return installPath, nil
 }
 
@@ -256,14 +259,17 @@ func findBinary(dir, name string) (string, error) {
 }
 
 // copyFile copies a file from src to dst.
-func copyFile(src, dst string) error {
+func copyFile(src, dst string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if closeErr := in.Close(); closeErr != nil {
-			slog.Debug("failed to close file during extraction", "error", closeErr)
+			logger.Debug("failed to close file during extraction", "error", closeErr)
 		}
 	}()
 
@@ -273,7 +279,7 @@ func copyFile(src, dst string) error {
 	}
 	defer func() {
 		if closeErr := out.Close(); closeErr != nil {
-			slog.Debug("failed to close file during extraction", "error", closeErr)
+			logger.Debug("failed to close file during extraction", "error", closeErr)
 		}
 	}()
 

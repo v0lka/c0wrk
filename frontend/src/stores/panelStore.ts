@@ -4,7 +4,8 @@ import type { ChatMessageUI } from './chatStore'
 // Types matching backend event data structures
 export interface PlanItem {
   id: string        // step_id from backend (1-indexed string)
-  title: string     // step description
+  title: string     // short display label (summary or description fallback)
+  description?: string // full What-How-Where text for tooltips
   summary?: string  // short 5-7 word label for UI display
   status: 'pending' | 'running' | 'completed' | 'failed'
   duration?: number // milliseconds, from plan_step_complete
@@ -75,7 +76,8 @@ export const usePanelStore = create<PanelState>((set) => ({
         id: counter,
         items: steps.map((s, i) => ({
           id: (isRecord(s) && typeof (s as Record<string, unknown>).id === 'string' ? (s as Record<string, unknown>).id as string : undefined) || String(i + 1),
-          title: s.description,
+          title: (isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined) || s.description,
+          description: s.description,
           summary: isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined,
           status: toValidStatus(s.status),
           dependsOn: isRecord(s) && Array.isArray((s as Record<string, unknown>).depends_on) ? (s as Record<string, unknown>).depends_on as string[] : [],
@@ -156,7 +158,8 @@ export const usePanelStore = create<PanelState>((set) => ({
             id: ++planCounter,
             items: rawSteps.map((s, i) => ({
               id: s.id || String(i + 1),
-              title: s.description,
+              title: (isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined) || s.description,
+              description: s.description,
               summary: isRecord(s) && typeof (s as Record<string, unknown>).summary === 'string' ? (s as Record<string, unknown>).summary as string : undefined,
               status: toValidStatus(s.status),
               dependsOn: isRecord(s) && Array.isArray((s as Record<string, unknown>).depends_on) ? (s as Record<string, unknown>).depends_on as string[] : [],

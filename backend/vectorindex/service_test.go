@@ -741,5 +741,3 @@ func containsPath(paths []string, target string) bool {
 	}
 	return false
 }
-
-

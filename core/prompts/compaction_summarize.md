@@ -3,7 +3,9 @@ Summarize the following agent execution steps as a bullet list. Maximum 8 bullet
 Preserve:
 
 - Key decisions and reasoning
-- Specific file paths, tool names, and command outputs that produced actionable results
+- Specific file paths with line numbers referenced in tool results
+- Tool names and command outputs that produced actionable results
+- Build/test command outputs indicating success or failure
 - Errors encountered and their resolutions (highlight these prominently)
 - Current state or conclusion
 

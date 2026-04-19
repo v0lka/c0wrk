@@ -90,6 +90,8 @@ type Executor struct {
 	planStepID    string // e.g. "step_3" (empty if not plan mode)
 	planStepIndex int    // 1-based position in plan (0 if not plan mode)
 	planStepTotal int    // total steps in plan (0 if not plan mode)
+
+	logger *slog.Logger
 }
 
 // NewExecutor creates a new Executor.
@@ -111,6 +113,17 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		toolResultBudget:        toolResultBudget,
 		circuitBreaker:          circuitBreaker,
 	}
+}
+
+// SetLogger sets the logger for the executor.
+func (e *Executor) SetLogger(l *slog.Logger) { e.logger = l }
+
+// log returns the executor's logger or slog.Default() if none was set.
+func (e *Executor) log() *slog.Logger {
+	if e.logger != nil {
+		return e.logger
+	}
+	return slog.Default()
 }
 
 // SetPlanContext sets plan-step metadata for structured logging.
@@ -281,7 +294,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		}
 
 		if resp == nil {
-			return nil, fmt.Errorf("LLM returned empty response at step %d", stepNum)
+			return nil, fmt.Errorf("llm returned empty response at step %d", stepNum)
 		}
 
 		// Parse response
@@ -513,6 +526,10 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				if err := json.Unmarshal(action.Input, &params); err != nil {
 					params.Answer = string(action.Input) // fallback
 				}
+
+				// Emit finishing event so the frontend can show "Finishing..." status
+				// instead of "Running tool: finish".
+				e.emitter.Finishing(stepNum, params.Answer)
 
 				stepThought := ""
 				if callIdx == 0 {
@@ -788,7 +805,7 @@ func (e *Executor) buildToolDefinitions(taskTools []tools.ToolDescriptor) []llm.
 	for i, d := range defs {
 		toolNames[i] = d.Name
 	}
-	slog.Debug("executor: tool definitions built for LLM", "count", len(defs), "tools", toolNames)
+	e.log().Debug("executor: tool definitions built for LLM", "count", len(defs), "tools", toolNames)
 
 	return defs
 }

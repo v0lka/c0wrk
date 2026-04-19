@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -69,7 +70,7 @@ func (s *SQLiteProjectStore) LoadProject(id string) (*ProjectInfo, error) {
 		id,
 	).Scan(&info.ID, &info.Name, &info.WorkspacePath, &info.IsExternal, &info.CreatedAt, &info.LastActiveAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

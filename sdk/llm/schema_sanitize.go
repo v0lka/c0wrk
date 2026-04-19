@@ -17,7 +17,7 @@ func SanitizeSchemaForGemini(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 
-	var schema map[string]interface{}
+	var schema map[string]any
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		// If parsing fails, return original unchanged
 		return raw
@@ -32,12 +32,12 @@ func SanitizeSchemaForGemini(raw json.RawMessage) json.RawMessage {
 }
 
 // sanitizeGeminiSchema recursively processes a schema map for Gemini compatibility.
-func sanitizeGeminiSchema(schema map[string]interface{}) map[string]interface{} {
+func sanitizeGeminiSchema(schema map[string]any) map[string]any {
 	if schema == nil {
 		return nil
 	}
 
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 
 	// Remove unsupported JSON Schema keywords
 	for key, value := range schema {
@@ -67,10 +67,10 @@ func sanitizeGeminiSchema(schema map[string]interface{}) map[string]interface{} 
 	}
 
 	// Process nested objects in properties
-	if props, ok := result["properties"].(map[string]interface{}); ok {
-		newProps := make(map[string]interface{})
+	if props, ok := result["properties"].(map[string]any); ok {
+		newProps := make(map[string]any)
 		for propName, propVal := range props {
-			if propMap, ok := propVal.(map[string]interface{}); ok {
+			if propMap, ok := propVal.(map[string]any); ok {
 				newProps[propName] = sanitizeGeminiSchema(propMap)
 			} else {
 				newProps[propName] = propVal
@@ -82,18 +82,18 @@ func sanitizeGeminiSchema(schema map[string]interface{}) map[string]interface{} 
 	// Process items for array type
 	if items, ok := result["items"]; ok {
 		switch v := items.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			// Ensure items has explicit type
 			if _, hasItemsType := v["type"]; !hasItemsType {
 				// Default to "object" if no type specified
 				v["type"] = "object"
 			}
 			result["items"] = sanitizeGeminiSchema(v)
-		case []interface{}:
+		case []any:
 			// Tuple items - process each
-			newItems := make([]interface{}, len(v))
+			newItems := make([]any, len(v))
 			for i, item := range v {
-				if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap, ok := item.(map[string]any); ok {
 					if _, hasItemsType := itemMap["type"]; !hasItemsType {
 						itemMap["type"] = "object"
 					}
@@ -108,10 +108,10 @@ func sanitizeGeminiSchema(schema map[string]interface{}) map[string]interface{} 
 
 	// Process anyOf, oneOf, allOf recursively
 	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-		if arr, ok := result[key].([]interface{}); ok {
-			newArr := make([]interface{}, len(arr))
+		if arr, ok := result[key].([]any); ok {
+			newArr := make([]any, len(arr))
 			for i, item := range arr {
-				if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap, ok := item.(map[string]any); ok {
 					newArr[i] = sanitizeGeminiSchema(itemMap)
 				} else {
 					newArr[i] = item
@@ -125,7 +125,7 @@ func sanitizeGeminiSchema(schema map[string]interface{}) map[string]interface{} 
 }
 
 // getTypes extracts type values as a slice of strings.
-func getTypes(typeVal interface{}) []string {
+func getTypes(typeVal any) []string {
 	if typeVal == nil {
 		return nil
 	}
@@ -133,7 +133,7 @@ func getTypes(typeVal interface{}) []string {
 	switch v := typeVal.(type) {
 	case string:
 		return []string{v}
-	case []interface{}:
+	case []any:
 		types := make([]string, 0, len(v))
 		for _, t := range v {
 			if s, ok := t.(string); ok {
@@ -147,13 +147,13 @@ func getTypes(typeVal interface{}) []string {
 }
 
 // convertEnumToStrings converts enum values to strings if they are numbers.
-func convertEnumToStrings(enumVal interface{}) []interface{} {
-	arr, ok := enumVal.([]interface{})
+func convertEnumToStrings(enumVal any) []any {
+	arr, ok := enumVal.([]any)
 	if !ok {
-		return []interface{}{enumVal}
+		return []any{enumVal}
 	}
 
-	result := make([]interface{}, len(arr))
+	result := make([]any, len(arr))
 	for i, val := range arr {
 		switch v := val.(type) {
 		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
@@ -177,7 +177,7 @@ func SanitizeSchemaForOpenAI(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 
-	var schema map[string]interface{}
+	var schema map[string]any
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		return raw
 	}
@@ -192,11 +192,11 @@ func SanitizeSchemaForOpenAI(raw json.RawMessage) json.RawMessage {
 }
 
 // extractDefs pulls $defs or definitions from the schema for $ref resolution.
-func extractDefs(schema map[string]interface{}) map[string]interface{} {
-	if d, ok := schema["$defs"].(map[string]interface{}); ok {
+func extractDefs(schema map[string]any) map[string]any {
+	if d, ok := schema["$defs"].(map[string]any); ok {
 		return d
 	}
-	if d, ok := schema["definitions"].(map[string]interface{}); ok {
+	if d, ok := schema["definitions"].(map[string]any); ok {
 		return d
 	}
 	return nil
@@ -204,7 +204,7 @@ func extractDefs(schema map[string]interface{}) map[string]interface{} {
 
 // resolveRef replaces a $ref schema with the referenced definition.
 // If the $ref target is not found, returns a safe strict-mode fallback.
-func resolveRef(schema, defs map[string]interface{}) map[string]interface{} {
+func resolveRef(schema, defs map[string]any) map[string]any {
 	ref, ok := schema["$ref"].(string)
 	if !ok || defs == nil {
 		return schema
@@ -221,13 +221,13 @@ func resolveRef(schema, defs map[string]interface{}) map[string]interface{} {
 	if !found {
 		return safeFallbackSchema()
 	}
-	defMap, ok := defRaw.(map[string]interface{})
+	defMap, ok := defRaw.(map[string]any)
 	if !ok {
 		return safeFallbackSchema()
 	}
 
 	// Return a copy so we don't mutate the definitions
-	cp := make(map[string]interface{}, len(defMap))
+	cp := make(map[string]any, len(defMap))
 	for k, v := range defMap {
 		cp[k] = v
 	}
@@ -266,18 +266,18 @@ func splitRefPath(ref string) []string {
 }
 
 // safeFallbackSchema returns a minimal strict-mode-compatible object schema.
-func safeFallbackSchema() map[string]interface{} {
-	return map[string]interface{}{
+func safeFallbackSchema() map[string]any {
+	return map[string]any{
 		"type":                 "object",
-		"properties":           map[string]interface{}{},
-		"required":             []interface{}{},
+		"properties":           map[string]any{},
+		"required":             []any{},
 		"additionalProperties": false,
 	}
 }
 
 // sanitizeOpenAISchemaWithDefs recursively processes a schema map for OpenAI strict mode,
 // carrying top-level definitions for $ref resolution.
-func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[string]interface{} {
+func sanitizeOpenAISchemaWithDefs(schema, defs map[string]any) map[string]any {
 	if schema == nil {
 		return nil
 	}
@@ -286,7 +286,7 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[strin
 	schema = resolveRef(schema, defs)
 
 	// Copy keys, filtering out forbidden keywords
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 	for key, value := range schema {
 		switch key {
 		case "$schema", "$id", "$comment", "$defs", "definitions", "default", "examples":
@@ -299,7 +299,7 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[strin
 	// If the resolved schema itself had a $ref (e.g. nested), re-resolve and re-filter
 	if _, hasRef := result["$ref"]; hasRef {
 		resolved := resolveRef(result, defs)
-		result = make(map[string]interface{})
+		result = make(map[string]any)
 		for key, value := range resolved {
 			switch key {
 			case "$schema", "$id", "$comment", "$defs", "definitions", "default", "examples":
@@ -333,18 +333,18 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[strin
 		result["additionalProperties"] = false
 
 		// Ensure properties exists
-		if _, hasProps := result["properties"].(map[string]interface{}); !hasProps {
-			result["properties"] = map[string]interface{}{}
+		if _, hasProps := result["properties"].(map[string]any); !hasProps {
+			result["properties"] = map[string]any{}
 		}
 
 		// Ensure required array contains ALL property names (strict mode).
 		// Phase 1: filter out required entries that don't exist in properties.
 		// Phase 2: add any property names missing from required.
-		props, propsOK := result["properties"].(map[string]interface{})
+		props, propsOK := result["properties"].(map[string]any)
 		if propsOK && len(props) > 0 {
 			// Phase 1: keep only valid existing required entries
 			requiredSet := make(map[string]struct{})
-			if required, ok := result["required"].([]interface{}); ok {
+			if required, ok := result["required"].([]any); ok {
 				for _, req := range required {
 					if reqStr, ok := req.(string); ok {
 						if _, exists := props[reqStr]; exists {
@@ -365,22 +365,22 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[strin
 				sortedNames = append(sortedNames, name)
 			}
 			sort.Strings(sortedNames)
-			allRequired := make([]interface{}, len(sortedNames))
+			allRequired := make([]any, len(sortedNames))
 			for i, name := range sortedNames {
 				allRequired[i] = name
 			}
 			result["required"] = allRequired
 		} else {
 			// No properties or empty properties: strict mode still requires the array
-			result["required"] = []interface{}{}
+			result["required"] = []any{}
 		}
 	}
 
 	// Process nested objects in properties
-	if props, ok := result["properties"].(map[string]interface{}); ok {
-		newProps := make(map[string]interface{})
+	if props, ok := result["properties"].(map[string]any); ok {
+		newProps := make(map[string]any)
 		for propName, propVal := range props {
-			if propMap, ok := propVal.(map[string]interface{}); ok {
+			if propMap, ok := propVal.(map[string]any); ok {
 				newProps[propName] = sanitizeOpenAISchemaWithDefs(propMap, defs)
 			} else {
 				newProps[propName] = propVal
@@ -392,12 +392,12 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[strin
 	// Process items for array type
 	if items, ok := result["items"]; ok {
 		switch v := items.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			result["items"] = sanitizeOpenAISchemaWithDefs(v, defs)
-		case []interface{}:
-			newItems := make([]interface{}, len(v))
+		case []any:
+			newItems := make([]any, len(v))
 			for i, item := range v {
-				if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap, ok := item.(map[string]any); ok {
 					newItems[i] = sanitizeOpenAISchemaWithDefs(itemMap, defs)
 				} else {
 					newItems[i] = item
@@ -409,10 +409,10 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]interface{}) map[strin
 
 	// Process anyOf, oneOf, allOf recursively
 	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-		if arr, ok := result[key].([]interface{}); ok {
-			newArr := make([]interface{}, len(arr))
+		if arr, ok := result[key].([]any); ok {
+			newArr := make([]any, len(arr))
 			for i, item := range arr {
-				if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap, ok := item.(map[string]any); ok {
 					newArr[i] = sanitizeOpenAISchemaWithDefs(itemMap, defs)
 				} else {
 					newArr[i] = item

@@ -47,6 +47,7 @@ type ToolRegistry struct {
 	preExecuteHook   PreExecuteHook
 	toolFilter       ToolFilter
 	paramInjector    ParamInjector
+	logger           *slog.Logger
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -59,6 +60,20 @@ func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		ToolRegistry: sdktools.NewToolRegistry(),
 	}
+}
+
+// SetLogger sets the logger for the tool registry. If nil, slog.Default() is used.
+func (r *ToolRegistry) SetLogger(l *slog.Logger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logger = l
+}
+
+func (r *ToolRegistry) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
 }
 
 // SetConfirmFunc sets the confirmation callback for mutating tools.
@@ -127,7 +142,7 @@ func (r *ToolRegistry) RegisterWithSource(tool Tool, source string) {
 	filter := r.toolFilter
 	r.mu.RUnlock()
 	if filter != nil && !filter(tool.Name(), source) {
-		slog.Debug("tool filtered out during registration", "tool", tool.Name(), "source", source)
+		r.log().Debug("tool filtered out during registration", "tool", tool.Name(), "source", source)
 		return
 	}
 	r.ToolRegistry.RegisterWithSource(tool, source)
@@ -190,11 +205,11 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// regardless of policy (except AlwaysDeny which is always respected).
 	if policy != PolicyAlwaysDeny {
 		if tempDir := sdktools.TempDirFrom(ctx); tempDir != "" && allPathsInDir(input, tempDir) {
-			slog.Debug("auto-approved: all paths within session temp directory", "tool", name)
+			r.log().Debug("auto-approved: all paths within session temp directory", "tool", name)
 			return tool.Execute(ctx, input)
 		}
 		if allPathsInWorkspace(ctx, input) {
-			slog.Debug("auto-approved: all paths within workspace", "tool", name)
+			r.log().Debug("auto-approved: all paths within workspace", "tool", name)
 			return tool.Execute(ctx, input)
 		}
 	}
@@ -205,7 +220,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		if judger, ok := tool.(ToolJudger); ok {
 			allow, reasoning := judger.Judge(ctx, input)
 			if !allow && reasoning != "" {
-				slog.Debug("PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
+				r.log().Debug("PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
 				return r.confirmAndExecute(ctx, tool, name, input, reasoning)
 			}
 		}

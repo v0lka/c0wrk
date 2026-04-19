@@ -145,6 +145,15 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
     [saveSettings]
   )
 
+  // Clean up pending debounce on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+      }
+    }
+  }, [])
+
   const handleProviderChange = (provider: string) => {
     setActiveProvider(provider)
     // Save immediately when changing provider

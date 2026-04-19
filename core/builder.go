@@ -39,6 +39,13 @@ type OrchestratorBuilder struct {
 	vectorSearchFunc tools.VectorSearchFunc
 }
 
+func (b *OrchestratorBuilder) log() *slog.Logger {
+	if b.logger != nil {
+		return b.logger
+	}
+	return slog.Default()
+}
+
 // NewOrchestratorBuilder creates the shared infrastructure: tool registry,
 // built-in tools, MCP gateway, LLM router, and tool judge.
 // The cfg is used for initial setup; runtime changes are applied via the
@@ -61,7 +68,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 	if err != nil {
 		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable
 		// but the orchestrator can still operate with built-in tools.
-		slog.Warn("MCP gateway startup failed", "error", err)
+		b.log().Warn("MCP gateway startup failed", "error", err)
 	}
 	b.gateway = gw
 
@@ -71,7 +78,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 	// 4. LLM Router (fail-fast validation)
 	router, modelReg, err := b.buildRouter(cfg)
 	if err != nil {
-		slog.Warn("failed to initialize LLM router at startup", "error", err)
+		b.log().Warn("failed to initialize LLM router at startup", "error", err)
 		// Non-fatal — router will be rebuilt per-session from current config.
 	} else {
 		b.llmRouter = router
@@ -134,7 +141,7 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// Build context factory
-	contextFactory := b.buildContextFactory(router, cfg, dumpWriter)
+	contextFactory := b.buildContextFactory(trackingCaller, cfg, dumpWriter)
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
@@ -151,6 +158,7 @@ func (b *OrchestratorBuilder) Build(
 		MaxRetries:                cfg.Executor.MaxRetries,
 		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
+		Model:                     cfg.LLM.Model,
 		StepLimitFunc:             stepLimitFunc,
 	}
 
@@ -174,7 +182,7 @@ func (b *OrchestratorBuilder) Build(
 
 	// Logged LLM caller for step execution (wraps trackingCaller)
 	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.ActiveProvider, logger)
-	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter)
+	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter, logger)
 
 	return NewOrchestrator(
 		coreRouter,
@@ -264,7 +272,7 @@ func (b *OrchestratorBuilder) SetBashRtkPath(path string) {
 	}
 	if bashTool, ok := tool.(*builtins.BashExecTool); ok {
 		bashTool.SetRtkPath(path)
-		slog.Info("updated bash_exec rtk path", "path", path)
+		b.log().Info("updated bash_exec rtk path", "path", path)
 	}
 }
 
@@ -275,7 +283,7 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 	b.mu.RUnlock()
 
 	if router == nil {
-		return "", errors.New("LLM router not available")
+		return "", errors.New("llm router not available")
 	}
 
 	temp := 1.0
@@ -314,7 +322,7 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 		baseURL := cfg.ExpandEnvVars(cfg.LLM.OpenAICompatBaseURL)
 		apiKey := cfg.ExpandEnvVars(cfg.LLM.OpenAICompatAPIKey)
 		if baseURL == "" {
-			return nil, errors.New("OpenAI Compatible base URL not configured")
+			return nil, errors.New("openAI compatible base URL not configured")
 		}
 		return listOpenAIModels(ctx, baseURL, apiKey)
 	case "lmstudio":
@@ -382,11 +390,11 @@ func (b *OrchestratorBuilder) buildRouter(cfg *BuilderConfig) (*llm.Router, *llm
 
 	initialBackoff, err := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
 	if err != nil && cfg.LLM.Retry.InitialBackoff != "" {
-		slog.Warn("invalid initial_backoff, using default", "value", cfg.LLM.Retry.InitialBackoff, "error", err)
+		b.log().Warn("invalid initial_backoff, using default", "value", cfg.LLM.Retry.InitialBackoff, "error", err)
 	}
 	maxBackoff, err := time.ParseDuration(cfg.LLM.Retry.MaxBackoff)
 	if err != nil && cfg.LLM.Retry.MaxBackoff != "" {
-		slog.Warn("invalid max_backoff, using default", "value", cfg.LLM.Retry.MaxBackoff, "error", err)
+		b.log().Warn("invalid max_backoff, using default", "value", cfg.LLM.Retry.MaxBackoff, "error", err)
 	}
 	routerCfg := llm.RouterConfig{
 		ActiveProvider:      cfg.LLM.ActiveProvider,
@@ -425,7 +433,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 		return nil, nil, nil
 	}
 	loggedCaller := agent.NewLoggingLLMCaller(caller, cfg.LLM.ActiveProvider, logger)
-	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter)
+	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
 	coreRouter := NewRouter(loggedCaller, cfg.Router.HistoryWindow)
 	planner := NewPlanner(loggedCaller)
 	reflector := NewReflector(loggedCaller)
@@ -437,24 +445,39 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	}
 
 	// Wire planner exploration dependencies
+	planner.SetLogger(logger)
+	planner.SetModel(cfg.LLM.Model)
 	planner.SetToolRegistry(b.registry)
 	planner.SetTokenCounter(tokenCounter)
 	planner.SetContextFactory(contextFactory)
 	planner.SetEmitter(emitter)
 	planner.SetMaxExploreSteps(cfg.Orchestration.MaxPlannerExploreSteps)
 
+	// Wire CallerForStep so exploration's ContextTokenTracker gets corrected by API responses
+	if tc, ok := caller.(*llm.TrackingCaller); ok {
+		planner.SetCallerForStep(func(cm agent.ContextManager) agent.LLMCaller {
+			if ctm, ok := cm.(interface {
+				ContextTracker() *llm.ContextTokenTracker
+			}); ok {
+				return tc.WithContextTracker(ctm.ContextTracker())
+			}
+			return tc
+		})
+	}
+
 	return coreRouter, planner, reflector
 }
 
-// buildContextFactory creates a ContextManagerFactory from LLM router and config.
-func (b *OrchestratorBuilder) buildContextFactory(router *llm.Router, cfg *BuilderConfig, dumpWriter io.Writer) ContextManagerFactory {
-	var summarizeCaller agent.LLMCaller = router
-	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter)
+// buildContextFactory creates a ContextManagerFactory using the tracking caller for
+// compaction summarization (ensuring those tokens are counted in session totals).
+func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, dumpWriter io.Writer) ContextManagerFactory {
+	var summarizeCaller agent.LLMCaller = caller
+	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
 
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
 		if err != nil {
-			slog.Warn("token counter fallback", "tokenizer", modelMeta.TokenizerType, "error", err)
+			b.log().Warn("token counter fallback", "tokenizer", modelMeta.TokenizerType, "error", err)
 			counter = llm.NewSimpleTokenCounter()
 		}
 		tracker := llm.NewContextTokenTracker(counter)
@@ -482,8 +505,8 @@ func (b *OrchestratorBuilder) buildContextFactory(router *llm.Router, cfg *Build
 			TokenCounter:       counter,
 			MaxSummarizeTokens: cfg.Executor.Compaction.MaxSummarizeTokens,
 			Summarize: func(ctx context.Context, blockText string) (string, error) {
-				if router == nil {
-					return "", errors.New("compaction summarize: LLM router not available")
+				if summarizeCaller == nil {
+					return "", errors.New("compaction summarize: LLM caller not available")
 				}
 				req := llm.ChatRequest{
 					Messages: []llm.Message{
@@ -599,6 +622,10 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		WebSearchLimits: tools.WebSearchLimits{
 			MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 			Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
+		},
+		BatchLimits: tools.BatchLimits{
+			MaxCalls:       cfg.ToolLimits.BatchMaxCalls,
+			MaxConcurrency: cfg.ToolLimits.BatchMaxConcurrency,
 		},
 		BashTimeouts: tools.BashTimeouts{
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,

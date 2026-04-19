@@ -71,7 +71,7 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		return nil, fmt.Errorf("anthropic: failed to build request: %w", err)
 	}
 
-	chunks := make(chan ChatChunk)
+	chunks := make(chan ChatChunk, 64)
 
 	// Track current tool use for accumulating input JSON
 	var currentToolID string
@@ -97,13 +97,16 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		OnContentBlockDelta: func(data anthropic.MessagesEventContentBlockDeltaData) {
 			switch data.Delta.Type {
 			case anthropic.MessagesContentTypeText:
-				chunks <- ChatChunk{
-					Delta: data.Delta.GetText(),
+				select {
+				case chunks <- ChatChunk{Delta: data.Delta.GetText()}:
+				case <-ctx.Done():
+					return
 				}
 			case anthropic.MessagesContentTypeThinkingDelta:
-				// Extended thinking delta — route to Reasoning field
-				chunks <- ChatChunk{
-					Reasoning: data.Delta.GetText(),
+				select {
+				case chunks <- ChatChunk{Reasoning: data.Delta.GetText()}:
+				case <-ctx.Done():
+					return
 				}
 			case anthropic.MessagesContentTypeToolUse, anthropic.MessagesContentTypeInputJsonDelta:
 				// Accumulate tool input JSON
@@ -116,12 +119,15 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		OnContentBlockStop: func(data anthropic.MessagesEventContentBlockStopData, content anthropic.MessageContent) {
 			// If we were accumulating a tool call, emit it now
 			if currentToolID != "" {
-				chunks <- ChatChunk{
+				select {
+				case chunks <- ChatChunk{
 					ToolCall: &ToolCall{
 						ID:    currentToolID,
 						Name:  currentToolName,
 						Input: json.RawMessage(currentToolInput),
 					},
+				}:
+				case <-ctx.Done():
 				}
 				currentToolID = ""
 				currentToolName = ""
@@ -132,9 +138,12 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		OnMessageDelta: func(data anthropic.MessagesEventMessageDeltaData) {
 			streamUsage.OutputTokens = data.Usage.OutputTokens
 			if data.Delta.StopReason != "" {
-				chunks <- ChatChunk{
+				select {
+				case chunks <- ChatChunk{
 					StopReason: string(data.Delta.StopReason),
 					Usage:      &streamUsage,
+				}:
+				case <-ctx.Done():
 				}
 			}
 		},
@@ -142,7 +151,7 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		OnError: func(errResp anthropic.ErrorResponse) {
 			select {
 			case chunks <- ChatChunk{StopReason: "error", Delta: errResp.Error.Message}:
-			default:
+			case <-ctx.Done():
 			}
 		},
 	}
@@ -153,7 +162,7 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 		if err != nil {
 			select {
 			case chunks <- ChatChunk{StopReason: "error"}:
-			default:
+			case <-ctx.Done():
 			}
 		}
 	}()

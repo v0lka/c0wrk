@@ -79,7 +79,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const pendingActions: DisplayItem[] = []
   const openSteps = new Map<string, DisplayItem & { kind: 'plan_step' }>()
   const stepIdCounts = new Map<string, number>()
-  const stepIndexMap = new Map<string, { num: number; title: string }>()
+  const stepIndexMap = new Map<string, { num: number; title: string; description: string }>()
   const toolItemsByStep = new Map<string, DisplayItem & { kind: 'tool' }>()
   // Buffer for tool_result messages that arrive before their matching tool_call
   const pendingResults = new Map<string, { result?: string; resultLen?: number; error?: boolean }>()
@@ -103,9 +103,9 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
 
     // Build step index from plan events
     if (msg.type === 'plan') {
-      const steps = (meta?.steps as Array<{ id?: string; description: string }>) || []
+      const steps = (meta?.steps as Array<{ id?: string; summary?: string; description: string }>) || []
       steps.forEach((s, i) => {
-        if (s.id) stepIndexMap.set(s.id, { num: i + 1, title: s.description })
+        if (s.id) stepIndexMap.set(s.id, { num: i + 1, title: s.summary || s.description, description: s.description })
       })
       continue
     }
@@ -113,7 +113,9 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     // Handle plan step lifecycle
     if (msg.type === 'plan_step_start') {
       const stepId = (meta?.step_id as string) || ''
-      const info = stepIndexMap.get(stepId) || { num: 0, title: (meta?.description as string) || stepId }
+      const fallbackDesc = (meta?.description as string) || stepId
+      const fallbackSummary = (meta?.summary as string) || fallbackDesc
+      const info = stepIndexMap.get(stepId) || { num: 0, title: fallbackSummary, description: fallbackDesc }
       const count = (stepIdCounts.get(stepId) ?? 0) + 1
       stepIdCounts.set(stepId, count)
       const stepItem: DisplayItem & { kind: 'plan_step' } = {
@@ -122,6 +124,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         stepId,
         stepNum: info.num,
         title: info.title,
+        description: info.description,
         status: 'running',
         children: [],
         ...(count > 1 ? { isRetry: true } : {}),

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"google.golang.org/genai"
 )
@@ -30,6 +31,7 @@ type GeminiProviderConfig struct {
 type GeminiProvider struct {
 	client *genai.Client
 	name   string
+	logger *slog.Logger
 }
 
 // NewGeminiProvider creates a new GeminiProvider with the given configuration.
@@ -56,6 +58,16 @@ func NewGeminiProvider(ctx context.Context, cfg GeminiProviderConfig) (*GeminiPr
 		client: client,
 		name:   "gemini",
 	}, nil
+}
+
+// SetLogger sets the logger for the Gemini provider.
+func (p *GeminiProvider) SetLogger(l *slog.Logger) { p.logger = l }
+
+func (p *GeminiProvider) log() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
+	}
+	return slog.Default()
 }
 
 // Name returns the provider name.
@@ -135,7 +147,7 @@ func (p *GeminiProvider) convertMessages(messages []Message) (contents []*genai.
 				var args map[string]any
 				if len(tc.Input) > 0 {
 					if err := json.Unmarshal(tc.Input, &args); err != nil {
-						slog.Debug("gemini: failed to unmarshal tool call args", "error", err)
+						p.log().Debug("gemini: failed to unmarshal tool call args", "error", err)
 					}
 				}
 				content.Parts = append(content.Parts, &genai.Part{
@@ -152,7 +164,7 @@ func (p *GeminiProvider) convertMessages(messages []Message) (contents []*genai.
 			var responseData map[string]any
 			if msg.Content != "" {
 				if err := json.Unmarshal([]byte(msg.Content), &responseData); err != nil {
-					slog.Debug("gemini: failed to unmarshal tool response", "error", err)
+					p.log().Debug("gemini: failed to unmarshal tool response", "error", err)
 				}
 				if responseData == nil {
 					responseData = map[string]any{"result": msg.Content}
@@ -332,6 +344,35 @@ func (p *GeminiProvider) convertStreamResponse(result *genai.GenerateContentResp
 	}
 
 	return chunks
+}
+
+// MetadataSource returns a ModelMetadataSource that resolves model metadata
+// by querying the Gemini Models.Get API for InputTokenLimit and OutputTokenLimit.
+func (p *GeminiProvider) MetadataSource() ModelMetadataSource {
+	return func(model string) (ModelMetadata, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		m, err := p.client.Models.Get(ctx, model, nil)
+		if err != nil {
+			p.log().Debug("gemini Models.Get failed", "model", model, "error", err)
+			return ModelMetadata{}, false
+		}
+
+		if m.InputTokenLimit == 0 {
+			return ModelMetadata{}, false
+		}
+
+		meta := ModelMetadata{
+			ContextWindow: int(m.InputTokenLimit),
+			OutputLimit:   int(m.OutputTokenLimit),
+			TokenizerType: "approximate",
+		}
+		if meta.OutputLimit == 0 {
+			meta.OutputLimit = 8192
+		}
+		return meta, true
+	}
 }
 
 // wrapError maps Gemini SDK error types to *LLMError.

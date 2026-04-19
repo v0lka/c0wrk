@@ -94,7 +94,7 @@ export function ReflectionBlock({
                   <span className="text-muted-foreground/60">Hypotheses:</span>
                   <ul className="list-disc list-inside mt-0.5 space-y-0.5">
                     {hypotheses.map((h, i) => (
-                      <li key={i}>{h}</li>
+                      <li key={`${i}-${h}`}>{h}</li>
                     ))}
                   </ul>
                 </div>

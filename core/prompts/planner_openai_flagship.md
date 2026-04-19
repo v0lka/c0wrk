@@ -1,15 +1,15 @@
 ## Planning Approach
 
-Analyze the task holistically before decomposing. Consider non-obvious dependencies between steps and potential failure modes. Choose granularity based on actual complexity — not every task needs fine-grained steps.
+You MUST exhaustively decompose the task. NEVER leave implicit dependencies between steps.
 
-When designing the plan, verify its internal coherence:
+ALWAYS include an initial research/exploration step for tasks with complexity >= 3. This step MUST investigate existing patterns, relevant code locations, and dependencies before any implementation steps run.
+
+Every step description MUST list specific file paths and function names when referencing code. NEVER use vague references like "the relevant files" or "the affected module."
+
+Verify plan coherence:
 
 - Do step outputs logically feed into subsequent step inputs?
 - Are there implicit dependencies that should be explicit?
 - Could any steps be safely parallelized?
 
-If the task is ambiguous, note assumptions explicitly rather than guessing silently.
-
-## Research First
-
-For complex tasks, include an initial research step to investigate existing patterns and dependencies before implementation steps.
+Note assumptions explicitly. If the task is ambiguous, state what you are assuming and why.

@@ -27,9 +27,10 @@ type OrchestratorConfig struct {
 	MaxSteps                  int
 	KeepFirst                 int // for sliding window compaction
 	KeepLast                  int // for sliding window compaction
-	MaxRetries                int // max retry attempts after failed evaluation (default: 3)
+	MaxRetries                int // max retry attempts (default: 2, yielding 3 total executions)
 	MaxHistoryMessages        int // max conversation history messages to retain (default: 20)
 	MaxDependencyContextChars int // max chars for dependency context in step tasks (default: 8000)
+	Model                     string // active model name for ModelRegistry.Resolve()
 
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
@@ -111,6 +112,7 @@ func NewOrchestrator(
 		Tools:         toolExec,
 		ToolRegistry:  toolReg,
 		TokenCounter:  counter,
+		Model:         cfg.Model,
 		ModelRegistry: modelRegistry,
 		ContextFactory: func(sys string, meta llm.ModelMetadata, compact string) agent.ContextManager {
 			return contextFactory(sys, meta, compact)
@@ -131,7 +133,7 @@ func NewOrchestrator(
 			}
 			return trackingCaller
 		},
-		Events:                    &emitterEventsAdapter{emitter},
+		Events:                    &emitterEventsAdapter{Emitter: emitter, logger: logger},
 		SystemPrompt:              buildSystemPrompt,
 		MaxRetries:                cfg.MaxRetries,
 		MaxSteps:                  cfg.MaxSteps,
@@ -300,7 +302,8 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 func (o *Orchestrator) emitInitialContextFill() {
 	var effectiveMax int
 	if o.modelRegistry != nil {
-		meta, _ := o.modelRegistry.Resolve("")
+		model := o.config.Model
+		meta, _ := o.modelRegistry.Resolve(model)
 		if meta.ContextWindow > 0 {
 			safetyMargin := meta.ContextWindow * 5 / 100
 			effectiveMax = meta.ContextWindow - meta.OutputLimit - safetyMargin
@@ -441,6 +444,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 		// Execute in Plan&Execute mode
 		o.logDebug("orchestrator: executing in full Plan&Execute mode")
+		o.emitter.ServiceWithMeta("Preparing execution...", map[string]any{"phase": "orchestration", "step_count": len(plan.Steps)})
 
 		// Store plan on blackboard for P&E execution.
 		bb.SetPlan(plan)

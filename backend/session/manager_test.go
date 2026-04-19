@@ -1154,9 +1154,9 @@ func (m *mockSessionStoreForRestore) ListSessions() ([]SessionInfo, error) {
 func (m *mockSessionStoreForRestore) ListSessionsByProject(_ string) ([]SessionInfo, error) {
 	return []SessionInfo{}, nil
 }
-func (m *mockSessionStoreForRestore) DeleteSession(_ string) error      { return nil }
+func (m *mockSessionStoreForRestore) DeleteSession(_ string) error          { return nil }
 func (m *mockSessionStoreForRestore) ArchiveSession(_ string, _ bool) error { return nil }
-func (m *mockSessionStoreForRestore) RenameSession(_, _ string) error   { return nil }
+func (m *mockSessionStoreForRestore) RenameSession(_, _ string) error       { return nil }
 func (m *mockSessionStoreForRestore) UpdateSessionTokens(_ string, _, _ int, _, _ string) error {
 	return nil
 }
@@ -1166,7 +1166,7 @@ func (m *mockSessionStoreForRestore) LoadMessages(_ string) ([]ChatMessage, erro
 	return []ChatMessage{}, nil
 }
 func (m *mockSessionStoreForRestore) DeleteMessages(_ string) error { return nil }
-func (m *mockSessionStoreForRestore) Close() error                 { return nil }
+func (m *mockSessionStoreForRestore) Close() error                  { return nil }
 
 // restoreTestManager creates a Manager pre-wired with a mock session store and
 // project resolver for restoration tests. It returns the manager, event channel,

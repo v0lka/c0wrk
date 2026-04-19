@@ -122,12 +122,12 @@ func (a *App) ListDirectoryRecursive(dirPath string) ([]FileNode, error) {
 	}
 
 	// Build the set of gitignored paths for filtering.
-	ignoredPaths := gitIgnoredPaths(absDir)
+	ignoredPaths := gitIgnoredPaths(absDir, a.log())
 
 	var nodes []FileNode
 	err = filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			slog.Warn("skipping unreadable path", "path", path, "error", walkErr)
+			a.log().Warn("skipping unreadable path", "path", path, "error", walkErr)
 			return nil
 		}
 		// Skip .git directory tree
@@ -178,7 +178,7 @@ func (a *App) ListDirectoryRecursive(dirPath string) ([]FileNode, error) {
 // in the given directory. It uses "git ls-files" to collect ignored untracked
 // files and directories. If the directory is not a git repository or git is
 // not available, it returns nil (no filtering).
-func gitIgnoredPaths(dir string) map[string]bool {
+func gitIgnoredPaths(dir string, logger *slog.Logger) map[string]bool {
 	// Quick check: if there's no .git dir, not a git repo — skip.
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		// Could be a subdirectory of a repo; try running git anyway.
@@ -201,7 +201,7 @@ func gitIgnoredPaths(dir string) map[string]bool {
 	cmd.Stderr = nil // discard stderr
 
 	if err := cmd.Run(); err != nil {
-		slog.Debug("git ls-files failed, skipping gitignore filtering", "dir", dir, "error", err)
+		logger.Debug("git ls-files failed, skipping gitignore filtering", "dir", dir, "error", err)
 		return nil
 	}
 

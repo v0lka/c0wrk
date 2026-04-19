@@ -32,7 +32,7 @@ Prefer fewer, broader steps over many granular ones. Each step should represent 
 - Medium tasks (complexity 3): 2-4 steps
 - Complex tasks (complexity 4-5): 3-7 steps
 
-Limit plans to 10 steps maximum. If a task seems to require more, combine related work into broader steps.
+Limit plans to MAX-STEPS steps maximum. If a task seems to require more, combine related work into broader steps.
 `
 
 	planModeDomainAssignment = `
@@ -146,31 +146,6 @@ The following steps are the terminal (final) steps of the completed plan. New st
 TERMINAL-STEPS
 `
 
-	continuationModeDomainAssignment = `
-Domain controls how the agent's context window is compacted during long executions:
-
-- "code" → sliding window (keeps recent file edits visible)
-- "research" → summarization (condenses findings into key points)
-- "general" → sliding window; switches to hierarchical if plan complexity ≥ 4
-
-Choose the domain that matches the **primary activity** of the step.
-`
-
-	continuationModeAgentProfiles = `
-Assign specialized profiles when it adds clear value. Omit profile for simple tasks.
-
-Tool Priority for ALL profiles:
-1. codebase-memory-mcp tools (search_graph, trace_path, get_code_snippet) + semantic_search — ALWAYS use first for code exploration
-2. ripgrep, glob — ONLY for exact text/pattern matching
-3. read_file, write_file, edit_file — for reading and modifying specific files
-4. bash_exec — fallback for build/run/test commands
-
-Profiles:
-- "researcher": information gathering, analysis (primary: search_graph, trace_path, get_code_snippet, semantic_search; secondary: ripgrep, glob, read_file, list_directory; web: web_search, web_fetch)
-- "coder": implementation, file operations (primary: search_graph, semantic_search, read_file, write_file, edit_file; secondary: ripgrep, glob, list_directory; bash_exec for build/run/test)
-- "tester": test execution, verification (primary: bash_exec for test runs; discovery: search_graph, semantic_search, ripgrep, glob, read_file)
-- "executor": general purpose (default, all tools — follow tool priority order above)`
-
 	continuationModeExtraSections = ""
 	continuationModeTail          = ""
 	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec"], "domain": "code"}}]}`
@@ -193,10 +168,13 @@ const (
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {
 	llm             LLMCaller
+	logger          *slog.Logger
 	modelRegistry   *llm.ModelRegistry
+	model           string                  // active model name for Resolve()
 	toolRegistry    *coretools.ToolRegistry // to discover available tools
 	tokenCounter    llm.TokenCounter        // for context window management
 	contextFactory  ContextManagerFactory   // for creating the exploration ContextManager
+	callerForStep   func(cm agent.ContextManager) agent.LLMCaller // optional, for context tracker correction
 	maxExploreSteps int                     // budget for exploration (default: 7)
 	emitter         Emitter                 // for logging/events (optional, nil-safe)
 }
@@ -209,9 +187,24 @@ func NewPlanner(caller LLMCaller) *Planner {
 	}
 }
 
+// SetLogger sets the logger for the planner. If nil, slog.Default() is used.
+func (p *Planner) SetLogger(l *slog.Logger) { p.logger = l }
+
+func (p *Planner) log() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
+	}
+	return slog.Default()
+}
+
 // SetModelRegistry sets the model registry for family resolution.
 func (p *Planner) SetModelRegistry(registry *llm.ModelRegistry) {
 	p.modelRegistry = registry
+}
+
+// SetModel sets the active model name for ModelRegistry.Resolve() calls.
+func (p *Planner) SetModel(model string) {
+	p.model = model
 }
 
 // SetToolRegistry sets the tool registry for discovering available tools.
@@ -227,6 +220,13 @@ func (p *Planner) SetTokenCounter(counter llm.TokenCounter) {
 // SetContextFactory sets the factory for creating the exploration ContextManager.
 func (p *Planner) SetContextFactory(factory ContextManagerFactory) {
 	p.contextFactory = factory
+}
+
+// SetCallerForStep sets a function that returns a step-local LLMCaller wired to the
+// ContextManager's ContextTokenTracker. This allows API-reported token counts to
+// correct predictive estimates during exploration.
+func (p *Planner) SetCallerForStep(fn func(cm agent.ContextManager) agent.LLMCaller) {
+	p.callerForStep = fn
 }
 
 // SetEmitter sets the emitter for logging/events.
@@ -267,11 +267,11 @@ func (p *Planner) Plan(
 	plannerTools := p.getPlannerTools()
 
 	if domain == "general" || len(plannerTools) == 0 {
-		slog.Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools))
+		p.log().Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools))
 		return p.planDirect(ctx, task, availableTools, reflections)
 	}
 
-	slog.Debug("planner: using informed exploration planning", "domain", domain, "planner_tools", len(plannerTools))
+	p.log().Debug("planner: using informed exploration planning", "domain", domain, "planner_tools", len(plannerTools))
 	return p.planWithExploration(ctx, task, availableTools, reflections, plannerTools)
 }
 
@@ -307,6 +307,13 @@ func (p *Planner) planDirect(
 	return plan, nil
 }
 
+// emitService is a nil-safe helper that emits a ServiceWithMeta event if the emitter is set.
+func (p *Planner) emitService(content string, meta map[string]any) {
+	if p.emitter != nil {
+		p.emitter.ServiceWithMeta(content, meta)
+	}
+}
+
 // planWithExploration runs a bounded ReAct exploration loop, then extracts the plan
 // from the executor's finish output.
 func (p *Planner) planWithExploration(
@@ -322,10 +329,10 @@ func (p *Planner) planWithExploration(
 	// Resolve model metadata for context window management
 	var modelMeta llm.ModelMetadata
 	if p.modelRegistry != nil {
-		modelMeta, _ = p.modelRegistry.Resolve("")
+		modelMeta, _ = p.modelRegistry.Resolve(p.model)
 	}
 	if modelMeta.ContextWindow == 0 {
-		// Sensible defaults if registry is not available
+		// Sensible defaults if registry is not available or model unknown
 		modelMeta.ContextWindow = 200000
 		modelMeta.OutputLimit = 16384
 		modelMeta.TokenizerType = "approximate"
@@ -334,7 +341,7 @@ func (p *Planner) planWithExploration(
 	// Create a ContextManager for the exploration loop
 	if p.contextFactory == nil {
 		// Fall back to direct planning if no context factory is available
-		slog.Warn("planner: contextFactory is nil, falling back to direct planning")
+		p.log().Warn("planner: contextFactory is nil, falling back to direct planning")
 		return p.planDirect(ctx, task, availableTools, reflections)
 	}
 	cm := p.contextFactory(systemPrompt, modelMeta, "sliding")
@@ -356,9 +363,16 @@ func (p *Planner) planWithExploration(
 		executorEmitter = p.emitter
 	}
 
+	// Resolve the LLM caller for exploration — use callerForStep if available
+	// to wire the ContextTokenTracker so API-reported tokens correct predictions.
+	execCaller := p.llm
+	if p.callerForStep != nil {
+		execCaller = p.callerForStep(cm)
+	}
+
 	// Create the internal Executor for exploration
 	exec := agent.NewExecutor(
-		p.llm,
+		execCaller,
 		p.toolRegistry, // ToolExecutor — core ToolRegistry implements this
 		tokenCounter,
 		p.maxExploreSteps,
@@ -374,6 +388,7 @@ func (p *Planner) planWithExploration(
 	)
 
 	// Run the exploration loop
+	p.emitService("Exploring codebase...", map[string]any{"phase": "planning"})
 	result, err := exec.Run(ctx, plannerTools, cm)
 	if err != nil {
 		// Preserve cancellation semantics
@@ -381,25 +396,27 @@ func (p *Planner) planWithExploration(
 			return nil, ctx.Err()
 		}
 		// Degrade gracefully for other executor failures
-		slog.Warn("planner: exploration executor failed, falling back to direct planning", "error", err)
+		p.log().Warn("planner: exploration executor failed, falling back to direct planning", "error", err)
 		return p.planDirect(ctx, task, availableTools, reflections)
 	}
 
 	// Parse the plan from the executor's output
+	p.emitService("Generating plan...", map[string]any{"phase": "planning"})
 	if result.Output == "" {
 		// Exploration exhausted budget without producing a plan — fall back to direct
-		slog.Warn("planner: exploration produced no output, falling back to direct planning")
+		p.log().Warn("planner: exploration produced no output, falling back to direct planning")
 		return p.planDirect(ctx, task, availableTools, reflections)
 	}
 
 	plan, err := p.parsePlanResponse(result.Output)
 	if err != nil {
 		// If parsing fails, the LLM might have returned free text — fall back
-		slog.Warn("planner: failed to parse exploration plan output, falling back to direct", "error", err)
+		p.log().Warn("planner: failed to parse exploration plan output, falling back to direct", "error", err)
 		return p.planDirect(ctx, task, availableTools, reflections)
 	}
 
 	plan.ExplorationContext = summarizeExplorationSteps(result.Steps)
+	p.emitService("Plan ready", map[string]any{"phase": "planning", "step_count": len(plan.Steps)})
 	return plan, nil
 }
 
@@ -414,6 +431,7 @@ var fsToolNames = map[string]bool{
 	"ripgrep":         true,
 	"read_file":       true,
 	"search_files":    true,
+	"search_content":  true,
 	"semantic_search": true,
 	"batch":           true,
 }
@@ -493,11 +511,13 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 		"MODE-JSON-EXAMPLE":   planModeJSONExample,
 		"AVAILABLE-TOOLS":     availableToolsStr,
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
+		"MAX-STEPS":           "10",
 	}
 
 	result := prompt.NewBuilder().
 		Core(prompts.PlannerInformed).
 		Core(prompts.FamilyPrompt("planner", p.getFamily())).
+		Core(prompts.VerificationMandate).
 		ReplaceAll(substitutions).
 		Build()
 
@@ -521,6 +541,7 @@ func (p *Planner) Replan(
 	reflection *Reflection,
 	sessionReflections []Reflection,
 ) (*Plan, error) {
+	p.emitService("Refining plan...", map[string]any{"phase": "planning"})
 	systemPrompt := p.buildReplanSystemPrompt(ctx, replanContext{
 		originalPlan:       originalPlan,
 		completedSteps:     completedSteps,
@@ -548,6 +569,7 @@ func (p *Planner) Replan(
 		return nil, fmt.Errorf("failed to parse replan response: %w", err)
 	}
 
+	p.emitService("Plan refined", map[string]any{"phase": "planning", "step_count": len(plan.Steps)})
 	return plan, nil
 }
 
@@ -619,12 +641,14 @@ func (p *Planner) buildPlanSystemPrompt(
 		"MODE-JSON-EXAMPLE":   planModeJSONExample,
 		"AVAILABLE-TOOLS":     availableToolsStr,
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
+		"MAX-STEPS":           "10",
 	}
 
 	// Use prompt builder with family-specific adapters
 	result := prompt.NewBuilder().
 		Core(prompts.PlannerBase).
 		Core(prompts.FamilyPrompt("planner", p.getFamily())).
+		Core(prompts.VerificationMandate).
 		ReplaceAll(substitutions).
 		Build()
 
@@ -768,8 +792,8 @@ func (p *Planner) buildContinuationSystemPrompt(
 	// Build substitutions for template placeholders
 	substitutions := map[string]string{
 		"MODE-PREAMBLE":          continuationModePreamble,
-		"DOMAIN-ASSIGNMENT":      continuationModeDomainAssignment,
-		"AGENT-PROFILES":         continuationModeAgentProfiles,
+		"DOMAIN-ASSIGNMENT":      planModeDomainAssignment,
+		"AGENT-PROFILES":         planModeAgentProfiles,
 		"MODE-EXTRA-SECTIONS":    continuationModeExtraSections,
 		"MODE-TAIL":              continuationModeTail,
 		"MODE-JSON-EXAMPLE":      continuationModeJSONExample,

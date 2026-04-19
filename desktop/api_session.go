@@ -3,7 +3,6 @@ package desktop
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/user/agent/backend/session"
@@ -32,7 +31,7 @@ func (a *App) CreateSession() (*session.SessionInfo, error) {
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.SaveSession(*info); err != nil {
-			slog.Error("failed to save session to store", "error", err)
+			a.log().Error("failed to save session to store", "error", err)
 		}
 	}
 	return info, nil
@@ -53,7 +52,7 @@ func (a *App) DeleteSession(id string) error {
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.DeleteSession(id); err != nil {
-			slog.Error("failed to delete session from store", "error", err)
+			a.log().Error("failed to delete session from store", "error", err)
 		}
 	}
 	return nil
@@ -91,7 +90,7 @@ func (a *App) RenameSession(id, name string) error {
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.RenameSession(id, name); err != nil {
-			slog.Error("failed to rename session in store", "error", err)
+			a.log().Error("failed to rename session in store", "error", err)
 		}
 	}
 	return nil
@@ -114,7 +113,7 @@ func (a *App) ArchiveSession(id string) error {
 		info, err := a.store.LoadSession(id)
 		if err == nil && info != nil {
 			if err := a.store.ArchiveSession(id, !info.Archived); err != nil {
-				slog.Error("failed to archive session in store", "error", err)
+				a.log().Error("failed to archive session in store", "error", err)
 			}
 		}
 	}
@@ -131,7 +130,7 @@ func (a *App) SendMessage(id, text string) error {
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if a.store != nil {
 		if err := a.store.UpdateSessionActivity(id); err != nil {
-			slog.Error("failed to update session activity", "error", err)
+			a.log().Error("failed to update session activity", "error", err)
 		}
 	}
 	// Save user message to store
@@ -143,7 +142,7 @@ func (a *App) SendMessage(id, text string) error {
 			Content:   text,
 			CreatedAt: time.Now().Format(time.RFC3339),
 		}); err != nil {
-			slog.Error("failed to save user message to store", "error", err)
+			a.log().Error("failed to save user message to store", "error", err)
 		}
 	}
 

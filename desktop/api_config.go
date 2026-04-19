@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/user/agent/backend"
@@ -203,7 +202,7 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 	}
 
 	if err := a.persistConfig(); err != nil {
-		slog.Warn("failed to persist LLM settings", "error", err)
+		a.log().Warn("failed to persist LLM settings", "error", err)
 	}
 
 	// Clear any config load errors since settings are now valid
@@ -215,7 +214,7 @@ func (a *App) UpdateLLMSettings(settings LLMSettingsRequest) error {
 		bcfg := backend.ToBuilderConfig(a.config)
 		a.app.Builder().RebuildJudge(bcfg)
 		if err := a.app.Builder().RebuildRouter(bcfg); err != nil {
-			slog.Warn("failed to rebuild LLM router after settings update", "error", err)
+			a.log().Warn("failed to rebuild LLM router after settings update", "error", err)
 		}
 	}
 
@@ -238,7 +237,7 @@ func (a *App) UpdateSearchSettings(settings SearchSettingsRequest) error {
 	}
 
 	if err := a.persistConfig(); err != nil {
-		slog.Warn("failed to persist search settings", "error", err)
+		a.log().Warn("failed to persist search settings", "error", err)
 	}
 
 	// Rebuild web search tool via the backend builder.
@@ -307,7 +306,7 @@ func (a *App) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	}
 
 	if err := a.persistConfig(); err != nil {
-		slog.Warn("failed to persist security settings", "error", err)
+		a.log().Warn("failed to persist security settings", "error", err)
 	}
 
 	return nil
@@ -335,7 +334,7 @@ func (a *App) SetLogLevel(level string) error {
 		}
 		a.config.LogLevel = level
 		if err := a.persistConfig(); err != nil {
-			slog.Warn("failed to persist log level change", "error", err)
+			a.log().Warn("failed to persist log level change", "error", err)
 		}
 		return nil
 	default:
@@ -362,16 +361,19 @@ func (a *App) SetTheme(theme string) error {
 // For ChatGPT/OpenAI Compatible/LM Studio: fetches from the provider's API.
 func (a *App) ListProviderModels(provider string) ([]string, error) {
 	a.configMu.RLock()
-	defer a.configMu.RUnlock()
-
 	if a.config == nil {
+		a.configMu.RUnlock()
 		return nil, errors.New("config not initialized")
 	}
 	if a.app == nil {
+		a.configMu.RUnlock()
 		return nil, errors.New("application not initialized")
 	}
+	cfg := backend.ToBuilderConfig(a.config)
+	builder := a.app.Builder()
+	a.configMu.RUnlock()
 
-	return a.app.Builder().ListProviderModels(context.Background(), provider, backend.ToBuilderConfig(a.config))
+	return builder.ListProviderModels(context.Background(), provider, cfg)
 }
 
 // persistConfig saves the current in-memory config to disk.

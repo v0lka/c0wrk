@@ -13,6 +13,12 @@ interface StartupError {
   error: string
 }
 
+function isStartupError(data: unknown): data is StartupError {
+  return typeof data === 'object' && data !== null &&
+    typeof (data as Record<string, unknown>).message === 'string' &&
+    typeof (data as Record<string, unknown>).error === 'string'
+}
+
 function App() {
   useThemeEffect()
   const { runtime } = useWails()
@@ -23,8 +29,8 @@ function App() {
     if (!runtime) return
 
     const unsubscribe = runtime.EventsOn('startup_error', (data: unknown) => {
-      const errorData = data as StartupError
-      setStartupError(errorData)
+      if (!isStartupError(data)) return
+      setStartupError(data)
     })
 
     return unsubscribe
@@ -35,6 +41,7 @@ function App() {
     if (!runtime) return
 
     const unsubscribe = runtime.EventsOn('vector_index:status', (data: unknown) => {
+      if (typeof data !== 'object' || data === null || typeof (data as Record<string, unknown>).state !== 'string') return
       const payload = data as {
         state: string
         progress: number

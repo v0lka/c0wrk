@@ -33,6 +33,9 @@ func (c ChunkerConfig) withDefaults() ChunkerConfig {
 	if c.Overlap <= 0 {
 		c.Overlap = 200
 	}
+	if c.Overlap >= c.MaxChunkSize {
+		c.Overlap = c.MaxChunkSize / 5
+	}
 	return c
 }
 

@@ -66,6 +66,9 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		if lms, ok := provider.(*LMStudioProvider); ok {
 			registry.RegisterSource(lms.MetadataSource())
 		}
+		if gp, ok := provider.(*GeminiProvider); ok {
+			registry.RegisterSource(gp.MetadataSource())
+		}
 	}
 
 	initialBackoff := cfg.InitialBackoff
@@ -109,12 +112,14 @@ func createProviderFromConfig(ctx context.Context, provType, apiKey, baseURL str
 	switch provType {
 	case "openai":
 		return NewOpenAIProvider(OpenAIProviderConfig{
+			Name:    "openai",
 			APIKey:  apiKey,
 			BaseURL: baseURL,
 		})
 
 	case "lmstudio":
 		return NewLMStudioProvider(LMStudioProviderConfig{
+			Name:    "lmstudio",
 			APIKey:  apiKey,
 			BaseURL: baseURL,
 		})

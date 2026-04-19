@@ -62,6 +62,7 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	result := prompt.NewBuilder().
 		Core(prompts.OrchestratorSystem).
 		Core(prompts.FamilyPrompt("orchestrator", family)).
+		Core(prompts.VerificationMandate).
 		Replace("WORKSPACE-CONTEXT", workspaceCtxStr).
 		Build()
 
@@ -85,7 +86,11 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		sb.WriteString("\n\n## Relevant Project Files (auto-detected)\n")
 		sb.WriteString("Based on your query, these files may be relevant:\n")
 		for _, h := range hints.Files {
-			sb.WriteString("- " + h.FilePath + ": " + h.Summary + "\n")
+			sb.WriteString("- " + h.FilePath)
+			if h.Summary != "" {
+				sb.WriteString(": " + h.Summary)
+			}
+			sb.WriteString("\n")
 		}
 		sb.WriteString("\nUse semantic_search tool for deeper investigation.")
 		result += sb.String()

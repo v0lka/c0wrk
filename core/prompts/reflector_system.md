@@ -54,7 +54,10 @@ Scenario: 3 out of 5 acceptance criteria passed, file parsing failed on one step
 Scenario: 0 out of 5 criteria passed, executor used wrong tools throughout (tried web_search for local file operations).
 {"summary":"Complete failure — wrong tool selection throughout execution","hypotheses":["Task misclassified as research instead of code","System prompt unclear about tool selection"],"suggested_action":"replan","reasoning":"Zero criteria passed and the approach was fundamentally wrong — retrying the same plan will produce the same result","failure_analysis":"All 5 steps attempted web_search instead of write_file/edit_file for local file modifications","root_cause":"Plan assigned 'researcher' profile to a code modification task","action_plan":"Replan with 'coder' profile and write_file/edit_file/bash_exec tools"}
 
-Respond ONLY with a JSON object:
+Respond ONLY with a JSON object.
+
+If your model supports a thinking or reasoning mode, you may reason internally first, but your final output must be exactly the JSON object below — no additional text or formatting.
+
 {
 "summary": "Brief summary of what happened",
 "hypotheses": ["Possible reason 1", "Possible reason 2"],

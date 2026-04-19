@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"sync"
 
 	"github.com/user/agent/backend"
@@ -12,12 +13,12 @@ import (
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/backend/vectorindex"
 	"github.com/user/agent/backend/workspace"
-	"github.com/user/agent/sdk/embedding"
 )
 
 // App holds the Wails application state and exposes methods to the frontend.
 type App struct {
 	ctx        context.Context
+	logger     *slog.Logger         // instance logger; nil-safe via log()
 	app        *backend.Application // central ViewModel (owns builder, manager, persister)
 	manager    *session.Manager     // convenience alias for app.Manager()
 	db         *sql.DB              // shared SQLite connection
@@ -54,12 +55,7 @@ type App struct {
 	indexingMu       sync.Mutex    // protects indexingDone
 
 	// Vector search state
-	vectorMu      sync.RWMutex // protects vectorIndexer, gitMonitor, and indexCancel
-	vectorService *vectorindex.Service
-	vectorIndexer *vectorindex.Indexer
-	embedder      *embedding.Embedder
-	gitMonitor    *vectorindex.GitMonitor
-	indexCancel   context.CancelFunc // cancels in-flight IndexFull goroutine
+	vectorManager *vectorindex.Manager
 }
 
 // NewApp creates a new App instance.
@@ -67,3 +63,10 @@ func NewApp() *App {
 	return &App{}
 }
 
+// log returns the instance logger, falling back to slog.Default() when nil.
+func (a *App) log() *slog.Logger {
+	if a.logger != nil {
+		return a.logger
+	}
+	return slog.Default()
+}

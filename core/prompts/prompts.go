@@ -37,6 +37,12 @@ var PlannerDeepSeek string
 //go:embed planner_mistral.md
 var PlannerMistral string
 
+//go:embed planner_kimi.md
+var PlannerKimi string
+
+//go:embed planner_openai_codex.md
+var PlannerOpenAICodex string
+
 // Orchestrator prompts
 
 //go:embed orchestrator_system.md
@@ -68,6 +74,12 @@ var OrchestratorDeepSeek string
 //go:embed orchestrator_mistral.md
 var OrchestratorMistral string
 
+//go:embed orchestrator_kimi.md
+var OrchestratorKimi string
+
+//go:embed orchestrator_openai_codex.md
+var OrchestratorOpenAICodex string
+
 // Reflector prompt (auxiliary agent — fixed prompt, no family variants)
 
 //go:embed reflector_system.md
@@ -83,6 +95,11 @@ var RouterSystem string
 
 //go:embed router_instructions.md
 var RouterInstructions string
+
+// Verification mandate — injected into tool-enabled system prompts
+
+//go:embed verification_mandate.md
+var VerificationMandate string
 
 // Compaction summarize prompt
 
@@ -117,6 +134,10 @@ func orchestratorFamilyPrompt(family string) string {
 		return OrchestratorDeepSeek
 	case "mistral":
 		return OrchestratorMistral
+	case "kimi":
+		return OrchestratorKimi
+	case "openai_codex":
+		return OrchestratorOpenAICodex
 	default:
 		return OrchestratorDefault
 	}
@@ -136,6 +157,10 @@ func plannerFamilyPrompt(family string) string {
 		return PlannerDeepSeek
 	case "mistral":
 		return PlannerMistral
+	case "kimi":
+		return PlannerKimi
+	case "openai_codex":
+		return PlannerOpenAICodex
 	default:
 		return PlannerDefault
 	}

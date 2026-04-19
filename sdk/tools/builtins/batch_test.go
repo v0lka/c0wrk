@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -291,5 +292,74 @@ func TestBatchTool_ContextCancellation(t *testing.T) {
 	}
 	if !strings.Contains(out.Results[0].Error, "context canceled") {
 		t.Errorf("expected 'context canceled' in error, got: %s", out.Results[0].Error)
+	}
+}
+
+func TestBatchTool_MaxCallsExceeded(t *testing.T) {
+	d := &mockDispatcher{handler: func(context.Context, string, json.RawMessage) (tools.ToolResult, error) {
+		t.Fatal("dispatcher should not be called when MaxCalls exceeded")
+		return tools.ToolResult{}, nil
+	}}
+	bt := NewBatchToolWithLimits(d, BatchLimits{MaxCalls: 3, MaxConcurrency: 2})
+
+	calls := make([]BatchCall, 5)
+	for i := range calls {
+		calls[i] = BatchCall{Tool: fmt.Sprintf("t%d", i), Input: json.RawMessage(`{}`)}
+	}
+	input := newBatchInput(t, calls)
+
+	result, err := bt.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true, got content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "exceeds maximum") {
+		t.Errorf("expected 'exceeds maximum' in error, got: %s", result.Content)
+	}
+}
+
+func TestBatchTool_ConcurrencyBounded(t *testing.T) {
+	var mu sync.Mutex
+	var peak int
+	var current int
+
+	d := &mockDispatcher{handler: func(_ context.Context, _ string, _ json.RawMessage) (tools.ToolResult, error) {
+		mu.Lock()
+		current++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		current--
+		mu.Unlock()
+
+		return tools.ToolResult{Content: "ok"}, nil
+	}}
+
+	maxConcurrency := 3
+	bt := NewBatchToolWithLimits(d, BatchLimits{MaxCalls: 100, MaxConcurrency: maxConcurrency})
+
+	calls := make([]BatchCall, 15)
+	for i := range calls {
+		calls[i] = BatchCall{Tool: fmt.Sprintf("t%d", i), Input: json.RawMessage(`{}`)}
+	}
+	input := newBatchInput(t, calls)
+
+	result, err := bt.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.Content)
+	}
+
+	if peak > maxConcurrency {
+		t.Errorf("peak concurrency %d exceeded limit %d", peak, maxConcurrency)
 	}
 }

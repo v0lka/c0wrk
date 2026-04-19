@@ -23,12 +23,12 @@ func (s *spyEmitter) record(method string, args ...any) {
 	s.calls = append(s.calls, spyCall{method: method, args: args})
 }
 
-func (s *spyEmitter) StepStart(n int)                     { s.record("StepStart", n) }
-func (s *spyEmitter) Thought(n int, c, r string)          { s.record("Thought", n, c, r) }
+func (s *spyEmitter) StepStart(n int)                      { s.record("StepStart", n) }
+func (s *spyEmitter) Thought(n int, c, r string)           { s.record("Thought", n, c, r) }
 func (s *spyEmitter) ToolCall(n, ci int, t, a, src string) { s.record("ToolCall", n, ci, t, a, src) }
-func (s *spyEmitter) ToolResult(n, ci, l int, p string)       { s.record("ToolResult", n, ci, l, p) }
-func (s *spyEmitter) StepComplete(n int, d time.Duration) { s.record("StepComplete", n, d) }
-func (s *spyEmitter) SubAgentLaunch(id, desc string)      { s.record("SubAgentLaunch", id, desc) }
+func (s *spyEmitter) ToolResult(n, ci, l int, p string)    { s.record("ToolResult", n, ci, l, p) }
+func (s *spyEmitter) StepComplete(n int, d time.Duration)  { s.record("StepComplete", n, d) }
+func (s *spyEmitter) SubAgentLaunch(id, desc string)       { s.record("SubAgentLaunch", id, desc) }
 func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration) {
 	s.record("SubAgentComplete", id, ok, d)
 }
@@ -40,6 +40,7 @@ func (s *spyEmitter) ContextFill(p float64, u, m int, st, id string) {
 func (s *spyEmitter) ContextCompaction(before, after float64, id string) {
 	s.record("ContextCompaction", before, after, id)
 }
+func (s *spyEmitter) Finishing(n int, summary string) { s.record("Finishing", n, summary) }
 func (s *spyEmitter) ExecutorDiagnostic(n int, e string, d map[string]any) {
 	s.record("ExecutorDiagnostic", n, e, d)
 }
@@ -58,6 +59,9 @@ func (s *spyEmitter) Service(c string)                           { s.record("Ser
 func (s *spyEmitter) ServiceWithMeta(c string, m map[string]any) { s.record("ServiceWithMeta", c, m) }
 func (s *spyEmitter) ReplanFailed(e error)                       { s.record("ReplanFailed", e) }
 func (s *spyEmitter) FileRollbackError(id string, e error)       { s.record("FileRollbackError", id, e) }
+func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
+	s.record("EmitSessionTokens", totalIn, totalOut, model, family)
+}
 
 // scopableSpyEmitter extends spyEmitter with scoping support.
 type scopableSpyEmitter struct {
@@ -103,6 +107,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"ContextFill", func(e Emitter) { e.ContextFill(0.5, 500, 1000, "ok", "s1") }, "ContextFill"},
 		{"ContextCompaction", func(e Emitter) { e.ContextCompaction(85.0, 30.0, "s1") }, "ContextCompaction"},
 		{"ExecutorDiagnostic", func(e Emitter) { e.ExecutorDiagnostic(1, "nudge", details) }, "ExecutorDiagnostic"},
+		{"Finishing", func(e Emitter) { e.Finishing(1, "done") }, "Finishing"},
 		{"Routing", func(e Emitter) { e.Routing("plan", "code", "3") }, "Routing"},
 		{"PlanGenerated", func(e Emitter) { e.PlanGenerated(1, steps) }, "PlanGenerated"},
 		{"PlanStepStart", func(e Emitter) { e.PlanStepStart("s1", "do it") }, "PlanStepStart"},
@@ -131,6 +136,30 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 				t.Errorf("expected method %q, got %q", tt.want, spy.calls[0].method)
 			}
 		})
+	}
+}
+
+func TestLoggingEmitter_EmitSessionTokens_ForwardsToInner(t *testing.T) {
+	spy := &spyEmitter{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	le := NewLoggingEmitter(spy, logger)
+
+	// The type assertion used in builder.go must succeed on the logging wrapper.
+	type tokenEmitter interface {
+		EmitSessionTokens(totalIn, totalOut int, model, family string)
+	}
+	te, ok := le.(tokenEmitter)
+	if !ok {
+		t.Fatal("expected loggingEmitter to satisfy EmitSessionTokens interface")
+	}
+	te.EmitSessionTokens(100, 50, "gpt-4o", "openai")
+
+	if len(spy.calls) != 1 {
+		t.Fatalf("expected 1 call to inner, got %d", len(spy.calls))
+	}
+	if spy.calls[0].method != "EmitSessionTokens" {
+		t.Errorf("expected method EmitSessionTokens, got %q", spy.calls[0].method)
 	}
 }
 

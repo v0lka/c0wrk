@@ -45,7 +45,10 @@ func CheckCodebaseMemoryMCP() CodeMemoryStatus {
 // InstallCodebaseMemoryMCP downloads and installs the codebase-memory-mcp binary.
 // The progress callback is called with status updates; it may be nil.
 // Returns the install path on success.
-func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
+func InstallCodebaseMemoryMCP(progress ProgressFunc, logger *slog.Logger) (string, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if progress == nil {
 		progress = func(string) {} // noop
 	}
@@ -69,7 +72,7 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 	// Build download URL
 	url := fmt.Sprintf("https://github.com/DeusData/codebase-memory-mcp/releases/latest/download/codebase-memory-mcp-%s-%s.%s", goos, arch, ext)
 
-	slog.Info("downloading codebase-memory-mcp", "url", url)
+	logger.Info("downloading codebase-memory-mcp", "url", url)
 	progress("downloading")
 
 	// Create temp directory
@@ -94,7 +97,7 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			slog.Debug("failed to close file during extraction", "error", closeErr)
+			logger.Debug("failed to close file during extraction", "error", closeErr)
 		}
 	}()
 
@@ -112,14 +115,14 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 	}
 	_, err = io.Copy(out, resp.Body)
 	if closeErr := out.Close(); closeErr != nil {
-		slog.Debug("failed to close file during extraction", "error", closeErr)
+		logger.Debug("failed to close file during extraction", "error", closeErr)
 	}
 	if err != nil {
 		progress("error")
 		return "", fmt.Errorf("failed to save download: %w", err)
 	}
 
-	slog.Info("extracting codebase-memory-mcp")
+	logger.Info("extracting codebase-memory-mcp")
 	progress("installing")
 
 	// Extract archive
@@ -130,7 +133,7 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 	}
 
 	if goos == "windows" {
-		if err := ExtractZip(archivePath, extractDir); err != nil {
+		if err := ExtractZip(archivePath, extractDir, logger); err != nil {
 			progress("error")
 			return "", fmt.Errorf("failed to extract zip: %w", err)
 		}
@@ -143,7 +146,7 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 	}
 
 	// Run installer
-	slog.Info("running codebase-memory-mcp installer")
+	logger.Info("running codebase-memory-mcp installer")
 	var installCmd *exec.Cmd
 	if goos == "windows" {
 		installCmd = exec.CommandContext(context.Background(), "powershell", "-File", "install.ps1", "-SkipConfig")
@@ -171,7 +174,7 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 		}
 	}
 
-	slog.Info("codebase-memory-mcp installed", "path", installPath)
+	logger.Info("codebase-memory-mcp installed", "path", installPath)
 	return installPath, nil
 }
 
@@ -179,7 +182,12 @@ func InstallCodebaseMemoryMCP(progress ProgressFunc) (string, error) {
 // auto_index if it is currently disabled. If the binary is not found, it
 // returns (nil, nil) (graceful skip). When auto_index is changed, a restore
 // closure is returned that reverts the setting to its original value.
-func EnsureAutoIndex(ctx context.Context) (restore func(), err error) {
+func EnsureAutoIndex(ctx context.Context, loggers ...*slog.Logger) (restore func(), err error) {
+	logger := slog.Default()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
+
 	status := CheckCodebaseMemoryMCP()
 	if !status.Installed {
 		return nil, nil // not installed, skip gracefully
@@ -204,7 +212,7 @@ func EnsureAutoIndex(ctx context.Context) (restore func(), err error) {
 			if len(parts) == 2 {
 				originalValue = strings.TrimSpace(parts[1])
 				if originalValue == "true" {
-					slog.Debug("codebase-memory-mcp auto_index already enabled")
+					logger.Debug("codebase-memory-mcp auto_index already enabled")
 					return nil, nil
 				}
 			}
@@ -212,7 +220,7 @@ func EnsureAutoIndex(ctx context.Context) (restore func(), err error) {
 	}
 
 	// auto_index is not true — enable it
-	slog.Info("enabling codebase-memory-mcp auto_index")
+	logger.Info("enabling codebase-memory-mcp auto_index")
 	setCmd := exec.CommandContext(ctx, binaryPath, "config", "set", "auto_index", "true")
 	if out, err := setCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to enable auto_index: %w, output: %s", err, string(out))
@@ -224,27 +232,31 @@ func EnsureAutoIndex(ctx context.Context) (restore func(), err error) {
 		restoreValue = "false"
 	}
 
-	slog.Info("codebase-memory-mcp auto_index enabled")
+	logger.Info("codebase-memory-mcp auto_index enabled")
 	return func() {
-		slog.Info("restoring codebase-memory-mcp auto_index", "value", restoreValue)
+		logger.Info("restoring codebase-memory-mcp auto_index", "value", restoreValue)
 		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		restoreCmd := exec.CommandContext(rctx, binaryPath, "config", "set", "auto_index", restoreValue)
 		if out, err := restoreCmd.CombinedOutput(); err != nil {
-			slog.Warn("failed to restore auto_index", "error", err, "output", string(out))
+			logger.Warn("failed to restore auto_index", "error", err, "output", string(out))
 		}
 	}, nil
 }
 
 // ExtractZip extracts a zip file to the specified directory.
-func ExtractZip(src, dest string) error {
+func ExtractZip(src, dest string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	r, err := zip.OpenReader(src)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if closeErr := r.Close(); closeErr != nil {
-			slog.Debug("failed to close file during extraction", "error", closeErr)
+			logger.Debug("failed to close file during extraction", "error", closeErr)
 		}
 	}()
 
@@ -275,17 +287,17 @@ func ExtractZip(src, dest string) error {
 		rc, err := f.Open()
 		if err != nil {
 			if closeErr := outFile.Close(); closeErr != nil {
-				slog.Debug("failed to close file during extraction", "error", closeErr)
+				logger.Debug("failed to close file during extraction", "error", closeErr)
 			}
 			return err
 		}
 
 		_, err = io.Copy(outFile, rc)
 		if closeErr := outFile.Close(); closeErr != nil {
-			slog.Debug("failed to close file during extraction", "error", closeErr)
+			logger.Debug("failed to close file during extraction", "error", closeErr)
 		}
 		if closeErr := rc.Close(); closeErr != nil {
-			slog.Debug("failed to close file during extraction", "error", closeErr)
+			logger.Debug("failed to close file during extraction", "error", closeErr)
 		}
 
 		if err != nil {

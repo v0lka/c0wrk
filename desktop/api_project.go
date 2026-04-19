@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os/exec"
-	"sync"
 	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -16,7 +14,6 @@ import (
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/vectorindex"
 	"github.com/user/agent/backend/workspace"
-	"github.com/user/agent/sdk/embedding"
 )
 
 // checkCodebaseMemoryFunc is the function used to check codebase-memory-mcp installation.
@@ -40,13 +37,13 @@ func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, er
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("panic in codebase indexing", "recover", r)
+				a.log().Error("panic in codebase indexing", "recover", r)
 			}
 		}()
 		a.triggerCodebaseIndexing(p.WorkspacePath)
 	}()
 
-	wailsRuntime.EventsEmit(a.ctx, "project:created", p)
+	wailsRuntime.EventsEmit(a.ctx, EventProjectCreated, p)
 
 	return p, nil
 }
@@ -59,7 +56,7 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 	if a.indexingDone != nil {
 		// Another indexing run is already in progress; skip.
 		a.indexingMu.Unlock()
-		slog.Info("codebase indexing already in progress, skipping", "workspace", workspacePath)
+		a.log().Info("codebase indexing already in progress, skipping", "workspace", workspacePath)
 		return
 	}
 	ch := make(chan struct{})
@@ -86,12 +83,17 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
 	defer cancel()
 
-	jsonArg := fmt.Sprintf(`{"workspace_path": %q}`, workspacePath)
+	jsonBytes, err := json.Marshal(map[string]string{"workspace_path": workspacePath})
+	if err != nil {
+		a.log().Warn("failed to marshal codebase indexing JSON arg", "error", err)
+		return
+	}
+	jsonArg := string(jsonBytes)
 
 	cmd := execCommandFunc(ctx, status.Path, "cli", "index_repository", jsonArg)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		slog.Warn("codebase-memory-mcp indexing failed",
+		a.log().Warn("codebase-memory-mcp indexing failed",
 			"workspace", workspacePath,
 			"error", err,
 			"output", string(output),
@@ -99,7 +101,7 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 		return
 	}
 
-	slog.Info("codebase-memory-mcp indexing triggered", "workspace", workspacePath)
+	a.log().Info("codebase-memory-mcp indexing triggered", "workspace", workspacePath)
 	a.resolveCodebaseProjectName(workspacePath)
 }
 
@@ -122,7 +124,7 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 	cmd := execCommandFunc(ctx, status.Path, "cli", "list_projects")
 	output, err := cmd.Output()
 	if err != nil {
-		slog.Warn("failed to list codebase-memory-mcp projects", "error", err)
+		a.log().Warn("failed to list codebase-memory-mcp projects", "error", err)
 		return
 	}
 
@@ -134,7 +136,7 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(output, &mcpResp); err != nil {
-		slog.Warn("failed to parse list_projects response", "error", err)
+		a.log().Warn("failed to parse list_projects response", "error", err)
 		return
 	}
 	if len(mcpResp.Content) == 0 {
@@ -148,7 +150,7 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 		} `json:"projects"`
 	}
 	if err := json.Unmarshal([]byte(mcpResp.Content[0].Text), &projectList); err != nil {
-		slog.Warn("failed to parse project list", "error", err)
+		a.log().Warn("failed to parse project list", "error", err)
 		return
 	}
 
@@ -159,11 +161,11 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 		a.activeProjectMu.Lock()
 		a.codebaseProjectName = p.Name
 		a.activeProjectMu.Unlock()
-		slog.Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
+		a.log().Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
 		return
 	}
 
-	slog.Warn("codebase-memory-mcp project not found for workspace", "workspace", workspacePath)
+	a.log().Warn("codebase-memory-mcp project not found for workspace", "workspace", workspacePath)
 }
 
 // DeleteProject deletes a project and all its sessions.
@@ -190,7 +192,7 @@ func (a *App) DeleteProject(id string) error {
 		a.watcher = nil
 	}
 
-	wailsRuntime.EventsEmit(a.ctx, "project:deleted", id)
+	wailsRuntime.EventsEmit(a.ctx, EventProjectDeleted, id)
 	return nil
 }
 
@@ -202,7 +204,7 @@ func (a *App) RenameProject(id, name string) error {
 	if err := a.projectManager.RenameProject(id, name); err != nil {
 		return fmt.Errorf("failed to rename project: %w", err)
 	}
-	wailsRuntime.EventsEmit(a.ctx, "project:renamed", map[string]string{"id": id, "name": name})
+	wailsRuntime.EventsEmit(a.ctx, EventProjectRenamed, map[string]string{"id": id, "name": name})
 	return nil
 }
 
@@ -232,7 +234,7 @@ func (a *App) SwitchProject(id string) error {
 	alreadyActive := a.activeProjectID == id
 	a.activeProjectMu.RUnlock()
 	if alreadyActive {
-		slog.Info("SwitchProject: project already active, skipping", "project", id)
+		a.log().Info("SwitchProject: project already active, skipping", "project", id)
 		return nil
 	}
 
@@ -245,12 +247,9 @@ func (a *App) SwitchProject(id string) error {
 	}
 
 	// Cancel any in-flight indexing from a previous project.
-	a.vectorMu.Lock()
-	if a.indexCancel != nil {
-		a.indexCancel()
-		a.indexCancel = nil
+	if a.vectorManager != nil {
+		a.vectorManager.CancelIndexing()
 	}
-	a.vectorMu.Unlock()
 
 	a.activeProjectMu.Lock()
 	a.activeProjectID = p.ID
@@ -275,153 +274,47 @@ func (a *App) SwitchProject(id string) error {
 		a.watcher = nil
 	}
 
-	// Debounce timer for incremental indexing triggered by file changes.
-	var indexDebounce *time.Timer
-	var indexDebounceMu sync.Mutex
-
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
 		// Existing behavior: emit workspace tree change.
-		wailsRuntime.EventsEmit(a.ctx, "workspace:tree_changed", nil)
+		wailsRuntime.EventsEmit(a.ctx, EventWorkspaceTreeChanged, nil)
 
-		// Trigger incremental indexing with 1s debounce.
-		a.vectorMu.RLock()
-		idx := a.vectorIndexer
-		a.vectorMu.RUnlock()
-
-		if idx != nil {
-			indexDebounceMu.Lock()
-			if indexDebounce != nil {
-				indexDebounce.Stop()
-			}
-			indexDebounce = time.AfterFunc(1*time.Second, func() {
-				if idxErr := idx.IndexIncremental(context.Background(), p.WorkspacePath); idxErr != nil {
-					slog.Warn("incremental indexing failed", "error", idxErr)
-				}
-			})
-			indexDebounceMu.Unlock()
+		// Trigger debounced incremental indexing via Manager.
+		if a.vectorManager != nil {
+			a.vectorManager.NotifyFileChange(p.WorkspacePath)
 		}
 	})
 	if err != nil {
-		slog.Warn("failed to start workspace file watcher", "project", id, "error", err)
+		a.log().Warn("failed to start workspace file watcher", "project", id, "error", err)
 	} else {
 		a.watcher = watcher
 	}
 
 	// --- Vector index wiring ---
-	if a.vectorService != nil {
-		if setErr := a.vectorService.SetProject(p.ID); setErr != nil {
-			slog.Warn("vector index project setup failed", "error", setErr)
-		} else {
-			branch, branchErr := vectorindex.CurrentBranch(p.WorkspacePath)
-			if branchErr != nil {
-				slog.Warn("failed to detect git branch for vector index", "error", branchErr)
-				branch = vectorindex.DefaultBranch
-			}
+	if a.vectorManager != nil {
+		branch, branchErr := vectorindex.CurrentBranch(p.WorkspacePath)
+		if branchErr != nil {
+			a.log().Warn("failed to detect git branch", "error", branchErr)
+			branch = vectorindex.DefaultBranch
+		}
+		capturedBranch := branch
 
-			// Create chunker adapter (bridges sdk/embedding to backend/vectorindex interface).
-			chunkFunc := func(filePath string, content []byte, maxSize, overlap int) ([]vectorindex.ChunkResult, error) {
-				chunks, chunkErr := embedding.ChunkFile(filePath, content, embedding.ChunkerConfig{
-					MaxChunkSize: maxSize,
-					Overlap:      overlap,
+		if switchErr := a.vectorManager.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
+			OnProgress: func(state vectorindex.IndexState, indexed, total int, file string) {
+				wailsRuntime.EventsEmit(a.ctx, EventVectorIndexStatus, map[string]any{
+					"state":         string(state),
+					"progress":      progressPercent(indexed, total),
+					"files_indexed": indexed,
+					"total_files":   total,
+					"current_file":  file,
+					"branch":        capturedBranch,
 				})
-				if chunkErr != nil {
-					return nil, chunkErr
-				}
-				results := make([]vectorindex.ChunkResult, len(chunks))
-				for i, c := range chunks {
-					results[i] = vectorindex.ChunkResult{
-						Content:   c.Content,
-						StartLine: c.StartLine,
-						EndLine:   c.EndLine,
-						Language:  c.Language,
-					}
-				}
-				return results, nil
-			}
-
-			// Create indexer with progress callback that emits Wails events.
-			capturedBranch := branch
-			indexer := vectorindex.NewIndexer(vectorindex.IndexerConfig{
-				Service: a.vectorService,
-				ChunkFn: chunkFunc,
-				HashFn:  embedding.ComputeFileHash,
-				OnProgress: func(state vectorindex.IndexState, indexed, total int, file string) {
-					wailsRuntime.EventsEmit(a.ctx, "vector_index:status", map[string]any{
-						"state":         string(state),
-						"progress":      progressPercent(indexed, total),
-						"files_indexed": indexed,
-						"total_files":   total,
-						"current_file":  file,
-						"branch":        capturedBranch,
-					})
-				},
-				Logger: slog.Default(),
-			})
-			a.vectorMu.Lock()
-			a.vectorIndexer = indexer
-			a.vectorMu.Unlock()
-
-			// Switch to branch collection.
-			if switchErr := a.vectorService.SwitchBranch(context.Background(), branch); switchErr != nil {
-				slog.Warn("vector index branch switch failed", "error", switchErr)
-			}
-
-			// Start background indexing with a cancellable context.
-			indexCtx, indexCancel := context.WithCancel(context.Background())
-			a.vectorMu.Lock()
-			a.indexCancel = indexCancel
-			a.vectorMu.Unlock()
-
-			go func() {
-				// Use incremental indexing when the collection already has data;
-				// fall back to full indexing only on first run (empty/nil collection).
-				col := a.vectorService.GetCollection()
-				var idxErr error
-				if col == nil || col.Count() == 0 {
-					slog.Info("empty collection, running full index", "project", p.ID)
-					idxErr = indexer.IndexFull(indexCtx, p.WorkspacePath)
-				} else {
-					slog.Info("existing collection found, running incremental index", "project", p.ID)
-					idxErr = indexer.IndexIncremental(indexCtx, p.WorkspacePath)
-				}
-				if idxErr != nil {
-					if context.Cause(indexCtx) != nil {
-						slog.Info("vector indexing cancelled", "project", p.ID)
-					} else {
-						slog.Warn("vector indexing failed", "error", idxErr)
-					}
-				}
-			}()
-
-			// Start git branch monitor.
-			if gitMon, monErr := vectorindex.NewGitMonitor(
-				p.WorkspacePath,
-				func(newBranch string) {
-					go func() {
-						if bsErr := indexer.HandleBranchSwitch(context.Background(), p.WorkspacePath, newBranch); bsErr != nil {
-							slog.Warn("branch switch indexing failed", "error", bsErr)
-						}
-					}()
-				},
-				slog.Default(),
-			); monErr == nil {
-				// Stop previous git monitor if any.
-				a.vectorMu.Lock()
-				if a.gitMonitor != nil {
-					_ = a.gitMonitor.Stop()
-				}
-				a.gitMonitor = gitMon
-				a.vectorMu.Unlock()
-				if startErr := gitMon.Start(); startErr != nil {
-					slog.Warn("failed to start git monitor", "error", startErr)
-				}
-			} else {
-				slog.Warn("failed to create git monitor", "error", monErr)
-			}
+			},
+		}); switchErr != nil {
+			a.log().Warn("vector index project switch failed", "error", switchErr)
 		}
 	}
 
-	wailsRuntime.EventsEmit(a.ctx, "project:switched", p)
+	wailsRuntime.EventsEmit(a.ctx, EventProjectSwitched, p)
 
 	return nil
 }

@@ -115,6 +115,11 @@ func (l *loggingEmitter) ContextCompaction(beforePercent, afterPercent float64, 
 	l.inner.ContextCompaction(beforePercent, afterPercent, stepID)
 }
 
+func (l *loggingEmitter) Finishing(stepNum int, summary string) {
+	l.logger.Debug("executor: finishing", "stepNum", stepNum, "summary", summary)
+	l.inner.Finishing(stepNum, summary)
+}
+
 func (l *loggingEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
 	l.logger.Debug("executor: diagnostic", "stepNum", stepNum, "event", event, "details", details)
 	l.inner.ExecutorDiagnostic(stepNum, event, details)
@@ -177,4 +182,17 @@ func (l *loggingEmitter) ReplanFailed(err error) {
 func (l *loggingEmitter) FileRollbackError(stepID string, err error) {
 	l.logger.Warn("file rollback error", "stepID", stepID, "error", err)
 	l.inner.FileRollbackError(stepID, err)
+}
+
+// EmitSessionTokens forwards session token totals to the inner emitter if it supports it.
+// This enables the UsageTracker observer (registered via builder.go type assertion) to
+// propagate accumulated tokens through the logging wrapper.
+func (l *loggingEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
+	l.logger.Debug("session tokens update", "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
+	type sessionTokenEmitter interface {
+		EmitSessionTokens(totalIn, totalOut int, model, family string)
+	}
+	if te, ok := l.inner.(sessionTokenEmitter); ok {
+		te.EmitSessionTokens(totalIn, totalOut, model, family)
+	}
 }

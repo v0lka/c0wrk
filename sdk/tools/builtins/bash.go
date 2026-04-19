@@ -28,6 +28,7 @@ type BashExecTool struct {
 	timeouts  BashTimeouts
 	rtkPath   string
 	rtkMu     sync.RWMutex
+	logger    *slog.Logger
 }
 
 // NewBashExecTool creates a new BashExecTool with the given blacklist.
@@ -66,6 +67,16 @@ func (t *BashExecTool) SetRtkPath(path string) {
 	t.rtkPath = path
 }
 
+// SetLogger sets the logger for the bash tool.
+func (t *BashExecTool) SetLogger(l *slog.Logger) { t.logger = l }
+
+func (t *BashExecTool) log() *slog.Logger {
+	if t.logger != nil {
+		return t.logger
+	}
+	return slog.Default()
+}
+
 // getRtkPath returns the current rtk binary path (thread-safe).
 func (t *BashExecTool) getRtkPath() string {
 	t.rtkMu.RLock()
@@ -86,7 +97,7 @@ func (t *BashExecTool) rtkRewrite(ctx context.Context, rtkPath, command string) 
 	cmd := exec.CommandContext(rewriteCtx, rtkPath, "rewrite", command)
 	output, err := cmd.Output()
 	if err != nil {
-		slog.Debug("rtk rewrite failed, using original command", "error", err)
+		t.log().Debug("rtk rewrite failed, using original command", "error", err)
 		return ""
 	}
 
@@ -95,7 +106,7 @@ func (t *BashExecTool) rtkRewrite(ctx context.Context, rtkPath, command string) 
 		return ""
 	}
 
-	slog.Debug("rtk rewrote command", "original", command, "rewritten", rewritten)
+	t.log().Debug("rtk rewrote command", "original", command, "rewritten", rewritten)
 	return rewritten
 }
 

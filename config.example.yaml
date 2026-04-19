@@ -200,6 +200,10 @@ toolLimits:
   # Web fetch
   webFetchMaxBodySize: 2097152 # Max Markdown output size in bytes (after HTML conversion), default 2 MB
 
+  # Batch tool
+  batchMaxCalls: 50 # Max tool calls per batch request
+  batchMaxConcurrency: 20 # Max parallel goroutines for batch execution
+
 # ---------------------------------------------------------------------------
 # Timeouts (in seconds)
 # ---------------------------------------------------------------------------

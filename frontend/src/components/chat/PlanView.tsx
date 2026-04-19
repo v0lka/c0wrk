@@ -116,7 +116,7 @@ export function PlanView() {
   const steps: PlanStepView[] = latestPlanGroup
     ? latestPlanGroup.items.map((item, index) => ({
         id: item.id || String(index + 1),
-        description: item.title,
+        description: item.description || item.title,
         summary: item.summary,
         status: item.status === 'completed' ? 'done' : item.status === 'pending' ? 'waiting' : item.status,
         duration: item.duration,

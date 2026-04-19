@@ -223,6 +223,9 @@ type BuilderToolLimitsConfig struct {
 
 	WebSearchMaxResults int
 	WebFetchMaxBodySize int
+
+	BatchMaxCalls       int
+	BatchMaxConcurrency int
 }
 
 // ---------------------------------------------------------------------------

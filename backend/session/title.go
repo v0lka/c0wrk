@@ -15,12 +15,26 @@ type LLMTitleCaller interface {
 // TitleGenerator generates concise session titles from user messages.
 type TitleGenerator struct {
 	caller LLMTitleCaller
+	logger *slog.Logger
 }
 
 // NewTitleGenerator creates a new TitleGenerator.
 // If caller is nil, only fallback title generation is used.
 func NewTitleGenerator(caller LLMTitleCaller) *TitleGenerator {
 	return &TitleGenerator{caller: caller}
+}
+
+// log returns the generator's logger, falling back to slog.Default().
+func (g *TitleGenerator) log() *slog.Logger {
+	if g.logger != nil {
+		return g.logger
+	}
+	return slog.Default()
+}
+
+// SetLogger sets the logger for the title generator.
+func (g *TitleGenerator) SetLogger(l *slog.Logger) {
+	g.logger = l
 }
 
 // Generate produces a title for the given user message.
@@ -30,7 +44,7 @@ func (g *TitleGenerator) Generate(ctx context.Context, userMessage string) strin
 	if g.caller != nil {
 		title, err := g.caller.GenerateTitle(ctx, userMessage)
 		if err != nil {
-			slog.Warn("failed to generate session title via LLM, using fallback", "error", err)
+			g.log().Warn("failed to generate session title via LLM, using fallback", "error", err)
 		} else if title != "" {
 			title = strings.TrimSpace(title)
 			title = strings.Trim(title, "\"'")
@@ -45,10 +59,11 @@ func (g *TitleGenerator) Generate(ctx context.Context, userMessage string) strin
 	return truncateTitle(title)
 }
 
-// truncateTitle ensures title doesn't exceed 60 characters.
+// truncateTitle ensures title doesn't exceed 60 runes.
 func truncateTitle(title string) string {
-	if len(title) > 60 {
-		return title[:57] + "..."
+	runes := []rune(title)
+	if len(runes) > 60 {
+		return string(runes[:57]) + "..."
 	}
 	return title
 }

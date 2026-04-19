@@ -22,8 +22,6 @@ import (
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/backend/vectorindex"
-	"github.com/user/agent/core/tools"
-	"github.com/user/agent/sdk/embedding"
 
 	_ "modernc.org/sqlite" // register SQLite driver
 )
@@ -45,7 +43,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Load shell environment variables BEFORE any other initialization.
 	// On macOS, apps launched from Finder/Dock don't inherit shell env vars.
 	// This ensures ${OPENAI_API_KEY} and similar vars in config.yaml resolve correctly.
-	config.LoadShellEnvironment()
+	config.LoadShellEnvironment(nil)
 
 	// Initialize logger FIRST - before any other initialization
 	// This ensures all startup errors are written to log files
@@ -63,6 +61,7 @@ func (a *App) Startup(ctx context.Context) {
 	} else {
 		log = slog.Default()
 	}
+	a.logger = log
 
 	// Determine config path and load configuration via backend.
 	resolved := config.ResolveAndLoad(log)
@@ -84,6 +83,7 @@ func (a *App) Startup(ctx context.Context) {
 			}
 			a.sessionLogger = newLogger
 			log = newLogger.Logger()
+			a.logger = log
 		}
 	}
 
@@ -130,7 +130,7 @@ func (a *App) Startup(ctx context.Context) {
 	uiEmitFunc := func(evt session.Event) {
 		eventName := fmt.Sprintf("session:%s:%s", evt.SessionID, evt.Type)
 		wailsRuntime.EventsEmit(a.ctx, eventName, evt.Data)
-		slog.Debug("desktop: Wails EventsEmit called", "eventName", eventName)
+		a.log().Debug("desktop: Wails EventsEmit called", "eventName", eventName)
 	}
 
 	// --- Desktop UI callbacks ---
@@ -249,41 +249,23 @@ func (a *App) Startup(ctx context.Context) {
 	// --- Create backend Application (owns builder, manager, persister) ---
 
 	// --- Vector Search Initialization ---
-	var vectorSvc *vectorindex.Service
-	var embdr *embedding.Embedder
-
 	modelPath := resolveModelPath("jina-v2-small.onnx", agentDir)
 	tokenizerPath := resolveModelPath("jina-v2-small-tokenizer.json", agentDir)
 	libraryPath := resolveONNXLibPath()
 
-	if modelPath != "" && tokenizerPath != "" && libraryPath != "" {
-		embdr, err = embedding.NewEmbedder(embedding.EmbedderConfig{
-			ModelPath:     modelPath,
-			TokenizerPath: tokenizerPath,
-			LibraryPath:   libraryPath,
-			MaxSeqLength:  512,
-			Logger:        log,
-		})
-		if err != nil {
-			log.Warn("vector search unavailable: embedder init failed", "error", err)
-			embdr = nil
-		} else {
-			vectorSvc, err = vectorindex.NewService(vectorindex.ServiceConfig{
-				PersistPath:   filepath.Join(agentDir, "vector_index"),
-				EmbeddingFunc: embdr.EmbeddingFunc(),
-				Logger:        log,
-			})
-			if err != nil {
-				log.Warn("vector search unavailable: service init failed", "error", err)
-				if closeErr := embdr.Close(); closeErr != nil {
-					log.Warn("failed to close embedder after service init failure", "error", closeErr)
-				}
-				embdr = nil
-			}
-		}
+	vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
+		ModelPath:     modelPath,
+		TokenizerPath: tokenizerPath,
+		LibraryPath:   libraryPath,
+		MaxSeqLength:  512,
+		HiddenDim:     512,
+		PersistPath:   filepath.Join(agentDir, "vector_index"),
+		Logger:        log,
+	})
+	if err != nil {
+		log.Warn("vector search unavailable", "error", err)
 	}
-	a.vectorService = vectorSvc
-	a.embedder = embdr
+	a.vectorManager = vectorMgr
 
 	logDir := filepath.Join(agentDir, "logs")
 	a.projectsDir = filepath.Join(agentDir, "Projects")
@@ -299,17 +281,18 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// Wire vector search callbacks into Application config.
-	var vectorSearchFunc tools.VectorSearchFunc
-	var vectorSearchWaitFunc tools.VectorSearchWaitFunc
-	if vectorSvc != nil {
-		vectorSearchFunc = func(ctx context.Context, query string, topK int, fileFilter string) ([]tools.VectorSearchResult, error) {
+	var vectorSearchFunc backend.VectorSearchFunc
+	var vectorSearchWaitFunc backend.VectorSearchWaitFunc
+	if vectorMgr != nil {
+		vectorSvc := vectorMgr.Service()
+		vectorSearchFunc = func(ctx context.Context, query string, topK int, fileFilter string) ([]backend.VectorSearchResult, error) {
 			results, searchErr := vectorSvc.SearchWithFilter(ctx, query, topK, fileFilter)
 			if searchErr != nil {
 				return nil, searchErr
 			}
-			out := make([]tools.VectorSearchResult, len(results))
+			out := make([]backend.VectorSearchResult, len(results))
 			for i, r := range results {
-				out[i] = tools.VectorSearchResult{
+				out[i] = backend.VectorSearchResult{
 					FilePath:  r.FilePath,
 					FileName:  r.FileName,
 					Content:   r.Content,
@@ -325,15 +308,15 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	application, err := backend.NewApplication(backend.ApplicationConfig{
-		Config:        a.config,
-		Logger:        log,
-		AgentDir:      agentDir,
-		LogDir:        logDir,
-		ProjectsDir:   a.projectsDir,
-		SessionStore:  a.store,
-		TaskStore:     a.store,
-		UIEmitFunc:    uiEmitFunc,
-		AskUserFunc:   askUserFunc,
+		Config:               a.config,
+		Logger:               log,
+		AgentDir:             agentDir,
+		LogDir:               logDir,
+		ProjectsDir:          a.projectsDir,
+		SessionStore:         a.store,
+		TaskStore:            a.store,
+		UIEmitFunc:           uiEmitFunc,
+		AskUserFunc:          askUserFunc,
 		ConfirmFunc:          confirmFunc,
 		StepLimitFunc:        stepLimitFunc,
 		VectorSearchFunc:     vectorSearchFunc,
@@ -341,7 +324,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 	if err != nil {
 		log.Error("failed to create backend application", "error", err)
-		wailsRuntime.EventsEmit(a.ctx, "startup_error", map[string]string{
+		wailsRuntime.EventsEmit(a.ctx, EventStartupError, map[string]string{
 			"message": "failed to create backend application",
 			"error":   err.Error(),
 		})
@@ -377,13 +360,13 @@ func (a *App) Startup(ctx context.Context) {
 			// initialization entirely. The frontend will call SwitchProject
 			// after receiving this event, which sets activeProjectID properly.
 
-			wailsRuntime.EventsEmit(a.ctx, "projects:loaded", projects)
+			wailsRuntime.EventsEmit(a.ctx, EventProjectsLoaded, projects)
 
 			// Also pre-load sessions for the most recent project
 			if a.store != nil {
 				sessions, sErr := a.store.ListSessionsByProject(projects[0].ID)
 				if sErr == nil {
-					wailsRuntime.EventsEmit(a.ctx, "sessions:loaded", sessions)
+					wailsRuntime.EventsEmit(a.ctx, EventSessionsLoaded, sessions)
 				} else {
 					log.Warn("failed to pre-load sessions for early emit", "error", sErr)
 				}
@@ -433,7 +416,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Validate LLM provider configuration at startup (fail-fast).
 	if a.config.LLM.ActiveProvider == "" {
 		log.Error("no active LLM provider configured - check your config.yaml")
-		wailsRuntime.EventsEmit(a.ctx, "startup_error", map[string]string{
+		wailsRuntime.EventsEmit(a.ctx, EventStartupError, map[string]string{
 			"message": "no active LLM provider configured - check your config.yaml",
 			"error":   "config has no active_provider defined under llm",
 		})
@@ -442,7 +425,7 @@ func (a *App) Startup(ctx context.Context) {
 	// --- Wire Wails event listeners ---
 
 	// Listen for confirmation responses from frontend
-	wailsRuntime.EventsOn(a.ctx, "tool_confirm_response", func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, EventToolConfirmResponse, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("tool confirmation response missing payload")
 			return
@@ -515,7 +498,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Listen for on-demand judge verdict requests from frontend
-	wailsRuntime.EventsOn(a.ctx, "tool_judge_request", func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, EventToolJudgeRequest, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("tool judge request missing payload")
 			return
@@ -591,7 +574,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Listen for ask_user responses from frontend
-	wailsRuntime.EventsOn(a.ctx, "ask_user_response", func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, EventAskUserResponse, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("ask_user response missing payload")
 			return
@@ -667,7 +650,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Listen for step_limit responses from frontend
-	wailsRuntime.EventsOn(a.ctx, "step_limit_response", func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, EventStepLimitResponse, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("step_limit response missing payload")
 			return
@@ -727,13 +710,13 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Check codebase-memory-mcp availability and emit status
 	cmStatus := a.CheckCodebaseMemoryMCP()
-	wailsRuntime.EventsEmit(a.ctx, "codememory:status", cmStatus)
+	wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryStatus, cmStatus)
 
 	// Ensure auto_index is enabled if codebase-memory-mcp is installed
 	if cmStatus.Installed {
 		restoreFn, err := beMcp.EnsureAutoIndex(a.ctx)
 		if err != nil {
-			slog.Warn("failed to ensure codebase-memory-mcp auto_index", "error", err)
+			a.log().Warn("failed to ensure codebase-memory-mcp auto_index", "error", err)
 		}
 		a.restoreAutoIndex = restoreFn
 	}
@@ -752,7 +735,7 @@ func (a *App) Startup(ctx context.Context) {
 
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID != "" {
-			wailsRuntime.EventsEmit(a.ctx, "session:event", session.Event{
+			wailsRuntime.EventsEmit(a.ctx, EventSessionEvent, session.Event{
 				SessionID: sessionID,
 				Type:      "service",
 				Data: map[string]any{
@@ -761,7 +744,7 @@ func (a *App) Startup(ctx context.Context) {
 			})
 		}
 
-		slog.Info("blocking MCP tool call until indexing completes", "tool", toolName)
+		a.log().Info("blocking MCP tool call until indexing completes", "tool", toolName)
 		select {
 		case <-ch:
 			return nil
@@ -772,22 +755,22 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Check rtk availability and emit status
 	rtkStatus := a.CheckRtk()
-	wailsRuntime.EventsEmit(a.ctx, "rtk:status", rtkStatus)
+	wailsRuntime.EventsEmit(a.ctx, EventRtkStatus, rtkStatus)
 
 	// Signal frontend that all backend subsystems are ready.
 	// Pre-load projects so the frontend doesn't need a separate round-trip.
 	if a.projectManager != nil {
 		projects, err := a.projectManager.ListProjects()
 		if err == nil && len(projects) > 0 {
-			wailsRuntime.EventsEmit(a.ctx, "backend:ready", projects)
+			wailsRuntime.EventsEmit(a.ctx, EventBackendReady, projects)
 		} else {
 			if err != nil {
 				log.Warn("failed to pre-load projects for backend:ready", "error", err)
 			}
-			wailsRuntime.EventsEmit(a.ctx, "backend:ready")
+			wailsRuntime.EventsEmit(a.ctx, EventBackendReady)
 		}
 	} else {
-		wailsRuntime.EventsEmit(a.ctx, "backend:ready")
+		wailsRuntime.EventsEmit(a.ctx, EventBackendReady)
 	}
 }
 
@@ -798,32 +781,14 @@ func (a *App) Shutdown(ctx context.Context) {
 		a.restoreAutoIndex()
 	}
 
-	// Stop git monitor before closing vector resources.
-	if a.gitMonitor != nil {
-		if err := a.gitMonitor.Stop(); err != nil {
-			slog.Error("failed to stop git monitor", "error", err)
-		}
-		a.gitMonitor = nil
-	}
-
-	// Close vector service before embedder (service depends on embedding func).
-	if a.vectorService != nil {
-		if err := a.vectorService.Close(); err != nil {
-			slog.Error("failed to close vector service", "error", err)
-		}
-		a.vectorService = nil
-	}
-
-	if a.embedder != nil {
-		if err := a.embedder.Close(); err != nil {
-			slog.Error("failed to close embedder", "error", err)
-		}
-		a.embedder = nil
+	// Shut down vector search (cancel indexing, stop monitor, close service+embedder).
+	if a.vectorManager != nil {
+		a.vectorManager.Shutdown()
 	}
 
 	if a.watcher != nil {
 		if err := a.watcher.Close(); err != nil {
-			slog.Error("failed to close workspace watcher", "error", err)
+			a.log().Error("failed to close workspace watcher", "error", err)
 		}
 		a.watcher = nil
 	}
@@ -834,25 +799,25 @@ func (a *App) Shutdown(ctx context.Context) {
 
 	if a.store != nil {
 		if err := a.store.Close(); err != nil {
-			slog.Error("failed to close session store", "error", err)
+			a.log().Error("failed to close session store", "error", err)
 		}
 	}
 
 	if a.projStore != nil {
 		if err := a.projStore.Close(); err != nil {
-			slog.Error("failed to close project store", "error", err)
+			a.log().Error("failed to close project store", "error", err)
 		}
 	}
 
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
-			slog.Error("failed to close database", "error", err)
+			a.log().Error("failed to close database", "error", err)
 		}
 	}
 
 	if a.sessionLogger != nil {
 		if err := a.sessionLogger.Close(); err != nil {
-			slog.Error("failed to close session logger", "error", err)
+			a.log().Error("failed to close session logger", "error", err)
 		}
 	}
 }

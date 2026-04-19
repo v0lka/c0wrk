@@ -228,6 +228,12 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.ToolLimits.WebFetchMaxBodySize == 0 {
 		cfg.ToolLimits.WebFetchMaxBodySize = 102400 // 100KB
 	}
+	if cfg.ToolLimits.BatchMaxCalls == 0 {
+		cfg.ToolLimits.BatchMaxCalls = 50
+	}
+	if cfg.ToolLimits.BatchMaxConcurrency == 0 {
+		cfg.ToolLimits.BatchMaxConcurrency = 20
+	}
 
 	// Timeouts defaults
 	if cfg.Timeouts.BashMaxTimeout == 0 {

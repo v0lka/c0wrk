@@ -19,6 +19,17 @@ type SummarizationStrategy struct {
 	summarizer          func(ctx context.Context, text string) (string, error)
 	tokenCounter        llm.TokenCounter
 	maxSummarizeTokens  int
+	logger              *slog.Logger
+}
+
+// SetLogger sets the logger for the strategy. If nil, slog.Default() is used.
+func (s *SummarizationStrategy) SetLogger(l *slog.Logger) { s.logger = l }
+
+func (s *SummarizationStrategy) log() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 // NewSummarizationStrategy creates a new SummarizationStrategy.
@@ -93,7 +104,7 @@ func (s *SummarizationStrategy) Compact(ctx context.Context, steps []sdkagent.St
 			var err error
 			summary, err = s.summarizer(ctx, blockText)
 			if err != nil {
-				slog.Error("summary compaction: summarization failed", "error", err)
+				s.log().Error("summary compaction: summarization failed", "error", err)
 				// Fallback to a simple indicator if summarization fails
 				summary = fmt.Sprintf("[Summary of steps %d-%d failed: %v]", i+1, end, err)
 			}

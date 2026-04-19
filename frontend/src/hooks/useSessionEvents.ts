@@ -72,7 +72,7 @@ function isStepRetryData(data: unknown): data is { step_id: string; attempt: num
   return typeof data === 'object' && data !== null && 'step_id' in data && 'attempt' in data && 'max_attempts' in data
 }
 
-function isServiceData(data: unknown): data is { content: string } {
+function isServiceData(data: unknown): data is { content: string; phase?: string } {
   return typeof data === 'object' && data !== null && 'content' in data
 }
 
@@ -179,7 +179,10 @@ export function useSessionEvents(sessionId: string | null) {
       if (!isToolCallData(data)) return
       const toolCall = data
       const isMemoryTool = ['read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts'].includes(toolCall.tool)
-      if (isActiveSession()) useChatStore.getState().setActivityStatus(isMemoryTool ? 'Using memory...' : `Running tool: ${toolCall.tool}...`)
+      if (isActiveSession()) {
+        const activityLabel = isMemoryTool ? 'Using memory...' : toolCall.tool === 'finish' ? 'Finishing...' : `Running tool: ${toolCall.tool}...`
+        useChatStore.getState().setActivityStatus(activityLabel)
+      }
       // Primary: use backend-generated tool_call_id for unambiguous correlation
       // Fallback: reconstruct composite ID for backward compat with old events
       let toolMsgId: string
@@ -351,7 +354,7 @@ export function useSessionEvents(sessionId: string | null) {
       if (!mounted) return
       if (!isStepData(data)) return
       if (isActiveSession()) useChatStore.getState().setThinking(false)
-      useChatStore.getState().updateMessage(sessionId, `step-${(data as { step_num: number }).step_num}`, {
+      useChatStore.getState().updateMessage(sessionId, `step-${data.step_num}`, {
         type: 'step_done',
       })
     })
@@ -559,7 +562,7 @@ export function useSessionEvents(sessionId: string | null) {
       if (!mounted) return
       if (!isServiceData(data)) return
       if (!isActiveSession()) return
-      const service = data as { content: string; phase?: string }
+      const service = data
       if (service.content) {
         useChatStore.getState().setActivityStatus(service.content)
       }
@@ -609,7 +612,6 @@ export function useSessionEvents(sessionId: string | null) {
     on('context_fill', (data: unknown) => {
       if (!mounted) return
       if (!isContextFillData(data)) return
-      if (!isActiveSession()) return
       const fillData = data
       // Store per-step context fill if step_id is present
       if (fillData.plan_step_id) {
@@ -646,7 +648,6 @@ export function useSessionEvents(sessionId: string | null) {
     on('session_tokens', (data: unknown) => {
       if (!mounted) return
       if (!isSessionTokensData(data)) return
-      if (!isActiveSession()) return
       useChatStore.getState().setSessionTokens(
         data.session_input_tokens,
         data.session_output_tokens,
@@ -681,6 +682,11 @@ export function useSessionEvents(sessionId: string | null) {
         useChatStore.getState().setTaskActive(true)
         useChatStore.getState().setActivityStatus('Resuming...')
       }
+    })
+
+    on('finishing', () => {
+      if (!mounted) return
+      if (isActiveSession()) useChatStore.getState().setActivityStatus('Finishing...')
     })
 
     on('session_renamed', (data: unknown) => {

@@ -17,7 +17,17 @@ When investigating, exploring, or understanding code, use tools in this priority
 - **codebase-memory-mcp tools** — `search_graph` (find functions, classes, routes by pattern), `trace_path` (trace call relationships), `get_code_snippet` (read specific function/class source), `query_graph` (Cypher queries for complex patterns), `get_architecture` (high-level project overview). These tools understand code structure and relationships.
 - **semantic_search** — searches the entire codebase by semantic similarity in a single call. Use for concept-based discovery: "authentication middleware", "error handling patterns", "database connection logic".
 
-ALWAYS start with Tier 1 tools when exploring code. They understand code semantics and structure, providing more relevant results than text-based search.
+ALWAYS start with Tier 1 tools when exploring code. They understand code semantics and structure, providing more relevant results than text-based search. ALWAYS prefer these over ripgrep/glob/search_files for code discovery.
+
+#### Tier 1 Usage Guide
+
+1. `search_graph` — find functions, classes, routes, variables by pattern (e.g., `search_graph(name_pattern=".*OrderHandler.*")`)
+2. `trace_path` — trace who calls a function or what it calls (e.g., `trace_path(function_name="OrderHandler", direction="inbound")`)
+3. `get_code_snippet` — read specific function/class source code (e.g., `get_code_snippet(qualified_name="pkg/orders.OrderHandler")`)
+4. `query_graph` — run Cypher queries for complex patterns
+5. `get_architecture` — high-level project summary
+
+Fall back to Tier 2 when searching for exact string literals, error messages, config values, non-code files, or when Tier 1 returns insufficient results.
 
 ### Tier 2 — Targeted Text Search (exact matches only)
 
@@ -34,31 +44,6 @@ ALWAYS start with Tier 1 tools when exploring code. They understand code semanti
 ### Tier 4 — Fallback
 
 - **bash_exec** — ONLY when no built-in tool covers the operation (build commands, git operations, package management, running tests).
-
-### Codebase Knowledge Graph (codebase-memory-mcp)
-
-This project uses codebase-memory-mcp to maintain a knowledge graph of the codebase.
-ALWAYS prefer codebase-memory-mcp graph tools and semantic_search over ripgrep/glob/search_files for code discovery.
-
-#### Tool Usage Guide
-
-1. `search_graph` — find functions, classes, routes, variables by pattern
-2. `trace_path` — trace who calls a function or what it calls
-3. `get_code_snippet` — read specific function/class source code
-4. `query_graph` — run Cypher queries for complex patterns
-5. `get_architecture` — high-level project summary
-
-#### When to fall back to ripgrep/glob
-
-- Searching for exact string literals, error messages, config values
-- Searching non-code files (Dockerfiles, shell scripts, configs)
-- When Tier 1 tools return insufficient results
-
-#### Examples
-
-- Find a handler: `search_graph(name_pattern=".*OrderHandler.*")`
-- Who calls it: `trace_path(function_name="OrderHandler", direction="inbound")`
-- Read source: `get_code_snippet(qualified_name="pkg/orders.OrderHandler")`
 
 ### bash_exec Output Management
 
@@ -88,6 +73,18 @@ Consecutive empty or minimal results are a signal to stop, not to try harder. Wh
 - Prefer passing results through `finish` — this is the most efficient inter-step channel
 - If you need to write intermediate files (large datasets, temporary configs, scratch work), use the session temp directory (specified in Workspace section)
 - Write intermediate files ONLY to the session temp directory (specified in Workspace section)
+
+## Fact Memory
+
+Use `store_fact` and `search_facts` to maintain knowledge across execution steps:
+
+- After discovering important information — API signatures, architectural decisions, error patterns, configuration details, intermediate results — use `store_fact` with 3-5 descriptive keywords.
+- Before starting work on a new step, use `search_facts` to check for relevant prior context.
+- Facts persist across steps and execution cycles. Use them to avoid redundant investigation and to share knowledge between steps.
+
+## Tool Call Communication
+
+Every tool invocation must be accompanied by brief text. Summarize what you learned from previous results and state what you intend to do next. Never emit tool calls without visible reasoning — the user must always see your progress.
 
 ## Safety
 

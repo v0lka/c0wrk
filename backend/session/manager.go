@@ -87,13 +87,29 @@ type Manager struct {
 	logLevel            string      // current log level for session loggers
 	projectsDir         string      // base directory for project temp dirs (~/.c0wrk/Projects)
 	tokenPersist        TokenPersistFunc
-	taskStore           TaskStore       // optional persistent task store
-	sessionStore        SessionStore    // optional persistent session store
-	titleGen            *TitleGenerator // optional title generator for auto-naming
-	envInfo             *tools.EnvInfo  // environment info for context injection
-	stopTimeout         time.Duration   // how long to wait for goroutine on cancel/delete
-	maxSummaryLen       int             // character limit for auto-generated step summaries
+	taskStore           TaskStore           // optional persistent task store
+	sessionStore        SessionStore        // optional persistent session store
+	titleGen            *TitleGenerator     // optional title generator for auto-naming
+	envInfo             *tools.EnvInfo      // environment info for context injection
+	stopTimeout         time.Duration       // how long to wait for goroutine on cancel/delete
+	maxSummaryLen       int                 // character limit for auto-generated step summaries
 	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
+	logger              *slog.Logger
+}
+
+// SetLogger sets the logger for the manager.
+func (m *Manager) SetLogger(l *slog.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = l
+}
+
+// log returns the manager's logger, falling back to slog.Default().
+func (m *Manager) log() *slog.Logger {
+	if m.logger != nil {
+		return m.logger
+	}
+	return slog.Default()
 }
 
 // NewManager creates a new session Manager.
@@ -185,11 +201,11 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	m.mu.RUnlock()
 
 	if store == nil {
-		slog.Warn("session restoration skipped: session store not configured", "session_id", id)
+		m.log().Warn("session restoration skipped: session store not configured", "session_id", id)
 		return nil, nil
 	}
 	if resolver == nil {
-		slog.Warn("session restoration skipped: project resolver not configured", "session_id", id)
+		m.log().Warn("session restoration skipped: project resolver not configured", "session_id", id)
 		return nil, nil
 	}
 
@@ -252,7 +268,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		dumpPath := filepath.Join(m.logDir, fmt.Sprintf("session_%s_llm_dump.jsonl", id))
 		dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
-			slog.Warn("failed to create LLM dump file", "session_id", id, "error", err)
+			m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
 			dumpFile = nil
 		}
 	}
@@ -286,7 +302,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// Create session temp directory.
 	tempDir := sessionTempDir(m.projectsDir, info.ProjectID, id)
 	if mkErr := os.MkdirAll(tempDir, 0o755); mkErr != nil {
-		slog.Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", mkErr)
+		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", mkErr)
 	}
 
 	sess := &Session{
@@ -319,7 +335,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	m.sessions[id] = sess
 	m.mu.Unlock()
 
-	slog.Info("restored session from database", "session_id", id, "project_id", info.ProjectID)
+	m.log().Info("restored session from database", "session_id", id, "project_id", info.ProjectID)
 	return sess, nil
 }
 
@@ -411,7 +427,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		dumpPath := filepath.Join(m.logDir, fmt.Sprintf("session_%s_llm_dump.jsonl", id))
 		dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
-			slog.Warn("failed to create LLM dump file", "session_id", id, "error", err)
+			m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
 			dumpFile = nil // non-fatal, continue without dump
 		}
 	}
@@ -440,7 +456,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Create session temp directory
 	tempDir := sessionTempDir(m.projectsDir, projectID, id)
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
-		slog.Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", err)
+		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", err)
 	}
 
 	// Create session
@@ -531,7 +547,7 @@ func (m *Manager) SetLogLevel(level string) {
 func (m *Manager) DeleteSession(id string) error {
 	// Try lazy restoration before checking the map.
 	if _, restoreErr := m.getOrRestoreSession(id); restoreErr != nil {
-		slog.Warn("failed to restore session for deletion", "session_id", id, "error", restoreErr)
+		m.log().Warn("failed to restore session for deletion", "session_id", id, "error", restoreErr)
 	}
 
 	m.mu.Lock()
@@ -556,7 +572,7 @@ func (m *Manager) DeleteSession(id string) error {
 		select {
 		case <-doneCh:
 		case <-time.After(m.stopTimeout):
-			slog.Warn("timed out waiting for task goroutine to stop", "session_id", id)
+			m.log().Warn("timed out waiting for task goroutine to stop", "session_id", id)
 		}
 	}
 
@@ -566,12 +582,12 @@ func (m *Manager) DeleteSession(id string) error {
 	// Close log file if it exists
 	if session.logFile != nil {
 		if err := session.logFile.Close(); err != nil {
-			slog.Warn("failed to close session log file", "session_id", id, "error", err)
+			m.log().Warn("failed to close session log file", "session_id", id, "error", err)
 		}
 	}
 	if session.dumpFile != nil {
 		if err := session.dumpFile.Close(); err != nil {
-			slog.Warn("failed to close session LLM dump file", "session_id", id, "error", err)
+			m.log().Warn("failed to close session LLM dump file", "session_id", id, "error", err)
 		}
 	}
 	session.mu.Unlock()
@@ -581,7 +597,7 @@ func (m *Manager) DeleteSession(id string) error {
 	// Clean up temp directory
 	if session.TempDir != "" {
 		if err := os.RemoveAll(session.TempDir); err != nil {
-			slog.Warn("failed to remove session temp directory", "session_id", id, "temp_dir", session.TempDir, "error", err)
+			m.log().Warn("failed to remove session temp directory", "session_id", id, "temp_dir", session.TempDir, "error", err)
 		}
 	}
 
@@ -603,7 +619,7 @@ func (m *Manager) DeleteSession(id string) error {
 func (m *Manager) GetSession(id string) (*Session, bool) {
 	sess, err := m.getOrRestoreSession(id)
 	if err != nil {
-		slog.Warn("failed to restore session", "session_id", id, "error", err)
+		m.log().Warn("failed to restore session", "session_id", id, "error", err)
 		return nil, false
 	}
 	return sess, sess != nil
@@ -693,7 +709,7 @@ func (m *Manager) ArchiveSession(id string) error {
 	// If archiving, clean up temp directory
 	if archived && session.TempDir != "" {
 		if err := os.RemoveAll(session.TempDir); err != nil {
-			slog.Warn("failed to remove session temp directory on archive", "session_id", id, "temp_dir", session.TempDir, "error", err)
+			m.log().Warn("failed to remove session temp directory on archive", "session_id", id, "temp_dir", session.TempDir, "error", err)
 		}
 	}
 
@@ -778,14 +794,14 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				return
 			}
 			if err := m.RenameSession(id, title); err != nil {
-				slog.Warn("failed to rename session with generated title", "session", id, "error", err)
+				m.log().Warn("failed to rename session with generated title", "session", id, "error", err)
 				return
 			}
-			slog.Info("session auto-named", "session", id, "title", title)
+			m.log().Info("session auto-named", "session", id, "title", title)
 			// Persist rename to store
 			if store != nil {
 				if err := store.RenameSession(id, title); err != nil {
-					slog.Warn("failed to persist session title", "session", id, "error", err)
+					m.log().Warn("failed to persist session title", "session", id, "error", err)
 				}
 			}
 		}()
@@ -813,7 +829,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 
 		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh
 		if err != nil && lastTaskID != "" {
-			slog.Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
+			m.log().Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
 			session.mu.Lock()
 			session.lastCompletedTaskID = "" // clear to avoid repeated failures
 			session.mu.Unlock()
@@ -840,7 +856,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 					adapter := NewTaskStoreAdapter(ts)
 					if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
 						if pErr := adapter.PersistCompletion(tid, "", 0); pErr != nil {
-							slog.Warn("failed to persist completion on session done", "task", tid, "error", pErr)
+							m.log().Warn("failed to persist completion on session done", "task", tid, "error", pErr)
 						}
 					}
 				}
@@ -884,7 +900,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 				adapter := NewTaskStoreAdapter(ts)
 				if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
 					if pErr := adapter.PersistCompletion(tid, "", 0); pErr != nil {
-						slog.Warn("failed to persist completion on cancel safety-net", "task", tid, "error", pErr)
+						m.log().Warn("failed to persist completion on cancel safety-net", "task", tid, "error", pErr)
 					}
 				}
 			}
@@ -1071,7 +1087,7 @@ func (m *Manager) emitResumableIfUnfinished(sessionID string) {
 	adapter := NewTaskStoreAdapter(ts)
 	taskID, err := adapter.GetUnfinishedTaskID(sessionID)
 	if err != nil {
-		slog.Debug("failed to get unfinished task ID", "session", sessionID, "error", err)
+		m.log().Warn("failed to get unfinished task ID", "session", sessionID, "error", err)
 	}
 	if taskID == "" {
 		return
@@ -1115,7 +1131,7 @@ func (m *Manager) CancelTask(id string) error {
 		select {
 		case <-doneCh:
 		case <-time.After(m.stopTimeout):
-			slog.Warn("timed out waiting for task goroutine to stop on cancel", "session_id", id)
+			m.log().Warn("timed out waiting for task goroutine to stop on cancel", "session_id", id)
 		}
 	}
 

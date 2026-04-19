@@ -54,14 +54,14 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
           )}
 
           {showRaw ? (
-            <pre className="font-mono text-sm whitespace-pre-wrap break-words text-foreground overflow-auto max-w-full min-w-0 bg-zinc-100 dark:bg-zinc-800 rounded-lg px-4 py-3">
+            <pre className="font-mono text-sm whitespace-pre-wrap break-words text-foreground overflow-auto max-w-full min-w-0 bg-background border border-border rounded-lg px-4 py-3">
               <code
                 className="hljs language-markdown"
                 dangerouslySetInnerHTML={{ __html: highlightedMarkdown }}
               />
             </pre>
           ) : (
-            <div className="prose prose-sm dark:prose-invert max-w-full break-words min-w-0 bg-zinc-100 dark:bg-zinc-800 rounded-lg px-4 py-3">
+            <div className="prose prose-sm dark:prose-invert max-w-full break-words min-w-0 bg-background border border-border rounded-lg px-4 py-3">
               <ErrorBoundary fallback={<div className="text-sm text-muted-foreground italic px-4 py-3">Failed to render message content</div>}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkEmoji, remarkBreaks]}

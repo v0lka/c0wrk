@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/user/agent/core"
-	"github.com/user/agent/sdk/orchestration"
 )
 
 // Event represents a structured event emitted during agent execution.
@@ -74,6 +73,8 @@ type EventEmitter struct {
 	// Each scoped emitter copy gets its own map (not shared),
 	// since each executor starts stepNum from 1.
 	localToolIDs map[string]string
+
+	logger *slog.Logger
 }
 
 // NewEventEmitter creates a new EventEmitter for a session.
@@ -84,6 +85,14 @@ func NewEventEmitter(sessionID string, emit func(Event)) *EventEmitter {
 		tokens:      &tokenState{lastFillStatus: "ok"},
 		toolCallIDs: &toolCallIDGen{epoch: time.Now().UnixMilli()},
 	}
+}
+
+// log returns the emitter's logger, falling back to slog.Default().
+func (e *EventEmitter) log() *slog.Logger {
+	if e.logger != nil {
+		return e.logger
+	}
+	return slog.Default()
 }
 
 // SetTokenPersist sets a callback that is invoked with cumulative session token
@@ -98,7 +107,7 @@ func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, mo
 // WithPlanStepID returns a shallow copy of the emitter with planStepID set.
 // Events emitted by the copy will include "plan_step_id" in their Data map.
 func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
-	slog.Debug("emitter: creating plan-step-scoped emitter", "sessionID", e.sessionID, "planStepID", id)
+	e.log().Debug("emitter: creating plan-step-scoped emitter", "sessionID", e.sessionID, "planStepID", id)
 	return &EventEmitter{
 		sessionID:    e.sessionID,
 		emit:         e.emit,
@@ -106,13 +115,14 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 		retryAttempt: e.retryAttempt, // preserve retry attempt across copies
 		tokens:       e.tokens,       // share token accumulation state across copies
 		toolCallIDs:  e.toolCallIDs,  // share tool call ID counter across copies
+		logger:       e.logger,       // propagate logger to copies
 	}
 }
 
 // WithRetryAttempt returns a shallow copy of the emitter with retryAttempt set.
 // Events emitted by the copy will include "retry_attempt" in their Data map when > 0.
 func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
-	slog.Debug("emitter: creating retry-scoped emitter", "sessionID", e.sessionID, "retryAttempt", attempt)
+	e.log().Debug("emitter: creating retry-scoped emitter", "sessionID", e.sessionID, "retryAttempt", attempt)
 	return &EventEmitter{
 		sessionID:    e.sessionID,
 		emit:         e.emit,
@@ -120,6 +130,7 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 		retryAttempt: attempt,
 		tokens:       e.tokens,      // share token accumulation state across copies
 		toolCallIDs:  e.toolCallIDs, // share tool call ID counter across copies
+		logger:       e.logger,      // propagate logger to copies
 	}
 }
 
@@ -132,7 +143,7 @@ var (
 
 // emitEvent is a helper that emits an event, injecting plan_step_id and retry_attempt if set.
 func (e *EventEmitter) emitEvent(evt Event) {
-	slog.Debug("emitter: dispatching event", "type", evt.Type, "sessionID", e.sessionID, "planStepID", e.planStepID)
+	e.log().Debug("emitter: dispatching event", "type", evt.Type, "sessionID", e.sessionID, "planStepID", e.planStepID)
 	if e.planStepID != "" {
 		// Inject plan_step_id into Data if it's a map[string]any
 		if data, ok := evt.Data.(map[string]any); ok {
@@ -186,7 +197,7 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []core.PlanStepEvent) 
 
 // PlanStepStart emits a plan step start event with progress info.
 func (e *EventEmitter) PlanStepStart(stepID, description string) {
-	slog.Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description)
+	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.planCurrentStepID = stepID
@@ -207,7 +218,7 @@ func (e *EventEmitter) PlanStepStart(stepID, description string) {
 
 // PlanStepComplete emits a plan step completion event with updated progress.
 func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
-	slog.Debug("emitter: plan step complete", "sessionID", e.sessionID, "stepID", stepID, "success", success, "duration", duration, "errMsg", errMsg)
+	e.log().Debug("emitter: plan step complete", "sessionID", e.sessionID, "stepID", stepID, "success", success, "duration", duration, "errMsg", errMsg)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if success {
@@ -276,11 +287,27 @@ func (e *EventEmitter) Thought(stepNum int, content, reasoning string) {
 	})
 }
 
+// Finishing emits a finishing event when the agent calls the finish tool.
+// The frontend uses this to show "Finishing..." status instead of "Running tool: finish".
+func (e *EventEmitter) Finishing(stepNum int, summary string) {
+	e.log().Debug("emitter: finishing", "sessionID", e.sessionID, "step", stepNum)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "finishing",
+		Data: map[string]any{
+			"step_num": stepNum,
+			"summary":  summary,
+		},
+	})
+}
+
 // ToolCall emits a tool call event.
 // If argsPreview is valid JSON, a pre-parsed map is included as "parsed_args"
 // so the frontend doesn't need to JSON.parse() at render time.
 func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, source string) {
-	slog.Debug("emitter: tool call", "sessionID", e.sessionID, "tool", toolName, "step", stepNum, "callIdx", callIdx)
+	e.log().Debug("emitter: tool call", "sessionID", e.sessionID, "tool", toolName, "step", stepNum, "callIdx", callIdx)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -316,7 +343,7 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 
 // ToolResult emits a tool result event.
 func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string) {
-	slog.Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "callIdx", callIdx, "resultLen", resultLen)
+	e.log().Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "callIdx", callIdx, "resultLen", resultLen)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -384,8 +411,8 @@ func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration ti
 }
 
 // Reflection emits a reflection event.
-func (e *EventEmitter) Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int) {
-	slog.Info("emitter: reflection completed",
+func (e *EventEmitter) Reflection(reflection *core.Reflection, attempt, maxAttempts int) {
+	e.log().Info("emitter: reflection completed",
 		"sessionID", e.sessionID,
 		"summary", reflection.Summary,
 		"suggested_action", reflection.SuggestedAction,
@@ -462,7 +489,7 @@ func (e *EventEmitter) AssistantChunk(content string) {
 // AssistantDone emits an assistant response completion event and resets the accumulator.
 // Token accumulation is handled by the UsageTracker; session totals are cached in tokenState.
 func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputTokens int) {
-	slog.Debug("emitter: completion (assistant done)", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens)
+	e.log().Debug("emitter: completion (assistant done)", "sessionID", e.sessionID, "inputTokens", inputTokens, "outputTokens", outputTokens)
 	// Read current session totals (cached by EmitSessionTokens).
 	e.tokens.mu.Lock()
 	totalIn := e.tokens.sessionInputTokens
@@ -504,7 +531,7 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 // EmitSessionTokens emits a "session_tokens" event with the given totals.
 // This is called by the UsageTracker observer — accumulation is handled externally.
 func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
-	slog.Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
+	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
 	e.tokens.mu.Lock()
 	// Update cached state for ContextFill enrichment
 	e.tokens.sessionInputTokens = totalIn
@@ -567,7 +594,7 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 
 // Service emits a general service message without metadata.
 func (e *EventEmitter) Service(content string) {
-	slog.Debug("emitter: service message", "sessionID", e.sessionID)
+	e.log().Debug("emitter: service message", "sessionID", e.sessionID)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emitEvent(Event{
@@ -599,7 +626,7 @@ func (e *EventEmitter) ServiceWithMeta(content string, meta map[string]any) {
 // ExecutorDiagnostic logs an internal executor diagnostic at DEBUG level.
 // These are internal diagnostics, not user-facing events.
 func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
-	slog.Debug("emitter: executor diagnostic",
+	e.log().Debug("emitter: executor diagnostic",
 		"stepNum", stepNum,
 		"event", event,
 		"details", details,
@@ -623,12 +650,12 @@ func (e *EventEmitter) ContextCompaction(beforePercent, afterPercent float64, st
 
 // ReplanFailed logs a failed replan attempt.
 func (e *EventEmitter) ReplanFailed(err error) {
-	slog.Debug("emitter: replan failed", "sessionID", e.sessionID, "error", err)
+	e.log().Debug("emitter: replan failed", "sessionID", e.sessionID, "error", err)
 }
 
 // FileRollbackError logs a file rollback failure for a plan step.
 func (e *EventEmitter) FileRollbackError(stepID string, err error) {
-	slog.Warn("emitter: file rollback error", "sessionID", e.sessionID, "stepID", stepID, "error", err)
+	e.log().Warn("emitter: file rollback error", "sessionID", e.sessionID, "stepID", stepID, "error", err)
 }
 
 // SessionTokenTotals returns the accumulated session-wide input and output token counts.

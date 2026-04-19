@@ -38,13 +38,27 @@ type ProceduralMemory struct {
 	tools    map[string]*ExternalToolInfo
 	toolsDir string // base directory (~/.c0wrk/tools/)
 	mu       sync.RWMutex
+	logger   *slog.Logger
+}
+
+// log returns the logger, falling back to slog.Default() if nil.
+func (pm *ProceduralMemory) log() *slog.Logger {
+	if pm.logger != nil {
+		return pm.logger
+	}
+	return slog.Default()
 }
 
 // NewProceduralMemory creates a new ProceduralMemory that scans toolsDir.
-func NewProceduralMemory(toolsDir string) *ProceduralMemory {
+func NewProceduralMemory(toolsDir string, loggers ...*slog.Logger) *ProceduralMemory {
+	var logger *slog.Logger
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
 	return &ProceduralMemory{
 		tools:    make(map[string]*ExternalToolInfo),
 		toolsDir: toolsDir,
+		logger:   logger,
 	}
 }
 
@@ -92,19 +106,19 @@ func (pm *ProceduralMemory) Scan() error {
 		// Read and parse manifest
 		data, err := os.ReadFile(manifestPath)
 		if err != nil {
-			slog.Warn("failed to read tool manifest", "path", manifestPath, "error", err)
+			pm.log().Warn("failed to read tool manifest", "path", manifestPath, "error", err)
 			continue
 		}
 
 		var manifest toolManifest
 		if err := json.Unmarshal(data, &manifest); err != nil {
-			slog.Warn("failed to parse tool manifest", "path", manifestPath, "error", err)
+			pm.log().Warn("failed to parse tool manifest", "path", manifestPath, "error", err)
 			continue
 		}
 
 		// Skip if no name
 		if manifest.Name == "" {
-			slog.Warn("tool manifest has no name, skipping", "path", manifestPath)
+			pm.log().Warn("tool manifest has no name, skipping", "path", manifestPath)
 			continue
 		}
 

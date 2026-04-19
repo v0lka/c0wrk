@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 
+	"github.com/user/agent/core/tools"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -233,6 +235,10 @@ type ToolLimitsConfig struct {
 
 	// Web fetch limit
 	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // max response body size in bytes (default: 102400)
+
+	// Batch limits
+	BatchMaxCalls       int `yaml:"batchMaxCalls"`       // max tool calls per batch request (default: 50)
+	BatchMaxConcurrency int `yaml:"batchMaxConcurrency"` // max parallel goroutines for batch (default: 20)
 }
 
 // TimeoutsConfig holds configurable timeout values for various operations.
@@ -391,24 +397,10 @@ func validate(cfg *Config) error {
 
 	// Validate that internal tools are not in tool_policies
 	for toolName := range cfg.Security.ToolPolicies {
-		if isInternalTool(toolName) {
+		if tools.IsInternalTool(toolName) {
 			return fmt.Errorf("tool %q is an internal tool and cannot have a custom policy", toolName)
 		}
 	}
 
 	return nil
-}
-
-// isInternalTool returns true if the given tool name is an internal tool
-// that is always allowed and cannot have a custom policy.
-// This must be kept in sync with core/tools/registry.go internalTools.
-func isInternalTool(name string) bool {
-	internalTools := map[string]bool{
-		"ask_user":          true,
-		"batch":             true,
-		"finish":            true,
-		"list_step_outputs": true,
-		"read_step_output":  true,
-	}
-	return internalTools[name]
 }

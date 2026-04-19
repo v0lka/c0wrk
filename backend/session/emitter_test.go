@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/user/agent/core"
-	"github.com/user/agent/sdk/orchestration"
 )
 
 // TestEventEmitterImplementsInterface verifies EventEmitter satisfies core.Emitter at compile time.
@@ -276,7 +275,7 @@ func TestEventEmitterReflection(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.Reflection(&orchestration.Reflection{Summary: "Test failed due to missing dependency", Hypotheses: []string{"Missing import"}}, 1, 3)
+	emitter.Reflection(&core.Reflection{Summary: "Test failed due to missing dependency", Hypotheses: []string{"Missing import"}}, 1, 3)
 
 	if received.Type != "reflection" {
 		t.Errorf("expected type 'reflection', got %q", received.Type)
@@ -408,7 +407,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.StepComplete(1, time.Second)
 	emitter.SubAgentLaunch("step_1", "Do something")
 	emitter.SubAgentComplete("step_1", true, time.Second)
-	emitter.Reflection(&orchestration.Reflection{Summary: "Something went wrong", Hypotheses: []string{"Issue found"}}, 1, 3)
+	emitter.Reflection(&core.Reflection{Summary: "Something went wrong", Hypotheses: []string{"Issue found"}}, 1, 3)
 	emitter.Retry(2, 3)
 	emitter.ContextFill(75.5, 75500, 100000, "compact", "step_1")
 

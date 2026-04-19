@@ -1149,7 +1149,7 @@ func TestParamInjector_ModifiesInput(t *testing.T) {
 	registry.Register(tool)
 
 	registry.SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
-		var m map[string]interface{}
+		var m map[string]any
 		if err := json.Unmarshal(input, &m); err != nil {
 			return input
 		}

@@ -83,7 +83,7 @@ func NewGitMonitor(repoPath string, onChange func(newBranch string), logger *slo
 		repoPath:      repoPath,
 		currentBranch: branch,
 		watcher:       fsw,
-		onChange:       onChange,
+		onChange:      onChange,
 		done:          make(chan struct{}),
 		logger:        logger,
 	}, nil

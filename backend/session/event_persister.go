@@ -10,13 +10,27 @@ import (
 // It is decoupled from the UI — the desktop layer is responsible for emitting
 // Wails events separately.
 type EventPersister struct {
-	store SessionStore
+	store  SessionStore
+	logger *slog.Logger
 }
 
 // NewEventPersister creates a new EventPersister backed by the given store.
 // If store is nil, Persist is a no-op.
 func NewEventPersister(store SessionStore) *EventPersister {
 	return &EventPersister{store: store}
+}
+
+// log returns the persister's logger, falling back to slog.Default().
+func (p *EventPersister) log() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
+	}
+	return slog.Default()
+}
+
+// SetLogger sets the logger for the event persister.
+func (p *EventPersister) SetLogger(l *slog.Logger) {
+	p.logger = l
 }
 
 // Persist saves a chat-visible event to the session store.
@@ -146,6 +160,6 @@ func (p *EventPersister) Persist(evt Event) {
 		Metadata:  metadata,
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}); err != nil {
-		slog.Error("failed to persist event message", "type", evt.Type, "session", evt.SessionID, "error", err)
+		p.log().Error("failed to persist event message", "type", evt.Type, "session", evt.SessionID, "error", err)
 	}
 }

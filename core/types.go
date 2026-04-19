@@ -91,6 +91,7 @@ var (
 	NewMapBlackboard     = orchestration.NewMapBlackboard
 	WithMaxSummaryTokens = orchestration.WithMaxSummaryTokens
 	WithMaxSummaryLen    = orchestration.WithMaxSummaryLen
+	GenerateSummary      = orchestration.GenerateSummary
 )
 
 // ---------------------------------------------------------------------------
@@ -173,6 +174,14 @@ func (n *noopEmitter) FileRollbackError(_ string, _ error)                      
 
 type emitterEventsAdapter struct {
 	Emitter
+	logger *slog.Logger
+}
+
+func (a *emitterEventsAdapter) log() *slog.Logger {
+	if a.logger != nil {
+		return a.logger
+	}
+	return slog.Default()
 }
 
 var _ orchestration.Events = (*emitterEventsAdapter)(nil)
@@ -202,18 +211,18 @@ func (a *emitterEventsAdapter) OnServiceMeta(content string, meta map[string]any
 	a.ServiceWithMeta(content, meta)
 }
 func (a *emitterEventsAdapter) OnReplanFailed(err error) {
-	slog.Debug("event adapter: replan failed", "error", err)
+	a.log().Debug("event adapter: replan failed", "error", err)
 	a.ReplanFailed(err)
 }
 func (a *emitterEventsAdapter) OnFileRollbackError(stepID string, err error) {
-	slog.Debug("event adapter: file rollback error", "stepID", stepID, "error", err)
+	a.log().Debug("event adapter: file rollback error", "stepID", stepID, "error", err)
 	a.FileRollbackError(stepID, err)
 }
 
 // WithStepID implements orchestration.StepScopable.
 func (a *emitterEventsAdapter) WithStepID(id string) orchestration.Events {
 	if s, ok := a.Emitter.(PlanStepScopable); ok {
-		return &emitterEventsAdapter{s.WithPlanStepID(id)}
+		return &emitterEventsAdapter{Emitter: s.WithPlanStepID(id), logger: a.logger}
 	}
 	return a
 }
@@ -221,7 +230,7 @@ func (a *emitterEventsAdapter) WithStepID(id string) orchestration.Events {
 // WithRetryAttempt implements orchestration.RetryScopable.
 func (a *emitterEventsAdapter) WithRetryAttempt(attempt int) orchestration.Events {
 	if r, ok := a.Emitter.(RetryAttemptScopable); ok {
-		return &emitterEventsAdapter{r.WithRetryAttempt(attempt)}
+		return &emitterEventsAdapter{Emitter: r.WithRetryAttempt(attempt), logger: a.logger}
 	}
 	return a
 }

@@ -57,7 +57,7 @@ export const markdownComponents: Components = {
             {match?.[1] || 'text'}
           </span>
         </div>
-        <pre className="bg-muted rounded-lg p-4 overflow-x-auto max-w-full min-w-0">
+        <pre className="bg-background border border-border rounded-lg p-4 overflow-x-auto max-w-full min-w-0">
           <code
             className={cn(
               'text-sm font-mono block',

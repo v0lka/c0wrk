@@ -42,6 +42,7 @@ type FileChangeTracker struct {
 	fileLocks     map[string]*sync.Mutex
 	baselines     map[string]*fileBaseline
 	ops           map[string][]trackedOp // keyed by stepID
+	logger        *slog.Logger
 }
 
 // NewFileChangeTracker creates a new FileChangeTracker for the given workspace root.
@@ -52,6 +53,16 @@ func NewFileChangeTracker(workspaceRoot string) *FileChangeTracker {
 		baselines:     make(map[string]*fileBaseline),
 		ops:           make(map[string][]trackedOp),
 	}
+}
+
+// SetLogger sets the logger for the file change tracker.
+func (t *FileChangeTracker) SetLogger(l *slog.Logger) { t.logger = l }
+
+func (t *FileChangeTracker) log() *slog.Logger {
+	if t.logger != nil {
+		return t.logger
+	}
+	return slog.Default()
 }
 
 // relPath converts an absolute path to a relative path from the workspace root.
@@ -400,7 +411,7 @@ func (t *FileChangeTracker) SnapshotWorkspace() map[string]fileInfo {
 	snapshot := make(map[string]fileInfo)
 	_ = filepath.WalkDir(t.workspaceRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			slog.Debug("file walk: skipping entry", "path", path, "error", err)
+			t.log().Debug("file walk: skipping entry", "path", path, "error", err)
 			return nil //nolint:nilerr // intentionally skip unreadable files/dirs during walk
 		}
 		if d.IsDir() {
@@ -417,12 +428,12 @@ func (t *FileChangeTracker) SnapshotWorkspace() map[string]fileInfo {
 		}
 		rel, err := filepath.Rel(t.workspaceRoot, path)
 		if err != nil {
-			slog.Debug("file walk: skipping entry", "path", path, "error", err)
+			t.log().Debug("file walk: skipping entry", "path", path, "error", err)
 			return nil //nolint:nilerr // intentionally skip unreadable files/dirs during walk
 		}
 		info, err := d.Info()
 		if err != nil {
-			slog.Debug("file walk: skipping entry", "path", path, "error", err)
+			t.log().Debug("file walk: skipping entry", "path", path, "error", err)
 			return nil //nolint:nilerr // intentionally skip unreadable files/dirs during walk
 		}
 		snapshot[rel] = fileInfo{

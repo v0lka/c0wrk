@@ -117,11 +117,11 @@ func TestToolCallRoundTrip(t *testing.T) {
 
 func TestNormalizeResponse(t *testing.T) {
 	tests := []struct {
-		name            string
-		content         string
-		reasoning       string
-		wantContent     string
-		wantReasoning   string
+		name          string
+		content       string
+		reasoning     string
+		wantContent   string
+		wantReasoning string
 	}{
 		{
 			name:          "trims trailing mixed whitespace from content and reasoning",

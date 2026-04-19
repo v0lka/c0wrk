@@ -136,13 +136,4 @@ func NormalizeMistralMessages(messages []Message) []Message {
 	return result
 }
 
-// StripReasoningFromHistory removes reasoning content from message history.
-// Reasoning models produce reasoning_content/reasoning_details that should not
-// be passed back in subsequent turns. Currently the Message struct does not carry
-// a Reasoning field (reasoning lives on ChatResponse), so this function acts as
-// a safety net ensuring no reasoning leaks if the struct evolves.
-func StripReasoningFromHistory(messages []Message) []Message {
-	result := make([]Message, len(messages))
-	copy(result, messages)
-	return result
-}
+

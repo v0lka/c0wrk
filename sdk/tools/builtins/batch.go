@@ -55,10 +55,16 @@ type BatchOutput struct {
 type BatchTool struct {
 	*tools.BaseTool
 	dispatcher toolDispatcher
+	limits     BatchLimits
 }
 
-// NewBatchTool creates a new BatchTool with the given dispatcher.
+// NewBatchTool creates a new BatchTool with default limits.
 func NewBatchTool(dispatcher toolDispatcher) *BatchTool {
+	return NewBatchToolWithLimits(dispatcher, DefaultBatchLimits())
+}
+
+// NewBatchToolWithLimits creates a new BatchTool with the given dispatcher and limits.
+func NewBatchToolWithLimits(dispatcher toolDispatcher, limits BatchLimits) *BatchTool {
 	return &BatchTool{
 		BaseTool: &tools.BaseTool{
 			ToolName:        "batch",
@@ -90,6 +96,7 @@ func NewBatchTool(dispatcher toolDispatcher) *BatchTool {
 			Policy: tools.PolicyAlwaysAllow,
 		},
 		dispatcher: dispatcher,
+		limits:     limits,
 	}
 }
 
@@ -104,6 +111,10 @@ func (bt *BatchTool) Execute(ctx context.Context, input json.RawMessage) (tools.
 		return tools.ErrorResult("batch calls list is empty"), nil
 	}
 
+	if bt.limits.MaxCalls > 0 && len(params.Calls) > bt.limits.MaxCalls {
+		return tools.ErrorResult("batch size %d exceeds maximum of %d", len(params.Calls), bt.limits.MaxCalls), nil
+	}
+
 	// Recursion guard: disallow nested batch calls.
 	for _, call := range params.Calls {
 		if call.Tool == "batch" {
@@ -114,10 +125,18 @@ func (bt *BatchTool) Execute(ctx context.Context, input json.RawMessage) (tools.
 	results := make([]BatchCallResult, len(params.Calls))
 	var wg sync.WaitGroup
 
+	concurrency := bt.limits.MaxConcurrency
+	if concurrency <= 0 {
+		concurrency = len(params.Calls)
+	}
+	sem := make(chan struct{}, concurrency)
+
 	for i, call := range params.Calls {
 		wg.Add(1)
 		go func(idx int, c BatchCall) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			res, err := bt.dispatcher.Execute(ctx, c.Tool, c.Input)
 			if err != nil {
