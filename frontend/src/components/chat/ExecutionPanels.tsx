@@ -8,7 +8,6 @@ import {
   CircleX,
   ChevronRight,
 } from 'lucide-react'
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import {
   usePanelStore,
   usePlanCompleted,
@@ -19,7 +18,7 @@ import {
 import { useSessionStore } from '@/stores/sessionStore'
 import { useScrollStore } from '@/stores/scrollStore'
 import { DAGGraph } from './DAGGraph'
-import { TooltipMarkdown } from './TooltipMarkdown'
+import { StepTooltip } from './StepTooltip'
 
 // Status icon for plan items
 function PlanStatusIcon({ status }: { status: PlanItem['status'] }) {
@@ -74,7 +73,6 @@ interface PlanContentProps {
 
 function PlanContent({ groups, onStepClick }: PlanContentProps) {
   return (
-    <TooltipProvider delayDuration={400}>
     <div className="max-h-48 overflow-y-auto px-3 pb-2">
       {groups.map((group, groupIdx) => (
         <div key={group.id}>
@@ -92,18 +90,9 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
                     className="flex items-center gap-2 h-[24px] px-1 -mx-1 w-full text-left rounded hover:bg-muted/50 transition-colors cursor-pointer"
                   >
                     <PlanStatusIcon status={item.status} />
-                    {hasDescription ? (
-                      <Tooltip delayDuration={400}>
-                        <TooltipTrigger asChild>
-                          <span className="text-xs text-muted-foreground truncate">{item.title}</span>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom" align="start" className="max-w-md text-left p-3 bg-background border border-border shadow-md">
-                          <TooltipMarkdown content={tooltipText} />
-                        </TooltipContent>
-                      </Tooltip>
-                    ) : (
+                    <StepTooltip description={tooltipText} enabled={hasDescription}>
                       <span className="text-xs text-muted-foreground truncate">{item.title}</span>
-                    )}
+                    </StepTooltip>
                   </button>
                 )
               })}
@@ -112,7 +101,6 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
         </div>
       ))}
     </div>
-    </TooltipProvider>
   )
 }
 
