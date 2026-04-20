@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
-import { useThemeEffect } from '@/stores/uiStore'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useWails } from '@/hooks/useWails'
 import { AlertCircle, X } from 'lucide-react'
@@ -20,7 +19,6 @@ function isStartupError(data: unknown): data is StartupError {
 }
 
 function App() {
-  useThemeEffect()
   const { runtime } = useWails()
   const [startupError, setStartupError] = useState<StartupError | null>(null)
 

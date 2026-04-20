@@ -13,11 +13,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LogLevel = "DEBUG"
 	}
 
-	// Theme defaults
-	if cfg.Theme == "" {
-		cfg.Theme = "system"
-	}
-
 	// Executor defaults
 	if cfg.Executor.MaxReactSteps == 0 {
 		cfg.Executor.MaxReactSteps = 50

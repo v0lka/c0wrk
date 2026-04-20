@@ -241,7 +241,7 @@ func TestTrackingCaller_Stream(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var chunks []ChatChunk
+	chunks := make([]ChatChunk, 0, 3)
 	for c := range ch {
 		chunks = append(chunks, c)
 	}

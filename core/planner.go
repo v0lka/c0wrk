@@ -77,7 +77,7 @@ Profiles:
 Each step MUST include two text fields:
 
 - **summary**: A condensed label of 5-7 words STRICTLY. Used only for UI display. Must capture the essence of the step. MUST NOT be empty.
-- **description**: A detailed specification following the What-How-Where format:
+- **description**: A detailed specification well-formatted with Markdown and following the "What-How-Where and Acceptance Criteria" structure:
   - What: What needs to be done in this step.
   - How: The approach, techniques, patterns, or algorithms to use.
   - Where: Specific files, functions, modules, or components involved.
@@ -85,7 +85,7 @@ Each step MUST include two text fields:
 
 Example:
   "summary": "Add JWT auth middleware",
-  "description": "What: Implement JWT-based authentication middleware for all protected API endpoints.\nHow: Create a middleware function that extracts and validates JWT tokens from the Authorization header using the existing auth package. Use RS256 signature verification.\nWhere: backend/middleware/auth.go (new file), backend/routes/api.go (wire middleware)\nAcceptance Criteria:\n- All protected endpoints return 401 for missing or invalid tokens\n- Valid tokens allow request processing with user context\n- Token expiration is properly handled with appropriate error messages"
+  "description": "# Add JWT auth middleware\n## What:\nImplement JWT-based authentication middleware for all protected API endpoints.\n##How:\nCreate a middleware function that extracts and validates JWT tokens from the Authorization header using the existing auth package. Use RS256 signature verification.\n## Where:\nbackend/middleware/auth.go (new file), backend/routes/api.go (wire middleware)\n## Acceptance Criteria:\n- All protected endpoints return 401 for missing or invalid tokens\n- Valid tokens allow request processing with user context\n- Token expiration is properly handled with appropriate error messages"
 
 ## Output Expectations
 

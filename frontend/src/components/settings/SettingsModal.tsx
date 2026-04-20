@@ -5,7 +5,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ThemeToggle } from './ThemeToggle'
 import { LogLevelSelector } from './LogLevelSelector'
 import { LLMSettings } from './LLMSettings'
 import { SearchSettings } from './SearchSettings'
@@ -76,7 +75,6 @@ export function SettingsModal() {
 
           <TabsContent value="general" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-6">
-              <ThemeToggle />
               <LogLevelSelector />
             </div>
           </TabsContent>

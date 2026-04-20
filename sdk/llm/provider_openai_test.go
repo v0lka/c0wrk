@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sashabaranov/go-openai"
+	oai "github.com/openai/openai-go"
 )
 
 func TestOpenAIProvider_ImplementsInterface(t *testing.T) {
@@ -128,7 +128,7 @@ func TestOpenAIProvider_StreamIntegration(t *testing.T) {
 	}
 }
 
-func TestOpenAIProvider_BuildRequest(t *testing.T) {
+func TestOpenAIProvider_BuildChatParams(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 
 	temp := 0.5
@@ -149,16 +149,16 @@ func TestOpenAIProvider_BuildRequest(t *testing.T) {
 		},
 	}
 
-	oaiReq := p.buildRequest(req)
+	oaiReq := p.buildChatParams(req)
 
 	if oaiReq.Model != "gpt-4o" {
 		t.Errorf("expected model 'gpt-4o', got %q", oaiReq.Model)
 	}
-	if oaiReq.MaxCompletionTokens != 1024 {
-		t.Errorf("expected MaxCompletionTokens 1024, got %d", oaiReq.MaxCompletionTokens)
+	if oaiReq.MaxCompletionTokens.Value != 1024 {
+		t.Errorf("expected MaxCompletionTokens 1024, got %d", oaiReq.MaxCompletionTokens.Value)
 	}
-	if oaiReq.Temperature != 0.5 {
-		t.Errorf("expected temperature 0.5, got %f", oaiReq.Temperature)
+	if oaiReq.Temperature.Value != 0.5 {
+		t.Errorf("expected temperature 0.5, got %f", oaiReq.Temperature.Value)
 	}
 	if len(oaiReq.Messages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(oaiReq.Messages))
@@ -171,7 +171,7 @@ func TestOpenAIProvider_BuildRequest(t *testing.T) {
 	}
 }
 
-func TestOpenAIProvider_BuildRequest_NoTools(t *testing.T) {
+func TestOpenAIProvider_BuildChatParams_NoTools(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 
 	req := ChatRequest{
@@ -179,14 +179,14 @@ func TestOpenAIProvider_BuildRequest_NoTools(t *testing.T) {
 		Messages: []Message{{Role: "user", Content: "Hi"}},
 	}
 
-	oaiReq := p.buildRequest(req)
+	oaiReq := p.buildChatParams(req)
 
 	if len(oaiReq.Tools) != 0 {
 		t.Errorf("expected 0 tools, got %d", len(oaiReq.Tools))
 	}
 	// Temperature should be zero value when nil
-	if oaiReq.Temperature != 0 {
-		t.Errorf("expected temperature 0 (default), got %f", oaiReq.Temperature)
+	if oaiReq.Temperature.Value != 0 {
+		t.Errorf("expected temperature 0 (default), got %f", oaiReq.Temperature.Value)
 	}
 }
 
@@ -194,10 +194,11 @@ func TestOpenAIProvider_ConvertRequestMessage(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 
 	tests := []struct {
-		name        string
-		msg         Message
-		wantRole    string
-		wantContent string
+		name         string
+		msg          Message
+		wantRole     string
+		wantContent  string
+		wantToolCall bool
 	}{
 		{
 			name:        "user message",
@@ -228,11 +229,31 @@ func TestOpenAIProvider_ConvertRequestMessage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := p.convertRequestMessage(tt.msg)
-			if result.Role != tt.wantRole {
-				t.Errorf("role = %q, want %q", result.Role, tt.wantRole)
-			}
-			if result.Content != tt.wantContent {
-				t.Errorf("content = %q, want %q", result.Content, tt.wantContent)
+			// The result is a union type, we need to check the actual type
+			switch {
+			case result.OfUser != nil:
+				if tt.wantRole != "user" {
+					t.Errorf("expected role %q, got user", tt.wantRole)
+				}
+				if result.OfUser.Content.OfString.Value != tt.wantContent {
+					t.Errorf("content = %q, want %q", result.OfUser.Content.OfString.Value, tt.wantContent)
+				}
+			case result.OfSystem != nil:
+				if tt.wantRole != "system" {
+					t.Errorf("expected role %q, got system", tt.wantRole)
+				}
+				if result.OfSystem.Content.OfString.Value != tt.wantContent {
+					t.Errorf("content = %q, want %q", result.OfSystem.Content.OfString.Value, tt.wantContent)
+				}
+			case result.OfTool != nil:
+				if tt.wantRole != "tool" {
+					t.Errorf("expected role %q, got tool", tt.wantRole)
+				}
+				if result.OfTool.Content.OfString.Value != tt.wantContent {
+					t.Errorf("content = %q, want %q", result.OfTool.Content.OfString.Value, tt.wantContent)
+				}
+			default:
+				t.Errorf("unexpected message type")
 			}
 		})
 	}
@@ -252,30 +273,35 @@ func TestOpenAIProvider_ConvertRequestMessage_WithToolCalls(t *testing.T) {
 
 	result := p.convertRequestMessage(msg)
 
-	if len(result.ToolCalls) != 2 {
-		t.Fatalf("expected 2 tool calls, got %d", len(result.ToolCalls))
+	// The result is a union type, check for assistant message with tool calls
+	if result.OfAssistant == nil {
+		t.Fatalf("expected assistant message, got nil")
 	}
-	if result.ToolCalls[0].ID != "call-1" {
-		t.Errorf("tool call 0 ID = %q, want %q", result.ToolCalls[0].ID, "call-1")
+	m := result.OfAssistant
+	if len(m.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(m.ToolCalls))
 	}
-	if result.ToolCalls[0].Function.Name != "search" {
-		t.Errorf("tool call 0 name = %q, want %q", result.ToolCalls[0].Function.Name, "search")
+	if m.ToolCalls[0].ID != "call-1" {
+		t.Errorf("tool call 0 ID = %q, want %q", m.ToolCalls[0].ID, "call-1")
 	}
-	if result.ToolCalls[0].Function.Arguments != `{"q":"test"}` {
-		t.Errorf("tool call 0 args = %q, want %q", result.ToolCalls[0].Function.Arguments, `{"q":"test"}`)
+	if m.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("tool call 0 name = %q, want %q", m.ToolCalls[0].Function.Name, "search")
+	}
+	if m.ToolCalls[0].Function.Arguments != `{"q":"test"}` {
+		t.Errorf("tool call 0 args = %q, want %q", m.ToolCalls[0].Function.Arguments, `{"q":"test"}`)
 	}
 }
 
-func TestOpenAIProvider_ConvertResponseMessage(t *testing.T) {
+func TestOpenAIProvider_ConvertChatResponseMessage(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 
 	// Simple text message
 	t.Run("simple text", func(t *testing.T) {
-		oaiMsg := openai.ChatCompletionMessage{
+		oaiMsg := oai.ChatCompletionMessage{
 			Role:    "assistant",
 			Content: "Hello!",
 		}
-		result := p.convertResponseMessage(oaiMsg)
+		result := p.convertChatResponseMessage(oaiMsg)
 		if result.Role != "assistant" {
 			t.Errorf("role = %q, want 'assistant'", result.Role)
 		}
@@ -289,20 +315,20 @@ func TestOpenAIProvider_ConvertResponseMessage(t *testing.T) {
 
 	// Message with tool calls
 	t.Run("with tool calls", func(t *testing.T) {
-		oaiMsg := openai.ChatCompletionMessage{
+		oaiMsg := oai.ChatCompletionMessage{
 			Role: "assistant",
-			ToolCalls: []openai.ToolCall{
+			ToolCalls: []oai.ChatCompletionMessageToolCall{
 				{
 					ID:   "call-abc",
-					Type: openai.ToolTypeFunction,
-					Function: openai.FunctionCall{
+					Type: "function",
+					Function: oai.ChatCompletionMessageToolCallFunction{
 						Name:      "get_weather",
 						Arguments: `{"city":"NYC"}`,
 					},
 				},
 			},
 		}
-		result := p.convertResponseMessage(oaiMsg)
+		result := p.convertChatResponseMessage(oaiMsg)
 		if len(result.ToolCalls) != 1 {
 			t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
 		}
@@ -378,9 +404,9 @@ func TestOpenAIProvider_WrapError(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 
 	t.Run("APIError", func(t *testing.T) {
-		apiErr := &openai.APIError{
-			HTTPStatusCode: 429,
-			Message:        "rate limited",
+		apiErr := &oai.Error{
+			StatusCode: 429,
+			Message:    "rate limited",
 		}
 		result := p.wrapError(apiErr)
 		var llmErr *Error
@@ -392,21 +418,6 @@ func TestOpenAIProvider_WrapError(t *testing.T) {
 		}
 		if !llmErr.Retryable {
 			t.Error("expected retryable for 429")
-		}
-	})
-
-	t.Run("RequestError", func(t *testing.T) {
-		reqErr := &openai.RequestError{
-			HTTPStatusCode: 500,
-			Err:            errors.New("server error"),
-		}
-		result := p.wrapError(reqErr)
-		var llmErr *Error
-		if !errors.As(result, &llmErr) {
-			t.Fatal("expected *Error")
-		}
-		if llmErr.StatusCode != 500 {
-			t.Errorf("expected status 500, got %d", llmErr.StatusCode)
 		}
 	})
 

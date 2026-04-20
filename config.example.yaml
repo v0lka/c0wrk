@@ -8,9 +8,6 @@
 # Logging level: DEBUG, INFO, WARN, ERROR
 log_level: "DEBUG"
 
-# UI theme: "system", "dark", "light"
-theme: "system"
-
 # ---------------------------------------------------------------------------
 # LLM Provider Configuration
 # ---------------------------------------------------------------------------

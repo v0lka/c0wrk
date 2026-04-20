@@ -17,7 +17,6 @@ const maskedAPIKey = "***configured***"
 type ConfigResponse struct {
 	Loaded             bool              `json:"loaded"`
 	LogLevel           string            `json:"log_level"`
-	Theme              string            `json:"theme"`
 	ConfigMigrated     bool              `json:"config_migrated"`
 	ConfigMigrationMsg string            `json:"config_migration_msg"`
 	ConfigErrors       []string          `json:"config_errors"`
@@ -98,7 +97,6 @@ func (a *App) GetConfig() ConfigResponse {
 	return ConfigResponse{
 		Loaded:             true,
 		LogLevel:           a.config.LogLevel,
-		Theme:              a.config.Theme,
 		ConfigMigrated:     a.configMigrated,
 		ConfigMigrationMsg: a.configMigrationMsg,
 		ConfigErrors:       nonNilStringSlice(a.configLoadErrors),
@@ -339,20 +337,6 @@ func (a *App) SetLogLevel(level string) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid log level: %s", level)
-	}
-}
-
-// SetTheme sets the UI theme and persists to config.
-func (a *App) SetTheme(theme string) error {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-
-	switch theme {
-	case "light", "dark", "system":
-		a.config.Theme = theme
-		return a.persistConfig()
-	default:
-		return fmt.Errorf("invalid theme: %s (must be light, dark, or system)", theme)
 	}
 }
 

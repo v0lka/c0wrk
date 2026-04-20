@@ -67,8 +67,6 @@ export function SendMessage(arg1:string,arg2:string):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 
-export function SetTheme(arg1:string):Promise<void>;
-
 export function SwitchProject(arg1:string):Promise<void>;
 
 export function UnwatchDirectory(arg1:string):Promise<void>;

@@ -101,7 +101,6 @@ export namespace desktop {
 	export class ConfigResponse {
 	    loaded: boolean;
 	    log_level: string;
-	    theme: string;
 	    config_migrated: boolean;
 	    config_migration_msg: string;
 	    config_errors: string[];
@@ -117,7 +116,6 @@ export namespace desktop {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.loaded = source["loaded"];
 	        this.log_level = source["log_level"];
-	        this.theme = source["theme"];
 	        this.config_migrated = source["config_migrated"];
 	        this.config_migration_msg = source["config_migration_msg"];
 	        this.config_errors = source["config_errors"];

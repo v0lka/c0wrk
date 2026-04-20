@@ -1,4 +1,5 @@
-import { FolderTree, GitBranch, Database, ClipboardList } from 'lucide-react'
+import { FolderTree, GitBranch, Database } from 'lucide-react'
+import { useState } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Tooltip,
@@ -12,7 +13,6 @@ const WORKSPACE_TABS = [
   { value: 'explorer', label: 'Workspace Explorer', icon: FolderTree },
   { value: 'git', label: 'Git Repository', icon: GitBranch },
   { value: 'vectors', label: 'Vector Storage', icon: Database },
-  { value: 'blackboard', label: 'Blackboard', icon: ClipboardList },
 ] as const
 
 function TBDPlaceholder() {
@@ -24,27 +24,33 @@ function TBDPlaceholder() {
 }
 
 export function WorkspacePanel() {
+  const [activeTab, setActiveTab] = useState<string>('explorer')
+  const activeLabel = WORKSPACE_TABS.find((t) => t.value === activeTab)?.label ?? ''
+
   return (
     <TooltipProvider>
-      <Tabs defaultValue="explorer" className="h-full flex flex-col">
-        <TabsList className="w-full shrink-0 grid grid-cols-4 h-8 rounded-none border-b border-border bg-transparent p-0">
-          {WORKSPACE_TABS.map(({ value, label, icon: Icon }) => (
-            <Tooltip key={value}>
-              <TooltipTrigger asChild>
-                <TabsTrigger
-                  value={value}
-                  aria-label={label}
-                  className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:shadow-none"
-                >
-                  <Icon className="size-4" />
-                </TabsTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={4}>
-                {label}
-              </TooltipContent>
-            </Tooltip>
-          ))}
-        </TabsList>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
+        <div className="shrink-0 flex items-center gap-2 border-b border-border px-2 h-8">
+          <TabsList className="grid grid-cols-3 h-auto rounded-none bg-transparent p-0 gap-0.5">
+            {WORKSPACE_TABS.map(({ value, label, icon: Icon }) => (
+              <Tooltip key={value}>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value={value}
+                    aria-label={label}
+                    className="h-6 w-6 rounded-sm border-b-2 border-transparent data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:shadow-none p-0"
+                  >
+                    <Icon className="size-3.5" />
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" sideOffset={4}>
+                  {label}
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </TabsList>
+          <span className="text-xs text-muted-foreground select-none uppercase font-bold">{activeLabel}</span>
+        </div>
 
         <TabsContent value="explorer" className="flex-1 min-h-0 mt-0">
           <FileTreePanel />

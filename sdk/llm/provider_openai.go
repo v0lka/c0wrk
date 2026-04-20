@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	oai "github.com/openai/openai-go"
-	"github.com/sashabaranov/go-openai"
+	"github.com/openai/openai-go/option"
 )
 
 // OpenAIProviderConfig contains configuration for OpenAI-compatible providers.
@@ -20,7 +19,7 @@ type OpenAIProviderConfig struct {
 
 // OpenAIProvider implements Provider for OpenAI and compatible APIs.
 type OpenAIProvider struct {
-	client          *openai.Client
+	client          *oai.Client // official SDK for Chat Completions API
 	responsesClient *oai.Client // official SDK for Responses API
 	name            string
 }
@@ -29,20 +28,18 @@ type OpenAIProvider struct {
 // If BaseURL is empty, uses default OpenAI endpoint.
 // If BaseURL is set, uses custom endpoint (DeepSeek, Grok, OpenRouter, Ollama, LM-Studio).
 func NewOpenAIProvider(cfg OpenAIProviderConfig) (*OpenAIProvider, error) {
-	var client *openai.Client
-
-	if cfg.BaseURL == "" {
-		client = openai.NewClient(cfg.APIKey)
-	} else {
-		config := openai.DefaultConfig(cfg.APIKey)
-		config.BaseURL = cfg.BaseURL
-		client = openai.NewClientWithConfig(config)
+	opts := []option.RequestOption{
+		option.WithAPIKey(cfg.APIKey),
 	}
+	if cfg.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	client := oai.NewClient(opts...)
 
 	responsesClient := newResponsesClient(cfg.APIKey, cfg.BaseURL)
 
 	return &OpenAIProvider{
-		client:          client,
+		client:          &client,
 		responsesClient: responsesClient,
 		name:            cfg.Name,
 	}, nil
@@ -59,9 +56,9 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 		return responsesAPICompletion(ctx, p.responsesClient, req)
 	}
 
-	openaiReq := p.buildRequest(req)
+	params := p.buildChatParams(req)
 
-	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
+	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, p.wrapError(fmt.Errorf("openai chat completion: %w", err))
 	}
@@ -71,19 +68,15 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 	}
 
 	choice := resp.Choices[0]
-	message := p.convertResponseMessage(choice.Message)
-	stopReason := MapStopReason(string(choice.FinishReason), openAIStopReasonMap)
-
-	// Extract reasoning content (supported by o1/o3 and DeepSeek-reasoner models)
-	reasoning := choice.Message.ReasoningContent
+	message := p.convertChatResponseMessage(choice.Message)
+	stopReason := MapStopReason(choice.FinishReason, openAIStopReasonMap)
 
 	return &ChatResponse{
 		Message:    message,
-		Reasoning:  reasoning,
 		StopReason: stopReason,
 		Usage: TokenUsage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:  int(resp.Usage.PromptTokens),
+			OutputTokens: int(resp.Usage.CompletionTokens),
 		},
 	}, nil
 }
@@ -94,14 +87,9 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 		return responsesAPIStream(ctx, p.responsesClient, req)
 	}
 
-	openaiReq := p.buildRequest(req)
-	openaiReq.Stream = true
-	openaiReq.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
+	params := p.buildChatParams(req)
 
-	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
-	if err != nil {
-		return nil, p.wrapError(fmt.Errorf("openai stream: %w", err))
-	}
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
 
 	chunks := make(chan ChatChunk)
 
@@ -113,30 +101,22 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 		acc := NewStreamToolCallAccumulator()
 		var streamUsage *TokenUsage
 
-		for {
-			resp, err := stream.Recv()
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			if err != nil {
-				// Send error as final chunk with stop reason
-				chunks <- ChatChunk{StopReason: "error"}
-				return
-			}
+		for stream.Next() {
+			event := stream.Current()
 
-			// Capture usage from the dedicated usage chunk (StreamOptions.IncludeUsage)
-			if resp.Usage != nil {
+			// Capture usage from the usage field when available
+			if event.Usage.PromptTokens > 0 || event.Usage.CompletionTokens > 0 {
 				streamUsage = &TokenUsage{
-					InputTokens:  resp.Usage.PromptTokens,
-					OutputTokens: resp.Usage.CompletionTokens,
+					InputTokens:  int(event.Usage.PromptTokens),
+					OutputTokens: int(event.Usage.CompletionTokens),
 				}
 			}
 
-			if len(resp.Choices) == 0 {
+			if len(event.Choices) == 0 {
 				continue
 			}
 
-			choice := resp.Choices[0]
+			choice := event.Choices[0]
 			delta := choice.Delta
 
 			// Handle content delta
@@ -144,76 +124,97 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 				chunks <- ChatChunk{Delta: delta.Content}
 			}
 
-			// Handle reasoning content delta (o1/o3, DeepSeek-reasoner)
-			if delta.ReasoningContent != "" {
-				chunks <- ChatChunk{Reasoning: delta.ReasoningContent}
-			}
-
 			// Handle tool calls delta
 			for _, tc := range delta.ToolCalls {
-				idx := 0
-				if tc.Index != nil {
-					idx = *tc.Index
-				}
-				acc.HandleDelta(idx, tc.ID, tc.Function.Name, tc.Function.Arguments)
+				acc.HandleDelta(int(tc.Index), tc.ID, tc.Function.Name, tc.Function.Arguments)
 			}
 
 			// Handle finish reason
 			if choice.FinishReason != "" {
-				stopReason := MapStopReason(string(choice.FinishReason), openAIStopReasonMap)
+				stopReason := MapStopReason(choice.FinishReason, openAIStopReasonMap)
 				acc.Emit(chunks)
 				chunks <- ChatChunk{StopReason: stopReason, Usage: streamUsage}
 			}
+		}
+
+		if err := stream.Err(); err != nil {
+			// Send error as final chunk with stop reason
+			chunks <- ChatChunk{StopReason: "error"}
 		}
 	}()
 
 	return chunks, nil
 }
 
-// buildRequest converts our ChatRequest to OpenAI's request format.
-func (p *OpenAIProvider) buildRequest(req ChatRequest) openai.ChatCompletionRequest {
-	messages := make([]openai.ChatCompletionMessage, len(req.Messages))
-	for i, msg := range req.Messages {
-		messages[i] = p.convertRequestMessage(msg)
+// buildChatParams converts our ChatRequest to OpenAI's ChatCompletionNewParams.
+func (p *OpenAIProvider) buildChatParams(req ChatRequest) oai.ChatCompletionNewParams {
+	messages := make([]oai.ChatCompletionMessageParamUnion, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		messages = append(messages, p.convertRequestMessage(msg))
 	}
 
-	openaiReq := openai.ChatCompletionRequest{
-		Model:               req.Model,
-		Messages:            messages,
-		MaxCompletionTokens: req.MaxTokens,
+	params := oai.ChatCompletionNewParams{
+		Model:    req.Model,
+		Messages: messages,
+	}
+
+	if req.MaxTokens > 0 {
+		params.MaxCompletionTokens = oai.Int(int64(req.MaxTokens))
 	}
 
 	if req.Temperature != nil {
-		openaiReq.Temperature = float32(*req.Temperature)
+		params.Temperature = oai.Float(*req.Temperature)
 	}
 
 	// Apply reasoning effort if set
 	if req.ReasoningEffort != "" {
 		rc := ResolveReasoning(req.ReasoningEffort, "openai_flagship")
 		if rc.Enabled && rc.OpenAIEffort != "" {
-			openaiReq.ReasoningEffort = rc.OpenAIEffort
+			params.ReasoningEffort = oai.ReasoningEffort(rc.OpenAIEffort)
 		}
 	}
 
 	if len(req.Tools) > 0 {
-		openaiReq.Tools = make([]openai.Tool, len(req.Tools))
+		tools := make([]oai.ChatCompletionToolParam, len(req.Tools))
 		for i, tool := range req.Tools {
-			openaiReq.Tools[i] = openai.Tool{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
+			tools[i] = oai.ChatCompletionToolParam{
+				Function: oai.FunctionDefinitionParam{
 					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  SanitizeSchemaForOpenAI(tool.InputSchema),
+					Description: oai.String(tool.Description),
+					Parameters:  p.convertSchemaToMap(SanitizeSchemaForOpenAI(tool.InputSchema)),
 				},
 			}
 		}
+		params.Tools = tools
 	}
 
-	return openaiReq
+	return params
+}
+
+// convertSchemaToMap converts JSON schema bytes to a map[string]any.
+func (p *OpenAIProvider) convertSchemaToMap(schema []byte) map[string]any {
+	if len(schema) == 0 {
+		return map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"required":             []any{},
+			"additionalProperties": false,
+		}
+	}
+	var params map[string]any
+	if err := json.Unmarshal(schema, &params); err != nil {
+		return map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"required":             []any{},
+			"additionalProperties": false,
+		}
+	}
+	return params
 }
 
 // convertRequestMessage converts our Message to OpenAI's message format.
-func (p *OpenAIProvider) convertRequestMessage(msg Message) openai.ChatCompletionMessage {
+func (p *OpenAIProvider) convertRequestMessage(msg Message) oai.ChatCompletionMessageParamUnion {
 	// Safety net: OpenAI API requires non-empty content for tool-role messages.
 	// The context layer should already guarantee this, but we keep this as a defensive measure.
 	content := msg.Content
@@ -221,38 +222,45 @@ func (p *OpenAIProvider) convertRequestMessage(msg Message) openai.ChatCompletio
 		content = "(no output)"
 	}
 
-	openaiMsg := openai.ChatCompletionMessage{
-		Role:    msg.Role,
-		Content: content,
-	}
-
-	// Handle tool call ID for tool responses
-	if msg.ToolCallID != "" {
-		openaiMsg.ToolCallID = msg.ToolCallID
-	}
-
-	// Handle tool calls for assistant messages
-	if len(msg.ToolCalls) > 0 {
-		openaiMsg.ToolCalls = make([]openai.ToolCall, len(msg.ToolCalls))
-		for i, tc := range msg.ToolCalls {
-			openaiMsg.ToolCalls[i] = openai.ToolCall{
-				ID:   tc.ID,
-				Type: openai.ToolTypeFunction,
-				Function: openai.FunctionCall{
-					Name:      tc.Name,
-					Arguments: string(tc.Input),
+	switch msg.Role {
+	case "system":
+		return oai.SystemMessage(content)
+	case "user":
+		return oai.UserMessage(content)
+	case "assistant":
+		if len(msg.ToolCalls) > 0 {
+			toolCalls := make([]oai.ChatCompletionMessageToolCallParam, len(msg.ToolCalls))
+			for i, tc := range msg.ToolCalls {
+				toolCalls[i] = oai.ChatCompletionMessageToolCallParam{
+					ID:   tc.ID,
+					Type: "function",
+					Function: oai.ChatCompletionMessageToolCallFunctionParam{
+						Name:      tc.Name,
+						Arguments: string(tc.Input),
+					},
+				}
+			}
+			return oai.ChatCompletionMessageParamUnion{
+				OfAssistant: &oai.ChatCompletionAssistantMessageParam{
+					Content: oai.ChatCompletionAssistantMessageParamContentUnion{
+						OfString: oai.String(content),
+					},
+					ToolCalls: toolCalls,
 				},
 			}
 		}
+		return oai.AssistantMessage(content)
+	case "tool":
+		return oai.ToolMessage(content, msg.ToolCallID)
+	default:
+		return oai.UserMessage(content)
 	}
-
-	return openaiMsg
 }
 
-// convertResponseMessage converts OpenAI's message to our Message format.
-func (p *OpenAIProvider) convertResponseMessage(msg openai.ChatCompletionMessage) Message {
+// convertChatResponseMessage converts OpenAI's message to our Message format.
+func (p *OpenAIProvider) convertChatResponseMessage(msg oai.ChatCompletionMessage) Message {
 	result := Message{
-		Role:    msg.Role,
+		Role:    string(msg.Role),
 		Content: msg.Content,
 	}
 
@@ -272,13 +280,9 @@ func (p *OpenAIProvider) convertResponseMessage(msg openai.ChatCompletionMessage
 
 // wrapError maps OpenAI SDK error types to *LLMError.
 func (p *OpenAIProvider) wrapError(err error) error {
-	var apiErr *openai.APIError
+	var apiErr *oai.Error
 	if errors.As(err, &apiErr) {
-		return WrapProviderError(p.name, apiErr.HTTPStatusCode, err)
-	}
-	var reqErr *openai.RequestError
-	if errors.As(err, &reqErr) {
-		return WrapProviderError(p.name, reqErr.HTTPStatusCode, err)
+		return WrapProviderError(p.name, apiErr.StatusCode, err)
 	}
 	// Fallback: check for net errors directly
 	return WrapProviderError(p.name, 0, err)

@@ -7,8 +7,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/liushuangls/go-anthropic/v2 v2.17.3
 	github.com/mark3labs/mcp-go v0.45.0
+	github.com/openai/openai-go v1.12.0
 	github.com/pkoukk/tiktoken-go v0.1.8
-	github.com/sashabaranov/go-openai v1.41.2
 	github.com/wailsapp/wails/v2 v2.12.0
 	google.golang.org/genai v1.51.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -40,13 +40,11 @@ require (
 	github.com/pjbgf/sha1cd v0.5.0 // indirect
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
-	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
 )
 
 require (
-	github.com/openai/openai-go v1.12.0
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

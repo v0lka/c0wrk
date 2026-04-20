@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	openai "github.com/sashabaranov/go-openai"
+	oai "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 
 	coreprompts "github.com/user/agent/core/prompts"
 	"github.com/user/agent/core/tools"
@@ -670,25 +671,24 @@ func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
 
 // listOpenAIModels fetches model names from an OpenAI-compatible API.
 func listOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, error) {
-	var client *openai.Client
-	if baseURL == "" {
-		client = openai.NewClient(apiKey)
-	} else {
-		cfg := openai.DefaultConfig(apiKey)
-		cfg.BaseURL = baseURL
-		client = openai.NewClientWithConfig(cfg)
+	opts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
 	}
+	if baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	client := oai.NewClient(opts...)
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	modelList, err := client.ListModels(ctx)
+	modelList, err := client.Models.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
 
-	names := make([]string, 0, len(modelList.Models))
-	for _, m := range modelList.Models {
+	names := make([]string, 0, len(modelList.Data))
+	for _, m := range modelList.Data {
 		names = append(names, m.ID)
 	}
 	sort.Strings(names)

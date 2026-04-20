@@ -19,6 +19,7 @@ import {
 import { useSessionStore } from '@/stores/sessionStore'
 import { useScrollStore } from '@/stores/scrollStore'
 import { DAGGraph } from './DAGGraph'
+import { TooltipMarkdown } from './TooltipMarkdown'
 
 // Status icon for plan items
 function PlanStatusIcon({ status }: { status: PlanItem['status'] }) {
@@ -83,7 +84,7 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
             <div className="flex-1 min-w-0">
               {group.items.map((item) => {
                 const tooltipText = item.description || item.title
-                const hasTooltip = tooltipText.length > 40
+                const hasDescription = !!item.description
                 return (
                   <button
                     key={`${group.id}-${item.id}`}
@@ -91,13 +92,13 @@ function PlanContent({ groups, onStepClick }: PlanContentProps) {
                     className="flex items-center gap-2 h-[24px] px-1 -mx-1 w-full text-left rounded hover:bg-muted/50 transition-colors cursor-pointer"
                   >
                     <PlanStatusIcon status={item.status} />
-                    {hasTooltip ? (
+                    {hasDescription ? (
                       <Tooltip delayDuration={400}>
                         <TooltipTrigger asChild>
                           <span className="text-xs text-muted-foreground truncate">{item.title}</span>
                         </TooltipTrigger>
-                        <TooltipContent side="bottom" align="start" className="max-w-md text-left whitespace-pre-line p-3 bg-background text-foreground border border-border shadow-md">
-                          {tooltipText}
+                        <TooltipContent side="bottom" align="start" className="max-w-md text-left p-3 bg-background border border-border shadow-md">
+                          <TooltipMarkdown content={tooltipText} />
                         </TooltipContent>
                       </Tooltip>
                     ) : (

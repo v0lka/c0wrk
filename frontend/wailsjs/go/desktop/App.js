@@ -122,10 +122,6 @@ export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
 }
 
-export function SetTheme(arg1) {
-  return window['go']['desktop']['App']['SetTheme'](arg1);
-}
-
 export function SwitchProject(arg1) {
   return window['go']['desktop']['App']['SwitchProject'](arg1);
 }
