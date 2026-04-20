@@ -160,6 +160,7 @@ func (b *OrchestratorBuilder) Build(
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		Model:                     cfg.LLM.Model,
 		StepLimitFunc:             stepLimitFunc,
+		SyntheticPlanThreshold:    cfg.Orchestration.SyntheticPlanThreshold,
 	}
 
 	// Token counter, budgets, circuit breaker

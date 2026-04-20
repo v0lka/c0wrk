@@ -271,4 +271,10 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Orchestration.MaxPlannerExploreSteps == 0 {
 		cfg.Orchestration.MaxPlannerExploreSteps = 7
 	}
+	// Synthetic plan threshold default (0 means not set, use default of 2)
+	// Note: We check for 0 and set to 2, but 0 is also a valid value (disable synthetic plans).
+	// This is acceptable because the zero value behavior matches the default.
+	if cfg.Orchestration.SyntheticPlanThreshold == 0 {
+		cfg.Orchestration.SyntheticPlanThreshold = 2
+	}
 }

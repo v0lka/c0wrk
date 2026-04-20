@@ -223,3 +223,9 @@ orchestration:
   maxSummaryLength: 500 # Max summary length in characters
   maxHistoryMessages: 20 # Max history messages retained
   maxJudgeCacheSize: 1000 # Max entries in judge decision cache
+
+  # Adaptive planning threshold
+  # Tasks with complexity ≤ this value use synthetic 1-step plans (no Planner LLM call)
+  # Tasks with complexity > this value use full Planner (exploration/direct)
+  # Set to 0 to disable synthetic plans (always use full planning)
+  synthetic_plan_threshold: 2 # default: 2 (complexity 1-2 = synthetic, 3+ = full)

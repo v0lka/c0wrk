@@ -128,6 +128,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 			MaxJudgeCacheSize:         cfg.Orchestration.MaxJudgeCacheSize,
 			MaxPlannerExploreSteps:    cfg.Orchestration.MaxPlannerExploreSteps,
+			SyntheticPlanThreshold:    cfg.Orchestration.SyntheticPlanThreshold,
 		},
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:     cfg.ToolLimits.ReadDefaultLines,

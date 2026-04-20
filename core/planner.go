@@ -783,7 +783,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 	completedPlanSummary := planSummaryBuilder.String()
 
 	// Find terminal steps (steps that have no dependents)
-	terminalSteps := findTerminalSteps(existingPlan)
+	terminalSteps := FindTerminalSteps(existingPlan)
 	terminalStepsStr := strings.Join(terminalSteps, ", ")
 
 	// Build available tools string (grouped by priority tier)
@@ -819,8 +819,8 @@ func (p *Planner) buildContinuationSystemPrompt(
 	return result
 }
 
-// findTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
-func findTerminalSteps(plan *Plan) []string {
+// FindTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
+func FindTerminalSteps(plan *Plan) []string {
 	// Track which steps are depended on
 	dependedOn := make(map[string]bool)
 	for _, step := range plan.Steps {
@@ -945,4 +945,35 @@ func summarizeExplorationSteps(steps []agent.Step) string {
 		}
 	}
 	return result
+}
+
+// CreateSyntheticPlan creates a minimal 1-step plan without LLM calls.
+// Used for simple tasks where full planning is unnecessary overhead.
+func (p *Planner) CreateSyntheticPlan(task, domain string) *Plan {
+	return &Plan{
+		Steps: []PlanStep{
+			{
+				ID:             "step_1",
+				Summary:        Truncate(task, 50),
+				Description:    task,
+				DependsOn:      []string{},
+				Parallelizable: true,
+				Profile: AgentProfile{
+					Role:   "executor",
+					Domain: domain,
+				},
+			},
+		},
+	}
+}
+
+// Truncate truncates a string to maxLen characters, adding "..." if truncated.
+func Truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
