@@ -387,6 +387,18 @@ func (a *App) Startup(ctx context.Context) {
 	a.app.Builder().ToolRegistry().Unregister("list_projects")
 	a.app.Builder().ToolRegistry().Unregister("delete_project")
 
+	// Strip the "project" parameter from codebase-memory-mcp tool schemas so the
+	// LLM never sees it. The correct project name is auto-injected at execution
+	// time by the ParamInjector below.
+	if gw := a.app.Builder().MCPGateway(); gw != nil {
+		gw.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
+			if source != "codebase-memory" {
+				return schema
+			}
+			return backend.MCPStripParamsFromSchema(schema, map[string]bool{"project": true})
+		})
+	}
+
 	// Auto-inject project scoping for codebase-memory-mcp tools.
 	a.app.Builder().ToolRegistry().SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
 		if source != "codebase-memory" {
@@ -402,9 +414,8 @@ func (a *App) Startup(ctx context.Context) {
 		if err := json.Unmarshal(input, &params); err != nil {
 			return input
 		}
-		if _, ok := params["project"]; ok {
-			return input // don't override explicit project param
-		}
+		// Always set project; the parameter is stripped from the schema so the LLM
+		// should never provide it, but we override regardless for safety.
 		params["project"] = projectName
 		modified, err := json.Marshal(params)
 		if err != nil {

@@ -135,6 +135,12 @@ type MCPServerEntry = mcp.ServerEntry
 // MCPGatewayConfig holds the MCP gateway configuration.
 type MCPGatewayConfig = mcp.GatewayConfig
 
+// MCPSchemaSanitizer transforms an MCP tool input schema before registration.
+type MCPSchemaSanitizer = mcp.SchemaSanitizer
+
+// MCPStripParamsFromSchema strips named parameters from a JSON Schema.
+var MCPStripParamsFromSchema = mcp.StripParamsFromSchema
+
 // ---------------------------------------------------------------------------
 // Emitter type (from core)
 // ---------------------------------------------------------------------------

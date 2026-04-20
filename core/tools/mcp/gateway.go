@@ -14,11 +14,12 @@ import (
 // Gateway manages connections to multiple MCP servers and provides
 // their tools to the agent through the ToolRegistry.
 type Gateway struct {
-	servers        map[string]*Server
-	config         GatewayConfig
-	defaultWorkDir string
-	logger         *slog.Logger
-	mu             sync.RWMutex
+	servers           map[string]*Server
+	config            GatewayConfig
+	defaultWorkDir    string
+	schemaSanitizer   SchemaSanitizer
+	logger            *slog.Logger
+	mu                sync.RWMutex
 }
 
 // NewGateway creates a new Gateway instance.
@@ -40,6 +41,15 @@ func (g *Gateway) SetDefaultWorkDir(dir string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.defaultWorkDir = dir
+}
+
+// SetSchemaSanitizer sets a function that transforms tool input schemas before
+// they are registered. This allows stripping parameters that are auto-injected
+// at execution time and should not be exposed to the LLM.
+func (g *Gateway) SetSchemaSanitizer(fn SchemaSanitizer) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.schemaSanitizer = fn
 }
 
 // Start connects to all configured MCP servers and discovers their tools.
@@ -88,11 +98,15 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 // Tools are registered with the server name as their source for proper unregistration.
 func (g *Gateway) RegisterTools(registry *tools.ToolRegistry) error {
 	g.mu.RLock()
+	sanitizer := g.schemaSanitizer
+	g.mu.RUnlock()
+
+	g.mu.RLock()
 	defer g.mu.RUnlock()
 
 	for name, server := range g.servers {
 		for _, toolInfo := range server.Tools() {
-			mcpTool := NewTool(server, toolInfo)
+			mcpTool := NewTool(server, toolInfo, sanitizer)
 			registry.RegisterWithSource(mcpTool, name)
 		}
 		toolNames := make([]string, len(server.Tools()))
@@ -238,7 +252,7 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 
 		// Register new tools
 		for _, toolInfo := range server.Tools() {
-			mcpTool := NewTool(server, toolInfo)
+			mcpTool := NewTool(server, toolInfo, g.schemaSanitizer)
 			registry.RegisterWithSource(mcpTool, name)
 		}
 

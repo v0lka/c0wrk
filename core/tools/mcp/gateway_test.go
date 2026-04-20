@@ -1201,6 +1201,114 @@ func TestGateway_SetDefaultWorkDir(t *testing.T) {
 	}
 }
 
+func TestGateway_SetSchemaSanitizer(t *testing.T) {
+	gateway := NewGateway()
+
+	// Add a codebase-memory server with a project parameter
+	server := NewServer("codebase-memory")
+	server.tools = []ToolInfo{
+		{
+			Name:        "search_graph",
+			Description: "Search the code graph",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"project":{"type":"string"},"name_pattern":{"type":"string"}},"required":["project","name_pattern"]}`),
+		},
+	}
+	gateway.servers["codebase-memory"] = server
+
+	// Set sanitizer to strip 'project' param from codebase-memory tools
+	gateway.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
+		if source != "codebase-memory" {
+			return schema
+		}
+		return StripParamsFromSchema(schema, map[string]bool{"project": true})
+	})
+
+	registry := tools.NewToolRegistry()
+	if err := gateway.RegisterTools(registry); err != nil {
+		t.Fatalf("RegisterTools failed: %v", err)
+	}
+
+	tool, ok := registry.Get("search_graph")
+	if !ok {
+		t.Fatal("search_graph should be registered")
+	}
+
+	// Verify 'project' is stripped from the schema
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(tool.InputSchema(), &schema); err != nil {
+		t.Fatalf("tool schema is not valid JSON: %v", err)
+	}
+
+	var props map[string]json.RawMessage
+	if err := json.Unmarshal(schema["properties"], &props); err != nil {
+		t.Fatalf("properties is not valid JSON: %v", err)
+	}
+	if _, exists := props["project"]; exists {
+		t.Error("'project' should be stripped from codebase-memory tool schema")
+	}
+	if _, exists := props["name_pattern"]; !exists {
+		t.Error("'name_pattern' should still be present in tool schema")
+	}
+
+	// Verify 'project' is also stripped from required
+	var required []string
+	if err := json.Unmarshal(schema["required"], &required); err != nil {
+		t.Fatalf("required is not valid JSON: %v", err)
+	}
+	for _, r := range required {
+		if r == "project" {
+			t.Error("'project' should be stripped from required in tool schema")
+		}
+	}
+}
+
+func TestGateway_SetSchemaSanitizer_OtherSourceUntouched(t *testing.T) {
+	gateway := NewGateway()
+
+	// Add a non-codebase-memory server with a project parameter
+	server := NewServer("other-mcp")
+	server.tools = []ToolInfo{
+		{
+			Name:        "my_tool",
+			Description: "Some tool",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"project":{"type":"string"}}}`),
+		},
+	}
+	gateway.servers["other-mcp"] = server
+
+	// Set sanitizer that only strips project for codebase-memory
+	gateway.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
+		if source != "codebase-memory" {
+			return schema
+		}
+		return StripParamsFromSchema(schema, map[string]bool{"project": true})
+	})
+
+	registry := tools.NewToolRegistry()
+	if err := gateway.RegisterTools(registry); err != nil {
+		t.Fatalf("RegisterTools failed: %v", err)
+	}
+
+	tool, ok := registry.Get("my_tool")
+	if !ok {
+		t.Fatal("my_tool should be registered")
+	}
+
+	// Verify 'project' is NOT stripped (different source)
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(tool.InputSchema(), &schema); err != nil {
+		t.Fatalf("tool schema is not valid JSON: %v", err)
+	}
+
+	var props map[string]json.RawMessage
+	if err := json.Unmarshal(schema["properties"], &props); err != nil {
+		t.Fatalf("properties is not valid JSON: %v", err)
+	}
+	if _, exists := props["project"]; !exists {
+		t.Error("'project' should still be present for non-codebase-memory server")
+	}
+}
+
 func TestStartGateway_DefaultWorkDir(t *testing.T) {
 	cfg := GatewayConfig{
 		Servers:        map[string]ServerEntry{},
