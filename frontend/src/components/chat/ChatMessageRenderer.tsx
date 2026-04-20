@@ -92,9 +92,9 @@ const MemoryBlock = React.memo(function MemoryBlock({ toolName, args, parsedArgs
 
   const StatusIcon = status === 'success' ? Check : status === 'error' ? X : Loader2
   const statusClass = status === 'success'
-    ? 'text-emerald-500'
+    ? 'text-success'
     : status === 'error'
-      ? 'text-red-500'
+      ? 'text-destructive'
       : 'text-muted-foreground animate-spin'
 
   return (
@@ -108,11 +108,11 @@ const MemoryBlock = React.memo(function MemoryBlock({ toolName, args, parsedArgs
           )}
         </span>
         <StatusIcon className={`h-3.5 w-3.5 ${statusClass}`} />
-        <BookOpen className="h-3.5 w-3.5 text-violet-500" />
+        <BookOpen className="h-3.5 w-3.5 text-accent" />
         <span className="text-sm">{label}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="mt-2 border-l-2 border-violet-500/30 bg-muted/30 rounded p-3 space-y-3 min-w-0">
+        <div className="mt-2 border-l-2 border-accent/30 bg-muted/30 rounded p-3 space-y-3 min-w-0">
           {formattedArgs && (
             <div>
               <span className="text-xs text-muted-foreground font-medium">Arguments</span>
@@ -185,7 +185,7 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
     case 'step_finish':
       return (
         <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          <CheckCircle2 className="h-3.5 w-3.5 text-success" />
           <span>{item.stepNum ? `Finished step ${item.stepNum}` : 'Finished'}</span>
         </div>
       )
@@ -196,7 +196,7 @@ function renderDisplayItem(item: DisplayItem, lastUserMessageId: string | null):
     case 'context_compaction':
       return (
         <div key={item.id} className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <Minimize2 className="h-3.5 w-3.5 text-blue-500" />
+          <Minimize2 className="h-3.5 w-3.5 text-info" />
           <span>Context compacted from {item.beforePercent}% to {item.afterPercent}%</span>
         </div>
       )

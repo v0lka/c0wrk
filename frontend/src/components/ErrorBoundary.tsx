@@ -30,12 +30,12 @@ export class ErrorBoundary extends Component<Props, State> {
         return this.props.fallback
       }
       return (
-        <div className="p-10 text-white bg-zinc-900 font-mono min-h-screen">
+        <div className="p-10 text-foreground bg-background font-mono min-h-screen">
           <h1 className="mb-5">Something went wrong</h1>
-          <pre className="whitespace-pre-wrap text-red-400 mb-5">
+          <pre className="whitespace-pre-wrap text-destructive mb-5">
             {this.state.error?.message}
           </pre>
-          <pre className="whitespace-pre-wrap text-zinc-500 text-xs">
+          <pre className="whitespace-pre-wrap text-muted-foreground text-xs">
             {this.state.error?.stack}
           </pre>
         </div>

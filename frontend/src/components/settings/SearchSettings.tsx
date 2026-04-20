@@ -185,7 +185,7 @@ export function SearchSettings() {
         </p>
       </div>
       )}
-      {saveError && <p className="text-sm text-red-500 mt-2">{saveError}</p>}
+      {saveError && <p className="text-sm text-destructive mt-2">{saveError}</p>}
     </div>
   )
 }

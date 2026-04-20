@@ -343,7 +343,7 @@ export function Sidebar() {
   const renderSessionItem = useCallback((s: SessionInfo) => (
     <DropdownMenuItem
       key={s.id}
-      className="flex items-center justify-between gap-2"
+      className="flex items-center justify-between gap-2 hover:bg-muted/50"
       onClick={() => setActiveSession(s.id)}
     >
       <div className="flex-1 min-w-0">
@@ -354,7 +354,7 @@ export function Sidebar() {
       </div>
       <div className="flex items-center gap-1 flex-shrink-0">
         {s.id === activeSessionId && <Check className="h-3.5 w-3.5" />}
-        {s.active && <div className="w-2 h-2 rounded-full bg-green-500" />}
+        {s.active && <div className="w-2 h-2 rounded-full bg-success" />}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -395,7 +395,7 @@ export function Sidebar() {
           {hasProject ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2">
+                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2 hover:bg-muted/50 hover:text-foreground">
                   <span className="truncate text-sm font-medium">
                     {activeProject?.name ?? 'Select project'}
                   </span>
@@ -404,7 +404,7 @@ export function Sidebar() {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-56">
                 {(projects ?? []).map(p => (
-                  <DropdownMenuItem key={p.id} className="justify-between" onClick={() => handleSwitchProject(p.id)}>
+                  <DropdownMenuItem key={p.id} className="justify-between hover:bg-muted/50" onClick={() => handleSwitchProject(p.id)}>
                     <span className="truncate">{p.name}</span>
                     <div className="flex items-center gap-1 flex-shrink-0 ml-2">
                       {p.id === activeProjectId && <Check className="h-3.5 w-3.5" />}
@@ -458,7 +458,7 @@ export function Sidebar() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 flex-shrink-0"
+            className="h-7 w-7 flex-shrink-0 hover:bg-muted/50 hover:text-foreground"
             onClick={() => setCreateProjectOpen(true)}
             title="New project"
           >
@@ -468,7 +468,7 @@ export function Sidebar() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 flex-shrink-0"
+            className="h-7 w-7 flex-shrink-0 hover:bg-muted/50 hover:text-foreground"
             onClick={() => openSettings()}
             title="Settings"
           >
@@ -481,10 +481,10 @@ export function Sidebar() {
           <div className="flex items-center gap-1 px-2 pb-2">
             <DropdownMenu onOpenChange={(open) => { if (!open) setSessionSearch('') }}>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2">
+                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2 hover:bg-muted/50 hover:text-foreground">
                   <div className="flex items-center gap-1.5 min-w-0">
                     {activeSessionInfo?.active && (
-                      <div className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
+                      <div className="w-2 h-2 rounded-full bg-success flex-shrink-0" />
                     )}
                     <span className={cn(
                       'truncate text-sm font-medium',
@@ -541,7 +541,7 @@ export function Sidebar() {
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7 flex-shrink-0"
+              className="h-7 w-7 flex-shrink-0 hover:bg-muted/50 hover:text-foreground"
               onClick={handleCreateSession}
               title="New session"
             >

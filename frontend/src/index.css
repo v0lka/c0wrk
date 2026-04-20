@@ -27,25 +27,28 @@
 }
 
 @theme {
-  --color-background: oklch(0.145 0 0);
-  --color-foreground: oklch(0.985 0 0);
-  --color-card: oklch(0.145 0 0);
-  --color-card-foreground: oklch(0.985 0 0);
-  --color-popover: oklch(0.145 0 0);
-  --color-popover-foreground: oklch(0.985 0 0);
-  --color-primary: oklch(0.985 0 0);
-  --color-primary-foreground: oklch(0.205 0 0);
-  --color-secondary: oklch(0.269 0 0);
-  --color-secondary-foreground: oklch(0.985 0 0);
-  --color-muted: oklch(0.269 0 0);
-  --color-muted-foreground: oklch(0.708 0 0);
-  --color-accent: oklch(0.269 0 0);
-  --color-accent-foreground: oklch(0.985 0 0);
-  --color-destructive: oklch(0.396 0.141 25.723);
-  --color-destructive-foreground: oklch(0.637 0.237 25.331);
-  --color-border: oklch(0.269 0 0);
-  --color-input: oklch(0.269 0 0);
-  --color-ring: oklch(0.439 0 0);
+  --color-background: #282c34;
+  --color-foreground: #abb2bf;
+  --color-card: #252931;
+  --color-card-foreground: #abb2bf;
+  --color-popover: #252931;
+  --color-popover-foreground: #abb2bf;
+  --color-primary: #528bff;
+  --color-primary-foreground: #282c34;
+  --color-secondary: #1d2025;
+  --color-secondary-foreground: #cccccc;
+  --color-muted: #1d2025;
+  --color-muted-foreground: #cccccc;
+  --color-accent: #528bff;
+  --color-accent-foreground: #282c34;
+  --color-destructive: #e06c75;
+  --color-destructive-foreground: #282c34;
+  --color-border: #1d2025;
+  --color-input: #1d2025;
+  --color-ring: #528bff;
+  --color-success: #98c379;
+  --color-warning: #d19a66;
+  --color-info: #61afef;
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
@@ -104,12 +107,12 @@ html {
 .hljs-meta,
 .hljs-selector-id,
 .hljs-title {
-  color: #61aeee;
+  color: #61afef;
 }
 .hljs-built_in,
 .hljs-title.class_,
 .hljs-class .hljs-title {
-  color: #e6c07b;
+  color: #e5c07b;
 }
 
 * {
@@ -130,6 +133,75 @@ body {
 /* Fix Radix ScrollArea internal display:table that prevents text wrapping */
 [data-radix-scroll-area-viewport] > div {
   display: block !important;
+}
+
+/* One Dark prose overrides — bring markdown rendering in line with the theme.
+   These override Tailwind Typography's default stone/neutral palette. */
+.prose {
+  --tw-prose-body: #abb2bf;
+  --tw-prose-headings: #e5c07b;
+  --tw-prose-lead: #cccccc;
+  --tw-prose-links: #61afef;
+  --tw-prose-bold: #e5c07b;
+  --tw-prose-counters: #d19a66;
+  --tw-prose-bullets: #5c6370;
+  --tw-prose-hr: #1d2025;
+  --tw-prose-quotes: #5c6370;
+  --tw-prose-quote-borders: #1d2025;
+  --tw-prose-captions: #5c6370;
+  --tw-prose-code: #e06c75;
+  --tw-prose-pre-code: #abb2bf;
+  --tw-prose-pre-bg: #282c34;
+  --tw-prose-th-borders: #1d2025;
+  --tw-prose-td-borders: #1d2025;
+}
+.prose a {
+  text-decoration: none;
+}
+.prose a:hover {
+  text-decoration: underline;
+}
+.prose code:not(pre code) {
+  color: var(--tw-prose-code);
+  background-color: #1d2025;
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.25rem;
+}
+.prose pre {
+  background-color: var(--tw-prose-pre-bg);
+  border: 1px solid #1d2025;
+}
+.prose strong {
+  color: var(--tw-prose-bold);
+}
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  color: var(--tw-prose-headings);
+}
+.prose blockquote {
+  color: var(--tw-prose-quotes);
+  border-left-color: #528bff;
+}
+
+/* Global focus ring removal - theme uses visual feedback via other means */
+*:focus,
+*:focus-visible,
+*:focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Override Radix UI DropdownMenuItem hover/focus styles to match theme */
+[data-radix-dropdown-menu-item]:hover,
+[data-radix-dropdown-menu-item]:focus,
+[data-radix-dropdown-menu-item][data-highlighted] {
+  background-color: color-mix(in srgb, var(--color-muted) 50%, transparent) !important;
+  color: inherit !important;
+}
+
+[data-radix-dropdown-menu-item]:hover *,
+[data-radix-dropdown-menu-item]:focus *,
+[data-radix-dropdown-menu-item][data-highlighted] * {
+  color: inherit !important;
 }
 
 

@@ -6,7 +6,7 @@ import type { PlanItem } from '@/stores/panelStore'
 const LANE_WIDTH = 6
 const ROW_HEIGHT = 24
 const PADDING = 4
-const STROKE_COLOR = '#52525b'
+const STROKE_COLOR = 'var(--color-muted-foreground)'
 const STROKE_WIDTH = 1
 
 // SVG DAG column for plan items

@@ -61,7 +61,7 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
               />
             </pre>
           ) : (
-            <div className="prose prose-sm prose-stone dark:prose-invert max-w-full break-words min-w-0 bg-background border border-border rounded-lg px-4 py-3">
+            <div className="prose prose-sm dark:prose-invert max-w-full break-words min-w-0 bg-background border border-border rounded-lg px-4 py-3">
               <ErrorBoundary fallback={<div className="text-sm text-muted-foreground italic px-4 py-3">Failed to render message content</div>}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkEmoji, remarkBreaks]}

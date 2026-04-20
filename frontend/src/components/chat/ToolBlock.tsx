@@ -65,11 +65,11 @@ export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedA
     : Loader2
 
   const statusClass = status === 'success'
-    ? 'text-emerald-500'
+    ? 'text-success'
     : status === 'error'
-      ? 'text-red-500'
+      ? 'text-destructive'
       : status === 'awaiting_confirmation'
-        ? 'text-amber-500'
+        ? 'text-warning'
         : 'text-muted-foreground animate-spin'
 
   return (
@@ -86,7 +86,7 @@ export const ToolBlock = React.memo(function ToolBlock({ toolName, args, parsedA
         <Wrench className="h-3.5 w-3.5" />
         <span className="text-sm">Tool called: <span className="text-muted-foreground/60">{toolName}</span></span>
         {source !== undefined && source !== '' && source !== 'core' && (
-          <span className="text-[10px] font-medium bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
+          <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded">
             MCP
           </span>
         )}

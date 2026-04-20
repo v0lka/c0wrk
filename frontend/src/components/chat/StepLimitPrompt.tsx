@@ -49,7 +49,7 @@ export function StepLimitPrompt({ sessionId, metadata }: StepLimitPromptProps) {
   if (resolved === 'allow_once') {
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
-        <Check className="h-3.5 w-3.5 text-emerald-500" />
+        <Check className="h-3.5 w-3.5 text-success" />
         <span className="text-sm">Allowed once — continuing execution</span>
       </div>
     )
@@ -58,7 +58,7 @@ export function StepLimitPrompt({ sessionId, metadata }: StepLimitPromptProps) {
   if (resolved === 'allow_always') {
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
-        <InfinityIcon className="h-3.5 w-3.5 text-blue-500" />
+        <InfinityIcon className="h-3.5 w-3.5 text-info" />
         <span className="text-sm">Allowed always — unlimited execution</span>
       </div>
     )
@@ -67,17 +67,17 @@ export function StepLimitPrompt({ sessionId, metadata }: StepLimitPromptProps) {
   if (resolved === 'deny') {
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
-        <X className="h-3.5 w-3.5 text-red-500" />
+        <X className="h-3.5 w-3.5 text-destructive" />
         <span className="text-sm">Denied — execution stopped</span>
       </div>
     )
   }
 
   return (
-    <div className="border-2 border-orange-500/50 rounded-lg p-4 bg-orange-500/5 max-w-full overflow-hidden">
+    <div className="border-2 border-warning/50 rounded-lg p-4 bg-warning/5 max-w-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <AlertOctagon className="h-4 w-4 text-orange-500" />
+        <AlertOctagon className="h-4 w-4 text-warning" />
         <span className="text-sm font-medium">Tool Call Limit Reached</span>
       </div>
 

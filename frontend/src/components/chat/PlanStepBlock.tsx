@@ -30,10 +30,10 @@ function getStatusColor(status: string): string {
     case 'compact':
       return 'text-foreground'
     case 'warning':
-      return 'text-amber-500'
+      return 'text-warning'
     case 'emergency':
     case 'reject':
-      return 'text-red-500'
+      return 'text-destructive'
     default:
       return 'text-muted-foreground'
   }
@@ -57,17 +57,17 @@ export function PlanStepBlock({ stepId, stepNum, title, description, status, dur
   }
 
   const borderColor = status === 'running'
-    ? 'border-blue-500'
+    ? 'border-info'
     : status === 'completed'
-      ? 'border-emerald-500'
-      : 'border-red-500'
+      ? 'border-success'
+      : 'border-destructive'
 
   const StatusIcon = status === 'running' ? Loader2 : status === 'completed' ? CheckCircle2 : XCircle
   const iconClass = status === 'running'
-    ? 'text-blue-500 animate-spin'
+    ? 'text-info animate-spin'
     : status === 'completed'
-      ? 'text-emerald-500'
-      : 'text-red-500'
+      ? 'text-success'
+      : 'text-destructive'
 
   const stepLabel = `Step ${stepNum}: ${title}`
 
@@ -86,7 +86,7 @@ export function PlanStepBlock({ stepId, stepNum, title, description, status, dur
           <span className={cn("text-sm truncate", hasDescription && "cursor-default")}>{stepLabel}</span>
         </StepTooltip>
         {status === 'failed' && error && (
-          <span className="text-xs text-red-400 truncate max-w-[300px]" title={error}>
+          <span className="text-xs text-destructive truncate max-w-[300px]" title={error}>
             — {error}
           </span>
         )}

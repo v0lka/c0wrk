@@ -57,7 +57,7 @@ interface TooltipMarkdownProps {
 
 export function TooltipMarkdown({ content }: TooltipMarkdownProps) {
   return (
-    <div className="prose prose-sm prose-neutral dark:prose-invert prose-xs max-w-full break-words min-w-0">
+    <div className="prose prose-sm dark:prose-invert prose-xs max-w-full break-words min-w-0">
       <ErrorBoundary fallback={<span>{content}</span>}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkEmoji, remarkBreaks]}

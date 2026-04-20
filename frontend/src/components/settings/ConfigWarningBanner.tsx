@@ -35,10 +35,10 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
   // Show migration success message
   if (migrated && migrationMsg && errors.length === 0) {
     return (
-      <div className={`flex items-start gap-2 p-3 rounded-md bg-blue-500/10 border border-blue-500/20 text-sm ${className}`}>
-        <Info className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
+      <div className={`flex items-start gap-2 p-3 rounded-md bg-primary/10 border border-primary/20 text-sm ${className}`}>
+        <Info className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
         <div>
-          <span className="font-medium text-blue-500">Config migrated: </span>
+          <span className="font-medium text-primary">Config migrated: </span>
           <span className="text-muted-foreground">{migrationMsg}</span>
         </div>
       </div>

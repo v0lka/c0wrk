@@ -26,26 +26,26 @@ interface PlanStepView {
 function StatusIcon({ status }: { status: PlanStepView['status'] }) {
   switch (status) {
     case 'done':
-      return <CheckCircle2 className="h-4 w-4 text-green-500" />
+      return <CheckCircle2 className="h-4 w-4 text-success" />
     case 'running':
-      return <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />
+      return <Loader2 className="h-4 w-4 text-info animate-spin" />
     case 'waiting':
       return <Circle className="h-4 w-4 text-muted-foreground" />
     case 'failed':
-      return <XCircle className="h-4 w-4 text-red-500" />
+      return <XCircle className="h-4 w-4 text-destructive" />
   }
 }
 
 function StatusBadge({ status }: { status: PlanStepView['status'] }) {
   switch (status) {
     case 'done':
-      return <Badge variant="secondary" className="text-xs bg-green-500/10 text-green-500 hover:bg-green-500/20">Done</Badge>
+      return <Badge variant="secondary" className="text-xs bg-success/10 text-success hover:bg-success/20">Done</Badge>
     case 'running':
-      return <Badge variant="secondary" className="text-xs bg-blue-500/10 text-blue-500 hover:bg-blue-500/20">Running</Badge>
+      return <Badge variant="secondary" className="text-xs bg-info/10 text-info hover:bg-info/20">Running</Badge>
     case 'waiting':
       return <Badge variant="secondary" className="text-xs text-muted-foreground">Waiting</Badge>
     case 'failed':
-      return <Badge variant="secondary" className="text-xs bg-red-500/10 text-red-500 hover:bg-red-500/20">Failed</Badge>
+      return <Badge variant="secondary" className="text-xs bg-destructive/10 text-destructive hover:bg-destructive/20">Failed</Badge>
   }
 }
 

@@ -85,7 +85,7 @@ Each step MUST include two text fields:
 
 Example:
   "summary": "Add JWT auth middleware",
-  "description": "# Add JWT auth middleware\n## What:\nImplement JWT-based authentication middleware for all protected API endpoints.\n##How:\nCreate a middleware function that extracts and validates JWT tokens from the Authorization header using the existing auth package. Use RS256 signature verification.\n## Where:\nbackend/middleware/auth.go (new file), backend/routes/api.go (wire middleware)\n## Acceptance Criteria:\n- All protected endpoints return 401 for missing or invalid tokens\n- Valid tokens allow request processing with user context\n- Token expiration is properly handled with appropriate error messages"
+  "description": "## Add JWT auth middleware\n### What:\nImplement JWT-based authentication middleware for all protected API endpoints.\n### How:\nCreate a middleware function that extracts and validates JWT tokens from the Authorization header using the existing auth package. Use RS256 signature verification.\n### Where:\nbackend/middleware/auth.go (new file), backend/routes/api.go (wire middleware)\n### Acceptance Criteria:\n- All protected endpoints return 401 for missing or invalid tokens\n- Valid tokens allow request processing with user context\n- Token expiration is properly handled with appropriate error messages"
 
 ## Output Expectations
 

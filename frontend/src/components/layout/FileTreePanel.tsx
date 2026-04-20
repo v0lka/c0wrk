@@ -181,15 +181,15 @@ function TreeNode({
   if (visiblePaths && !visiblePaths.has(node.path)) return null
 
   // Determine text color: yellow for matched nodes, default otherwise
-  let textColorClass = isHidden ? 'text-zinc-500' : 'text-zinc-300'
+  let textColorClass = isHidden ? 'text-muted-foreground' : 'text-foreground'
   if (isMatch) {
-    textColorClass = 'text-yellow-400'
+    textColorClass = 'text-warning'
   }
 
   return (
     <>
       <div
-        className={`flex items-center gap-1 px-2 py-0.5 text-sm hover:bg-zinc-800/50 cursor-default select-none ${textColorClass}`}
+        className={`flex items-center gap-1 px-2 py-0.5 text-sm hover:bg-muted/50 cursor-default select-none ${textColorClass}`}
         style={{ paddingLeft: depth * 16 + 8 }}
         onClick={handleClick}
         role={node.is_dir ? 'treeitem' : undefined}
@@ -198,10 +198,10 @@ function TreeNode({
         {/* Chevron for directories */}
         {node.is_dir ? (
           isLoading ? (
-            <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-zinc-500" />
+            <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-muted-foreground" />
           ) : (
             <ChevronRight
-              className={`h-3.5 w-3.5 flex-shrink-0 text-zinc-500 transition-transform duration-150 ${
+              className={`h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform duration-150 ${
                 isExpanded ? 'rotate-90' : ''
               }`}
             />
@@ -333,11 +333,11 @@ export function FileTreePanel() {
   if (!activeProjectId) {
     return (
       <div className="h-full bg-card flex flex-col">
-        <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-border flex-shrink-0">
+        <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border flex-shrink-0">
           Workspace
         </div>
         <div className="flex-1 flex items-center justify-center">
-          <span className="text-xs text-zinc-600">No project selected</span>
+          <span className="text-xs text-muted-foreground/50">No project selected</span>
         </div>
       </div>
     )
@@ -355,18 +355,18 @@ export function FileTreePanel() {
   return (
     <div className="h-full bg-card flex flex-col">
       {/* Filter bar */}
-      <div className="px-2 py-1.5 flex items-center gap-1 border-b border-zinc-800 flex-shrink-0">
+      <div className="px-2 py-1.5 flex items-center gap-1 border-b border-border flex-shrink-0">
         <input
           type="text"
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
           placeholder={`Filter (${filterMode})…`}
-          className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-zinc-500 transition-colors"
+          className="flex-1 min-w-0 bg-secondary border border-border rounded px-1.5 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-ring transition-colors"
         />
         {filterText && (
           <button
             onClick={handleClearFilter}
-            className="p-0.5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 transition-colors"
+            className="p-0.5 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors"
             title="Clear filter"
           >
             <X className="h-3.5 w-3.5" />
@@ -374,10 +374,10 @@ export function FileTreePanel() {
         )}
         <button
           onClick={handleToggleMode}
-          className={`p-0.5 rounded hover:bg-zinc-700 transition-colors ${
+          className={`p-0.5 rounded hover:bg-accent/50 transition-colors ${
             filterMode === 'regex'
-              ? 'text-blue-400 hover:text-blue-300'
-              : 'text-zinc-500 hover:text-zinc-300'
+              ? 'text-info hover:text-info/80'
+              : 'text-muted-foreground hover:text-foreground'
           }`}
           title={`Mode: ${filterMode} (click to toggle)`}
         >
@@ -392,11 +392,11 @@ export function FileTreePanel() {
       <ScrollArea className="flex-1">
         <div className="py-1" role="tree">
           {rootEntries === undefined ? (
-            <div className="px-3 py-2 text-xs text-zinc-500">
+            <div className="px-3 py-2 text-xs text-muted-foreground">
               {isFilterActive && recursiveLoading ? 'Searching…' : 'Loading…'}
             </div>
           ) : rootEntries.length === 0 ? (
-            <div className="px-3 py-4 text-xs text-zinc-600 text-center">
+            <div className="px-3 py-4 text-xs text-muted-foreground/50 text-center">
               {isFilterActive ? 'No matches found' : 'No files created yet'}
             </div>
           ) : (

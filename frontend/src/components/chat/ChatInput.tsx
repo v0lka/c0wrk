@@ -141,7 +141,7 @@ export function ChatInput() {
   }
 
   return (
-    <div className="border-t border-border bg-card p-4">
+    <div className="border-t border-border bg-background p-4">
       <div className="flex flex-col">
         <div className="relative">
           <textarea
@@ -165,10 +165,10 @@ export function ChatInput() {
           
           {showCancel ? (
             <Button
-              variant="destructive"
+              variant="outline"
               size="icon"
               onClick={handleCancel}
-              className="shrink-0 h-8 w-8 rounded-md"
+              className="shrink-0 h-8 w-8 rounded-md border-[#be5046] text-[#be5046] hover:bg-[#be5046]/10 active:bg-[#be5046]/20"
               title="Cancel"
               aria-label="Cancel task"
             >
@@ -178,7 +178,7 @@ export function ChatInput() {
             <Button
               onClick={handleSend}
               disabled={!text.trim() || isInputDisabled}
-              className="shrink-0 h-8 w-8 rounded-md bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-colors text-white"
+              className="shrink-0 h-8 w-8 rounded-md bg-[#98c379] hover:bg-[#98c379]/90 active:bg-[#98c379]/75 transition-colors text-[#282c34]"
               title="Send message"
               aria-label="Send message"
             >

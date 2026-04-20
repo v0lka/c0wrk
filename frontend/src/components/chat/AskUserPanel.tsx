@@ -111,7 +111,7 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
   if (resolved !== null) {
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
-        <Check className="h-3.5 w-3.5 text-blue-500" />
+        <Check className="h-3.5 w-3.5 text-primary" />
         <span className="text-sm">Answered: {resolved}</span>
       </div>
     )
@@ -124,10 +124,10 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
   })
 
   return (
-    <div className="border-2 border-blue-500/50 rounded-lg p-4 bg-blue-500/5 max-w-full overflow-hidden">
+    <div className="border-2 border-primary/50 rounded-lg p-4 bg-primary/5 max-w-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <HelpCircle className="h-4 w-4 text-blue-500" />
+        <HelpCircle className="h-4 w-4 text-primary" />
         <span className="text-sm font-medium">{questions.length > 1 ? 'Questions' : 'Question'}</span>
       </div>
 
@@ -153,7 +153,7 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
                       onClick={() => toggleOption(q.id, opt.value)}
                       className={`w-full flex items-center gap-3 p-2.5 rounded-md border text-left transition-colors ${
                         isSelected
-                          ? 'bg-blue-500/10 border-blue-500/50'
+                          ? 'bg-primary/10 border-primary/50'
                           : 'border-border hover:bg-accent/50'
                       }`}
                     >
@@ -162,16 +162,16 @@ export function AskUserPanel({ sessionId, metadata }: AskUserPanelProps) {
                         className={`shrink-0 flex items-center justify-center ${
                           q.multi_select ? 'h-4 w-4 rounded-sm' : 'h-4 w-4 rounded-full'
                         } border ${
-                          isSelected ? 'border-blue-500 bg-blue-500' : 'border-muted-foreground'
+                          isSelected ? 'border-primary bg-primary' : 'border-muted-foreground'
                         }`}
                       >
                         {isSelected && (
-                          <Check className="h-3 w-3 text-white" />
+                          <Check className="h-3 w-3 text-primary-foreground" />
                         )}
                       </div>
                       <span className="text-sm flex-1">{opt.label}</span>
                       {isRecommended && (
-                        <Star className="h-3.5 w-3.5 text-yellow-400 shrink-0" />
+                        <Star className="h-3.5 w-3.5 text-warning shrink-0" />
                       )}
                     </button>
                   )

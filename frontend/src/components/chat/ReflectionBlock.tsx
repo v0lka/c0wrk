@@ -19,9 +19,9 @@ interface ReflectionBlockProps {
 }
 
 const actionBadgeColors: Record<string, string> = {
-  retry: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-  replan: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  abort: 'bg-red-500/15 text-red-400 border-red-500/30',
+  retry: 'bg-warning/15 text-warning border-warning/30',
+  replan: 'bg-info/15 text-info border-info/30',
+  abort: 'bg-destructive/15 text-destructive border-destructive/30',
 }
 
 export function ReflectionBlock({
@@ -41,9 +41,9 @@ export function ReflectionBlock({
   const hasDetails = rootCause || actionPlan || failureAnalysis || reasoning || hypotheses.length > 0
 
   return (
-    <div className="border-l-2 border-amber-500/60 rounded pl-3 py-2">
+    <div className="border-l-2 border-warning/60 rounded pl-3 py-2">
       <div className="flex items-center gap-1.5 text-sm">
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
         <span className="text-muted-foreground">{summary}</span>
         {suggestedAction && (
           <span className={`text-xs px-1.5 py-0.5 rounded border ${badgeColor}`}>

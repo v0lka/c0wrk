@@ -157,7 +157,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
             {creating ? 'Creating...' : 'Create'}
           </Button>
         </DialogFooter>
-        {error && <p className="text-sm text-red-500 mt-1 px-6 pb-4">{error}</p>}
+        {error && <p className="text-sm text-destructive mt-1 px-6 pb-4">{error}</p>}
       </DialogContent>
     </Dialog>
   )

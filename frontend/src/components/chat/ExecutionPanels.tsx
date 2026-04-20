@@ -26,11 +26,11 @@ function PlanStatusIcon({ status }: { status: PlanItem['status'] }) {
     case 'pending':
       return <CircleHelp className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
     case 'running':
-      return <CircleDot className="h-3.5 w-3.5 text-blue-400 animate-pulse flex-shrink-0" />
+      return <CircleDot className="h-3.5 w-3.5 text-info animate-pulse flex-shrink-0" />
     case 'completed':
-      return <CircleCheck className="h-3.5 w-3.5 text-emerald-400 flex-shrink-0" />
+      return <CircleCheck className="h-3.5 w-3.5 text-success flex-shrink-0" />
     case 'failed':
-      return <CircleX className="h-3.5 w-3.5 text-red-400 flex-shrink-0" />
+      return <CircleX className="h-3.5 w-3.5 text-destructive flex-shrink-0" />
   }
 }
 
@@ -122,7 +122,7 @@ export function ExecutionPanels() {
   }
 
   return (
-    <div className="border-t border-border bg-card">
+    <div className="border-t border-border bg-background">
       {/* Execution plan panel */}
       <div className="group">
         <PanelHeader

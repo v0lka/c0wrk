@@ -34,10 +34,10 @@ export function ResumeActionPanel({ sessionId, content, metadata }: ResumeAction
   }
 
   return (
-    <div className="border-2 border-red-500/50 rounded-lg p-4 bg-red-500/5 max-w-full overflow-hidden">
+    <div className="border-2 border-destructive/50 rounded-lg p-4 bg-destructive/5 max-w-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle className="h-4 w-4 text-red-500" />
+        <AlertTriangle className="h-4 w-4 text-destructive" />
         <span className="text-sm font-medium">Task Failed</span>
       </div>
 

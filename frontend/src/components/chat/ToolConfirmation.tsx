@@ -135,7 +135,7 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
   if (resolved === 'confirmed') {
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
-        <Check className="h-3.5 w-3.5 text-emerald-500" />
+        <Check className="h-3.5 w-3.5 text-success" />
         <span className="text-sm">Confirmed: {tool}</span>
       </div>
     )
@@ -144,7 +144,7 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
   if (resolved === 'denied') {
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
-        <X className="h-3.5 w-3.5 text-red-500" />
+        <X className="h-3.5 w-3.5 text-destructive" />
         <span className="text-sm">Denied: {tool}</span>
       </div>
     )
@@ -162,29 +162,29 @@ export function ToolConfirmation({ sessionId, metadata }: ToolConfirmationProps)
   }
 
   return (
-    <div className="border-2 border-amber-500/50 rounded-lg p-4 bg-amber-500/5 max-w-full overflow-hidden">
+    <div className="border-2 border-warning/50 rounded-lg p-4 bg-warning/5 max-w-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle className="h-4 w-4 text-amber-500" />
+        <AlertTriangle className="h-4 w-4 text-warning" />
         <span className="text-sm font-medium">Tool Confirmation Required</span>
       </div>
 
       {/* Judge reasoning — yellow/amber warning style */}
       {judgeReasoning && (
-        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-md">
+        <div className="mb-4 p-3 bg-warning/10 border border-warning/30 rounded-md">
           <div className="flex items-start gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+            <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
             <div>
-              <p className="text-xs font-medium text-amber-600 dark:text-amber-300 mb-1">Agent Verdict</p>
-              <p className="text-sm text-amber-900 dark:text-amber-100">{judgeReasoning}</p>
+              <p className="text-xs font-medium text-warning mb-1">Agent Verdict</p>
+              <p className="text-sm text-foreground">{judgeReasoning}</p>
             </div>
           </div>
         </div>
       )}
 
       {judgeError && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md">
-          <p className="text-xs text-red-600 dark:text-red-400">{judgeError}</p>
+        <div className="mb-4 p-3 bg-destructive/10 border border-destructive/30 rounded-md">
+          <p className="text-xs text-destructive">{judgeError}</p>
         </div>
       )}
 

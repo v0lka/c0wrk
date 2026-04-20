@@ -22,8 +22,8 @@ export function IndexingStatus() {
         <Separator orientation="vertical" className="h-4" />
         <div className="flex items-center gap-2 min-w-0">
           <div className="relative flex items-center justify-center h-3 w-3">
-            <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping" />
-            <Database className="relative h-3 w-3 text-blue-500" />
+            <span className="absolute inline-flex h-full w-full rounded-full bg-info opacity-75 animate-ping" />
+            <Database className="relative h-3 w-3 text-info" />
           </div>
           <span className="text-muted-foreground whitespace-nowrap">
             Indexing: {formatCount(filesIndexed)}/{formatCount(totalFiles)} ({Math.round(progress)}%)
@@ -31,7 +31,7 @@ export function IndexingStatus() {
           {/* Progress bar */}
           <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
             <div
-              className="h-full rounded-full bg-blue-500 transition-all duration-300 ease-out"
+              className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
               style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
             />
           </div>
@@ -50,14 +50,14 @@ export function IndexingStatus() {
       <>
         <Separator orientation="vertical" className="h-4" />
         <div className="flex items-center gap-2 min-w-0">
-          <Loader2 className="h-3 w-3 animate-spin text-amber-500" />
+          <Loader2 className="h-3 w-3 animate-spin text-warning" />
           <span className="text-muted-foreground whitespace-nowrap">
             Updating: {formatCount(filesIndexed)}/{formatCount(totalFiles)} ({Math.round(progress)}%)
           </span>
           {/* Progress bar */}
           <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
             <div
-              className="h-full rounded-full bg-amber-500 transition-all duration-300 ease-out"
+              className="h-full rounded-full bg-warning transition-all duration-300 ease-out"
               style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
             />
           </div>
@@ -76,7 +76,7 @@ export function IndexingStatus() {
     <>
       <Separator orientation="vertical" className="h-4" />
       <div className="flex items-center gap-1.5">
-        <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+        <CheckCircle2 className="h-3 w-3 text-success" />
         <span className="text-muted-foreground">
           Index ready{branch ? ` · ${branch}` : ''}{totalFiles > 0 ? ` · ${formatCount(totalFiles)} files` : ''}
         </span>

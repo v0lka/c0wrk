@@ -562,11 +562,11 @@ export function MCPSettings() {
             <div className="flex items-center gap-2 mb-1">
               <span className="font-medium text-sm">Codebase Memory</span>
               {cmInstalled ? (
-                <Badge variant="secondary" className="text-xs bg-green-500/10 text-green-600 border-green-500/20">
+                <Badge variant="secondary" className="text-xs bg-success/10 text-success border-success/20">
                   Installed
                 </Badge>
               ) : (
-                <Badge variant="secondary" className="text-xs bg-orange-500/10 text-orange-600 border-orange-500/20">
+                <Badge variant="secondary" className="text-xs bg-warning/10 text-warning border-warning/20">
                   Not Installed
                 </Badge>
               )}
@@ -615,11 +615,11 @@ export function MCPSettings() {
             <div className="flex items-center gap-2 mb-1">
               <span className="font-medium text-sm">RTK (Command Optimizer)</span>
               {rtkInstalled ? (
-                <Badge variant="secondary" className="text-xs bg-green-500/10 text-green-600 border-green-500/20">
+                <Badge variant="secondary" className="text-xs bg-success/10 text-success border-success/20">
                   Installed
                 </Badge>
               ) : (
-                <Badge variant="secondary" className="text-xs bg-orange-500/10 text-orange-600 border-orange-500/20">
+                <Badge variant="secondary" className="text-xs bg-warning/10 text-warning border-warning/20">
                   Not Installed
                 </Badge>
               )}
@@ -711,9 +711,9 @@ export function MCPSettings() {
 
                       {/* Status dot */}
                       {server.connected ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-500" />
+                        <CheckCircle2 className="h-4 w-4 text-success" />
                       ) : (
-                        <AlertCircle className="h-4 w-4 text-red-500" />
+                        <AlertCircle className="h-4 w-4 text-destructive" />
                       )}
 
                       {/* Server name */}
