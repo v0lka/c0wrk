@@ -624,10 +624,6 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 			Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 		},
-		BatchLimits: tools.BatchLimits{
-			MaxCalls:       cfg.ToolLimits.BatchMaxCalls,
-			MaxConcurrency: cfg.ToolLimits.BatchMaxConcurrency,
-		},
 		BashTimeouts: tools.BashTimeouts{
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,

@@ -16,7 +16,6 @@ type (
 	GlobLimits           = builtins.GlobLimits
 	WebFetchLimits       = builtins.WebFetchLimits
 	WebSearchLimits      = builtins.WebSearchLimits
-	BatchLimits          = builtins.BatchLimits
 	BashTimeouts         = builtins.BashTimeouts
 	VectorSearchFunc     = builtins.VectorSearchFunc
 	VectorSearchWaitFunc = builtins.VectorSearchWaitFunc
@@ -30,7 +29,6 @@ type BuiltinToolsConfig struct {
 	GlobLimits      GlobLimits
 	WebFetchLimits  WebFetchLimits
 	WebSearchLimits WebSearchLimits
-	BatchLimits     BatchLimits
 	BashTimeouts    BashTimeouts
 	BashBlacklist   []string
 	RtkPath         string
@@ -95,9 +93,6 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	if cfg.VectorSearchFunc != nil {
 		registry.Register(builtins.NewVectorSearchTool(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc))
 	}
-
-	// Batch (must be registered after other tools since it dispatches to them)
-	registry.Register(builtins.NewBatchToolWithLimits(registry, cfg.BatchLimits))
 
 	// Ask user (optional)
 	if cfg.AskUserFunc != nil {

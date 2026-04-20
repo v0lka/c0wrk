@@ -140,8 +140,6 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			GlobMaxResults:       cfg.ToolLimits.GlobMaxResults,
 			WebSearchMaxResults:  cfg.ToolLimits.WebSearchMaxResults,
 			WebFetchMaxBodySize:  cfg.ToolLimits.WebFetchMaxBodySize,
-			BatchMaxCalls:        cfg.ToolLimits.BatchMaxCalls,
-			BatchMaxConcurrency:  cfg.ToolLimits.BatchMaxConcurrency,
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
 			BashMaxTimeout:   cfg.Timeouts.BashMaxTimeout,

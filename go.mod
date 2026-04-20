@@ -40,7 +40,9 @@ require (
 	github.com/pjbgf/sha1cd v0.5.0 // indirect
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
+	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/tools v0.44.0 // indirect
 )
 
 require (

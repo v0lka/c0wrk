@@ -828,7 +828,6 @@ func TestPlanWithExploration_InformedPath(t *testing.T) {
 		{"glob", ""},
 		{"ripgrep", ""},
 		{"search_files", ""},
-		{"batch", ""},
 	})
 
 	planner := NewPlanner(mockLLM)
@@ -878,7 +877,6 @@ func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
 		{"glob", ""},
 		{"ripgrep", ""},
 		{"search_files", ""},
-		{"batch", ""},
 	})
 
 	planner := NewPlanner(mockLLM)
@@ -895,17 +893,6 @@ func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
 	}
 	if len(plannerTools) == 0 {
 		t.Fatal("expected FS planner tools, got none")
-	}
-
-	// Verify batch is included
-	hasBatch := false
-	for _, pt := range plannerTools {
-		if pt.Name == "batch" {
-			hasBatch = true
-		}
-	}
-	if !hasBatch {
-		t.Error("expected batch tool in planner tools")
 	}
 
 	ctx := WithDomain(context.Background(), "code")
@@ -1040,7 +1027,6 @@ func TestGetPlannerTools(t *testing.T) {
 			{"glob", ""},
 			{"ripgrep", ""},
 			{"search_files", ""},
-			{"batch", ""},
 			{"write_file", ""}, // should NOT be included
 		})
 
@@ -1053,7 +1039,7 @@ func TestGetPlannerTools(t *testing.T) {
 			names[td.Name] = true
 		}
 
-		expected := []string{"get_architecture", "query_codebase", "read_file", "list_directory", "glob", "ripgrep", "search_files", "batch"}
+		expected := []string{"get_architecture", "query_codebase", "read_file", "list_directory", "glob", "ripgrep", "search_files"}
 		for _, e := range expected {
 			if !names[e] {
 				t.Errorf("expected tool %q in result", e)
@@ -1068,7 +1054,6 @@ func TestGetPlannerTools(t *testing.T) {
 		reg := newPlannerTestRegistry([]struct{ name, source string }{
 			{"read_file", ""},
 			{"glob", ""},
-			{"batch", ""},
 		})
 
 		p := &Planner{toolRegistry: reg}
@@ -1079,7 +1064,7 @@ func TestGetPlannerTools(t *testing.T) {
 			names[td.Name] = true
 		}
 
-		if !names["read_file"] || !names["glob"] || !names["batch"] {
+		if !names["read_file"] || !names["glob"] {
 			t.Errorf("expected FS tools in result, got %v", names)
 		}
 
@@ -1095,26 +1080,6 @@ func TestGetPlannerTools(t *testing.T) {
 		result := p.getPlannerTools()
 		if result != nil {
 			t.Errorf("expected nil for nil registry, got %v", result)
-		}
-	})
-
-	t.Run("batch_always_included", func(t *testing.T) {
-		reg := newPlannerTestRegistry([]struct{ name, source string }{
-			{"read_file", ""},
-			{"batch", ""},
-		})
-
-		p := &Planner{toolRegistry: reg}
-		result := p.getPlannerTools()
-
-		hasBatch := false
-		for _, td := range result {
-			if td.Name == "batch" {
-				hasBatch = true
-			}
-		}
-		if !hasBatch {
-			t.Error("expected batch to be included when FS tools are present")
 		}
 	})
 }
@@ -1167,7 +1132,6 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 			reg := newPlannerTestRegistry([]struct{ name, source string }{
 				{"get_architecture", "codebase-memory-server"},
 				{"read_file", ""},
-				{"batch", ""},
 			})
 
 			planner := NewPlanner(mockLLM)
@@ -1261,7 +1225,6 @@ func TestPlanWithExploration_ExecutorError_FallsBackToDirect(t *testing.T) {
 		{"glob", ""},
 		{"ripgrep", ""},
 		{"search_files", ""},
-		{"batch", ""},
 	})
 
 	planner := NewPlanner(mockLLM)

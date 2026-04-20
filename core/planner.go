@@ -170,13 +170,13 @@ type Planner struct {
 	llm             LLMCaller
 	logger          *slog.Logger
 	modelRegistry   *llm.ModelRegistry
-	model           string                  // active model name for Resolve()
-	toolRegistry    *coretools.ToolRegistry // to discover available tools
-	tokenCounter    llm.TokenCounter        // for context window management
-	contextFactory  ContextManagerFactory   // for creating the exploration ContextManager
+	model           string                                        // active model name for Resolve()
+	toolRegistry    *coretools.ToolRegistry                       // to discover available tools
+	tokenCounter    llm.TokenCounter                              // for context window management
+	contextFactory  ContextManagerFactory                         // for creating the exploration ContextManager
 	callerForStep   func(cm agent.ContextManager) agent.LLMCaller // optional, for context tracker correction
-	maxExploreSteps int                     // budget for exploration (default: 7)
-	emitter         Emitter                 // for logging/events (optional, nil-safe)
+	maxExploreSteps int                                           // budget for exploration (default: 7)
+	emitter         Emitter                                       // for logging/events (optional, nil-safe)
 }
 
 // NewPlanner creates a new Planner with the given LLM caller.
@@ -433,7 +433,6 @@ var fsToolNames = map[string]bool{
 	"search_files":    true,
 	"search_content":  true,
 	"semantic_search": true,
-	"batch":           true,
 }
 
 // getPlannerTools assembles the two-tier tool set for the planner.

@@ -14,7 +14,6 @@ import (
 // excluded from policy configuration, and bypass the tool judge entirely.
 var internalTools = map[string]struct{}{
 	"ask_user":          {},
-	"batch":             {},
 	"finish":            {},
 	"list_step_outputs": {},
 	"read_step_output":  {},

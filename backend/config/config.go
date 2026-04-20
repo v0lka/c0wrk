@@ -235,10 +235,6 @@ type ToolLimitsConfig struct {
 
 	// Web fetch limit
 	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // max response body size in bytes (default: 102400)
-
-	// Batch limits
-	BatchMaxCalls       int `yaml:"batchMaxCalls"`       // max tool calls per batch request (default: 50)
-	BatchMaxConcurrency int `yaml:"batchMaxConcurrency"` // max parallel goroutines for batch (default: 20)
 }
 
 // TimeoutsConfig holds configurable timeout values for various operations.

@@ -14,7 +14,7 @@ You are a request classifier. Analyze the user's request to determine the best e
 
 - "code": Primarily file operations, code implementation, tests, or build commands
 - "research": Primarily web search, documentation gathering, analysis, or information retrieval
-- "mixed": Spans BOTH objective (code) AND subjective (research) criteria, requires BOTH file tools AND web tools, has distinct phases needing different approaches
+- "mixed": Spans BOTH objective (code) AND subjective (research) criteria, requires BOTH code exploration or file tools AND web tools, has distinct phases needing different approaches
 - "general": Conversational, unclear, or doesn't fit other categories
 
 When domain is "mixed": complexity is typically >= 3.

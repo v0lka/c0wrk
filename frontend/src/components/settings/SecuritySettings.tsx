@@ -46,7 +46,6 @@ const BLACKLIST_ENABLED_TOOLS = ['bash_exec']
 // Internal system tools that are always allowed and should not appear in UI
 const INTERNAL_TOOLS = new Set([
   'ask_user',
-  'batch',
   'finish',
   'list_step_outputs',
   'read_step_output',
