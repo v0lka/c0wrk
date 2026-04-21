@@ -1,5 +1,4 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { useScrollStore } from '@/stores/scrollStore'
 import { ChatMessageUI } from '@/stores/chatStore'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
@@ -30,14 +29,12 @@ export function ChatScrollManager({
   // Cache viewport element
   useEffect(() => {
     if (!scrollRef.current) return
-    const vp = scrollRef.current.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement | null
+    const vp = scrollRef.current
     viewportRef.current = vp
-    if (vp) {
-      prevScrollState.current = {
-        scrollTop: vp.scrollTop,
-        scrollHeight: vp.scrollHeight,
-        clientHeight: vp.clientHeight,
-      }
+    prevScrollState.current = {
+      scrollTop: vp.scrollTop,
+      scrollHeight: vp.scrollHeight,
+      clientHeight: vp.clientHeight,
     }
   }, [scrollRef])
 
@@ -108,7 +105,7 @@ export function ChatScrollManager({
   }, [setScrollToStep])
 
   return (
-    <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
+    <div className="flex-1 min-w-0 overflow-auto custom-scrollbar" ref={scrollRef}>
       {children}
       <ChatNewActivityBanner
         hasNewActivity={hasNewActivity}
@@ -116,6 +113,6 @@ export function ChatScrollManager({
         viewportRef={viewportRef}
         setHasNewActivity={setHasNewActivity}
       />
-    </ScrollArea>
+    </div>
   )
 }

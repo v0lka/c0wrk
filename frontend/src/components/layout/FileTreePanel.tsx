@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { ChevronRight, Loader2, X, Regex, Asterisk } from 'lucide-react'
 import picomatch from 'picomatch'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { useFileTreeStore, type FileNode, type GitStatusEntry } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { FileIcon } from './FileIcon'
@@ -441,7 +440,7 @@ export function FileTreePanel() {
         </button>
       </div>
 
-      <ScrollArea className="flex-1">
+      <div className="flex-1 overflow-auto custom-scrollbar">
         <div className="py-1" role="tree">
           {rootEntries === undefined ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">
@@ -468,7 +467,7 @@ export function FileTreePanel() {
             ))
           )}
         </div>
-      </ScrollArea>
+      </div>
     </div>
   )
 }

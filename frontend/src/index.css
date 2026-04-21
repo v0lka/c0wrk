@@ -132,11 +132,6 @@ body {
   font-size: 0.75rem;
 }
 
-/* Fix Radix ScrollArea internal display:table that prevents text wrapping */
-[data-radix-scroll-area-viewport] > div {
-  display: block !important;
-}
-
 /* One Dark prose overrides — bring markdown rendering in line with the theme.
    These override Tailwind Typography's default stone/neutral palette. */
 .prose {
@@ -206,16 +201,20 @@ body {
   color: inherit !important;
 }
 
-/* Custom scrollbar for native scrollable elements (textarea, etc.) */
+/* Custom scrollbar for native scrollable elements — matches ScrollArea styling */
 .custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
+  background: transparent;
+  border-left: 1px solid transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
+  background-clip: padding-box;
   background-color: var(--color-border);
-  border-radius: 3px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
 }
 
 
