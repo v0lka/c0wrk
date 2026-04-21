@@ -67,7 +67,8 @@ async function unwatchDirectory(path: string): Promise<void> {
 async function fetchGitStatusFromBackend(path: string): Promise<Record<string, GitStatusEntry>> {
   if (!window?.go?.desktop?.App?.GetGitStatus) return {}
   try {
-    return await window.go.desktop.App.GetGitStatus(path)
+    const result = await window.go.desktop.App.GetGitStatus(path)
+    return result ?? {}
   } catch (err) {
     logger.error('[fileTreeStore] Failed to fetch git status:', err)
     return {}

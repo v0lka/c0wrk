@@ -1,130 +1,52 @@
-import { useRef, useCallback, useState, useEffect, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect } from 'react'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { ExecutionPanels } from '@/components/chat/ExecutionPanels'
 import { PendingActionsBar } from '@/components/chat/PendingActionsBar'
+import { FileViewerPanel } from '@/components/fileViewer/FileViewerPanel'
 import { useProjectStore } from '@/stores/projectStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useUIStore } from '@/stores/uiStore'
 import { NoProjectEmptyState } from '@/components/project/NoProjectEmptyState'
+import { useResizeHandle } from '@/hooks/useResize'
+import { ResizeHandle } from '@/components/ResizeHandle'
+import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 
 const SIDEBAR_DEFAULT = 300
 const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 500
 
-function useResizeHandle(
-  defaultWidth: number,
-  minWidth: number,
-  maxWidth: number,
-  side: 'left' | 'right'
-) {
-  const [width, setWidth] = useState(defaultWidth)
-  const dragging = useRef(false)
-  const startX = useRef(0)
-  const startWidth = useRef(0)
-  const moveHandlerRef = useRef<((ev: globalThis.MouseEvent) => void) | null>(null)
-  const upHandlerRef = useRef<(() => void) | null>(null)
-  const mountedRef = useRef(true)
+const SIDEBAR_COLLAPSED_WIDTH = 32
 
-  useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-      if (moveHandlerRef.current) {
-        document.removeEventListener('mousemove', moveHandlerRef.current)
-        moveHandlerRef.current = null
-      }
-      if (upHandlerRef.current) {
-        document.removeEventListener('mouseup', upHandlerRef.current)
-        upHandlerRef.current = null
-      }
-      dragging.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-  }, [])
+const FILE_VIEWER_DEFAULT = 500
+const FILE_VIEWER_MIN = 250
+const FILE_VIEWER_MAX = 900
 
-  const onMouseDown = useCallback(
-    (e: ReactMouseEvent) => {
-      e.preventDefault()
-      dragging.current = true
-      startX.current = e.clientX
-      startWidth.current = width
-
-      const onMouseMove = (ev: MouseEvent) => {
-        if (!dragging.current) return
-        const delta = ev.clientX - startX.current
-        const newWidth =
-          side === 'left'
-            ? startWidth.current + delta
-            : startWidth.current - delta
-        setWidth(Math.max(minWidth, Math.min(maxWidth, newWidth)))
-      }
-
-      const onMouseUp = () => {
-        dragging.current = false
-        document.removeEventListener('mousemove', onMouseMove)
-        document.removeEventListener('mouseup', onMouseUp)
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-        if (mountedRef.current) {
-          moveHandlerRef.current = null
-          upHandlerRef.current = null
-        }
-      }
-
-      // Defensive: remove any existing handlers before adding new ones
-      if (moveHandlerRef.current) {
-        document.removeEventListener('mousemove', moveHandlerRef.current)
-      }
-      if (upHandlerRef.current) {
-        document.removeEventListener('mouseup', upHandlerRef.current)
-      }
-
-      moveHandlerRef.current = onMouseMove
-      upHandlerRef.current = onMouseUp
-
-      document.addEventListener('mousemove', onMouseMove)
-      document.addEventListener('mouseup', onMouseUp)
-      document.body.style.cursor = 'col-resize'
-      document.body.style.userSelect = 'none'
-    },
-    [width, minWidth, maxWidth, side]
-  )
-
-  return { width, setWidth, onMouseDown }
-}
-
-interface ResizeHandleProps {
-  onMouseDown: (e: ReactMouseEvent) => void
-  onResize: (delta: number) => void
-}
-
-function ResizeHandle({ onMouseDown, onResize }: ResizeHandleProps) {
-  return (
-    <div
-      className="w-1 flex-shrink-0 bg-border hover:bg-ring active:bg-ring transition-colors cursor-col-resize focus:outline-none focus:bg-ring"
-      onMouseDown={onMouseDown}
-      role="separator"
-      aria-label="Resize panel"
-      aria-orientation="vertical"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        const step = e.shiftKey ? 50 : 10
-        if (e.key === 'ArrowLeft') {
-          e.preventDefault()
-          onResize(-step)
-        } else if (e.key === 'ArrowRight') {
-          e.preventDefault()
-          onResize(step)
-        }
-      }}
-    />
-  )
-}
+const FILE_VIEWER_COLLAPSED_WIDTH = 32
 
 export function AppLayout() {
   const sidebar = useResizeHandle(SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, 'left')
+  const fileViewer = useResizeHandle(FILE_VIEWER_DEFAULT, FILE_VIEWER_MIN, FILE_VIEWER_MAX, 'right')
+  const openFiles = useFileViewerStore((s) => s.openFiles)
+  const persistedPanelWidth = useFileViewerStore((s) => s.panelWidth)
+  const setPersistedPanelWidth = useFileViewerStore((s) => s.setPanelWidth)
+  const fileViewerCollapsed = useFileViewerStore((s) => s.isCollapsed)
+  const hasOpenFiles = openFiles.length > 0
+  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
+  const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed)
+
+  // Sync persisted width into the resize hook on mount and when it changes externally
+  useEffect(() => {
+    fileViewer.setWidth(persistedPanelWidth)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync resize hook width back to the store for persistence
+  useEffect(() => {
+    setPersistedPanelWidth(fileViewer.width)
+  }, [fileViewer.width, setPersistedPanelWidth])
   const projects = useProjectStore(s => s.projects)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
   const isLoading = projects === null
@@ -134,17 +56,36 @@ export function AppLayout() {
   return (
     <div className="h-screen w-screen flex overflow-hidden">
       {/* Sidebar */}
-      <div
-        className="flex-shrink-0 overflow-hidden"
-        style={{ width: sidebar.width }}
-      >
-        <Sidebar />
-      </div>
+      {sidebarCollapsed ? (
+        <div
+          className="flex-shrink-0 flex items-center justify-center bg-card border-r border-border"
+          style={{ width: SIDEBAR_COLLAPSED_WIDTH }}
+        >
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={() => setSidebarCollapsed(false)}
+            title="Expand sidebar"
+          >
+            <PanelLeftOpen className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div
+            className="flex-shrink-0 overflow-hidden"
+            style={{ width: sidebar.width }}
+          >
+            <Sidebar />
+          </div>
 
-      <ResizeHandle
-        onMouseDown={sidebar.onMouseDown}
-        onResize={(delta) => sidebar.setWidth(w => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w + delta)))}
-      />
+          <ResizeHandle
+            onMouseDown={sidebar.onMouseDown}
+            onResize={(delta) => sidebar.setWidth(w => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w + delta)))}
+          />
+        </>
+      )}
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -158,6 +99,32 @@ export function AppLayout() {
               <ExecutionPanels />
               <ChatInput />
             </div>
+            {hasOpenFiles && (
+              fileViewerCollapsed ? (
+                <div
+                  className="flex-shrink-0 flex items-center justify-center bg-card border-l border-border"
+                  style={{ width: FILE_VIEWER_COLLAPSED_WIDTH }}
+                >
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => useFileViewerStore.getState().toggleCollapsed()}
+                    title="Expand inspector"
+                  >
+                    <PanelRightOpen className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <ResizeHandle
+                    onMouseDown={fileViewer.onMouseDown}
+                    onResize={(delta) => fileViewer.setWidth(w => Math.max(FILE_VIEWER_MIN, Math.min(FILE_VIEWER_MAX, w + delta)))}
+                  />
+                  <FileViewerPanel width={fileViewer.width} />
+                </>
+              )
+            )}
           </main>
         )}
         <StatusBar />

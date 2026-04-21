@@ -38,6 +38,10 @@ export function GetConfig() {
   return window['go']['desktop']['App']['GetConfig']();
 }
 
+export function GetFileDiff(arg1) {
+  return window['go']['desktop']['App']['GetFileDiff'](arg1);
+}
+
 export function GetGitStatus(arg1) {
   return window['go']['desktop']['App']['GetGitStatus'](arg1);
 }
@@ -104,6 +108,10 @@ export function ListSessions() {
 
 export function PickDirectory() {
   return window['go']['desktop']['App']['PickDirectory']();
+}
+
+export function ReadFile(arg1) {
+  return window['go']['desktop']['App']['ReadFile'](arg1);
 }
 
 export function RenameProject(arg1, arg2) {

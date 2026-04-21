@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import {
   Plus, Settings, MoreVertical, Archive, Trash2, Edit3,
-  ChevronDown, FolderKanban, Check,
+  ChevronDown, FolderKanban, Check, PanelLeftClose,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import type { SessionInfo, ProjectInfo } from '@/lib/wails'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useUIStore } from '@/stores/uiStore'
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -83,6 +84,7 @@ export function Sidebar() {
 
   // ── Local UI state ──
   const openSettings = useSettingsStore(s => s.openSettings)
+  const toggleSidebarCollapsed = useUIStore(s => s.toggleSidebarCollapsed)
   const [createProjectOpen, setCreateProjectOpen] = useState(false)
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -391,6 +393,15 @@ export function Sidebar() {
       {/* ═══ Header: Row 1 — Project selector + actions ═══ */}
       <div className="flex flex-col border-b border-border flex-shrink-0">
         <div className="flex items-center gap-1 p-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 flex-shrink-0"
+            onClick={toggleSidebarCollapsed}
+            title="Collapse sidebar"
+          >
+            <PanelLeftClose className="h-3.5 w-3.5" />
+          </Button>
           {hasProject ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

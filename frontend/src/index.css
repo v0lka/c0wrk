@@ -201,20 +201,77 @@ body {
   color: inherit !important;
 }
 
-/* Custom scrollbar for native scrollable elements — matches ScrollArea styling */
+/* Custom scrollbar — always visible, subtly transparent */
 .custom-scrollbar::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
   background: transparent;
-  border-left: 1px solid transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background-clip: padding-box;
-  background-color: var(--color-border);
+  background-color: color-mix(in srgb, var(--color-border) 75%, transparent);
   border-radius: 9999px;
   border: 1px solid transparent;
+}
+
+/* Hide scrollbar but keep scroll functionality */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+/* File Viewer — line styling */
+.file-viewer-line {
+  display: flex;
+  min-height: 1.25rem;
+}
+.file-viewer-line-number {
+  display: inline-block;
+  width: 3.5rem;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 0.75rem;
+  color: #5c6370;
+  user-select: none;
+}
+.file-viewer-line-content {
+  flex: none;
+  white-space: pre;
+}
+.diff-line-added {
+  background-color: rgba(152, 195, 121, 0.15);
+}
+.diff-line-added .file-viewer-line-number {
+  color: #98c379;
+}
+.diff-line-removed {
+  background-color: rgba(224, 108, 117, 0.15);
+}
+.diff-line-removed .file-viewer-line-number {
+  color: #e06c75;
+}
+.diff-line-modified {
+  background-color: rgba(152, 195, 121, 0.10);
+}
+.diff-line-modified .file-viewer-line-number {
+  color: #98c379;
+}
+
+/* Inline character-level diff highlights */
+.diff-char-added {
+  background-color: rgba(152, 195, 121, 0.35);
+  border-radius: 2px;
+}
+.diff-char-removed {
+  background-color: rgba(224, 108, 117, 0.35);
+  text-decoration: line-through;
+  border-radius: 2px;
 }
 
 

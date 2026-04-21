@@ -66,7 +66,7 @@ func (a *App) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
 
 	if err := cmd.Run(); err != nil {
 		// Not a git repo or git not available — silently return empty status.
-		return nil, nil //nolint:nilerr // intentional: absence of git is not a failure
+		return map[string]GitStatusEntry{}, nil //nolint:nilerr // absence of git is not a failure; return empty map so Wails serializes as {} not null
 	}
 
 	result := make(map[string]GitStatusEntry)
@@ -110,6 +110,137 @@ func (a *App) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
 	}
 
 	return result, nil
+}
+
+// ReadFile returns the content of a file within the active project workspace.
+// Binary file content is returned as-is; the frontend is responsible for
+// detecting binary files and displaying a fallback message.
+func (a *App) ReadFile(filePath string) (string, error) {
+	absPath, _, err := a.resolveWorkspacePath(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return string(content), nil
+}
+
+// GetFileDiff returns the unified diff of uncommitted changes for a single file
+// within the active project workspace. It concatenates staged and unstaged
+// diffs. For untracked (new) files where both diffs are empty, it produces
+// a diff showing the entire file as added. An empty string is returned when
+// there are no changes or when git is not available.
+func (a *App) GetFileDiff(filePath string) (string, error) {
+	absPath, absRoot, err := a.resolveWorkspacePath(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	// Use path relative to workspace root so git can find the file.
+	relPath, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute relative path: %w", err)
+	}
+
+	var result strings.Builder
+
+	// Staged changes first
+	staged, err := a.runGitDiff(absRoot, true, relPath)
+	if err == nil {
+		result.WriteString(staged)
+	}
+
+	// Unstaged changes
+	unstaged, err := a.runGitDiff(absRoot, false, relPath)
+	if err == nil {
+		result.WriteString(unstaged)
+	}
+
+	// If no diff was produced (untracked file or not a git repo),
+	// generate a diff showing the entire content as added.
+	if result.Len() == 0 {
+		untrackedDiff, untrackedErr := a.runGitDiffNoIndex(absRoot, relPath)
+		if untrackedErr == nil {
+			result.WriteString(untrackedDiff)
+		}
+	}
+
+	return result.String(), nil
+}
+
+// runGitDiff executes a git diff command and returns its output.
+func (a *App) runGitDiff(dir string, cached bool, relPath string) (string, error) {
+	args := []string{"diff"}
+	if cached {
+		args = append(args, "--cached")
+	}
+	args = append(args, "--", relPath)
+
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return stdout.String(), nil
+}
+
+// runGitDiffNoIndex produces a diff for an untracked file by comparing it
+// against /dev/null. This shows the entire file content as added lines.
+// git diff --no-index exits with code 1 when differences exist, so we treat
+// that as success.
+func (a *App) runGitDiffNoIndex(dir, relPath string) (string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", "diff", "--no-index", "/dev/null", relPath)
+	cmd.Dir = dir
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		// git diff --no-index exits with code 1 when there are differences
+		// (which is the expected case for an untracked file with content).
+		// Any other exit code is a real error.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return stdout.String(), nil
+		}
+		return "", err
+	}
+	return stdout.String(), nil
+}
+
+// resolveWorkspacePath validates that filePath is within the active project
+// workspace and returns the resolved absolute path and workspace root.
+func (a *App) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
+	a.activeProjectMu.RLock()
+	projectPath := a.activeProjectPath
+	a.activeProjectMu.RUnlock()
+
+	if projectPath == "" {
+		return "", "", errors.New("no active project")
+	}
+
+	absPath, err = filepath.Abs(filePath)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid path: %w", err)
+	}
+	absRoot, err = filepath.Abs(projectPath)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid workspace path: %w", err)
+	}
+	if absPath != absRoot && !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
+		return "", "", errors.New("path outside project workspace")
+	}
+	return absPath, absRoot, nil
 }
 
 // GetSessionWorkspace returns the workspace directory path for a given session.

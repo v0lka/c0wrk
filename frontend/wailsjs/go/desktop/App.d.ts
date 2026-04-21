@@ -25,6 +25,8 @@ export function DeleteSession(arg1:string):Promise<void>;
 
 export function GetConfig():Promise<desktop.ConfigResponse>;
 
+export function GetFileDiff(arg1:string):Promise<string>;
+
 export function GetGitStatus(arg1:string):Promise<Record<string, desktop.GitStatusEntry>>;
 
 export function GetLogLevel():Promise<string>;
@@ -58,6 +60,8 @@ export function ListProviderModels(arg1:string):Promise<Array<string>>;
 export function ListSessions():Promise<Array<session.SessionInfo>>;
 
 export function PickDirectory():Promise<string>;
+
+export function ReadFile(arg1:string):Promise<string>;
 
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 

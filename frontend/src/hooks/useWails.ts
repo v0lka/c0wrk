@@ -28,6 +28,8 @@ declare global {
           GetGitStatus(path: string): Promise<Record<string, { status: string; staged: boolean }>>
           WatchDirectory(path: string): Promise<void>
           UnwatchDirectory(path: string): Promise<void>
+          ReadFile(filePath: string): Promise<string>
+          GetFileDiff(filePath: string): Promise<string>
           CreateProject(name: string, externalPath: string): Promise<ProjectInfo>
           DeleteProject(id: string): Promise<void>
           RenameProject(id: string, name: string): Promise<void>

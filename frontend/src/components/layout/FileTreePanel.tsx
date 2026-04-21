@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { ChevronRight, Loader2, X, Regex, Asterisk } from 'lucide-react'
 import picomatch from 'picomatch'
 import { useFileTreeStore, type FileNode, type GitStatusEntry } from '@/stores/fileTreeStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { FileIcon } from './FileIcon'
 
@@ -165,6 +166,7 @@ function TreeNode({
   const loadingDirs = useFileTreeStore((s) => s.loadingDirs)
   const entries = useFileTreeStore((s) => s.entries)
   const toggleDir = useFileTreeStore((s) => s.toggleDir)
+  const openFile = useFileViewerStore((s) => s.openFile)
 
   const isMatch = isFilterActive && matchedPaths !== null && matchedPaths.has(node.path)
   const forceExpanded = isFilterActive && expandedByFilter !== null && expandedByFilter.has(node.path)
@@ -182,6 +184,12 @@ function TreeNode({
       toggleDir(node.path)
     }
   }, [node.is_dir, node.path, toggleDir])
+
+  const handleDoubleClick = useCallback(() => {
+    if (!node.is_dir) {
+      openFile(node.path, node.name)
+    }
+  }, [node.is_dir, node.path, node.name, openFile])
 
   // If filter is active and this path isn't visible, hide it
   if (visiblePaths && !visiblePaths.has(node.path)) return null
@@ -202,6 +210,7 @@ function TreeNode({
         className={`flex items-center gap-1 pr-4 py-0.5 text-sm hover:bg-muted/50 cursor-default select-none ${textColorClass}`}
         style={{ paddingLeft: depth * 16 + 8 }}
         onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
         role={node.is_dir ? 'treeitem' : undefined}
         aria-expanded={node.is_dir ? isExpanded : undefined}
       >
@@ -358,7 +367,7 @@ export function FileTreePanel() {
       return 0
     }
 
-    for (const [path, entry] of Object.entries(gitStatus)) {
+    for (const [path, entry] of Object.entries(gitStatus ?? {})) {
       if (!entry) continue
       const color = entry.staged ? 'text-info' : entry.status === 'M' ? 'text-warning' : 'text-success'
 
