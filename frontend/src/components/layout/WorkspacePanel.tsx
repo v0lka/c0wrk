@@ -10,9 +10,9 @@ import {
 import { FileTreePanel } from './FileTreePanel'
 
 const WORKSPACE_TABS = [
-  { value: 'explorer', label: 'Workspace Explorer', icon: FolderTree },
-  { value: 'git', label: 'Git Repository', icon: GitBranch },
-  { value: 'vectors', label: 'Vector Storage', icon: Database },
+  { value: 'explorer', label: 'Explorer', icon: FolderTree },
+  { value: 'git', label: 'Git', icon: GitBranch },
+  { value: 'semantics', label: 'Semantics', icon: Database },
 ] as const
 
 function TBDPlaceholder() {
@@ -38,7 +38,7 @@ export function WorkspacePanel() {
                   <TabsTrigger
                     value={value}
                     aria-label={label}
-                    className="h-6 w-6 rounded-sm border-b-2 border-transparent data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:shadow-none p-0"
+                    className="h-6 w-6 rounded-sm data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:shadow-none p-0"
                   >
                     <Icon className="size-3.5" />
                   </TabsTrigger>
@@ -60,13 +60,10 @@ export function WorkspacePanel() {
           <TBDPlaceholder />
         </TabsContent>
 
-        <TabsContent value="vectors" className="flex-1 min-h-0 mt-0">
+        <TabsContent value="semantics" className="flex-1 min-h-0 mt-0">
           <TBDPlaceholder />
         </TabsContent>
 
-        <TabsContent value="blackboard" className="flex-1 min-h-0 mt-0">
-          <TBDPlaceholder />
-        </TabsContent>
       </Tabs>
     </TooltipProvider>
   )

@@ -7,7 +7,7 @@ export function NoProjectEmptyState() {
   const [createOpen, setCreateOpen] = useState(false)
 
   return (
-    <div className="flex-1 flex items-center justify-center">
+    <div className="flex-1 flex items-center justify-center bg-background">
       <div className="flex flex-col items-center gap-4 text-center max-w-sm px-6">
         <FolderKanban className="h-16 w-16 text-muted-foreground/30" />
         <div className="space-y-1">

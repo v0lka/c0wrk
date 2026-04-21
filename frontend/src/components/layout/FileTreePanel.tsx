@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { ChevronRight, Loader2, X, Regex, Asterisk } from 'lucide-react'
 import picomatch from 'picomatch'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useFileTreeStore, type FileNode } from '@/stores/fileTreeStore'
+import { useFileTreeStore, type FileNode, type GitStatusEntry } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { FileIcon } from './FileIcon'
 
@@ -147,6 +147,8 @@ interface TreeNodeProps {
   visiblePaths: Set<string> | null
   expandedByFilter: Set<string> | null
   entriesSource: Record<string, FileNode[]>
+  gitStatus: Record<string, GitStatusEntry>
+  dirGitColors: Map<string, string>
 }
 
 function TreeNode({
@@ -157,6 +159,8 @@ function TreeNode({
   visiblePaths,
   expandedByFilter,
   entriesSource,
+  gitStatus,
+  dirGitColors,
 }: TreeNodeProps) {
   const expandedDirs = useFileTreeStore((s) => s.expandedDirs)
   const loadingDirs = useFileTreeStore((s) => s.loadingDirs)
@@ -171,6 +175,9 @@ function TreeNode({
   const children = isFilterActive ? entriesSource[node.path] : entries[node.path]
   const isHidden = node.name.startsWith('.')
 
+  const gitEntry = !node.is_dir ? gitStatus[node.path] : undefined
+  const dirColor = node.is_dir ? dirGitColors.get(node.path) : undefined
+
   const handleClick = useCallback(() => {
     if (node.is_dir) {
       toggleDir(node.path)
@@ -180,16 +187,20 @@ function TreeNode({
   // If filter is active and this path isn't visible, hide it
   if (visiblePaths && !visiblePaths.has(node.path)) return null
 
-  // Determine text color: yellow for matched nodes, default otherwise
+  // Determine text color: filter match > git status > default
   let textColorClass = isHidden ? 'text-muted-foreground' : 'text-foreground'
   if (isMatch) {
-    textColorClass = 'text-warning'
+    textColorClass = 'text-highlight'
+  } else if (gitEntry) {
+    textColorClass = gitEntry.staged ? 'text-info' : gitEntry.status === 'M' ? 'text-warning' : 'text-success'
+  } else if (dirColor) {
+    textColorClass = dirColor
   }
 
   return (
     <>
       <div
-        className={`flex items-center gap-1 px-2 py-0.5 text-sm hover:bg-muted/50 cursor-default select-none ${textColorClass}`}
+        className={`flex items-center gap-1 pr-4 py-0.5 text-sm hover:bg-muted/50 cursor-default select-none ${textColorClass}`}
         style={{ paddingLeft: depth * 16 + 8 }}
         onClick={handleClick}
         role={node.is_dir ? 'treeitem' : undefined}
@@ -216,7 +227,13 @@ function TreeNode({
           </span>
         )}
 
-        <span className="truncate">{node.name}</span>
+        <span className="truncate flex-1 min-w-0">{node.name}</span>
+        {!node.is_dir && gitEntry && (
+          <span className={`text-xs font-mono font-bold ${textColorClass}`}>{gitEntry.status}</span>
+        )}
+        {node.is_dir && dirColor && (
+          <span className={`text-xs font-bold ${dirColor}`}>•</span>
+        )}
       </div>
 
       {/* Render children if expanded */}
@@ -232,6 +249,8 @@ function TreeNode({
               visiblePaths={visiblePaths}
               expandedByFilter={expandedByFilter}
               entriesSource={entriesSource}
+              gitStatus={gitStatus}
+              dirGitColors={dirGitColors}
             />
           ))}
         </>
@@ -245,6 +264,7 @@ export function FileTreePanel() {
   const entries = useFileTreeStore((s) => s.entries)
   const recursiveEntries = useFileTreeStore((s) => s.recursiveEntries)
   const recursiveLoading = useFileTreeStore((s) => s.recursiveLoading)
+  const gitStatus = useFileTreeStore((s) => s.gitStatus)
   const initForProject = useFileTreeStore((s) => s.initForProject)
   const clearTree = useFileTreeStore((s) => s.clearTree)
   const refreshVisibleDirs = useFileTreeStore((s) => s.refreshVisibleDirs)
@@ -329,6 +349,38 @@ export function FileTreePanel() {
     return cleanup
   }, [refreshVisibleDirs, isFilterActive, rootPath, fetchRecursiveTree])
 
+  // Compute directory colors based on descendant git status
+  const dirGitColors = useMemo(() => {
+    const colors = new Map<string, string>()
+    const priority = (c: string): number => {
+      if (c === 'text-info') return 3
+      if (c === 'text-warning') return 2
+      if (c === 'text-success') return 1
+      return 0
+    }
+
+    for (const [path, entry] of Object.entries(gitStatus)) {
+      if (!entry) continue
+      const color = entry.staged ? 'text-info' : entry.status === 'M' ? 'text-warning' : 'text-success'
+
+      let current = path
+      while (true) {
+        const lastSep = current.lastIndexOf('/')
+        if (lastSep <= 0) break
+        const parent = current.substring(0, lastSep)
+        if (parent === rootPath || parent.length < rootPath.length) break
+
+        const existing = colors.get(parent)
+        if (!existing || priority(color) > priority(existing)) {
+          colors.set(parent, color)
+        }
+        current = parent
+      }
+    }
+
+    return colors
+  }, [gitStatus, rootPath])
+
   // No project selected
   if (!activeProjectId) {
     return (
@@ -410,6 +462,8 @@ export function FileTreePanel() {
                 visiblePaths={currentVisiblePaths}
                 expandedByFilter={currentExpandedByFilter}
                 entriesSource={entriesSource}
+                gitStatus={gitStatus}
+                dirGitColors={dirGitColors}
               />
             ))
           )}

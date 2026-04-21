@@ -25,6 +25,8 @@ export function DeleteSession(arg1:string):Promise<void>;
 
 export function GetConfig():Promise<desktop.ConfigResponse>;
 
+export function GetGitStatus(arg1:string):Promise<Record<string, desktop.GitStatusEntry>>;
+
 export function GetLogLevel():Promise<string>;
 
 export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;

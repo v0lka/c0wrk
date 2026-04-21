@@ -140,7 +140,7 @@ export function ChatArea(): React.ReactNode {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0" ref={containerRef}>
+    <div className="flex flex-col flex-1 min-h-0 bg-background" ref={containerRef}>
       {/* History load error */}
       {historyError && (
         <div className="px-4 py-2 text-sm text-destructive bg-destructive/10 border-b border-destructive/20">

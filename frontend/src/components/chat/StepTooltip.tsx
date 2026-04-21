@@ -25,7 +25,7 @@ export function StepTooltip({ children, description, enabled = true }: StepToolt
         collisionPadding={32}
         avoidCollisions={true}
         updatePositionStrategy="always"
-        className="max-w-md w-auto max-h-[min(70vh,calc(var(--radix-tooltip-content-available-height)-32px))] overflow-y-auto p-3 bg-background border border-border shadow-md"
+        className="max-w-md w-auto max-h-[min(70vh,calc(var(--radix-tooltip-content-available-height)-32px))] overflow-y-auto custom-scrollbar p-3 bg-background border border-border shadow-md"
       >
         <TooltipMarkdown content={description} />
       </TooltipContent>

@@ -122,7 +122,7 @@ export function ExecutionPanels() {
   }
 
   return (
-    <div className="border-t border-border bg-background">
+    <div className="border-t border-border bg-card">
       {/* Execution plan panel */}
       <div className="group">
         <PanelHeader

@@ -7,6 +7,11 @@ export interface FileNode {
   is_dir: boolean
 }
 
+export interface GitStatusEntry {
+  status: string
+  staged: boolean
+}
+
 interface FileTreeState {
   projectWorkspacePath: string
   rootPath: string
@@ -15,6 +20,7 @@ interface FileTreeState {
   loadingDirs: Set<string>
   recursiveEntries: Record<string, FileNode[]>
   recursiveLoading: boolean
+  gitStatus: Record<string, GitStatusEntry>
 
   initForProject: (workspacePath: string) => void
   clearTree: () => void
@@ -25,6 +31,7 @@ interface FileTreeState {
   refreshVisibleDirs: () => void
   fetchRecursiveTree: (rootPath: string) => void
   clearRecursiveEntries: () => void
+  fetchGitStatus: () => void
 }
 
 async function listDirectory(path: string): Promise<FileNode[]> {
@@ -57,6 +64,16 @@ async function unwatchDirectory(path: string): Promise<void> {
   try { await window.go.desktop.App.UnwatchDirectory(path) } catch { /* ignore */ }
 }
 
+async function fetchGitStatusFromBackend(path: string): Promise<Record<string, GitStatusEntry>> {
+  if (!window?.go?.desktop?.App?.GetGitStatus) return {}
+  try {
+    return await window.go.desktop.App.GetGitStatus(path)
+  } catch (err) {
+    logger.error('[fileTreeStore] Failed to fetch git status:', err)
+    return {}
+  }
+}
+
 export const useFileTreeStore = create<FileTreeState>((set, get) => ({
   projectWorkspacePath: '',
   rootPath: '',
@@ -65,6 +82,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
   loadingDirs: new Set<string>(),
   recursiveEntries: {},
   recursiveLoading: false,
+  gitStatus: {},
 
   initForProject: async (workspacePath: string) => {
     const { rootPath: currentRoot } = get()
@@ -90,6 +108,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       loadingDirs: new Set<string>(),
       recursiveEntries: {},
       recursiveLoading: false,
+      gitStatus: {},
     })
 
     if (!workspacePath) return
@@ -102,6 +121,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
 
       set((state) => ({ entries: { ...state.entries, [workspacePath]: nodes } }))
       watchDirectory(workspacePath)
+      get().fetchGitStatus()
     } catch {
       // Workspace not available
     }
@@ -123,6 +143,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       loadingDirs: new Set<string>(),
       recursiveEntries: {},
       recursiveLoading: false,
+      gitStatus: {},
     })
   },
 
@@ -207,5 +228,15 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => ({
       }
       return { entries: newEntries }
     })
+
+    get().fetchGitStatus()
+  },
+
+  fetchGitStatus: async () => {
+    const { rootPath, projectWorkspacePath } = get()
+    if (!rootPath || !projectWorkspacePath) return
+    const status = await fetchGitStatusFromBackend(rootPath)
+    if (get().projectWorkspacePath !== projectWorkspacePath) return
+    set({ gitStatus: status })
   },
 }))

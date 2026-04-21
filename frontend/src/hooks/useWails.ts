@@ -25,6 +25,7 @@ declare global {
           GetSessionWorkspace(sessionID: string): Promise<string>
           ListDirectory(path: string): Promise<Array<{ name: string; path: string; is_dir: boolean }>>
           ListDirectoryRecursive(path: string): Promise<Array<{ name: string; path: string; is_dir: boolean }>>
+          GetGitStatus(path: string): Promise<Record<string, { status: string; staged: boolean }>>
           WatchDirectory(path: string): Promise<void>
           UnwatchDirectory(path: string): Promise<void>
           CreateProject(name: string, externalPath: string): Promise<ProjectInfo>

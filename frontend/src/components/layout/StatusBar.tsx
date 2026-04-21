@@ -18,7 +18,7 @@ export function StatusBar() {
 
   return (
     <>
-    <div className="h-8 border-t border-border bg-muted/50 flex items-center px-3 gap-4 text-xs">
+    <div className="h-8 border-t border-border bg-card flex items-center px-3 gap-4 text-xs">
       {/* Session name */}
       <div className="flex items-center gap-2 min-w-0">
         {isThinking && <Loader2 className="h-3 w-3 animate-spin text-primary" />}

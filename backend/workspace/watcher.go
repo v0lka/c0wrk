@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -69,6 +70,15 @@ func NewWatcher(root string, onChange func(), loggers ...*slog.Logger) (*Watcher
 		return nil, fmt.Errorf("failed to watch root directory: %w", err)
 	}
 	w.watched[absRoot] = true
+
+	// Also watch the .git directory so that index changes (staging/unstaging)
+	// trigger the same onChange callback used by the file tree.
+	gitDir := filepath.Join(absRoot, ".git")
+	if stat, err := os.Stat(gitDir); err == nil && stat.IsDir() {
+		if err := fsw.Add(gitDir); err != nil {
+			w.log().Debug("failed to watch .git directory", "error", err)
+		}
+	}
 
 	go w.eventLoop()
 	return w, nil

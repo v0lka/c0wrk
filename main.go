@@ -19,11 +19,12 @@ func main() {
 	app := desktop.NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "c0wrk",
-		Width:     1400,
-		Height:    900,
-		MinWidth:  1024,
-		MinHeight: 600,
+		Title:            "c0wrk",
+		Width:            1400,
+		Height:           900,
+		MinWidth:         1024,
+		MinHeight:        600,
+		BackgroundColour: options.NewRGB(40, 44, 52),
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

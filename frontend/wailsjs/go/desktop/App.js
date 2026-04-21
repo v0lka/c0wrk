@@ -38,6 +38,10 @@ export function GetConfig() {
   return window['go']['desktop']['App']['GetConfig']();
 }
 
+export function GetGitStatus(arg1) {
+  return window['go']['desktop']['App']['GetGitStatus'](arg1);
+}
+
 export function GetLogLevel() {
   return window['go']['desktop']['App']['GetLogLevel']();
 }

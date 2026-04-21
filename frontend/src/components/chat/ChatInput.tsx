@@ -141,9 +141,9 @@ export function ChatInput() {
   }
 
   return (
-    <div className="border-t border-border bg-background p-4">
+    <div className="border-t border-border bg-card p-4">
       <div className="flex flex-col">
-        <div className="relative">
+        <div className="relative chat-input-wrapper">
           <textarea
             ref={textareaRef}
             value={text}
@@ -152,7 +152,7 @@ export function ChatInput() {
             placeholder={placeholder}
             rows={1}
             disabled={isInputDisabled}
-            className={`w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none${isInputDisabled ? ' opacity-50 cursor-not-allowed' : ''}`}
+            className={`w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none custom-scrollbar${isInputDisabled ? ' opacity-50 cursor-not-allowed' : ''}`}
             style={{ overflow: text.split('\n').length > MAX_LINES ? 'auto' : 'hidden' }}
           />
         </div>

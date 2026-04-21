@@ -4,7 +4,6 @@ import {
   ChevronDown, FolderKanban, Check,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import {
   DropdownMenu,
@@ -343,7 +342,7 @@ export function Sidebar() {
   const renderSessionItem = useCallback((s: SessionInfo) => (
     <DropdownMenuItem
       key={s.id}
-      className="flex items-center justify-between gap-2 hover:bg-muted/50"
+      className="flex items-center justify-between gap-2"
       onClick={() => setActiveSession(s.id)}
     >
       <div className="flex-1 min-w-0">
@@ -395,16 +394,16 @@ export function Sidebar() {
           {hasProject ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2 hover:bg-muted/50 hover:text-foreground">
+                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2">
                   <span className="truncate text-sm font-medium">
                     {activeProject?.name ?? 'Select project'}
                   </span>
                   <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-56">
+              <DropdownMenuContent align="start" className="w-56 custom-scrollbar max-h-80">
                 {(projects ?? []).map(p => (
-                  <DropdownMenuItem key={p.id} className="justify-between hover:bg-muted/50" onClick={() => handleSwitchProject(p.id)}>
+                  <DropdownMenuItem key={p.id} className="justify-between" onClick={() => handleSwitchProject(p.id)}>
                     <span className="truncate">{p.name}</span>
                     <div className="flex items-center gap-1 flex-shrink-0 ml-2">
                       {p.id === activeProjectId && <Check className="h-3.5 w-3.5" />}
@@ -458,7 +457,7 @@ export function Sidebar() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 flex-shrink-0 hover:bg-muted/50 hover:text-foreground"
+            className="h-7 w-7 flex-shrink-0"
             onClick={() => setCreateProjectOpen(true)}
             title="New project"
           >
@@ -468,7 +467,7 @@ export function Sidebar() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 flex-shrink-0 hover:bg-muted/50 hover:text-foreground"
+            className="h-7 w-7 flex-shrink-0"
             onClick={() => openSettings()}
             title="Settings"
           >
@@ -481,7 +480,7 @@ export function Sidebar() {
           <div className="flex items-center gap-1 px-2 pb-2">
             <DropdownMenu onOpenChange={(open) => { if (!open) setSessionSearch('') }}>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2 hover:bg-muted/50 hover:text-foreground">
+                <Button variant="ghost" size="sm" className="flex-1 justify-between min-w-0 gap-1 px-2">
                   <div className="flex items-center gap-1.5 min-w-0">
                     {activeSessionInfo?.active && (
                       <div className="w-2 h-2 rounded-full bg-success flex-shrink-0" />
@@ -496,41 +495,40 @@ export function Sidebar() {
                   <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-64 max-h-80">
+              <DropdownMenuContent align="start" className="w-64 custom-scrollbar max-h-80">
                 {totalSessionCount >= 5 && (
                   <div className="p-2">
-                    <Input
+                    <input
+                      type="text"
                       placeholder="Search sessions..."
-                      className="h-7 text-sm"
+                      className="w-full min-w-0 bg-secondary border border-border rounded px-1.5 py-0.5 text-xs text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-ring transition-colors"
                       value={sessionSearch}
                       onChange={e => setSessionSearch(e.target.value)}
                       onClick={e => e.stopPropagation()}
                     />
                   </div>
                 )}
-                <ScrollArea className="max-h-60">
-                  {filteredActiveSessions.map(renderSessionItem)}
+                {filteredActiveSessions.map(renderSessionItem)}
 
-                  {filteredArchivedSessions.length > 0 && filteredActiveSessions.length > 0 && (
-                    <DropdownMenuSeparator />
-                  )}
+                {filteredArchivedSessions.length > 0 && filteredActiveSessions.length > 0 && (
+                  <DropdownMenuSeparator />
+                )}
 
-                  {filteredArchivedSessions.length > 0 && (
-                    <div className="px-2 py-1.5">
-                      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Archived
-                      </span>
-                    </div>
-                  )}
+                {filteredArchivedSessions.length > 0 && (
+                  <div className="px-2 py-1.5">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      Archived
+                    </span>
+                  </div>
+                )}
 
-                  {filteredArchivedSessions.map(renderSessionItem)}
+                {filteredArchivedSessions.map(renderSessionItem)}
 
-                  {filteredActiveSessions.length === 0 && filteredArchivedSessions.length === 0 && (
-                    <div className="text-center py-4 text-muted-foreground text-sm">
-                      {sessionSearch ? 'No matching sessions' : 'No sessions yet'}
-                    </div>
-                  )}
-                </ScrollArea>
+                {filteredActiveSessions.length === 0 && filteredArchivedSessions.length === 0 && (
+                  <div className="text-center py-4 text-muted-foreground text-sm">
+                    {sessionSearch ? 'No matching sessions' : 'No sessions yet'}
+                  </div>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleCreateSession}>
                   <Plus className="h-4 w-4 mr-2" /> New Session...
@@ -541,7 +539,7 @@ export function Sidebar() {
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7 flex-shrink-0 hover:bg-muted/50 hover:text-foreground"
+              className="h-7 w-7 flex-shrink-0"
               onClick={handleCreateSession}
               title="New session"
             >

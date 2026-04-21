@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -21,12 +22,94 @@ type FileNode struct {
 	IsDir bool   `json:"is_dir"`
 }
 
+// GitStatusEntry describes the git status of a single file.
+type GitStatusEntry struct {
+	Status string `json:"status"` // "M" or "A"
+	Staged bool   `json:"staged"`
+}
+
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {
 	TotalInputTokens  int    `json:"total_input_tokens"`
 	TotalOutputTokens int    `json:"total_output_tokens"`
 	Model             string `json:"model"`
 	Family            string `json:"family"`
+}
+
+// GetGitStatus returns a map of absolute file paths to their git status for the active project.
+func (a *App) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
+	a.activeProjectMu.RLock()
+	projectPath := a.activeProjectPath
+	a.activeProjectMu.RUnlock()
+
+	if projectPath == "" {
+		return nil, errors.New("no active project")
+	}
+
+	absDir, err := filepath.Abs(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+	absRoot, err := filepath.Abs(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid workspace path: %w", err)
+	}
+	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(filepath.Separator)) {
+		return nil, errors.New("path outside project workspace")
+	}
+
+	cmd := exec.CommandContext(context.Background(), "git", "status", "--porcelain", "-uall")
+	cmd.Dir = absRoot
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	if err := cmd.Run(); err != nil {
+		// Not a git repo or git not available — silently return empty status.
+		return nil, nil //nolint:nilerr // intentional: absence of git is not a failure
+	}
+
+	result := make(map[string]GitStatusEntry)
+	scanner := bufio.NewScanner(&stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) < 3 {
+			continue
+		}
+		x := line[0]
+		y := line[1]
+
+		if x == 'R' || y == 'R' || x == 'C' || y == 'C' {
+			continue // skip renames and copies
+		}
+
+		rawPath := line[3:]
+
+		if x == '?' && y == '?' {
+			path := filepath.Join(absRoot, rawPath)
+			result[path] = GitStatusEntry{Status: "A", Staged: false}
+			continue
+		}
+
+		status := ' '
+		staged := false
+		if x == 'M' || x == 'A' {
+			status = rune(x)
+			staged = true
+		} else if y == 'M' || y == 'A' {
+			status = rune(y)
+			staged = false
+		}
+
+		if status == ' ' {
+			continue
+		}
+
+		path := filepath.Join(absRoot, rawPath)
+		result[path] = GitStatusEntry{Status: string(status), Staged: staged}
+	}
+
+	return result, nil
 }
 
 // GetSessionWorkspace returns the workspace directory path for a given session.
