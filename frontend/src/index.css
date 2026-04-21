@@ -212,7 +212,7 @@ body {
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background-clip: padding-box;
-  background-color: color-mix(in srgb, var(--color-border) 75%, transparent);
+  background-color: color-mix(in srgb, var(--color-border) 50%, transparent);
   border-radius: 9999px;
   border: 1px solid transparent;
 }

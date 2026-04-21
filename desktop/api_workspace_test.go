@@ -206,6 +206,40 @@ func TestGetFileDiff_UntrackedFileInGitRepo(t *testing.T) {
 	}
 }
 
+func TestGetFileDiff_TrackedFileNoChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	app := &App{activeProjectPath: tmpDir}
+
+	// Initialize git repo
+	gitInit(t, tmpDir)
+
+	// Create and commit a file so it is tracked
+	filePath := filepath.Join(tmpDir, "tracked.txt")
+	if err := os.WriteFile(filePath, []byte("tracked content\n"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "git", "add", "tracked.txt")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git add failed: %v", err)
+	}
+	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "initial")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git commit failed: %v", err)
+	}
+
+	// No modifications — diff should be empty
+	diff, err := app.GetFileDiff(filePath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if diff != "" {
+		t.Errorf("expected empty diff for tracked file with no changes, got %q", diff)
+	}
+}
+
 // --- helpers ---
 
 func containsSubstring(s, substr string) bool {

@@ -160,9 +160,10 @@ func (a *App) GetFileDiff(filePath string) (string, error) {
 		result.WriteString(unstaged)
 	}
 
-	// If no diff was produced (untracked file or not a git repo),
-	// generate a diff showing the entire content as added.
-	if result.Len() == 0 {
+	// If no diff was produced, check if the file is untracked.
+	// Only for untracked files (or non-git directories) do we generate
+	// a full-file diff; tracked files with no changes should return empty.
+	if result.Len() == 0 && !a.isGitTracked(absRoot, relPath) {
 		untrackedDiff, untrackedErr := a.runGitDiffNoIndex(absRoot, relPath)
 		if untrackedErr == nil {
 			result.WriteString(untrackedDiff)
@@ -170,6 +171,15 @@ func (a *App) GetFileDiff(filePath string) (string, error) {
 	}
 
 	return result.String(), nil
+}
+
+// isGitTracked reports whether relPath is tracked by git in dir.
+func (a *App) isGitTracked(dir, relPath string) bool {
+	cmd := exec.CommandContext(context.Background(), "git", "ls-files", "--error-unmatch", relPath)
+	cmd.Dir = dir
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
 }
 
 // runGitDiff executes a git diff command and returns its output.
