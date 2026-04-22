@@ -6,61 +6,46 @@ import (
 	"log/slog"
 	"sync"
 
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"github.com/user/agent/backend"
-	"github.com/user/agent/backend/config"
-	"github.com/user/agent/backend/logger"
-	"github.com/user/agent/backend/project"
-	"github.com/user/agent/backend/session"
-	"github.com/user/agent/backend/vectorindex"
-	"github.com/user/agent/backend/workspace"
 )
 
 // App holds the Wails application state and exposes methods to the frontend.
+// All frontend API methods live on the embedded *backend.FrontendAPI; promoted
+// methods are visible to the Wails binding generator.
+// App itself retains only lifecycle management (Startup/Shutdown), the native
+// PickDirectory dialog, and Wails event-listener infrastructure.
 type App struct {
-	ctx        context.Context
-	logger     *slog.Logger         // instance logger; nil-safe via log()
-	app        *backend.Application // central ViewModel (owns builder, manager, persister)
-	manager    *session.Manager     // convenience alias for app.Manager()
-	db         *sql.DB              // shared SQLite connection
-	store      *session.SQLiteSessionStore
-	projStore  *project.SQLiteProjectStore
-	config     *config.Config
-	configMu   sync.RWMutex // protects config and config-related state
-	configPath string
+	ctx context.Context
+	*backend.FrontendAPI
 
-	sessionLogger *logger.SessionLogger
-	logLevel      string
+	// app is the central ViewModel (owns builder, manager, persister).
+	// Kept here for Startup/Shutdown orchestration that references it directly.
+	app *backend.Application
 
-	// Config loading state for UI warnings
-	configMigrated     bool
-	configMigrationMsg string
-	configLoadErrors   []string
+	// logger used during Startup before FrontendAPI is constructed.
+	logger *slog.Logger
 
+	db *sql.DB // shared SQLite connection; lifecycle: opened in Startup, closed in Shutdown
+
+	// Wails event-listener infrastructure (used only in startup.go listeners)
 	pendingConfirmations sync.Map
 	pendingAskUser       sync.Map
 	pendingStepLimit     sync.Map
-
-	watcher        *workspace.Watcher
-	projectManager *project.Manager
-
-	projectsDir         string       // ~/.c0wrk/Projects/
-	activeProjectID     string       // currently active project ID
-	activeProjectPath   string       // workspace path of active project
-	activeProjectMu     sync.RWMutex // protects activeProjectID/Path and codebaseProjectName
-	codebaseProjectName string       // resolved codebase-memory-mcp project name for active project
-
-	// Codebase indexing state
-	restoreAutoIndex func()        // called on Shutdown to restore original auto_index value
-	indexingDone     chan struct{} // closed when indexing completes; nil if not indexing
-	indexingMu       sync.Mutex    // protects indexingDone
-
-	// Vector search state
-	vectorManager *vectorindex.Manager
 }
 
 // NewApp creates a new App instance.
 func NewApp() *App {
 	return &App{}
+}
+
+// PickDirectory opens a native directory picker dialog.
+// This must remain on App (not FrontendAPI) because it requires the Wails context.
+func (a *App) PickDirectory() (string, error) {
+	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Select Workspace Directory",
+	})
 }
 
 // log returns the instance logger, falling back to slog.Default() when nil.

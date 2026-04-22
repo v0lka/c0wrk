@@ -1,4 +1,4 @@
-package desktop
+package backend
 
 import (
 	"context"
@@ -27,23 +27,25 @@ func TestTriggerCodebaseIndexing_NotInstalled(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 
-	app := &App{}
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
 
 	// Verify indexingDone is nil before call
-	app.indexingMu.Lock()
-	if app.indexingDone != nil {
+	f.indexingMu.Lock()
+	if f.indexingDone != nil {
 		t.Error("expected indexingDone to be nil before triggerCodebaseIndexing")
 	}
-	app.indexingMu.Unlock()
+	f.indexingMu.Unlock()
 
-	app.triggerCodebaseIndexing("/tmp/test-workspace")
+	f.triggerCodebaseIndexing("/tmp/test-workspace")
 
 	// Verify gate channel is closed and cleared even on early return (not installed)
-	app.indexingMu.Lock()
-	if app.indexingDone != nil {
+	f.indexingMu.Lock()
+	if f.indexingDone != nil {
 		t.Error("expected indexingDone to be nil after triggerCodebaseIndexing completes (not installed path)")
 	}
-	app.indexingMu.Unlock()
+	f.indexingMu.Unlock()
 
 	if execCalled {
 		t.Error("exec should not have been called when codebase-memory-mcp is not installed")
@@ -77,23 +79,25 @@ func TestTriggerCodebaseIndexing_Installed(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 
-	app := &App{}
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
 
 	// Verify indexingDone is nil before call
-	app.indexingMu.Lock()
-	if app.indexingDone != nil {
+	f.indexingMu.Lock()
+	if f.indexingDone != nil {
 		t.Error("expected indexingDone to be nil before triggerCodebaseIndexing")
 	}
-	app.indexingMu.Unlock()
+	f.indexingMu.Unlock()
 
-	app.triggerCodebaseIndexing("/tmp/test-workspace")
+	f.triggerCodebaseIndexing("/tmp/test-workspace")
 
 	// Verify indexingDone is nil after completion (channel closed and cleared)
-	app.indexingMu.Lock()
-	if app.indexingDone != nil {
+	f.indexingMu.Lock()
+	if f.indexingDone != nil {
 		t.Error("expected indexingDone to be nil after triggerCodebaseIndexing completes")
 	}
-	app.indexingMu.Unlock()
+	f.indexingMu.Unlock()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -134,26 +138,28 @@ func TestTriggerCodebaseIndexing_SkipsWhenAlreadyRunning(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 
-	app := &App{}
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
 
 	// Simulate an already-running indexing operation.
 	existingCh := make(chan struct{})
-	app.indexingMu.Lock()
-	app.indexingDone = existingCh
-	app.indexingMu.Unlock()
+	f.indexingMu.Lock()
+	f.indexingDone = existingCh
+	f.indexingMu.Unlock()
 
-	app.triggerCodebaseIndexing("/tmp/test-workspace")
+	f.triggerCodebaseIndexing("/tmp/test-workspace")
 
 	if execCalled {
 		t.Error("exec should not have been called when indexing is already in progress")
 	}
 
 	// Verify the original channel is still set (not closed or replaced).
-	app.indexingMu.Lock()
-	if app.indexingDone != existingCh {
+	f.indexingMu.Lock()
+	if f.indexingDone != existingCh {
 		t.Error("expected indexingDone to still reference the original channel")
 	}
-	app.indexingMu.Unlock()
+	f.indexingMu.Unlock()
 
 	// Verify the original channel is still open (not closed).
 	select {
@@ -180,9 +186,11 @@ func TestTriggerCodebaseIndexing_CommandFailure(t *testing.T) {
 		return exec.CommandContext(ctx, "false")
 	}
 
-	app := &App{}
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
 	// Should not panic even when the command fails
-	app.triggerCodebaseIndexing("/tmp/test-workspace")
+	f.triggerCodebaseIndexing("/tmp/test-workspace")
 }
 
 func TestResolveCodebaseProjectName_MatchFound(t *testing.T) {
@@ -203,12 +211,14 @@ func TestResolveCodebaseProjectName_MatchFound(t *testing.T) {
 		return exec.CommandContext(ctx, "echo", mcpJSON)
 	}
 
-	app := &App{}
-	app.resolveCodebaseProjectName("/tmp/test-workspace")
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
+	f.resolveCodebaseProjectName("/tmp/test-workspace")
 
-	app.activeProjectMu.RLock()
-	got := app.codebaseProjectName
-	app.activeProjectMu.RUnlock()
+	f.activeProjectMu.RLock()
+	got := f.codebaseProjectName
+	f.activeProjectMu.RUnlock()
 
 	if got != "Test-Project" {
 		t.Errorf("expected codebaseProjectName %q, got %q", "Test-Project", got)
@@ -233,12 +243,14 @@ func TestResolveCodebaseProjectName_NoMatch(t *testing.T) {
 		return exec.CommandContext(ctx, "echo", mcpJSON)
 	}
 
-	app := &App{}
-	app.resolveCodebaseProjectName("/no/match/path")
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
+	f.resolveCodebaseProjectName("/no/match/path")
 
-	app.activeProjectMu.RLock()
-	got := app.codebaseProjectName
-	app.activeProjectMu.RUnlock()
+	f.activeProjectMu.RLock()
+	got := f.codebaseProjectName
+	f.activeProjectMu.RUnlock()
 
 	if got != "" {
 		t.Errorf("expected empty codebaseProjectName, got %q", got)
@@ -262,12 +274,14 @@ func TestResolveCodebaseProjectName_NotInstalled(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 
-	app := &App{}
-	app.resolveCodebaseProjectName("/tmp/test-workspace")
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
+	f.resolveCodebaseProjectName("/tmp/test-workspace")
 
-	app.activeProjectMu.RLock()
-	got := app.codebaseProjectName
-	app.activeProjectMu.RUnlock()
+	f.activeProjectMu.RLock()
+	got := f.codebaseProjectName
+	f.activeProjectMu.RUnlock()
 
 	if got != "" {
 		t.Errorf("expected empty codebaseProjectName, got %q", got)
@@ -305,12 +319,14 @@ func TestTriggerCodebaseIndexing_ResolvesProjectName(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 
-	app := &App{}
-	app.triggerCodebaseIndexing("/tmp/test-workspace")
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
+	f.triggerCodebaseIndexing("/tmp/test-workspace")
 
-	app.activeProjectMu.RLock()
-	got := app.codebaseProjectName
-	app.activeProjectMu.RUnlock()
+	f.activeProjectMu.RLock()
+	got := f.codebaseProjectName
+	f.activeProjectMu.RUnlock()
 
 	if got != "Indexed-Project" {
 		t.Errorf("expected codebaseProjectName %q, got %q", "Indexed-Project", got)

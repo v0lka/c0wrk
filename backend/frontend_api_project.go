@@ -1,4 +1,4 @@
-package desktop
+package backend
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
@@ -24,11 +22,11 @@ var checkCodebaseMemoryFunc = mcp.CheckCodebaseMemoryMCP
 var execCommandFunc = exec.CommandContext
 
 // CreateProject creates a new project. If externalPath is empty, an internal workspace is created.
-func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, error) {
-	if a.projectManager == nil {
+func (f *FrontendAPI) CreateProject(name, externalPath string) (*project.ProjectInfo, error) {
+	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
-	p, err := a.projectManager.CreateProject(name, externalPath)
+	p, err := f.projectManager.CreateProject(name, externalPath)
 	if err != nil {
 		return nil, err
 	}
@@ -37,13 +35,13 @@ func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, er
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				a.log().Error("panic in codebase indexing", "recover", r)
+				f.log().Error("panic in codebase indexing", "recover", r)
 			}
 		}()
-		a.triggerCodebaseIndexing(p.WorkspacePath)
+		f.triggerCodebaseIndexing(p.WorkspacePath)
 	}()
 
-	wailsRuntime.EventsEmit(a.ctx, EventProjectCreated, p)
+	f.emitEvent(EventProjectCreated, p)
 
 	return p, nil
 }
@@ -51,24 +49,24 @@ func (a *App) CreateProject(name, externalPath string) (*project.ProjectInfo, er
 // triggerCodebaseIndexing runs codebase-memory-mcp index_repository for the
 // given workspace path. It is designed to run in a goroutine and never panics.
 // Errors are logged as warnings and are non-fatal.
-func (a *App) triggerCodebaseIndexing(workspacePath string) {
-	a.indexingMu.Lock()
-	if a.indexingDone != nil {
+func (f *FrontendAPI) triggerCodebaseIndexing(workspacePath string) {
+	f.indexingMu.Lock()
+	if f.indexingDone != nil {
 		// Another indexing run is already in progress; skip.
-		a.indexingMu.Unlock()
-		a.log().Info("codebase indexing already in progress, skipping", "workspace", workspacePath)
+		f.indexingMu.Unlock()
+		f.log().Info("codebase indexing already in progress, skipping", "workspace", workspacePath)
 		return
 	}
 	ch := make(chan struct{})
-	a.indexingDone = ch
-	a.indexingMu.Unlock()
+	f.indexingDone = ch
+	f.indexingMu.Unlock()
 	defer func() {
-		a.indexingMu.Lock()
+		f.indexingMu.Lock()
 		close(ch)
-		if a.indexingDone == ch {
-			a.indexingDone = nil
+		if f.indexingDone == ch {
+			f.indexingDone = nil
 		}
-		a.indexingMu.Unlock()
+		f.indexingMu.Unlock()
 	}()
 
 	status := checkCodebaseMemoryFunc()
@@ -76,7 +74,7 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 		return
 	}
 
-	parentCtx := a.ctx
+	parentCtx := f.appCtx()
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
@@ -85,7 +83,7 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 
 	jsonBytes, err := json.Marshal(map[string]string{"workspace_path": workspacePath})
 	if err != nil {
-		a.log().Warn("failed to marshal codebase indexing JSON arg", "error", err)
+		f.log().Warn("failed to marshal codebase indexing JSON arg", "error", err)
 		return
 	}
 	jsonArg := string(jsonBytes)
@@ -93,7 +91,7 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 	cmd := execCommandFunc(ctx, status.Path, "cli", "index_repository", jsonArg)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		a.log().Warn("codebase-memory-mcp indexing failed",
+		f.log().Warn("codebase-memory-mcp indexing failed",
 			"workspace", workspacePath,
 			"error", err,
 			"output", string(output),
@@ -101,20 +99,20 @@ func (a *App) triggerCodebaseIndexing(workspacePath string) {
 		return
 	}
 
-	a.log().Info("codebase-memory-mcp indexing triggered", "workspace", workspacePath)
-	a.resolveCodebaseProjectName(workspacePath)
+	f.log().Info("codebase-memory-mcp indexing triggered", "workspace", workspacePath)
+	f.resolveCodebaseProjectName(workspacePath)
 }
 
 // resolveCodebaseProjectName queries codebase-memory-mcp for the project name
 // that matches the given workspace path. The result is stored in codebaseProjectName.
 // Errors are logged as warnings and are non-fatal.
-func (a *App) resolveCodebaseProjectName(workspacePath string) {
+func (f *FrontendAPI) resolveCodebaseProjectName(workspacePath string) {
 	status := checkCodebaseMemoryFunc()
 	if !status.Installed {
 		return
 	}
 
-	parentCtx := a.ctx
+	parentCtx := f.appCtx()
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
@@ -124,7 +122,7 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 	cmd := execCommandFunc(ctx, status.Path, "cli", "list_projects")
 	output, err := cmd.Output()
 	if err != nil {
-		a.log().Warn("failed to list codebase-memory-mcp projects", "error", err)
+		f.log().Warn("failed to list codebase-memory-mcp projects", "error", err)
 		return
 	}
 
@@ -136,7 +134,7 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(output, &mcpResp); err != nil {
-		a.log().Warn("failed to parse list_projects response", "error", err)
+		f.log().Warn("failed to parse list_projects response", "error", err)
 		return
 	}
 	if len(mcpResp.Content) == 0 {
@@ -150,7 +148,7 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 		} `json:"projects"`
 	}
 	if err := json.Unmarshal([]byte(mcpResp.Content[0].Text), &projectList); err != nil {
-		a.log().Warn("failed to parse project list", "error", err)
+		f.log().Warn("failed to parse project list", "error", err)
 		return
 	}
 
@@ -158,87 +156,80 @@ func (a *App) resolveCodebaseProjectName(workspacePath string) {
 		if p.RootPath != workspacePath {
 			continue
 		}
-		a.activeProjectMu.Lock()
-		a.codebaseProjectName = p.Name
-		a.activeProjectMu.Unlock()
-		a.log().Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
+		f.activeProjectMu.Lock()
+		f.codebaseProjectName = p.Name
+		f.activeProjectMu.Unlock()
+		f.log().Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
 		return
 	}
 
-	a.log().Warn("codebase-memory-mcp project not found for workspace", "workspace", workspacePath)
+	f.log().Warn("codebase-memory-mcp project not found for workspace", "workspace", workspacePath)
 }
 
 // DeleteProject deletes a project and all its sessions.
-func (a *App) DeleteProject(id string) error {
-	if a.projectManager == nil {
+func (f *FrontendAPI) DeleteProject(id string) error {
+	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
 	// If deleting the active project, clear active state
-	a.activeProjectMu.Lock()
-	wasActive := a.activeProjectID == id
+	f.activeProjectMu.Lock()
+	wasActive := f.activeProjectID == id
 	if wasActive {
-		a.activeProjectID = ""
-		a.activeProjectPath = ""
+		f.activeProjectID = ""
+		f.activeProjectPath = ""
 	}
-	a.activeProjectMu.Unlock()
+	f.activeProjectMu.Unlock()
 
-	if err := a.projectManager.DeleteProject(id); err != nil {
+	if err := f.projectManager.DeleteProject(id); err != nil {
 		return err
 	}
 
 	// Stop watcher if this was the active project
-	if wasActive && a.watcher != nil {
-		_ = a.watcher.Close() // Best-effort cleanup; error is non-critical.
-		a.watcher = nil
+	if wasActive && f.watcher != nil {
+		_ = f.watcher.Close() // Best-effort cleanup; error is non-critical.
+		f.watcher = nil
 	}
 
-	wailsRuntime.EventsEmit(a.ctx, EventProjectDeleted, id)
+	f.emitEvent(EventProjectDeleted, id)
 	return nil
 }
 
 // RenameProject renames a project.
-func (a *App) RenameProject(id, name string) error {
-	if a.projectManager == nil {
+func (f *FrontendAPI) RenameProject(id, name string) error {
+	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
-	if err := a.projectManager.RenameProject(id, name); err != nil {
+	if err := f.projectManager.RenameProject(id, name); err != nil {
 		return fmt.Errorf("failed to rename project: %w", err)
 	}
-	wailsRuntime.EventsEmit(a.ctx, EventProjectRenamed, map[string]string{"id": id, "name": name})
+	f.emitEvent(EventProjectRenamed, map[string]string{"id": id, "name": name})
 	return nil
 }
 
 // ListProjects returns all projects sorted by last activity.
-func (a *App) ListProjects() ([]project.ProjectInfo, error) {
-	if a.projectManager == nil {
+func (f *FrontendAPI) ListProjects() ([]project.ProjectInfo, error) {
+	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
-	return a.projectManager.ListProjects()
-}
-
-// PickDirectory opens a native directory picker dialog.
-func (a *App) PickDirectory() (string, error) {
-	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "Select Workspace Directory",
-	})
+	return f.projectManager.ListProjects()
 }
 
 // SwitchProject activates a project, setting it as the current workspace.
-func (a *App) SwitchProject(id string) error {
-	if a.projectManager == nil {
+func (f *FrontendAPI) SwitchProject(id string) error {
+	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
 
 	// Idempotency: skip if the same project is already active.
-	a.activeProjectMu.RLock()
-	alreadyActive := a.activeProjectID == id
-	a.activeProjectMu.RUnlock()
+	f.activeProjectMu.RLock()
+	alreadyActive := f.activeProjectID == id
+	f.activeProjectMu.RUnlock()
 	if alreadyActive {
-		a.log().Info("SwitchProject: project already active, skipping", "project", id)
+		f.log().Info("SwitchProject: project already active, skipping", "project", id)
 		return nil
 	}
 
-	p, err := a.projectManager.GetProject(id)
+	p, err := f.projectManager.GetProject(id)
 	if err != nil {
 		return err
 	}
@@ -247,60 +238,60 @@ func (a *App) SwitchProject(id string) error {
 	}
 
 	// Cancel any in-flight indexing from a previous project.
-	if a.vectorManager != nil {
-		a.vectorManager.CancelIndexing()
+	if f.vectorManager != nil {
+		f.vectorManager.CancelIndexing()
 	}
 
-	a.activeProjectMu.Lock()
-	a.activeProjectID = p.ID
-	a.activeProjectPath = p.WorkspacePath
-	a.codebaseProjectName = "" // clear stale name
-	a.activeProjectMu.Unlock()
+	f.activeProjectMu.Lock()
+	f.activeProjectID = p.ID
+	f.activeProjectPath = p.WorkspacePath
+	f.codebaseProjectName = "" // clear stale name
+	f.activeProjectMu.Unlock()
 
 	// Set MCP working directory to the new project workspace
-	if a.app != nil {
-		a.app.Builder().SetMCPWorkDir(p.WorkspacePath)
+	if f.app != nil {
+		f.app.Builder().SetMCPWorkDir(p.WorkspacePath)
 	}
 
 	// Resolve codebase-memory-mcp project name for new project (fast CLI call)
-	a.resolveCodebaseProjectName(p.WorkspacePath)
+	f.resolveCodebaseProjectName(p.WorkspacePath)
 
 	// Update project activity timestamp
-	_ = a.projStore.UpdateProjectActivity(id) // Best-effort; error is non-critical.
+	_ = f.projStore.UpdateProjectActivity(id) // Best-effort; error is non-critical.
 
 	// Recreate file watcher for the new project workspace
-	if a.watcher != nil {
-		_ = a.watcher.Close() // Best-effort cleanup; error is non-critical.
-		a.watcher = nil
+	if f.watcher != nil {
+		_ = f.watcher.Close() // Best-effort cleanup; error is non-critical.
+		f.watcher = nil
 	}
 
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
 		// Existing behavior: emit workspace tree change.
-		wailsRuntime.EventsEmit(a.ctx, EventWorkspaceTreeChanged, nil)
+		f.emitEvent(EventWorkspaceTreeChanged, nil)
 
 		// Trigger debounced incremental indexing via Manager.
-		if a.vectorManager != nil {
-			a.vectorManager.NotifyFileChange(p.WorkspacePath)
+		if f.vectorManager != nil {
+			f.vectorManager.NotifyFileChange(p.WorkspacePath)
 		}
 	})
 	if err != nil {
-		a.log().Warn("failed to start workspace file watcher", "project", id, "error", err)
+		f.log().Warn("failed to start workspace file watcher", "project", id, "error", err)
 	} else {
-		a.watcher = watcher
+		f.watcher = watcher
 	}
 
 	// --- Vector index wiring ---
-	if a.vectorManager != nil {
+	if f.vectorManager != nil {
 		branch, branchErr := vectorindex.CurrentBranch(p.WorkspacePath)
 		if branchErr != nil {
-			a.log().Warn("failed to detect git branch", "error", branchErr)
+			f.log().Warn("failed to detect git branch", "error", branchErr)
 			branch = vectorindex.DefaultBranch
 		}
 		capturedBranch := branch
 
-		if switchErr := a.vectorManager.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
+		if switchErr := f.vectorManager.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
 			OnProgress: func(state vectorindex.IndexState, indexed, total int, file string) {
-				wailsRuntime.EventsEmit(a.ctx, EventVectorIndexStatus, map[string]any{
+				f.emitEvent(EventVectorIndexStatus, map[string]any{
 					"state":         string(state),
 					"progress":      progressPercent(indexed, total),
 					"files_indexed": indexed,
@@ -310,11 +301,19 @@ func (a *App) SwitchProject(id string) error {
 				})
 			},
 		}); switchErr != nil {
-			a.log().Warn("vector index project switch failed", "error", switchErr)
+			f.log().Warn("vector index project switch failed", "error", switchErr)
 		}
 	}
 
-	wailsRuntime.EventsEmit(a.ctx, EventProjectSwitched, p)
+	f.emitEvent(EventProjectSwitched, p)
 
 	return nil
+}
+
+// progressPercent calculates a percentage value for indexing progress.
+func progressPercent(indexed, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(indexed) / float64(total) * 100
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/user/agent/backend/logger"
 	beMcp "github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
+	beRtk "github.com/user/agent/backend/rtk"
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/backend/vectorindex"
 
@@ -52,8 +53,6 @@ func (a *App) Startup(ctx context.Context) {
 	if err != nil {
 		// Can't log to file, but can still emit to frontend
 		slog.Error("failed to initialize logger", "error", err)
-	} else {
-		a.sessionLogger = sessionLogger
 	}
 	var log *slog.Logger
 	if sessionLogger != nil {
@@ -65,23 +64,23 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Determine config path and load configuration via backend.
 	resolved := config.ResolveAndLoad(log)
-	a.config = resolved.Config
-	a.configPath = resolved.ConfigPath
-	a.configMigrated = resolved.Migrated
-	a.configMigrationMsg = resolved.MigrationMsg
-	a.configLoadErrors = resolved.LoadErrors
+	cfg := resolved.Config
+	configPath := resolved.ConfigPath
+	configMigrated := resolved.Migrated
+	configMigrationMsg := resolved.MigrationMsg
+	configLoadErrors := resolved.LoadErrors
 	agentDir := resolved.AgentDir
 
 	// Initialize logLevel from config and re-init logger if level differs
-	a.logLevel = a.config.LogLevel
-	if a.logLevel != "" && a.logLevel != "INFO" {
-		if newLogger, err := logger.Init(a.logLevel); err == nil {
-			if a.sessionLogger != nil {
-				if err := a.sessionLogger.Close(); err != nil {
+	logLevel := cfg.LogLevel
+	if logLevel != "" && logLevel != "INFO" {
+		if newLogger, err := logger.Init(logLevel); err == nil {
+			if sessionLogger != nil {
+				if err := sessionLogger.Close(); err != nil {
 					slog.Error("failed to close session logger", "error", err)
 				}
 			}
-			a.sessionLogger = newLogger
+			sessionLogger = newLogger
 			log = newLogger.Logger()
 			a.logger = log
 		}
@@ -90,7 +89,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Note: workspace watcher is initialized per-project in SwitchProject
 
 	// Initialize shared SQLite database
-	dbPath := filepath.Join(agentDir, a.config.Memory.Database)
+	dbPath := filepath.Join(agentDir, cfg.Memory.Database)
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		log.Error("failed to open sqlite database", "error", err)
@@ -107,22 +106,24 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// Project store first (sessions FK references projects)
+	var projStore *project.SQLiteProjectStore
 	if db != nil {
-		projStore, err := project.NewSQLiteProjectStore(db)
+		ps, err := project.NewSQLiteProjectStore(db)
 		if err != nil {
 			log.Error("failed to init project store", "error", err)
 		} else {
-			a.projStore = projStore
+			projStore = ps
 		}
 	}
 
 	// Session store (depends on projects table)
+	var store *session.SQLiteSessionStore
 	if db != nil {
-		store, err := session.NewSQLiteSessionStore(db)
+		s, err := session.NewSQLiteSessionStore(db)
 		if err != nil {
 			log.Error("failed to init session store", "error", err)
 		} else {
-			a.store = store
+			store = s
 		}
 	}
 
@@ -265,19 +266,19 @@ func (a *App) Startup(ctx context.Context) {
 	if err != nil {
 		log.Warn("vector search unavailable", "error", err)
 	}
-	a.vectorManager = vectorMgr
 
 	logDir := filepath.Join(agentDir, "logs")
-	a.projectsDir = filepath.Join(agentDir, "Projects")
-	if err := os.MkdirAll(a.projectsDir, 0o755); err != nil {
+	projectsDir := filepath.Join(agentDir, "Projects")
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
 		log.Error("failed to create projects directory", "error", err)
 	}
 
 	// Initialize project manager early — it only needs the store and a directory path.
 	// This allows us to emit project/session data to the frontend before the slow
 	// NewApplication() call (MCP gateway, etc.).
-	if a.projStore != nil {
-		a.projectManager = project.NewManager(a.projStore, a.projectsDir)
+	var projectMgr *project.Manager
+	if projStore != nil {
+		projectMgr = project.NewManager(projStore, projectsDir)
 	}
 
 	// Wire vector search callbacks into Application config.
@@ -308,13 +309,13 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	application, err := backend.NewApplication(backend.ApplicationConfig{
-		Config:               a.config,
+		Config:               cfg,
 		Logger:               log,
 		AgentDir:             agentDir,
 		LogDir:               logDir,
-		ProjectsDir:          a.projectsDir,
-		SessionStore:         a.store,
-		TaskStore:            a.store,
+		ProjectsDir:          projectsDir,
+		SessionStore:         store,
+		TaskStore:            store,
 		UIEmitFunc:           uiEmitFunc,
 		AskUserFunc:          askUserFunc,
 		ConfirmFunc:          confirmFunc,
@@ -324,20 +325,43 @@ func (a *App) Startup(ctx context.Context) {
 	})
 	if err != nil {
 		log.Error("failed to create backend application", "error", err)
-		wailsRuntime.EventsEmit(a.ctx, EventStartupError, map[string]string{
+		wailsRuntime.EventsEmit(a.ctx, backend.EventStartupError, map[string]string{
 			"message": "failed to create backend application",
 			"error":   err.Error(),
 		})
 		return
 	}
 	a.app = application
-	a.manager = application.Manager()
+
+	// --- Construct FrontendAPI (all components are ready) ---
+	a.FrontendAPI = backend.NewFrontendAPI(backend.FrontendAPIConfig{
+		App:            application,
+		Logger:         log,
+		Config:         cfg,
+		ConfigPath:     configPath,
+		Store:          store,
+		ProjStore:      projStore,
+		SessionLogger:  sessionLogger,
+		LogLevel:       logLevel,
+		ProjectManager: projectMgr,
+		ProjectsDir:    projectsDir,
+		VectorManager:  vectorMgr,
+		EmitEvent: func(eventName string, data ...any) {
+			wailsRuntime.EventsEmit(a.ctx, eventName, data...)
+		},
+		AppCtx: func() context.Context {
+			return a.ctx
+		},
+	})
+	a.SetConfigLoadState(configMigrated, configMigrationMsg, configLoadErrors)
+
+	manager := application.Manager()
 
 	// Wire project resolver so the session manager can lazily restore sessions
 	// from the database by looking up the project's workspace path.
-	if a.projStore != nil {
-		a.manager.SetProjectResolver(func(projectID string) (string, error) {
-			proj, err := a.projStore.LoadProject(projectID)
+	if projStore != nil {
+		manager.SetProjectResolver(func(projectID string) (string, error) {
+			proj, err := projStore.LoadProject(projectID)
 			if err != nil {
 				return "", fmt.Errorf("failed to load project: %w", err)
 			}
@@ -351,8 +375,8 @@ func (a *App) Startup(ctx context.Context) {
 	// Pre-load projects and sessions and emit to frontend AFTER the project
 	// resolver is wired, so that lazy session restoration works if the user
 	// interacts with a session before backend:ready fires.
-	if a.projectManager != nil {
-		projects, pErr := a.projectManager.ListProjects()
+	if projectMgr != nil {
+		projects, pErr := projectMgr.ListProjects()
 		if pErr == nil && len(projects) > 0 {
 			// NOTE: We intentionally do NOT set activeProjectID here.
 			// Setting it prematurely causes SwitchProject's idempotency guard
@@ -360,13 +384,13 @@ func (a *App) Startup(ctx context.Context) {
 			// initialization entirely. The frontend will call SwitchProject
 			// after receiving this event, which sets activeProjectID properly.
 
-			wailsRuntime.EventsEmit(a.ctx, EventProjectsLoaded, projects)
+			wailsRuntime.EventsEmit(a.ctx, backend.EventProjectsLoaded, projects)
 
 			// Also pre-load sessions for the most recent project
-			if a.store != nil {
-				sessions, sErr := a.store.ListSessionsByProject(projects[0].ID)
+			if store != nil {
+				sessions, sErr := store.ListSessionsByProject(projects[0].ID)
 				if sErr == nil {
-					wailsRuntime.EventsEmit(a.ctx, EventSessionsLoaded, sessions)
+					wailsRuntime.EventsEmit(a.ctx, backend.EventSessionsLoaded, sessions)
 				} else {
 					log.Warn("failed to pre-load sessions for early emit", "error", sErr)
 				}
@@ -404,9 +428,7 @@ func (a *App) Startup(ctx context.Context) {
 		if source != "codebase-memory" {
 			return input
 		}
-		a.activeProjectMu.RLock()
-		projectName := a.codebaseProjectName
-		a.activeProjectMu.RUnlock()
+		projectName := a.GetCodebaseProjectName()
 		if projectName == "" {
 			return input
 		}
@@ -425,9 +447,9 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Validate LLM provider configuration at startup (fail-fast).
-	if a.config.LLM.ActiveProvider == "" {
+	if cfg.LLM.ActiveProvider == "" {
 		log.Error("no active LLM provider configured - check your config.yaml")
-		wailsRuntime.EventsEmit(a.ctx, EventStartupError, map[string]string{
+		wailsRuntime.EventsEmit(a.ctx, backend.EventStartupError, map[string]string{
 			"message": "no active LLM provider configured - check your config.yaml",
 			"error":   "config has no active_provider defined under llm",
 		})
@@ -436,7 +458,7 @@ func (a *App) Startup(ctx context.Context) {
 	// --- Wire Wails event listeners ---
 
 	// Listen for confirmation responses from frontend
-	wailsRuntime.EventsOn(a.ctx, EventToolConfirmResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, backend.EventToolConfirmResponse, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("tool confirmation response missing payload")
 			return
@@ -509,7 +531,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Listen for on-demand judge verdict requests from frontend
-	wailsRuntime.EventsOn(a.ctx, EventToolJudgeRequest, func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, backend.EventToolJudgeRequest, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("tool judge request missing payload")
 			return
@@ -585,7 +607,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Listen for ask_user responses from frontend
-	wailsRuntime.EventsOn(a.ctx, EventAskUserResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, backend.EventAskUserResponse, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("ask_user response missing payload")
 			return
@@ -661,7 +683,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Listen for step_limit responses from frontend
-	wailsRuntime.EventsOn(a.ctx, EventStepLimitResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.ctx, backend.EventStepLimitResponse, func(data ...any) {
 		if len(data) == 0 {
 			log.Warn("step_limit response missing payload")
 			return
@@ -720,8 +742,8 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Check codebase-memory-mcp availability and emit status
-	cmStatus := a.CheckCodebaseMemoryMCP()
-	wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryStatus, cmStatus)
+	cmStatus := beMcp.CheckCodebaseMemoryMCP()
+	wailsRuntime.EventsEmit(a.ctx, backend.EventCodeMemoryStatus, cmStatus)
 
 	// Ensure auto_index is enabled if codebase-memory-mcp is installed
 	if cmStatus.Installed {
@@ -729,7 +751,7 @@ func (a *App) Startup(ctx context.Context) {
 		if err != nil {
 			a.log().Warn("failed to ensure codebase-memory-mcp auto_index", "error", err)
 		}
-		a.restoreAutoIndex = restoreFn
+		a.SetRestoreAutoIndex(restoreFn)
 	}
 
 	// Set pre-execute hook to block codebase-memory MCP tools during indexing
@@ -737,16 +759,14 @@ func (a *App) Startup(ctx context.Context) {
 		if source != "codebase-memory" {
 			return nil
 		}
-		a.indexingMu.Lock()
-		ch := a.indexingDone
-		a.indexingMu.Unlock()
+		ch := a.IndexingDoneChan()
 		if ch == nil {
 			return nil // not indexing
 		}
 
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID != "" {
-			wailsRuntime.EventsEmit(a.ctx, EventSessionEvent, session.Event{
+			wailsRuntime.EventsEmit(a.ctx, backend.EventSessionEvent, session.Event{
 				SessionID: sessionID,
 				Type:      "service",
 				Data: map[string]any{
@@ -765,70 +785,39 @@ func (a *App) Startup(ctx context.Context) {
 	})
 
 	// Check rtk availability and emit status
-	rtkStatus := a.CheckRtk()
-	wailsRuntime.EventsEmit(a.ctx, EventRtkStatus, rtkStatus)
+	rtkStatus := beRtk.CheckRtk()
+	wailsRuntime.EventsEmit(a.ctx, backend.EventRtkStatus, rtkStatus)
 
 	// Signal frontend that all backend subsystems are ready.
 	// Pre-load projects so the frontend doesn't need a separate round-trip.
-	if a.projectManager != nil {
-		projects, err := a.projectManager.ListProjects()
+	if projectMgr != nil {
+		projects, err := projectMgr.ListProjects()
 		if err == nil && len(projects) > 0 {
-			wailsRuntime.EventsEmit(a.ctx, EventBackendReady, projects)
+			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady, projects)
 		} else {
 			if err != nil {
 				log.Warn("failed to pre-load projects for backend:ready", "error", err)
 			}
-			wailsRuntime.EventsEmit(a.ctx, EventBackendReady)
+			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
 		}
 	} else {
-		wailsRuntime.EventsEmit(a.ctx, EventBackendReady)
+		wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
 	}
 }
 
 // Shutdown is called when the Wails app is shutting down.
 func (a *App) Shutdown(ctx context.Context) {
-	// Restore original auto_index value before shutting down
-	if a.restoreAutoIndex != nil {
-		a.restoreAutoIndex()
-	}
-
-	// Shut down vector search (cancel indexing, stop monitor, close service+embedder).
-	if a.vectorManager != nil {
-		a.vectorManager.Shutdown()
-	}
-
-	if a.watcher != nil {
-		if err := a.watcher.Close(); err != nil {
-			a.log().Error("failed to close workspace watcher", "error", err)
-		}
-		a.watcher = nil
+	if a.FrontendAPI != nil {
+		a.Cleanup()
 	}
 
 	if a.app != nil {
 		a.app.Shutdown()
 	}
 
-	if a.store != nil {
-		if err := a.store.Close(); err != nil {
-			a.log().Error("failed to close session store", "error", err)
-		}
-	}
-
-	if a.projStore != nil {
-		if err := a.projStore.Close(); err != nil {
-			a.log().Error("failed to close project store", "error", err)
-		}
-	}
-
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
 			a.log().Error("failed to close database", "error", err)
-		}
-	}
-
-	if a.sessionLogger != nil {
-		if err := a.sessionLogger.Close(); err != nil {
-			a.log().Error("failed to close session logger", "error", err)
 		}
 	}
 }
@@ -880,12 +869,4 @@ func resolveONNXLibPath() string {
 		return libPath
 	}
 	return ""
-}
-
-// progressPercent calculates a percentage value for indexing progress.
-func progressPercent(indexed, total int) float64 {
-	if total == 0 {
-		return 0
-	}
-	return float64(indexed) / float64(total) * 100
 }

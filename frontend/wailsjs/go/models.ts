@@ -1,4 +1,4 @@
-export namespace desktop {
+export namespace backend {
 	
 	export class ConfigProviderFull {
 	    base_url: string;

@@ -3,7 +3,7 @@ import { Info, Plus, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { GetSecuritySettings, UpdateSecuritySettings, GetToolList } from '../../../wailsjs/go/desktop/App'
-import { desktop } from '../../../wailsjs/go/models'
+import { backend } from '../../../wailsjs/go/models'
 import { logger } from '@/lib/logger'
 
 type ToolPolicy = 'always_allow' | 'always_deny' | 'user_confirm'
@@ -109,14 +109,14 @@ export function SecuritySettings() {
   const updateSettings = async (newSettings: SecuritySettings) => {
     setSettings(newSettings)
     try {
-      const toolPolicies: Record<string, desktop.ToolPolicyResponse> = {}
+      const toolPolicies: Record<string, backend.ToolPolicyResponse> = {}
       for (const [name, data] of Object.entries(newSettings.tool_policies)) {
-        toolPolicies[name] = new desktop.ToolPolicyResponse({
+        toolPolicies[name] = new backend.ToolPolicyResponse({
           policy: data.policy,
           blacklist: data.blacklist,
         })
       }
-      const request = new desktop.SecuritySettingsResponse({
+      const request = new backend.SecuritySettingsResponse({
         default_policy: newSettings.default_policy,
         tool_policies: toolPolicies,
       })

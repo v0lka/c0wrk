@@ -1,4 +1,4 @@
-package desktop
+package backend
 
 // ---------------------------------------------------------------------------
 // Wails event names emitted TO the frontend

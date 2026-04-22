@@ -4,10 +4,10 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { formatTokenCount } from '@/lib/formatters'
 import { BrainCircuit } from 'lucide-react'
 import { GetConfig } from '../../../wailsjs/go/desktop/App'
-import type { desktop } from '../../../wailsjs/go/models'
+import type { backend } from '../../../wailsjs/go/models'
 
 /** Extract the model name for the active provider from config. */
-function resolveConfiguredModel(llm: desktop.ConfigLLMResponse): string {
+function resolveConfiguredModel(llm: backend.ConfigLLMResponse): string {
   const provider = llm.active_provider
   switch (provider) {
     case 'anthropic': return llm.anthropic?.model ?? ''

@@ -1,4 +1,4 @@
-package desktop
+package backend
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 // --- resolveWorkspacePath tests ---
 
 func TestResolveWorkspacePath_NoActiveProject(t *testing.T) {
-	app := &App{}
-	_, _, err := app.resolveWorkspacePath("/some/path")
+	f := &FrontendAPI{}
+	_, _, err := f.resolveWorkspacePath("/some/path")
 	if err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -21,9 +21,9 @@ func TestResolveWorkspacePath_NoActiveProject(t *testing.T) {
 
 func TestResolveWorkspacePath_PathOutsideWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
-	_, _, err := app.resolveWorkspacePath("/etc/passwd")
+	_, _, err := f.resolveWorkspacePath("/etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for path outside workspace")
 	}
@@ -31,10 +31,10 @@ func TestResolveWorkspacePath_PathOutsideWorkspace(t *testing.T) {
 
 func TestResolveWorkspacePath_ValidPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	filePath := filepath.Join(tmpDir, "test.txt")
-	absPath, absRoot, err := app.resolveWorkspacePath(filePath)
+	absPath, absRoot, err := f.resolveWorkspacePath(filePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,9 +48,9 @@ func TestResolveWorkspacePath_ValidPath(t *testing.T) {
 
 func TestResolveWorkspacePath_WorkspaceRootItself(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
-	absPath, absRoot, err := app.resolveWorkspacePath(tmpDir)
+	absPath, absRoot, err := f.resolveWorkspacePath(tmpDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,8 +65,8 @@ func TestResolveWorkspacePath_WorkspaceRootItself(t *testing.T) {
 // --- ReadFile tests ---
 
 func TestReadFile_NoActiveProject(t *testing.T) {
-	app := &App{}
-	_, err := app.ReadFile("/some/path")
+	f := &FrontendAPI{}
+	_, err := f.ReadFile("/some/path")
 	if err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -74,9 +74,9 @@ func TestReadFile_NoActiveProject(t *testing.T) {
 
 func TestReadFile_PathOutsideWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
-	_, err := app.ReadFile("/etc/passwd")
+	_, err := f.ReadFile("/etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for path outside workspace")
 	}
@@ -84,7 +84,7 @@ func TestReadFile_PathOutsideWorkspace(t *testing.T) {
 
 func TestReadFile_Success(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	// Create a test file
 	testContent := "hello world\nline 2\n"
@@ -93,7 +93,7 @@ func TestReadFile_Success(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	content, err := app.ReadFile(filePath)
+	content, err := f.ReadFile(filePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,10 +104,10 @@ func TestReadFile_Success(t *testing.T) {
 
 func TestReadFile_FileNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	filePath := filepath.Join(tmpDir, "nonexistent.txt")
-	_, err := app.ReadFile(filePath)
+	_, err := f.ReadFile(filePath)
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
@@ -115,7 +115,7 @@ func TestReadFile_FileNotFound(t *testing.T) {
 
 func TestReadFile_NestedPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	// Create nested directory and file
 	nestedDir := filepath.Join(tmpDir, "sub", "dir")
@@ -128,7 +128,7 @@ func TestReadFile_NestedPath(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	content, err := app.ReadFile(filePath)
+	content, err := f.ReadFile(filePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,8 +140,8 @@ func TestReadFile_NestedPath(t *testing.T) {
 // --- GetFileDiff tests ---
 
 func TestGetFileDiff_NoActiveProject(t *testing.T) {
-	app := &App{}
-	_, err := app.GetFileDiff("/some/path")
+	f := &FrontendAPI{}
+	_, err := f.GetFileDiff("/some/path")
 	if err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -149,9 +149,9 @@ func TestGetFileDiff_NoActiveProject(t *testing.T) {
 
 func TestGetFileDiff_PathOutsideWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
-	_, err := app.GetFileDiff("/etc/passwd")
+	_, err := f.GetFileDiff("/etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for path outside workspace")
 	}
@@ -159,7 +159,7 @@ func TestGetFileDiff_PathOutsideWorkspace(t *testing.T) {
 
 func TestGetFileDiff_NotGitRepo(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	// Create a test file (no git repo)
 	filePath := filepath.Join(tmpDir, "test.txt")
@@ -169,21 +169,21 @@ func TestGetFileDiff_NotGitRepo(t *testing.T) {
 
 	// With --no-index fallback, even a non-git directory produces a diff
 	// showing the file as entirely added.
-	diff, err := app.GetFileDiff(filePath)
+	diff, err := f.GetFileDiff(filePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if diff == "" {
 		t.Error("expected non-empty diff for untracked file via --no-index")
 	}
-	if !containsSubstring(diff, "+++ b/test.txt") {
+	if !strings.Contains(diff, "+++ b/test.txt") {
 		t.Errorf("expected diff to contain +++ b/test.txt, got %q", diff)
 	}
 }
 
 func TestGetFileDiff_UntrackedFileInGitRepo(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	// Initialize git repo
 	gitInit(t, tmpDir)
@@ -194,21 +194,21 @@ func TestGetFileDiff_UntrackedFileInGitRepo(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	diff, err := app.GetFileDiff(filePath)
+	diff, err := f.GetFileDiff(filePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if diff == "" {
 		t.Error("expected non-empty diff for untracked file")
 	}
-	if !containsSubstring(diff, "+++ b/newfile.txt") {
+	if !strings.Contains(diff, "+++ b/newfile.txt") {
 		t.Errorf("expected diff to contain +++ b/newfile.txt, got %q", diff)
 	}
 }
 
 func TestGetFileDiff_TrackedFileNoChanges(t *testing.T) {
 	tmpDir := t.TempDir()
-	app := &App{activeProjectPath: tmpDir}
+	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	// Initialize git repo
 	gitInit(t, tmpDir)
@@ -231,7 +231,7 @@ func TestGetFileDiff_TrackedFileNoChanges(t *testing.T) {
 	}
 
 	// No modifications — diff should be empty
-	diff, err := app.GetFileDiff(filePath)
+	diff, err := f.GetFileDiff(filePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -241,10 +241,6 @@ func TestGetFileDiff_TrackedFileNoChanges(t *testing.T) {
 }
 
 // --- helpers ---
-
-func containsSubstring(s, substr string) bool {
-	return strings.Contains(s, substr)
-}
 
 func gitInit(t *testing.T, dir string) {
 	t.Helper()

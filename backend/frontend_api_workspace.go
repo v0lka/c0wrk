@@ -1,4 +1,4 @@
-package desktop
+package backend
 
 import (
 	"bufio"
@@ -15,32 +15,11 @@ import (
 	"strings"
 )
 
-// FileNode represents a file or directory entry in the workspace tree.
-type FileNode struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	IsDir bool   `json:"is_dir"`
-}
-
-// GitStatusEntry describes the git status of a single file.
-type GitStatusEntry struct {
-	Status string `json:"status"` // "M" or "A"
-	Staged bool   `json:"staged"`
-}
-
-// SessionTokensResponse holds token usage statistics for a session.
-type SessionTokensResponse struct {
-	TotalInputTokens  int    `json:"total_input_tokens"`
-	TotalOutputTokens int    `json:"total_output_tokens"`
-	Model             string `json:"model"`
-	Family            string `json:"family"`
-}
-
 // GetGitStatus returns a map of absolute file paths to their git status for the active project.
-func (a *App) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
-	a.activeProjectMu.RLock()
-	projectPath := a.activeProjectPath
-	a.activeProjectMu.RUnlock()
+func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
+	f.activeProjectMu.RLock()
+	projectPath := f.activeProjectPath
+	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
 		return nil, errors.New("no active project")
@@ -115,8 +94,8 @@ func (a *App) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
 // ReadFile returns the content of a file within the active project workspace.
 // Binary file content is returned as-is; the frontend is responsible for
 // detecting binary files and displaying a fallback message.
-func (a *App) ReadFile(filePath string) (string, error) {
-	absPath, _, err := a.resolveWorkspacePath(filePath)
+func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
+	absPath, _, err := f.resolveWorkspacePath(filePath)
 	if err != nil {
 		return "", err
 	}
@@ -134,8 +113,8 @@ func (a *App) ReadFile(filePath string) (string, error) {
 // diffs. For untracked (new) files where both diffs are empty, it produces
 // a diff showing the entire file as added. An empty string is returned when
 // there are no changes or when git is not available.
-func (a *App) GetFileDiff(filePath string) (string, error) {
-	absPath, absRoot, err := a.resolveWorkspacePath(filePath)
+func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
+	absPath, absRoot, err := f.resolveWorkspacePath(filePath)
 	if err != nil {
 		return "", err
 	}
@@ -149,13 +128,13 @@ func (a *App) GetFileDiff(filePath string) (string, error) {
 	var result strings.Builder
 
 	// Staged changes first
-	staged, err := a.runGitDiff(absRoot, true, relPath)
+	staged, err := f.runGitDiff(absRoot, true, relPath)
 	if err == nil {
 		result.WriteString(staged)
 	}
 
 	// Unstaged changes
-	unstaged, err := a.runGitDiff(absRoot, false, relPath)
+	unstaged, err := f.runGitDiff(absRoot, false, relPath)
 	if err == nil {
 		result.WriteString(unstaged)
 	}
@@ -163,8 +142,8 @@ func (a *App) GetFileDiff(filePath string) (string, error) {
 	// If no diff was produced, check if the file is untracked.
 	// Only for untracked files (or non-git directories) do we generate
 	// a full-file diff; tracked files with no changes should return empty.
-	if result.Len() == 0 && !a.isGitTracked(absRoot, relPath) {
-		untrackedDiff, untrackedErr := a.runGitDiffNoIndex(absRoot, relPath)
+	if result.Len() == 0 && !f.isGitTracked(absRoot, relPath) {
+		untrackedDiff, untrackedErr := f.runGitDiffNoIndex(absRoot, relPath)
 		if untrackedErr == nil {
 			result.WriteString(untrackedDiff)
 		}
@@ -174,7 +153,7 @@ func (a *App) GetFileDiff(filePath string) (string, error) {
 }
 
 // isGitTracked reports whether relPath is tracked by git in dir.
-func (a *App) isGitTracked(dir, relPath string) bool {
+func (f *FrontendAPI) isGitTracked(dir, relPath string) bool {
 	cmd := exec.CommandContext(context.Background(), "git", "ls-files", "--error-unmatch", relPath)
 	cmd.Dir = dir
 	cmd.Stdout = nil
@@ -183,7 +162,7 @@ func (a *App) isGitTracked(dir, relPath string) bool {
 }
 
 // runGitDiff executes a git diff command and returns its output.
-func (a *App) runGitDiff(dir string, cached bool, relPath string) (string, error) {
+func (f *FrontendAPI) runGitDiff(dir string, cached bool, relPath string) (string, error) {
 	args := []string{"diff"}
 	if cached {
 		args = append(args, "--cached")
@@ -206,7 +185,7 @@ func (a *App) runGitDiff(dir string, cached bool, relPath string) (string, error
 // against /dev/null. This shows the entire file content as added lines.
 // git diff --no-index exits with code 1 when differences exist, so we treat
 // that as success.
-func (a *App) runGitDiffNoIndex(dir, relPath string) (string, error) {
+func (f *FrontendAPI) runGitDiffNoIndex(dir, relPath string) (string, error) {
 	cmd := exec.CommandContext(context.Background(), "git", "diff", "--no-index", "/dev/null", relPath)
 	cmd.Dir = dir
 	var stdout bytes.Buffer
@@ -230,10 +209,10 @@ func (a *App) runGitDiffNoIndex(dir, relPath string) (string, error) {
 
 // resolveWorkspacePath validates that filePath is within the active project
 // workspace and returns the resolved absolute path and workspace root.
-func (a *App) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
-	a.activeProjectMu.RLock()
-	projectPath := a.activeProjectPath
-	a.activeProjectMu.RUnlock()
+func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
+	f.activeProjectMu.RLock()
+	projectPath := f.activeProjectPath
+	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
 		return "", "", errors.New("no active project")
@@ -254,10 +233,10 @@ func (a *App) resolveWorkspacePath(filePath string) (absPath, absRoot string, er
 }
 
 // GetSessionWorkspace returns the workspace directory path for a given session.
-func (a *App) GetSessionWorkspace(sessionID string) (string, error) {
-	a.activeProjectMu.RLock()
-	projectPath := a.activeProjectPath
-	a.activeProjectMu.RUnlock()
+func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
+	f.activeProjectMu.RLock()
+	projectPath := f.activeProjectPath
+	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
 		return "", errors.New("no active project")
@@ -266,10 +245,10 @@ func (a *App) GetSessionWorkspace(sessionID string) (string, error) {
 }
 
 // ListDirectory returns the immediate children of a directory, sorted directories first then alphabetically.
-func (a *App) ListDirectory(dirPath string) ([]FileNode, error) {
-	a.activeProjectMu.RLock()
-	projectPath := a.activeProjectPath
-	a.activeProjectMu.RUnlock()
+func (f *FrontendAPI) ListDirectory(dirPath string) ([]FileNode, error) {
+	f.activeProjectMu.RLock()
+	projectPath := f.activeProjectPath
+	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
 		return nil, errors.New("no active project")
@@ -323,10 +302,10 @@ func (a *App) ListDirectory(dirPath string) ([]FileNode, error) {
 // The .git directory and its contents are excluded.
 // Files and directories ignored by .gitignore are also excluded when the
 // workspace is a git repository.
-func (a *App) ListDirectoryRecursive(dirPath string) ([]FileNode, error) {
-	a.activeProjectMu.RLock()
-	projectPath := a.activeProjectPath
-	a.activeProjectMu.RUnlock()
+func (f *FrontendAPI) ListDirectoryRecursive(dirPath string) ([]FileNode, error) {
+	f.activeProjectMu.RLock()
+	projectPath := f.activeProjectPath
+	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
 		return nil, errors.New("no active project")
@@ -346,12 +325,12 @@ func (a *App) ListDirectoryRecursive(dirPath string) ([]FileNode, error) {
 	}
 
 	// Build the set of gitignored paths for filtering.
-	ignoredPaths := gitIgnoredPaths(absDir, a.log())
+	ignoredPaths := gitIgnoredPaths(absDir, f.log())
 
 	var nodes []FileNode
 	err = filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			a.log().Warn("skipping unreadable path", "path", path, "error", walkErr)
+			f.log().Warn("skipping unreadable path", "path", path, "error", walkErr)
 			return nil
 		}
 		// Skip .git directory tree
@@ -449,36 +428,36 @@ func gitIgnoredPaths(dir string, logger *slog.Logger) map[string]bool {
 }
 
 // WatchDirectory adds a directory to the file watcher.
-func (a *App) WatchDirectory(dirPath string) error {
-	if a.watcher == nil {
+func (f *FrontendAPI) WatchDirectory(dirPath string) error {
+	if f.watcher == nil {
 		return errors.New("no active file watcher")
 	}
-	return a.watcher.WatchDir(dirPath)
+	return f.watcher.WatchDir(dirPath)
 }
 
 // UnwatchDirectory removes a directory from the file watcher.
-func (a *App) UnwatchDirectory(dirPath string) error {
-	if a.watcher == nil {
+func (f *FrontendAPI) UnwatchDirectory(dirPath string) error {
+	if f.watcher == nil {
 		return errors.New("no active file watcher")
 	}
-	return a.watcher.UnwatchDir(dirPath)
+	return f.watcher.UnwatchDir(dirPath)
 }
 
 // UpdateSessionTokens persists accumulated token counts for a session.
-func (a *App) UpdateSessionTokens(sessionID string, inputTokens, outputTokens int, model, family string) error {
-	if a.store == nil {
+func (f *FrontendAPI) UpdateSessionTokens(sessionID string, inputTokens, outputTokens int, model, family string) error {
+	if f.store == nil {
 		return nil
 	}
-	return a.store.UpdateSessionTokens(sessionID, inputTokens, outputTokens, model, family)
+	return f.store.UpdateSessionTokens(sessionID, inputTokens, outputTokens, model, family)
 }
 
 // GetSessionTokens returns persisted token counts for a session.
-func (a *App) GetSessionTokens(sessionID string) SessionTokensResponse {
+func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 	var result SessionTokensResponse
-	if a.store == nil || sessionID == "" {
+	if f.store == nil || sessionID == "" {
 		return result
 	}
-	info, err := a.store.LoadSession(sessionID)
+	info, err := f.store.LoadSession(sessionID)
 	if err != nil || info == nil {
 		return result
 	}

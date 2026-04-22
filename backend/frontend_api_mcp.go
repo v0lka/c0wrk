@@ -1,47 +1,36 @@
-package desktop
+package backend
 
 import (
 	"context"
 	"errors"
 	"fmt"
 
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
-
-	"github.com/user/agent/backend"
 	"github.com/user/agent/backend/config"
 	beMcp "github.com/user/agent/backend/mcp"
 )
 
-// ToolInfo represents a tool with its metadata, source, and policy for the frontend.
-type ToolInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Source      string `json:"source"`
-	Policy      string `json:"policy"`
-}
-
 // GetMCPStatus returns current MCP server connection statuses.
 // Returns an empty slice if the backend application is not initialized.
-func (a *App) GetMCPStatus() []backend.MCPServerStatus {
-	if a.app == nil {
-		return []backend.MCPServerStatus{}
+func (f *FrontendAPI) GetMCPStatus() []MCPServerStatus {
+	if f.app == nil {
+		return []MCPServerStatus{}
 	}
-	return a.app.GetMCPStatus()
+	return f.app.GetMCPStatus()
 }
 
 // GetMCPServers returns the current MCP server configurations.
 // Returns an empty map if config is not initialized.
-func (a *App) GetMCPServers() map[string]config.MCPServerConfig {
-	a.configMu.RLock()
-	defer a.configMu.RUnlock()
+func (f *FrontendAPI) GetMCPServers() map[string]config.MCPServerConfig {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
 
-	if a.config == nil {
+	if f.config == nil {
 		return map[string]config.MCPServerConfig{}
 	}
 
 	// Deep-copy to avoid external modifications
-	result := make(map[string]config.MCPServerConfig, len(a.config.MCP.Servers))
-	for name, cfg := range a.config.MCP.Servers {
+	result := make(map[string]config.MCPServerConfig, len(f.config.MCP.Servers))
+	for name, cfg := range f.config.MCP.Servers {
 		srv := cfg
 		if cfg.Args != nil {
 			srv.Args = make([]string, len(cfg.Args))
@@ -67,26 +56,26 @@ func (a *App) GetMCPServers() map[string]config.MCPServerConfig {
 
 // GetToolList returns all registered tools with source and policy info.
 // Internal tools are filtered out from the list.
-func (a *App) GetToolList() []ToolInfo {
-	if a.app == nil {
+func (f *FrontendAPI) GetToolList() []ToolInfo {
+	if f.app == nil {
 		return []ToolInfo{}
 	}
 
 	// Get descriptors from the backend application.
-	descriptors := a.app.ListTools()
+	descriptors := f.app.ListTools()
 
-	a.configMu.RLock()
-	defer a.configMu.RUnlock()
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
 
 	toolInfos := make([]ToolInfo, 0, len(descriptors))
 	for _, desc := range descriptors {
 		// Filter out internal tools
-		if backend.IsInternalTool(desc.Name) {
+		if IsInternalTool(desc.Name) {
 			continue
 		}
 
 		// Resolve effective policy
-		policy := a.resolveToolPolicy(desc.Name)
+		policy := f.resolveToolPolicy(desc.Name)
 
 		toolInfos = append(toolInfos, ToolInfo{
 			Name:        desc.Name,
@@ -101,26 +90,26 @@ func (a *App) GetToolList() []ToolInfo {
 
 // resolveToolPolicy returns the effective policy string for a tool.
 // It checks policy overrides and default policy from config.
-func (a *App) resolveToolPolicy(toolName string) string {
-	if a.config == nil {
+func (f *FrontendAPI) resolveToolPolicy(toolName string) string {
+	if f.config == nil {
 		return "user_confirm"
 	}
 
 	// Check per-tool override first
-	if policyCfg, ok := a.config.Security.ToolPolicies[toolName]; ok {
+	if policyCfg, ok := f.config.Security.ToolPolicies[toolName]; ok {
 		return policyCfg.Policy
 	}
 
 	// Fall back to default policy
-	if a.config.Security.DefaultPolicy != "" {
-		return a.config.Security.DefaultPolicy
+	if f.config.Security.DefaultPolicy != "" {
+		return f.config.Security.DefaultPolicy
 	}
 
 	return "user_confirm"
 }
 
 // UpdateMCPServers updates MCP server configuration and hot-reloads the gateway.
-func (a *App) UpdateMCPServers(servers map[string]config.MCPServerConfig) error {
+func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig) error {
 	// Validate config first
 	for name, cfg := range servers {
 		if err := validateMCPServerConfig(name, cfg); err != nil {
@@ -128,15 +117,15 @@ func (a *App) UpdateMCPServers(servers map[string]config.MCPServerConfig) error 
 		}
 	}
 
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
 
-	if a.config == nil {
+	if f.config == nil {
 		return errors.New("config not initialized")
 	}
 
 	// Deep-copy the servers map to avoid external modifications
-	a.config.MCP.Servers = make(map[string]config.MCPServerConfig, len(servers))
+	f.config.MCP.Servers = make(map[string]config.MCPServerConfig, len(servers))
 	for name, cfg := range servers {
 		srv := cfg
 		if cfg.Args != nil {
@@ -155,17 +144,17 @@ func (a *App) UpdateMCPServers(servers map[string]config.MCPServerConfig) error 
 				srv.Headers[hk] = hv
 			}
 		}
-		a.config.MCP.Servers[name] = srv
+		f.config.MCP.Servers[name] = srv
 	}
 
 	// Persist config
-	if err := a.persistConfig(); err != nil {
-		a.log().Warn("failed to persist MCP server settings", "error", err)
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist MCP server settings", "error", err)
 	}
 
 	// Reconfigure MCP gateway via the backend builder.
-	if a.app != nil {
-		if err := a.app.Builder().ReconfigureMCP(context.Background(), backend.ToBuilderConfig(a.config)); err != nil {
+	if f.app != nil {
+		if err := f.app.Builder().ReconfigureMCP(context.Background(), ToBuilderConfig(f.config)); err != nil {
 			return fmt.Errorf("failed to reconfigure MCP gateway: %w", err)
 		}
 	}
@@ -197,14 +186,14 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 }
 
 // CheckCodebaseMemoryMCP checks if codebase-memory-mcp is installed and returns its status.
-func (a *App) CheckCodebaseMemoryMCP() beMcp.CodeMemoryStatus {
+func (f *FrontendAPI) CheckCodebaseMemoryMCP() beMcp.CodeMemoryStatus {
 	return beMcp.CheckCodebaseMemoryMCP()
 }
 
 // InstallCodebaseMemoryMCP downloads and installs the codebase-memory-mcp binary.
-func (a *App) InstallCodebaseMemoryMCP() error {
+func (f *FrontendAPI) InstallCodebaseMemoryMCP() error {
 	progress := func(status string) {
-		wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, status)
+		f.emitEvent(EventCodeMemoryInstallProgress, status)
 	}
 
 	installPath, err := beMcp.InstallCodebaseMemoryMCP(progress, nil)
@@ -212,34 +201,34 @@ func (a *App) InstallCodebaseMemoryMCP() error {
 		return err
 	}
 
-	a.log().Info("codebase-memory-mcp installed", "path", installPath)
-	wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, "configuring")
+	f.log().Info("codebase-memory-mcp installed", "path", installPath)
+	f.emitEvent(EventCodeMemoryInstallProgress, "configuring")
 
 	// Add MCP config entry
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
 
-	if a.config.MCP.Servers == nil {
-		a.config.MCP.Servers = make(map[string]config.MCPServerConfig)
+	if f.config.MCP.Servers == nil {
+		f.config.MCP.Servers = make(map[string]config.MCPServerConfig)
 	}
-	a.config.MCP.Servers["codebase-memory"] = config.MCPServerConfig{
+	f.config.MCP.Servers["codebase-memory"] = config.MCPServerConfig{
 		Transport: "stdio",
 		Command:   installPath,
 	}
 
 	// Persist config
-	if err := a.persistConfig(); err != nil {
-		a.log().Warn("failed to persist MCP server settings", "error", err)
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist MCP server settings", "error", err)
 	}
 
 	// Reconfigure MCP gateway via the backend builder.
-	if a.app != nil {
-		if err := a.app.Builder().ReconfigureMCP(context.Background(), backend.ToBuilderConfig(a.config)); err != nil {
-			wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, "error")
+	if f.app != nil {
+		if err := f.app.Builder().ReconfigureMCP(context.Background(), ToBuilderConfig(f.config)); err != nil {
+			f.emitEvent(EventCodeMemoryInstallProgress, "error")
 			return fmt.Errorf("failed to reconfigure MCP gateway: %w", err)
 		}
 	}
 
-	wailsRuntime.EventsEmit(a.ctx, EventCodeMemoryInstallProgress, "done")
+	f.emitEvent(EventCodeMemoryInstallProgress, "done")
 	return nil
 }

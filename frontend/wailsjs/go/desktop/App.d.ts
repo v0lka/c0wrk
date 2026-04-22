@@ -4,7 +4,7 @@ import {mcp} from '../models';
 import {rtk} from '../models';
 import {project} from '../models';
 import {session} from '../models';
-import {desktop} from '../models';
+import {backend} from '../models';
 import {config} from '../models';
 
 export function ArchiveSession(arg1:string):Promise<void>;
@@ -23,11 +23,11 @@ export function DeleteProject(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
-export function GetConfig():Promise<desktop.ConfigResponse>;
+export function GetConfig():Promise<backend.ConfigResponse>;
 
 export function GetFileDiff(arg1:string):Promise<string>;
 
-export function GetGitStatus(arg1:string):Promise<Record<string, desktop.GitStatusEntry>>;
+export function GetGitStatus(arg1:string):Promise<Record<string, backend.GitStatusEntry>>;
 
 export function GetLogLevel():Promise<string>;
 
@@ -35,23 +35,23 @@ export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
 
 export function GetMCPStatus():Promise<Array<mcp.ServerStatus>>;
 
-export function GetSecuritySettings():Promise<desktop.SecuritySettingsResponse>;
+export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
 
-export function GetSessionTokens(arg1:string):Promise<desktop.SessionTokensResponse>;
+export function GetSessionTokens(arg1:string):Promise<backend.SessionTokensResponse>;
 
 export function GetSessionWorkspace(arg1:string):Promise<string>;
 
-export function GetToolList():Promise<Array<desktop.ToolInfo>>;
+export function GetToolList():Promise<Array<backend.ToolInfo>>;
 
 export function InstallCodebaseMemoryMCP():Promise<void>;
 
 export function InstallRtk():Promise<void>;
 
-export function ListDirectory(arg1:string):Promise<Array<desktop.FileNode>>;
+export function ListDirectory(arg1:string):Promise<Array<backend.FileNode>>;
 
-export function ListDirectoryRecursive(arg1:string):Promise<Array<desktop.FileNode>>;
+export function ListDirectoryRecursive(arg1:string):Promise<Array<backend.FileNode>>;
 
 export function ListProjects():Promise<Array<project.ProjectInfo>>;
 
@@ -77,13 +77,13 @@ export function SwitchProject(arg1:string):Promise<void>;
 
 export function UnwatchDirectory(arg1:string):Promise<void>;
 
-export function UpdateLLMSettings(arg1:desktop.LLMSettingsRequest):Promise<void>;
+export function UpdateLLMSettings(arg1:backend.LLMSettingsRequest):Promise<void>;
 
 export function UpdateMCPServers(arg1:Record<string, config.MCPServerConfig>):Promise<void>;
 
-export function UpdateSearchSettings(arg1:desktop.SearchSettingsRequest):Promise<void>;
+export function UpdateSearchSettings(arg1:backend.SearchSettingsRequest):Promise<void>;
 
-export function UpdateSecuritySettings(arg1:desktop.SecuritySettingsResponse):Promise<void>;
+export function UpdateSecuritySettings(arg1:backend.SecuritySettingsResponse):Promise<void>;
 
 export function UpdateSessionTokens(arg1:string,arg2:number,arg3:number,arg4:string,arg5:string):Promise<void>;
 

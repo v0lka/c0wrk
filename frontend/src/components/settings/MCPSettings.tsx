@@ -41,7 +41,7 @@ import {
   CheckRtk,
   InstallRtk,
 } from '../../../wailsjs/go/desktop/App'
-import { mcp, desktop } from '../../../wailsjs/go/models'
+import { mcp, backend } from '../../../wailsjs/go/models'
 
 interface MCPServerConfig {
   transport: string
@@ -92,7 +92,7 @@ const emptyFormData: ServerFormData = {
 interface UseMCPServersReturn {
   servers: mcp.ServerStatus[]
   serverConfigs: Record<string, MCPServerConfig>
-  tools: desktop.ToolInfo[]
+  tools: backend.ToolInfo[]
   isLoading: boolean
   isSaving: boolean
   error: string | null
@@ -109,13 +109,13 @@ interface UseMCPServersReturn {
     headerEntries: KeyValueEntry[],
   ) => Promise<string | null>
   handleDelete: (serverName: string) => Promise<void>
-  getToolsForServer: (serverName: string) => desktop.ToolInfo[]
+  getToolsForServer: (serverName: string) => backend.ToolInfo[]
 }
 
 function useMCPServers(): UseMCPServersReturn {
   const [servers, setServers] = useState<mcp.ServerStatus[]>([])
   const [serverConfigs, setServerConfigs] = useState<Record<string, MCPServerConfig>>({})
-  const [tools, setTools] = useState<desktop.ToolInfo[]>([])
+  const [tools, setTools] = useState<backend.ToolInfo[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -243,7 +243,7 @@ function useMCPServers(): UseMCPServersReturn {
     }
   }
 
-  const getToolsForServer = (serverName: string): desktop.ToolInfo[] => {
+  const getToolsForServer = (serverName: string): backend.ToolInfo[] => {
     return tools.filter((t) => t.source === serverName)
   }
 
