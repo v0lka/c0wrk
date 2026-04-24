@@ -21,16 +21,17 @@
 - [projectStore.ts](file://frontend/src/stores/projectStore.ts)
 - [sessionStore.ts](file://frontend/src/stores/sessionStore.ts)
 - [vectorIndexStore.ts](file://frontend/src/stores/vectorIndexStore.ts)
+- [models.ts](file://frontend/src/types/models.ts)
 - [index.css](file://frontend/src/index.css)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for new ProjectSelector.tsx and SessionSelector.tsx components
-- Updated FileTreePanel.tsx documentation to reflect substantial rewrite with new interaction patterns
-- Revised Sidebar.tsx documentation to reflect complete refactoring integrating new selector components
-- Enhanced component integration patterns and data flow documentation
-- Updated architecture diagrams to reflect new selector-based approach
+- Updated FileTreePanel documentation to reflect the new signature-based Git status propagation algorithm using Map data structure
+- Enhanced Git status computation section with detailed explanation of the improved algorithm
+- Updated component analysis to include the new dirSignatures Map implementation
+- Revised performance considerations to highlight the improved computational efficiency
+- Updated troubleshooting guide to address new Git status propagation behavior
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -44,7 +45,7 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document provides comprehensive documentation for C0WRK's layout and navigation components. It covers the AppLayout main container, responsive design patterns, Sidebar with integrated ProjectSelector and SessionSelector components, WorkspacePanel for project management and file browsing integration, FileTreePanel for hierarchical file navigation with Git-aware status indicators, StatusBar for system information and indexing status, IndexingStatus for real-time codebase indexing feedback, and FileIcon for file type visualization. It also explains layout composition patterns, responsive breakpoints, and customization options.
+This document provides comprehensive documentation for C0WRK's layout and navigation components. It covers the AppLayout main container, responsive design patterns, Sidebar with integrated ProjectSelector and SessionSelector components, WorkspacePanel for project management and file browsing integration, FileTreePanel for hierarchical file navigation with enhanced Git-aware status indicators, StatusBar for system information and indexing status, IndexingStatus for real-time codebase indexing feedback, and FileIcon for file type visualization. It also explains layout composition patterns, responsive breakpoints, and customization options.
 
 ## Project Structure
 The layout and navigation system resides in the frontend/src/components/layout directory and integrates with multiple stores for state management. The main application entry point initializes global banners and renders the AppLayout, which orchestrates the sidebar (now featuring dedicated selectors), main content area, file viewer, and status bar.
@@ -57,7 +58,7 @@ Sidebar --> SidebarHeader["SidebarHeader.tsx<br/>Header with collapse/settings c
 Sidebar --> ProjectSelector["ProjectSelector.tsx<br/>Project management dropdown"]
 Sidebar --> SessionSelector["SessionSelector.tsx<br/>Session management dropdown"]
 Sidebar --> WorkspacePanel["WorkspacePanel.tsx<br/>Explorer/Git/Semantics tabs"]
-WorkspacePanel --> FileTreePanel["FileTreePanel.tsx<br/>Enhanced hierarchical file tree"]
+WorkspacePanel --> FileTreePanel["FileTreePanel.tsx<br/>Enhanced hierarchical file tree with signature-based Git propagation"]
 FileTreePanel --> FileIcon["FileIcon.tsx<br/>File type visualization"]
 StatusBar["StatusBar.tsx<br/>System and indexing status"] --> IndexingStatus["IndexingStatus.tsx<br/>Real-time indexing feedback"]
 ```
@@ -70,7 +71,7 @@ StatusBar["StatusBar.tsx<br/>System and indexing status"] --> IndexingStatus["In
 - [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
 - [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
 - [WorkspacePanel.tsx:26-70](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L70)
-- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
+- [FileTreePanel.tsx:15-56](file://frontend/src/components/layout/FileTreePanel.tsx#L15-L56)
 - [StatusBar.tsx:10-68](file://frontend/src/components/layout/StatusBar.tsx#L10-L68)
 - [IndexingStatus.tsx:9-86](file://frontend/src/components/layout/IndexingStatus.tsx#L9-L86)
 
@@ -84,7 +85,7 @@ StatusBar["StatusBar.tsx<br/>System and indexing status"] --> IndexingStatus["In
 - **ProjectSelector**: Dedicated dropdown interface for managing multiple projects with create, rename, delete, and switch operations.
 - **SessionSelector**: Comprehensive dropdown interface for managing multiple sessions with search, archive/unarchive, and delete operations.
 - **WorkspacePanel**: Provides Explorer, Git, and Semantics tabs with a file tree in the Explorer tab.
-- **FileTreePanel**: Enhanced hierarchical file navigation with improved filtering, Git status indicators, and file opening capabilities.
+- **FileTreePanel**: Enhanced hierarchical file navigation with improved filtering, Git status propagation using signature-based algorithm, and file opening capabilities.
 - **StatusBar**: Displays session name, routing domain, attempt counts, context fill percentage, and indexing status.
 - **IndexingStatus**: Shows real-time progress for codebase indexing with animated indicators and progress bars.
 - **FileIcon**: Visualizes file types using a seti-inspired icon palette and folder icons.
@@ -97,19 +98,19 @@ StatusBar["StatusBar.tsx<br/>System and indexing status"] --> IndexingStatus["In
 - [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
 - [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
 - [WorkspacePanel.tsx:26-70](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L70)
-- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
+- [FileTreePanel.tsx:150-239](file://frontend/src/components/layout/FileTreePanel.tsx#L150-L239)
 - [StatusBar.tsx:10-68](file://frontend/src/components/layout/StatusBar.tsx#L10-L68)
 - [IndexingStatus.tsx:9-86](file://frontend/src/components/layout/IndexingStatus.tsx#L9-L86)
 - [FileIcon.tsx:148-162](file://frontend/src/components/layout/FileIcon.tsx#L148-L162)
 - [projectStore.ts:31-65](file://frontend/src/stores/projectStore.ts#L31-L65)
 - [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
-- [fileTreeStore.ts:78-243](file://frontend/src/stores/fileTreeStore.ts#L78-L243)
+- [fileTreeStore.ts:35-102](file://frontend/src/stores/fileTreeStore.ts#L35-L102)
 - [fileViewerStore.ts:108-278](file://frontend/src/stores/fileViewerStore.ts#L108-L278)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
 - [vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
 
 ## Architecture Overview
-The layout follows a responsive, resizable panel architecture with persistent UI state. The sidebar now integrates dedicated selector components for seamless project and session management. The file tree supports recursive loading and filtering with Git status integration. The status bar aggregates session and indexing information.
+The layout follows a responsive, resizable panel architecture with persistent UI state. The sidebar now integrates dedicated selector components for seamless project and session management. The file tree supports recursive loading and filtering with enhanced Git status integration using a signature-based propagation algorithm. The status bar aggregates session and indexing information.
 
 ```mermaid
 graph TB
@@ -158,10 +159,10 @@ FileTreePanel --> fileTreeStore
 - [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
 - [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
 - [WorkspacePanel.tsx:26-70](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L70)
-- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
+- [FileTreePanel.tsx:150-239](file://frontend/src/components/layout/FileTreePanel.tsx#L150-L239)
 - [projectStore.ts:31-65](file://frontend/src/stores/projectStore.ts#L31-L65)
 - [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
-- [fileTreeStore.ts:78-243](file://frontend/src/stores/fileTreeStore.ts#L78-L243)
+- [fileTreeStore.ts:35-102](file://frontend/src/stores/fileTreeStore.ts#L35-L102)
 - [fileViewerStore.ts:108-278](file://frontend/src/stores/fileViewerStore.ts#L108-L278)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
 - [vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
@@ -332,11 +333,13 @@ It uses a tooltip-enabled tab list with dynamic labels and provides a consistent
 ### FileTreePanel: Enhanced Hierarchical File Navigation
 FileTreePanel implements an enhanced version with:
 - **Improved tree rendering**: Optimized TreeNode component with better performance.
-- **Git status propagation**: Enhanced algorithm to propagate Git status up to parent directories.
+- **Enhanced Git status propagation**: New signature-based algorithm using Map data structure for improved accuracy in directory status inheritance.
 - **Interactive filtering**: Integrated filter input with mode switching between glob and regex.
 - **Better accessibility**: Proper ARIA attributes and keyboard navigation support.
 - **Loading states**: Improved loading indicators for directory expansion.
 - **Event-driven refresh**: Enhanced workspace tree change detection.
+
+**Updated** Enhanced Git status propagation algorithm with signature-based approach using Map data structure for improved accuracy in directory status inheritance.
 
 Enhanced filtering algorithm:
 - **Integrated filter input**: Built-in search box with mode switching.
@@ -344,34 +347,41 @@ Enhanced filtering algorithm:
 - **Mode switching**: Toggle between glob and regex filtering modes.
 
 Git status computation improvements:
-- **Propagate status**: Enhanced algorithm to propagate Git status to parent directories.
-- **Visual indicators**: Better color coding for different Git status types.
-- **Performance optimization**: Efficient status computation and caching.
+- **Signature-based propagation**: Enhanced algorithm using Map data structure to track directory signatures for improved accuracy.
+- **Enhanced algorithm structure**: The `propagateGitStatus` function now uses a two-phase approach:
+  - **Phase 1**: Build directory signatures using `dirSignatures` Map where keys are directory paths and values are Sets of signature strings
+  - **Phase 2**: Apply status propagation based on signature analysis
+- **Visual indicators**: Better color coding for different Git status types with improved status inheritance.
+- **Performance optimization**: More efficient status computation and caching using Map data structure.
+
+The new algorithm works as follows:
+1. **Signature Collection Phase**: For each file path, traverse up to parent directories and collect unique status signatures in the format `"status:staged"` (e.g., `"M:true"`, `"A:false"`)
+2. **Signature Analysis Phase**: For each directory, analyze collected signatures:
+   - If exactly one unique signature exists, inherit that status to the directory
+   - If multiple different signatures exist, fall back to modified status (`M`)
+3. **Result Generation**: Return both the propagated status map and the set of propagated paths
 
 ```mermaid
 flowchart TD
-Start(["User types filter"]) --> Debounce["Debounce input (300ms)"]
-Debounce --> BuildMatcher["Build matcher (glob/regex)"]
-BuildMatcher --> IsActive{"Filter active?"}
-IsActive --> |No| UseLazy["Use lazy visibility on existing entries"]
-IsActive --> |Yes| CheckRecursive{"Recursive data loaded?"}
-CheckRecursive --> |No| FetchRecursive["Fetch recursive tree"]
-CheckRecursive --> |Yes| ComputeFilter["Compute matched/visible/expansion sets"]
-FetchRecursive --> ComputeFilter
-ComputeFilter --> PropagateGit["Propagate Git status to parents"]
-PropagateGit --> Render["Render tree with enhanced Git colors and matches"]
-UseLazy --> Render
+Start(["propagateGitStatus Called"]) --> Init["Initialize result map and propagated Set"]
+Init --> CreateMap["Create dirSignatures Map"]
+CreateMap --> IterateFiles["Iterate through gitStatus entries"]
+IterateFiles --> CollectSignatures["For each file, traverse parent directories<br/>and collect signature sets"]
+CollectSignatures --> AnalyzeSignatures["Analyze signature sets for each directory"]
+AnalyzeSignatures --> SingleSig{"Single signature?"}
+SingleSig --> |Yes| InheritStatus["Inherit status from single signature"]
+SingleSig --> |No| ModifiedStatus["Set status to M (modified)"]
+InheritStatus --> MarkPropagated["Add directory to propagated Set"]
+ModifiedStatus --> MarkPropagated
+MarkPropagated --> ReturnResult["Return {status, propagated}"]
 ```
 
 **Diagram sources**
-- [FileTreePanel.tsx:14-30](file://frontend/src/components/layout/FileTreePanel.tsx#L14-L30)
-- [FileTreePanel.tsx:138-139](file://frontend/src/components/layout/FileTreePanel.tsx#L138-L139)
-- [FileTreePanel.tsx:173-174](file://frontend/src/components/layout/FileTreePanel.tsx#L173-L174)
-- [useFileSearch.ts](file://frontend/src/hooks/useFileSearch.ts)
+- [FileTreePanel.tsx:15-56](file://frontend/src/components/layout/FileTreePanel.tsx#L15-L56)
 
 **Section sources**
-- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
-- [fileTreeStore.ts:78-243](file://frontend/src/stores/fileTreeStore.ts#L78-L243)
+- [FileTreePanel.tsx:150-239](file://frontend/src/components/layout/FileTreePanel.tsx#L150-L239)
+- [fileTreeStore.ts:35-102](file://frontend/src/stores/fileTreeStore.ts#L35-L102)
 
 ### StatusBar: System Information and Indexing Status
 StatusBar displays:
@@ -452,13 +462,16 @@ App["App.tsx"] --> VectorIndexStore
 
 ## Performance Considerations
 - **Enhanced filtering**: FileTreePanel debounces filter input to reduce re-computation overhead.
-- **Optimized Git status propagation**: Improved algorithm reduces computational complexity for status calculations.
+- **Optimized Git status propagation**: New signature-based algorithm using Map data structure significantly improves computational efficiency for status calculations.
 - **Selective rendering**: ProjectSelector and SessionSelector use conditional rendering to minimize DOM updates.
 - **Efficient state updates**: Both selector components use zustand's selective state updates to prevent unnecessary re-renders.
 - **Recursive loading**: Uses recursive directory listing only when filtering is active and clears it when inactive to save memory.
 - **Lazy expansion**: Toggles directory loading state and watches/unwatches directories to minimize backend calls.
 - **Persistent state**: UI and file viewer states persist to localStorage to avoid re-initialization on reload.
 - **Memoized computations**: SessionSelector uses useMemo for filtered lists to avoid recomputation on each render.
+- **Map-based signature tracking**: The new algorithm uses Map data structure for O(1) signature lookups and Set for unique signature tracking, improving overall performance.
+
+**Updated** The new signature-based Git status propagation algorithm provides improved accuracy and performance through the use of Map data structure for signature tracking and Set for unique signature analysis.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -470,15 +483,20 @@ Common issues and resolutions:
 - **ProjectSelector not updating sessions**: Verify that handleSwitch calls listSessions and updates session store.
 - **SessionSelector search not working**: Check that showSearch condition triggers and filterFn properly filters session names.
 - **Selector dropdowns not closing**: Ensure proper event handling for dropdown open/close states and search input clearing.
+- **Git status propagation incorrect**: Verify that the signature-based algorithm is properly analyzing directory signatures and applying status inheritance rules.
+
+**Updated** Added troubleshooting guidance for the new Git status propagation algorithm, including verification of signature analysis and status inheritance behavior.
 
 **Section sources**
 - [Sidebar.tsx:124-178](file://frontend/src/components/layout/Sidebar.tsx#L124-L178)
-- [FileTreePanel.tsx:346-358](file://frontend/src/components/layout/FileTreePanel.tsx#L346-L358)
+- [FileTreePanel.tsx:15-56](file://frontend/src/components/layout/FileTreePanel.tsx#L15-L56)
 - [ProjectSelector.tsx:35-42](file://frontend/src/components/layout/ProjectSelector.tsx#L35-L42)
 - [SessionSelector.tsx:105-106](file://frontend/src/components/layout/SessionSelector.tsx#L105-L106)
-- [fileTreeStore.ts:236-242](file://frontend/src/stores/fileTreeStore.ts#L236-L242)
+- [fileTreeStore.ts:83](file://frontend/src/stores/fileTreeStore.ts#L83)
 - [useResize.tsx:7-88](file://frontend/src/hooks/useResize.tsx#L7-L88)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
 
 ## Conclusion
-The layout and navigation system combines a responsive, resizable panel architecture with robust state management and Git-aware file browsing. AppLayout coordinates the sidebar, main content, and file viewer, while the newly integrated ProjectSelector and SessionSelector components provide streamlined workspace switching and file exploration. FileTreePanel delivers efficient hierarchical navigation with enhanced filtering and Git status integration. StatusBar and IndexingStatus communicate system and indexing states, and FileIcon enhances visual clarity. The stores encapsulate persistence and backend integration, enabling a smooth and customizable user experience with improved project and session management workflows.
+The layout and navigation system combines a responsive, resizable panel architecture with robust state management and enhanced Git-aware file browsing. AppLayout coordinates the sidebar, main content, and file viewer, while the newly integrated ProjectSelector and SessionSelector components provide streamlined workspace switching and file exploration. FileTreePanel delivers efficient hierarchical navigation with enhanced filtering and Git status integration using the new signature-based propagation algorithm with Map data structure for improved accuracy. StatusBar and IndexingStatus communicate system and indexing states, and FileIcon enhances visual clarity. The stores encapsulate persistence and backend integration, enabling a smooth and customizable user experience with improved project and session management workflows.
+
+**Updated** The enhanced FileTreePanel now features a sophisticated signature-based Git status propagation algorithm that uses Map data structures for improved accuracy in directory status inheritance, providing more reliable and precise Git status indicators across the file tree hierarchy.
