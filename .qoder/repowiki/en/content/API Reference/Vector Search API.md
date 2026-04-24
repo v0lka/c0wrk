@@ -11,7 +11,20 @@
 - [types.go](file://backend/types.go)
 - [application.go](file://backend/application.go)
 - [vectorIndexStore.ts](file://frontend/src/stores/vectorIndexStore.ts)
+- [VectorStorePanel.tsx](file://frontend/src/components/layout/VectorStorePanel.tsx)
+- [frontend_api_vector.go](file://backend/frontend_api_vector.go)
+- [vector.ts](file://frontend/src/api/vector.ts)
+- [models.ts](file://frontend/src/types/models.ts)
+- [WorkspacePanel.tsx](file://frontend/src/components/layout/WorkspacePanel.tsx)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added new VectorStorePanel interface for intelligent code browsing
+- Enhanced vector search capabilities with BrowseWithFilter functionality
+- Integrated intelligent code browsing into workspace panel
+- Added VectorStoreEntry data model for frontend representation
+- Updated search API to support both semantic search and browsing modes
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -19,20 +32,22 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
-10. [Appendices](#appendices)
+6. [New VectorStorePanel Interface](#new-vectorstorepanel-interface)
+7. [Enhanced Vector Search Capabilities](#enhanced-vector-search-capabilities)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
+12. [Appendices](#appendices)
 
 ## Introduction
-This document provides comprehensive API documentation for C0WRK’s vector-based semantic search functionality. It covers the vector search endpoints, query processing, result ranking, and result formatting. It also documents the VectorSearchResult data model, search configuration options, optimization techniques, performance tuning, index maintenance, and troubleshooting. Practical examples demonstrate semantic search queries, result filtering, and integration patterns with the AI orchestrator.
+This document provides comprehensive API documentation for C0WRK's vector-based semantic search functionality. It covers the vector search endpoints, query processing, result ranking, and result formatting. The system now includes an intelligent code browsing interface through the VectorStorePanel, enabling both semantic search and arbitrary browsing of vectorized code chunks. It also documents the VectorSearchResult and VectorStoreEntry data models, search configuration options, optimization techniques, performance tuning, index maintenance, and troubleshooting. Practical examples demonstrate semantic search queries, result filtering, and integration patterns with the AI orchestrator.
 
 ## Project Structure
-The vector search capability spans three layers:
-- Backend vector index service and indexer
+The vector search capability spans three layers with enhanced UI integration:
+- Backend vector index service and indexer with browsing capabilities
 - SDK tool definition and orchestration integration
-- Frontend UI state for index status
+- Frontend UI state for index status and intelligent browsing interface
 
 ```mermaid
 graph TB
@@ -41,18 +56,28 @@ MGR["Manager<br/>backend/vectorindex/manager.go"]
 SVC["Service<br/>backend/vectorindex/service.go"]
 IDX["Indexer<br/>backend/vectorindex/indexer.go"]
 COL["Collection Utils<br/>backend/vectorindex/collection.go"]
+API["Frontend API<br/>backend/frontend_api_vector.go"]
+ENDPOINT["SearchVectorStore<br/>backend/frontend_api_vector.go"]
 end
 subgraph "SDK"
 TOOL["VectorSearchTool<br/>sdk/tools/builtins/vector_search.go"]
 end
 subgraph "Frontend"
 STORE["VectorIndexStore<br/>frontend/src/stores/vectorIndexStore.ts"]
+PANEL["VectorStorePanel<br/>frontend/src/components/layout/VectorStorePanel.tsx"]
+WORKSPACE["WorkspacePanel<br/>frontend/src/components/layout/WorkspacePanel.tsx"]
+APIWRAPPER["Vector API Wrapper<br/>frontend/src/api/vector.ts"]
+MODELS["VectorStoreEntry Model<br/>frontend/src/types/models.ts"]
 end
 MGR --> SVC
 MGR --> IDX
 SVC --> COL
+API --> ENDPOINT
 TOOL --> SVC
-STORE --> MGR
+STORE --> PANEL
+PANEL --> APIWRAPPER
+APIWRAPPER --> API
+WORKSPACE --> PANEL
 ```
 
 **Diagram sources**
@@ -60,29 +85,42 @@ STORE --> MGR
 - [service.go:32-46](file://backend/vectorindex/service.go#L32-L46)
 - [indexer.go:61-70](file://backend/vectorindex/indexer.go#L61-L70)
 - [collection.go:31-55](file://backend/vectorindex/collection.go#L31-L55)
+- [frontend_api_vector.go:11-54](file://backend/frontend_api_vector.go#L11-L54)
 - [vector_search.go:32-37](file://sdk/tools/builtins/vector_search.go#L32-L37)
 - [vectorIndexStore.ts:1-56](file://frontend/src/stores/vectorIndexStore.ts#L1-L56)
+- [VectorStorePanel.tsx:17-183](file://frontend/src/components/layout/VectorStorePanel.tsx#L17-L183)
+- [WorkspacePanel.tsx:7-46](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L46)
+- [vector.ts:7-15](file://frontend/src/api/vector.ts#L7-L15)
+- [models.ts:59-67](file://frontend/src/types/models.ts#L59-L67)
 
 **Section sources**
 - [manager.go:31-90](file://backend/vectorindex/manager.go#L31-L90)
 - [service.go:32-46](file://backend/vectorindex/service.go#L32-L46)
 - [indexer.go:61-70](file://backend/vectorindex/indexer.go#L61-L70)
 - [collection.go:31-55](file://backend/vectorindex/collection.go#L31-L55)
+- [frontend_api_vector.go:11-54](file://backend/frontend_api_vector.go#L11-L54)
 - [vector_search.go:32-37](file://sdk/tools/builtins/vector_search.go#L32-L37)
 - [vectorIndexStore.ts:1-56](file://frontend/src/stores/vectorIndexStore.ts#L1-L56)
+- [VectorStorePanel.tsx:17-183](file://frontend/src/components/layout/VectorStorePanel.tsx#L17-L183)
+- [WorkspacePanel.tsx:7-46](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L46)
+- [vector.ts:7-15](file://frontend/src/api/vector.ts#L7-L15)
+- [models.ts:59-67](file://frontend/src/types/models.ts#L59-L67)
 
 ## Core Components
 - VectorSearchTool: Defines the semantic_search tool, input schema, defaults, and result formatting.
-- Service: Provides vector search over a chromem-go collection, supports readiness gating, and optional file-filtering.
+- Service: Provides vector search over a chromem-go collection, supports readiness gating, optional file-filtering, and browsing capabilities.
 - Indexer: Builds and maintains the vector index from project files, with full and incremental modes.
 - Manager: Lifecycle manager for embedder, service, indexer, and git branch monitoring.
 - VectorIndexStore: Frontend state for index status and progress.
+- **New**: VectorStorePanel: Intelligent code browsing interface with semantic search and file filtering capabilities.
+- **New**: VectorStoreEntry: Frontend data model for vector store entries.
 
 Key responsibilities:
 - Query processing: Embedding query, collection lookup, similarity scoring.
 - Result ranking: Similarity scores from chromem-go.
 - Filtering: Optional glob-based file filtering.
 - Formatting: Human-readable result summaries with path, line range, score, language, and content preview.
+- **New**: Browsing: Arbitrary chunk enumeration without semantic ordering for code exploration.
 
 **Section sources**
 - [vector_search.go:14-85](file://sdk/tools/builtins/vector_search.go#L14-L85)
@@ -90,9 +128,11 @@ Key responsibilities:
 - [indexer.go:105-163](file://backend/vectorindex/indexer.go#L105-L163)
 - [manager.go:97-212](file://backend/vectorindex/manager.go#L97-L212)
 - [vectorIndexStore.ts:1-56](file://frontend/src/stores/vectorIndexStore.ts#L1-L56)
+- [VectorStorePanel.tsx:17-183](file://frontend/src/components/layout/VectorStorePanel.tsx#L17-L183)
+- [frontend_api_vector.go:11-54](file://backend/frontend_api_vector.go#L11-L54)
 
 ## Architecture Overview
-The vector search pipeline integrates the AI orchestrator with the backend vector index:
+The vector search pipeline integrates the AI orchestrator with the backend vector index and enhanced UI:
 
 ```mermaid
 sequenceDiagram
@@ -101,7 +141,8 @@ participant Tool as "VectorSearchTool"
 participant App as "Application"
 participant Mgr as "Manager"
 participant Svc as "Service"
-participant Col as "chromem Collection"
+participant Panel as "VectorStorePanel"
+participant API as "Frontend API"
 Agent->>Tool : "semantic_search(query, top_k, file_pattern)"
 Tool->>Tool : "validate input, apply defaults/caps"
 Tool->>Svc : "WaitReady(ctx)"
@@ -112,6 +153,11 @@ Col-->>Svc : "chromem.Results"
 Svc->>Svc : "filter by file_filter (glob)"
 Svc-->>Tool : "[]SearchResult"
 Tool-->>Agent : "formatted text results"
+Panel->>API : "SearchVectorStore(query, topK, filePattern)"
+API->>Svc : "SearchWithFilter or BrowseWithFilter"
+Svc-->>API : "[]SearchResult"
+API-->>Panel : "[]VectorStoreEntry"
+Panel-->>User : "intelligent code browsing interface"
 ```
 
 **Diagram sources**
@@ -119,6 +165,8 @@ Tool-->>Agent : "formatted text results"
 - [application.go:94-97](file://backend/application/application.go#L94-L97)
 - [manager.go:97-212](file://backend/vectorindex/manager.go#L97-L212)
 - [service.go:100-143](file://backend/vectorindex/service.go#L100-L143)
+- [VectorStorePanel.tsx:36-77](file://frontend/src/components/layout/VectorStorePanel.tsx#L36-L77)
+- [frontend_api_vector.go:15-54](file://backend/frontend_api_vector.go#L15-L54)
 
 ## Detailed Component Analysis
 
@@ -147,19 +195,23 @@ Result formatting highlights:
 - Methods:
   - Search(ctx, query, topK) → []SearchResult
   - SearchWithFilter(ctx, query, topK, fileFilter) → []SearchResult
+  - **New**: Browse(ctx, topK) → []SearchResult
+  - **New**: BrowseWithFilter(ctx, topK, fileFilter) → []SearchResult
 - Processing:
   - Blocks on WaitReady if index not ready
   - Queries current collection with topK
   - Converts chromem results to SearchResult
   - Applies optional fileFilter using glob matching
+  - **New**: Browse uses space query " " to enumerate documents without semantic ordering
 - Result ranking:
-  - Score is the similarity score from chromem-go
+  - Score is the similarity score from chromem-go for semantic search
+  - **New**: Browse returns results in collection order without semantic ranking
 - Filtering:
   - Optional glob pattern applied to FilePath
 
 ```mermaid
 flowchart TD
-Start(["SearchWithFilter"]) --> Ready["WaitReady(ctx)"]
+Start(["SearchWithFilter/BrowseWithFilter"]) --> Ready["WaitReady(ctx)"]
 Ready --> Query["collection.Query(ctx, query, topK)"]
 Query --> Convert["Convert chromem.Result -> SearchResult"]
 Convert --> Filter{"fileFilter provided?"}
@@ -174,9 +226,11 @@ Next --> Done["Return []SearchResult"]
 
 **Diagram sources**
 - [service.go:100-143](file://backend/vectorindex/service.go#L100-L143)
+- [service.go:107-154](file://backend/vectorindex/service.go#L107-L154)
 
 **Section sources**
 - [service.go:100-143](file://backend/vectorindex/service.go#L100-L143)
+- [service.go:107-154](file://backend/vectorindex/service.go#L107-L154)
 
 ### SearchResult Data Model
 Fields:
@@ -221,6 +275,8 @@ class Service {
 +SwitchBranch(ctx, branchName)
 +Search(ctx, query, topK)
 +SearchWithFilter(ctx, query, topK, fileFilter)
++Browse(ctx, topK)
++BrowseWithFilter(ctx, topK, fileFilter)
 +ValidateCollection(ctx, workspacePath)
 +AddDocuments(ctx, docs)
 +DeleteDocumentsByIDs(ctx, ids)
@@ -259,7 +315,7 @@ Service --> CollectionUtils : "uses"
 ### Integration with the AI Orchestrator
 - Application wires the vector search tool into the orchestrator builder:
   - Registers VectorSearchFunc and VectorSearchWaitFunc
-- The tool’s Execute method:
+- The tool's Execute method:
   - Validates input, applies defaults/caps
   - Waits for readiness
   - Calls the backend search function
@@ -276,10 +332,104 @@ Service --> CollectionUtils : "uses"
   - filesIndexed, totalFiles
   - currentFile
   - branch
+  - entries: VectorStoreEntry array for browsing
+  - query: current search query
+  - topK: current result limit
+  - filePattern: current file filter pattern
 - Updates from backend events and resets on project changes
 
 **Section sources**
 - [vectorIndexStore.ts:1-56](file://frontend/src/stores/vectorIndexStore.ts#L1-L56)
+
+## New VectorStorePanel Interface
+
+### Overview
+The VectorStorePanel provides an intelligent code browsing interface that allows developers to explore vectorized code chunks in real-time. It supports both semantic search mode and browsing mode, enabling comprehensive code exploration beyond traditional search capabilities.
+
+### Key Features
+- **Dual Mode Operation**: Toggle between semantic search and arbitrary browsing
+- **Real-time Filtering**: Live filtering by file patterns and search queries
+- **Interactive Results**: Click to navigate to specific code locations
+- **Visual Indicators**: Score display, language badges, and file path previews
+- **Responsive Design**: Optimized for workspace panel integration
+
+### Component Architecture
+```mermaid
+graph TB
+PANEL["VectorStorePanel<br/>VectorStorePanel.tsx"]
+FILTER["Filter Controls<br/>Query Input + File Pattern"]
+STATUS["Status Bar<br/>Indexing Status + Entry Count"]
+RESULTS["Results List<br/>VectorStoreEntryItem"]
+ENTRY["Individual Entry<br/>Clickable Result Item"]
+PANEL --> FILTER
+PANEL --> STATUS
+PANEL --> RESULTS
+RESULTS --> ENTRY
+```
+
+**Diagram sources**
+- [VectorStorePanel.tsx:92-183](file://frontend/src/components/layout/VectorStorePanel.tsx#L92-L183)
+
+### Filter Controls
+- **Query Input**: Natural language search with Enter key support
+- **TopK Control**: Adjustable result count (1-500, default 50)
+- **File Pattern**: Glob pattern filtering (e.g., "*.go", "src/**")
+- **Search Button**: Explicit search trigger
+- **Clear Button**: Reset filters and return to browsing mode
+
+### Results Display
+- **Entry Items**: Each result shows file name, line range, language, and score
+- **Content Preview**: Truncated content preview with line clamping
+- **Interactive Navigation**: Click to open file viewer at specific line
+- **Visual Feedback**: Hover states and keyboard navigation support
+
+**Section sources**
+- [VectorStorePanel.tsx:17-183](file://frontend/src/components/layout/VectorStorePanel.tsx#L17-L183)
+
+### Workspace Integration
+The VectorStorePanel is integrated into the WorkspacePanel as the "Semantics" tab, providing seamless access to vector search capabilities alongside file explorer and Git integration.
+
+**Section sources**
+- [WorkspacePanel.tsx:7-46](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L46)
+
+## Enhanced Vector Search Capabilities
+
+### SearchVectorStore API
+The backend SearchVectorStore function provides unified access to both semantic search and browsing capabilities:
+
+- **Semantic Search**: When query is provided, performs vector similarity search
+- **Browsing Mode**: When query is empty, returns arbitrary chunks without semantic ordering
+- **Default Parameters**: topK defaults to 50 when <= 0
+- **File Filtering**: Optional glob pattern filtering for both modes
+
+### Implementation Details
+```mermaid
+flowchart TD
+INPUT["SearchVectorStore(query, topK, filePattern)"] --> CHECK{"query empty?"}
+CHECK --> |Yes| BROWSE["BrowseWithFilter(topK, filePattern)"]
+CHECK --> |No| SEARCH["SearchWithFilter(query, topK, filePattern)"]
+BROWSE --> CONVERT["Convert SearchResult -> VectorStoreEntry"]
+SEARCH --> CONVERT
+CONVERT --> RETURN["Return []VectorStoreEntry"]
+```
+
+**Diagram sources**
+- [frontend_api_vector.go:15-54](file://backend/frontend_api_vector.go#L15-L54)
+
+### VectorStoreEntry Data Model
+The frontend representation of vector store entries includes all necessary information for display and navigation:
+
+- **file_path**: Absolute file path
+- **file_name**: Basename of the file  
+- **content**: Chunk content
+- **score**: Similarity score (number)
+- **start_line**: 1-based start line
+- **end_line**: 1-based end line
+- **language**: Detected language
+
+**Section sources**
+- [frontend_api_vector.go:15-54](file://backend/frontend_api_vector.go#L15-L54)
+- [models.ts:59-67](file://frontend/src/types/models.ts#L59-L67)
 
 ## Dependency Analysis
 - Backend-to-SDK:
@@ -291,6 +441,10 @@ Service --> CollectionUtils : "uses"
 - Service-to-Collection:
   - Service delegates queries to chromem-go Collection
   - Service converts chromem results to SearchResult
+- **New**: Frontend-to-Backend:
+  - VectorStorePanel uses searchVectorStore API wrapper
+  - API wrapper calls FrontendAPI.SearchVectorStore
+  - FrontendAPI routes to Service methods
 
 ```mermaid
 graph LR
@@ -300,6 +454,9 @@ MGR --> SVC["Service<br/>backend/vectorindex/service.go"]
 MGR --> IDX["Indexer<br/>backend/vectorindex/indexer.go"]
 SVC --> COL["chromem Collection"]
 TOOL["VectorSearchTool<br/>sdk/tools/builtins/vector_search.go"] --> SVC
+PANEL["VectorStorePanel<br/>frontend/src/components/layout/VectorStorePanel.tsx"] --> APIWRAPPER["vector.ts"]
+APIWRAPPER --> API["FrontendAPI<br/>backend/frontend_api_vector.go"]
+API --> SVC
 ```
 
 **Diagram sources**
@@ -309,6 +466,9 @@ TOOL["VectorSearchTool<br/>sdk/tools/builtins/vector_search.go"] --> SVC
 - [service.go:100-143](file://backend/vectorindex/service.go#L100-L143)
 - [indexer.go:105-163](file://backend/vectorindex/indexer.go#L105-L163)
 - [vector_search.go:25-30](file://sdk/tools/builtins/vector_search.go#L25-L30)
+- [VectorStorePanel.tsx:5](file://frontend/src/components/layout/VectorStorePanel.tsx#L5)
+- [vector.ts:7-15](file://frontend/src/api/vector.ts#L7-L15)
+- [frontend_api_vector.go:15-54](file://backend/frontend_api_vector.go#L15-L54)
 
 **Section sources**
 - [application.go:94-97](file://backend/application/application.go#L94-L97)
@@ -317,6 +477,9 @@ TOOL["VectorSearchTool<br/>sdk/tools/builtins/vector_search.go"] --> SVC
 - [service.go:100-143](file://backend/vectorindex/service.go#L100-L143)
 - [indexer.go:105-163](file://backend/vectorindex/indexer.go#L105-L163)
 - [vector_search.go:25-30](file://sdk/tools/builtins/vector_search.go#L25-L30)
+- [VectorStorePanel.tsx:5](file://frontend/src/components/layout/VectorStorePanel.tsx#L5)
+- [vector.ts:7-15](file://frontend/src/api/vector.ts#L7-L15)
+- [frontend_api_vector.go:15-54](file://backend/frontend_api_vector.go#L15-L54)
 
 ## Performance Considerations
 - Indexing
@@ -327,18 +490,18 @@ TOOL["VectorSearchTool<br/>sdk/tools/builtins/vector_search.go"] --> SVC
   - topK controls result cardinality; larger values increase latency and memory usage.
   - Optional fileFilter reduces candidate set via glob matching.
   - Service blocks on WaitReady to avoid query failures during initialization.
+  - **New**: Browse mode uses space query " " for efficient arbitrary enumeration.
 - Embedding
   - Embedder is configured via ManagerConfig; ensure appropriate MaxSeqLength and HiddenDim for your model.
 - Frontend UX
   - Debounced incremental indexing reduces churn from frequent file edits.
   - Progress callbacks enable responsive UI updates.
-
-[No sources needed since this section provides general guidance]
+  - **New**: VectorStorePanel defaults to topK=50 for browsing mode to provide comprehensive coverage.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
 - Index not ready
-  - Symptom: Tool returns “index not ready”.
+  - Symptom: Tool returns "index not ready".
   - Cause: Service not initialized or not yet ready.
   - Resolution: Ensure Manager.SwitchProject has completed; use VectorSearchWaitFunc before querying.
 - Empty results
@@ -349,6 +512,14 @@ Common issues and resolutions:
   - Symptom: High latency.
   - Causes: Large topK, lack of fileFilter, or heavy embedding model.
   - Resolution: Reduce topK, add fileFilter, or tune embedding model parameters.
+- **New**: Browse mode issues
+  - Symptom: Empty browsing results.
+  - Cause: No indexed content or file pattern too restrictive.
+  - Resolution: Ensure indexing completed successfully, verify filePattern matches actual files.
+- **New**: VectorStorePanel not displaying results
+  - Symptom: Panel shows "No results found" or blank state.
+  - Cause: Project not selected, index not ready, or network error.
+  - Resolution: Select a project, wait for index to become ready, check console for errors.
 - Incorrect file filtering
   - Symptom: Unexpected results despite file_pattern.
   - Cause: Glob pattern mismatch or invalid pattern.
@@ -362,11 +533,10 @@ Common issues and resolutions:
 - [service.go:100-143](file://backend/vectorindex/service.go#L100-L143)
 - [indexer.go:165-273](file://backend/vectorindex/indexer.go#L165-L273)
 - [collection.go:185-208](file://backend/vectorindex/collection.go#L185-L208)
+- [VectorStorePanel.tsx:168-174](file://frontend/src/components/layout/VectorStorePanel.tsx#L168-L174)
 
 ## Conclusion
-C0WRK’s vector search provides a robust, branch-aware semantic search over codebases. The SDK tool exposes a simple, powerful API for the AI orchestrator, while the backend ensures reliable indexing, incremental maintenance, and fast querying. By tuning topK, leveraging file filters, and monitoring index status, teams can achieve accurate, low-latency semantic search results integrated seamlessly into AI-driven workflows.
-
-[No sources needed since this section summarizes without analyzing specific files]
+C0WRK's vector search provides a robust, branch-aware semantic search over codebases with enhanced intelligent code browsing capabilities. The new VectorStorePanel interface offers developers a powerful tool for exploring vectorized code chunks in real-time, supporting both semantic search and arbitrary browsing modes. The SDK tool exposes a simple, powerful API for the AI orchestrator, while the backend ensures reliable indexing, incremental maintenance, and fast querying. By tuning topK, leveraging file filters, and utilizing the intelligent browsing interface, teams can achieve accurate, low-latency semantic search results integrated seamlessly into AI-driven workflows.
 
 ## Appendices
 
@@ -383,26 +553,46 @@ C0WRK’s vector search provides a robust, branch-aware semantic search over cod
 - Service Search Methods
   - Search(ctx, query, topK) → []SearchResult
   - SearchWithFilter(ctx, query, topK, fileFilter) → []SearchResult
+  - **New**: Browse(ctx, topK) → []SearchResult
+  - **New**: BrowseWithFilter(ctx, topK, fileFilter) → []SearchResult
   - WaitReady(ctx) → error
 
-- SearchResult Fields
-  - FilePath, FileName, Content, Score, StartLine, EndLine, Language
+- **New**: VectorStoreEntry Fields
+  - file_path, file_name, content, score, start_line, end_line, language
+
+- **New**: VectorStorePanel Features
+  - Dual mode: semantic search vs browsing
+  - Real-time filtering: query + file pattern
+  - Interactive results: click to navigate
+  - Responsive design: integrated workspace panel
 
 **Section sources**
 - [vector_search.go:54-77](file://sdk/tools/builtins/vector_search.go#L54-L77)
 - [vector_search.go:87-157](file://sdk/tools/builtins/vector_search.go#L87-L157)
 - [service.go:100-143](file://backend/vectorindex/service.go#L100-L143)
+- [service.go:107-154](file://backend/vectorindex/service.go#L107-L154)
 - [search_result.go:3-12](file://backend/vectorindex/search_result.go#L3-L12)
+- [frontend_api_vector.go:15-54](file://backend/frontend_api_vector.go#L15-L54)
+- [models.ts:59-67](file://frontend/src/types/models.ts#L59-L67)
+- [VectorStorePanel.tsx:17-183](file://frontend/src/components/layout/VectorStorePanel.tsx#L17-L183)
 
 ### Practical Examples
 
 - Semantic search query
-  - Use semantic_search with a natural language description (e.g., “authentication middleware”) and top_k=10.
+  - Use semantic_search with a natural language description (e.g., "authentication middleware") and top_k=10.
 - Result filtering
-  - Narrow to specific languages or directories using file_pattern (e.g., “**/*.go”, “src/**/*.ts”, “backend/**”).
+  - Narrow to specific languages or directories using file_pattern (e.g., "**/*.go", "src/**/*.ts", "backend/**").
+- **New**: Intelligent code browsing
+  - Use VectorStorePanel to explore arbitrary code chunks without semantic ordering
+  - Combine browsing with file pattern filtering for targeted exploration
+  - Navigate directly to code locations from search results
 - Integration with AI orchestrator
   - Register VectorSearchFunc and VectorSearchWaitFunc during Application initialization; the tool will automatically enforce readiness and formatting.
+- **New**: Workspace integration
+  - Access VectorStorePanel through the "Semantics" tab in WorkspacePanel for seamless code exploration.
 
 **Section sources**
 - [vector_search.go:54-77](file://sdk/tools/builtins/vector_search.go#L54-L77)
 - [application.go:94-97](file://backend/application/application.go#L94-L97)
+- [VectorStorePanel.tsx:17-183](file://frontend/src/components/layout/VectorStorePanel.tsx#L17-L183)
+- [WorkspacePanel.tsx:7-46](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L46)

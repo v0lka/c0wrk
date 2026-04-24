@@ -51,7 +51,7 @@ export function PlanView() {
   if (!latestGroup || latestGroup.items.length === 0) return null
 
   return (
-    <div className="space-y-0.5 min-w-0">
+    <div className="min-w-0">
       {latestGroup.items.map((item) => (
         <PlanStepItem
           key={item.id}

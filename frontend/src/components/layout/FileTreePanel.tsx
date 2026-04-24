@@ -12,21 +12,46 @@ import { ChevronRight, Loader2, Regex } from 'lucide-react'
 import { useFileSearch } from '@/hooks/useFileSearch'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
-/** Propagate git status up to parent directories so folders show change indicators. */
+/** Propagate git status up to parent directories so folders show change indicators.
+ *  A directory inherits a uniform status if all nested files share the same (status, staged)
+ *  pair; otherwise it falls back to modified (M).
+ */
 function propagateGitStatus(gitStatus: Record<string, GitStatusEntry>): {
   status: Record<string, GitStatusEntry>
   propagated: Set<string>
 } {
   const result: Record<string, GitStatusEntry> = { ...gitStatus }
   const propagated = new Set<string>()
-  for (const filePath of Object.keys(gitStatus)) {
+  const dirSignatures = new Map<string, Set<string>>()
+
+  for (const [filePath, entry] of Object.entries(gitStatus)) {
     let dir = filePath
     while ((dir = dir.substring(0, dir.lastIndexOf('/'))) && dir) {
-      if (result[dir]) break
-      result[dir] = { status: 'M', staged: false }
-      propagated.add(dir)
+      let sigs = dirSignatures.get(dir)
+      if (!sigs) {
+        sigs = new Set<string>()
+        dirSignatures.set(dir, sigs)
+      }
+      sigs.add(`${entry.status}:${entry.staged}`)
+
+      if (!result[dir]) {
+        propagated.add(dir)
+      }
     }
   }
+
+  for (const [dir, signatures] of dirSignatures) {
+    if (signatures.size === 1) {
+      for (const sig of signatures) {
+        const parts = sig.split(':')
+        result[dir] = { status: parts[0]!, staged: parts[1] === 'true' }
+        break
+      }
+    } else {
+      result[dir] = { status: 'M', staged: false }
+    }
+  }
+
   return { status: result, propagated }
 }
 
