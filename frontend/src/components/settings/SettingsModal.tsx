@@ -5,46 +5,47 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { LogLevelSelector } from './LogLevelSelector'
 import { LLMSettings } from './LLMSettings'
 import { SearchSettings } from './SearchSettings'
-import { SecuritySettings } from './SecuritySettings'
 import { MCPSettings } from './MCPSettings'
+import { SecuritySettings } from './SecuritySettings'
 import { Settings, Brain, Search, Shield, Info, Server } from 'lucide-react'
-import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useSettingsStore } from '@/stores/settingsStore'
 
 export function SettingsModal() {
-  const open = useSettingsStore(s => s.open)
-  const activeTab = useSettingsStore(s => s.activeTab)
-  const closeSettings = useSettingsStore(s => s.closeSettings)
-  const setActiveTab = useSettingsStore(s => s.setActiveTab)
+  const open = useSettingsStore((s) => s.open)
+  const activeTab = useSettingsStore((s) => s.activeTab)
+  const closeSettings = useSettingsStore((s) => s.closeSettings)
+  const setActiveTab = useSettingsStore((s) => s.setActiveTab)
   const [bannerRefreshKey, setBannerRefreshKey] = useState(0)
   const prevOpenRef = useRef(open)
 
-  // Refresh banner when dialog opens
   useEffect(() => {
     if (open && !prevOpenRef.current) {
-      setBannerRefreshKey(k => k + 1)
+      setBannerRefreshKey((k) => k + 1)
     }
     prevOpenRef.current = open
   }, [open])
 
   const handleSettingsSaved = useCallback(() => {
-    setBannerRefreshKey(k => k + 1)
+    setBannerRefreshKey((k) => k + 1)
   }, [])
 
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => {
-      if (!isOpen) closeSettings()
-    }}>
-      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden top-[40px] translate-y-0">
+    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) closeSettings() }}>
+      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
-        
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0">
+
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as typeof activeTab)}
+          className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0"
+        >
           <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
           <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="general" className="gap-1">
@@ -80,27 +81,19 @@ export function SettingsModal() {
           </TabsContent>
 
           <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0">
-            <div className="space-y-4">
-              <LLMSettings onSettingsSaved={handleSettingsSaved} />
-            </div>
+            <LLMSettings onSettingsSaved={handleSettingsSaved} />
           </TabsContent>
 
           <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0">
-            <div className="space-y-4">
-              <SearchSettings />
-            </div>
+            <SearchSettings />
           </TabsContent>
 
           <TabsContent value="mcp" className="mt-4 overflow-y-auto min-h-0">
-            <div className="space-y-4">
-              <MCPSettings />
-            </div>
+            <MCPSettings />
           </TabsContent>
 
           <TabsContent value="security" className="mt-4 overflow-y-auto min-h-0">
-            <div className="space-y-4">
-              <SecuritySettings />
-            </div>
+            <SecuritySettings />
           </TabsContent>
 
           <TabsContent value="about" className="mt-4 overflow-y-auto min-h-0">
@@ -111,40 +104,12 @@ export function SettingsModal() {
                 </div>
                 <div>
                   <h3 className="font-semibold">c0wrk</h3>
-                  <p className="text-sm text-muted-foreground">Version 0.0.1</p>
+                  <p className="text-sm text-muted-foreground">Desktop AI Coding Agent</p>
                 </div>
               </div>
-              
               <div className="text-sm text-muted-foreground space-y-2">
-                <p>
-                  An AI-powered coding assistant with multi-agent orchestration.
-                </p>
-                <p>
-                  Built with warmth, love, and AI.
-                </p>
-              </div>
-
-              <div className="pt-4 border-t border-border">
-                <div className="flex flex-col gap-2 text-sm">
-                  <button 
-                    type="button"
-                    className="text-primary hover:underline bg-transparent border-none cursor-pointer p-0 text-left text-sm"
-                  >
-                    Documentation
-                  </button>
-                  <button 
-                    type="button"
-                    className="text-primary hover:underline bg-transparent border-none cursor-pointer p-0 text-left text-sm"
-                  >
-                    Report an Issue
-                  </button>
-                  <button 
-                    type="button"
-                    className="text-primary hover:underline bg-transparent border-none cursor-pointer p-0 text-left text-sm"
-                  >
-                    GitHub Repository
-                  </button>
-                </div>
+                <p>An AI-powered coding assistant with multi-agent orchestration.</p>
+                <p>Built with warmth, love, and AI.</p>
               </div>
             </div>
           </TabsContent>

@@ -97,9 +97,6 @@ out/
 *.code-workspace
 .history/
 
-# Qoder
-.qoder/
-
 # Vim
 *.swp
 *.swo

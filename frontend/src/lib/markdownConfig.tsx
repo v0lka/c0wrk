@@ -1,18 +1,27 @@
-import type { Components } from 'react-markdown'
-import { defaultSchema } from 'rehype-sanitize'
+import { useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import { Code, Eye } from 'lucide-react'
+import remarkGfm from 'remark-gfm'
+import remarkEmoji from 'remark-emoji'
+import remarkBreaks from 'remark-breaks'
+import rehypeSlug from 'rehype-slug'
+import rehypeAutolinkHeadings from 'rehype-autolink-headings'
+import rehypeHighlight from 'rehype-highlight'
+import rehypeExternalLinks from 'rehype-external-links'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import { cn } from '@/lib/utils'
-import { MermaidBlock } from '@/components/chat/MermaidBlock'
-import { ErrorBoundary } from '@/components/ErrorBoundary'
+import type { PluggableList } from 'unified'
 
-// Custom sanitize schema that allows highlight.js classes, heading IDs, and link attributes
-export const customSchema = {
+// Custom sanitize schema — extends default to allow highlight.js classes,
+// heading IDs, task list inputs, and mermaid container styles.
+const customSanitizeSchema = {
   ...defaultSchema,
   attributes: {
     ...defaultSchema.attributes,
     code: ['className'],
-    span: ['className'],
     pre: ['className'],
-    div: ['className'],
+    span: ['className'],
+    div: ['className', 'style'],
     h1: ['id'],
     h2: ['id'],
     h3: ['id'],
@@ -20,58 +29,65 @@ export const customSchema = {
     h5: ['id'],
     h6: ['id'],
     a: ['href', 'target', 'rel', 'className'],
+    input: ['type', 'checked', 'disabled'],
   },
 }
 
-// Shared markdown component overrides for ReactMarkdown
-export const markdownComponents: Components = {
-  code({ className, children, ...props }) {
-    const match = /language-(\w+)/.exec(className || '')
-    const isInline = !match && !className
-    const codeContent = String(children).replace(/\n$/, '')
+const remarkPlugins: PluggableList = [remarkGfm, remarkEmoji, remarkBreaks]
 
-    if (isInline) {
-      return (
-        <code
-          className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono"
-          {...props}
-        >
-          {children}
-        </code>
-      )
-    }
+const rehypePlugins: PluggableList = [
+  rehypeSlug,
+  [rehypeAutolinkHeadings, { behavior: 'wrap' }],
+  rehypeHighlight,
+  [rehypeExternalLinks, { target: '_blank', rel: ['noopener', 'noreferrer'] }],
+  [rehypeSanitize, customSanitizeSchema],
+]
 
-    // Check for mermaid diagram
-    if (match?.[1] === 'mermaid') {
-      return (
-        <ErrorBoundary fallback={<div className="text-sm text-muted-foreground">Failed to render diagram</div>}>
-          <MermaidBlock code={codeContent} />
-        </ErrorBoundary>
-      )
-    }
+// --- Markdown wrapper component ---
 
+interface MarkdownProps {
+  content: string
+  className?: string
+  compact?: boolean
+  showSourceToggle?: boolean
+}
+
+export function Markdown({ content, className, compact, showSourceToggle }: MarkdownProps) {
+  const [showSource, setShowSource] = useState(false)
+
+  if (showSource && showSourceToggle) {
     return (
-      <div className="relative group">
-        <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
-          <span className="text-xs text-muted-foreground uppercase">
-            {match?.[1] || 'text'}
-          </span>
-        </div>
-        <pre className="bg-background border border-border rounded-lg p-4 overflow-x-auto max-w-full min-w-0">
-          <code
-            className={cn(
-              'text-sm font-mono block',
-              match ? `language-${match[1]}` : ''
-            )}
-            {...props}
-          >
-            {children}
-          </code>
-        </pre>
+      <div>
+        <button
+          onClick={() => setShowSource(false)}
+          className="float-right ml-3 mb-3 p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          title="Preview"
+        >
+          <Eye className="size-4" />
+        </button>
+        <pre className="whitespace-pre-wrap font-mono text-sm m-0 text-foreground">{content}</pre>
       </div>
     )
-  },
-  pre({ children }) {
-    return <>{children}</>
-  },
+  }
+
+  return (
+    <div className={cn('prose prose-sm max-w-none', compact && 'prose-xs', className)}>
+      {showSourceToggle && (
+        <button
+          onClick={() => setShowSource(true)}
+          className="float-right ml-3 mb-3 p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          title="Source"
+        >
+          <Code className="size-4" />
+        </button>
+      )}
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
 }
+

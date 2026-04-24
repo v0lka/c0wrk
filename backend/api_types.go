@@ -79,14 +79,24 @@ type ToolPolicyResponse struct {
 
 // FileNode represents a file or directory entry in the workspace tree.
 type FileNode struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	IsDir bool   `json:"is_dir"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	IsDir      bool   `json:"is_dir"`
+	Icon       string `json:"icon"`
+	IconColor  string `json:"icon_color"`
+	Hidden     bool   `json:"hidden"`
+	GitIgnored bool   `json:"gitignored"`
+}
+
+// FileIconResponse holds the icon and color for a single file or directory.
+type FileIconResponse struct {
+	Icon      string `json:"icon"`
+	IconColor string `json:"icon_color"`
 }
 
 // GitStatusEntry describes the git status of a single file.
 type GitStatusEntry struct {
-	Status string `json:"status"` // "M" or "A"
+	Status string `json:"status"` // "M", "A", "R", "C", or "U"
 	Staged bool   `json:"staged"`
 }
 

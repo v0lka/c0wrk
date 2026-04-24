@@ -498,7 +498,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 			// Create synthetic continuation step with unique ID
 			syntheticStep := PlanStep{
 				ID:             fmt.Sprintf("continuation_%d", len(existingPlan.Steps)+1),
-				Summary:        Truncate(message, 50),
+				Summary:        message,
 				Description:    message,
 				DependsOn:      terminalSteps,
 				Parallelizable: true,

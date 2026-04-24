@@ -3,9 +3,7 @@ import { useChatStore } from '@/stores/chatStore'
 export function ActivityIndicator() {
   const activityStatus = useChatStore(s => s.activityStatus)
 
-  if (!activityStatus) {
-    return null
-  }
+  if (!activityStatus) return null
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground">

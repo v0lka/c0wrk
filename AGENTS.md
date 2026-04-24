@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents working on **c0wrk** — a desktop AI coding-agent built with Wails v2 (Go backend + React 19 / Vite 6 / TS frontend).
+Guidance for coding agents working on **c0wrk** — a desktop AI coding-agent built with Wails v2 (Go backend + React 19 / Vite 6 / TS frontend). Full specifications are available in `.qoder/specs`
 
 ## Project shape
 
@@ -64,7 +64,78 @@ Frontend-only: `cd frontend && npm run lint | build | dev`. There is **no** fron
 - Don't `go install` the ONNX runtime differently per-machine — always go through `make fetch-onnx` so `.cache/` stays consistent.
 - Don't commit `coverage*.out`, `*_cov.out`, `config.local.yaml`, `.cache/`, `build/bin/`, or anything matched in `.gitignore`.
 - Don't rely on `.qoder/` — it's gitignored, developer-local only.
+- Don't create new arrays or objects inside Zustand selectors (e.g. `useStore(s => s.items.map(…))` or `useStore(s => condition ? derive(s) : [])`). React 19's `useSyncExternalStore` compares snapshots by reference — a new object/array on every call causes an infinite re-render loop (React error #185). Return direct store references from selectors and derive values with `useMemo` in a custom hook. See `.qoder/specs/frontend-anti-patterns.md §2.7`.
+
+## Frontend architecture
+
+### Stack
+
+React 19 + TypeScript ~5.7 + Vite 6 + Tailwind CSS v4 + Zustand 5. UI primitives from shadcn/ui (new-york style) + Radix UI. Icons via lucide-react. Markdown rendered with react-markdown 10 + remark-gfm/emoji/breaks + rehype-highlight/sanitize/external-links/slug/autolink-headings. Syntax highlighting via highlight.js 11 (selective language registration). Mermaid 11 lazy-loaded for diagrams. File tree icons via Nerd Fonts (SauceCodePro NF).
+
+### Layout
+
+Three-column panel layout (no router): Sidebar (300px default, collapsible to 32px) | Main Chat Area | File Viewer (500px default, collapsible to 32px). Resize handles between panels (4px, drag + keyboard). File viewer only visible when files are open. Sidebar and file viewer states persist via `localStorage`.
+
+### Communication with Go backend
+
+1. **RPC**: `window.go.desktop.App.*` — async promise-based calls for CRUD and data fetching.
+2. **Events**: `window.runtime.EventsOn/EventsEmit` — real-time streaming during task execution.
+   - **Session-scoped** events: `session:${sessionId}:${eventType}` (25+ event types for task lifecycle).
+   - **Global** events: `startup_error`, `backend:ready`, `projects:loaded`, `sessions:loaded`, `project:*`, `workspace:tree_changed`, `vector_index:status`.
+
+### State management (Zustand stores)
+
+| Store              | Responsibility                                                                                 |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `chatStore`        | Messages per session, streaming text, thinking/activity/task flags, context fill, token counts |
+| `panelStore`       | Execution plan groups (DAG items), session stats (routing, attempts)                           |
+| `sessionStore`     | Session list (sorted by last_active_at), active session ID                                     |
+| `projectStore`     | Project list (sorted by last_active_at), active project ID                                     |
+| `fileTreeStore`    | Lazy-loaded directory tree, expanded dirs, search entries, git status                          |
+| `fileViewerStore`  | Open files (content/diff/language), tabs, panel width, collapsed state                         |
+| `scrollStore`      | `scrollToStep` callback for cross-component plan step navigation                               |
+| `settingsStore`    | Settings modal open/close, active tab                                                          |
+| `uiStore`          | Sidebar collapsed state, log level                                                             |
+| `vectorIndexStore` | Vector index status/progress                                                                   |
+
+### Data model
+
+- Backend persists `ChatMessage` (id, session_id, role, content, metadata JSON, created_at).
+- Frontend converts to `ChatMessageUI` (semantic string ID, sessionId, MessageType, content, metadata, timestamp).
+- `groupMessages()` transforms flat `ChatMessageUI[]` into a `DisplayItem[]` tree (16 kinds: user, assistant, thought, thought_group, tool, tool_confirm, ask_user, step_limit, resume_action, error, service, plan_step, reflection, step_finish, memory_read, context_compaction, action_placeholder).
+- Grouping handles: plan step nesting, tool call/result correlation (via tool_call_id or composite key), thought collapsing, pending action extraction, special tool handling (subagent skipped, finish/memory compact).
+
+### Key components
+
+- **Sidebar**: Project selector + session selector (dropdowns with context menus, inline rename, search for 5+ sessions) + file tree workspace panel.
+- **Chat Area**: Pinned last user message (sticky, collapsible) + scrollable message list + smart auto-scroll (50px threshold, "New activity" pill) + activity indicator.
+- **Chat Input**: Auto-resize textarea (max 6 lines), Enter sends / Shift+Enter newline, auto-creates session if needed, cancel button during task.
+- **Pending Actions Bar**: Sticky bar for unresolved prompts — tool confirmations (allow/deny/judge), ask-user multi-question forms, step limit, resume after failure.
+- **Execution Panels**: Collapsible plan view with DAG graph (SVG, lane allocation) + item list, click-to-scroll to chat.
+- **File Viewer**: Tab bar + syntax-highlighted content + unified diff overlay (character-level) + markdown preview toggle. Auto-refreshes on `workspace:tree_changed`. Binary detection (null bytes in first 8KB). State persisted to localStorage.
+
+### Design system
+
+One Dark theme. All colors as Tailwind v4 `@theme` custom properties (background `#282c34`, foreground `#abb2bf`, primary `#528bff`, destructive `#e06c75`, success `#98c379`, warning `#d19a66`, info `#61afef`, highlight `#e5c07b`). Base font 14px, dark color-scheme. Focus outlines globally suppressed. Custom scrollbar class (`.custom-scrollbar`, 8px, semi-transparent thumb).
+
+### Event handling pattern
+
+Session event handler subscribes to all session-scoped events on session change. Each handler: validates data with type guard → updates activity status → adds/updates chat store message → updates panel store. Streaming: `assistant_chunk` sets/appends text, `assistant_done` flushes to permanent message.
+
+### Key Principles
+
+- Design tokens are law. Every color, spacing, radius references CSS custom property. No raw hex in component code.
+- No !important. If you need it, abstraction is wrong. Fix component API, not CSS specificity.
+- Single source of truth. Each piece of data lives in exactly one store. No dual bookkeeping, no parallel state trees.
+- Normalized store, incremental updates. Don't rebuild trees from flat arrays on every render. Index by ID, update in place.
+- Stable Zustand selectors. Every selector passed to `useStore(selector)` must return a referentially stable value — either a primitive, a direct store property, or use a custom hook with granular selectors + `useMemo`. Never allocate arrays/objects inside a selector.
+- Type safety at boundaries. Validate and type event data at ingestion point. Everything downstream typed — no Record<string, unknown>.
+- Small, focused components. No file over 200 lines. No component handling more than one domain concept. Extract hooks for data loading.
+- One import path for backend calls. All RPC through @/api/\*. No direct imports from wailsjs/go/desktop/App.
+- Declarative persistence. Use Zustand middleware, not manual localStorage calls.
+- No module-level side effects. Store files define stores. Initialization happens in React lifecycle hooks after runtime readiness confirmed.
+- Event handlers are testable. Each event type has focused handler function testable in isolation without React rendering.
 
 ## Pre-PR checklist
 
-`go build ./...` → `make lint` → `make test`. All three must be clean; CI is not configured in this repo, so local verification is the gate.
+`make build` → `make lint` → `make test`. All three must be clean; CI is not configured in this repo, so local verification is the gate.

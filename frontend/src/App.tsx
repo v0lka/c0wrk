@@ -1,68 +1,56 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { useWails } from '@/hooks/useWails'
+import { subscribe } from '@/api/runtime'
 import { AlertCircle, X } from 'lucide-react'
 import { CodebaseMemoryBanner } from '@/components/CodebaseMemoryBanner'
 import { RtkBanner } from '@/components/RtkBanner'
+import { SettingsModal } from '@/components/settings/SettingsModal'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
-
-interface StartupError {
-  message: string
-  error: string
-}
-
-function isStartupError(data: unknown): data is StartupError {
-  return typeof data === 'object' && data !== null &&
-    typeof (data as Record<string, unknown>).message === 'string' &&
-    typeof (data as Record<string, unknown>).error === 'string'
-}
+import { useProjectLoader } from '@/hooks/useProjectLoader'
+import { useSessionLoader } from '@/hooks/useSessionLoader'
+import { useSessionEvents } from '@/hooks/useSessionEvents'
+import { useSessionStore } from '@/stores/sessionStore'
+import { isStartupError, isVectorIndexPayload, type StartupError } from '@/types/events'
 
 function App() {
-  const { runtime } = useWails()
   const [startupError, setStartupError] = useState<StartupError | null>(null)
+  const activeSessionId = useSessionStore(s => s.activeSessionId)
+
+  // Wire loaders
+  useProjectLoader()
+  useSessionLoader()
+  useSessionEvents(activeSessionId)
 
   // Listen for startup errors from the backend
   useEffect(() => {
-    if (!runtime) return
-
-    const unsubscribe = runtime.EventsOn('startup_error', (data: unknown) => {
+    return subscribe('startup_error', (data: unknown) => {
       if (!isStartupError(data)) return
       setStartupError(data)
     })
-
-    return unsubscribe
-  }, [runtime])
+  }, [])
 
   // Listen for vector index status (non-session-scoped)
   useEffect(() => {
-    if (!runtime) return
-
-    const unsubscribe = runtime.EventsOn('vector_index:status', (data: unknown) => {
-      if (typeof data !== 'object' || data === null || typeof (data as Record<string, unknown>).state !== 'string') return
-      const payload = data as {
-        state: string
-        progress: number
-        files_indexed: number
-        total_files: number
-        current_file: string
-        branch: string
-      }
-      useVectorIndexStore.getState().updateFromEvent(payload)
+    return subscribe('vector_index:status', (data: unknown) => {
+      if (!isVectorIndexPayload(data)) return
+      useVectorIndexStore.getState().setStatus(data)
     })
+  }, [])
 
-    return unsubscribe
-  }, [runtime])
-
-  const dismissStartupError = () => {
+  const dismissStartupError = useCallback(() => {
     setStartupError(null)
-  }
+  }, [])
 
   return (
     <TooltipProvider>
       <div className="fixed top-0 left-0 right-0 z-50 flex flex-col pointer-events-none">
-        <CodebaseMemoryBanner />
-        <RtkBanner />
+        <div className="pointer-events-auto">
+          <CodebaseMemoryBanner />
+        </div>
+        <div className="pointer-events-auto">
+          <RtkBanner />
+        </div>
         {startupError && (
           <div className="bg-destructive/95 text-destructive-foreground p-4 shadow-lg pointer-events-auto">
             <div className="max-w-4xl mx-auto flex items-start gap-3">
@@ -83,6 +71,7 @@ function App() {
         )}
       </div>
       <AppLayout />
+      <SettingsModal />
     </TooltipProvider>
   )
 }

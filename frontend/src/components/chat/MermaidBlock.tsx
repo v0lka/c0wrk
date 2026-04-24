@@ -6,27 +6,20 @@ interface MermaidBlockProps {
 
 export function MermaidBlock({ code }: MermaidBlockProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [error, setError] = useState<boolean>(false)
+  const [error, setError] = useState(false)
   const idRef = useRef(`mermaid-${crypto.randomUUID()}`)
 
-  // Render diagram when code changes (lazy-loads mermaid)
   useEffect(() => {
     let cancelled = false
 
-    const renderDiagram = async () => {
+    async function renderDiagram() {
       if (!containerRef.current) return
       try {
         const { default: mermaid } = await import('mermaid')
         if (cancelled) return
-
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: 'dark',
-        })
-
+        mermaid.initialize({ startOnLoad: false, theme: 'dark' })
         const { svg } = await mermaid.render(idRef.current, code.trim())
         if (cancelled) return
-        // Safely insert SVG without direct innerHTML on the container
         const temp = document.createElement('div')
         temp.innerHTML = svg
         const svgEl = temp.firstElementChild
@@ -36,18 +29,13 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
       } catch {
         if (!cancelled) {
           setError(true)
-          if (containerRef.current) {
-            containerRef.current.replaceChildren()
-          }
+          if (containerRef.current) containerRef.current.replaceChildren()
         }
       }
     }
 
     renderDiagram()
-
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [code])
 
   if (error) {
@@ -61,7 +49,8 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
   return (
     <div
       ref={containerRef}
-      className="mermaid-container bg-muted rounded-lg p-4 overflow-x-auto"
+      className="mermaid-container bg-muted rounded-lg p-4 overflow-x-auto max-w-full"
+      style={{ height: 'auto' }}
     />
   )
 }

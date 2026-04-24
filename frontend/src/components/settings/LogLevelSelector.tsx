@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Info } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { Button } from '@/components/ui/button'
-import { GetLogLevel, SetLogLevel } from '../../../wailsjs/go/desktop/App'
+import { getLogLevel, setLogLevel as apiSetLogLevel } from '@/api/config'
 import { logger } from '@/lib/logger'
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
@@ -24,7 +24,7 @@ export function LogLevelSelector() {
   const setLogLevel = useUIStore((s) => s.setLogLevel)
 
   useEffect(() => {
-    GetLogLevel()
+    getLogLevel()
       .then((level: string) => {
         if (level && ['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(level)) {
           setLogLevel(level as LogLevel)
@@ -35,7 +35,7 @@ export function LogLevelSelector() {
 
   const handleLogLevelChange = async (level: LogLevel) => {
     try {
-      await SetLogLevel(level)
+      await apiSetLogLevel(level)
       setLogLevel(level)
     } catch (error) {
       logger.error('Failed to set log level:', error)

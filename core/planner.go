@@ -953,7 +953,7 @@ func (p *Planner) CreateSyntheticPlan(task, domain string) *Plan {
 		Steps: []PlanStep{
 			{
 				ID:             "step_1",
-				Summary:        Truncate(task, 50),
+				Summary:        task,
 				Description:    task,
 				DependsOn:      []string{},
 				Parallelizable: true,
@@ -966,13 +966,3 @@ func (p *Planner) CreateSyntheticPlan(task, domain string) *Plan {
 	}
 }
 
-// Truncate truncates a string to maxLen characters, adding "..." if truncated.
-func Truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-3] + "..."
-}

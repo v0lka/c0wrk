@@ -13,6 +13,8 @@ import xml from 'highlight.js/lib/languages/xml'
 import yaml from 'highlight.js/lib/languages/yaml'
 import json from 'highlight.js/lib/languages/json'
 import sql from 'highlight.js/lib/languages/sql'
+import diff from 'highlight.js/lib/languages/diff'
+import dockerfile from 'highlight.js/lib/languages/dockerfile'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 
 let registered = false
@@ -38,6 +40,8 @@ export function registerLanguages(): void {
   hljs.registerLanguage('yaml', yaml)
   hljs.registerLanguage('json', json)
   hljs.registerLanguage('sql', sql)
+  hljs.registerLanguage('diff', diff)
+  hljs.registerLanguage('dockerfile', dockerfile)
   hljs.registerLanguage('plaintext', plaintext)
 }
 
@@ -50,8 +54,8 @@ export function detectLanguage(fileName: string): string {
   const exactMap: Record<string, string> = {
     'Makefile': 'plaintext',
     'makefile': 'plaintext',
-    'Dockerfile': 'bash',
-    'dockerfile': 'bash',
+    'Dockerfile': 'dockerfile',
+    'dockerfile': 'dockerfile',
     '.gitignore': 'bash',
     '.gitmodules': 'bash',
     '.editorconfig': 'plaintext',
@@ -95,6 +99,8 @@ export function detectLanguage(fileName: string): string {
     '.md': 'markdown',
     '.mdx': 'markdown',
     '.sql': 'sql',
+    '.diff': 'diff',
+    '.patch': 'diff',
     '.env': 'bash',
     '.ini': 'plaintext',
     '.cfg': 'plaintext',

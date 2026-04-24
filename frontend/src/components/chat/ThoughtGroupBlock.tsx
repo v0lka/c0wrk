@@ -1,45 +1,31 @@
-import { useState } from 'react'
-import { BrainCircuit, ChevronDown, ChevronRight } from 'lucide-react'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
+import { BrainCircuit } from 'lucide-react'
+import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import type { DisplayItem } from '@/types/messages'
+
+type ThoughtGroupItem = Extract<DisplayItem, { kind: 'thought_group' }>
 
 interface ThoughtGroupBlockProps {
-  thoughts: Array<{ content: string; reasoning?: string }>
+  item: ThoughtGroupItem
 }
 
-export function ThoughtGroupBlock({ thoughts }: ThoughtGroupBlockProps) {
-  const [isOpen, setIsOpen] = useState(false)
-
+export function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen} className="group">
-      <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
-        <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
-          {isOpen ? (
-            <ChevronDown className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5" />
-          )}
-        </span>
-        <BrainCircuit className="h-3.5 w-3.5" />
-        <span className="text-sm">Reasoning ({thoughts.length})</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-2 pl-3 border-l-2 border-muted space-y-2 min-w-0">
-          {thoughts.map((t, idx) => (
-            <div key={`thought-${idx}`}>
-              {t.reasoning && t.reasoning.trim() !== '' && (
-                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.reasoning}</p>
-              )}
-              {t.content && t.content.trim() !== '' && (
-                <p className="text-muted-foreground text-sm whitespace-pre-wrap">{t.content}</p>
-              )}
-            </div>
-          ))}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+    <CollapsibleBlock
+      icon={<BrainCircuit className="h-3.5 w-3.5" />}
+      label={`Reasoning (${item.thoughts.length})`}
+    >
+      <div className="mt-2 pl-3 border-l-2 border-muted space-y-2 min-w-0">
+        {item.thoughts.map((t, idx) => (
+          <div key={`thought-${idx}`}>
+            {t.reasoning && t.reasoning.trim() !== '' && (
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.reasoning}</p>
+            )}
+            {t.content && t.content.trim() !== '' && (
+              <p className="text-muted-foreground text-sm whitespace-pre-wrap">{t.content}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </CollapsibleBlock>
   )
 }

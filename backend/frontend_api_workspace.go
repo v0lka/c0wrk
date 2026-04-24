@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/epilande/go-devicons"
 )
 
 // GetGitStatus returns a map of absolute file paths to their git status for the active project.
@@ -58,11 +60,14 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 		x := line[0]
 		y := line[1]
 
-		if x == 'R' || y == 'R' || x == 'C' || y == 'C' {
-			continue // skip renames and copies
-		}
-
+		// Extract the path part after the status XY and space.
+		// For renames/copies the format is: XY orig -> dest
 		rawPath := line[3:]
+		if x == 'R' || y == 'R' || x == 'C' || y == 'C' {
+			if idx := strings.LastIndex(rawPath, " -> "); idx >= 0 {
+				rawPath = rawPath[idx+4:] // use the destination path
+			}
+		}
 
 		if x == '?' && y == '?' {
 			path := filepath.Join(absRoot, rawPath)
@@ -72,10 +77,10 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 
 		status := ' '
 		staged := false
-		if x == 'M' || x == 'A' {
+		if x == 'M' || x == 'A' || x == 'R' || x == 'C' || x == 'U' {
 			status = rune(x)
 			staged = true
-		} else if y == 'M' || y == 'A' {
+		} else if y == 'M' || y == 'A' || y == 'R' || y == 'C' || y == 'U' {
 			status = rune(y)
 			staged = false
 		}
@@ -207,6 +212,18 @@ func (f *FrontendAPI) runGitDiffNoIndex(dir, relPath string) (string, error) {
 	return stdout.String(), nil
 }
 
+// resolveFileIcon returns the Nerd Font icon and hex color for a file or directory.
+func resolveFileIcon(info os.FileInfo) (icon, color string) {
+	style := devicons.IconForInfo(info)
+	return style.Icon, style.Color
+}
+
+// isHidden reports whether a file or directory should be considered hidden.
+// On Unix-like systems this is determined by a leading dot in the name.
+func isHidden(name string) bool {
+	return strings.HasPrefix(name, ".")
+}
+
 // resolveWorkspacePath validates that filePath is within the active project
 // workspace and returns the resolved absolute path and workspace root.
 func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
@@ -244,8 +261,26 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	return projectPath, nil
 }
 
-// ListDirectory returns the immediate children of a directory, sorted directories first then alphabetically.
-func (f *FrontendAPI) ListDirectory(dirPath string) ([]FileNode, error) {
+// GetFileIcon returns the Nerd Font icon and hex color for a file path.
+// The path must be within the active project workspace.
+func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
+	absPath, _, err := f.resolveWorkspacePath(filePath)
+	if err != nil {
+		return FileIconResponse{}, err
+	}
+	style := devicons.IconForPath(absPath)
+	return FileIconResponse{Icon: style.Icon, IconColor: style.Color}, nil
+}
+
+// ListDirectory returns the children of a directory. When recursive is false,
+// only the immediate children are listed, sorted directories first then
+// alphabetically. When recursive is true, a flat list of all files and
+// directories found recursively under dirPath is returned. Within each
+// directory level, directories are listed before files and both groups are
+// sorted alphabetically. The .git directory and its contents are excluded.
+// Files and directories ignored by .gitignore are included but flagged with
+// GitIgnored=true so the frontend can render them with a subdued color.
+func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
@@ -267,17 +302,38 @@ func (f *FrontendAPI) ListDirectory(dirPath string) ([]FileNode, error) {
 		return nil, errors.New("path outside project workspace")
 	}
 
+	if !recursive {
+		return f.listDirectoryFlat(absDir)
+	}
+	return f.listDirectoryWalk(absDir)
+}
+
+// listDirectoryFlat returns the immediate children of a directory,
+// sorted directories first then alphabetically.
+func (f *FrontendAPI) listDirectoryFlat(absDir string) ([]FileNode, error) {
 	entries, err := os.ReadDir(absDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
+	ignoredPaths := gitIgnoredPaths(absDir, f.log())
+
 	var dirs, files []FileNode
 	for _, entry := range entries {
+		info, infoErr := entry.Info()
 		node := FileNode{
-			Name:  entry.Name(),
-			Path:  filepath.Join(absDir, entry.Name()),
-			IsDir: entry.IsDir(),
+			Name:   entry.Name(),
+			Path:   filepath.Join(absDir, entry.Name()),
+			IsDir:  entry.IsDir(),
+			Hidden: isHidden(entry.Name()),
+		}
+		if ignoredPaths != nil {
+			node.GitIgnored = ignoredPaths[node.Path]
+		}
+		if infoErr != nil {
+			f.log().Warn("failed to get file info", "path", node.Path, "error", infoErr)
+		} else if !entry.IsDir() {
+			node.Icon, node.IconColor = resolveFileIcon(info)
 		}
 		if entry.IsDir() {
 			dirs = append(dirs, node)
@@ -296,39 +352,18 @@ func (f *FrontendAPI) ListDirectory(dirPath string) ([]FileNode, error) {
 	return nodes, nil
 }
 
-// ListDirectoryRecursive returns a flat list of all files and directories
-// found recursively under dirPath. Within each directory level, directories
+// listDirectoryWalk returns a flat list of all files and directories
+// found recursively under absDir. Within each directory level, directories
 // are listed before files and both groups are sorted alphabetically.
 // The .git directory and its contents are excluded.
-// Files and directories ignored by .gitignore are also excluded when the
-// workspace is a git repository.
-func (f *FrontendAPI) ListDirectoryRecursive(dirPath string) ([]FileNode, error) {
-	f.activeProjectMu.RLock()
-	projectPath := f.activeProjectPath
-	f.activeProjectMu.RUnlock()
-
-	if projectPath == "" {
-		return nil, errors.New("no active project")
-	}
-
-	// Security: validate path is under the active project's workspace
-	absDir, err := filepath.Abs(dirPath)
-	if err != nil {
-		return nil, fmt.Errorf("invalid path: %w", err)
-	}
-	absRoot, err := filepath.Abs(projectPath)
-	if err != nil {
-		return nil, fmt.Errorf("invalid workspace path: %w", err)
-	}
-	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(filepath.Separator)) {
-		return nil, errors.New("path outside project workspace")
-	}
-
-	// Build the set of gitignored paths for filtering.
+// Files and directories ignored by .gitignore are included but flagged with
+// GitIgnored=true so the frontend can render them with a subdued color.
+func (f *FrontendAPI) listDirectoryWalk(absDir string) ([]FileNode, error) {
+	// Build the set of gitignored paths for marking.
 	ignoredPaths := gitIgnoredPaths(absDir, f.log())
 
 	var nodes []FileNode
-	err = filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			f.log().Warn("skipping unreadable path", "path", path, "error", walkErr)
 			return nil
@@ -341,18 +376,22 @@ func (f *FrontendAPI) ListDirectoryRecursive(dirPath string) ([]FileNode, error)
 		if path == absDir {
 			return nil
 		}
-		// Skip gitignored entries; skip entire directory trees for performance.
-		if ignoredPaths[path] {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+		info, infoErr := d.Info()
+		node := FileNode{
+			Name:   d.Name(),
+			Path:   path,
+			IsDir:  d.IsDir(),
+			Hidden: isHidden(d.Name()),
 		}
-		nodes = append(nodes, FileNode{
-			Name:  d.Name(),
-			Path:  path,
-			IsDir: d.IsDir(),
-		})
+		if ignoredPaths != nil {
+			node.GitIgnored = ignoredPaths[path]
+		}
+		if infoErr != nil {
+			f.log().Warn("failed to get file info", "path", path, "error", infoErr)
+		} else if !d.IsDir() {
+			node.Icon, node.IconColor = resolveFileIcon(info)
+		}
+		nodes = append(nodes, node)
 		return nil
 	})
 	if err != nil {

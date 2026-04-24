@@ -1,6 +1,6 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useScrollStore } from '@/stores/scrollStore'
-import { ChatMessageUI } from '@/stores/chatStore'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useScrollContext } from './ScrollContext'
+import type { ChatMessageUI } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
 
 interface ChatScrollManagerProps {
@@ -15,15 +15,11 @@ export function ChatScrollManager({
   streamingText,
   scrollRef,
   children,
-}: ChatScrollManagerProps): React.ReactNode {
-  const setScrollToStep = useScrollStore(s => s.setScrollToStep)
+}: ChatScrollManagerProps) {
+  const { setScrollToStep } = useScrollContext()
   const isAtBottomRef = useRef(true)
   const viewportRef = useRef<HTMLElement | null>(null)
-  const prevScrollState = useRef<{ scrollTop: number; scrollHeight: number; clientHeight: number }>({
-    scrollTop: 0,
-    scrollHeight: 0,
-    clientHeight: 0,
-  })
+  const prevScrollState = useRef({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })
   const [hasNewActivity, setHasNewActivity] = useState(false)
 
   // Cache viewport element
@@ -63,24 +59,18 @@ export function ChatScrollManager({
     const viewport = viewportRef.current
     if (!viewport) return
 
-    // Read current measurements synchronously (before paint)
     const currentScrollHeight = viewport.scrollHeight
     const currentClientHeight = viewport.clientHeight
-
-    // Determine if user was at bottom using PREVIOUS state (before new content was added)
     const prev = prevScrollState.current
     const wasAtBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 50
 
     if (wasAtBottom) {
-      // User was at bottom → scroll to new bottom (direct assignment in useLayoutEffect, before paint)
       viewport.scrollTop = currentScrollHeight
       isAtBottomRef.current = true
     } else {
-      // User had scrolled up → don't move, show "new activity" indicator
       setHasNewActivity(true)
     }
 
-    // Update prev state with current measurements
     prevScrollState.current = {
       scrollTop: viewport.scrollTop,
       scrollHeight: currentScrollHeight,
@@ -94,7 +84,7 @@ export function ChatScrollManager({
       const viewport = viewportRef.current
       if (!viewport) return
       const elements = viewport.querySelectorAll(`[data-step-id="${stepId}"]`)
-      const target = elements[elements.length - 1] // last match (for retries)
+      const target = elements[elements.length - 1]
       if (target) {
         target.scrollIntoView({ behavior: 'smooth', block: 'start' })
         isAtBottomRef.current = false

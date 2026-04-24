@@ -3,39 +3,37 @@ import { Button } from '@/components/ui/button'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
-import { useWails } from '@/hooks/useWails'
+import { useUIStore } from '@/stores/uiStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { sendMessage, cancelTask } from '@/api/chat'
+import { createSession } from '@/api/sessions'
+import { generateMessageId } from '@/lib/ids'
 import { Play, Square } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
-/** Maximum visible lines before the textarea scrolls, balancing input visibility with chat area space. */
 const MAX_LINES = 6
 
 export function ChatInput() {
   const [text, setText] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
   const activeSessionId = useSessionStore(s => s.activeSessionId)
-  const touchSession = useSessionStore(s => s.touchSession)
-  const addSession = useSessionStore(s => s.addSession)
-  const setActiveSession = useSessionStore(s => s.setActiveSession)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
-  const isThinking = useChatStore(s => s.isThinking)
-  const isTaskActive = useChatStore(s => s.isTaskActive)
-  const setTaskActive = useChatStore(s => s.setTaskActive)
-  const addMessage = useChatStore(s => s.addMessage)
-  const { api } = useWails()
+  const taskActive = useChatStore(s => activeSessionId ? s.taskActive[activeSessionId] ?? false : false)
+  const sidebarCollapsed = useUIStore(s => s.sidebarCollapsed)
+  const viewerCollapsed = useFileViewerStore(s => s.collapsed)
+  const hasViewerTabs = useFileViewerStore(s => s.openTabs.length > 0)
 
-  // Blocking conditions
   const isNoProject = !activeProjectId
-  const isInputDisabled = isTaskActive || isNoProject
-
-  const showCancel = isThinking || isProcessing
+  const isInputDisabled = taskActive || isNoProject
+  const showCancel = taskActive || isProcessing
 
   // Auto-resize textarea
   useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
-
     textarea.style.height = 'auto'
     const lineHeight = parseInt(getComputedStyle(textarea).lineHeight) || 24
     const maxHeight = lineHeight * MAX_LINES
@@ -44,106 +42,93 @@ export function ChatInput() {
   }, [text])
 
   const handleSend = useCallback(async () => {
-    if (!text.trim() || !api) return
+    if (!text.trim()) return
 
     const messageText = text.trim()
     setText('')
     setIsProcessing(true)
 
-    // Reset textarea height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
-    // Get or create session ID
     let sessionId = useSessionStore.getState().activeSessionId
     if (!sessionId) {
       try {
-        // Create new session
-        const newSession = await api.CreateSession()
-        addSession(newSession)
-        setActiveSession(newSession.id)
+        const newSession = await createSession()
+        useSessionStore.getState().addSession(newSession)
+        useSessionStore.getState().setActiveSessionId(newSession.id)
         sessionId = newSession.id
       } catch (error) {
         logger.error('Failed to create session:', error)
-        // Show error to user - we don't have a session ID yet, so we can't add to chat
         setIsProcessing(false)
-        // Restore the text so user can retry
         setText(messageText)
         return
       }
     }
 
-    // Optimistically add user message to UI
-    addMessage(sessionId, {
-      id: `user-${Date.now()}`,
-      sessionId: sessionId,
+    // Optimistically add user message
+    useChatStore.getState().addMessage(sessionId, {
+      id: generateMessageId(),
+      sessionId,
       type: 'user',
       content: messageText,
       timestamp: Date.now(),
     })
 
-    // Move session to top of list
-    touchSession(sessionId)
-
-    // Mark task as active
-    setTaskActive(true)
+    useSessionStore.getState().touchSession(sessionId)
+    useChatStore.getState().setTaskActive(sessionId, true)
     useChatStore.getState().setActivityStatus('Processing...')
 
     try {
-      await api.SendMessage(sessionId, messageText)
+      await sendMessage(sessionId, messageText)
     } catch (error) {
       logger.error('Failed to send message:', error)
-      // Display the error in the chat UI so the user can see it
       const errorMessage = error instanceof Error ? error.message : String(error)
-      addMessage(sessionId, {
-        id: `error-send-${Date.now()}`,
-        sessionId: sessionId,
+      useChatStore.getState().addMessage(sessionId, {
+        id: generateMessageId(),
+        sessionId,
         type: 'error',
         content: `Failed to send message: ${errorMessage}`,
         timestamp: Date.now(),
       })
-      // Re-enable input since no backend task was started
-      setTaskActive(false)
+      useChatStore.getState().setTaskActive(sessionId, false)
     } finally {
       setIsProcessing(false)
     }
-  }, [text, api, addMessage, addSession, setActiveSession, touchSession, setTaskActive])
+  }, [text])
 
   const handleCancel = useCallback(async () => {
-    if (!activeSessionId || !api) return
-
+    if (!activeSessionId) return
     try {
-      await api.CancelTask(activeSessionId)
+      await cancelTask(activeSessionId)
     } catch (error) {
       logger.error('Failed to cancel task:', error)
     }
-  }, [activeSessionId, api])
+  }, [activeSessionId])
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    // Enter to send, Shift+Enter for new line
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (!showCancel && !isInputDisabled) {
-        handleSend()
-      }
+      if (!showCancel && !isInputDisabled) handleSend()
     }
   }, [handleSend, showCancel, isInputDisabled])
 
-  // Determine placeholder and blocking message
   let placeholder = 'Type a message... (Enter to send, Shift+Enter for new line)'
   let blockingMessage: string | null = null
   if (isNoProject) {
     placeholder = 'Select or create a project to start'
-    blockingMessage = 'Select or create a project to start'
-  } else if (isTaskActive) {
+    blockingMessage = 'Select or create a project'
+  } else if (taskActive) {
     placeholder = 'Session is processing...'
   }
 
   return (
-    <div className="border-t border-border bg-card p-4">
+    <div className={cn(
+      'border-t border-x border-border bg-card p-4 mb-1',
+      sidebarCollapsed && 'ml-1',
+      viewerCollapsed && hasViewerTabs && 'mr-1',
+    )}>
       <div className="flex flex-col">
-        <div className="relative chat-input-wrapper">
+        <div className="relative">
           <textarea
             ref={textareaRef}
             value={text}
@@ -152,8 +137,11 @@ export function ChatInput() {
             placeholder={placeholder}
             rows={1}
             disabled={isInputDisabled}
-            className={`w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none custom-scrollbar${isInputDisabled ? ' opacity-50 cursor-not-allowed' : ''}`}
-            style={{ overflow: text.split('\n').length > MAX_LINES ? 'auto' : 'hidden' }}
+            className={cn(
+              'w-full min-h-[44px] max-h-[160px] resize-none bg-transparent px-3 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none custom-scrollbar',
+              isInputDisabled && 'opacity-50 cursor-not-allowed',
+              text.split('\n').length > MAX_LINES ? 'overflow-auto' : 'overflow-hidden',
+            )}
           />
         </div>
 
@@ -162,13 +150,12 @@ export function ChatInput() {
         )}
 
         <div className="flex items-center justify-end pt-2 min-h-[40px]">
-          
           {showCancel ? (
             <Button
               variant="outline"
               size="icon"
               onClick={handleCancel}
-              className="shrink-0 h-8 w-8 rounded-md border-[#be5046] text-[#be5046] hover:bg-[#be5046]/10 active:bg-[#be5046]/20"
+              className="shrink-0 h-8 w-8 rounded-md border-destructive text-destructive hover:bg-destructive/10 active:bg-destructive/20"
               title="Cancel"
               aria-label="Cancel task"
             >
@@ -178,7 +165,7 @@ export function ChatInput() {
             <Button
               onClick={handleSend}
               disabled={!text.trim() || isInputDisabled}
-              className="shrink-0 h-8 w-8 rounded-md bg-[#98c379] hover:bg-[#98c379]/90 active:bg-[#98c379]/75 transition-colors text-[#282c34]"
+              className="shrink-0 h-8 w-8 rounded-md bg-success hover:bg-success/90 active:bg-success/75 transition-colors text-success-foreground"
               title="Send message"
               aria-label="Send message"
             >

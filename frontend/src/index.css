@@ -1,98 +1,167 @@
+/* ==========================================================================
+   c0wrk Design System — One Dark Theme
+   Clean CSS foundation: zero !important, all colors as design tokens.
+   ========================================================================== */
+
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
-@import 'highlight.js/styles/atom-one-dark.min.css';
 
-@font-face {
-  font-family: 'SauceCodePro NF';
-  src: url('./assets/fonts/SauceCodeProNerdFont-Regular.ttf') format('truetype');
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-
-/* Remove underline from heading anchor links */
-.prose :where(h1, h2, h3, h4, h5, h6) a {
-  text-decoration: none;
-}
-
-.nerd-font-icon {
-  font-family: 'SauceCodePro NF', monospace;
-}
-
-
-/* Mermaid diagrams */
-.mermaid-container svg {
-  max-width: 100%;
-  height: auto;
-}
+/* ==========================================================================
+   Design Tokens — @theme
+   All color values are defined here and ONLY here. Component styles
+   reference var(--color-*) exclusively.
+   ========================================================================== */
 
 @theme {
+  /* Core palette */
   --color-background: #282c34;
   --color-foreground: #abb2bf;
+
+  /* Surfaces */
   --color-card: #252931;
   --color-card-foreground: #abb2bf;
   --color-popover: #252931;
   --color-popover-foreground: #abb2bf;
+
+  /* Primary / Accent */
   --color-primary: #528bff;
   --color-primary-foreground: #282c34;
+  --color-accent: #528bff;
+  --color-accent-foreground: #282c34;
+
+  /* Secondary / Muted */
   --color-secondary: #1d2025;
   --color-secondary-foreground: #cccccc;
   --color-muted: #1d2025;
   --color-muted-foreground: #cccccc;
-  --color-accent: #528bff;
-  --color-accent-foreground: #282c34;
+
+  /* Semantic */
   --color-destructive: #e06c75;
   --color-destructive-foreground: #282c34;
-  --color-border: #1d2025;
-  --color-input: #1d2025;
-  --color-ring: #528bff;
   --color-success: #98c379;
   --color-warning: #d19a66;
   --color-info: #61afef;
   --color-highlight: #e5c07b;
+
+  /* Borders & inputs */
+  --color-border: #1d2025;
+  --color-input: #1d2025;
+  --color-ring: #528bff;
+
+  /* RGB variants for rgba() usage */
+  --color-success-rgb: 152, 195, 121;
+  --color-destructive-rgb: 224, 108, 117;
+
+  /* highlight.js One Dark tokens */
+  --color-hljs-comment: #5c6370;
+  --color-hljs-keyword: #c678dd;
+  --color-hljs-literal: #56b6c2;
+
+  /* Border radii */
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
   --radius-xl: 0.75rem;
 }
 
-html {
-  font-size: 14px;
-  color-scheme: dark;
+/* ==========================================================================
+   Font Face — SauceCodePro NF (Nerd Font for file tree icons)
+   ========================================================================== */
+
+@font-face {
+  font-family: 'SauceCodePro NF';
+  src: url('./assets/fonts/SauceCodeProNerdFont-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
 }
 
-/* highlight.js theme - atom-one-dark */
-.hljs {
-  color: #abb2bf;
-  background: #282c34;
+/* ==========================================================================
+   Base Styles
+   ========================================================================== */
+
+html {
+  font-size: 14px;
 }
+
+body {
+  color-scheme: dark;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+.nerd-font-icon {
+  font-family: 'SauceCodePro NF', monospace;
+}
+
+/* ==========================================================================
+   Focus Ring Handling
+   Focus rings are intentionally suppressed across all UI elements as a
+   deliberate design decision for this desktop application. Mouse clicks
+   and keyboard navigation both suppress outlines. Interactive state is
+   conveyed through color changes, background highlights, and other
+   non-outline visual feedback instead.
+   ========================================================================== */
+
+:focus,
+:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Resize drag state — applied via class toggle from useResize hook */
+.resize-dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ==========================================================================
+   highlight.js — One Dark Theme (self-contained, no external import)
+   All colors reference design tokens defined in @theme.
+   ========================================================================== */
+
+.hljs {
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
 .hljs-comment,
 .hljs-quote {
-  color: #5c6370;
+  color: var(--color-hljs-comment);
   font-style: italic;
 }
+
 .hljs-doctag,
 .hljs-keyword,
-.hljs-formula {
-  color: #c678dd;
+.hljs-formula,
+.hljs-selector-tag {
+  color: var(--color-hljs-keyword);
 }
+
 .hljs-section,
 .hljs-name,
-.hljs-selector-tag,
 .hljs-deletion,
-.hljs-subst {
-  color: #e06c75;
+.hljs-subst,
+.hljs-tag {
+  color: var(--color-destructive);
 }
-.hljs-literal {
-  color: #56b6c2;
+
+.hljs-literal,
+.hljs-meta {
+  color: var(--color-hljs-literal);
 }
+
 .hljs-string,
 .hljs-regexp,
 .hljs-addition,
-.hljs-attribute,
 .hljs-meta .hljs-string {
-  color: #98c379;
+  color: var(--color-success);
 }
+
 .hljs-attr,
 .hljs-variable,
 .hljs-template-variable,
@@ -100,116 +169,133 @@ html {
 .hljs-selector-class,
 .hljs-selector-attr,
 .hljs-selector-pseudo,
-.hljs-number {
-  color: #d19a66;
+.hljs-number,
+.hljs-attribute {
+  color: var(--color-warning);
 }
+
 .hljs-symbol,
 .hljs-bullet,
 .hljs-link,
-.hljs-meta,
 .hljs-selector-id,
 .hljs-title {
-  color: #61afef;
+  color: var(--color-info);
 }
+
 .hljs-built_in,
 .hljs-title.class_,
 .hljs-class .hljs-title {
-  color: #e5c07b;
+  color: var(--color-highlight);
 }
 
-* {
-  border-color: var(--color-border);
+.hljs-emphasis {
+  font-style: italic;
 }
 
-body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
+.hljs-strong {
+  font-weight: 700;
 }
 
-/* Custom prose-xs variant — 2pt smaller than prose-sm (12px base vs 14px).
-   All em-based children scale proportionally via cascade. */
+/* ==========================================================================
+   Prose Overrides — One Dark for @tailwindcss/typography
+   All values reference design tokens, not raw hex.
+   ========================================================================== */
+
+.prose {
+  --tw-prose-body: var(--color-foreground);
+  --tw-prose-headings: var(--color-secondary-foreground);
+  --tw-prose-lead: var(--color-secondary-foreground);
+  --tw-prose-links: var(--color-info);
+  --tw-prose-bold: var(--color-highlight);
+  --tw-prose-counters: var(--color-warning);
+  --tw-prose-bullets: var(--color-muted-foreground);
+  --tw-prose-hr: var(--color-border);
+  --tw-prose-quotes: var(--color-muted-foreground);
+  --tw-prose-quote-borders: var(--color-border);
+  --tw-prose-captions: var(--color-muted-foreground);
+  --tw-prose-code: var(--color-destructive);
+  --tw-prose-pre-code: var(--color-foreground);
+  --tw-prose-pre-bg: var(--color-background);
+  --tw-prose-th-borders: var(--color-border);
+  --tw-prose-td-borders: var(--color-border);
+}
+
+/* Prose links — no underline by default, underline on hover */
+.prose a {
+  text-decoration: none;
+}
+
+.prose a:hover {
+  text-decoration: underline;
+}
+
+/* Remove underline from heading anchor links */
+.prose :where(h1, h2, h3, h4, h5, h6) a {
+  text-decoration: none;
+}
+
+/* Inline code (not inside pre blocks) */
+.prose :where(code):not(:where(pre *)) {
+  color: var(--tw-prose-code);
+  background: var(--color-secondary);
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.25rem;
+}
+
+/* Code blocks */
+.prose pre {
+  background-color: var(--tw-prose-pre-bg);
+  border: 1px solid var(--color-border);
+}
+
+.prose pre code {
+  display: block;
+}
+
+.prose strong {
+  color: var(--tw-prose-bold);
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  color: var(--tw-prose-headings);
+}
+
+.prose blockquote {
+  color: var(--tw-prose-quotes);
+  border-left-color: var(--color-primary);
+}
+
+/* Compact prose variant for tooltips and tight spaces */
 .prose-xs {
   font-size: 0.75rem;
 }
 
-/* One Dark prose overrides — bring markdown rendering in line with the theme.
-   These override Tailwind Typography's default stone/neutral palette. */
-.prose {
-  --tw-prose-body: #abb2bf;
-  --tw-prose-headings: #e5c07b;
-  --tw-prose-lead: #cccccc;
-  --tw-prose-links: #61afef;
-  --tw-prose-bold: #e5c07b;
-  --tw-prose-counters: #d19a66;
-  --tw-prose-bullets: #5c6370;
-  --tw-prose-hr: #1d2025;
-  --tw-prose-quotes: #5c6370;
-  --tw-prose-quote-borders: #1d2025;
-  --tw-prose-captions: #5c6370;
-  --tw-prose-code: #e06c75;
-  --tw-prose-pre-code: #abb2bf;
-  --tw-prose-pre-bg: #282c34;
-  --tw-prose-th-borders: #1d2025;
-  --tw-prose-td-borders: #1d2025;
-}
-.prose a {
-  text-decoration: none;
-}
-.prose a:hover {
-  text-decoration: underline;
-}
-.prose code:not(pre code) {
-  color: var(--tw-prose-code);
-  background-color: #1d2025;
-  border-radius: 0.25rem;
-  padding: 0.125rem 0.25rem;
-}
-.prose pre {
-  background-color: var(--tw-prose-pre-bg);
-  border: 1px solid #1d2025;
-}
-.prose strong {
-  color: var(--tw-prose-bold);
-}
-.prose h1, .prose h2, .prose h3, .prose h4 {
-  color: var(--tw-prose-headings);
-}
-.prose blockquote {
-  color: var(--tw-prose-quotes);
-  border-left-color: #528bff;
+/* ==========================================================================
+   Mermaid Diagrams
+   ========================================================================== */
+
+.mermaid-container svg {
+  max-width: 100%;
+  height: auto;
 }
 
-/* Global focus ring removal - theme uses visual feedback via other means */
-*:focus,
-*:focus-visible,
-*:focus-within {
-  outline: none !important;
-  box-shadow: none !important;
-}
+/* ==========================================================================
+   Custom Scrollbar
+   ========================================================================== */
 
-/* Override Radix UI DropdownMenuItem hover/focus styles to match theme */
-[data-radix-dropdown-menu-item]:hover,
-[data-radix-dropdown-menu-item]:focus,
-[data-radix-dropdown-menu-item][data-highlighted] {
-  background-color: color-mix(in srgb, var(--color-muted) 50%, transparent) !important;
-  color: inherit !important;
-}
-
-[data-radix-dropdown-menu-item]:hover *,
-[data-radix-dropdown-menu-item]:focus *,
-[data-radix-dropdown-menu-item][data-highlighted] * {
-  color: inherit !important;
-}
-
-/* Custom scrollbar — always visible, subtly transparent */
 .custom-scrollbar::-webkit-scrollbar {
   width: 8px;
   height: 8px;
   background: transparent;
 }
+
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background-clip: padding-box;
   background-color: color-mix(in srgb, var(--color-border) 50%, transparent);
@@ -222,56 +308,85 @@ body {
   scrollbar-width: none; /* Firefox */
   -ms-overflow-style: none; /* IE/Edge */
 }
+
 .no-scrollbar::-webkit-scrollbar {
-  display: none; /* Chrome/Safari */
+  display: none; /* Chrome/Safari/WebKit */
 }
 
-/* File Viewer — line styling */
+/* ==========================================================================
+   Radix UI Dropdown Overrides
+   Styled via specificity and color-mix() — zero !important.
+   ========================================================================== */
+
+[data-radix-dropdown-menu-content] [data-highlighted] {
+  background: color-mix(in srgb, var(--color-muted) 50%, transparent);
+  color: inherit;
+}
+
+[data-radix-dropdown-menu-content] [data-highlighted] * {
+  color: inherit;
+}
+
+/* ==========================================================================
+   File Viewer — Line Styling
+   ========================================================================== */
+
 .file-viewer-line {
   display: flex;
   min-height: 1.25rem;
 }
+
 .file-viewer-line-number {
   display: inline-block;
   width: 3.5rem;
   flex-shrink: 0;
   text-align: right;
   padding-right: 0.75rem;
-  color: #5c6370;
+  color: var(--color-hljs-comment);
   user-select: none;
 }
+
 .file-viewer-line-content {
   flex: none;
   white-space: pre;
 }
+
+/* ==========================================================================
+   File Viewer — Diff Line Styles
+   ========================================================================== */
+
 .diff-line-added {
-  background-color: rgba(152, 195, 121, 0.15);
+  background-color: rgba(var(--color-success-rgb), 0.15);
 }
+
 .diff-line-added .file-viewer-line-number {
-  color: #98c379;
+  color: var(--color-success);
 }
+
 .diff-line-removed {
-  background-color: rgba(224, 108, 117, 0.15);
+  background-color: rgba(var(--color-destructive-rgb), 0.15);
 }
+
 .diff-line-removed .file-viewer-line-number {
-  color: #e06c75;
+  color: var(--color-destructive);
 }
+
 .diff-line-modified {
-  background-color: rgba(152, 195, 121, 0.10);
+  background-color: rgba(var(--color-success-rgb), 0.10);
 }
+
 .diff-line-modified .file-viewer-line-number {
-  color: #98c379;
+  color: var(--color-success);
 }
 
 /* Inline character-level diff highlights */
 .diff-char-added {
-  background-color: rgba(152, 195, 121, 0.35);
+  background-color: rgba(var(--color-success-rgb), 0.35);
   border-radius: 2px;
 }
+
 .diff-char-removed {
-  background-color: rgba(224, 108, 117, 0.35);
+  background-color: rgba(var(--color-destructive-rgb), 0.35);
   text-decoration: line-through;
   border-radius: 2px;
 }
-
-

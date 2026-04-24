@@ -1,122 +1,77 @@
-import { useState } from 'react'
-import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight } from 'lucide-react'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
+import { useState, useEffect } from 'react'
+import { Loader2, CheckCircle2, XCircle, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
-import { useChatStore, type DisplayItem } from '@/stores/chatStore'
+import { useChatStore } from '@/stores/chatStore'
+import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { StepTooltip } from './StepTooltip'
+import { ChatMessageRenderer } from './ChatMessageRenderer'
+import type { DisplayItem } from '@/types/messages'
+
+type PlanStepItem = Extract<DisplayItem, { kind: 'plan_step' }>
 
 interface PlanStepBlockProps {
-  stepId: string
-  stepNum: number
-  title: string
-  description?: string
-  status: 'running' | 'completed' | 'failed'
-  duration?: number
-  error?: string
-  isRetry?: boolean
-  children: DisplayItem[]
-  renderItem: (item: DisplayItem, index: number) => React.ReactNode
+  item: PlanStepItem
 }
 
-function getStatusColor(status: string): string {
-  switch (status) {
-    case 'ok':
-      return 'text-muted-foreground'
-    case 'compact':
-      return 'text-foreground'
-    case 'warning':
-      return 'text-warning'
-    case 'emergency':
-    case 'reject':
-      return 'text-destructive'
-    default:
-      return 'text-muted-foreground'
-  }
-}
-
-export function PlanStepBlock({ stepId, stepNum, title, description, status, duration, error, children, renderItem }: PlanStepBlockProps) {
-  const [isOpen, setIsOpen] = useState(status === 'running')
+export function PlanStepBlock({ item }: PlanStepBlockProps) {
+  const { stepId, stepNum, title, description, status, duration, error, isRetry, children } = item
   const stepContextFill = useChatStore(s => s.stepContextFill[stepId])
-  const fullDesc = description || title
-  const hasDescription = !!fullDesc
 
-  // Adjust isOpen during render when status changes (avoids extra render cycle from useEffect)
-  const [prevStatus, setPrevStatus] = useState(status)
-  if (status !== prevStatus) {
-    setPrevStatus(status)
-    if (status === 'completed' || status === 'failed') {
-      setIsOpen(false)
-    } else if (status === 'running') {
-      setIsOpen(true)
-    }
-  }
+  // Derived open state — auto-opens when running, auto-closes otherwise
+  const isAutoOpen = status === 'running'
+  const [userOverride, setUserOverride] = useState<boolean | null>(null)
+  const isOpen = userOverride ?? isAutoOpen
 
-  const borderColor = status === 'running'
-    ? 'border-info'
-    : status === 'completed'
-      ? 'border-success'
-      : 'border-destructive'
+  // Reset user override when status changes
+  useEffect(() => { setUserOverride(null) }, [status])
+
+  const borderColor = status === 'running' ? 'border-info'
+    : status === 'completed' ? 'border-success'
+    : 'border-destructive'
 
   const StatusIcon = status === 'running' ? Loader2 : status === 'completed' ? CheckCircle2 : XCircle
-  const iconClass = status === 'running'
-    ? 'text-info animate-spin'
-    : status === 'completed'
-      ? 'text-success'
-      : 'text-destructive'
+  const iconClass = status === 'running' ? 'text-info animate-spin'
+    : status === 'completed' ? 'text-success' : 'text-destructive'
 
-  const stepLabel = `Step ${stepNum}: ${title}`
+  const fullDesc = description || title
+
+  const headerExtra = (
+    <>
+      {isRetry && <RefreshCw className="h-3 w-3 text-warning" />}
+      {status === 'failed' && error && (
+        <span className="text-xs text-destructive truncate min-w-0" title={error}>— {error}</span>
+      )}
+      {typeof stepContextFill === 'number' && (
+        <span className="text-xs text-muted-foreground ml-2">{Math.round(stepContextFill)}%</span>
+      )}
+      {duration !== undefined && (
+        <span className="ml-auto text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded shrink-0">
+          {formatDuration(duration)}
+        </span>
+      )}
+    </>
+  )
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen} data-step-id={stepId} className="group">
-      <CollapsibleTrigger className="flex items-center gap-1.5 w-full text-muted-foreground hover:text-foreground transition-colors">
-        <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
-          {isOpen ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0" />
-          )}
-        </span>
-        <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${iconClass}`} />
-        <StepTooltip description={fullDesc} enabled={hasDescription}>
-          <span className={cn("text-sm truncate", hasDescription && "cursor-default")}>{stepLabel}</span>
-        </StepTooltip>
-        {status === 'failed' && error && (
-          <span className="text-xs text-destructive truncate max-w-[300px]" title={error}>
-            — {error}
-          </span>
-        )}
-        {status === 'running' && stepContextFill && (
-          <span className={`text-xs ml-2 ${getStatusColor(stepContextFill.status)}`}>
-            {Math.round(stepContextFill.fillPercent)}%
-          </span>
-        )}
-        {duration !== undefined && (
-          <span className="ml-auto text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded shrink-0">
-            {formatDuration(duration)}
-          </span>
-        )}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className={`mt-2 border-l-2 ${borderColor} rounded pl-3 py-2 space-y-3 min-w-0`}>
-          {status === 'running' && stepContextFill && (
-            <div className="text-xs text-muted-foreground flex items-center gap-2">
-              <span>Context:</span>
-              <span className={getStatusColor(stepContextFill.status)}>
-                {Math.round(stepContextFill.fillPercent)}%
-              </span>
-              <span className="text-muted-foreground/60">
-                ({stepContextFill.usedTokens.toLocaleString()} / {stepContextFill.maxTokens.toLocaleString()} tokens)
-              </span>
-            </div>
-          )}
-          {children.map((child, idx) => renderItem(child, idx))}
+    <div data-step-id={stepId}>
+      <CollapsibleBlock
+        icon={<StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />}
+        label={
+          <StepTooltip description={fullDesc} enabled={!!description}>
+            <span className={cn('text-sm truncate', description && 'cursor-default')}>
+              Step {stepNum}: {title}
+            </span>
+          </StepTooltip>
+        }
+        open={isOpen}
+        onOpenChange={(open) => setUserOverride(open)}
+        headerExtra={headerExtra}
+      >
+        <div className={cn('mt-2 border-l-2 rounded pl-3 py-2 space-y-3 min-w-0', borderColor)}>
+          <ChatMessageRenderer items={children} />
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      </CollapsibleBlock>
+    </div>
   )
 }

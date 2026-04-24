@@ -1,127 +1,103 @@
-import React, { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
-import { useChatStore, ChatMessageUI, groupMessages } from '@/stores/chatStore'
+import { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
+import { useChatStore, useSessionMessages } from '@/stores/chatStore'
+import { groupMessages, chatMessageToUI, rebuildPlanFromHistory } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
-import { usePanelStore } from '@/stores/panelStore'
+import { usePlanStore } from '@/stores/planStore'
+import { getSessionHistory } from '@/api/chat'
+import { useLatestAsync } from '@/hooks/useLatestAsync'
+import { generateMessageId } from '@/lib/ids'
 import { UserMessage } from './UserMessage'
+import { AssistantMessage } from './AssistantMessage'
+import { ActivityIndicator } from './ActivityIndicator'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
-import { useSessionEvents } from '@/hooks/useSessionEvents'
+import { ExecutionPanels } from './ExecutionPanels'
+import { PendingActionsBar } from './PendingActionsBar'
+import { ChatInput } from './ChatInput'
+import { ScrollProvider } from './ScrollContext'
 import { MessageCircle } from 'lucide-react'
-import { GetSessionHistory } from '../../../wailsjs/go/desktop/App'
-import { chatMessageToUI } from '@/lib/chatUtils'
 import { logger } from '@/lib/logger'
 
-// Stable empty array to prevent infinite re-render loops in Zustand selectors
-const EMPTY_MESSAGES: ChatMessageUI[] = []
-
-export function ChatArea(): React.ReactNode {
+export function ChatArea() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
-  const messages = useChatStore(s =>
-    activeSessionId ? (s.messages[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
-  )
+  const messages = useSessionMessages(activeSessionId)
   const streamingText = useChatStore(s => s.streamingText)
-  const setMessages = useChatStore(s => s.setMessages)
   const scrollRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const [containerHeight, setContainerHeight] = useState(() =>
-    typeof window !== 'undefined' ? window.innerHeight : 600
-  )
-  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [containerHeight, setContainerHeight] = useState(600)
+  const { wrap } = useLatestAsync()
 
-  // Derived flag: true when the container div with containerRef is in the DOM
-  const showContainer = !!activeSessionId && (messages.length > 0 || !!streamingText)
-
-  // Track container height for pinned message max height calculation
+  // Track container height via ResizeObserver (no rAF fallback)
   useLayoutEffect(() => {
     const el = containerRef.current
     if (!el) return
-
-    // Immediate measurement attempt
     const h = el.getBoundingClientRect().height
-    if (h > 0) {
-      setContainerHeight(h)
-    }
-
-    // Fallback: measure after next frame in case layout isn't ready yet
-    const rafId = requestAnimationFrame(() => {
-      if (el) {
-        const height = el.getBoundingClientRect().height
-        if (height > 0) setContainerHeight(height)
-      }
-    })
-
-    if (typeof ResizeObserver === 'undefined') {
-      return () => cancelAnimationFrame(rafId)
-    }
+    if (h > 0) setContainerHeight(h)
 
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) {
-        if (entry.contentRect.height > 0) {
-          setContainerHeight(entry.contentRect.height)
-        }
+        if (entry.contentRect.height > 0) setContainerHeight(entry.contentRect.height)
       }
     })
     ro.observe(el)
-    return () => {
-      cancelAnimationFrame(rafId)
-      ro.disconnect()
-    }
-  }, [showContainer])
+    return () => ro.disconnect()
+  }, [activeSessionId])
 
   const maxPinnedHeight = containerHeight / 5
 
-  // Subscribe to session events
-  useSessionEvents(activeSessionId)
-
-  // Clear panels when there is no active session
+  // Load persisted history on session change
   useEffect(() => {
     if (!activeSessionId) {
-      usePanelStore.getState().resetPanels()
+      usePlanStore.getState().clearPlan()
+      return
     }
-  }, [activeSessionId])
-
-  // Load persisted history when active session changes
-  useEffect(() => {
-    if (!activeSessionId) return
-
-    // Always fetch full history from backend for panel reconstruction.
-    // Backend persists plan events that aren't kept in the frontend
-    // message cache, so we must use the complete history to rebuild panels.
-    GetSessionHistory(activeSessionId).then((history) => {
-      setHistoryError(null)
-      if (history && history.length > 0) {
-        const uiMessages = history.map(chatMessageToUI)
-        setMessages(activeSessionId, uiMessages)
-        usePanelStore.getState().rebuildFromEvents(uiMessages)
+    usePlanStore.getState().clearPlan()
+    wrap(getSessionHistory(activeSessionId)).then((history) => {
+      if (!history) return // stale — superseded by a newer session switch
+      if (history.length > 0) {
+        const uiMessages = history.map((msg) => chatMessageToUI(msg))
+        useChatStore.getState().setMessages(activeSessionId, uiMessages)
+        rebuildPlanFromHistory(uiMessages)
       }
     }).catch((err) => {
       logger.error('Failed to load session history:', err)
-      setHistoryError('Failed to load session history')
+      useChatStore.getState().addMessage(activeSessionId, {
+        id: generateMessageId(),
+        sessionId: activeSessionId,
+        type: 'error',
+        content: 'Failed to load session history. Please try switching sessions.',
+        metadata: {},
+        timestamp: Date.now(),
+      })
     })
-  }, [activeSessionId, setMessages])
+  }, [activeSessionId, wrap])
 
   const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
 
-  // Find the last user message for pinning at the top
-  let lastUserMessage: Extract<typeof displayItems[number], { kind: 'user' }> | null = null
+  // Find last user message for pinning
+  let lastUserItem: Extract<typeof displayItems[number], { kind: 'user' }> | null = null
   for (let i = displayItems.length - 1; i >= 0; i--) {
-    const item = displayItems[i]
-    if (!item) continue
-    if (item.kind === 'user') {
-      lastUserMessage = item as Extract<typeof displayItems[number], { kind: 'user' }>
+    if (displayItems[i]!.kind === 'user') {
+      lastUserItem = displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
       break
     }
   }
 
-  const lastUserMessageId = lastUserMessage ? lastUserMessage.message.id : null
+  // Filter out pinned message from main list
+  const filteredItems = lastUserItem
+    ? displayItems.filter(item => !(item.kind === 'user' && 'message' in item && item.message.id === lastUserItem!.message.id))
+    : displayItems
 
   if (!activeSessionId) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        <div className="flex flex-col items-center gap-3">
-          <MessageCircle className="h-12 w-12 opacity-20" />
-          <p>Send a message to start a new conversation</p>
+      <div className="flex flex-1 flex-col">
+        <div className="flex-1 flex items-center justify-center text-muted-foreground">
+          <div className="flex flex-col items-center gap-3">
+            <MessageCircle className="h-12 w-12 opacity-20" />
+            <p>Send a message to start a new conversation</p>
+          </div>
         </div>
+        <ChatInput />
       </div>
     )
   }
@@ -130,45 +106,40 @@ export function ChatArea(): React.ReactNode {
 
   if (!hasContent) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        <div className="flex flex-col items-center gap-3">
-          <MessageCircle className="h-12 w-12 opacity-20" />
-          <p>Send a message to start the conversation</p>
+      <div className="flex flex-1 flex-col">
+        <div className="flex-1 flex items-center justify-center text-muted-foreground">
+          <div className="flex flex-col items-center gap-3">
+            <MessageCircle className="h-12 w-12 opacity-20" />
+            <p>Send a message to start the conversation</p>
+          </div>
         </div>
+        <ExecutionPanels />
+        <PendingActionsBar />
+        <ChatInput />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 bg-background" ref={containerRef}>
-      {/* History load error */}
-      {historyError && (
-        <div className="px-4 py-2 text-sm text-destructive bg-destructive/10 border-b border-destructive/20">
-          {historyError}
-        </div>
-      )}
-      {/* Pinned last user message */}
-      {lastUserMessage && (
-        <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
-          <UserMessage
-            content={lastUserMessage.message.content}
-            timestamp={lastUserMessage.message.timestamp}
-            isPinned
-            maxHeight={maxPinnedHeight}
-          />
-        </div>
-      )}
-      <ChatScrollManager
-        messages={messages}
-        streamingText={streamingText}
-        scrollRef={scrollRef}
-      >
-        <ChatMessageRenderer
-          displayItems={displayItems}
-          lastUserMessageId={lastUserMessageId}
-          streamingText={streamingText}
-        />
-      </ChatScrollManager>
-    </div>
+    <ScrollProvider>
+      <div className="flex flex-1 flex-col min-h-0 bg-background" ref={containerRef}>
+        {/* Pinned last user message */}
+        {lastUserItem && (
+          <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
+            <UserMessage item={lastUserItem} isPinned maxHeight={maxPinnedHeight} />
+          </div>
+        )}
+        <ChatScrollManager messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
+          <div className="p-4 space-y-4 min-w-0">
+            <ChatMessageRenderer items={filteredItems} />
+            {streamingText && <AssistantMessage content={streamingText} isStreaming />}
+            <ActivityIndicator />
+          </div>
+        </ChatScrollManager>
+        <ExecutionPanels />
+        <PendingActionsBar />
+        <ChatInput />
+      </div>
+    </ScrollProvider>
   )
 }

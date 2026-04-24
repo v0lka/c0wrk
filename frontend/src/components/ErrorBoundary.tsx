@@ -1,47 +1,41 @@
 import { Component, type ReactNode, type ErrorInfo } from 'react'
+import { logger } from '@/lib/logger'
 
-interface Props {
+interface ErrorBoundaryProps {
+  fallback?: ReactNode | ((error: Error) => ReactNode)
   children: ReactNode
-  fallback?: ReactNode
 }
 
-interface State {
-  hasError: boolean
+interface ErrorBoundaryState {
   error: Error | null
 }
 
-export class ErrorBoundary extends Component<Props, State> {
-  constructor(props: Props) {
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
     super(props)
-    this.state = { hasError: false, error: null }
+    this.state = { error: null }
   }
 
-  static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error }
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { error }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('React error boundary caught:', error, info)
+    logger.error('React error boundary caught:', error, info)
   }
 
   render() {
-    if (this.state.hasError) {
-      if (this.props.fallback !== undefined) {
-        return this.props.fallback
-      }
+    const { error } = this.state
+    if (error) {
+      const { fallback } = this.props
+      if (typeof fallback === 'function') return fallback(error)
+      if (fallback !== undefined) return fallback
       return (
-        <div className="p-10 text-foreground bg-background font-mono min-h-screen">
-          <h1 className="mb-5">Something went wrong</h1>
-          <pre className="whitespace-pre-wrap text-destructive mb-5">
-            {this.state.error?.message}
-          </pre>
-          <pre className="whitespace-pre-wrap text-muted-foreground text-xs">
-            {this.state.error?.stack}
-          </pre>
+        <div className="p-2 text-sm text-destructive">
+          {error.message}
         </div>
       )
     }
-
     return this.props.children
   }
 }

@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
-import { GetConfig, UpdateSearchSettings } from '../../../wailsjs/go/desktop/App'
+import { getConfig, updateSearchSettings, MASKED_API_KEY } from '@/api/config'
 import { logger } from '@/lib/logger'
-import { MASKED_API_KEY } from '@/constants/api'
 
 interface SearchConfig {
   provider: string
@@ -18,15 +17,10 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 }
 
 const PROVIDER_KEYS = ['tavily', 'brave', 'exa', 'duckduckgo']
-
-// Providers that don't require an API key
 const NO_API_KEY_PROVIDERS = ['duckduckgo']
 
 export function SearchSettings() {
-  const [config, setConfig] = useState<SearchConfig>({
-    provider: 'tavily',
-    api_key: '',
-  })
+  const [config, setConfig] = useState<SearchConfig>({ provider: 'tavily', api_key: '' })
   const [isLoading, setIsLoading] = useState(true)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [isApiKeyFocused, setIsApiKeyFocused] = useState(false)
@@ -34,59 +28,38 @@ export function SearchSettings() {
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
-    const loadConfig = async () => {
+    const load = async () => {
       try {
-        const result = await GetConfig()
-        const searchConfig = result?.search
-        if (searchConfig) {
-          setConfig(searchConfig)
-          // Initialize input with masked value if key exists
-          setApiKeyInput(searchConfig.api_key === MASKED_API_KEY ? '' : searchConfig.api_key)
+        const result = await getConfig()
+        if (result?.search) {
+          setConfig(result.search)
+          setApiKeyInput(result.search.api_key === MASKED_API_KEY ? '' : result.search.api_key)
         }
-      } catch (error) {
-        logger.error('Failed to load search config:', error)
+      } catch (err) {
+        logger.error('Failed to load search config:', err)
       } finally {
         setIsLoading(false)
       }
     }
-    loadConfig()
+    load()
   }, [])
 
-  const saveSettings = useCallback(
-    async (newConfig: SearchConfig) => {
-      try {
-        await UpdateSearchSettings({
-          provider: newConfig.provider,
-          api_key: newConfig.api_key,
-        })
-        setSaveError(null)
-      } catch (error) {
-        logger.error('Failed to save search settings:', error)
-        setSaveError('Failed to save search settings')
-      }
-    },
-    []
-  )
-
-  const debouncedSave = useCallback(
-    (newConfig: SearchConfig) => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current)
-      }
-      saveTimeoutRef.current = setTimeout(() => {
-        saveSettings(newConfig)
-      }, 500)
-    },
-    [saveSettings]
-  )
-
-  useEffect(() => {
-    return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current)
-      }
+  const saveSettings = useCallback(async (newConfig: SearchConfig) => {
+    try {
+      await updateSearchSettings({ provider: newConfig.provider, api_key: newConfig.api_key })
+      setSaveError(null)
+    } catch (err) {
+      logger.error('Failed to save search settings:', err)
+      setSaveError('Failed to save search settings')
     }
   }, [])
+
+  const debouncedSave = useCallback((newConfig: SearchConfig) => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(() => saveSettings(newConfig), 500)
+  }, [saveSettings])
+
+  useEffect(() => () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current) }, [])
 
   const handleProviderChange = (value: string) => {
     const newConfig = { ...config, provider: value }
@@ -96,8 +69,6 @@ export function SearchSettings() {
 
   const handleApiKeyChange = (value: string) => {
     setApiKeyInput(value)
-    // If user clears the field, send MASKED_API_KEY to keep existing
-    // Otherwise send the new value
     const apiKeyToSave = value.trim() === '' ? MASKED_API_KEY : value
     const newConfig = { ...config, api_key: apiKeyToSave }
     setConfig(newConfig)
@@ -106,26 +77,13 @@ export function SearchSettings() {
 
   const handleApiKeyFocus = () => {
     setIsApiKeyFocused(true)
-    // Clear the input when user starts typing (if it was masked)
-    if (config.api_key === MASKED_API_KEY) {
-      setApiKeyInput('')
-    }
+    if (config.api_key === MASKED_API_KEY) setApiKeyInput('')
   }
 
-  const handleApiKeyBlur = () => {
-    setIsApiKeyFocused(false)
-    // If user left field empty and there was a key, revert to masked state
-    if (apiKeyInput.trim() === '' && config.api_key === MASKED_API_KEY) {
-      setApiKeyInput('')
-    }
-  }
+  const handleApiKeyBlur = () => setIsApiKeyFocused(false)
 
-  const getApiKeyPlaceholder = () => {
-    if (config.api_key === MASKED_API_KEY && !isApiKeyFocused) {
-      return '••••••••••••••••'
-    }
-    return 'Enter API key'
-  }
+  const getPlaceholder = () =>
+    config.api_key === MASKED_API_KEY && !isApiKeyFocused ? '••••••••••••••••' : 'Enter API key'
 
   if (isLoading) {
     return (
@@ -137,54 +95,46 @@ export function SearchSettings() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Provider */}
       <div className="flex flex-col gap-2">
         <label className="text-xs text-muted-foreground">Search Provider</label>
-        <div className="flex items-center gap-3">
-          <select
-            value={config.provider}
-            onChange={(e) => handleProviderChange(e.target.value)}
-            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none min-w-[180px]"
-          >
-            {PROVIDER_KEYS.map((key) => (
-              <option key={key} value={key}>
-                {PROVIDER_DISPLAY_NAMES[key]}
-              </option>
-            ))}
-          </select>
-        </div>
+        <select
+          value={config.provider}
+          onChange={(e) => handleProviderChange(e.target.value)}
+          className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none min-w-[180px]"
+        >
+          {PROVIDER_KEYS.map((key) => (
+            <option key={key} value={key}>{PROVIDER_DISPLAY_NAMES[key]}</option>
+          ))}
+        </select>
       </div>
 
-      {/* Warning if API key not configured */}
       {config.api_key !== MASKED_API_KEY && apiKeyInput.trim() === '' && !NO_API_KEY_PROVIDERS.includes(config.provider) && (
         <div className="flex items-start gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm">
           <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
-          <p>Search provider API key is not configured. Web search will not function without it.</p>
+          <p>Search provider API key is not configured.</p>
         </div>
       )}
 
-      {/* API Key - hide for providers that don't require it */}
       {!NO_API_KEY_PROVIDERS.includes(config.provider) && (
-      <div className="flex flex-col gap-2">
-        <label className="text-xs text-muted-foreground">API Key</label>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-2">
+          <label className="text-xs text-muted-foreground">API Key</label>
           <Input
             type={apiKeyInput.startsWith('${') ? 'text' : 'password'}
-            placeholder={getApiKeyPlaceholder()}
+            placeholder={getPlaceholder()}
             value={apiKeyInput}
             onChange={(e) => handleApiKeyChange(e.target.value)}
             onFocus={handleApiKeyFocus}
             onBlur={handleApiKeyBlur}
-            className="h-9 text-sm flex-1"
+            className="h-9 text-sm"
           />
+          <p className="text-xs text-muted-foreground">
+            {config.api_key === MASKED_API_KEY
+              ? 'API key is configured. Enter a new value to change it.'
+              : 'Enter your API key for the search provider.'}
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {config.api_key === MASKED_API_KEY
-            ? 'API key is configured. Enter a new value to change it.'
-            : 'Enter your API key for the search provider.'}
-        </p>
-      </div>
       )}
+
       {saveError && <p className="text-sm text-destructive mt-2">{saveError}</p>}
     </div>
   )

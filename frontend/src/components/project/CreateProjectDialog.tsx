@@ -1,150 +1,111 @@
-import { useState, useCallback } from 'react'
-import { FolderOpen } from 'lucide-react'
+import { useState } from 'react'
+import { createProject, pickDirectory, switchProject } from '@/api/projects'
+import { useProjectStore } from '@/stores/projectStore'
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useProjectAPI } from '@/hooks/useProject'
-import { useProjectStore } from '@/stores/projectStore'
-import { logger } from '@/lib/logger'
-import { cn } from '@/lib/utils'
+import { FolderOpen } from 'lucide-react'
 
 interface CreateProjectDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-type WorkspaceType = 'internal' | 'external'
-
 export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogProps) {
   const [name, setName] = useState('')
-  const [workspaceType, setWorkspaceType] = useState<WorkspaceType>('internal')
+  const [isExternal, setIsExternal] = useState(false)
   const [externalPath, setExternalPath] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
 
-  const api = useProjectAPI()
-  const addProject = useProjectStore(s => s.addProject)
-  const setActiveProject = useProjectStore(s => s.setActiveProject)
+  const reset = () => {
+    setName('')
+    setIsExternal(false)
+    setExternalPath('')
+  }
 
-  const canSubmit =
-    name.trim().length > 0 &&
-    (workspaceType === 'internal' || externalPath.length > 0) &&
-    !creating
-
-  const handleBrowse = useCallback(async () => {
+  const handlePickDir = async () => {
     try {
-      const dir = await api.pickDirectory()
-      if (dir) {
-        setExternalPath(dir)
+      const path = await pickDirectory()
+      if (path) {
+        setExternalPath(path)
+        if (!name) setName(path.split('/').pop() ?? '')
       }
-    } catch (err) {
-      logger.error('Failed to pick directory:', err)
+    } catch {
+      // user cancelled
     }
-  }, [api])
+  }
 
-  const handleCreate = useCallback(async () => {
-    if (!canSubmit) return
-    setCreating(true)
-    setError(null)
+  const handleSubmit = async () => {
+    if (!name.trim()) return
+    setSubmitting(true)
     try {
-      const extPath = workspaceType === 'external' ? externalPath : ''
-      const project = await api.createProject(name.trim(), extPath)
-      if (project) {
-        addProject(project)
-        await api.switchProject(project.id)
-        setActiveProject(project.id) // Only after switch succeeds
-      }
-      // Reset form and close
-      setName('')
-      setWorkspaceType('internal')
-      setExternalPath('')
+      const project = await createProject(name.trim(), isExternal ? externalPath : undefined)
+      try { await switchProject(project.id) } catch { /* best effort */ }
+      useProjectStore.getState().setActiveProjectId(project.id)
       onOpenChange(false)
-    } catch (err) {
-      logger.error('Failed to create project:', err)
-      setError(err instanceof Error ? err.message : 'Failed to create project')
+      reset()
+    } catch {
+      // error handled by API layer
     } finally {
-      setCreating(false)
-    }
-  }, [canSubmit, name, workspaceType, externalPath, api, addProject, setActiveProject, onOpenChange])
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && canSubmit) {
-      handleCreate()
+      setSubmitting(false)
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[440px] top-[40px] translate-y-0">
+    <Dialog open={open} onOpenChange={(o) => { onOpenChange(o); if (!o) reset() }}>
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New Project</DialogTitle>
+          <DialogTitle>Create Project</DialogTitle>
+          <DialogDescription>
+            Give your project a name and choose workspace type.
+          </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
-          {/* Name */}
+        <div className="space-y-4">
           <div className="space-y-2">
-            <label htmlFor="project-name" className="text-sm font-medium">
-              Project Name
-            </label>
+            <label className="text-sm font-medium text-foreground">Project name</label>
             <Input
-              id="project-name"
-              placeholder="My Project"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              onKeyDown={handleKeyDown}
+              placeholder="My project"
               autoFocus
+              onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
             />
           </div>
 
-          {/* Workspace type toggle */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Workspace</label>
+            <label className="text-sm font-medium text-foreground">Workspace</label>
             <div className="flex gap-2">
               <Button
-                type="button"
-                variant={workspaceType === 'internal' ? 'default' : 'outline'}
+                variant={!isExternal ? 'default' : 'outline'}
                 size="sm"
-                className={cn('flex-1', workspaceType !== 'internal' && 'text-muted-foreground')}
-                onClick={() => setWorkspaceType('internal')}
+                onClick={() => { setIsExternal(false); setExternalPath('') }}
               >
                 Internal
               </Button>
               <Button
-                type="button"
-                variant={workspaceType === 'external' ? 'default' : 'outline'}
+                variant={isExternal ? 'default' : 'outline'}
                 size="sm"
-                className={cn('flex-1', workspaceType !== 'external' && 'text-muted-foreground')}
-                onClick={() => setWorkspaceType('external')}
+                onClick={() => setIsExternal(true)}
               >
                 External
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              {workspaceType === 'internal'
-                ? 'A managed workspace directory will be created automatically.'
-                : 'Point to an existing directory on your filesystem.'}
-            </p>
           </div>
 
-          {/* External path picker */}
-          {workspaceType === 'external' && (
-            <div className="flex items-center gap-2">
-              <Input
-                readOnly
-                value={externalPath}
-                placeholder="No directory selected"
-                className="flex-1 text-sm"
-              />
-              <Button type="button" variant="outline" size="sm" onClick={handleBrowse}>
-                <FolderOpen className="h-4 w-4 mr-1" />
-                Browse
+          {isExternal && (
+            <div className="space-y-2">
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={handlePickDir}>
+                <FolderOpen className="size-4" />
+                Choose directory
               </Button>
+              {externalPath && (
+                <p className="truncate text-xs text-muted-foreground" title={externalPath}>
+                  {externalPath}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -153,11 +114,13 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleCreate} disabled={!canSubmit}>
-            {creating ? 'Creating...' : 'Create'}
+          <Button
+            onClick={handleSubmit}
+            disabled={!name.trim() || (isExternal && !externalPath) || submitting}
+          >
+            {submitting ? 'Creating...' : 'Create'}
           </Button>
         </DialogFooter>
-        {error && <p className="text-sm text-destructive mt-1 px-6 pb-4">{error}</p>}
       </DialogContent>
     </Dialog>
   )

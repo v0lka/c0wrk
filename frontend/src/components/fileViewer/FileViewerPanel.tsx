@@ -1,25 +1,35 @@
+import { PanelRightOpen } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { Button } from '@/components/ui/button'
 import { FileViewerTabBar } from './FileViewerTabBar'
 import { FileViewerContent } from './FileViewerContent'
 
-interface FileViewerPanelProps {
-  width: number
-}
+export function FileViewerPanel() {
+  const openTabs = useFileViewerStore((s) => s.openTabs)
+  const collapsed = useFileViewerStore((s) => s.collapsed)
+  const setCollapsed = useFileViewerStore((s) => s.setCollapsed)
 
-export function FileViewerPanel({ width }: FileViewerPanelProps) {
-  const openFiles = useFileViewerStore((s) => s.openFiles)
-  const isCollapsed = useFileViewerStore((s) => s.isCollapsed)
+  if (openTabs.length === 0) return null
 
-  // Hide completely when no files are open or panel is collapsed
-  // (collapsed state is handled by a narrow strip in AppLayout)
-  if (openFiles.length === 0 || isCollapsed) return null
+  // Collapsed: narrow strip with expand button, vertically centered (mirrors Sidebar pattern)
+  if (collapsed) {
+    return (
+      <div className="flex flex-col items-end pr-2 justify-center h-full">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={() => setCollapsed(false)}
+          title="Expand file viewer"
+        >
+          <PanelRightOpen className="size-4" />
+        </Button>
+      </div>
+    )
+  }
 
   return (
-    <div
-      className="flex flex-col bg-card border-l border-border overflow-hidden"
-      style={{ width }}
-    >
-      <FileViewerTabBar />
+    <div className="flex flex-col bg-background border-l border-border overflow-hidden h-full">
+      <FileViewerTabBar onToggleCollapse={() => setCollapsed(true)} collapsed={collapsed} />
       <FileViewerContent />
     </div>
   )

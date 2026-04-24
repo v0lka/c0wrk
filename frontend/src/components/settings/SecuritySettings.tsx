@@ -2,245 +2,104 @@ import { useState, useEffect, type KeyboardEvent } from 'react'
 import { Info, Plus, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { GetSecuritySettings, UpdateSecuritySettings, GetToolList } from '../../../wailsjs/go/desktop/App'
-import { backend } from '../../../wailsjs/go/models'
+import { getSecuritySettings, updateSecuritySettings } from '@/api/config'
+import { getToolList } from '@/api/mcp'
 import { logger } from '@/lib/logger'
+import type { ToolInfo, SecuritySettingsResponse, ToolPolicyResponse } from '@/types/models'
 
 type ToolPolicy = 'always_allow' | 'always_deny' | 'user_confirm'
 
-interface ToolPolicyData {
-  policy: ToolPolicy
-  blacklist?: string[]
-}
-
-interface SecuritySettings {
+interface LocalSettings {
   default_policy: ToolPolicy
-  tool_policies: Record<string, ToolPolicyData>
+  tool_policies: Record<string, { policy: ToolPolicy; blacklist?: string[] }>
 }
 
-interface PolicyOption {
-  value: ToolPolicy
-  label: string
-}
-
-interface ToolInfo {
-  name: string
-  description: string
-  source: string
-  policy: string
-}
-
-interface GroupedTools {
-  [source: string]: ToolInfo[]
-}
-
-const policyOptions: PolicyOption[] = [
+const policyOptions: { value: ToolPolicy; label: string }[] = [
   { value: 'always_allow', label: 'Always Allow' },
   { value: 'always_deny', label: 'Always Deny' },
   { value: 'user_confirm', label: 'User Confirm' },
 ]
 
-// Tools that support blacklist functionality
-const BLACKLIST_ENABLED_TOOLS = ['bash_exec']
-
-// Internal system tools that are always allowed and should not appear in UI
-const INTERNAL_TOOLS = new Set([
-  'ask_user',
-  'finish',
-  'list_step_outputs',
-  'read_step_output',
-])
-
-function getGroupLabel(source: string): string {
-  if (source === 'core') {
-    return 'Built-in Tools'
-  }
-  return `MCP: ${source}`
-}
+const BLACKLIST_TOOLS = ['bash_exec']
+const INTERNAL_TOOLS = new Set(['ask_user', 'finish', 'list_step_outputs', 'read_step_output'])
 
 export function SecuritySettings() {
-  const [settings, setSettings] = useState<SecuritySettings>({
-    default_policy: 'user_confirm',
-    tool_policies: {},
-  })
+  const [settings, setSettings] = useState<LocalSettings>({ default_policy: 'user_confirm', tool_policies: {} })
   const [tools, setTools] = useState<ToolInfo[]>([])
-  const [newBlacklistPattern, setNewBlacklistPattern] = useState('')
+  const [newPattern, setNewPattern] = useState('')
   const [isLoading, setIsLoading] = useState(true)
-  const [isToolsLoading, setIsToolsLoading] = useState(true)
 
   useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const result = await GetSecuritySettings()
-        if (!result || typeof result !== 'object') {
-          throw new Error('Invalid security settings response')
-        }
-        setSettings(result as SecuritySettings)
-      } catch (error) {
-        logger.error('Failed to load security settings:', error)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-    loadSettings()
+    Promise.all([
+      getSecuritySettings().then((r) => setSettings(r as LocalSettings)),
+      getToolList().then((r) => setTools((r || []).filter((t) => !INTERNAL_TOOLS.has(t.name)))),
+    ]).catch((err) => logger.error('Failed to load security settings:', err))
+      .finally(() => setIsLoading(false))
   }, [])
 
-  useEffect(() => {
-    const loadTools = async () => {
-      try {
-        const result = await GetToolList()
-        if (!result || !Array.isArray(result)) {
-          throw new Error('Invalid tool list response')
-        }
-        // Filter out internal tools that should not appear in UI
-        const filteredTools = (result as ToolInfo[]).filter(
-          (tool) => !INTERNAL_TOOLS.has(tool.name)
-        )
-        setTools(filteredTools)
-      } catch (error) {
-        logger.error('Failed to load tools:', error)
-      } finally {
-        setIsToolsLoading(false)
-      }
-    }
-    loadTools()
-  }, [])
-
-  const updateSettings = async (newSettings: SecuritySettings) => {
-    setSettings(newSettings)
+  const save = async (next: LocalSettings) => {
+    setSettings(next)
     try {
-      const toolPolicies: Record<string, backend.ToolPolicyResponse> = {}
-      for (const [name, data] of Object.entries(newSettings.tool_policies)) {
-        toolPolicies[name] = new backend.ToolPolicyResponse({
-          policy: data.policy,
-          blacklist: data.blacklist,
-        })
+      const tp: Record<string, ToolPolicyResponse> = {}
+      for (const [name, data] of Object.entries(next.tool_policies)) {
+        tp[name] = { policy: data.policy, blacklist: data.blacklist }
       }
-      const request = new backend.SecuritySettingsResponse({
-        default_policy: newSettings.default_policy,
-        tool_policies: toolPolicies,
-      })
-      await UpdateSecuritySettings(request)
-    } catch (error) {
-      logger.error('Failed to update security settings:', error)
-    }
+      await updateSecuritySettings({ default_policy: next.default_policy, tool_policies: tp } as SecuritySettingsResponse)
+    } catch (err) { logger.error('Failed to update security settings:', err) }
   }
 
-  const handlePolicyChange = (toolId: string, policy: ToolPolicy) => {
-    const newSettings: SecuritySettings = {
+  const handlePolicy = (tool: string, policy: ToolPolicy) => {
+    save({ ...settings, tool_policies: { ...settings.tool_policies, [tool]: { ...settings.tool_policies[tool], policy } } })
+  }
+
+  const addBlacklist = () => {
+    if (!newPattern.trim()) return
+    const bl = settings.tool_policies['bash_exec']?.blacklist || []
+    if (bl.includes(newPattern.trim())) { setNewPattern(''); return }
+    save({
       ...settings,
-      tool_policies: {
-        ...settings.tool_policies,
-        [toolId]: {
-          ...settings.tool_policies[toolId],
-          policy,
-        },
-      },
-    }
-    updateSettings(newSettings)
+      tool_policies: { ...settings.tool_policies, bash_exec: { ...settings.tool_policies['bash_exec'], policy: settings.tool_policies['bash_exec']?.policy || 'user_confirm', blacklist: [...bl, newPattern.trim()] } },
+    })
+    setNewPattern('')
   }
 
-  const handleAddBlacklistPattern = () => {
-    if (!newBlacklistPattern.trim()) return
-
-    const currentBlacklist = settings.tool_policies['bash_exec']?.blacklist || []
-    if (currentBlacklist.includes(newBlacklistPattern.trim())) {
-      setNewBlacklistPattern('')
-      return
-    }
-
-    const newSettings: SecuritySettings = {
+  const removeBlacklist = (pattern: string) => {
+    const bl = (settings.tool_policies['bash_exec']?.blacklist || []).filter((p) => p !== pattern)
+    save({
       ...settings,
-      tool_policies: {
-        ...settings.tool_policies,
-        bash_exec: {
-          ...settings.tool_policies['bash_exec'],
-          policy: settings.tool_policies['bash_exec']?.policy || 'user_confirm',
-          blacklist: [...currentBlacklist, newBlacklistPattern.trim()],
-        },
-      },
-    }
-    updateSettings(newSettings)
-    setNewBlacklistPattern('')
+      tool_policies: { ...settings.tool_policies, bash_exec: { ...settings.tool_policies['bash_exec'], policy: settings.tool_policies['bash_exec']?.policy || 'user_confirm', blacklist: bl } },
+    })
   }
 
-  const handleRemoveBlacklistPattern = (pattern: string) => {
-    const currentBlacklist = settings.tool_policies['bash_exec']?.blacklist || []
-    const newSettings: SecuritySettings = {
-      ...settings,
-      tool_policies: {
-        ...settings.tool_policies,
-        bash_exec: {
-          ...settings.tool_policies['bash_exec'],
-          policy: settings.tool_policies['bash_exec']?.policy || 'user_confirm',
-          blacklist: currentBlacklist.filter((p) => p !== pattern),
-        },
-      },
-    }
-    updateSettings(newSettings)
-  }
+  const handleKey = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); addBlacklist() } }
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      handleAddBlacklistPattern()
-    }
-  }
-
-  // Group tools by source
-  const groupedTools: GroupedTools = tools.reduce((acc, tool) => {
-    const source = tool.source || 'core'
-    if (!acc[source]) {
-      acc[source] = []
-    }
-    acc[source].push(tool)
+  // Group tools by source, core first
+  const grouped = tools.reduce<Record<string, ToolInfo[]>>((acc, t) => {
+    const src = t.source || 'core'
+    ;(acc[src] ??= []).push(t)
     return acc
-  }, {} as GroupedTools)
+  }, {})
+  const sources = Object.keys(grouped).sort((a, b) => a === 'core' ? -1 : b === 'core' ? 1 : a.localeCompare(b))
 
-  // Sort sources: core first, then alphabetically
-  const sortedSources = Object.keys(groupedTools).sort((a, b) => {
-    if (a === 'core') return -1
-    if (b === 'core') return 1
-    return a.localeCompare(b)
-  })
-
-  // Sort tools within each source by name
-  sortedSources.forEach((source) => {
-    if (groupedTools[source]) {
-      groupedTools[source].sort((a, b) => a.name.localeCompare(b.name))
-    }
-  })
-
-  if (isLoading || isToolsLoading) {
-    return (
-      <div className="flex items-center justify-center py-8 gap-2">
-        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-        <span className="text-sm text-muted-foreground">Loading security settings...</span>
-      </div>
-    )
+  if (isLoading) {
+    return <div className="flex items-center justify-center py-8 gap-2"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /><span className="text-sm text-muted-foreground">Loading security settings...</span></div>
   }
 
   if (tools.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-8 gap-2">
-        <span className="text-sm text-muted-foreground">No tools available.</span>
-        <span className="text-xs text-muted-foreground">Tools will appear here once registered.</span>
-      </div>
-    )
+    return <div className="flex flex-col items-center justify-center py-8 gap-2"><span className="text-sm text-muted-foreground">No tools available.</span></div>
   }
 
   return (
     <div className="flex flex-col gap-6">
-      {sortedSources.map((source) => (
+      {sources.map((source) => (
         <div key={source} className="flex flex-col gap-4">
           <h3 className="text-sm font-semibold text-muted-foreground border-b border-border pb-1">
-            {getGroupLabel(source)}
+            {source === 'core' ? 'Built-in Tools' : `MCP: ${source}`}
           </h3>
-          {(groupedTools[source] || []).map((tool) => {
-            const currentPolicy = settings.tool_policies[tool.name]?.policy || 'user_confirm'
-            const blacklist = settings.tool_policies[tool.name]?.blacklist || []
-            const hasBlacklist = BLACKLIST_ENABLED_TOOLS.includes(tool.name)
-
+          {(grouped[source] || []).sort((a, b) => a.name.localeCompare(b.name)).map((tool) => {
+            const policy = (settings.tool_policies[tool.name]?.policy || 'user_confirm') as ToolPolicy
+            const bl = settings.tool_policies[tool.name]?.blacklist || []
+            const hasBl = BLACKLIST_TOOLS.includes(tool.name)
             return (
               <div key={tool.name} className="flex flex-col gap-3">
                 <div className="flex flex-col gap-1">
@@ -248,64 +107,34 @@ export function SecuritySettings() {
                   <span className="text-xs text-muted-foreground">{tool.description}</span>
                 </div>
                 <div className="flex gap-1 p-1 bg-muted rounded-lg flex-wrap">
-                  {policyOptions.map((option) => (
+                  {policyOptions.map((opt) => (
                     <Button
-                      key={option.value}
-                      variant={currentPolicy === option.value ? 'secondary' : 'ghost'}
+                      key={opt.value}
+                      variant={policy === opt.value ? 'secondary' : 'ghost'}
                       size="sm"
-                      className={`flex-1 gap-2 justify-center transition-all duration-200 ${
-                        currentPolicy === option.value
-                          ? 'bg-background shadow-sm text-foreground'
-                          : 'text-muted-foreground hover:text-foreground'
-                      }`}
-                      onClick={() => handlePolicyChange(tool.name, option.value)}
+                      className={`flex-1 gap-2 justify-center transition-all duration-200 ${policy === opt.value ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                      onClick={() => handlePolicy(tool.name, opt.value)}
                     >
-                      <span className="text-xs">{option.label}</span>
+                      <span className="text-xs">{opt.label}</span>
                     </Button>
                   ))}
                 </div>
-
-                {/* Blacklist for bash_exec */}
-                {hasBlacklist && (
+                {hasBl && (
                   <div className="mt-2 space-y-2">
                     <p className="text-xs text-muted-foreground">Blacklist patterns (regex):</p>
-                    {blacklist.length > 0 && (
+                    {bl.length > 0 && (
                       <div className="flex flex-wrap gap-2">
-                        {blacklist.map((pattern) => (
-                          <div
-                            key={pattern}
-                            className="flex items-center gap-1 px-2 py-1 bg-muted rounded text-xs"
-                          >
-                            <code className="font-mono">{pattern}</code>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-4 w-4 p-0 hover:bg-destructive/20"
-                              onClick={() => handleRemoveBlacklistPattern(pattern)}
-                            >
-                              <X className="h-3 w-3" />
-                            </Button>
+                        {bl.map((p) => (
+                          <div key={p} className="flex items-center gap-1 px-2 py-1 bg-muted rounded text-xs">
+                            <code className="font-mono">{p}</code>
+                            <Button variant="ghost" size="sm" className="h-4 w-4 p-0 hover:bg-destructive/20" onClick={() => removeBlacklist(p)}><X className="h-3 w-3" /></Button>
                           </div>
                         ))}
                       </div>
                     )}
                     <div className="flex gap-2">
-                      <Input
-                        placeholder="e.g., rm\\s+-rf"
-                        value={newBlacklistPattern}
-                        onChange={(e) => setNewBlacklistPattern(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        className="h-8 text-xs font-mono"
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8"
-                        onClick={handleAddBlacklistPattern}
-                        disabled={!newBlacklistPattern.trim()}
-                      >
-                        <Plus className="h-3 w-3" />
-                      </Button>
+                      <Input placeholder="e.g., rm\\s+-rf" value={newPattern} onChange={(e) => setNewPattern(e.target.value)} onKeyDown={handleKey} className="h-8 text-xs font-mono" />
+                      <Button variant="outline" size="sm" className="h-8" onClick={addBlacklist} disabled={!newPattern.trim()}><Plus className="h-3 w-3" /></Button>
                     </div>
                   </div>
                 )}
@@ -317,10 +146,7 @@ export function SecuritySettings() {
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-        <p>
-          <strong>User Confirm</strong> mode requires manual approval. Use the "Ask agent" button to get an AI safety assessment before deciding.
-          <strong> Always Allow</strong> disables all confirmations (use with caution).
-        </p>
+        <p><strong>User Confirm</strong> requires manual approval. <strong>Always Allow</strong> disables confirmations (use with caution).</p>
       </div>
     </div>
   )

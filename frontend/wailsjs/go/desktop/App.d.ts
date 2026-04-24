@@ -15,6 +15,8 @@ export function CheckCodebaseMemoryMCP():Promise<mcp.CodeMemoryStatus>;
 
 export function CheckRtk():Promise<rtk.RtkStatus>;
 
+export function Cleanup():Promise<void>;
+
 export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;
 
 export function CreateSession():Promise<session.SessionInfo>;
@@ -23,9 +25,13 @@ export function DeleteProject(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
+export function GetCodebaseProjectName():Promise<string>;
+
 export function GetConfig():Promise<backend.ConfigResponse>;
 
 export function GetFileDiff(arg1:string):Promise<string>;
+
+export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, backend.GitStatusEntry>>;
 
@@ -45,13 +51,13 @@ export function GetSessionWorkspace(arg1:string):Promise<string>;
 
 export function GetToolList():Promise<Array<backend.ToolInfo>>;
 
+export function IndexingDoneChan():Promise<any>;
+
 export function InstallCodebaseMemoryMCP():Promise<void>;
 
 export function InstallRtk():Promise<void>;
 
-export function ListDirectory(arg1:string):Promise<Array<backend.FileNode>>;
-
-export function ListDirectoryRecursive(arg1:string):Promise<Array<backend.FileNode>>;
+export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<backend.FileNode>>;
 
 export function ListProjects():Promise<Array<project.ProjectInfo>>;
 
@@ -71,7 +77,11 @@ export function ResumeTask(arg1:string):Promise<void>;
 
 export function SendMessage(arg1:string,arg2:string):Promise<void>;
 
+export function SetConfigLoadState(arg1:boolean,arg2:string,arg3:Array<string>):Promise<void>;
+
 export function SetLogLevel(arg1:string):Promise<void>;
+
+export function SetRestoreAutoIndex(arg1:any):Promise<void>;
 
 export function SwitchProject(arg1:string):Promise<void>;
 

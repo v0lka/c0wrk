@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { roleToType, chatMessageToUI } from './chatUtils'
-import type { session } from '../../wailsjs/go/models'
+import type { ChatMessage } from '@/types/models'
 
 /**
  * Helper to create ChatMessage-like objects.
- * The real session.ChatMessage from Wails has a constructor + createFrom,
+ * The real ChatMessage from Wails has a constructor + createFrom,
  * but chatMessageToUI only reads plain properties, so a POJO suffices.
  */
 function makeMsg(overrides: Partial<{
@@ -14,7 +14,7 @@ function makeMsg(overrides: Partial<{
   content: string
   metadata: string
   created_at: string
-}>): session.ChatMessage {
+}>): ChatMessage {
   return {
     id: 1,
     session_id: 'sess-1',
@@ -23,7 +23,7 @@ function makeMsg(overrides: Partial<{
     metadata: '',
     created_at: '2025-01-01T00:00:00Z',
     ...overrides,
-  } as unknown as session.ChatMessage
+  } as unknown as ChatMessage
 }
 
 // ---------------------------------------------------------------------------

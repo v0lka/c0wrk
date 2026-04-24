@@ -143,10 +143,28 @@ export namespace backend {
 		}
 	}
 	
+	export class FileIconResponse {
+	    icon: string;
+	    icon_color: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileIconResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.icon = source["icon"];
+	        this.icon_color = source["icon_color"];
+	    }
+	}
 	export class FileNode {
 	    name: string;
 	    path: string;
 	    is_dir: boolean;
+	    icon: string;
+	    icon_color: string;
+	    hidden: boolean;
+	    gitignored: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new FileNode(source);
@@ -157,6 +175,10 @@ export namespace backend {
 	        this.name = source["name"];
 	        this.path = source["path"];
 	        this.is_dir = source["is_dir"];
+	        this.icon = source["icon"];
+	        this.icon_color = source["icon_color"];
+	        this.hidden = source["hidden"];
+	        this.gitignored = source["gitignored"];
 	    }
 	}
 	export class LLMSettingsRequest {

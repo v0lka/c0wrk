@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { AlertTriangle, Info } from 'lucide-react'
-import { GetConfig } from '../../../wailsjs/go/desktop/App'
+import { getConfig } from '@/api/config'
 
 interface ConfigWarningBannerProps {
   className?: string
@@ -16,7 +16,7 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
   useEffect(() => {
     const loadConfigState = async () => {
       try {
-        const result = await GetConfig()
+        const result = await getConfig()
         setLoaded(result?.loaded ?? false)
         setMigrated(result?.config_migrated ?? false)
         setMigrationMsg(result?.config_migration_msg ?? '')

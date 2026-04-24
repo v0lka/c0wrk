@@ -1,29 +1,34 @@
-import { type MouseEvent as ReactMouseEvent } from 'react'
+import { cn } from '@/lib/utils'
 
-export interface ResizeHandleProps {
-  onMouseDown: (e: ReactMouseEvent) => void
-  onResize: (delta: number) => void
+interface ResizeHandleProps {
+  onMouseDown: (e: React.MouseEvent) => void
+  onKeyDown: (e: React.KeyboardEvent) => void
+  className?: string
+  orientation?: 'vertical' | 'horizontal'
 }
 
-export function ResizeHandle({ onMouseDown, onResize }: ResizeHandleProps) {
+export function ResizeHandle({
+  onMouseDown,
+  onKeyDown,
+  className,
+  orientation = 'vertical',
+}: ResizeHandleProps) {
   return (
     <div
-      className="w-1 flex-shrink-0 bg-border hover:bg-ring active:bg-ring transition-colors cursor-col-resize focus:outline-none focus:bg-ring"
+      className={cn(
+        'flex-shrink-0 transition-colors',
+        orientation === 'vertical'
+          ? 'w-1 cursor-col-resize'
+          : 'h-1 cursor-row-resize',
+        'bg-transparent hover:bg-ring active:bg-primary',
+        className,
+      )}
       onMouseDown={onMouseDown}
+      onKeyDown={onKeyDown}
       role="separator"
+      aria-orientation={orientation}
       aria-label="Resize panel"
-      aria-orientation="vertical"
       tabIndex={0}
-      onKeyDown={(e) => {
-        const step = e.shiftKey ? 50 : 10
-        if (e.key === 'ArrowLeft') {
-          e.preventDefault()
-          onResize(-step)
-        } else if (e.key === 'ArrowRight') {
-          e.preventDefault()
-          onResize(step)
-        }
-      }}
     />
   )
 }

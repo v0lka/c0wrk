@@ -1,0 +1,185 @@
+/**
+ * Internal helpers for chatUtils.ts — not part of the public API.
+ * Extracted to keep chatUtils.ts under 200 lines.
+ */
+import type { ChatMessageUI, DisplayItem } from '@/types/messages'
+
+/** Tool names rendered as compact memory_read blocks. */
+export const MEMORY_TOOL_NAMES = new Set([
+  'read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts',
+])
+
+/** Build a composite tool key for correlating tool_call ↔ tool_result. */
+export function makeToolKey(
+  planStepId: string | undefined,
+  step: number | string,
+  callIdx?: number | string,
+  retryAttempt?: number | string,
+): string {
+  return `${planStepId ?? ''}:${step}${callIdx !== undefined ? `:${callIdx}` : ''}${retryAttempt ? `:r${retryAttempt}` : ''}`
+}
+
+/**
+ * Collapse consecutive thought DisplayItems into thought_group items.
+ * A single isolated thought stays as-is.
+ */
+export function collapseThoughts(items: DisplayItem[]): DisplayItem[] {
+  const result: DisplayItem[] = []
+  let i = 0
+  while (i < items.length) {
+    const current = items[i]
+    if (!current) break
+    if (current.kind === 'thought') {
+      const thoughts: Array<{ content: string; reasoning?: string }> = []
+      const firstId = current.id
+      while (i < items.length) {
+        const item = items[i]
+        if (!item || item.kind !== 'thought') break
+        thoughts.push({ content: item.content, reasoning: item.reasoning })
+        i++
+      }
+      if (thoughts.length === 1) {
+        const prev = items[i - 1]!
+        result.push(prev)
+      } else {
+        result.push({ kind: 'thought_group', id: `tg-${firstId}`, thoughts })
+      }
+    } else {
+      result.push(current)
+      i++
+    }
+  }
+  return result
+}
+
+// -- History reconstruction helpers (used by chatMessageToUI) --
+
+/** Reconstruct human-readable content from metadata to match live events. */
+export function reconstructContent(role: string, rawContent: string, meta: Record<string, unknown> | undefined): string {
+  if (!meta) return rawContent
+  switch (role) {
+    case 'routing': {
+      const d = meta.domain as string | undefined, c = meta.complexity as string | undefined
+      return (d || c) ? `Domain: ${d ?? ''} | Complexity: ${c ?? ''}` : rawContent
+    }
+    case 'tool_call': { const t = meta.tool as string | undefined; return t ? `${t}(${(meta.args as string) ?? ''})` : rawContent }
+    case 'thought': return rawContent
+    case 'thinking': return `Step ${(meta.step_num as number) ?? ''}...`
+    case 'error': return (meta.error as string) || rawContent
+    case 'plan_step_start': return (meta.description as string) || ''
+    case 'plan_step_complete': case 'plan': return ''
+    case 'retry': {
+      const a = meta.attempt as number | undefined, m = meta.max_attempts as number | undefined
+      return (a !== undefined && m !== undefined) ? `Retry attempt ${a}/${m}` : rawContent
+    }
+    case 'step_retry': {
+      const a = meta.attempt as number | undefined, m = meta.max_attempts as number | undefined
+      return (a !== undefined && m !== undefined) ? `Retrying step ${a}/${m}...` : rawContent
+    }
+    case 'subagent_launch': { const d = meta.description as string | undefined; return d ? `SubAgent: ${d}` : rawContent }
+    case 'tool_confirm': { const t = meta.tool as string | undefined; return t ? `Confirm: ${t}` : rawContent }
+    case 'ask_user': return (meta.question as string) || rawContent
+    case 'task_cancelled': return 'Task was cancelled'
+    case 'status': return (meta.content as string) || rawContent
+    case 'task_resumed': return rawContent
+    default: return rawContent
+  }
+}
+
+/** Build a semantic ID from history metadata for cross-referencing. */
+export function buildHistoryId(
+  dbId: number,
+  role: string,
+  meta: Record<string, unknown> | undefined,
+  timestamp: number,
+): string {
+  if (!meta) return `history-${dbId}`
+
+  switch (role) {
+    case 'routing':
+      return `routing-${timestamp}`
+    case 'thinking':
+    case 'step_done': {
+      const stepNum = meta.step_num as number | undefined
+      return stepNum !== undefined ? `step-${stepNum}` : `history-${dbId}`
+    }
+    case 'thought': {
+      const stepNum = meta.step_num as number | undefined
+      return `thought-${stepNum ?? 0}-${timestamp}`
+    }
+    case 'tool_call': {
+      const toolCallId = meta.tool_call_id as string | undefined
+      if (toolCallId) return `tool-${toolCallId}`
+      const planStepId = meta.plan_step_id as string | undefined
+      const step = meta.step as number | string | undefined
+      const callIdx = meta.call_idx as number | string | undefined
+      const retryAttempt = meta.retry_attempt as number | undefined
+      const retrySuffix = retryAttempt ? `-r${retryAttempt}` : ''
+      if (planStepId && step !== undefined) return `tool-${planStepId}-${step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
+      if (step !== undefined) return `tool-${step}${callIdx !== undefined ? `-${callIdx}` : ''}${retrySuffix}`
+      return `history-${dbId}`
+    }
+    case 'tool_result':
+      return `history-${dbId}`
+    case 'plan':
+      return `plan-${timestamp}`
+    case 'plan_step_start': {
+      const stepId = meta.step_id as string | undefined
+      return stepId ? `plan-step-start-${stepId}-${timestamp}` : `history-${dbId}`
+    }
+    case 'plan_step_complete': {
+      const stepId = meta.step_id as string | undefined
+      return stepId ? `plan-step-complete-${stepId}-${timestamp}` : `history-${dbId}`
+    }
+    case 'retry':
+      return `retry-${timestamp}`
+    case 'step_retry':
+      return `step-retry-${timestamp}`
+    case 'subagent_launch': {
+      const stepId = meta.step_id as string | undefined
+      return stepId ? `subagent-${stepId}-launch` : `history-${dbId}`
+    }
+    case 'subagent_complete': {
+      const stepId = meta.step_id as string | undefined
+      return stepId ? `subagent-${stepId}-complete` : `history-${dbId}`
+    }
+    case 'assistant':
+      return `assistant-${timestamp}`
+    case 'error':
+      return `error-${timestamp}`
+    case 'task_cancelled':
+      return `cancelled-${timestamp}`
+    case 'tool_confirm': {
+      const confirmId = meta.confirm_id as string | undefined
+      return confirmId ? `tool-confirm-${confirmId}` : `history-${dbId}`
+    }
+    case 'ask_user': {
+      const requestId = meta.request_id as string | undefined
+      return requestId ? `ask-user-${requestId}` : `history-${dbId}`
+    }
+    case 'status':
+      return `status-${timestamp}`
+    case 'task_resumed':
+      return `task-resumed-${timestamp}`
+    default:
+      return `history-${dbId}`
+  }
+}
+
+/**
+ * Resolve a tool matching key — prefers tool_call_id, falls back to composite key.
+ */
+export function resolveToolKey(meta: Record<string, unknown>, planStepId?: string): string | undefined {
+  const toolCallId = meta.tool_call_id as string | undefined
+  if (toolCallId) return toolCallId
+  const step = meta.step as number | string | undefined
+  if (step === undefined) return undefined
+  const callIdx = meta.call_idx as number | undefined
+  const retryAttempt = meta.retry_attempt as number | undefined
+  return makeToolKey(planStepId, step, callIdx, retryAttempt)
+}
+
+/** Extracts typed metadata from a ChatMessageUI, or undefined if missing. */
+export function extractMeta(msg: ChatMessageUI): Record<string, unknown> | undefined {
+  return (typeof msg.metadata === 'object' && msg.metadata !== null) ? msg.metadata : undefined
+}

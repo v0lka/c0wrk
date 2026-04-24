@@ -1,66 +1,43 @@
 import React, { useState } from 'react'
-import { BrainCircuit, ChevronDown, ChevronRight } from 'lucide-react'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
+import { BrainCircuit } from 'lucide-react'
+import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import type { DisplayItem } from '@/types/messages'
 
-interface ThoughtBlockProps {
-  content: string
-  reasoning?: string
-}
+type ThoughtItem = Extract<DisplayItem, { kind: 'thought' }>
 
-export const ThoughtBlock = React.memo(function ThoughtBlock({ content, reasoning }: ThoughtBlockProps) {
-  const [isOpen, setIsOpen] = useState(false)
+const MAX_CHARS = 500
+
+export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: ThoughtItem }) {
   const [showFull, setShowFull] = useState(false)
 
-  const MAX_CHARS = 500
-  const hasReasoning = !!reasoning && reasoning.trim() !== ''
-  const isLong = hasReasoning && reasoning.length > MAX_CHARS
+  const hasReasoning = !!item.reasoning && item.reasoning.trim() !== ''
+  const isLong = hasReasoning && item.reasoning!.length > MAX_CHARS
   const displayReasoning = hasReasoning
-    ? (!showFull && isLong) ? reasoning.slice(0, MAX_CHARS) + '...' : reasoning
+    ? (!showFull && isLong ? item.reasoning!.slice(0, MAX_CHARS) + '...' : item.reasoning!)
     : ''
 
   return (
     <div>
       {hasReasoning && (
-        <Collapsible open={isOpen} onOpenChange={setIsOpen} className="group">
-          <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
-            <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
-              {isOpen ? (
-                <ChevronDown className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5" />
-              )}
-            </span>
-            <BrainCircuit className="h-3.5 w-3.5" />
-            <span className="text-sm">Thought</span>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="mt-2 pl-3 border-l-2 border-muted min-w-0">
-              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                {displayReasoning}
-              </p>
-              {isLong && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setShowFull(!showFull)
-                  }}
-                  className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 active:bg-accent/70 rounded px-1 py-0.5 mt-1 transition-colors"
-                >
-                  {showFull ? 'Show less' : 'Show more'}
-                </button>
-              )}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+        <CollapsibleBlock
+          icon={<BrainCircuit className="h-3.5 w-3.5" />}
+          label="Reasoning"
+        >
+          <div className="mt-2 pl-3 border-l-2 border-muted min-w-0">
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap">{displayReasoning}</p>
+            {isLong && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowFull(!showFull) }}
+                className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded px-1 py-0.5 mt-1 transition-colors"
+              >
+                {showFull ? 'Show less' : 'Show more'}
+              </button>
+            )}
+          </div>
+        </CollapsibleBlock>
       )}
-      {content && content.trim() !== '' && (
-        <p className="text-muted-foreground text-sm whitespace-pre-wrap">
-          {content}
-        </p>
+      {item.content && item.content.trim() !== '' && (
+        <p className="text-muted-foreground text-sm whitespace-pre-wrap">{item.content}</p>
       )}
     </div>
   )
