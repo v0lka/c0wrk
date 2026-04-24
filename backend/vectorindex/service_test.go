@@ -297,6 +297,39 @@ func TestSearchWithDocuments(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("browse with file filter", func(t *testing.T) {
+		results, browseErr := svc.BrowseWithFilter(context.Background(), 10, "**/utils.go")
+		if browseErr != nil {
+			t.Fatalf("BrowseWithFilter failed: %v", browseErr)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].FileName != "utils.go" {
+			t.Errorf("expected utils.go, got %s", results[0].FileName)
+		}
+	})
+
+	t.Run("browse with no filter returns all", func(t *testing.T) {
+		results, browseErr := svc.BrowseWithFilter(context.Background(), 10, "")
+		if browseErr != nil {
+			t.Fatalf("BrowseWithFilter failed: %v", browseErr)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(results))
+		}
+	})
+
+	t.Run("browse with non-matching filter returns empty", func(t *testing.T) {
+		results, browseErr := svc.BrowseWithFilter(context.Background(), 10, "**/nonexistent.*")
+		if browseErr != nil {
+			t.Fatalf("BrowseWithFilter failed: %v", browseErr)
+		}
+		if len(results) != 0 {
+			t.Fatalf("expected 0 results, got %d", len(results))
+		}
+	})
 }
 
 func TestDocumentID(t *testing.T) {

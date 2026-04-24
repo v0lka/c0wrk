@@ -56,6 +56,16 @@ export interface VectorIndexStatus {
   branch?: string
 }
 
+export interface VectorStoreEntry {
+  file_path: string
+  file_name: string
+  content: string
+  score: number
+  start_line: number
+  end_line: number
+  language: string
+}
+
 export interface TokenInfo {
   total_input_tokens: number
   total_output_tokens: number

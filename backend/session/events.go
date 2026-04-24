@@ -170,6 +170,11 @@ type ContextCompactionEventData struct {
 	PlanStepID    string  `json:"plan_step_id,omitempty"`
 }
 
+// SkillsActivatedData is the typed Data payload for "skills_activated" events.
+type SkillsActivatedData struct {
+	Skills []string `json:"skills"`
+}
+
 // --- ChatMessage metadata helpers ---
 
 // MetadataFrom marshals any value into a json.RawMessage suitable for ChatMessage.Metadata.

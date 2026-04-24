@@ -295,6 +295,31 @@ export namespace backend {
 	        this.policy = source["policy"];
 	    }
 	}
+	
+	export class VectorStoreEntry {
+	    file_path: string;
+	    file_name: string;
+	    content: string;
+	    score: number;
+	    start_line: number;
+	    end_line: number;
+	    language: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new VectorStoreEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.file_path = source["file_path"];
+	        this.file_name = source["file_name"];
+	        this.content = source["content"];
+	        this.score = source["score"];
+	        this.start_line = source["start_line"];
+	        this.end_line = source["end_line"];
+	        this.language = source["language"];
+	    }
+	}
 
 }
 
@@ -441,6 +466,24 @@ export namespace session {
 	        this.total_output_tokens = source["total_output_tokens"];
 	        this.model = source["model"];
 	        this.family = source["family"];
+	    }
+	}
+	export class TerminalCommand {
+	    id: number;
+	    session_id: string;
+	    command: string;
+	    created_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TerminalCommand(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.session_id = source["session_id"];
+	        this.command = source["command"];
+	        this.created_at = source["created_at"];
 	    }
 	}
 

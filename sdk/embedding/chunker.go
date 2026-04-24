@@ -156,46 +156,21 @@ func classifyFile(ext string) fileType {
 	return fileTypeOther
 }
 
-// lineCount returns the number of lines in s (at least 1 for non-empty).
+// lineCount returns the number of lines in s.
+// It counts the number of newline characters plus one, matching the
+// behaviour of strings.Split(s, "\n") used by the frontend file viewer.
 func lineCount(s string) int {
 	if s == "" {
 		return 0
 	}
-	n := strings.Count(s, "\n")
-	if !strings.HasSuffix(s, "\n") {
-		n++
-	}
-	return n
+	return strings.Count(s, "\n") + 1
 }
 
-// chunkCode splits code by double-blank-line boundaries, then blank lines, then fixed.
+// chunkCode splits code by blank lines, then fixed-size if still oversized.
 func chunkCode(text string, cfg ChunkerConfig) []section {
-	// Split on double blank lines (two or more consecutive empty lines)
-	parts := splitByDoubleBlanks(text)
-	parts = splitOversized(parts, cfg, splitBySingleBlanks)
+	parts := splitBySingleBlanks(text, cfg)
 	parts = splitOversized(parts, cfg, fixedSizeStrings)
 	return assignLineNumbers(parts)
-}
-
-// splitByDoubleBlanks splits text at boundaries where 2+ consecutive blank lines appear.
-var doubleBlankRe = regexp.MustCompile(`\n\s*\n\s*\n`)
-
-func splitByDoubleBlanks(text string) []string {
-	indices := doubleBlankRe.FindAllStringIndex(text, -1)
-	if len(indices) == 0 {
-		return []string{text}
-	}
-
-	var parts []string
-	prev := 0
-	for _, idx := range indices {
-		parts = append(parts, text[prev:idx[0]+1]) // include the first \n
-		prev = idx[1]
-	}
-	if prev < len(text) {
-		parts = append(parts, text[prev:])
-	}
-	return parts
 }
 
 func splitBySingleBlanks(text string, _ ChunkerConfig) []string {

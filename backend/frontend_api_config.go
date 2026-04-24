@@ -257,7 +257,9 @@ func (f *FrontendAPI) SetLogLevel(level string) error {
 		if f.app != nil {
 			f.app.Manager().SetLogLevel(level)
 		}
-		f.config.LogLevel = level
+		if f.config != nil {
+			f.config.LogLevel = level
+		}
 		if err := f.persistConfig(); err != nil {
 			f.log().Warn("failed to persist log level change", "error", err)
 		}

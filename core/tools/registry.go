@@ -37,16 +37,17 @@ type ParamInjector func(toolName, source string, input json.RawMessage) json.Raw
 // Thread-safe via sync.RWMutex.
 type ToolRegistry struct {
 	*sdktools.ToolRegistry
-	mu               sync.RWMutex
-	confirmFunc      ConfirmFunc
-	judge            *ToolJudge
-	policyOverrides  map[string]ToolPolicy
-	defaultPolicy    ToolPolicy
-	hasDefaultPolicy bool
-	preExecuteHook   PreExecuteHook
-	toolFilter       ToolFilter
-	paramInjector    ParamInjector
-	logger           *slog.Logger
+	mu                  sync.RWMutex
+	confirmFunc         ConfirmFunc
+	judge               *ToolJudge
+	policyOverrides     map[string]ToolPolicy
+	skillPolicyOverrides map[string]ToolPolicy
+	defaultPolicy       ToolPolicy
+	hasDefaultPolicy    bool
+	preExecuteHook      PreExecuteHook
+	toolFilter          ToolFilter
+	paramInjector       ParamInjector
+	logger              *slog.Logger
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -148,17 +149,28 @@ func (r *ToolRegistry) RegisterWithSource(tool Tool, source string) {
 }
 
 // resolvePolicy returns the effective policy for a tool.
-// Resolution order: per-tool override > registry default > tool's own default.
+// Resolution order: per-tool override > skill override > registry default > tool's own default.
 func (r *ToolRegistry) resolvePolicy(name string, tool Tool) ToolPolicy {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p, ok := r.policyOverrides[name]; ok {
 		return p
 	}
+	if p, ok := r.skillPolicyOverrides[name]; ok {
+		return p
+	}
 	if r.hasDefaultPolicy {
 		return r.defaultPolicy
 	}
 	return tool.DefaultPolicy()
+}
+
+// SetSkillPolicyOverrides sets per-tool policy overrides derived from active skills.
+// These have lower priority than config-sourced policyOverrides but higher than default.
+func (r *ToolRegistry) SetSkillPolicyOverrides(overrides map[string]ToolPolicy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skillPolicyOverrides = overrides
 }
 
 // Execute looks up a tool by name and executes it with the given input.

@@ -253,6 +253,7 @@ func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
 
 func (m *mockEmitter) ReplanFailed(_ error)                                 {}
 func (m *mockEmitter) FileRollbackError(_ string, _ error)                  {}
+func (m *mockEmitter) SkillsActivated(_ []string)                            {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) Finishing(_ int, _ string)                            {}
 

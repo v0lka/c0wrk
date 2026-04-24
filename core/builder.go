@@ -15,6 +15,7 @@ import (
 	"github.com/openai/openai-go/option"
 
 	coreprompts "github.com/user/agent/core/prompts"
+	"github.com/user/agent/core/skills"
 	"github.com/user/agent/core/tools"
 	"github.com/user/agent/core/tools/mcp"
 	"github.com/user/agent/sdk/agent"
@@ -38,6 +39,7 @@ type OrchestratorBuilder struct {
 	modelRegistry    *llm.ModelRegistry
 	logger           *slog.Logger
 	vectorSearchFunc tools.VectorSearchFunc
+	skillManager     *skills.SkillManager
 }
 
 func (b *OrchestratorBuilder) log() *slog.Logger {
@@ -204,6 +206,8 @@ func (b *OrchestratorBuilder) Build(
 		bbFactory,
 		trackingCaller,
 		b.vectorSearchFunc,
+		b.skillManager,
+		b.registry, // coreToolRegistry - for skill policy overrides
 	), nil
 }
 
@@ -372,6 +376,27 @@ func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
 	if gw != nil {
 		gw.SetDefaultWorkDir(path)
 	}
+}
+
+// SetSkillManager sets the skill manager for skill discovery and activation.
+// This must be called before Build() to enable skill routing.
+// It also registers the read_skill_resource tool in the shared tool registry.
+func (b *OrchestratorBuilder) SetSkillManager(sm *skills.SkillManager) {
+	b.skillManager = sm
+
+	// Register the read_skill_resource tool with a resolver backed by the skill manager
+	if sm != nil && b.registry != nil {
+		resolver := func(skillName string) (string, bool) {
+			return sm.SkillPath(skillName)
+		}
+		b.registry.Register(skills.NewReadSkillResourceTool(resolver))
+		b.log().Info("registered read_skill_resource tool")
+	}
+}
+
+// SkillManager returns the current skill manager, or nil if not set.
+func (b *OrchestratorBuilder) SkillManager() *skills.SkillManager {
+	return b.skillManager
 }
 
 // ---------------------------------------------------------------------------

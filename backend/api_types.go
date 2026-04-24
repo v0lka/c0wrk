@@ -115,3 +115,14 @@ type ToolInfo struct {
 	Source      string `json:"source"`
 	Policy      string `json:"policy"`
 }
+
+// VectorStoreEntry represents a single chunk from the vector store for the frontend.
+type VectorStoreEntry struct {
+	FilePath  string  `json:"file_path"`
+	FileName  string  `json:"file_name"`
+	Content   string  `json:"content"`
+	Score     float32 `json:"score"`
+	StartLine int     `json:"start_line"`
+	EndLine   int     `json:"end_line"`
+	Language  string  `json:"language"`
+}

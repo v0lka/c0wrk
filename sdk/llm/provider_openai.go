@@ -73,6 +73,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 
 	return &ChatResponse{
 		Message:    message,
+		Reasoning:  message.ReasoningContent,
 		StopReason: stopReason,
 		Usage: TokenUsage{
 			InputTokens:  int(resp.Usage.PromptTokens),
@@ -122,6 +123,11 @@ func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 			// Handle content delta
 			if delta.Content != "" {
 				chunks <- ChatChunk{Delta: delta.Content}
+			}
+
+			// Handle reasoning_content delta (DeepSeek extension)
+			if rc := extractReasoningContent(delta.RawJSON()); rc != "" {
+				chunks <- ChatChunk{Reasoning: rc}
 			}
 
 			// Handle tool calls delta
@@ -228,6 +234,11 @@ func (p *OpenAIProvider) convertRequestMessage(msg Message) oai.ChatCompletionMe
 	case "user":
 		return oai.UserMessage(content)
 	case "assistant":
+		assistantParam := oai.ChatCompletionAssistantMessageParam{
+			Content: oai.ChatCompletionAssistantMessageParamContentUnion{
+				OfString: oai.String(content),
+			},
+		}
 		if len(msg.ToolCalls) > 0 {
 			toolCalls := make([]oai.ChatCompletionMessageToolCallParam, len(msg.ToolCalls))
 			for i, tc := range msg.ToolCalls {
@@ -240,16 +251,17 @@ func (p *OpenAIProvider) convertRequestMessage(msg Message) oai.ChatCompletionMe
 					},
 				}
 			}
-			return oai.ChatCompletionMessageParamUnion{
-				OfAssistant: &oai.ChatCompletionAssistantMessageParam{
-					Content: oai.ChatCompletionAssistantMessageParamContentUnion{
-						OfString: oai.String(content),
-					},
-					ToolCalls: toolCalls,
-				},
-			}
+			assistantParam.ToolCalls = toolCalls
 		}
-		return oai.AssistantMessage(content)
+		// DeepSeek reasoning models require reasoning_content to be echoed back.
+		if msg.ReasoningContent != "" {
+			assistantParam.SetExtraFields(map[string]any{
+				"reasoning_content": msg.ReasoningContent,
+			})
+		}
+		return oai.ChatCompletionMessageParamUnion{
+			OfAssistant: &assistantParam,
+		}
 	case "tool":
 		return oai.ToolMessage(content, msg.ToolCallID)
 	default:
@@ -264,6 +276,9 @@ func (p *OpenAIProvider) convertChatResponseMessage(msg oai.ChatCompletionMessag
 		Content: msg.Content,
 	}
 
+	// Extract reasoning_content from raw JSON (DeepSeek extension).
+	result.ReasoningContent = extractReasoningContent(msg.RawJSON())
+
 	if len(msg.ToolCalls) > 0 {
 		result.ToolCalls = make([]ToolCall, len(msg.ToolCalls))
 		for i, tc := range msg.ToolCalls {
@@ -276,6 +291,21 @@ func (p *OpenAIProvider) convertChatResponseMessage(msg oai.ChatCompletionMessag
 	}
 
 	return result
+}
+
+// extractReasoningContent extracts the "reasoning_content" field from raw JSON.
+// This is a DeepSeek-specific extension to the OpenAI chat completions format.
+func extractReasoningContent(rawJSON string) string {
+	if rawJSON == "" {
+		return ""
+	}
+	var payload struct {
+		ReasoningContent string `json:"reasoning_content"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &payload); err != nil {
+		return ""
+	}
+	return payload.ReasoningContent
 }
 
 // wrapError maps OpenAI SDK error types to *LLMError.

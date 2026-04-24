@@ -86,6 +86,10 @@ export function GetSessionWorkspace(arg1) {
   return window['go']['desktop']['App']['GetSessionWorkspace'](arg1);
 }
 
+export function GetTerminalHistory(arg1) {
+  return window['go']['desktop']['App']['GetTerminalHistory'](arg1);
+}
+
 export function GetToolList() {
   return window['go']['desktop']['App']['GetToolList']();
 }
@@ -138,6 +142,10 @@ export function ResumeTask(arg1) {
   return window['go']['desktop']['App']['ResumeTask'](arg1);
 }
 
+export function SearchVectorStore(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['SearchVectorStore'](arg1, arg2, arg3);
+}
+
 export function SendMessage(arg1, arg2) {
   return window['go']['desktop']['App']['SendMessage'](arg1, arg2);
 }
@@ -154,8 +162,24 @@ export function SetRestoreAutoIndex(arg1) {
   return window['go']['desktop']['App']['SetRestoreAutoIndex'](arg1);
 }
 
+export function StartTerminal(arg1) {
+  return window['go']['desktop']['App']['StartTerminal'](arg1);
+}
+
+export function StopTerminal(arg1) {
+  return window['go']['desktop']['App']['StopTerminal'](arg1);
+}
+
 export function SwitchProject(arg1) {
   return window['go']['desktop']['App']['SwitchProject'](arg1);
+}
+
+export function TerminalInput(arg1, arg2) {
+  return window['go']['desktop']['App']['TerminalInput'](arg1, arg2);
+}
+
+export function TerminalResize(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['TerminalResize'](arg1, arg2, arg3);
 }
 
 export function UnwatchDirectory(arg1) {

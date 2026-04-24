@@ -15,7 +15,16 @@
 - [systemprompt.go](file://core/systemprompt.go)
 - [planner_test.go](file://core/planner_test.go)
 - [reflector.go](file://core/reflector.go)
+- [AGENTS.md](file://AGENTS.md)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added documentation for AGENTS.md support functionality
+- Updated planner system to include project-specific instructions injection
+- Enhanced prompt engineering system with project context integration
+- Added new section covering project-specific instruction management
+- Updated planner integration diagrams to reflect AGENTS.md context injection
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -23,10 +32,11 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Project-Specific Instructions Integration](#project-specific-instructions-integration)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the C0WRK planner system and its role in generating execution plans for AI tasks. The planner supports:
@@ -37,6 +47,7 @@ This document explains the C0WRK planner system and its role in generating execu
 - PlanContinuation for follow-up requests after task completion
 - Prompt engineering with domain-specific templates
 - Relationship between planner complexity scores and execution strategies
+- **New**: Project-specific instructions integration via AGENTS.md for consistent project context
 
 ## Project Structure
 The planner system resides in the core package and integrates with the broader orchestration framework. Key files include:
@@ -46,6 +57,7 @@ The planner system resides in the core package and integrates with the broader o
 - Prompt templates for planner and router
 - Builder wiring components together
 - Types and system prompt utilities
+- **New**: AGENTS.md project instructions management
 
 ```mermaid
 graph TB
@@ -58,6 +70,7 @@ Types["Types (types.go)"]
 Builder["Builder (builder.go)"]
 SysPrompt["System Prompt (systemprompt.go)"]
 Reflector["Reflector (reflector.go)"]
+AgentsMD["AGENTS.md Manager"]
 end
 subgraph "Prompts"
 PB["planner_base.md"]
@@ -77,6 +90,8 @@ Orchestrator --> Reflector
 Planner --> Types
 Router --> Types
 Orchestrator --> Types
+AgentsMD --> Planner
+AgentsMD --> Orchestrator
 ```
 
 **Diagram sources**
@@ -91,6 +106,7 @@ Orchestrator --> Types
 - [builder.go:423-471](file://core/builder.go#L423-L471)
 - [systemprompt.go:44-100](file://core/systemprompt.go#L44-L100)
 - [reflector.go:24-80](file://core/reflector.go#L24-L80)
+- [systemprompt.go:44-100](file://core/systemprompt.go#L44-L100)
 
 **Section sources**
 - [planner.go:168-421](file://core/planner.go#L168-L421)
@@ -102,11 +118,12 @@ Orchestrator --> Types
 - [reflector.go:24-80](file://core/reflector.go#L24-L80)
 
 ## Core Components
-- Planner: Generates DAG execution plans using either synthetic or informed exploration strategies, depending on domain and tool availability. It builds domain-aware system prompts and parses structured JSON plans.
+- Planner: Generates DAG execution plans using either synthetic or informed exploration strategies, depending on domain and tool availability. It builds domain-aware system prompts and parses structured JSON plans. **Enhanced**: Now includes AGENTS.md project-specific instructions in all planning contexts.
 - Router: Classifies user requests by domain and complexity, enabling adaptive planning and execution strategies.
-- Orchestrator: Coordinates routing, planning, and execution, integrating planner decisions with the broader orchestration engine. It supports synthetic plan thresholds and plan continuation workflows.
+- Orchestrator: Coordinates routing, planning, and execution, integrating planner decisions with the broader orchestration engine. It supports synthetic plan thresholds and plan continuation workflows. **Enhanced**: Automatically discovers and injects AGENTS.md content from workspace root.
 - Prompt Templates: Domain-specific and model-family-specific templates guide planner and router behavior.
 - Builder: Wires the planner, router, and orchestrator with shared tool registries, context factories, and model registries.
+- **New**: AGENTS.md Manager: Handles project-specific instruction injection across all planning contexts (initial, informed, replanning, and continuation planning).
 
 **Section sources**
 - [planner.go:168-421](file://core/planner.go#L168-L421)
@@ -114,12 +131,14 @@ Orchestrator --> Types
 - [orchestrator.go:55-189](file://core/orchestrator.go#L55-L189)
 - [prompts.go:6-168](file://core/prompts/prompts.go#L6-L168)
 - [builder.go:423-471](file://core/builder.go#L423-L471)
+- [systemprompt.go:44-100](file://core/systemprompt.go#L44-L100)
 
 ## Architecture Overview
-The planner participates in a multi-agent pipeline:
+The planner participates in a multi-agent pipeline with enhanced project context awareness:
 - Router classifies the request and provides domain and complexity.
 - Orchestrator decides between synthetic and full planning based on the synthetic plan threshold.
-- Planner generates a plan using domain-aware prompts and tool availability.
+- **Enhanced**: Orchestrator automatically discovers AGENTS.md from workspace root and injects project-specific instructions.
+- Planner generates a plan using domain-aware prompts, tool availability, and project context.
 - Orchestrator executes the plan and manages continuations and replanning.
 
 ```mermaid
@@ -130,14 +149,17 @@ participant Router as "Router"
 participant Planner as "Planner"
 participant Executor as "Executor"
 User->>Orchestrator : "Message"
+Orchestrator->>Orchestrator : "Inject AGENTS.md context"
 Orchestrator->>Router : "Route(userMessage, availableTools, history)"
 Router-->>Orchestrator : "RoutingDecision(domain, complexity, needs_clarification)"
 Orchestrator->>Orchestrator : "Select synthetic vs full plan"
 alt "Synthetic plan"
 Orchestrator->>Planner : "CreateSyntheticPlan(task, domain)"
+Planner->>Planner : "Append AGENTS.md instructions"
 Planner-->>Orchestrator : "Plan{Steps : [{ID : step_1,...}]}"
 else "Full plan"
 Orchestrator->>Planner : "Plan(ctx, task, availableTools, reflections)"
+Planner->>Planner : "Append AGENTS.md instructions"
 Planner->>Executor : "Run exploration (ReAct)"
 Executor-->>Planner : "Finish tool with plan JSON"
 Planner-->>Orchestrator : "Plan{Steps : [...]}"
@@ -165,6 +187,7 @@ Key capabilities:
 - Tool filtering for exploration (codebase-memory MCP tools and filesystem tools).
 - Plan parsing supporting JSON in code blocks and structured fields.
 - Replan and PlanContinuation for failure recovery and follow-ups.
+- **Enhanced**: Automatic AGENTS.md project instructions injection in all planning contexts.
 
 ```mermaid
 classDiagram
@@ -181,6 +204,7 @@ class Planner {
 -buildContinuationSystemPrompt(...)
 -getPlannerTools() []ToolDescriptor
 -hasCodebaseMemoryTools() bool
++formatAgentsMD(ctx) string
 }
 ```
 
@@ -188,16 +212,18 @@ class Planner {
 - [planner.go:168-421](file://core/planner.go#L168-L421)
 - [planner.go:534-606](file://core/planner.go#L534-L606)
 - [planner.go:755-806](file://core/planner.go#L755-L806)
+- [planner.go:885-903](file://core/planner.go#L885-L903)
 
 **Section sources**
 - [planner.go:168-421](file://core/planner.go#L168-L421)
 - [planner.go:534-606](file://core/planner.go#L534-L606)
 - [planner.go:755-806](file://core/planner.go#L755-L806)
+- [planner.go:885-903](file://core/planner.go#L885-L903)
 - [planner_test.go:800-964](file://core/planner_test.go#L800-L964)
 - [planner_test.go:1387-1438](file://core/planner_test.go#L1387-L1438)
 
 ### Router
-The Router classifies user requests by domain and complexity, guiding the planner’s strategy:
+The Router classifies user requests by domain and complexity, guiding the planner's strategy:
 - Uses a system prompt and instruction template to guide classification.
 - Validates and clamps complexity to [1, 5].
 - Applies domain-based compaction strategy rules.
@@ -232,6 +258,7 @@ The Orchestrator integrates the Router and Planner:
 - Chooses synthetic vs full planning based on the synthetic plan threshold.
 - Supports PlanContinuation for follow-up requests after task completion.
 - Merges continuation plans with existing plans and resumes execution.
+- **Enhanced**: Automatically discovers AGENTS.md from workspace root and injects project-specific instructions.
 
 ```mermaid
 sequenceDiagram
@@ -239,6 +266,7 @@ participant Orchestrator as "Orchestrator"
 participant Router as "Router"
 participant Planner as "Planner"
 participant BB as "Blackboard"
+Orchestrator->>Orchestrator : "Inject AGENTS.md context"
 Orchestrator->>Router : "Route(message, availableTools, history)"
 Router-->>Orchestrator : "RoutingDecision"
 Orchestrator->>BB : "SetOriginalRequest(message)"
@@ -266,6 +294,7 @@ The planner leverages domain-specific and model-family-specific prompts:
 - Informed planner prompt guides exploration and finish tool usage.
 - Router system and instruction prompts guide classification.
 - Family-specific overlays adapt behavior per model family.
+- **Enhanced**: AGENTS.md project instructions are automatically appended to all planner prompts when available.
 
 ```mermaid
 graph LR
@@ -275,6 +304,8 @@ RS["router_system.md"] --> Router["Router"]
 RI["router_instructions.md"] --> Router
 FP["FamilyPrompt('planner', family)"] --> Planner
 FR["FamilyPrompt('orchestrator', family)"] --> Orchestrator["Orchestrator"]
+AMD["AGENTS.md Content"] --> Planner
+AMD --> Orchestrator
 ```
 
 **Diagram sources**
@@ -296,6 +327,7 @@ PlanContinuation enables follow-up requests after task completion:
 - Builds a continuation prompt including completed plan summaries and terminal steps.
 - Enforces step ID prefixes and dependency on terminal steps.
 - Merges continuation steps into the existing plan and resumes execution.
+- **Enhanced**: Automatically includes AGENTS.md project instructions in continuation prompts.
 
 ```mermaid
 sequenceDiagram
@@ -304,6 +336,7 @@ participant Planner as "Planner"
 participant BB as "Blackboard"
 Orchestrator->>BB : "GetPlan()"
 Orchestrator->>Planner : "PlanContinuation(originalRequest, existingPlan, completedSteps, newMessage, availableTools)"
+Planner->>Planner : "Append AGENTS.md instructions"
 Planner-->>Orchestrator : "Continuation Plan"
 Orchestrator->>BB : "Merge existingPlan + continuationPlan"
 Orchestrator->>Orchestrator : "Resume execution"
@@ -321,7 +354,7 @@ Orchestrator->>Orchestrator : "Resume execution"
 ### Synthetic Plan Threshold and Complexity-Based Decision Making
 The Orchestrator uses a synthetic plan threshold to decide between synthetic and full planning:
 - If complexity ≤ threshold, use CreateSyntheticPlan for minimal overhead.
-- Otherwise, route through the planner’s full planning path.
+- Otherwise, route through the planner's full planning path.
 
 ```mermaid
 flowchart TD
@@ -348,18 +381,73 @@ Execute --> End(["Return result"])
 - Orchestrator uses complexity to select synthetic vs full planning.
 - Domain influences compaction strategy and tool prioritization in prompts.
 - Replan and reflection integrate feedback loops to refine execution strategies.
+- **Enhanced**: Project-specific instructions from AGENTS.md influence planning decisions and step descriptions.
 
 **Section sources**
 - [router.go:137-154](file://core/router.go#L137-L154)
 - [orchestrator.go:444-457](file://core/orchestrator.go#L444-L457)
 - [reflector.go:42-80](file://core/reflector.go#L42-L80)
 
+## Project-Specific Instructions Integration
+
+### AGENTS.md Management System
+The C0WRK system now supports project-specific instructions through AGENTS.md files located in the workspace root. This functionality enhances consistency and ensures all planning contexts adhere to project standards.
+
+#### Automatic Discovery and Injection
+- **Workspace Detection**: The Orchestrator automatically scans the workspace root for AGENTS.md files.
+- **Context Injection**: When found, AGENTS.md content is injected into the planning context using `WithAgentsMD`.
+- **Priority Handling**: AGENTS.md is always prepended as the first hint in vector search results to ensure prominence.
+
+#### Context Management
+The system uses a dedicated context key system for AGENTS.md management:
+- **Context Keys**: `agentsMDKeyType` provides thread-safe storage for project instructions.
+- **Access Functions**: `WithAgentsMD` and `AgentsMDFromContext` enable seamless context manipulation.
+- **Nil Safety**: Functions gracefully handle missing AGENTS.md content without breaking execution.
+
+#### Prompt Integration
+AGENTS.md content is automatically included in all planner prompts:
+- **Initial Planning**: Project instructions are appended to base planner prompts.
+- **Informed Planning**: Additional instructions guide exploration and tool usage.
+- **Replanning**: Failure recovery maintains project context consistency.
+- **Continuation Planning**: Follow-up requests incorporate project standards.
+
+#### Format and Structure
+The system formats AGENTS.md content for optimal LLM processing:
+- **Structured Presentation**: Content is wrapped in a dedicated section with clear headers.
+- **Instruction Emphasis**: Prompts include directives for strict adherence to project rules.
+- **Contradiction Handling**: Guidance for resolving conflicts between project rules and codebase context.
+
+```mermaid
+flowchart TD
+Start(["Workspace Scan"]) --> CheckFile["Check for AGENTS.md in workspace root"]
+CheckFile --> Found{"File Found?"}
+Found --> |Yes| ReadFile["Read AGENTS.md content"]
+ReadFile --> InjectContext["Inject via WithAgentsMD"]
+InjectContext --> PrependHint["Prepend as first vector hint"]
+PrependHint --> Ready["Context Ready"]
+Found --> |No| Skip["Skip injection"]
+Skip --> Ready
+Ready --> AllPrompts["All planner prompts include AGENTS.md"]
+```
+
+**Diagram sources**
+- [systemprompt.go:44-66](file://core/systemprompt.go#L44-L66)
+- [orchestrator.go:305-330](file://core/orchestrator.go#L305-L330)
+- [planner.go:885-903](file://core/planner.go#L885-L903)
+
+**Section sources**
+- [systemprompt.go:44-66](file://core/systemprompt.go#L44-L66)
+- [orchestrator.go:305-330](file://core/orchestrator.go#L305-L330)
+- [planner.go:885-903](file://core/planner.go#L885-L903)
+- [planner_test.go:1460-1604](file://core/planner_test.go#L1460-L1604)
+
 ## Dependency Analysis
-The planner system exhibits clear separation of concerns:
-- Planner depends on prompt templates, tool registries, and model metadata.
+The planner system exhibits clear separation of concerns with enhanced project context management:
+- Planner depends on prompt templates, tool registries, model metadata, and AGENTS.md context.
 - Router depends on prompt templates and tool availability.
-- Orchestrator orchestrates both and integrates with the SDK orchestration engine.
+- Orchestrator orchestrates both and integrates with the SDK orchestration engine, managing AGENTS.md discovery.
 - Builder wires components and provides shared registries and context factories.
+- **Enhanced**: AGENTS.md manager provides centralized context management across all components.
 
 ```mermaid
 graph TB
@@ -374,6 +462,9 @@ Orchestrator --> Types["Types"]
 Planner --> Types
 Router --> Types
 Orchestrator --> SystemPrompt["System Prompt"]
+Orchestrator --> AgentsMD["AGENTS.md Manager"]
+Planner --> AgentsMD
+AgentsMD --> Context["Context Management"]
 ```
 
 **Diagram sources**
@@ -395,8 +486,7 @@ Orchestrator --> SystemPrompt["System Prompt"]
 - Informed exploration uses bounded ReAct loops and circuit breakers to prevent runaway token usage.
 - Tool result budgets and context window management mitigate memory pressure.
 - Auto-RAG hints and environment context improve plan quality without excessive prompting.
-
-[No sources needed since this section provides general guidance]
+- **Enhanced**: AGENTS.md injection adds minimal overhead while significantly improving plan consistency and adherence to project standards.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -404,6 +494,7 @@ Common issues and resolutions:
 - Exploration executor failures: The Planner falls back to direct planning when exploration fails.
 - Context cancellation propagation: Cancellation errors are preserved through the planning process.
 - Plan parsing errors: The Planner falls back to direct planning when exploration output cannot be parsed.
+- **Enhanced**: AGENTS.md context issues: Missing or malformed AGENTS.md content is gracefully handled without affecting planning functionality.
 
 **Section sources**
 - [router.go:89-109](file://core/router.go#L89-L109)
@@ -411,8 +502,10 @@ Common issues and resolutions:
 - [planner_test.go:1201-1289](file://core/planner_test.go#L1201-L1289)
 
 ## Conclusion
-The C0WRK planner system provides a robust, adaptive approach to plan generation:
+The C0WRK planner system provides a robust, adaptive approach to plan generation with enhanced project context awareness:
 - It intelligently selects between synthetic and full planning based on domain and complexity.
 - It integrates tightly with the Router and Orchestrator to support seamless execution and continuations.
 - Its prompt engineering system ensures domain-specific, model-family-adapted behavior.
+- **Enhanced**: Project-specific instructions from AGENTS.md provide consistent context across all planning scenarios.
 - It offers resilience through fallbacks, replanning, and reflection-driven improvements.
+- **New**: Centralized AGENTS.md management ensures all planning contexts maintain project standards and guidelines.

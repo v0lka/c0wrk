@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/user/agent/core/skills"
 	coretools "github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
@@ -1601,4 +1602,107 @@ func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
 	if !strings.Contains(systemPrompt, agentsContent) {
 		t.Error("continuation system prompt should contain full AGENTS.md content")
 	}
+}
+
+func TestFormatActiveSkills(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no skills in context", func(t *testing.T) {
+		result := formatActiveSkills(context.Background())
+		if result != "" {
+			t.Error("expected empty string when no skills in context")
+		}
+	})
+
+	t.Run("with active skills", func(t *testing.T) {
+		ctx := WithActiveSkills(context.Background(), &ActiveSkills{
+			Skills: []*skills.Skill{
+				{
+					Metadata: skills.SkillMetadata{
+						Name:         "pdf-processing",
+						Description:  "Extract PDF text and tables.",
+						AllowedTools: "Read Write",
+					},
+					Body:    "Step 1: Read the PDF.\nStep 2: Extract text.",
+					DirPath: "/skills/pdf-processing",
+				},
+			},
+		})
+
+		result := formatActiveSkills(ctx)
+		if !strings.Contains(result, "Active Skills") {
+			t.Error("expected Active Skills heading")
+		}
+		if !strings.Contains(result, "pdf-processing") {
+			t.Error("expected skill name")
+		}
+		if !strings.Contains(result, "Extract PDF text") {
+			t.Error("expected skill description")
+		}
+		if !strings.Contains(result, "Allowed tools: Read Write") {
+			t.Error("expected allowed-tools field")
+		}
+		if !strings.Contains(result, "Step 1: Read the PDF") {
+			t.Error("expected skill body")
+		}
+	})
+
+	t.Run("long skill body is truncated", func(t *testing.T) {
+		longBody := strings.Repeat("x", 3000)
+		ctx := WithActiveSkills(context.Background(), &ActiveSkills{
+			Skills: []*skills.Skill{
+				{
+					Metadata: skills.SkillMetadata{Name: "long-skill", Description: "A long skill."},
+					Body:     longBody,
+					DirPath:  "/skills/long-skill",
+				},
+			},
+		})
+
+		result := formatActiveSkills(ctx)
+		if !strings.Contains(result, "truncated") {
+			t.Error("expected truncation marker for long skill body")
+		}
+		// The body portion should not contain the full 3000 chars
+		bodyStart := strings.Index(result, "### Skill: long-skill")
+		if bodyStart == -1 {
+			t.Fatal("skill section not found")
+		}
+		skillSection := result[bodyStart:]
+		// The section should be much shorter than 3000 chars
+		if len(skillSection) > 2500 {
+			t.Errorf("skill section too long (%d chars), expected truncation", len(skillSection))
+		}
+	})
+
+	t.Run("multiple skills", func(t *testing.T) {
+		ctx := WithActiveSkills(context.Background(), &ActiveSkills{
+			Skills: []*skills.Skill{
+				{
+					Metadata: skills.SkillMetadata{Name: "skill-a", Description: "First skill."},
+					Body:     "Instructions for A.",
+					DirPath:  "/skills/skill-a",
+				},
+				{
+					Metadata: skills.SkillMetadata{Name: "skill-b", Description: "Second skill."},
+					Body:     "Instructions for B.",
+					DirPath:  "/skills/skill-b",
+				},
+			},
+		})
+
+		result := formatActiveSkills(ctx)
+		if !strings.Contains(result, "skill-a") {
+			t.Error("expected skill-a name")
+		}
+		if !strings.Contains(result, "skill-b") {
+			t.Error("expected skill-b name")
+		}
+		if !strings.Contains(result, "Instructions for A") {
+			t.Error("expected skill-a body")
+		}
+		if !strings.Contains(result, "Instructions for B") {
+			t.Error("expected skill-b body")
+		}
+	})
 }

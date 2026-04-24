@@ -28,7 +28,7 @@ Use the Makefile; it handles platform-specific ONNX Runtime bootstrap:
 - `make lint` — `golangci-lint run` (config at `.golangci.yml`, v2 schema)
 - `make build` — installs frontend deps, runs `wails build`, then `make fetch-onnx`
 - `make dev-desktop` — Vite dev server only (`cd frontend && npm run dev`); for full hot-reload use `wails dev` from repo root
-- `make fetch-onnx` — downloads ONNX Runtime 1.21.0 into `.cache/` and copies into `build/bin/c0wrk-desktop.app/Contents/MacOS/`. **Required after every `wails build`** or the app won't launch.
+- `make fetch-onnx` — downloads ONNX Runtime 1.24.1 into `.cache/` and copies into `build/bin/c0wrk-desktop.app/Contents/MacOS/`. **Required after every `wails build`** or the app won't launch.
 - `make clean` — removes `build/bin`, `.cache`, `frontend/dist`
 
 Frontend-only: `cd frontend && npm run lint | build | dev`. There is **no** frontend test suite.

@@ -56,6 +56,12 @@ func (f *FrontendAPI) DeleteSession(id string) error {
 			f.log().Error("failed to delete session from store", "error", err)
 		}
 	}
+	// Stop any active terminal for this session.
+	if f.terminalManager != nil && f.terminalManager.IsActive(id) {
+		if err := f.terminalManager.Stop(id); err != nil {
+			f.log().Warn("failed to stop terminal for deleted session", "session_id", id, "error", err)
+		}
+	}
 	return nil
 }
 

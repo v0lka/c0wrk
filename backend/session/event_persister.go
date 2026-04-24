@@ -126,6 +126,8 @@ func (p *EventPersister) Persist(evt Event) {
 				role = "status"
 			}
 		}
+	case "skills_activated":
+		role = "status"
 	case "session_tokens":
 		return // transient — no persistence needed
 	default:

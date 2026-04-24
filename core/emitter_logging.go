@@ -184,6 +184,11 @@ func (l *loggingEmitter) FileRollbackError(stepID string, err error) {
 	l.inner.FileRollbackError(stepID, err)
 }
 
+func (l *loggingEmitter) SkillsActivated(skillNames []string) {
+	l.logger.Info("skills activated", "skills", skillNames)
+	l.inner.SkillsActivated(skillNames)
+}
+
 // EmitSessionTokens forwards session token totals to the inner emitter if it supports it.
 // This enables the UsageTracker observer (registered via builder.go type assertion) to
 // propagate accumulated tokens through the logging wrapper.

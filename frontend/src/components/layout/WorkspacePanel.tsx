@@ -1,6 +1,7 @@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { FileTreePanel } from './FileTreePanel'
+import { VectorStorePanel } from './VectorStorePanel'
 import { FolderTree, GitBranch, Brain } from 'lucide-react'
 
 export function WorkspacePanel() {
@@ -16,7 +17,7 @@ export function WorkspacePanel() {
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <TabsTrigger value="git" className="px-2"><GitBranch className="size-4" /></TabsTrigger>
+              <TabsTrigger value="git" className="px-2" disabled><GitBranch className="size-4" /></TabsTrigger>
             </TooltipTrigger>
             <TooltipContent side="bottom">Git</TooltipContent>
           </Tooltip>
@@ -36,8 +37,8 @@ export function WorkspacePanel() {
           Git integration coming soon
         </TabsContent>
 
-        <TabsContent value="semantics" className="flex-1 p-4 text-center text-xs text-muted-foreground">
-          Semantic search coming soon
+        <TabsContent value="semantics" className="flex flex-col overflow-hidden">
+          <VectorStorePanel />
         </TabsContent>
       </Tabs>
     </TooltipProvider>

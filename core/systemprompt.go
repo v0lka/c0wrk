@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/user/agent/core/prompts"
+	"github.com/user/agent/core/skills"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/prompt"
@@ -65,6 +66,30 @@ func AgentsMDFromContext(ctx context.Context) *AgentsMD {
 	return nil
 }
 
+// activeSkillsKeyType is the context key for activated Agent Skills.
+type activeSkillsKeyType struct{}
+
+var activeSkillsKey = activeSkillsKeyType{}
+
+// ActiveSkills holds the full skill data for skills matched to the current task.
+type ActiveSkills struct {
+	Skills []*skills.Skill
+}
+
+// WithActiveSkills returns a context with active skills attached.
+func WithActiveSkills(ctx context.Context, as *ActiveSkills) context.Context {
+	return context.WithValue(ctx, activeSkillsKey, as)
+}
+
+// ActiveSkillsFromContext extracts active skills from the context.
+// Returns nil if not present.
+func ActiveSkillsFromContext(ctx context.Context) *ActiveSkills {
+	if as, ok := ctx.Value(activeSkillsKey).(*ActiveSkills); ok {
+		return as
+	}
+	return nil
+}
+
 // buildSystemPrompt creates the system prompt for executors.
 func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
 	// Build workspace context string
@@ -117,6 +142,24 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\nUse semantic_search tool for deeper investigation.")
+		result += sb.String()
+	}
+
+	// Append active Agent Skills when available.
+	if activeSkills, ok := ctx.Value(activeSkillsKey).(*ActiveSkills); ok && activeSkills != nil && len(activeSkills.Skills) > 0 {
+		var sb strings.Builder
+		sb.WriteString("\n\n## Active Skills\n")
+		sb.WriteString("The following skills have been activated for this task. Follow their instructions carefully.\n\n")
+		for _, s := range activeSkills.Skills {
+			sb.WriteString("### Skill: " + s.Metadata.Name + "\n")
+			if s.Metadata.Description != "" {
+				sb.WriteString("Description: " + s.Metadata.Description + "\n")
+			}
+			if len(s.Metadata.AllowedToolList()) > 0 {
+				sb.WriteString("Allowed tools: " + s.Metadata.AllowedTools + "\n")
+			}
+			sb.WriteString("\n" + s.Body + "\n\n")
+		}
 		result += sb.String()
 	}
 

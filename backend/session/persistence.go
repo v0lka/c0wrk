@@ -37,6 +37,14 @@ type ChatMessage struct {
 	CreatedAt string          `json:"created_at"` // RFC 3339 formatted timestamp
 }
 
+// TerminalCommand represents a stored terminal command.
+type TerminalCommand struct {
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
+	Command   string `json:"command"`
+	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
+}
+
 // SessionStore provides persistent storage for sessions and messages.
 type SessionStore interface {
 	// Session CRUD
@@ -58,6 +66,10 @@ type SessionStore interface {
 	SaveMessage(msg ChatMessage) error
 	LoadMessages(sessionID string) ([]ChatMessage, error)
 	DeleteMessages(sessionID string) error
+
+	// Terminal command history
+	SaveTerminalCommand(sessionID, command string) error
+	LoadTerminalCommands(sessionID string, limit int) ([]TerminalCommand, error)
 
 	// Lifecycle
 	Close() error
@@ -166,6 +178,14 @@ func (s *SQLiteSessionStore) createTables() error {
 		facts TEXT DEFAULT '[]',
 		updated_at TIMESTAMP NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS terminal_commands (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+		command TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_terminal_commands_session_id ON terminal_commands(session_id);
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
 	return err
@@ -430,6 +450,62 @@ func (s *SQLiteSessionStore) DeleteMessages(sessionID string) error {
 		return fmt.Errorf("failed to delete messages: %w", err)
 	}
 	return nil
+}
+
+// SaveTerminalCommand saves a terminal command to the history.
+func (s *SQLiteSessionStore) SaveTerminalCommand(sessionID, command string) error {
+	now := time.Now().Format(time.RFC3339)
+	_, err := s.db.ExecContext(context.Background(), `
+		INSERT INTO terminal_commands (session_id, command, created_at)
+		VALUES (?, ?, ?)`,
+		sessionID, command, now,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save terminal command: %w", err)
+	}
+	return nil
+}
+
+// LoadTerminalCommands loads the most recent terminal commands for a session.
+func (s *SQLiteSessionStore) LoadTerminalCommands(sessionID string, limit int) ([]TerminalCommand, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(context.Background(), `
+		SELECT id, session_id, command, created_at
+		FROM terminal_commands
+		WHERE session_id = ?
+		ORDER BY created_at DESC
+		LIMIT ?`,
+		sessionID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load terminal commands: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			s.log().Warn("failed to close database rows", "error", err)
+		}
+	}()
+
+	var commands []TerminalCommand
+	for rows.Next() {
+		var cmd TerminalCommand
+		if err := rows.Scan(&cmd.ID, &cmd.SessionID, &cmd.Command, &cmd.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan terminal command: %w", err)
+		}
+		commands = append(commands, cmd)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating terminal commands: %w", err)
+	}
+
+	if commands == nil {
+		commands = []TerminalCommand{}
+	}
+
+	return commands, nil
 }
 
 // Close is a no-op — the DB lifecycle is managed externally.

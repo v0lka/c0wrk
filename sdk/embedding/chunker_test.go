@@ -273,3 +273,59 @@ func TestChunkFile_FixedSplitOther(t *testing.T) {
 		}
 	}
 }
+
+func TestChunkFile_LineNumbersWithBlankLines(t *testing.T) {
+	// Synthetic TSX-like file with blank lines to verify line numbers
+	// match the frontend's split('\n') counting.
+	content := `import { useState } from 'react'
+
+const SIDEBAR_DEFAULT = 300
+
+export function AppLayout() {
+  const sidebarCollapsed = false
+
+  const showFileViewer = true
+
+  return (
+    <div>
+      {/* Sidebar */}
+      <Sidebar />
+
+      {/* Resize handle */}
+      <ResizeHandle />
+
+      {/* Main content */}
+      <ChatArea />
+    </div>
+  )
+}
+`
+	chunks, err := ChunkFile("/AppLayout.tsx", []byte(content), ChunkerConfig{MaxChunkSize: 1500})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the chunk containing the ResizeHandle comment and verify its line range.
+	var found bool
+	for _, c := range chunks {
+		if strings.Contains(c.Content, "Resize handle") {
+			found = true
+			if c.StartLine != 15 {
+				t.Errorf("ResizeHandle chunk StartLine: got %d, want 15", c.StartLine)
+			}
+			if c.EndLine != 17 {
+				t.Errorf("ResizeHandle chunk EndLine: got %d, want 17", c.EndLine)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a chunk containing 'Resize handle'")
+	}
+
+	// Verify cumulative line count equals split length of original content.
+	lastChunk := chunks[len(chunks)-1]
+	expectedTotal := len(strings.Split(content, "\n"))
+	if lastChunk.EndLine != expectedTotal {
+		t.Errorf("last chunk EndLine: got %d, want %d (total lines)", lastChunk.EndLine, expectedTotal)
+	}
+}

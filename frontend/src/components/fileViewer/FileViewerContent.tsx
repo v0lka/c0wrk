@@ -13,6 +13,7 @@ export function FileViewerContent() {
   const activeFile = useFileViewerStore((s) => s.activeFile)
   const files = useFileViewerStore((s) => s.files)
   const openTabs = useFileViewerStore((s) => s.openTabs)
+  const highlightLine = useFileViewerStore((s) => s.highlightLine)
   const setFileContent = useFileViewerStore((s) => s.setFileContent)
   const setFileDiff = useFileViewerStore((s) => s.setFileDiff)
   const setFileError = useFileViewerStore((s) => s.setFileError)
@@ -91,6 +92,7 @@ export function FileViewerContent() {
       content={fileData.content}
       language={fileData.language ?? 'plaintext'}
       diff={fileData.diff}
+      highlightLine={highlightLine}
       scrollRef={scrollRef}
     />
   )
@@ -98,10 +100,11 @@ export function FileViewerContent() {
 
 // --- Highlighted content with diff overlay ---
 
-function HighlightedContent({ content, language, diff, scrollRef }: {
+function HighlightedContent({ content, language, diff, highlightLine, scrollRef }: {
   content: string
   language: string
   diff?: string
+  highlightLine: number | null
   scrollRef: React.RefObject<HTMLDivElement | null>
 }) {
   const [showRaw, setShowRaw] = useState(false)
@@ -118,6 +121,29 @@ function HighlightedContent({ content, language, diff, scrollRef }: {
     () => highlightLines(content, language),
     [content, language],
   )
+
+  const clearHighlightLine = useFileViewerStore((s) => s.clearHighlightLine)
+
+  // Scroll to the highlighted line and clear after a delay
+  useEffect(() => {
+    if (highlightLine == null) return
+    const container = scrollRef.current
+    if (!container) return
+
+    // Find the line element by data-line-number attribute
+    const lineEl = container.querySelector<HTMLElement>(
+      `[data-line-number="${highlightLine}"]`
+    )
+    if (lineEl) {
+      lineEl.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+
+    const timer = setTimeout(() => {
+      clearHighlightLine()
+    }, 3000)
+
+    return () => clearTimeout(timer)
+  }, [highlightLine, scrollRef, clearHighlightLine])
 
   // Markdown preview mode
   if (isMarkdown && !showRaw) {
@@ -157,14 +183,14 @@ function HighlightedContent({ content, language, diff, scrollRef }: {
           <code className={`hljs language-${language}`}>
             {displayLines.length > 0
               ? displayLines.map((dl, i) => (
-                  <DiffLine key={i} dl={dl} highlighted={highlighted} />
-                ))
+                <DiffLine key={i} dl={dl} highlighted={highlighted} highlightLine={highlightLine} />
+              ))
               : lines.map((_, i) => (
-                  <div key={i} className="file-viewer-line">
-                    <span className="file-viewer-line-number">{i + 1}</span>
-                    <span className="file-viewer-line-content" dangerouslySetInnerHTML={{ __html: highlighted[i] ?? '' }} />
-                  </div>
-                ))}
+                <div key={i} className={cn('file-viewer-line', highlightLine === i + 1 && 'file-viewer-line-highlighted')} data-line-number={i + 1}>
+                  <span className="file-viewer-line-number">{i + 1}</span>
+                  <span className="file-viewer-line-content" dangerouslySetInnerHTML={{ __html: highlighted[i] ?? '' }} />
+                </div>
+              ))}
           </code>
         </pre>
       </div>
@@ -174,10 +200,11 @@ function HighlightedContent({ content, language, diff, scrollRef }: {
 
 
 
-function DiffLine({ dl, highlighted }: { dl: DisplayLine; highlighted: string[] }) {
+function DiffLine({ dl, highlighted, highlightLine }: { dl: DisplayLine; highlighted: string[]; highlightLine: number | null }) {
+  const isHighlighted = dl.lineNumber != null && highlightLine === dl.lineNumber
   if (dl.type === 'removed') {
     return (
-      <div className={cn('file-viewer-line', 'diff-line-removed')} data-hunk-id={dl.hunkId}>
+      <div className={cn('file-viewer-line', 'diff-line-removed', isHighlighted && 'file-viewer-line-highlighted')} data-hunk-id={dl.hunkId}>
         <span className="file-viewer-line-number" />
         <span className="file-viewer-line-content">{dl.content}</span>
       </div>
@@ -185,7 +212,7 @@ function DiffLine({ dl, highlighted }: { dl: DisplayLine; highlighted: string[] 
   }
   if (dl.type === 'modified' && dl.charDiff) {
     return (
-      <div className={cn('file-viewer-line', 'diff-line-modified')} data-line-number={dl.lineNumber} data-hunk-id={dl.hunkId}>
+      <div className={cn('file-viewer-line', 'diff-line-modified', isHighlighted && 'file-viewer-line-highlighted')} data-line-number={dl.lineNumber} data-hunk-id={dl.hunkId}>
         <span className="file-viewer-line-number">{dl.lineNumber}</span>
         <span className="file-viewer-line-content">
           {dl.charDiff.map((part, idx) => (
@@ -199,7 +226,7 @@ function DiffLine({ dl, highlighted }: { dl: DisplayLine; highlighted: string[] 
   }
   const html = dl.lineNumber ? (highlighted[dl.lineNumber - 1] ?? '') : ''
   return (
-    <div className={cn('file-viewer-line', dl.type === 'added' && 'diff-line-added')} data-line-number={dl.lineNumber} data-hunk-id={dl.hunkId}>
+    <div className={cn('file-viewer-line', dl.type === 'added' && 'diff-line-added', isHighlighted && 'file-viewer-line-highlighted')} data-line-number={dl.lineNumber} data-hunk-id={dl.hunkId}>
       <span className="file-viewer-line-number">{dl.lineNumber}</span>
       <span className="file-viewer-line-content" dangerouslySetInnerHTML={{ __html: html }} />
     </div>

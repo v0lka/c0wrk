@@ -12,7 +12,9 @@ func (f *FrontendAPI) CheckRtk() beRtk.RtkStatus {
 // InstallRtk downloads and installs the rtk CLI binary.
 func (f *FrontendAPI) InstallRtk() error {
 	progress := func(status string) {
-		f.emitEvent(EventRtkInstallProgress, status)
+		if f.emitEvent != nil {
+			f.emitEvent(EventRtkInstallProgress, status)
+		}
 	}
 
 	installPath, err := beRtk.InstallRtk(progress, nil)

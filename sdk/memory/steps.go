@@ -28,8 +28,9 @@ func stepsToMessages(steps []sdkagent.Step) []llm.Message {
 
 			// Build ONE assistant message with all tool calls
 			assistantMsg := llm.Message{
-				Role:    "assistant",
-				Content: strings.TrimRight(groupSteps[0].Thought, invisibleChars),
+				Role:             "assistant",
+				Content:          strings.TrimRight(groupSteps[0].Thought, invisibleChars),
+				ReasoningContent: groupSteps[0].ReasoningContent,
 			}
 			for _, gs := range groupSteps {
 				if gs.Action.ID != "" {
@@ -60,8 +61,9 @@ func stepsToMessages(steps []sdkagent.Step) []llm.Message {
 		} else {
 			// Original logic for standalone steps
 			assistantMsg := llm.Message{
-				Role:    "assistant",
-				Content: strings.TrimRight(step.Thought, invisibleChars),
+				Role:             "assistant",
+				Content:          strings.TrimRight(step.Thought, invisibleChars),
+				ReasoningContent: step.ReasoningContent,
 			}
 			if step.Action.ID != "" {
 				assistantMsg.ToolCalls = []llm.ToolCall{step.Action}

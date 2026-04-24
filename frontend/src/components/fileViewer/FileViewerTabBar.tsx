@@ -44,6 +44,15 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
     [closeFile],
   )
 
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const el = tabsRef.current
+    if (!el) return
+    // Only intercept vertical scroll — let native horizontal scroll pass through
+    if (e.deltaY === 0) return
+    e.preventDefault()
+    el.scrollBy({ left: e.deltaY, behavior: 'instant' })
+  }, [])
+
   const scrollToTab = useCallback((path: string) => {
     const el = tabsRef.current?.querySelector<HTMLElement>(`[data-file-path="${CSS.escape(path)}"]`)
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -62,7 +71,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
   return (
     <div className="flex items-end border-b border-border bg-secondary/50 flex-shrink-0 h-10">
       {/* Scrollable tab strip */}
-      <div ref={tabsRef} className="flex-1 flex overflow-x-auto no-scrollbar min-w-0">
+      <div ref={tabsRef} onWheel={handleWheel} className="flex-1 flex overflow-x-auto no-scrollbar min-w-0">
         {openTabs.map((path) => {
           const name = fileNameFromPath(path)
           const isActive = path === activeFile

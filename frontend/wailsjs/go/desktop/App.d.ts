@@ -49,6 +49,8 @@ export function GetSessionTokens(arg1:string):Promise<backend.SessionTokensRespo
 
 export function GetSessionWorkspace(arg1:string):Promise<string>;
 
+export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCommand>>;
+
 export function GetToolList():Promise<Array<backend.ToolInfo>>;
 
 export function IndexingDoneChan():Promise<any>;
@@ -75,6 +77,8 @@ export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
 export function ResumeTask(arg1:string):Promise<void>;
 
+export function SearchVectorStore(arg1:string,arg2:number,arg3:string):Promise<Array<backend.VectorStoreEntry>>;
+
 export function SendMessage(arg1:string,arg2:string):Promise<void>;
 
 export function SetConfigLoadState(arg1:boolean,arg2:string,arg3:Array<string>):Promise<void>;
@@ -83,7 +87,15 @@ export function SetLogLevel(arg1:string):Promise<void>;
 
 export function SetRestoreAutoIndex(arg1:any):Promise<void>;
 
+export function StartTerminal(arg1:string):Promise<void>;
+
+export function StopTerminal(arg1:string):Promise<void>;
+
 export function SwitchProject(arg1:string):Promise<void>;
+
+export function TerminalInput(arg1:string,arg2:string):Promise<void>;
+
+export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function UnwatchDirectory(arg1:string):Promise<void>;
 

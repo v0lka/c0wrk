@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { registerLanguages } from './lib/hljsLanguages'
+import '@xterm/xterm/css/xterm.css'
 import './index.css'
 
 registerLanguages()

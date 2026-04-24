@@ -26,6 +26,13 @@ Set needs_clarification to true ONLY when the request is genuinely ambiguous and
 Available tools:
 AVAILABLE-TOOLS
 
+## Skill Matching
+
+Available skills:
+AVAILABLE-SKILLS
+
+If any available skill is relevant to the user's request, include the skill name in the "matched_skills" array. Match a skill only if its description and purpose directly relate to the task. If no skills are relevant, omit "matched_skills" or set it to an empty array.
+
 ## Examples
 
 Request: "Hello, how are you?"
@@ -38,4 +45,4 @@ Request: "Make it better"
 {"domain":"general","complexity":1,"needs_clarification":true}
 
 Respond ONLY with a JSON object:
-{"domain": "code|research|general|mixed", "complexity": 1-5, "needs_clarification": false}
+{"domain": "code|research|general|mixed", "complexity": 1-5, "needs_clarification": false, "matched_skills": ["skill-name"]}

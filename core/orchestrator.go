@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/user/agent/core/skills"
 	"github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
@@ -63,6 +64,7 @@ type Orchestrator struct {
 	router              *Router
 	llm                 LLMCaller
 	toolRegistry        *sdktools.ToolRegistry
+	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
 	config              OrchestratorConfig
 	contextFactory      ContextManagerFactory
 	logger              *slog.Logger
@@ -74,6 +76,7 @@ type Orchestrator struct {
 	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
 	vectorSearchFunc    tools.VectorSearchFunc
+	skillManager        *skills.SkillManager // for skill discovery and activation
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -96,6 +99,8 @@ func NewOrchestrator(
 	bbFactory BlackboardFactory, // optional, nil = default MapBlackboard
 	trackingCaller *llm.TrackingCaller, // optional, for per-step context tracker wiring
 	vectorSearchFunc tools.VectorSearchFunc, // optional, for auto-RAG hint generation
+	skillManager *skills.SkillManager, // optional, for skill discovery and activation
+	coreToolReg *tools.ToolRegistry, // core tool registry for skill policy overrides
 ) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
@@ -187,6 +192,8 @@ func NewOrchestrator(
 		bbFactory:        bbFactory,
 		trackingCaller:   trackingCaller,
 		vectorSearchFunc: vectorSearchFunc,
+		skillManager:     skillManager,
+		coreToolRegistry: coreToolReg,
 	}
 }
 
@@ -270,6 +277,19 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	return result, nil
 }
 
+// buildSkillPolicyOverrides creates tool policy overrides from active skills.
+// Tools listed in a skill's allowed-tools field get PolicyAlwaysAllow,
+// enabling the agent to use them without manual confirmation.
+func (o *Orchestrator) buildSkillPolicyOverrides(activeSkills []*skills.Skill) map[string]tools.ToolPolicy {
+	overrides := make(map[string]tools.ToolPolicy)
+	for _, s := range activeSkills {
+		for _, toolName := range s.Metadata.AllowedToolList() {
+			// Only set if not already overridden by config
+			overrides[toolName] = tools.PolicyAlwaysAllow
+		}
+	}
+	return overrides
+}
 // injectVectorSearchHints queries the vector index for relevant files and
 // attaches the results as VectorSearchHints on the returned context.
 // It also reads AGENTS.md from the workspace root and injects its full
@@ -438,7 +458,11 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// 4. Route the message
 	o.logDebug("orchestrator: starting routing")
 	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "orchestration"})
-	routing, err := o.router.Route(ctx, message, availableTools, o.conversationHistory)
+	var skillDescriptors []skills.SkillDescriptor
+	if o.skillManager != nil {
+		skillDescriptors = o.skillManager.List()
+	}
+	routing, err := o.router.Route(ctx, message, availableTools, o.conversationHistory, skillDescriptors)
 	if err != nil {
 		o.logDebug("orchestrator: routing failed", "error", err)
 		return nil, fmt.Errorf("routing failed: %w", err)
@@ -448,6 +472,31 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	o.logDebug("orchestrator: routing completed", "domain", routing.Domain, "complexity", routing.Complexity, "needsClarification", routing.NeedsClarification)
 	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
 	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
+
+	// 4b. Activate matched skills
+	if len(routing.MatchedSkills) > 0 && o.skillManager != nil {
+		var activeSkills []*skills.Skill
+		var activatedNames []string
+		for _, name := range routing.MatchedSkills {
+			if s, ok := o.skillManager.Get(name); ok {
+				activeSkills = append(activeSkills, s)
+				activatedNames = append(activatedNames, name)
+			} else {
+				o.logDebug("orchestrator: matched skill not found", "name", name)
+			}
+		}
+		if len(activeSkills) > 0 {
+			ctx = WithActiveSkills(ctx, &ActiveSkills{Skills: activeSkills})
+			o.emitter.SkillsActivated(activatedNames)
+			o.logInfo("skills_activated", "skills", activatedNames)
+
+			// Apply skill-derived tool policy overrides
+			skillOverrides := o.buildSkillPolicyOverrides(activeSkills)
+			if len(skillOverrides) > 0 && o.coreToolRegistry != nil {
+				o.coreToolRegistry.SetSkillPolicyOverrides(skillOverrides)
+			}
+		}
+	}
 
 	// 5. Handle clarification
 	if routing.NeedsClarification {

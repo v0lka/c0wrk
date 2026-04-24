@@ -5,6 +5,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FileIcon } from './FileIcon'
 import { ChevronRight, Loader2, Regex } from 'lucide-react'
@@ -155,7 +156,7 @@ export function FileTreePanel() {
 
     return () => {
       cancelled = true
-      unwatchDirectory(workspacePath).catch(() => {})
+      unwatchDirectory(workspacePath).catch(() => { })
     }
   }, [workspacePath, clearTree, setRootPath, setEntries, setGitStatus])
 
@@ -164,8 +165,8 @@ export function FileTreePanel() {
     const unsub = subscribe('workspace:tree_changed', () => {
       const rp = useFileTreeStore.getState().rootPath
       if (!rp) return
-      listDirectory(rp).then((entries) => setEntries(rp, entries)).catch(() => {})
-      getGitStatus(rp).then(setGitStatus).catch(() => {})
+      listDirectory(rp).then((entries) => setEntries(rp, entries)).catch(() => { })
+      getGitStatus(rp).then(setGitStatus).catch(() => { })
     })
     return unsub
   }, [setEntries, setGitStatus])
@@ -175,23 +176,22 @@ export function FileTreePanel() {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
+      <div className="flex shrink-0 gap-1 border-b border-border px-2 py-1">
         <Input
           value={filterText}
           onChange={(e) => handleFilterChange(e.target.value)}
           placeholder={"Filter files... (" + filterMode + ")"}
-          className="h-6 border-none bg-transparent px-1 text-xs shadow-none"
+          className="h-7 text-xs placeholder-sm"
         />
-        <button
+        <Button
+          variant={filterMode === 'regex' ? 'default' : 'ghost'}
+          size="sm"
           onClick={toggleFilterMode}
-          className={cn(
-            'rounded p-0.5 text-muted-foreground hover:text-foreground',
-            filterMode === 'regex' && 'bg-muted text-foreground',
-          )}
+          className="h-7 px-2"
           title={filterMode === 'glob' ? 'Switch to regex' : 'Switch to glob'}
         >
           <Regex className="size-3.5" />
-        </button>
+        </Button>
       </div>
       {displayEntries && displayEntries.length > 0 ? (
         <div className="custom-scrollbar flex-1 overflow-y-auto py-1" role="tree">

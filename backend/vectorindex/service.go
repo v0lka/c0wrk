@@ -97,6 +97,62 @@ func (s *Service) SetProject(projectID string) error {
 	return nil
 }
 
+// Browse returns up to topK chunks from the current collection without semantic
+// ordering. It uses a space query to enumerate documents (the same approach used
+// by getCollectionFileHashes). Blocks via WaitReady if the index is not yet ready.
+func (s *Service) Browse(ctx context.Context, topK int) ([]SearchResult, error) {
+	return s.BrowseWithFilter(ctx, topK, "")
+}
+
+// BrowseWithFilter returns up to topK chunks from the current collection without
+// semantic ordering, optionally filtered by a file path glob pattern.
+// Blocks via WaitReady if the index is not yet ready.
+func (s *Service) BrowseWithFilter(ctx context.Context, topK int, fileFilter string) ([]SearchResult, error) {
+	if err := s.WaitReady(ctx); err != nil {
+		return nil, fmt.Errorf("waiting for index readiness: %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.collection == nil {
+		return nil, errors.New("no collection available; call SetProject and SwitchBranch first")
+	}
+
+	count := s.collection.Count()
+	if count == 0 {
+		return []SearchResult{}, nil
+	}
+	if topK > count {
+		topK = count
+	}
+
+	results, err := s.collection.Query(ctx, " ", topK, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("browsing collection: %w", err)
+	}
+
+	out := make([]SearchResult, 0, len(results))
+	for _, r := range results {
+		sr := resultToSearchResult(r)
+
+		if fileFilter != "" {
+			matched, matchErr := doublestar.Match(fileFilter, sr.FilePath)
+			if matchErr != nil {
+				s.logger.Warn("invalid file filter pattern", "pattern", fileFilter, "error", matchErr)
+				continue
+			}
+			if !matched {
+				continue
+			}
+		}
+
+		out = append(out, sr)
+	}
+
+	return out, nil
+}
+
 // Search queries the current collection for the top-K most similar results.
 func (s *Service) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
 	return s.SearchWithFilter(ctx, query, topK, "")

@@ -25,7 +25,7 @@ func TestRoute_ReturnsValidRoutingDecision(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "read the config file", nil, nil)
+	decision, err := router.Route(context.Background(), "read the config file", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestRoute_PassesToolsInPrompt(t *testing.T) {
 		{Name: "file_read", Description: "Read file contents"},
 	}
 
-	_, err := router.Route(context.Background(), "run a command", availableTools, nil)
+	_, err := router.Route(context.Background(), "run a command", availableTools, nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestRoute_PassesHistory(t *testing.T) {
 		{Role: "assistant", Content: "previous response 2"},
 	}
 
-	_, err := router.Route(context.Background(), "current request", nil, history)
+	_, err := router.Route(context.Background(), "current request", nil, history, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestRoute_PlanExecuteMode(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "refactor the entire codebase", nil, nil)
+	decision, err := router.Route(context.Background(), "refactor the entire codebase", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestRoute_HandlesJSONInCodeBlocks(t *testing.T) {
 
 	router := NewRouter(mock, 5)
 
-	decision, err := router.Route(context.Background(), "what is 2+2?", nil, nil)
+	decision, err := router.Route(context.Background(), "what is 2+2?", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestRoute_UsesRouterRole(t *testing.T) {
 	}
 
 	router := NewRouter(mock, 5)
-	_, _ = router.Route(context.Background(), "test request", nil, nil)
+	_, _ = router.Route(context.Background(), "test request", nil, nil, nil)
 
 	// We can verify through the mock that the role was passed
 	// Since mockLLMCaller doesn't store role, we'd need to extend it
@@ -272,23 +272,54 @@ func TestNewRouter_DefaultHistoryWindow(t *testing.T) {
 
 func TestValidateRoutingDecision(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    RoutingDecision
-		expected RoutingDecision
+		name        string
+		input       RoutingDecision
+		wantDomain  string
+		wantComplex int
 	}{
-		{"valid decision unchanged", RoutingDecision{Domain: "code", Complexity: 3}, RoutingDecision{Domain: "code", Complexity: 3}},
-		{"unknown domain defaults to general", RoutingDecision{Domain: "unknown", Complexity: 2}, RoutingDecision{Domain: "general", Complexity: 2}},
-		{"empty domain defaults to general", RoutingDecision{Domain: "", Complexity: 2}, RoutingDecision{Domain: "general", Complexity: 2}},
-		{"complexity clamped to min 1", RoutingDecision{Domain: "code", Complexity: 0}, RoutingDecision{Domain: "code", Complexity: 1}},
-		{"complexity clamped to max 5", RoutingDecision{Domain: "code", Complexity: 10}, RoutingDecision{Domain: "code", Complexity: 5}},
-		{"negative complexity clamped", RoutingDecision{Domain: "code", Complexity: -1}, RoutingDecision{Domain: "code", Complexity: 1}},
+		{"valid decision unchanged", RoutingDecision{Domain: "code", Complexity: 3}, "code", 3},
+		{"unknown domain defaults to general", RoutingDecision{Domain: "unknown", Complexity: 2}, "general", 2},
+		{"empty domain defaults to general", RoutingDecision{Domain: "", Complexity: 2}, "general", 2},
+		{"complexity clamped to min 1", RoutingDecision{Domain: "code", Complexity: 0}, "code", 1},
+		{"complexity clamped to max 5", RoutingDecision{Domain: "code", Complexity: 10}, "code", 5},
+		{"negative complexity clamped", RoutingDecision{Domain: "code", Complexity: -1}, "code", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := tt.input
 			validateRoutingDecision(&d)
-			if d != tt.expected {
-				t.Errorf("got %+v, want %+v", d, tt.expected)
+			if d.Domain != tt.wantDomain || d.Complexity != tt.wantComplex {
+				t.Errorf("got domain=%q complexity=%d, want domain=%q complexity=%d", d.Domain, d.Complexity, tt.wantDomain, tt.wantComplex)
+			}
+		})
+	}
+}
+
+func TestValidateRoutingDecision_MatchedSkills(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		input      []string
+		wantSkills []string
+	}{
+		{"nil skills unchanged", nil, nil},
+		{"empty skills unchanged", []string{}, []string{}},
+		{"valid skills preserved", []string{"pdf-processing", "data-analysis"}, []string{"pdf-processing", "data-analysis"}},
+		{"duplicate skills deduped", []string{"pdf", "data", "pdf"}, []string{"pdf", "data"}},
+		{"empty strings removed", []string{"pdf", "", "data"}, []string{"pdf", "data"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := RoutingDecision{Domain: "code", Complexity: 3, MatchedSkills: tt.input}
+			validateRoutingDecision(&d)
+			if len(d.MatchedSkills) != len(tt.wantSkills) {
+				t.Fatalf("got %d skills %v, want %d skills %v", len(d.MatchedSkills), d.MatchedSkills, len(tt.wantSkills), tt.wantSkills)
+			}
+			for i, got := range d.MatchedSkills {
+				if got != tt.wantSkills[i] {
+					t.Errorf("skill[%d] = %q, want %q", i, got, tt.wantSkills[i])
+				}
 			}
 		})
 	}
@@ -312,7 +343,7 @@ func TestRoute_RetriesOnInvalidJSON(t *testing.T) {
 		},
 	}
 	router := NewRouter(mock, 5)
-	decision, err := router.Route(context.Background(), "fix the bug", nil, nil)
+	decision, err := router.Route(context.Background(), "fix the bug", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("expected successful retry, got error: %v", err)
 	}

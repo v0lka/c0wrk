@@ -192,8 +192,14 @@ func (f *FrontendAPI) CheckCodebaseMemoryMCP() beMcp.CodeMemoryStatus {
 
 // InstallCodebaseMemoryMCP downloads and installs the codebase-memory-mcp binary.
 func (f *FrontendAPI) InstallCodebaseMemoryMCP() error {
+	if f.config == nil {
+		return errors.New("config not initialized")
+	}
+
 	progress := func(status string) {
-		f.emitEvent(EventCodeMemoryInstallProgress, status)
+		if f.emitEvent != nil {
+			f.emitEvent(EventCodeMemoryInstallProgress, status)
+		}
 	}
 
 	installPath, err := beMcp.InstallCodebaseMemoryMCP(progress, nil)

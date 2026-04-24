@@ -659,6 +659,19 @@ func (e *EventEmitter) FileRollbackError(stepID string, err error) {
 	e.log().Warn("emitter: file rollback error", "sessionID", e.sessionID, "stepID", stepID, "error", err)
 }
 
+// SkillsActivated emits a skills_activated event listing the skills matched for the current task.
+func (e *EventEmitter) SkillsActivated(skillNames []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "skills_activated",
+		Data: SkillsActivatedData{
+			Skills: skillNames,
+		},
+	})
+}
+
 // SessionTokenTotals returns the accumulated session-wide input and output token counts.
 func (e *EventEmitter) SessionTokenTotals() (inputTokens, outputTokens int) {
 	e.tokens.mu.Lock()

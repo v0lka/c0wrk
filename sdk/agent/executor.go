@@ -339,26 +339,27 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 
 			step := Step{
-				Thought:    thought,
-				TokensUsed: resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:          thought,
+				ReasoningContent: resp.Message.ReasoningContent,
+				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			allSteps = append(allSteps, step)
-
+		
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-
+		
 			// Emit assistant response events (unless suppressed)
 			if !e.suppressAssistantEvents {
 				e.emitter.AssistantChunk(thought)
 				e.emitter.AssistantDone(thought, resp.Usage.InputTokens, resp.Usage.OutputTokens)
 			}
-
+		
 			return &ExecutorResult{
 				Output:   thought,
 				Steps:    allSteps,
 				Finished: true,
 			}, nil
 		}
-
+		
 		// Take the first tool call
 		if len(resp.Message.ToolCalls) == 0 {
 			// No tool calls but not end_turn — apply nudge if not attempted
@@ -374,7 +375,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.emitter.ExecutorDiagnostic(stepNum, "executor_nudge", map[string]any{"reason": "no_tools_no_end_turn_on_step_1"})
 				continue
 			}
-
+		
 			// Finish nudge: require explicit finish tool call before accepting completion
 			// Only needed in plan-step execution where output needs structured capture
 			if e.suppressAssistantEvents && !e.finishNudgeAttempted {
@@ -389,11 +390,12 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.emitter.ExecutorDiagnostic(stepNum, "executor_finish_nudge", map[string]any{"reason": "implicit_finish_without_tool"})
 				continue // retry — LLM should now call finish explicitly
 			}
-
+		
 			// No tool calls but not end_turn — treat as implicit finish anyway
 			step := Step{
-				Thought:    thought,
-				TokensUsed: resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:          thought,
+				ReasoningContent: resp.Message.ReasoningContent,
+				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			allSteps = append(allSteps, step)
 
@@ -431,10 +433,11 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			e.emitter.ExecutorDiagnostic(stepNum, "truncation_detected", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
 
 			step := Step{
-				Thought:     thought,
-				Action:      truncAction,
-				Observation: truncObs,
-				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:          thought,
+				ReasoningContent: resp.Message.ReasoningContent,
+				Action:           truncAction,
+				Observation:      truncObs,
+				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			allSteps = append(allSteps, step)
 			cw.AddStep(step)
@@ -442,27 +445,27 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
 			continue
 		}
-
+		
 		// Reset truncation counter on any non-truncated response
 		e.consecutiveTruncationCount = 0
-
+		
 		// --- Process ALL tool calls from the response ---
 		toolCalls := resp.Message.ToolCalls
-
+		
 		// Generate ResponseGroup ID for multi-call responses
 		var responseGroup int64
 		if len(toolCalls) > 1 {
 			e.responseGroupCounter++
 			responseGroup = e.responseGroupCounter
 		}
-
+		
 		var finishResult *ExecutorResult
 		circuitBreakerTriggered := false
-
+		
 		for callIdx, action := range toolCalls {
 			// Emit tool call
 			e.emitter.ToolCall(stepNum, callIdx, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
-
+		
 			// --- Circuit breaker: detect repeated identical tool calls ---
 			toolKey := action.Name + ":" + compactJSON(action.Input)
 			if toolKey == e.lastToolKey {
@@ -472,7 +475,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.lastToolKey = toolKey
 				e.lastToolResultIsError = false
 			}
-
+		
 			// Use lower thresholds when the previous identical call produced an error
 			nudgeThreshold := e.circuitBreaker.RepeatNudgeThreshold
 			abortThreshold := e.circuitBreaker.RepeatAbortThreshold
@@ -480,7 +483,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				nudgeThreshold = e.circuitBreaker.RepeatNudgeThreshold - 1
 				abortThreshold = e.circuitBreaker.RepeatAbortThreshold - 1
 			}
-
+		
 			if e.consecutiveRepeatCount >= abortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
 				abortMsg := fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount)
@@ -491,7 +494,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 					Finished: false,
 				}, nil
 			}
-
+		
 			if e.consecutiveRepeatCount >= nudgeThreshold {
 				nudgeMsg := repeatNudgeMessage
 				if e.lastToolResultIsError {
@@ -500,15 +503,18 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_nudge", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
 				e.emitter.ToolResult(stepNum, callIdx, len(nudgeMsg), nudgeMsg)
 				stepThought := ""
+				stepReasoning := ""
 				if callIdx == 0 {
 					stepThought = thought
+					stepReasoning = resp.Message.ReasoningContent
 				}
 				step := Step{
-					Thought:       stepThought,
-					Action:        action,
-					Observation:   nudgeMsg,
-					TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
-					ResponseGroup: responseGroup,
+					Thought:          stepThought,
+					ReasoningContent: stepReasoning,
+					Action:           action,
+					Observation:      nudgeMsg,
+					TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
+					ResponseGroup:    responseGroup,
 				}
 				allSteps = append(allSteps, step)
 				cw.AddStep(step)
@@ -516,7 +522,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				break
 			}
 			// --- End circuit breaker ---
-
+		
 			// Check for finish tool
 			if action.Name == "finish" {
 				// Parse answer from input
@@ -526,25 +532,28 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				if err := json.Unmarshal(action.Input, &params); err != nil {
 					params.Answer = string(action.Input) // fallback
 				}
-
+		
 				// Emit finishing event so the frontend can show "Finishing..." status
 				// instead of "Running tool: finish".
 				e.emitter.Finishing(stepNum, params.Answer)
-
+		
 				stepThought := ""
+				stepReasoning := ""
 				if callIdx == 0 {
 					stepThought = thought
+					stepReasoning = resp.Message.ReasoningContent
 				}
 				step := Step{
-					Thought:       stepThought,
-					Action:        action,
-					TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
-					ResponseGroup: responseGroup,
+					Thought:          stepThought,
+					ReasoningContent: stepReasoning,
+					Action:           action,
+					TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
+					ResponseGroup:    responseGroup,
 				}
 				allSteps = append(allSteps, step)
-
+		
 				e.emitter.ToolResult(stepNum, callIdx, len(params.Answer), params.Answer)
-
+		
 				finishResult = &ExecutorResult{
 					Output:   params.Answer,
 					Steps:    allSteps,
@@ -552,17 +561,17 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				}
 				break // stop processing further tool calls
 			}
-
+		
 			// Execute the tool (task context should already be set by the caller)
 			result, err := e.tools.Execute(ctx, action.Name, action.Input)
 			if err != nil {
 				// Infrastructure error
 				return nil, err
 			}
-
+		
 			observation := result.Content
 			e.lastToolResultIsError = result.IsError
-
+		
 			// --- Fruitless result detector: consecutive minimal-result calls ---
 			// A result is "fruitless" if it's small AND not an error (errors have their own tracking)
 			fruitlessMaxLen := e.circuitBreaker.FruitlessMaxResultLen
@@ -576,7 +585,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				// Reset on non-fruitless, non-error result
 				e.consecutiveFruitlessCount = 0
 			}
-
+		
 			// Check fruitless thresholds (skip if threshold is 0 = disabled)
 			if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
@@ -587,7 +596,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 					Finished: false,
 				}, nil
 			}
-
+		
 			if e.circuitBreaker.FruitlessNudgeThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessNudgeThreshold && !e.fruitlessNudgeAttempted {
 				e.fruitlessNudgeAttempted = true
 				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
@@ -601,7 +610,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				break
 			}
 			// --- End fruitless result detector ---
-
+		
 			// --- Same-tool repetition detector: same tool, varied args, similar results ---
 			resultLen := len(result.Content)
 			sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
@@ -613,7 +622,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			if lenDiff < 0 {
 				lenDiff = -lenDiff
 			}
-
+		
 			if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
 				e.sameToolConsecutiveCount++
 				e.sameToolLastResultLen = resultLen
@@ -622,7 +631,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.sameToolLastName = action.Name
 				e.sameToolLastResultLen = resultLen
 			}
-
+		
 			// Check same-tool thresholds (skip if threshold is 0 = disabled)
 			if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
 				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
@@ -633,7 +642,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 					Finished: false,
 				}, nil
 			}
-
+		
 			if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
 				e.sameToolNudgeAttempted = true
 				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
@@ -647,12 +656,12 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				break
 			}
 			// --- End same-tool repetition detector ---
-
+		
 			// Ensure non-empty observation for tool messages (OpenAI API requirement)
 			if observation == "" {
 				observation = "(no output)"
 			}
-
+		
 			// --- Parse error tracker ---
 			if result.IsError && isParseError(observation) {
 				if action.Name == e.consecutiveParseErrorTool {
@@ -661,7 +670,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 					e.consecutiveParseErrorTool = action.Name
 					e.consecutiveParseErrorCount = 1
 				}
-
+		
 				if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
 					e.emitter.ExecutorDiagnostic(stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
 					e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
@@ -671,7 +680,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 						Finished: false,
 					}, nil
 				}
-
+		
 				observation += "\n\n" + fmt.Sprintf(parseErrorNudgeMessage, e.consecutiveParseErrorCount)
 			} else if !result.IsError {
 				// Reset parse error tracker on successful execution
@@ -679,27 +688,30 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.consecutiveParseErrorCount = 0
 			}
 			// --- End parse error tracker ---
-
+		
 			// Apply tool result budget
 			observation = e.applyToolResultBudget(observation, cw, action.Name)
-
+		
 			// Emit tool result
 			e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-
+		
 			// Create step - only first tool call in the group carries the Thought
 			stepThought := ""
+			stepReasoning := ""
 			if callIdx == 0 {
 				stepThought = thought
+				stepReasoning = resp.Message.ReasoningContent
 			}
 			step := Step{
-				Thought:       stepThought,
-				Action:        action,
-				Observation:   observation,
-				TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
-				ResponseGroup: responseGroup,
+				Thought:          stepThought,
+				ReasoningContent: stepReasoning,
+				Action:           action,
+				Observation:      observation,
+				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				ResponseGroup:    responseGroup,
 			}
 			allSteps = append(allSteps, step)
-
+		
 			// Add step to context window
 			cw.AddStep(step)
 		} // end tool call loop

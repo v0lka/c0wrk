@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/user/agent/core/prompts"
+	"github.com/user/agent/core/skills"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/prompt"
@@ -43,15 +44,20 @@ func (r *Router) SetModelRegistry(registry *llm.ModelRegistry) {
 }
 
 // Route analyzes the user's request and determines the best execution strategy.
-func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message) (decision *RoutingDecision, err error) {
+// availableSkills are included in the routing prompt so the LLM can match relevant skills.
+func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message, availableSkills []skills.SkillDescriptor) (decision *RoutingDecision, err error) {
 	// Build tool list for the prompt (grouped by priority tier)
 	toolListStr := agent.BuildGroupedToolList(availableTools)
+
+	// Build skill list for the prompt
+	skillListStr := formatSkillList(availableSkills)
 
 	// Build system prompt
 	systemPrompt := prompt.NewBuilder().
 		Core(prompts.RouterSystem).
 		Core(prompts.RouterInstructions).
 		Replace("AVAILABLE-TOOLS", toolListStr).
+		Replace("AVAILABLE-SKILLS", skillListStr).
 		Build()
 
 	// Build messages for the request
@@ -151,6 +157,19 @@ func validateRoutingDecision(d *RoutingDecision) {
 	if d.Complexity > 5 {
 		d.Complexity = 5
 	}
+
+	// Deduplicate and trim matched_skills
+	if len(d.MatchedSkills) > 0 {
+		seen := make(map[string]bool, len(d.MatchedSkills))
+		clean := d.MatchedSkills[:0]
+		for _, s := range d.MatchedSkills {
+			if s != "" && !seen[s] {
+				seen[s] = true
+				clean = append(clean, s)
+			}
+		}
+		d.MatchedSkills = clean
+	}
 }
 
 // applyCompactionStrategy applies the domain-based compaction strategy rule.
@@ -168,4 +187,20 @@ func applyCompactionStrategy(domain string, complexity int) string {
 	default:
 		return "sliding_window"
 	}
+}
+
+// formatSkillList formats available skill descriptors for the router prompt.
+// Returns "None" if no skills are available.
+func formatSkillList(availableSkills []skills.SkillDescriptor) string {
+	if len(availableSkills) == 0 {
+		return "None"
+	}
+	var sb strings.Builder
+	for i, s := range availableSkills {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("- " + s.Name + ": " + s.Description)
+	}
+	return sb.String()
 }

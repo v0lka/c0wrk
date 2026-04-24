@@ -18,10 +18,11 @@ type FileChange struct {
 
 // Step — single iteration of the ReAct loop.
 type Step struct {
-	Thought     string       `json:"thought"`
-	Action      llm.ToolCall `json:"action"`
-	Observation string       `json:"observation"`
-	TokensUsed  int          `json:"tokens_used"`
+	Thought          string       `json:"thought"`
+	ReasoningContent string       `json:"reasoning_content,omitempty"` // chain-of-thought from reasoning models (DeepSeek)
+	Action           llm.ToolCall `json:"action"`
+	Observation      string       `json:"observation"`
+	TokensUsed       int          `json:"tokens_used"`
 	// UserNudge is an optional user message injected into the context (e.g., step limit nudges).
 	// When set, this is added as a user message after the step's normal messages.
 	UserNudge string `json:"user_nudge,omitempty"`

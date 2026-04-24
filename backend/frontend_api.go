@@ -55,9 +55,22 @@ type FrontendAPI struct {
 	// Vector search
 	vectorManager *vectorindex.Manager
 
+	// Terminal
+	terminalManager TerminalManager
+
 	// Injected Wails callbacks (set by desktop during construction).
 	emitEvent func(string, ...any)
 	appCtx    func() context.Context
+}
+
+// TerminalManager is the interface for the terminal subsystem.
+type TerminalManager interface {
+	Start(sessionID, workDir string) error
+	Write(sessionID string, data []byte) error
+	Resize(sessionID string, cols, rows int) error
+	Stop(sessionID string) error
+	StopAll()
+	IsActive(sessionID string) bool
 }
 
 // FrontendAPIConfig holds all parameters needed to construct a FrontendAPI.
@@ -73,9 +86,10 @@ type FrontendAPIConfig struct {
 	Watcher        *workspace.Watcher
 	ProjectManager *project.Manager
 	ProjectsDir    string
-	VectorManager  *vectorindex.Manager
-	EmitEvent      func(string, ...any)
-	AppCtx         func() context.Context
+	VectorManager   *vectorindex.Manager
+	TerminalManager TerminalManager
+	EmitEvent       func(string, ...any)
+	AppCtx          func() context.Context
 }
 
 // NewFrontendAPI creates a new FrontendAPI with the given configuration.
@@ -90,11 +104,12 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		sessionLogger:  cfg.SessionLogger,
 		logLevel:       cfg.LogLevel,
 		watcher:        cfg.Watcher,
-		projectManager: cfg.ProjectManager,
-		projectsDir:    cfg.ProjectsDir,
-		vectorManager:  cfg.VectorManager,
-		emitEvent:      cfg.EmitEvent,
-		appCtx:         cfg.AppCtx,
+		projectManager:  cfg.ProjectManager,
+		projectsDir:     cfg.ProjectsDir,
+		vectorManager:   cfg.VectorManager,
+		terminalManager: cfg.TerminalManager,
+		emitEvent:       cfg.EmitEvent,
+		appCtx:          cfg.AppCtx,
 	}
 }
 
@@ -109,6 +124,9 @@ func (f *FrontendAPI) SetConfigLoadState(migrated bool, msg string, errors []str
 // Cleanup releases resources owned by FrontendAPI.
 // Called from desktop.Shutdown.
 func (f *FrontendAPI) Cleanup() {
+	if f.terminalManager != nil {
+		f.terminalManager.StopAll()
+	}
 	if f.restoreAutoIndex != nil {
 		f.restoreAutoIndex()
 	}

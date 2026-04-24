@@ -531,6 +531,9 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 	// Append AGENTS.md project instructions when available.
 	result += formatAgentsMD(ctx)
 
+	// Append active skill instructions when available.
+	result += formatActiveSkills(ctx)
+
 	return result
 }
 
@@ -665,6 +668,9 @@ func (p *Planner) buildPlanSystemPrompt(
 	// Append AGENTS.md project instructions when available.
 	result += formatAgentsMD(ctx)
 
+	// Append active skill instructions when available.
+	result += formatActiveSkills(ctx)
+
 	return result
 }
 
@@ -758,6 +764,9 @@ func (p *Planner) buildReplanSystemPrompt(
 	// Append AGENTS.md project instructions when available.
 	result += formatAgentsMD(ctx)
 
+	// Append active skill instructions when available.
+	result += formatActiveSkills(ctx)
+
 	return result
 }
 
@@ -826,6 +835,9 @@ func (p *Planner) buildContinuationSystemPrompt(
 
 	// Append AGENTS.md project instructions when available.
 	result += formatAgentsMD(ctx)
+
+	// Append active skill instructions when available.
+	result += formatActiveSkills(ctx)
 
 	return result
 }
@@ -899,6 +911,39 @@ func formatAgentsMD(ctx context.Context) string {
 	sb.WriteString("<agents-md>\n")
 	sb.WriteString(amd.Content)
 	sb.WriteString("\n</agents-md>")
+	return sb.String()
+}
+
+// formatActiveSkills returns a prompt section with condensed active skill
+// instructions for the planner, or an empty string when no skills are active.
+// Each skill body is truncated to 2000 characters to stay within token budget.
+func formatActiveSkills(ctx context.Context) string {
+	activeSkills := ActiveSkillsFromContext(ctx)
+	if activeSkills == nil || len(activeSkills.Skills) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Active Skills\n")
+	sb.WriteString("The following skills have been matched to this task. When formulating steps, ")
+	sb.WriteString("incorporate their guidance into the plan.\n\n")
+	for _, s := range activeSkills.Skills {
+		sb.WriteString("### Skill: " + s.Metadata.Name + "\n")
+		if s.Metadata.Description != "" {
+			sb.WriteString("Description: " + s.Metadata.Description + "\n")
+		}
+		if len(s.Metadata.AllowedToolList()) > 0 {
+			sb.WriteString("Allowed tools: " + s.Metadata.AllowedTools + "\n")
+		}
+		sb.WriteString("\n")
+		// Truncate skill body to conserve tokens in planner context
+		body := s.Body
+		if len(body) > 2000 {
+			body = body[:2000] + "\n... (truncated)"
+		}
+		sb.WriteString(body)
+		sb.WriteString("\n\n")
+	}
 	return sb.String()
 }
 

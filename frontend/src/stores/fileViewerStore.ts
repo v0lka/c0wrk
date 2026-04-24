@@ -12,16 +12,24 @@ export interface FileData {
   isBinary?: boolean
 }
 
+interface FileIconData {
+  icon: string
+  iconColor: string
+}
+
 interface FileViewerState {
   files: Record<string, FileData> // keyed by file path
   openTabs: string[] // ordered file paths
   activeFile: string | null
   width: number
   collapsed: boolean
+  highlightLine: number | null // transient: line to scroll to and highlight
+  fileIcons: Record<string, FileIconData>
 }
 
 interface FileViewerActions {
   openFile: (path: string) => void
+  openFileAtLine: (path: string, line: number) => void
   closeFile: (path: string) => void
   setActiveFile: (path: string) => void
   setFileContent: (path: string, content: string, language?: string) => void
@@ -31,6 +39,8 @@ interface FileViewerActions {
   setFileLoading: (path: string, loading: boolean) => void
   setWidth: (width: number) => void
   setCollapsed: (collapsed: boolean) => void
+  setFileIcon: (path: string, icon: string, iconColor: string) => void
+  clearHighlightLine: () => void
   refreshAllFiles: () => void
   closeAllFiles: () => void
 }
@@ -49,6 +59,8 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       activeFile: null,
       width: DEFAULT_WIDTH,
       collapsed: false,
+      highlightLine: null,
+      fileIcons: {},
 
       openFile: (path) => {
         const { openTabs } = get()
@@ -67,10 +79,29 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         }))
       },
 
+      openFileAtLine: (path, line) => {
+        const { openTabs } = get()
+        if (openTabs.includes(path)) {
+          set({ activeFile: path, collapsed: false, highlightLine: line })
+          return
+        }
+        set((s) => ({
+          openTabs: [...s.openTabs, path],
+          activeFile: path,
+          collapsed: false,
+          highlightLine: line,
+          files: {
+            ...s.files,
+            [path]: { content: '', loading: true },
+          },
+        }))
+      },
+
       closeFile: (path) => set((s) => {
         const idx = s.openTabs.indexOf(path)
         const newTabs = s.openTabs.filter(p => p !== path)
         const { [path]: _, ...restFiles } = s.files
+        const { [path]: __, ...restIcons } = s.fileIcons
 
         let newActive = s.activeFile
         if (s.activeFile === path) {
@@ -87,6 +118,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           openTabs: newTabs,
           activeFile: newActive,
           files: restFiles,
+          fileIcons: restIcons,
         }
       }),
 
@@ -148,6 +180,12 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
 
       setCollapsed: (collapsed) => set({ collapsed }),
 
+      setFileIcon: (path, icon, iconColor) => set((s) => ({
+        fileIcons: { ...s.fileIcons, [path]: { icon, iconColor } },
+      })),
+
+      clearHighlightLine: () => set({ highlightLine: null }),
+
       refreshAllFiles: () => set((s) => {
         const updated: Record<string, FileData> = {}
         for (const [path, data] of Object.entries(s.files)) {
@@ -160,6 +198,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         files: {},
         openTabs: [],
         activeFile: null,
+        fileIcons: {},
       }),
     }),
     {
@@ -169,6 +208,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         activeFile: state.activeFile,
         width: state.width,
         collapsed: state.collapsed,
+        fileIcons: state.fileIcons,
       }),
     }
   )

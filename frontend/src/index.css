@@ -24,9 +24,9 @@
   --color-popover-foreground: #abb2bf;
 
   /* Primary / Accent */
-  --color-primary: #528bff;
+  --color-primary: #abb2bf;
   --color-primary-foreground: #282c34;
-  --color-accent: #528bff;
+  --color-accent: #abb2bf;
   --color-accent-foreground: #282c34;
 
   /* Secondary / Muted */
@@ -46,11 +46,12 @@
   /* Borders & inputs */
   --color-border: #1d2025;
   --color-input: #1d2025;
-  --color-ring: #528bff;
+  --color-ring: #abb2bf;
 
   /* RGB variants for rgba() usage */
   --color-success-rgb: 152, 195, 121;
   --color-destructive-rgb: 224, 108, 117;
+  --color-primary-rgb: 82, 139, 255;
 
   /* highlight.js One Dark tokens */
   --color-hljs-comment: #5c6370;
@@ -204,7 +205,7 @@ body {
 .prose {
   --tw-prose-body: var(--color-foreground);
   --tw-prose-headings: var(--color-secondary-foreground);
-  --tw-prose-lead: var(--color-secondary-foreground);
+  --tw-prose-lead: var(--color-accent);
   --tw-prose-links: var(--color-info);
   --tw-prose-bold: var(--color-highlight);
   --tw-prose-counters: var(--color-warning);
@@ -229,9 +230,10 @@ body {
   text-decoration: underline;
 }
 
-/* Remove underline from heading anchor links */
+/* Heading anchor links — inherit heading color, no underline */
 .prose :where(h1, h2, h3, h4, h5, h6) a {
   text-decoration: none;
+  color: inherit;
 }
 
 /* Inline code (not inside pre blocks) */
@@ -271,6 +273,12 @@ body {
 /* Compact prose variant for tooltips and tight spaces */
 .prose-xs {
   font-size: 0.75rem;
+}
+
+/* Placeholder — compact variant: 2px smaller, 50% opacity */
+.placeholder-sm::placeholder {
+  font-size: 0.75rem;
+  opacity: 0.25;
 }
 
 /* ==========================================================================
@@ -389,4 +397,14 @@ body {
   background-color: rgba(var(--color-destructive-rgb), 0.35);
   text-decoration: line-through;
   border-radius: 2px;
+}
+
+/* ==========================================================================
+   File Viewer — Line Highlight (e.g. from vector store click-to-jump)
+   ========================================================================== */
+
+.file-viewer-line-highlighted {
+  background-color: rgba(var(--color-primary-rgb), 0.12);
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }

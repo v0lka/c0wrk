@@ -5,7 +5,7 @@ import { useEffect } from 'react'
 import { onSessionEvent } from '@/api/runtime'
 import {
   isRoutingData, isStepData, isRetryData, isStepRetryData,
-  isServiceData, isSessionRenamedData,
+  isServiceData, isSessionRenamedData, isSkillsActivatedData,
 } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
@@ -129,6 +129,22 @@ export function useLifecycleEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'session_renamed', (data) => {
         if (!isSessionRenamedData(data)) return
         useSessionStore.getState().updateSession(sessionId, { name: data.new_name })
+      }),
+    )
+
+    // --- skills_activated ---
+    cleanups.push(
+      onSessionEvent(sessionId, 'skills_activated', (data) => {
+        if (!isSkillsActivatedData(data)) return
+        const skillList = data.skills.join(', ')
+        useChatStore.getState().addMessage(sessionId, {
+          id: generateMessageId(),
+          sessionId,
+          type: 'status',
+          content: `Skills activated: ${skillList}`,
+          metadata: { skills: data.skills },
+          timestamp: Date.now(),
+        })
       }),
     )
 

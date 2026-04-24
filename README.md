@@ -2,7 +2,7 @@
 
 Desktop AI coding agent built with **Wails v2** (Go backend + React/TypeScript frontend).
 
-This repository contains a single Go module with a desktop app that orchestrates planning/execution loops, tool calls, local project access, and a multi-panel UI for agent workflows.
+This repository contains a single Go module (`github.com/user/agent` — this path is intentional, not `c0wrk`; do not "fix" it) with a desktop app that orchestrates planning/execution loops, tool calls, local project access, and a multi-panel UI for agent workflows.
 
 ## Overview
 
@@ -34,6 +34,15 @@ High-level layers and responsibilities:
 - **`frontend/`** — React + TypeScript UI; communicates with Go via generated Wails bindings (`frontend/wailsjs/go/desktop/App`).
 
 > Important layering rule: SDK usage is routed through `core/`; `backend/` wraps `core`.
+
+### Frontend Stack
+
+- **React 19** + **TypeScript ~5.7** + **Vite 6**
+- **Tailwind CSS v4** (One Dark theme via `@theme` custom properties)
+- **Zustand 5** for state management (9 domain stores: chat, panels, sessions, projects, file tree, file viewer, scroll, settings, UI)
+- **shadcn/ui** (new-york style) + **Radix UI** primitives
+- **lucide-react** icons, **react-markdown** 10, **highlight.js** 11, **Mermaid** 11 (lazy-loaded)
+- Communication with Go via Wails-generated RPC bindings + session-scoped events (25+ event types)
 
 ## Requirements
 
@@ -174,13 +183,21 @@ make fetch-onnx
 
 ---
 
-If you plan to contribute, use this local validation sequence before opening a PR:
+## Contributing
+
+**CI is not configured in this repo** — local verification is the gate. Before opening a PR, run the full validation sequence:
 
 ```bash
 make build
 make lint
 make test
 ```
+
+All three must pass clean. There is no frontend test suite; `make test` covers only Go tests.
+
+## License
+
+Licensed under the [MIT License](LICENSE) — see [LICENSE](LICENSE) for details.
 
 ## About
 

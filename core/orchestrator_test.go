@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/user/agent/core/skills"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
@@ -97,6 +98,8 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
+				nil, // skillManager - nil for tests
+						nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -215,6 +218,8 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
+				nil, // skillManager - nil for tests
+						nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -290,6 +295,8 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
+				nil, // skillManager - nil for tests
+						nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "test")
@@ -363,6 +370,8 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
+				nil, // skillManager - nil for tests
+						nil, // coreToolRegistry - nil for tests
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -471,6 +480,8 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
+				nil, // skillManager - nil for tests
+						nil, // coreToolRegistry - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -553,6 +564,8 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
+				nil, // skillManager - nil for tests
+						nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -704,8 +717,9 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	result, err := orchestrator.Handle(context.Background(), "Run the tests")
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
@@ -1018,8 +1032,9 @@ func TestHandleMessage_Continuation(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	// Set up mock task persistence with a stored task
 	mockStore := &mockTaskStore{
 		taskState: &TaskState{
@@ -1123,8 +1138,9 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	// Set up mock task persistence with a stored task
 	mockStore := &mockTaskStore{
 		taskState: &TaskState{
@@ -1194,6 +1210,8 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
 	// Note: taskStore is nil by default
 
@@ -1246,8 +1264,9 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	// Set up mock task persistence that returns nil (task not found)
 	mockStore := &mockTaskStore{
 		taskState: nil, // task not found
@@ -1330,8 +1349,9 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
@@ -1432,8 +1452,9 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	// Set up mock task persistence with a stored task
 	mockStore := &mockTaskStore{
 		taskState: &TaskState{
@@ -1555,8 +1576,9 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	// Create mock store that tracks ReactivateTask calls
 	mockStore := &mockTaskStoreWithReactivate{
 		taskState: &TaskState{
@@ -1674,8 +1696,9 @@ func TestHandleMessage_Clarification(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc
+		nil, // skillManager
+		nil, // coreToolRegistry
 	)
-
 	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
@@ -1740,6 +1763,111 @@ func TestBuildSystemPrompt_ReactMode(t *testing.T) {
 	}
 }
 
+// TestBuildSystemPrompt_PlanWithActiveSkills verifies that skill instructions
+// appear in the system prompt when PlanModeKey IS set (Plan&Execute mode)
+// and active skills are injected via context.
+func TestBuildSystemPrompt_PlanWithActiveSkills(t *testing.T) {
+	ctx := context.WithValue(context.Background(), PlanModeKey, true)
+	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
+	ctx = WithActiveSkills(ctx, &ActiveSkills{
+		Skills: []*skills.Skill{
+			{
+				Metadata: skills.SkillMetadata{
+					Name:        "pdf-processing",
+					Description: "Extract PDF text and tables.",
+				},
+				Body:    "Step 1: Read the PDF file using read_file.",
+				DirPath: "/skills/pdf-processing",
+			},
+		},
+	})
+
+	modelMeta := llm.ModelMetadata{Family: "openai_flagship"}
+	result := buildSystemPrompt(ctx, "process this PDF", modelMeta)
+
+	if !strings.Contains(result, "Active Skills") {
+		t.Error("plan mode prompt should contain Active Skills section when skills are active")
+	}
+	if !strings.Contains(result, "pdf-processing") {
+		t.Error("plan mode prompt should contain the skill name")
+	}
+	if !strings.Contains(result, "Step 1: Read the PDF file") {
+		t.Error("plan mode prompt should contain the skill body")
+	}
+	// Plan Context should also be present (plan mode)
+	if !strings.Contains(result, "Plan Context") {
+		t.Error("plan mode prompt should contain Plan Context section")
+	}
+}
+
+// TestBuildSystemPrompt_ReactWithActiveSkills verifies that skill instructions
+// appear in the system prompt when PlanModeKey is NOT set (ReAct mode).
+// This is the key verification: skills must work in BOTH execution modes.
+func TestBuildSystemPrompt_ReactWithActiveSkills(t *testing.T) {
+	ctx := context.Background()
+	ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
+	ctx = WithActiveSkills(ctx, &ActiveSkills{
+		Skills: []*skills.Skill{
+			{
+				Metadata: skills.SkillMetadata{
+					Name:        "data-analysis",
+					Description: "Analyze datasets and generate visualizations.",
+					AllowedTools: "Read Write Bash(jq:*)",
+				},
+				Body:    "1. Read the dataset using read_file.\n2. Process with jq.",
+				DirPath: "/skills/data-analysis",
+			},
+		},
+	})
+
+	modelMeta := llm.ModelMetadata{Family: "openai_flagship"}
+	result := buildSystemPrompt(ctx, "analyze this dataset", modelMeta)
+
+	if !strings.Contains(result, "Active Skills") {
+		t.Error("react mode prompt should contain Active Skills section when skills are active")
+	}
+	if !strings.Contains(result, "data-analysis") {
+		t.Error("react mode prompt should contain the skill name")
+	}
+	if !strings.Contains(result, "Read the dataset") {
+		t.Error("react mode prompt should contain the skill body")
+	}
+	if !strings.Contains(result, "Allowed tools: Read Write Bash(jq:*)") {
+		t.Error("react mode prompt should contain the skill allowed-tools")
+	}
+	// Plan Context should NOT be present (ReAct mode)
+	if strings.Contains(result, "Plan Context") {
+		t.Error("react mode prompt should NOT contain Plan Context section")
+	}
+	// ReAct mode should include the Completion section
+	if !strings.Contains(result, "single-step mode") {
+		t.Error("react mode prompt should contain single-step mode completion instruction")
+	}
+}
+
+// TestBuildSystemPrompt_NoActiveSkills verifies that when no active skills
+// are in the context, neither mode includes the Active Skills section.
+func TestBuildSystemPrompt_NoActiveSkills(t *testing.T) {
+	for _, planMode := range []bool{true, false} {
+		name := "ReAct"
+		ctx := context.Background()
+		if planMode {
+			name = "Plan"
+			ctx = context.WithValue(ctx, PlanModeKey, true)
+		}
+		ctx = tools.WithWorkspacePath(ctx, "/test/workspace")
+
+		t.Run(name, func(t *testing.T) {
+			modelMeta := llm.ModelMetadata{Family: "openai_flagship"}
+			result := buildSystemPrompt(ctx, "test message", modelMeta)
+
+			if strings.Contains(result, "Active Skills") {
+				t.Errorf("%s mode prompt should NOT contain Active Skills section when no skills are active", name)
+			}
+		})
+	}
+}
+
 // TestOrchestrator_VectorSearchHints_NilFunc verifies that when vectorSearchFunc is nil,
 // HandleMessage works normally without injecting hints (no panic).
 func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
@@ -1783,6 +1911,8 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 		nil, // bbFactory
 		nil, // trackingCaller
 		nil, // vectorSearchFunc - nil means no RAG hints
+		nil, // skillManager - nil for tests
+				nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "test query")

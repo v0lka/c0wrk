@@ -60,6 +60,8 @@ export interface ServiceData { content: string; phase?: string }
 export interface SessionRenamedData { new_name: string }
 export interface TaskFailedResumableData { message?: string }
 export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string; error?: string }
+export interface TerminalOutputData { data: string }
+export interface SkillsActivatedData { skills: string[] }
 
 // --- Session event map ---
 
@@ -95,6 +97,8 @@ export interface SessionEventMap {
   finishing: void
   reflection: void
   session_renamed: SessionRenamedData
+  terminal_output: TerminalOutputData
+  skills_activated: SkillsActivatedData
 }
 
 export type SessionEventKey = keyof SessionEventMap
@@ -150,6 +154,8 @@ export function isContextCompactionData(d: unknown): d is ContextCompactionData 
 export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData { return isObj(d) }
+export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
+export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
 
 // --- Global event type guards ---
 

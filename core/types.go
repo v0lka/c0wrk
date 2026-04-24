@@ -130,6 +130,8 @@ type Emitter interface {
 	ReplanFailed(err error)
 	// FileRollbackError reports a file rollback failure for a plan step.
 	FileRollbackError(stepID string, err error)
+	// SkillsActivated reports the skills matched and activated for the current task.
+	SkillsActivated(skillNames []string)
 }
 
 // PlanStepScopable is an optional interface that Emitter implementations
@@ -164,6 +166,7 @@ func (n *noopEmitter) Service(_ string)                                         
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)                   {}
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) FileRollbackError(_ string, _ error)                          {}
+func (n *noopEmitter) SkillsActivated(_ []string)                                    {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -238,9 +241,10 @@ func (a *emitterEventsAdapter) WithRetryAttempt(attempt int) orchestration.Event
 
 // RoutingDecision — result of Router classification (AD 4.1).
 type RoutingDecision struct {
-	Domain             string `json:"domain"`     // "code" | "research" | "general" | "mixed"
-	Complexity         int    `json:"complexity"` // 1-5
-	NeedsClarification bool   `json:"needs_clarification"`
+	Domain             string   `json:"domain"`               // "code" | "research" | "general" | "mixed"
+	Complexity         int      `json:"complexity"`            // 1-5
+	NeedsClarification bool     `json:"needs_clarification"`
+	MatchedSkills      []string `json:"matched_skills,omitempty"` // skills selected by the router
 }
 
 // Plan — DAG of execution steps (AD 4.3).

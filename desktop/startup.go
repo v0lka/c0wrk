@@ -22,6 +22,7 @@ import (
 	"github.com/user/agent/backend/project"
 	beRtk "github.com/user/agent/backend/rtk"
 	"github.com/user/agent/backend/session"
+	"github.com/user/agent/backend/terminal"
 	"github.com/user/agent/backend/vectorindex"
 
 	_ "modernc.org/sqlite" // register SQLite driver
@@ -133,6 +134,12 @@ func (a *App) Startup(ctx context.Context) {
 		wailsRuntime.EventsEmit(a.ctx, eventName, evt.Data)
 		a.log().Debug("desktop: Wails EventsEmit called", "eventName", eventName)
 	}
+
+	// Terminal manager: emits raw PTY output as session-scoped events.
+	termManager := terminal.NewManager(log, func(sessionID string, data []byte) {
+		eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
+		wailsRuntime.EventsEmit(a.ctx, eventName, string(data))
+	})
 
 	// --- Desktop UI callbacks ---
 
@@ -335,17 +342,18 @@ func (a *App) Startup(ctx context.Context) {
 
 	// --- Construct FrontendAPI (all components are ready) ---
 	a.FrontendAPI = backend.NewFrontendAPI(backend.FrontendAPIConfig{
-		App:            application,
-		Logger:         log,
-		Config:         cfg,
-		ConfigPath:     configPath,
-		Store:          store,
-		ProjStore:      projStore,
-		SessionLogger:  sessionLogger,
-		LogLevel:       logLevel,
-		ProjectManager: projectMgr,
-		ProjectsDir:    projectsDir,
-		VectorManager:  vectorMgr,
+		App:             application,
+		Logger:          log,
+		Config:          cfg,
+		ConfigPath:      configPath,
+		Store:           store,
+		ProjStore:       projStore,
+		SessionLogger:   sessionLogger,
+		LogLevel:        logLevel,
+		ProjectManager:  projectMgr,
+		ProjectsDir:     projectsDir,
+		VectorManager:   vectorMgr,
+		TerminalManager: termManager,
 		EmitEvent: func(eventName string, data ...any) {
 			wailsRuntime.EventsEmit(a.ctx, eventName, data...)
 		},

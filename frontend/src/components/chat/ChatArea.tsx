@@ -43,7 +43,7 @@ export function ChatArea() {
     return () => ro.disconnect()
   }, [activeSessionId])
 
-  const maxPinnedHeight = containerHeight / 5
+  const maxPinnedHeight = containerHeight / 7
 
   // Load persisted history on session change
   useEffect(() => {

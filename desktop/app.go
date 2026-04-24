@@ -36,8 +36,14 @@ type App struct {
 }
 
 // NewApp creates a new App instance.
+// FrontendAPI is initialized as a non-nil zero-value so that early frontend
+// RPC calls (before Startup finishes) hit the per-method nil guards and
+// return proper errors instead of panicking on a nil pointer dereference.
+// Startup replaces the pointer with a fully-wired FrontendAPI.
 func NewApp() *App {
-	return &App{}
+	return &App{
+		FrontendAPI: &backend.FrontendAPI{},
+	}
 }
 
 // PickDirectory opens a native directory picker dialog.

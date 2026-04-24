@@ -1166,7 +1166,11 @@ func (m *mockSessionStoreForRestore) LoadMessages(_ string) ([]ChatMessage, erro
 	return []ChatMessage{}, nil
 }
 func (m *mockSessionStoreForRestore) DeleteMessages(_ string) error { return nil }
-func (m *mockSessionStoreForRestore) Close() error                  { return nil }
+func (m *mockSessionStoreForRestore) SaveTerminalCommand(_, _ string) error { return nil }
+func (m *mockSessionStoreForRestore) LoadTerminalCommands(_ string, _ int) ([]TerminalCommand, error) {
+	return []TerminalCommand{}, nil
+}
+func (m *mockSessionStoreForRestore) Close() error { return nil }
 
 // restoreTestManager creates a Manager pre-wired with a mock session store and
 // project resolver for restoration tests. It returns the manager, event channel,
