@@ -106,6 +106,14 @@ var VerificationMandate string
 //go:embed compaction_summarize.md
 var CompactionSummarize string
 
+// Prompt optimizer prompts
+
+//go:embed prompt_optimize_extract.md
+var PromptOptimizeExtract string
+
+//go:embed prompt_optimize_rewrite.md
+var PromptOptimizeRewrite string
+
 // FamilyPrompt returns the family-specific prompt for the given agent and family.
 // Falls back to the "default" family if no specific prompt exists.
 // Returns empty string if the agent has no family-specific prompts (auxiliary agents).

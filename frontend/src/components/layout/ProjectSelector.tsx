@@ -23,6 +23,7 @@ export function ProjectSelector() {
   const [createOpen, setCreateOpen] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [dropdownOpen, setDropdownOpen] = useState(false)
   const renameRef = useRef<HTMLInputElement>(null)
 
   const activeProject = projects?.find((p) => p.id === activeProjectId)
@@ -32,6 +33,7 @@ export function ProjectSelector() {
     try {
       await switchProject(id)
       setActiveProjectId(id)
+      setDropdownOpen(false)
       const sessions = await listSessions()
       useSessionStore.getState().setSessions(sessions)
       if (sessions.length > 0) {
@@ -92,7 +94,7 @@ export function ProjectSelector() {
   return (
     <>
       <div className="px-2 py-1">
-        <DropdownMenu>
+        <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-7 w-full justify-between gap-1 px-2 text-sm font-medium">
               <span className="truncate">{activeProject?.name ?? 'Select project'}</span>

@@ -126,3 +126,10 @@ type VectorStoreEntry struct {
 	EndLine   int     `json:"end_line"`
 	Language  string  `json:"language"`
 }
+
+// OptimizePromptResponse holds the result of prompt optimization for the frontend.
+type OptimizePromptResponse struct {
+	OptimizedPrompt string   `json:"optimized_prompt"`
+	Keywords        []string `json:"keywords"`
+	UsedContext     bool     `json:"used_context"`
+}

@@ -9,15 +9,17 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { TerminalPanel } from '@/components/terminal/TerminalPanel'
 import { sendMessage, cancelTask } from '@/api/chat'
+import { optimizePrompt } from '@/api/prompt'
 import { createSession } from '@/api/sessions'
 import { generateMessageId } from '@/lib/ids'
-import { Play, Square, Maximize2, Minimize2, MessageSquare, Terminal } from 'lucide-react'
+import { Play, Square, Maximize2, Minimize2, MessageSquare, Terminal, Sparkles, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
 export function ChatInput() {
   const [text, setText] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
+  const [isOptimizing, setIsOptimizing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -104,6 +106,19 @@ export function ChatInput() {
       logger.error('Failed to cancel task:', error)
     }
   }, [activeSessionId])
+
+  const handleOptimize = useCallback(async () => {
+    if (!text.trim() || isOptimizing) return
+    setIsOptimizing(true)
+    try {
+      const result = await optimizePrompt(text.trim())
+      setText(result.optimized_prompt)
+    } catch (error) {
+      logger.error('Failed to optimize prompt:', error)
+    } finally {
+      setIsOptimizing(false)
+    }
+  }, [text, isOptimizing])
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -228,6 +243,21 @@ export function ChatInput() {
         >
           <Terminal className="size-3.5" />
         </Button>
+        {mode === 'chat' && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={handleOptimize}
+            disabled={!text.trim() || isOptimizing || isInputDisabled}
+            title="Optimize prompt"
+            aria-label="Optimize prompt"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            {isOptimizing
+              ? <Loader2 className="size-3.5 animate-spin" />
+              : <Sparkles className="size-3.5" />}
+          </Button>
+        )}
         {blockingMessage && mode === 'chat' && (
           <span className="text-xs italic text-muted-foreground">{blockingMessage}</span>
         )}
@@ -246,7 +276,7 @@ export function ChatInput() {
         ) : mode === 'chat' ? (
           <Button
             onClick={handleSend}
-            disabled={!text.trim() || isInputDisabled}
+            disabled={!text.trim() || isInputDisabled || isOptimizing}
             className="shrink-0 h-8 w-8 rounded-md text-input bg-success hover:bg-success/90 active:bg-success/75 transition-colors"
             title="Send message"
             aria-label="Send message"

@@ -67,6 +67,8 @@ export function ListProviderModels(arg1:string):Promise<Array<string>>;
 
 export function ListSessions():Promise<Array<session.SessionInfo>>;
 
+export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;
+
 export function PickDirectory():Promise<string>;
 
 export function ReadFile(arg1:string):Promise<string>;

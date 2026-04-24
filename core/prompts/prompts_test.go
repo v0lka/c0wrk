@@ -21,6 +21,9 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"RouterInstructions", RouterInstructions},
 		{"VerificationMandate", VerificationMandate},
 		{"CompactionSummarize", CompactionSummarize},
+		// Prompt optimizer prompts
+		{"PromptOptimizeExtract", PromptOptimizeExtract},
+		{"PromptOptimizeRewrite", PromptOptimizeRewrite},
 		// Family-specific orchestrator prompts
 		{"OrchestratorDefault", OrchestratorDefault},
 		{"OrchestratorAnthropic", OrchestratorAnthropic},
@@ -67,6 +70,8 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 		{"OrchestratorSystem", OrchestratorSystem, []string{"task"}},
 		{"ReflectorSystem", ReflectorSystem, []string{"reflect"}},
 		{"RouterSystem", RouterSystem, []string{"classif"}},
+		{"PromptOptimizeExtract", PromptOptimizeExtract, []string{"translate", "keyword", "json"}},
+		{"PromptOptimizeRewrite", PromptOptimizeRewrite, []string{"optim", "prompt"}},
 	}
 
 	for _, tt := range tests {

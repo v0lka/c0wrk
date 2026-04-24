@@ -199,6 +199,22 @@ export namespace backend {
 	        this.model = source["model"];
 	    }
 	}
+	export class OptimizePromptResponse {
+	    optimized_prompt: string;
+	    keywords: string[];
+	    used_context: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new OptimizePromptResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.optimized_prompt = source["optimized_prompt"];
+	        this.keywords = source["keywords"];
+	        this.used_context = source["used_context"];
+	    }
+	}
 	export class SearchSettingsRequest {
 	    provider: string;
 	    api_key: string;

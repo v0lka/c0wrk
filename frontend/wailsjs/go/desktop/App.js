@@ -122,6 +122,10 @@ export function ListSessions() {
   return window['go']['desktop']['App']['ListSessions']();
 }
 
+export function OptimizePrompt(arg1) {
+  return window['go']['desktop']['App']['OptimizePrompt'](arg1);
+}
+
 export function PickDirectory() {
   return window['go']['desktop']['App']['PickDirectory']();
 }

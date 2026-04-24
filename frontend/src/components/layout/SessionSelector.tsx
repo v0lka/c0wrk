@@ -132,7 +132,7 @@ export function SessionSelector() {
               key={session.id}
               session={session}
               isActive={session.id === activeSessionId}
-              onSelect={() => setActiveSessionId(session.id)}
+              onSelect={() => { setActiveSessionId(session.id); setDropdownOpen(false) }}
               onRename={() => startRename(session.id, session.name)}
               onArchive={() => handleArchive(session.id, session.archived)}
               onDelete={() => handleDelete(session.id)}
@@ -148,7 +148,7 @@ export function SessionSelector() {
                   key={session.id}
                   session={session}
                   isActive={session.id === activeSessionId}
-                  onSelect={() => setActiveSessionId(session.id)}
+                  onSelect={() => { setActiveSessionId(session.id); setDropdownOpen(false) }}
                   onRename={() => startRename(session.id, session.name)}
                   onArchive={() => handleArchive(session.id, session.archived)}
                   onDelete={() => handleDelete(session.id)}
