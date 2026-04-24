@@ -41,6 +41,30 @@ func VectorSearchHintsFromContext(ctx context.Context) *VectorSearchHints {
 	return nil
 }
 
+// agentsMDKeyType is the context key for AGENTS.md project instructions.
+type agentsMDKeyType struct{}
+
+var agentsMDKey = agentsMDKeyType{}
+
+// AgentsMD holds the full content of the project's AGENTS.md file.
+type AgentsMD struct {
+	Content string
+}
+
+// WithAgentsMD returns a context with AGENTS.md content attached.
+func WithAgentsMD(ctx context.Context, amd *AgentsMD) context.Context {
+	return context.WithValue(ctx, agentsMDKey, amd)
+}
+
+// AgentsMDFromContext extracts AGENTS.md content from the context.
+// Returns nil if not present.
+func AgentsMDFromContext(ctx context.Context) *AgentsMD {
+	if amd, ok := ctx.Value(agentsMDKey).(*AgentsMD); ok {
+		return amd
+	}
+	return nil
+}
+
 // buildSystemPrompt creates the system prompt for executors.
 func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
 	// Build workspace context string

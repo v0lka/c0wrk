@@ -5,19 +5,32 @@
 - [App.tsx](file://frontend/src/App.tsx)
 - [AppLayout.tsx](file://frontend/src/components/layout/AppLayout.tsx)
 - [Sidebar.tsx](file://frontend/src/components/layout/Sidebar.tsx)
+- [SidebarHeader.tsx](file://frontend/src/components/layout/SidebarHeader.tsx)
+- [ProjectSelector.tsx](file://frontend/src/components/layout/ProjectSelector.tsx)
+- [SessionSelector.tsx](file://frontend/src/components/layout/SessionSelector.tsx)
 - [WorkspacePanel.tsx](file://frontend/src/components/layout/WorkspacePanel.tsx)
 - [FileTreePanel.tsx](file://frontend/src/components/layout/FileTreePanel.tsx)
 - [StatusBar.tsx](file://frontend/src/components/layout/StatusBar.tsx)
 - [IndexingStatus.tsx](file://frontend/src/components/layout/IndexingStatus.tsx)
 - [FileIcon.tsx](file://frontend/src/components/layout/FileIcon.tsx)
 - [useResize.tsx](file://frontend/src/hooks/useResize.tsx)
+- [useFileSearch.ts](file://frontend/src/hooks/useFileSearch.ts)
 - [fileTreeStore.ts](file://frontend/src/stores/fileTreeStore.ts)
 - [fileViewerStore.ts](file://frontend/src/stores/fileViewerStore.ts)
 - [uiStore.ts](file://frontend/src/stores/uiStore.ts)
 - [projectStore.ts](file://frontend/src/stores/projectStore.ts)
+- [sessionStore.ts](file://frontend/src/stores/sessionStore.ts)
 - [vectorIndexStore.ts](file://frontend/src/stores/vectorIndexStore.ts)
 - [index.css](file://frontend/src/index.css)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added comprehensive documentation for new ProjectSelector.tsx and SessionSelector.tsx components
+- Updated FileTreePanel.tsx documentation to reflect substantial rewrite with new interaction patterns
+- Revised Sidebar.tsx documentation to reflect complete refactoring integrating new selector components
+- Enhanced component integration patterns and data flow documentation
+- Updated architecture diagrams to reflect new selector-based approach
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -31,70 +44,84 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document provides comprehensive documentation for C0WRK's layout and navigation components. It covers the AppLayout main container, responsive design patterns, Sidebar with workspace switching and project navigation, WorkspacePanel for project management and file browsing integration, FileTreePanel for hierarchical file navigation with Git-aware status indicators, StatusBar for system information and indexing status, IndexingStatus for real-time codebase indexing feedback, and FileIcon for file type visualization. It also explains layout composition patterns, responsive breakpoints, and customization options.
+This document provides comprehensive documentation for C0WRK's layout and navigation components. It covers the AppLayout main container, responsive design patterns, Sidebar with integrated ProjectSelector and SessionSelector components, WorkspacePanel for project management and file browsing integration, FileTreePanel for hierarchical file navigation with Git-aware status indicators, StatusBar for system information and indexing status, IndexingStatus for real-time codebase indexing feedback, and FileIcon for file type visualization. It also explains layout composition patterns, responsive breakpoints, and customization options.
 
 ## Project Structure
-The layout and navigation system resides in the frontend/src/components/layout directory and integrates with multiple stores for state management. The main application entry point initializes global banners and renders the AppLayout, which orchestrates the sidebar, main content area, file viewer, and status bar.
+The layout and navigation system resides in the frontend/src/components/layout directory and integrates with multiple stores for state management. The main application entry point initializes global banners and renders the AppLayout, which orchestrates the sidebar (now featuring dedicated selectors), main content area, file viewer, and status bar.
 
 ```mermaid
 graph TB
 App["App.tsx<br/>Application entry point"] --> AppLayout["AppLayout.tsx<br/>Main layout container"]
-AppLayout --> Sidebar["Sidebar.tsx<br/>Workspace switching and navigation"]
-AppLayout --> StatusBar["StatusBar.tsx<br/>System and indexing status"]
-AppLayout --> FileViewer["FileViewerPanel<br/>(via fileViewerStore)"]
+AppLayout --> Sidebar["Sidebar.tsx<br/>Integrated project and session selectors"]
+Sidebar --> SidebarHeader["SidebarHeader.tsx<br/>Header with collapse/settings controls"]
+Sidebar --> ProjectSelector["ProjectSelector.tsx<br/>Project management dropdown"]
+Sidebar --> SessionSelector["SessionSelector.tsx<br/>Session management dropdown"]
 Sidebar --> WorkspacePanel["WorkspacePanel.tsx<br/>Explorer/Git/Semantics tabs"]
-WorkspacePanel --> FileTreePanel["FileTreePanel.tsx<br/>Hierarchical file tree with Git status"]
+WorkspacePanel --> FileTreePanel["FileTreePanel.tsx<br/>Enhanced hierarchical file tree"]
 FileTreePanel --> FileIcon["FileIcon.tsx<br/>File type visualization"]
-StatusBar --> IndexingStatus["IndexingStatus.tsx<br/>Real-time indexing feedback"]
+StatusBar["StatusBar.tsx<br/>System and indexing status"] --> IndexingStatus["IndexingStatus.tsx<br/>Real-time indexing feedback"]
 ```
 
 **Diagram sources**
 - [App.tsx:21-87](file://frontend/src/App.tsx#L21-L87)
-- [AppLayout.tsx:30-134](file://frontend/src/components/layout/AppLayout.tsx#L30-L134)
-- [Sidebar.tsx:64-626](file://frontend/src/components/layout/Sidebar.tsx#L64-L626)
+- [AppLayout.tsx:20-91](file://frontend/src/components/layout/AppLayout.tsx#L20-L91)
+- [Sidebar.tsx:16-45](file://frontend/src/components/layout/Sidebar.tsx#L16-L45)
+- [SidebarHeader.tsx:10-25](file://frontend/src/components/layout/SidebarHeader.tsx#L10-L25)
+- [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
+- [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
 - [WorkspacePanel.tsx:26-70](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L70)
-- [FileTreePanel.tsx:270-482](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L482)
+- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
 - [StatusBar.tsx:10-68](file://frontend/src/components/layout/StatusBar.tsx#L10-L68)
 - [IndexingStatus.tsx:9-86](file://frontend/src/components/layout/IndexingStatus.tsx#L9-L86)
-- [FileIcon.tsx:148-162](file://frontend/src/components/layout/FileIcon.tsx#L148-L162)
 
 **Section sources**
 - [App.tsx:21-87](file://frontend/src/App.tsx#L21-L87)
 - [index.css:18-21](file://frontend/src/index.css#L18-L21)
 
 ## Core Components
-- AppLayout: Orchestrates sidebar, main chat area, file viewer panel, and status bar with resizable panels and collapsed states.
-- Sidebar: Manages project and session selection, workspace switching, and renders the WorkspacePanel.
-- WorkspacePanel: Provides Explorer, Git, and Semantics tabs with a file tree in the Explorer tab.
-- FileTreePanel: Renders hierarchical file navigation with filtering, Git status indicators, and file opening.
-- StatusBar: Displays session name, routing domain, attempt counts, context fill percentage, and indexing status.
-- IndexingStatus: Shows real-time progress for codebase indexing with animated indicators and progress bars.
-- FileIcon: Visualizes file types using a seti-inspired icon palette and folder icons.
-- Stores: fileTreeStore, fileViewerStore, uiStore, projectStore, vectorIndexStore manage state and persistence.
+- **AppLayout**: Orchestrates sidebar, main chat area, file viewer panel, and status bar with resizable panels and collapsed states.
+- **Sidebar**: Now features integrated ProjectSelector and SessionSelector components for streamlined project and session management, with SidebarHeader for controls.
+- **ProjectSelector**: Dedicated dropdown interface for managing multiple projects with create, rename, delete, and switch operations.
+- **SessionSelector**: Comprehensive dropdown interface for managing multiple sessions with search, archive/unarchive, and delete operations.
+- **WorkspacePanel**: Provides Explorer, Git, and Semantics tabs with a file tree in the Explorer tab.
+- **FileTreePanel**: Enhanced hierarchical file navigation with improved filtering, Git status indicators, and file opening capabilities.
+- **StatusBar**: Displays session name, routing domain, attempt counts, context fill percentage, and indexing status.
+- **IndexingStatus**: Shows real-time progress for codebase indexing with animated indicators and progress bars.
+- **FileIcon**: Visualizes file types using a seti-inspired icon palette and folder icons.
+- **Stores**: projectStore, sessionStore, fileTreeStore, fileViewerStore, uiStore, vectorIndexStore manage state and persistence.
 
 **Section sources**
-- [AppLayout.tsx:30-134](file://frontend/src/components/layout/AppLayout.tsx#L30-L134)
-- [Sidebar.tsx:64-626](file://frontend/src/components/layout/Sidebar.tsx#L64-L626)
+- [AppLayout.tsx:20-91](file://frontend/src/components/layout/AppLayout.tsx#L20-L91)
+- [Sidebar.tsx:16-45](file://frontend/src/components/layout/Sidebar.tsx#L16-L45)
+- [SidebarHeader.tsx:10-25](file://frontend/src/components/layout/SidebarHeader.tsx#L10-L25)
+- [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
+- [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
 - [WorkspacePanel.tsx:26-70](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L70)
-- [FileTreePanel.tsx:270-482](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L482)
+- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
 - [StatusBar.tsx:10-68](file://frontend/src/components/layout/StatusBar.tsx#L10-L68)
 - [IndexingStatus.tsx:9-86](file://frontend/src/components/layout/IndexingStatus.tsx#L9-L86)
 - [FileIcon.tsx:148-162](file://frontend/src/components/layout/FileIcon.tsx#L148-L162)
+- [projectStore.ts:31-65](file://frontend/src/stores/projectStore.ts#L31-L65)
+- [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
 - [fileTreeStore.ts:78-243](file://frontend/src/stores/fileTreeStore.ts#L78-L243)
 - [fileViewerStore.ts:108-278](file://frontend/src/stores/fileViewerStore.ts#L108-L278)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
-- [projectStore.ts:25-43](file://frontend/src/stores/projectStore.ts#L25-L43)
 - [vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
 
 ## Architecture Overview
-The layout follows a responsive, resizable panel architecture with persistent UI state. The sidebar can be collapsed and restored, and the file viewer panel can be resized and collapsed independently. The file tree supports recursive loading and filtering with Git status integration. The status bar aggregates session and indexing information.
+The layout follows a responsive, resizable panel architecture with persistent UI state. The sidebar now integrates dedicated selector components for seamless project and session management. The file tree supports recursive loading and filtering with Git status integration. The status bar aggregates session and indexing information.
 
 ```mermaid
 graph TB
 subgraph "Layout Container"
 AppLayout
 Sidebar
+SidebarHeader
 StatusBar
+end
+subgraph "Selector Components"
+ProjectSelector
+SessionSelector
 end
 subgraph "Panels"
 WorkspacePanel
@@ -102,33 +129,41 @@ FileTreePanel
 FileViewerPanel["FileViewerPanel<br/>(via fileViewerStore)"]
 end
 subgraph "Stores"
+projectStore
+sessionStore
 fileTreeStore
 fileViewerStore
 uiStore
-projectStore
 vectorIndexStore
 end
 AppLayout --> Sidebar
-AppLayout --> FileViewerPanel
-AppLayout --> StatusBar
+Sidebar --> SidebarHeader
+Sidebar --> ProjectSelector
+Sidebar --> SessionSelector
 Sidebar --> WorkspacePanel
 WorkspacePanel --> FileTreePanel
-FileTreePanel --> fileTreeStore
+FileTreePanel --> FileIcon
 FileViewerPanel --> fileViewerStore
 AppLayout --> uiStore
-Sidebar --> projectStore
 StatusBar --> vectorIndexStore
+ProjectSelector --> projectStore
+SessionSelector --> sessionStore
+FileTreePanel --> fileTreeStore
 ```
 
 **Diagram sources**
-- [AppLayout.tsx:30-134](file://frontend/src/components/layout/AppLayout.tsx#L30-L134)
-- [Sidebar.tsx:64-626](file://frontend/src/components/layout/Sidebar.tsx#L64-L626)
+- [AppLayout.tsx:20-91](file://frontend/src/components/layout/AppLayout.tsx#L20-L91)
+- [Sidebar.tsx:16-45](file://frontend/src/components/layout/Sidebar.tsx#L16-L45)
+- [SidebarHeader.tsx:10-25](file://frontend/src/components/layout/SidebarHeader.tsx#L10-L25)
+- [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
+- [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
 - [WorkspacePanel.tsx:26-70](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L70)
-- [FileTreePanel.tsx:270-482](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L482)
+- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
+- [projectStore.ts:31-65](file://frontend/src/stores/projectStore.ts#L31-L65)
+- [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
 - [fileTreeStore.ts:78-243](file://frontend/src/stores/fileTreeStore.ts#L78-L243)
 - [fileViewerStore.ts:108-278](file://frontend/src/stores/fileViewerStore.ts#L108-L278)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
-- [projectStore.ts:25-43](file://frontend/src/stores/projectStore.ts#L25-L43)
 - [vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
 
 ## Detailed Component Analysis
@@ -164,67 +199,129 @@ RenderViewerCollapsed --> RenderStatusBar
 ```
 
 **Diagram sources**
-- [AppLayout.tsx:30-134](file://frontend/src/components/layout/AppLayout.tsx#L30-L134)
+- [AppLayout.tsx:20-91](file://frontend/src/components/layout/AppLayout.tsx#L20-L91)
 - [useResize.tsx:7-88](file://frontend/src/hooks/useResize.tsx#L7-L88)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
 - [fileViewerStore.ts:108-211](file://frontend/src/stores/fileViewerStore.ts#L108-L211)
 
 **Section sources**
 - [AppLayout.tsx:18-28](file://frontend/src/components/layout/AppLayout.tsx#L18-L28)
-- [AppLayout.tsx:30-134](file://frontend/src/components/layout/AppLayout.tsx#L30-L134)
+- [AppLayout.tsx:20-91](file://frontend/src/components/layout/AppLayout.tsx#L20-L91)
 - [useResize.tsx:7-88](file://frontend/src/hooks/useResize.tsx#L7-L88)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
 - [fileViewerStore.ts:108-211](file://frontend/src/stores/fileViewerStore.ts#L108-L211)
 
-### Sidebar: Workspace Switching and Project Navigation
-The Sidebar component provides:
-- Project selection dropdown with create/rename/delete actions.
-- Session selection dropdown with search, archive/unarchive, and delete actions.
-- WorkspacePanel integration for file browsing.
-- Settings access and project creation flow.
-- Early data loading via backend events and fallback fetching.
+### Sidebar: Integrated Project and Session Management
+The Sidebar component now features a streamlined design with integrated selector components:
+- **SidebarHeader**: Provides collapse/settings controls with accessible labels.
+- **ProjectSelector**: Dedicated dropdown for project management with create, rename, delete, and switch operations.
+- **SessionSelector**: Comprehensive dropdown for session management with search, archive/unarchive, and delete operations.
+- **WorkspacePanel**: Integrated file browsing with Explorer, Git, and Semantics tabs.
 
-Key behaviors:
-- Loads projects and sessions on mount and on backend ready events.
-- Handles project switching and deletion with automatic fallback selection.
-- Manages inline renaming for projects and sessions.
-- Filters sessions by search term and separates archived sessions.
+Key integration patterns:
+- **Conditional rendering**: SessionSelector and WorkspacePanel only render when an active project exists.
+- **State synchronization**: ProjectSelector automatically updates session lists when projects change.
+- **Accessibility**: Proper ARIA labels and keyboard navigation support throughout.
 
 ```mermaid
 sequenceDiagram
 participant UI as "Sidebar"
-participant ProjectAPI as "useProjectAPI"
-participant SessionAPI as "useSessionAPI"
-participant Runtime as "window.runtime"
+participant ProjectSelector as "ProjectSelector"
+participant SessionSelector as "SessionSelector"
 participant ProjectStore as "useProjectStore"
-UI->>Runtime : Subscribe to "projects : loaded", "sessions : loaded", "backend : ready"
-Runtime-->>UI : Pre-emitted project/session lists
-UI->>ProjectStore : setProjects(), setActiveProject()
-UI->>ProjectAPI : switchProject()
-UI->>ProjectAPI : listProjects()
-ProjectAPI-->>UI : Project list
-UI->>ProjectStore : setProjects(), setActiveProject()
-UI->>ProjectAPI : switchProject()
-UI->>SessionAPI : listSessions()
-SessionAPI-->>UI : Session list
-UI->>ProjectStore : setSessions(), setActiveSession()
+participant SessionStore as "useSessionStore"
+UI->>ProjectSelector : Render project selector
+UI->>SessionSelector : Render session selector (if project active)
+ProjectSelector->>ProjectStore : setProjects(), setActiveProjectId()
+ProjectSelector->>SessionSelector : Trigger session list refresh
+SessionSelector->>SessionStore : setSessions(), setActiveSessionId()
 ```
 
 **Diagram sources**
-- [Sidebar.tsx:100-178](file://frontend/src/components/layout/Sidebar.tsx#L100-L178)
-- [Sidebar.tsx:207-232](file://frontend/src/components/layout/Sidebar.tsx#L207-L232)
-- [Sidebar.tsx:235-257](file://frontend/src/components/layout/Sidebar.tsx#L235-L257)
-- [Sidebar.tsx:279-315](file://frontend/src/components/layout/Sidebar.tsx#L279-L315)
+- [Sidebar.tsx:16-45](file://frontend/src/components/layout/Sidebar.tsx#L16-L45)
+- [ProjectSelector.tsx:30-43](file://frontend/src/components/layout/ProjectSelector.tsx#L30-L43)
+- [SessionSelector.tsx:35-41](file://frontend/src/components/layout/SessionSelector.tsx#L35-L41)
 
 **Section sources**
-- [Sidebar.tsx:64-626](file://frontend/src/components/layout/Sidebar.tsx#L64-L626)
-- [projectStore.ts:25-43](file://frontend/src/stores/projectStore.ts#L25-L43)
+- [Sidebar.tsx:16-45](file://frontend/src/components/layout/Sidebar.tsx#L16-L45)
+- [SidebarHeader.tsx:10-25](file://frontend/src/components/layout/SidebarHeader.tsx#L10-L25)
+- [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
+- [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
+
+### ProjectSelector: Comprehensive Project Management
+The ProjectSelector component provides a dedicated interface for project management:
+- **Project switching**: Dropdown with checkmark indicators for active project.
+- **Inline editing**: Seamless rename operations with keyboard shortcuts.
+- **Project lifecycle**: Create, rename, delete operations with proper error handling.
+- **Integration**: Automatically refreshes session lists when projects change.
+
+Key features:
+- **State management**: Uses zustand store for project state with sorting by activity.
+- **API integration**: Direct calls to project management APIs with proper error handling.
+- **User experience**: Keyboard navigation, focus management, and immediate visual feedback.
+
+```mermaid
+flowchart TD
+Start(["User opens ProjectSelector"]) --> ShowDropdown["Display project dropdown"]
+ShowDropdown --> SelectProject{"User selects project"}
+SelectProject --> |Same as active| Close["Close dropdown"]
+SelectProject --> |Different project| SwitchProject["Call switchProject API"]
+SwitchProject --> UpdateStore["Update project store"]
+UpdateStore --> RefreshSessions["Refresh session list"]
+RefreshSessions --> Close
+SelectProject --> |Rename/Delete| InlineEdit["Enter inline edit mode"]
+InlineEdit --> CommitEdit["Commit changes via API"]
+CommitEdit --> UpdateStore
+```
+
+**Diagram sources**
+- [ProjectSelector.tsx:30-72](file://frontend/src/components/layout/ProjectSelector.tsx#L30-L72)
+- [ProjectSelector.tsx:103-123](file://frontend/src/components/layout/ProjectSelector.tsx#L103-L123)
+
+**Section sources**
+- [ProjectSelector.tsx:16-136](file://frontend/src/components/layout/ProjectSelector.tsx#L16-L136)
+- [projectStore.ts:31-65](file://frontend/src/stores/projectStore.ts#L31-L65)
+
+### SessionSelector: Advanced Session Management
+The SessionSelector component provides comprehensive session management:
+- **Search functionality**: Dynamic search input for filtering sessions (shows when 5+ sessions exist).
+- **Archived sessions**: Separate section for archived sessions with toggle functionality.
+- **Inline editing**: Seamless rename operations with keyboard shortcuts.
+- **Session lifecycle**: Create, rename, archive/unarchive, delete operations.
+
+Advanced features:
+- **Filtering system**: Case-insensitive search with debounced updates.
+- **Visual indicators**: Active session dot, archived status, and relative timestamps.
+- **State management**: Uses zustand store with sorting by activity and touch operations.
+- **API integration**: Direct calls to session management APIs with proper error handling.
+
+```mermaid
+flowchart TD
+Start(["User opens SessionSelector"]) --> CheckCount{"Session count >= 5?"}
+CheckCount --> |Yes| ShowSearch["Show search input"]
+CheckCount --> |No| ShowDropdown["Display session dropdown"]
+ShowSearch --> FilterSessions["Filter sessions by search term"]
+ShowDropdown --> ShowActive["Show active sessions"]
+FilterSessions --> ShowActive
+ShowActive --> ShowArchived{"Archived sessions exist?"}
+ShowArchived --> |Yes| ShowArchivedSection["Show archived section"]
+ShowArchived --> |No| Close
+ShowArchivedSection --> Close
+```
+
+**Diagram sources**
+- [SessionSelector.tsx:29-44](file://frontend/src/components/layout/SessionSelector.tsx#L29-L44)
+- [SessionSelector.tsx:130-158](file://frontend/src/components/layout/SessionSelector.tsx#L130-L158)
+
+**Section sources**
+- [SessionSelector.tsx:15-199](file://frontend/src/components/layout/SessionSelector.tsx#L15-L199)
+- [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
 
 ### WorkspacePanel: Project Management and File Browsing Integration
 WorkspacePanel organizes three tabs:
-- Explorer: Displays the FileTreePanel for hierarchical file navigation.
-- Git: Placeholder for Git-related views.
-- Semantics: Placeholder for semantic search views.
+- **Explorer**: Displays the FileTreePanel for hierarchical file navigation.
+- **Git**: Placeholder for Git-related views.
+- **Semantics**: Placeholder for semantic search views.
 
 It uses a tooltip-enabled tab list with dynamic labels and provides a consistent header area for tab controls.
 
@@ -232,22 +329,24 @@ It uses a tooltip-enabled tab list with dynamic labels and provides a consistent
 - [WorkspacePanel.tsx:12-16](file://frontend/src/components/layout/WorkspacePanel.tsx#L12-L16)
 - [WorkspacePanel.tsx:26-70](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L70)
 
-### FileTreePanel: Hierarchical File Navigation with Git Status
-FileTreePanel implements:
-- Recursive directory listing with lazy expansion.
-- Filtering support with glob and regex modes, debounced for performance.
-- Git status integration with per-file and per-directory coloring.
-- Double-click to open files in the file viewer.
-- Event-driven refresh on workspace tree changes.
+### FileTreePanel: Enhanced Hierarchical File Navigation
+FileTreePanel implements an enhanced version with:
+- **Improved tree rendering**: Optimized TreeNode component with better performance.
+- **Git status propagation**: Enhanced algorithm to propagate Git status up to parent directories.
+- **Interactive filtering**: Integrated filter input with mode switching between glob and regex.
+- **Better accessibility**: Proper ARIA attributes and keyboard navigation support.
+- **Loading states**: Improved loading indicators for directory expansion.
+- **Event-driven refresh**: Enhanced workspace tree change detection.
 
-Filtering algorithm:
-- Builds a matcher from filter text and mode.
-- Computes matched and visible paths for recursive entries when filtering is active.
-- Expands directories containing matches and ancestor directories.
+Enhanced filtering algorithm:
+- **Integrated filter input**: Built-in search box with mode switching.
+- **Debounced updates**: Efficient filtering with proper debouncing.
+- **Mode switching**: Toggle between glob and regex filtering modes.
 
-Git status computation:
-- Aggregates Git status across descendants to color directories.
-- Applies colors based on staged, modified, or added statuses.
+Git status computation improvements:
+- **Propagate status**: Enhanced algorithm to propagate Git status to parent directories.
+- **Visual indicators**: Better color coding for different Git status types.
+- **Performance optimization**: Efficient status computation and caching.
 
 ```mermaid
 flowchart TD
@@ -259,18 +358,19 @@ IsActive --> |Yes| CheckRecursive{"Recursive data loaded?"}
 CheckRecursive --> |No| FetchRecursive["Fetch recursive tree"]
 CheckRecursive --> |Yes| ComputeFilter["Compute matched/visible/expansion sets"]
 FetchRecursive --> ComputeFilter
-ComputeFilter --> Render["Render tree with Git colors and matches"]
+ComputeFilter --> PropagateGit["Propagate Git status to parents"]
+PropagateGit --> Render["Render tree with enhanced Git colors and matches"]
 UseLazy --> Render
 ```
 
 **Diagram sources**
-- [FileTreePanel.tsx:286-335](file://frontend/src/components/layout/FileTreePanel.tsx#L286-L335)
-- [FileTreePanel.tsx:310-318](file://frontend/src/components/layout/FileTreePanel.tsx#L310-L318)
-- [FileTreePanel.tsx:360-390](file://frontend/src/components/layout/FileTreePanel.tsx#L360-L390)
-- [fileTreeStore.ts:188-205](file://frontend/src/stores/fileTreeStore.ts#L188-L205)
+- [FileTreePanel.tsx:14-30](file://frontend/src/components/layout/FileTreePanel.tsx#L14-L30)
+- [FileTreePanel.tsx:138-139](file://frontend/src/components/layout/FileTreePanel.tsx#L138-L139)
+- [FileTreePanel.tsx:173-174](file://frontend/src/components/layout/FileTreePanel.tsx#L173-L174)
+- [useFileSearch.ts](file://frontend/src/hooks/useFileSearch.ts)
 
 **Section sources**
-- [FileTreePanel.tsx:270-482](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L482)
+- [FileTreePanel.tsx:124-214](file://frontend/src/components/layout/FileTreePanel.tsx#L124-L214)
 - [fileTreeStore.ts:78-243](file://frontend/src/stores/fileTreeStore.ts#L78-L243)
 
 ### StatusBar: System Information and Indexing Status
@@ -306,13 +406,18 @@ FileIcon provides:
 - [FileIcon.tsx:148-162](file://frontend/src/components/layout/FileIcon.tsx#L148-L162)
 
 ## Dependency Analysis
-The layout components depend on multiple stores for state management and persistence. The file tree and file viewer integrate with backend APIs via window.go.desktop.App methods. The sidebar listens to backend events for early data loading and project/session updates.
+The layout components depend on multiple stores for state management and persistence. The new selector components integrate tightly with their respective stores and APIs. The sidebar listens to backend events for early data loading and project/session updates.
 
 ```mermaid
 graph TB
-Sidebar --> ProjectStore["useProjectStore"]
-Sidebar --> SessionAPI["useSessionAPI"]
-Sidebar --> ProjectAPI["useProjectAPI"]
+Sidebar --> SidebarHeader
+Sidebar --> ProjectSelector
+Sidebar --> SessionSelector
+Sidebar --> WorkspacePanel
+ProjectSelector --> ProjectStore["useProjectStore"]
+ProjectSelector --> ProjectAPI["Project management APIs"]
+SessionSelector --> SessionStore["useSessionStore"]
+SessionSelector --> SessionAPI["Session management APIs"]
 WorkspacePanel --> FileTreePanel
 FileTreePanel --> FileTreeStore["useFileTreeStore"]
 FileTreePanel --> FileIcon
@@ -324,44 +429,56 @@ App["App.tsx"] --> VectorIndexStore
 ```
 
 **Diagram sources**
-- [Sidebar.tsx:15-27](file://frontend/src/components/layout/Sidebar.tsx#L15-L27)
+- [Sidebar.tsx:16-45](file://frontend/src/components/layout/Sidebar.tsx#L16-L45)
+- [SidebarHeader.tsx:10-25](file://frontend/src/components/layout/SidebarHeader.tsx#L10-L25)
+- [ProjectSelector.tsx:17-21](file://frontend/src/components/layout/ProjectSelector.tsx#L17-L21)
+- [SessionSelector.tsx:16-21](file://frontend/src/components/layout/SessionSelector.tsx#L16-L21)
 - [WorkspacePanel.tsx:10](file://frontend/src/components/layout/WorkspacePanel.tsx#L10)
-- [FileTreePanel.tsx:4-7](file://frontend/src/components/layout/FileTreePanel.tsx#L4-L7)
+- [FileTreePanel.tsx:4-6](file://frontend/src/components/layout/FileTreePanel.tsx#L4-L6)
 - [AppLayout.tsx:8-16](file://frontend/src/components/layout/AppLayout.tsx#L8-L16)
 - [StatusBar.tsx:1-8](file://frontend/src/components/layout/StatusBar.tsx#L1-L8)
 - [App.tsx:8, 41-55](file://frontend/src/App.tsx#L8,L41-L55)
 
 **Section sources**
-- [Sidebar.tsx:15-27](file://frontend/src/components/layout/Sidebar.tsx#L15-L27)
+- [Sidebar.tsx:16-45](file://frontend/src/components/layout/Sidebar.tsx#L16-L45)
+- [SidebarHeader.tsx:10-25](file://frontend/src/components/layout/SidebarHeader.tsx#L10-L25)
+- [ProjectSelector.tsx:17-21](file://frontend/src/components/layout/ProjectSelector.tsx#L17-L21)
+- [SessionSelector.tsx:16-21](file://frontend/src/components/layout/SessionSelector.tsx#L16-L21)
 - [WorkspacePanel.tsx:10](file://frontend/src/components/layout/WorkspacePanel.tsx#L10)
-- [FileTreePanel.tsx:4-7](file://frontend/src/components/layout/FileTreePanel.tsx#L4-L7)
+- [FileTreePanel.tsx:4-6](file://frontend/src/components/layout/FileTreePanel.tsx#L4-L6)
 - [AppLayout.tsx:8-16](file://frontend/src/components/layout/AppLayout.tsx#L8-L16)
 - [StatusBar.tsx:1-8](file://frontend/src/components/layout/StatusBar.tsx#L1-L8)
 - [App.tsx:8, 41-55](file://frontend/src/App.tsx#L8,L41-L55)
 
 ## Performance Considerations
-- Debounced filtering: FileTreePanel debounces filter input to reduce re-computation overhead.
-- Recursive loading: Uses recursive directory listing only when filtering is active and clears it when inactive to save memory.
-- Lazy expansion: Toggles directory loading state and watches/unwatches directories to minimize backend calls.
-- Persistent state: UI and file viewer states persist to localStorage to avoid re-initialization on reload.
-- Efficient visibility computation: Uses memoized visibility sets for filtered trees and lazy visibility for non-filtered trees.
-
-[No sources needed since this section provides general guidance]
+- **Enhanced filtering**: FileTreePanel debounces filter input to reduce re-computation overhead.
+- **Optimized Git status propagation**: Improved algorithm reduces computational complexity for status calculations.
+- **Selective rendering**: ProjectSelector and SessionSelector use conditional rendering to minimize DOM updates.
+- **Efficient state updates**: Both selector components use zustand's selective state updates to prevent unnecessary re-renders.
+- **Recursive loading**: Uses recursive directory listing only when filtering is active and clears it when inactive to save memory.
+- **Lazy expansion**: Toggles directory loading state and watches/unwatches directories to minimize backend calls.
+- **Persistent state**: UI and file viewer states persist to localStorage to avoid re-initialization on reload.
+- **Memoized computations**: SessionSelector uses useMemo for filtered lists to avoid recomputation on each render.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
-- Projects not loading on startup: Verify backend-ready events and early data emission; ensure projectStore is updated accordingly.
-- File tree not refreshing: Confirm workspace:tree_changed event handling and recursive tree refresh logic.
-- Git status missing: Ensure fetchGitStatus is called after directory initialization and refresh.
-- File viewer panel not resizing: Check useResizeHandle implementation and persisted panel width synchronization.
-- Sidebar collapse state not persisting: Validate localStorage key and uiStore persistence logic.
+- **Projects not loading on startup**: Verify backend-ready events and early data emission; ensure projectStore is updated accordingly.
+- **File tree not refreshing**: Confirm workspace:tree_changed event handling and recursive tree refresh logic.
+- **Git status missing**: Ensure fetchGitStatus is called after directory initialization and refresh.
+- **File viewer panel not resizing**: Check useResizeHandle implementation and persisted panel width synchronization.
+- **Sidebar collapse state not persisting**: Validate localStorage key and uiStore persistence logic.
+- **ProjectSelector not updating sessions**: Verify that handleSwitch calls listSessions and updates session store.
+- **SessionSelector search not working**: Check that showSearch condition triggers and filterFn properly filters session names.
+- **Selector dropdowns not closing**: Ensure proper event handling for dropdown open/close states and search input clearing.
 
 **Section sources**
 - [Sidebar.tsx:124-178](file://frontend/src/components/layout/Sidebar.tsx#L124-L178)
 - [FileTreePanel.tsx:346-358](file://frontend/src/components/layout/FileTreePanel.tsx#L346-L358)
+- [ProjectSelector.tsx:35-42](file://frontend/src/components/layout/ProjectSelector.tsx#L35-L42)
+- [SessionSelector.tsx:105-106](file://frontend/src/components/layout/SessionSelector.tsx#L105-L106)
 - [fileTreeStore.ts:236-242](file://frontend/src/stores/fileTreeStore.ts#L236-L242)
 - [useResize.tsx:7-88](file://frontend/src/hooks/useResize.tsx#L7-L88)
 - [uiStore.ts:35-52](file://frontend/src/stores/uiStore.ts#L35-L52)
 
 ## Conclusion
-The layout and navigation system combines a responsive, resizable panel architecture with robust state management and Git-aware file browsing. AppLayout coordinates the sidebar, main content, and file viewer, while Sidebar and WorkspacePanel provide workspace switching and file exploration. FileTreePanel delivers efficient hierarchical navigation with filtering and Git status integration. StatusBar and IndexingStatus communicate system and indexing states, and FileIcon enhances visual clarity. The stores encapsulate persistence and backend integration, enabling a smooth and customizable user experience.
+The layout and navigation system combines a responsive, resizable panel architecture with robust state management and Git-aware file browsing. AppLayout coordinates the sidebar, main content, and file viewer, while the newly integrated ProjectSelector and SessionSelector components provide streamlined workspace switching and file exploration. FileTreePanel delivers efficient hierarchical navigation with enhanced filtering and Git status integration. StatusBar and IndexingStatus communicate system and indexing states, and FileIcon enhances visual clarity. The stores encapsulate persistence and backend integration, enabling a smooth and customizable user experience with improved project and session management workflows.

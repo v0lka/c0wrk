@@ -1436,3 +1436,169 @@ func TestPlanContinuation(t *testing.T) {
 		t.Errorf("Expected description 'Address follow-up request', got %q", plan.Steps[0].Description)
 	}
 }
+
+// --- AGENTS.md prompt injection tests ---
+
+// TestPlan_AgentsMD_InjectedInPrompt verifies that when AgentsMD is present in
+// context, the planner's system prompt contains the AGENTS.md section.
+func TestPlan_AgentsMD_InjectedInPrompt(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "summary": "Do it", "description": "Do it", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	agentsContent := "# Project Instructions\nAlways run `make test` before committing."
+	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
+
+	_, err := planner.Plan(ctx, "Build the feature", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	systemPrompt := capturedRequest.Messages[0].Content
+	if !strings.Contains(systemPrompt, "AGENTS.md") {
+		t.Error("system prompt should contain 'AGENTS.md' heading")
+	}
+	if !strings.Contains(systemPrompt, agentsContent) {
+		t.Error("system prompt should contain full AGENTS.md content")
+	}
+	if !strings.Contains(systemPrompt, "strictly follow") {
+		t.Error("system prompt should instruct planner to strictly follow AGENTS.md")
+	}
+	if !strings.Contains(systemPrompt, "ask_user") {
+		t.Error("system prompt should mention ask_user for contradictions")
+	}
+}
+
+// TestPlan_AgentsMD_AbsentWhenNotInContext verifies that when AgentsMD is NOT
+// in context, the planner's system prompt does not contain the AGENTS.md section.
+func TestPlan_AgentsMD_AbsentWhenNotInContext(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "summary": "Do it", "description": "Do it", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	_, err := planner.Plan(context.Background(), "Build the feature", nil, nil)
+	if err != nil {
+		t.Fatalf("Plan() returned error: %v", err)
+	}
+
+	systemPrompt := capturedRequest.Messages[0].Content
+	if strings.Contains(systemPrompt, "<agents-md>") {
+		t.Error("system prompt should NOT contain <agents-md> section when AgentsMD is not in context")
+	}
+}
+
+// TestPlan_AgentsMD_InjectedInReplan verifies that the replan prompt also
+// includes the AGENTS.md section when AgentsMD is present in context.
+func TestPlan_AgentsMD_InjectedInReplan(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "summary": "Retry step", "description": "Retry", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	agentsContent := "# Project Rules\nDo not modify vendor directory."
+	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
+
+	originalPlan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Summary: "Do something", Description: "Do something", DependsOn: []string{}},
+		},
+	}
+	failedStep := CompletedStep{StepID: "step_1", Output: "failed", Error: errors.New("build error")}
+
+	_, err := planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil)
+	if err != nil {
+		t.Fatalf("Replan() returned error: %v", err)
+	}
+
+	systemPrompt := capturedRequest.Messages[0].Content
+	if !strings.Contains(systemPrompt, "<agents-md>") {
+		t.Error("replan system prompt should contain <agents-md> section")
+	}
+	if !strings.Contains(systemPrompt, agentsContent) {
+		t.Error("replan system prompt should contain full AGENTS.md content")
+	}
+}
+
+// TestPlan_AgentsMD_InjectedInContinuation verifies that the continuation
+// prompt also includes the AGENTS.md section when present in context.
+func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
+	var capturedRequest llm.ChatRequest
+
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			capturedRequest = req
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "continuation_1", "summary": "New step", "description": "New step", "depends_on": ["step_1"], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	planner := NewPlanner(mock)
+
+	agentsContent := "# Project Rules\nAlways use idiomatic Go."
+	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
+
+	existingPlan := &Plan{
+		Steps: []PlanStep{
+			{ID: "step_1", Summary: "Original step", Description: "Original step", DependsOn: []string{}},
+		},
+	}
+	completedSteps := []CompletedStep{
+		{StepID: "step_1", Output: "done"},
+	}
+
+	_, err := planner.PlanContinuation(ctx, "Original request", existingPlan, completedSteps, "Follow-up", nil)
+	if err != nil {
+		t.Fatalf("PlanContinuation() returned error: %v", err)
+	}
+
+	systemPrompt := capturedRequest.Messages[0].Content
+	if !strings.Contains(systemPrompt, "<agents-md>") {
+		t.Error("continuation system prompt should contain <agents-md> section")
+	}
+	if !strings.Contains(systemPrompt, agentsContent) {
+		t.Error("continuation system prompt should contain full AGENTS.md content")
+	}
+}

@@ -12,22 +12,25 @@
 - [projectStore.ts](file://frontend/src/stores/projectStore.ts)
 - [settingsStore.ts](file://frontend/src/stores/settingsStore.ts)
 - [AppLayout.tsx](file://frontend/src/components/layout/AppLayout.tsx)
-- [useWails.ts](file://frontend/src/hooks/useWails.ts)
-- [wails.ts](file://frontend/src/lib/wails.ts)
+- [runtime.ts](file://frontend/src/api/runtime.ts)
+- [chat.ts](file://frontend/src/api/chat.ts)
+- [projects.ts](file://frontend/src/api/projects.ts)
+- [sessions.ts](file://frontend/src/api/sessions.ts)
 - [useSessionEvents.ts](file://frontend/src/hooks/useSessionEvents.ts)
+- [useChatEvents.ts](file://frontend/src/hooks/events/useChatEvents.ts)
+- [useToolEvents.ts](file://frontend/src/hooks/events/useToolEvents.ts)
 - [ChatArea.tsx](file://frontend/src/components/chat/ChatArea.tsx)
 - [FileViewerPanel.tsx](file://frontend/src/components/fileViewer/FileViewerPanel.tsx)
-- [frontend-spec-svelte.md](file://docs/frontend-spec-svelte.md)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated architecture overview to reflect the planned Svelte 5 migration from React 19
-- Added comprehensive Svelte-based frontend specification documentation
-- Updated component architecture to show Svelte 5 + SvelteKit integration
-- Revised state management patterns to align with Svelte stores and runes
-- Enhanced Wails v2 integration contract for Svelte applications
-- Updated build system documentation to reflect SvelteKit requirements
+- Complete removal of Svelte-based architecture references and Wails integration patterns
+- Updated architecture to reflect new API-driven approach with subscribe() function replacing useWails() hook
+- Introduced centralized API modules (chat.ts, config.ts, mcp.ts, projects.ts, runtime.ts, sessions.ts, workspace.ts)
+- Updated state management patterns to use React 19 + Zustand with new API integration
+- Revised component architecture to show React 19 + Vite 6 + Zustand + Tailwind v4 stack
+- Updated build system documentation to reflect current React ecosystem
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,140 +38,67 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [API Layer and Event System](#api-layer-and-event-system)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the frontend architecture for the C0WRK application, which is currently transitioning from a React 19 + Vite 6 + Zustand + Tailwind v4 architecture to a modern Svelte 5 + SvelteKit + Tailwind v4 + TypeScript ~5.7 stack. The application maintains tight integration with a Wails v2-backed Go backend via generated TypeScript bindings and real-time event streams. The UI emphasizes a chat-first interface with execution panels, a file viewer, and settings, all orchestrated through a responsive layout with resizable panels.
+This document describes the frontend architecture for the C0WRK application, built with React 19 + Vite 6 + Zustand + Tailwind v4. The application maintains tight integration with a Wails v2-backed Go backend via a centralized API layer with typed event subscriptions. The UI emphasizes a chat-first interface with execution panels, a file viewer, and settings, all orchestrated through a responsive layout with resizable panels.
 
-**Updated** The frontend is being migrated to Svelte 5 with SvelteKit for SPA mode deployment, maintaining the existing Wails v2 integration while adopting Svelte's reactive stores and component system.
+The architecture follows a clean separation of concerns with API modules providing typed access to backend services, centralized event subscription system for real-time updates, and store-based state management for UI state coordination.
 
 ## Project Structure
-The frontend is organized around a clear separation of concerns with the upcoming Svelte 5 architecture:
-- Entry point and rendering bootstrap with SvelteKit
-- Layout and page composition using Svelte components
-- UI components (chat, file viewer, settings) built with Svelte 5
-- Stores for state management using Svelte runes and writable stores
-- Hooks for Wails integration and session event handling
-- Build configuration and TypeScript setup optimized for SvelteKit
+The frontend is organized around a clear separation of concerns with the current React 19 architecture:
+- Entry point and rendering bootstrap with React 19
+- Centralized API layer with typed wrappers for backend services
+- Layout and page composition using React components
+- UI components (chat, file viewer, settings) built with React 19
+- Stores for state management using Zustand with granular selectors
+- Hooks for event handling and session lifecycle management
+- Build configuration and TypeScript setup optimized for React 19
 
 ```mermaid
 graph TB
 subgraph "Entry Point"
 M["main.tsx"]
-A["App.svelte"]
-SK["SvelteKit Router"]
+A["App.tsx"]
+end
+subgraph "API Layer"
+RT["runtime.ts"]
+CH["chat.ts"]
+PR["projects.ts"]
+SE["sessions.ts"]
 end
 subgraph "Layout"
-AL["AppLayout.svelte"]
+AL["AppLayout.tsx"]
 end
 subgraph "UI Components"
-CA["ChatArea.svelte"]
-FVP["FileViewerPanel.svelte"]
+CA["ChatArea.tsx"]
+FVP["FileViewerPanel.tsx"]
 end
 subgraph "Stores"
-CS["chatStore (Svelte runes)"]
-SS["sessionStore (Svelte writable)"]
-PS["projectStore (Svelte writable)"]
-SETS["settingsStore (Svelte writable)"]
+CS["chatStore (Zustand)"]
+SS["sessionStore (Zustand)"]
+PS["projectStore (Zustand)"]
+SETS["settingsStore (Zustand)"]
 end
-subgraph "Hooks"
-UWL["useWails.ts"]
+subgraph "Event Hooks"
 USE["useSessionEvents.ts"]
+UCE["useChatEvents.ts"]
+UTE["useToolEvents.ts"]
 end
 subgraph "Backend Integration"
-WLIB["wails.ts"]
 VCFG["vite.config.ts"]
 PKG["package.json"]
 TSC["tsconfig.json"]
 end
 M --> A
-A --> SK
-SK --> AL
-AL --> CA
-AL --> FVP
-CA --> CS
-CA --> SS
-CA --> USE
-FVP --> CS
-USE --> UWL
-USE --> WLIB
-UWL --> WLIB
-VCFG --> PKG
-TSC --> M
-```
-
-**Diagram sources**
-- [main.tsx:1-17](file://frontend/src/main.tsx#L1-L17)
-- [App.tsx:1-91](file://frontend/src/App.tsx#L1-L91)
-- [AppLayout.tsx:1-135](file://frontend/src/components/layout/AppLayout.tsx#L1-L135)
-- [ChatArea.tsx:1-175](file://frontend/src/components/chat/ChatArea.tsx#L1-L175)
-- [FileViewerPanel.tsx:1-27](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L27)
-- [chatStore.ts:1-571](file://frontend/src/stores/chatStore.ts#L1-L571)
-- [sessionStore.ts:1-52](file://frontend/src/stores/sessionStore.ts#L1-L52)
-- [projectStore.ts:1-44](file://frontend/src/stores/projectStore.ts#L1-L44)
-- [settingsStore.ts:1-20](file://frontend/src/stores/settingsStore.ts#L1-L20)
-- [useWails.ts:1-61](file://frontend/src/hooks/useWails.ts#L1-L61)
-- [useSessionEvents.ts:1-705](file://frontend/src/hooks/useSessionEvents.ts#L1-L705)
-- [wails.ts:1-205](file://frontend/src/lib/wails.ts#L1-L205)
-- [vite.config.ts:1-15](file://frontend/vite.config.ts#L1-L15)
-- [package.json:1-61](file://frontend/package.json#L1-L61)
-- [tsconfig.json:1-27](file://frontend/tsconfig.json#L1-L27)
-
-**Section sources**
-- [main.tsx:1-17](file://frontend/src/main.tsx#L1-L17)
-- [vite.config.ts:1-15](file://frontend/vite.config.ts#L1-L15)
-- [package.json:1-61](file://frontend/package.json#L1-L61)
-- [tsconfig.json:1-27](file://frontend/tsconfig.json#L1-L27)
-
-## Core Components
-- App: Initializes Wails runtime, listens for startup and vector index events, renders banners and the main layout.
-- AppLayout: Orchestrates sidebar, chat area, execution panels, chat input, file viewer, and status bar with resizable panels and collapsed states.
-- ChatArea: Renders grouped chat messages, handles streaming assistant responses, loads session history, and coordinates with session events.
-- FileViewerPanel: Manages open files and content rendering within a collapsible/resizable panel.
-- Stores: chatStore (message grouping, streaming, context fill, session tokens), sessionStore (sessions list and active session), projectStore (projects list and active project), settingsStore (settings modal state).
-- Hooks: useWails (typed access to Go backend APIs and runtime events), useSessionEvents (session-scoped event subscription and UI state updates).
-- Backend Types: wails.ts defines shared types for event payloads and data exchanged with the backend.
-
-**Updated** The stores will be migrated to Svelte runes and writable stores, providing better reactivity and performance compared to Zustand.
-
-**Section sources**
-- [App.tsx:21-91](file://frontend/src/App.tsx#L21-L91)
-- [AppLayout.tsx:30-135](file://frontend/src/components/layout/AppLayout.tsx#L30-L135)
-- [ChatArea.tsx:17-175](file://frontend/src/components/chat/ChatArea.tsx#L17-L175)
-- [FileViewerPanel.tsx:9-27](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L27)
-- [chatStore.ts:440-571](file://frontend/src/stores/chatStore.ts#L440-L571)
-- [sessionStore.ts:15-52](file://frontend/src/stores/sessionStore.ts#L15-L52)
-- [projectStore.ts:15-44](file://frontend/src/stores/projectStore.ts#L15-L44)
-- [settingsStore.ts:5-20](file://frontend/src/stores/settingsStore.ts#L5-L20)
-- [useWails.ts:51-61](file://frontend/src/hooks/useWails.ts#L51-L61)
-- [useSessionEvents.ts:95-705](file://frontend/src/hooks/useSessionEvents.ts#L95-L705)
-- [wails.ts:4-205](file://frontend/src/lib/wails.ts#L4-L205)
-
-## Architecture Overview
-The frontend follows a unidirectional data flow with Svelte 5's reactive stores:
-- UI components subscribe to Svelte stores for state.
-- Hooks connect to the Wails runtime and backend APIs.
-- Real-time session events update the chat timeline and related UI panels.
-- Stores encapsulate complex state transitions and derived computations (e.g., message grouping).
-
-**Updated** The architecture leverages Svelte 5's improved reactivity model with runes for better performance and developer experience.
-
-```mermaid
-graph TB
-A["App.svelte"]
-AL["AppLayout.svelte"]
-CA["ChatArea.svelte"]
-FVP["FileViewerPanel.svelte"]
-CS["chatStore (Svelte runes)"]
-SS["sessionStore (Svelte writable)"]
-PS["projectStore (Svelte writable)"]
-SETS["settingsStore (Svelte writable)"]
-USE["useSessionEvents.ts"]
-UWL["useWails.ts"]
-WLIB["wails.ts"]
+A --> RT
+RT --> CH
+RT --> PR
+RT --> SE
 A --> AL
 AL --> CA
 AL --> FVP
@@ -176,75 +106,160 @@ CA --> CS
 CA --> SS
 CA --> USE
 FVP --> CS
-USE --> UWL
-USE --> WLIB
-UWL --> WLIB
-CS --> WLIB
-SS --> WLIB
-PS --> WLIB
-SETS --> WLIB
+USE --> UCE
+USE --> UTE
+VCFG --> PKG
+TSC --> M
 ```
 
 **Diagram sources**
-- [App.tsx:21-91](file://frontend/src/App.tsx#L21-L91)
+- [main.tsx:1-20](file://frontend/src/main.tsx#L1-L20)
+- [App.tsx:1-80](file://frontend/src/App.tsx#L1-L80)
+- [runtime.ts:1-78](file://frontend/src/api/runtime.ts#L1-L78)
+- [chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
+- [projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
+- [sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
+- [AppLayout.tsx:1-135](file://frontend/src/components/layout/AppLayout.tsx#L1-L135)
+- [ChatArea.tsx:1-175](file://frontend/src/components/chat/ChatArea.tsx#L1-L175)
+- [FileViewerPanel.tsx:1-27](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L27)
+- [chatStore.ts:1-249](file://frontend/src/stores/chatStore.ts#L1-L249)
+- [sessionStore.ts:1-76](file://frontend/src/stores/sessionStore.ts#L1-L76)
+- [useSessionEvents.ts:1-48](file://frontend/src/hooks/useSessionEvents.ts#L1-L48)
+- [useChatEvents.ts:1-134](file://frontend/src/hooks/events/useChatEvents.ts#L1-L134)
+- [useToolEvents.ts:1-123](file://frontend/src/hooks/events/useToolEvents.ts#L1-L123)
+- [vite.config.ts:1-21](file://frontend/vite.config.ts#L1-L21)
+- [package.json:1-61](file://frontend/package.json#L1-L61)
+- [tsconfig.json:1-28](file://frontend/tsconfig.json#L1-L28)
+
+**Section sources**
+- [main.tsx:1-20](file://frontend/src/main.tsx#L1-L20)
+- [vite.config.ts:1-21](file://frontend/vite.config.ts#L1-L21)
+- [package.json:1-61](file://frontend/package.json#L1-L61)
+- [tsconfig.json:1-28](file://frontend/tsconfig.json#L1-L28)
+
+## Core Components
+- App: Initializes Wails runtime, listens for startup and vector index events, renders banners and the main layout using the new subscribe() function pattern.
+- AppLayout: Orchestrates sidebar, chat area, execution panels, chat input, file viewer, and status bar with resizable panels and collapsed states.
+- ChatArea: Renders grouped chat messages, handles streaming assistant responses, loads session history, and coordinates with session events.
+- FileViewerPanel: Manages open files and content rendering within a collapsible/resizable panel.
+- Stores: chatStore (message grouping, streaming, context fill, session tokens), sessionStore (sessions list and active session), projectStore (projects list and active project), settingsStore (settings modal state).
+- Hooks: useSessionEvents (session-scoped event subscription and UI state updates), useChatEvents (chat-specific event handling), useToolEvents (tool execution events).
+- API Layer: runtime.ts provides centralized Wails integration with subscribe() function, chat.ts, projects.ts, and sessions.ts provide typed API wrappers.
+
+**Section sources**
+- [App.tsx:16-80](file://frontend/src/App.tsx#L16-L80)
 - [AppLayout.tsx:30-135](file://frontend/src/components/layout/AppLayout.tsx#L30-L135)
 - [ChatArea.tsx:17-175](file://frontend/src/components/chat/ChatArea.tsx#L17-L175)
 - [FileViewerPanel.tsx:9-27](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L27)
-- [chatStore.ts:440-571](file://frontend/src/stores/chatStore.ts#L440-L571)
-- [sessionStore.ts:15-52](file://frontend/src/stores/sessionStore.ts#L15-L52)
-- [projectStore.ts:15-44](file://frontend/src/stores/projectStore.ts#L15-L44)
-- [settingsStore.ts:5-20](file://frontend/src/stores/settingsStore.ts#L5-L20)
-- [useSessionEvents.ts:95-705](file://frontend/src/hooks/useSessionEvents.ts#L95-L705)
-- [useWails.ts:51-61](file://frontend/src/hooks/useWails.ts#L51-L61)
-- [wails.ts:4-205](file://frontend/src/lib/wails.ts#L4-L205)
+- [chatStore.ts:104-249](file://frontend/src/stores/chatStore.ts#L104-L249)
+- [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
+- [runtime.ts:47-78](file://frontend/src/api/runtime.ts#L47-L78)
+- [useSessionEvents.ts:15-48](file://frontend/src/hooks/useSessionEvents.ts#L15-L48)
+- [useChatEvents.ts:10-134](file://frontend/src/hooks/events/useChatEvents.ts#L10-134)
+- [useToolEvents.ts:18-123](file://frontend/src/hooks/events/useToolEvents.ts#L18-123)
+
+## Architecture Overview
+The frontend follows a unidirectional data flow with React 19's component model and Zustand stores:
+- UI components subscribe to Zustand stores for state.
+- API modules provide typed access to Go backend APIs through Wails runtime.
+- Centralized event subscription system handles real-time session events.
+- Stores encapsulate complex state transitions and derived computations (e.g., message grouping).
+
+```mermaid
+graph TB
+A["App.tsx"]
+AL["AppLayout.tsx"]
+CA["ChatArea.tsx"]
+FVP["FileViewerPanel.tsx"]
+CS["chatStore (Zustand)"]
+SS["sessionStore (Zustand)"]
+PS["projectStore (Zustand)"]
+SETS["settingsStore (Zustand)"]
+USE["useSessionEvents.ts"]
+UCE["useChatEvents.ts"]
+UTE["useToolEvents.ts"]
+RT["runtime.ts"]
+CH["chat.ts"]
+PR["projects.ts"]
+SE["sessions.ts"]
+A --> AL
+AL --> CA
+AL --> FVP
+CA --> CS
+CA --> SS
+CA --> USE
+FVP --> CS
+USE --> UCE
+USE --> UTE
+USE --> RT
+UCE --> RT
+UTE --> RT
+RT --> CH
+RT --> PR
+RT --> SE
+CS --> RT
+SS --> RT
+PS --> RT
+SETS --> RT
+```
+
+**Diagram sources**
+- [App.tsx:16-80](file://frontend/src/App.tsx#L16-L80)
+- [AppLayout.tsx:30-135](file://frontend/src/components/layout/AppLayout.tsx#L30-L135)
+- [ChatArea.tsx:17-175](file://frontend/src/components/chat/ChatArea.tsx#L17-L175)
+- [FileViewerPanel.tsx:9-27](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L27)
+- [chatStore.ts:104-249](file://frontend/src/stores/chatStore.ts#L104-L249)
+- [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
+- [useSessionEvents.ts:15-48](file://frontend/src/hooks/useSessionEvents.ts#L15-L48)
+- [useChatEvents.ts:10-134](file://frontend/src/hooks/events/useChatEvents.ts#L10-134)
+- [useToolEvents.ts:18-123](file://frontend/src/hooks/events/useToolEvents.ts#L18-123)
+- [runtime.ts:47-78](file://frontend/src/api/runtime.ts#L47-L78)
+- [chat.ts:7-56](file://frontend/src/api/chat.ts#L7-56)
+- [projects.ts:7-66](file://frontend/src/api/projects.ts#L7-66)
+- [sessions.ts:7-56](file://frontend/src/api/sessions.ts#L7-56)
 
 ## Detailed Component Analysis
 
 ### Store-Based State Management
-The application uses Svelte stores for lightweight, composable state management:
+The application uses Zustand for lightweight, composable state management:
 - chatStore: Manages per-session messages, streaming text, thinking/activity status, step/session context fill, and pending actions. Provides a complex grouping function to transform raw messages into display items with nested plan steps, tool calls/results, and service/status messages.
 - sessionStore: Tracks sessions list, active session, and supports add/update/remove/touch operations with deterministic ordering by last activity.
 - projectStore: Mirrors project list and active project with similar mutation semantics.
 - settingsStore: Controls the settings modal visibility and active tab.
 
-**Updated** Stores will be implemented using Svelte 5 runes for reactive state management and writable stores for complex state logic.
-
 ```mermaid
 classDiagram
 class ChatStore {
-+messages : Record<string, ChatMessageUI[]>
++messages : Record~string, Record~string, ChatMessageUI~~
++messageOrder : Record~string, string~~
 +streamingText : string|null
-+isThinking : boolean
-+stepContextFill : Record<string, ContextFillState>
-+sessionInputTokens : number
-+sessionOutputTokens : number
-+sessionModel : string
-+sessionFamily : string
++streamingSessionId : string|null
 +activityStatus : string|null
-+isTaskActive : boolean
-+addMessage(sessionId, msg)
++taskActive : Record~string, boolean~
++stepContextFill : Record~string, number~
++sessionTokens : Record~string, TokenInfo~
++addMessage(sessionId, message)
 +updateMessage(sessionId, id, updates)
++removeMessage(sessionId, id)
 +setMessages(sessionId, msgs)
-+clearMessages(sessionId)
-+setStreaming(text)
-+appendStreamToken(token)
-+setThinking(thinking)
-+setStepContextFill(stepId, data)
-+clearStepContextFill(stepId)
-+setSessionTokens(input, output, model?, family?)
++setStreamingText(text, sessionId)
++appendStreamingText(delta)
++flushStreaming()
++clearStreamingText()
 +setActivityStatus(status)
-+resolveAction(sessionId, messageId, metadataUpdates?)
-+resolveResumeMessage(sessionId)
-+setTaskActive(active)
-+clearSessionUIState()
++setTaskActive(sessionId, active)
++setStepContextFill(stepId, fill)
++clearStepContextFill()
++setSessionTokens(sessionId, tokens)
++clearSession(sessionId)
 }
 class SessionStore {
 +sessions : SessionInfo[]|null
 +activeSessionId : string|null
 +setSessions(sessions)
++setActiveSessionId(id)
 +addSession(session)
 +removeSession(id)
-+setActiveSession(id)
 +updateSession(id, updates)
 +touchSession(id)
 }
@@ -259,7 +274,7 @@ class ProjectStore {
 }
 class SettingsStore {
 +open : boolean
-+activeTab : "general"|"llm"|"search"|"mcp"|"security"|"about"
++activeTab : string
 +openSettings(tab?)
 +closeSettings()
 +setActiveTab(tab)
@@ -267,99 +282,89 @@ class SettingsStore {
 ```
 
 **Diagram sources**
-- [chatStore.ts:440-571](file://frontend/src/stores/chatStore.ts#L440-L571)
-- [sessionStore.ts:15-52](file://frontend/src/stores/sessionStore.ts#L15-L52)
-- [projectStore.ts:15-44](file://frontend/src/stores/projectStore.ts#L15-L44)
-- [settingsStore.ts:5-20](file://frontend/src/stores/settingsStore.ts#L5-L20)
+- [chatStore.ts:13-46](file://frontend/src/stores/chatStore.ts#L13-L46)
+- [sessionStore.ts:16-28](file://frontend/src/stores/sessionStore.ts#L16-L28)
+- [projectStore.ts:1-44](file://frontend/src/stores/projectStore.ts#L1-L44)
+- [settingsStore.ts:1-20](file://frontend/src/stores/settingsStore.ts#L1-L20)
 
 **Section sources**
-- [chatStore.ts:1-571](file://frontend/src/stores/chatStore.ts#L1-L571)
-- [sessionStore.ts:1-52](file://frontend/src/stores/sessionStore.ts#L1-L52)
+- [chatStore.ts:104-249](file://frontend/src/stores/chatStore.ts#L104-L249)
+- [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
 - [projectStore.ts:1-44](file://frontend/src/stores/projectStore.ts#L1-L44)
 - [settingsStore.ts:1-20](file://frontend/src/stores/settingsStore.ts#L1-L20)
 
 ### Component Hierarchy and Responsibilities
-- App: Initializes Wails runtime, listens for startup errors and vector index status, renders banners and the main AppLayout.
+- App: Initializes Wails runtime, listens for startup errors and vector index status using the new subscribe() function, renders banners and the main AppLayout.
 - AppLayout: Coordinates sidebar, main chat area, execution panels, chat input, and file viewer. Handles resizing and collapsing of panels and displays an empty state when no project is selected.
 - ChatArea: Loads session history, groups messages, renders the chat timeline, and manages pinned user messages and scrolling.
 - FileViewerPanel: Renders open files with tabs and content, respecting collapsed state and width constraints.
 
-**Updated** Components will be implemented as Svelte 5 .svelte files with improved reactivity and performance.
-
 ```mermaid
 graph TB
-App["App.svelte"]
-AppLayout["AppLayout.svelte"]
-ChatArea["ChatArea.svelte"]
-FileViewerPanel["FileViewerPanel.svelte"]
+App["App.tsx"]
+AppLayout["AppLayout.tsx"]
+ChatArea["ChatArea.tsx"]
+FileViewerPanel["FileViewerPanel.tsx"]
 App --> AppLayout
 AppLayout --> ChatArea
 AppLayout --> FileViewerPanel
 ```
 
 **Diagram sources**
-- [App.tsx:21-91](file://frontend/src/App.tsx#L21-L91)
+- [App.tsx:16-80](file://frontend/src/App.tsx#L16-L80)
 - [AppLayout.tsx:30-135](file://frontend/src/components/layout/AppLayout.tsx#L30-L135)
 - [ChatArea.tsx:17-175](file://frontend/src/components/chat/ChatArea.tsx#L17-L175)
 - [FileViewerPanel.tsx:9-27](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L27)
 
 **Section sources**
-- [App.tsx:21-91](file://frontend/src/App.tsx#L21-L91)
+- [App.tsx:16-80](file://frontend/src/App.tsx#L16-L80)
 - [AppLayout.tsx:30-135](file://frontend/src/components/layout/AppLayout.tsx#L30-L135)
 - [ChatArea.tsx:17-175](file://frontend/src/components/chat/ChatArea.tsx#L17-L175)
 - [FileViewerPanel.tsx:9-27](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L27)
 
-### Wails Integration and Real-Time Updates
-- useWails: Provides typed access to Go backend APIs and runtime event subscription/emission.
-- useSessionEvents: Subscribes to session-scoped events (routing, steps, thoughts, tool calls/results, plan steps, retries, context fill, etc.), validates payloads, updates chatStore and panelStore, and sets activity status and task state.
-- Backend Types: wails.ts defines shared types for event payloads and data exchanged with the backend.
-
-**Updated** The Wails integration contract remains the same, but will be adapted for Svelte's reactive patterns.
+### API Layer and Event System
+- runtime.ts: Provides centralized Wails integration with subscribe() function for event subscription, onSessionEvent() for typed session-scoped events, and getApp() for typed RPC access.
+- API Modules: chat.ts, projects.ts, sessions.ts provide typed wrappers around Wails RPC calls with proper error handling and logging.
+- Event Handling: useSessionEvents orchestrates multiple event hooks (useChatEvents, useToolEvents, etc.) to manage session lifecycle and UI state updates.
+- Backend Types: Strongly typed event payloads and data exchanged with the backend through the API layer.
 
 ```mermaid
 sequenceDiagram
-participant UI as "Svelte Component"
+participant UI as "React Component"
 participant Hook as "useSessionEvents"
-participant Runtime as "Wails Runtime"
-participant Chat as "chatStore"
-participant Panel as "panelStore"
+participant Runtime as "runtime.ts"
+participant Chat as "chat.ts"
+participant Store as "chatStore"
 UI->>Hook : subscribe(activeSessionId)
-Hook->>Runtime : EventsOn("session : {id} : *")
-Runtime-->>Hook : event payload
-Hook->>Hook : validate payload
-alt tool_call
-Hook->>Chat : addMessage(tool_call)
-else tool_result
-Hook->>Chat : updateMessage(tool_call) or addMessage(tool_result)
-else plan_step_start/complete
-Hook->>Panel : updatePlanItemStatus(...)
-Hook->>Chat : addMessage(plan_step_*)
-else assistant_chunk
-Hook->>Chat : setStreaming(...) or appendStreamToken(...)
-else assistant_done
-Hook->>Chat : addMessage(assistant)
-else error/task_complete/task_cancelled
-Hook->>Chat : addMessage(error/assistant)
-end
-Hook-->>UI : reactive UI updates via stores
+Hook->>Runtime : onSessionEvent(sessionId, event, callback)
+Runtime-->>Hook : typed event payload
+Hook->>Store : update state based on event
+Hook-->>UI : reactive UI updates via Zustand
+Chat->>Runtime : getApp().SendMessage(sessionId, text)
+Runtime-->>Chat : RPC response
+Chat->>Store : update UI state
 ```
 
 **Diagram sources**
-- [useSessionEvents.ts:95-705](file://frontend/src/hooks/useSessionEvents.ts#L95-L705)
-- [chatStore.ts:440-571](file://frontend/src/stores/chatStore.ts#L440-L571)
-- [wails.ts:32-205](file://frontend/src/lib/wails.ts#L32-L205)
+- [runtime.ts:47-78](file://frontend/src/api/runtime.ts#L47-L78)
+- [chat.ts:7-56](file://frontend/src/api/chat.ts#L7-56)
+- [useSessionEvents.ts:15-48](file://frontend/src/hooks/useSessionEvents.ts#L15-L48)
+- [useChatEvents.ts:10-134](file://frontend/src/hooks/events/useChatEvents.ts#L10-134)
+- [chatStore.ts:104-249](file://frontend/src/stores/chatStore.ts#L104-L249)
 
 **Section sources**
-- [useWails.ts:1-61](file://frontend/src/hooks/useWails.ts#L1-L61)
-- [useSessionEvents.ts:1-705](file://frontend/src/hooks/useSessionEvents.ts#L1-L705)
-- [wails.ts:1-205](file://frontend/src/lib/wails.ts#L1-L205)
+- [runtime.ts:1-78](file://frontend/src/api/runtime.ts#L1-L78)
+- [chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
+- [projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
+- [sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
+- [useSessionEvents.ts:1-48](file://frontend/src/hooks/useSessionEvents.ts#L1-L48)
+- [useChatEvents.ts:1-134](file://frontend/src/hooks/events/useChatEvents.ts#L1-L134)
+- [useToolEvents.ts:1-123](file://frontend/src/hooks/events/useToolEvents.ts#L1-L123)
 
 ### Message Grouping and Rendering Pipeline
 The chat rendering pipeline transforms raw messages into a structured display tree:
 - groupMessages builds nested plan steps, groups consecutive thoughts, and correlates tool calls with results.
 - ChatArea computes display items and renders the timeline with pinned user messages and a scroll manager.
-
-**Updated** The message grouping logic will be preserved but implemented within Svelte's reactive store system.
 
 ```mermaid
 flowchart TD
@@ -373,36 +378,73 @@ Items --> Render["ChatMessageRenderer"]
 ```
 
 **Diagram sources**
-- [chatStore.ts:77-410](file://frontend/src/stores/chatStore.ts#L77-L410)
+- [chatStore.ts:7-9](file://frontend/src/stores/chatStore.ts#L7-L9)
 - [ChatArea.tsx:103](file://frontend/src/components/chat/ChatArea.tsx#L103)
 
 **Section sources**
-- [chatStore.ts:77-410](file://frontend/src/stores/chatStore.ts#L77-L410)
+- [chatStore.ts:7-9](file://frontend/src/stores/chatStore.ts#L7-L9)
 - [ChatArea.tsx:103](file://frontend/src/components/chat/ChatArea.tsx#L103)
+
+## API Layer and Event System
+
+### Centralized Runtime Integration
+The runtime.ts module provides a single access point for Wails integration:
+- subscribe(): Universal event subscription with automatic cleanup
+- onSessionEvent(): Typed session-scoped event subscription with auto-prefixing
+- getApp(): Typed access to Go backend RPC methods
+- isWailsReady(): Runtime availability check
+
+### API Module Pattern
+Each domain has its own API module with consistent patterns:
+- Error handling with centralized logging
+- Type-safe RPC calls with proper casting
+- Async operation wrappers with proper error propagation
+- Domain-specific convenience functions
+
+### Event Subscription Patterns
+- useSessionEvents: Orchestrates multiple event hooks for comprehensive session management
+- useChatEvents: Handles chat-specific events (assistant_chunk, assistant_done, thought, error, etc.)
+- useToolEvents: Manages tool execution lifecycle and confirmation flows
+- Centralized cleanup: All event subscriptions return cleanup functions for proper resource management
+
+**Section sources**
+- [runtime.ts:1-78](file://frontend/src/api/runtime.ts#L1-L78)
+- [chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
+- [projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
+- [sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
+- [useSessionEvents.ts:1-48](file://frontend/src/hooks/useSessionEvents.ts#L1-L48)
+- [useChatEvents.ts:1-134](file://frontend/src/hooks/events/useChatEvents.ts#L1-L134)
+- [useToolEvents.ts:1-123](file://frontend/src/hooks/events/useToolEvents.ts#L1-L123)
 
 ## Dependency Analysis
 - Build system: Vite with React plugin and TailwindCSS integration; TypeScript configured with strictness and path aliases; package dependencies include React 19, Radix UI, Lucide icons, Mermaid, and Zustand.
-- Runtime integration: Generated Wails bindings accessed via window.go and window.runtime; hooks expose typed APIs and event subscriptions.
+- Runtime integration: Generated Wails bindings accessed via window.go and window.runtime; runtime.ts provides typed access and event subscription.
 - Store coupling: Components depend on stores via selector patterns; stores are decoupled from UI and only mutate state.
-
-**Updated** The dependency analysis reflects the current React 19 architecture while preparing for the Svelte migration.
 
 ```mermaid
 graph TB
 VCFG["vite.config.ts"]
 PKG["package.json"]
 TSC["tsconfig.json"]
-UWL["useWails.ts"]
+RT["runtime.ts"]
+CHAT["chat.ts"]
+PROJ["projects.ts"]
+SESS["sessions.ts"]
 USE["useSessionEvents.ts"]
 CS["chatStore.ts"]
 SS["sessionStore.ts"]
 PS["projectStore.ts"]
 SETS["settingsStore.ts"]
 VCFG --> PKG
-TSC --> UWL
-UWL --> USE
+TSC --> RT
+RT --> CHAT
+RT --> PROJ
+RT --> SESS
 USE --> CS
 USE --> SS
+CHAT --> RT
+PROJ --> RT
+SESS --> RT
 CS --> CS
 SS --> SS
 PS --> PS
@@ -410,20 +452,21 @@ SETS --> SETS
 ```
 
 **Diagram sources**
-- [vite.config.ts:1-15](file://frontend/vite.config.ts#L1-L15)
+- [vite.config.ts:1-21](file://frontend/vite.config.ts#L1-L21)
 - [package.json:1-61](file://frontend/package.json#L1-L61)
-- [tsconfig.json:1-27](file://frontend/tsconfig.json#L1-L27)
-- [useWails.ts:51-61](file://frontend/src/hooks/useWails.ts#L51-L61)
-- [useSessionEvents.ts:95-705](file://frontend/src/hooks/useSessionEvents.ts#L95-L705)
-- [chatStore.ts:440-571](file://frontend/src/stores/chatStore.ts#L440-L571)
-- [sessionStore.ts:15-52](file://frontend/src/stores/sessionStore.ts#L15-L52)
-- [projectStore.ts:15-44](file://frontend/src/stores/projectStore.ts#L15-L44)
-- [settingsStore.ts:5-20](file://frontend/src/stores/settingsStore.ts#L5-L20)
+- [tsconfig.json:1-28](file://frontend/tsconfig.json#L1-L28)
+- [runtime.ts:1-78](file://frontend/src/api/runtime.ts#L1-L78)
+- [chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
+- [projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
+- [sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
+- [useSessionEvents.ts:1-48](file://frontend/src/hooks/useSessionEvents.ts#L1-L48)
+- [chatStore.ts:104-249](file://frontend/src/stores/chatStore.ts#L104-L249)
+- [sessionStore.ts:32-76](file://frontend/src/stores/sessionStore.ts#L32-L76)
 
 **Section sources**
-- [vite.config.ts:1-15](file://frontend/vite.config.ts#L1-L15)
+- [vite.config.ts:1-21](file://frontend/vite.config.ts#L1-L21)
 - [package.json:1-61](file://frontend/package.json#L1-L61)
-- [tsconfig.json:1-27](file://frontend/tsconfig.json#L1-L27)
+- [tsconfig.json:1-28](file://frontend/tsconfig.json#L1-L28)
 
 ## Performance Considerations
 - Selective re-renders: Components subscribe to minimal slices of stores using selector patterns to avoid unnecessary re-renders.
@@ -431,22 +474,24 @@ SETS --> SETS
 - Streaming UI: Assistant chunks are applied incrementally to keep the UI responsive during long generations.
 - Resize observers and layout measurements: ChatArea measures container height efficiently and falls back to animation frames when ResizeObserver is unavailable.
 - Store granularity: Separate stores for chat, sessions, projects, and UI state reduce cross-store dependencies and improve locality.
-
-**Updated** Performance optimizations will be enhanced with Svelte 5's improved reactivity model and rune-based state management.
+- Event cleanup: Proper subscription cleanup prevents memory leaks and ensures efficient event handling.
 
 ## Troubleshooting Guide
-- Startup errors: App listens for startup errors from the backend and displays a dismissible banner with message and error details.
+- Startup errors: App listens for startup errors from the backend using the new subscribe() function and displays a dismissible banner with message and error details.
 - Vector index status: App listens for vector index events and updates the vector index store accordingly.
 - Session history loading: ChatArea surfaces a history load error state and logs the failure.
 - Session events: useSessionEvents validates payloads and updates UI state; ensure the active session is set before subscribing.
+- API errors: All API modules include centralized error logging and proper error propagation.
+- Runtime availability: Use isWailsReady() to check runtime availability before making RPC calls.
 
 **Section sources**
-- [App.tsx:26-59](file://frontend/src/App.tsx#L26-L59)
-- [App.tsx:37-55](file://frontend/src/App.tsx#L37-L55)
+- [App.tsx:25-43](file://frontend/src/App.tsx#L25-L43)
+- [App.tsx:33-39](file://frontend/src/App.tsx#L33-L39)
 - [ChatArea.tsx:97-100](file://frontend/src/components/chat/ChatArea.tsx#L97-L100)
-- [useSessionEvents.ts:11-94](file://frontend/src/hooks/useSessionEvents.ts#L11-L94)
+- [useSessionEvents.ts:15-48](file://frontend/src/hooks/useSessionEvents.ts#L15-L48)
+- [runtime.ts:21-32](file://frontend/src/api/runtime.ts#L21-L32)
 
 ## Conclusion
-C0WRK's frontend is currently transitioning from a React 19 application with a clean separation between UI components, store-based state management, and hooks that bridge to the Wails backend. The architecture emphasizes real-time session events, robust message grouping, and a responsive layout with resizable panels. The build system and TypeScript configuration support a scalable development workflow, while the store abstractions enable maintainable state transitions across chat, sessions, projects, and settings.
+C0WRK's frontend is built with a clean separation between UI components, store-based state management, and a centralized API layer that bridges to the Wails backend. The architecture emphasizes real-time session events, robust message grouping, and a responsive layout with resizable panels. The build system and TypeScript configuration support a scalable development workflow, while the store abstractions enable maintainable state transitions across chat, sessions, projects, and settings.
 
-**Updated** The migration to Svelte 5 + SvelteKit will enhance performance through improved reactivity, better developer experience with runes and writable stores, and maintain the existing Wails v2 integration while modernizing the frontend architecture.
+The new API-driven approach with subscribe() function replacing useWails() hook provides better type safety, cleaner event handling, and more maintainable integration patterns. The architecture leverages React 19's component model with Zustand for efficient state management, ensuring optimal performance and developer experience.

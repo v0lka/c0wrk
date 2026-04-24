@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -270,38 +272,68 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 
 // injectVectorSearchHints queries the vector index for relevant files and
 // attaches the results as VectorSearchHints on the returned context.
-// If the vector search function is nil or the search fails, the original
-// context is returned unchanged (hints are a nice-to-have, not critical).
+// It also reads AGENTS.md from the workspace root and injects its full
+// content via WithAgentsMD, as well as prepending it as the first hint.
+// If the vector search function is nil or the search fails, hints are
+// still injected if AGENTS.md exists. Hints are a nice-to-have, not critical.
 func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string) context.Context {
-	if o.vectorSearchFunc == nil {
-		return ctx
-	}
+	var hints *VectorSearchHints
 
-	ragCtx, ragCancel := context.WithTimeout(ctx, 2*time.Second)
-	results, err := o.vectorSearchFunc(ragCtx, query, 5, "")
-	ragCancel()
+	// Vector search (optional, non-blocking).
+	if o.vectorSearchFunc != nil {
+		ragCtx, ragCancel := context.WithTimeout(ctx, 2*time.Second)
+		results, err := o.vectorSearchFunc(ragCtx, query, 5, "")
+		ragCancel()
 
-	if err != nil {
-		o.logDebug("vector search hints skipped", "error", err)
-		return ctx
-	}
-	if len(results) == 0 {
-		return ctx
-	}
-
-	hints := &VectorSearchHints{}
-	for _, r := range results {
-		summary := r.Content
-		if len(summary) > 100 {
-			summary = summary[:100]
+		if err != nil {
+			o.logDebug("vector search hints skipped", "error", err)
+		} else if len(results) > 0 {
+			hints = &VectorSearchHints{}
+			for _, r := range results {
+				summary := r.Content
+				if len(summary) > 100 {
+					summary = summary[:100]
+				}
+				hints.Files = append(hints.Files, VectorSearchHint{
+					FilePath: r.FilePath,
+					Summary:  summary,
+				})
+			}
+			o.logDebug("vector search hints injected", "count", len(hints.Files))
 		}
-		hints.Files = append(hints.Files, VectorSearchHint{
-			FilePath: r.FilePath,
-			Summary:  summary,
-		})
 	}
-	o.logDebug("vector search hints injected", "count", len(hints.Files))
-	return WithVectorSearchHints(ctx, hints)
+
+	// Always try to read AGENTS.md from workspace root.
+	if wsPath := sdktools.WorkspacePathFrom(ctx); wsPath != "" {
+		agentsMDPath := filepath.Join(wsPath, "AGENTS.md")
+		if content, err := os.ReadFile(agentsMDPath); err == nil {
+			ctx = WithAgentsMD(ctx, &AgentsMD{Content: string(content)})
+			o.logDebug("AGENTS.md found and injected", "path", agentsMDPath, "size", len(content))
+
+			// Prepend AGENTS.md as the first hint so it always appears in
+			// the "Relevant Project Files" section for executors.
+			if hints == nil {
+				hints = &VectorSearchHints{}
+			}
+			summary := string(content)
+			if len(summary) > 100 {
+				summary = summary[:100]
+			}
+			agentsHint := VectorSearchHint{
+				FilePath: "AGENTS.md",
+				Summary:  summary,
+			}
+			hints.Files = append([]VectorSearchHint{agentsHint}, hints.Files...)
+		} else {
+			o.logDebug("AGENTS.md not found in workspace", "path", agentsMDPath)
+		}
+	}
+
+	if hints != nil && len(hints.Files) > 0 {
+		ctx = WithVectorSearchHints(ctx, hints)
+	}
+
+	return ctx
 }
 
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.

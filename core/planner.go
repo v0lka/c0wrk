@@ -528,6 +528,9 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 	// Append auto-RAG hints when available.
 	result += formatVectorSearchHints(ctx)
 
+	// Append AGENTS.md project instructions when available.
+	result += formatAgentsMD(ctx)
+
 	return result
 }
 
@@ -659,6 +662,9 @@ func (p *Planner) buildPlanSystemPrompt(
 	// Append auto-RAG hints when available.
 	result += formatVectorSearchHints(ctx)
 
+	// Append AGENTS.md project instructions when available.
+	result += formatAgentsMD(ctx)
+
 	return result
 }
 
@@ -749,6 +755,9 @@ func (p *Planner) buildReplanSystemPrompt(
 		result += "\n\n" + envBlock
 	}
 
+	// Append AGENTS.md project instructions when available.
+	result += formatAgentsMD(ctx)
+
 	return result
 }
 
@@ -815,6 +824,9 @@ func (p *Planner) buildContinuationSystemPrompt(
 		result += "\n\n" + envBlock
 	}
 
+	// Append AGENTS.md project instructions when available.
+	result += formatAgentsMD(ctx)
+
 	return result
 }
 
@@ -865,6 +877,28 @@ func formatVectorSearchHints(ctx context.Context) string {
 		}
 		sb.WriteString("\n")
 	}
+	return sb.String()
+}
+
+// formatAgentsMD returns a prompt section with the full AGENTS.md content
+// and strict adherence instructions, or an empty string when not available.
+func formatAgentsMD(ctx context.Context) string {
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil || amd.Content == "" {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## AGENTS.md — Project Instructions\n\n")
+	sb.WriteString("The following instructions are from the project's AGENTS.md file. ")
+	sb.WriteString("When formulating step descriptions (What/How/Where/Acceptance Criteria), ")
+	sb.WriteString("you MUST strictly follow these instructions. ")
+	sb.WriteString("If you encounter a contradiction between these instructions and the codebase, ")
+	sb.WriteString("do NOT resolve it yourself — include an ask_user step or flag the contradiction ")
+	sb.WriteString("in the step description so the user can clarify.\n\n")
+	sb.WriteString("<agents-md>\n")
+	sb.WriteString(amd.Content)
+	sb.WriteString("\n</agents-md>")
 	return sb.String()
 }
 

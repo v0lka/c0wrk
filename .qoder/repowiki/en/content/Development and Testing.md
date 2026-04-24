@@ -43,6 +43,7 @@
 - Added comprehensive coverage of new frontend API modules (config, project, session, workspace)
 - Updated development workflow to include new backend package testing strategies
 - Expanded testing documentation with specific examples from new backend modules
+- Removed Wails-related testing infrastructure references and updated testing framework focus
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -419,6 +420,8 @@ Recommended practices:
 - Test error conditions and edge cases thoroughly
 - Validate side effects (emitter events, persisted state) rather than implementation internals
 - Test concurrent operations and race conditions
+
+**Updated** Removed Wails-related testing infrastructure references and updated testing framework focus to emphasize new API testing patterns and event subscription system.
 
 **Section sources**
 - [backend/config/config_test.go:14-800](file://backend/config/config_test.go#L14-L800)

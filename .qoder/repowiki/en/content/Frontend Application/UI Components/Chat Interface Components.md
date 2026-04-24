@@ -15,12 +15,30 @@
 - [ToolBlock.tsx](file://frontend/src/components/chat/ToolBlock.tsx)
 - [PlanStepBlock.tsx](file://frontend/src/components/chat/PlanStepBlock.tsx)
 - [ThoughtGroupBlock.tsx](file://frontend/src/components/chat/ThoughtGroupBlock.tsx)
-- [markdownConfig.tsx](file://frontend/src/lib/markdownConfig.tsx)
+- [CollapsibleBlock.tsx](file://frontend/src/components/chat/CollapsibleBlock.tsx)
+- [ScrollContext.tsx](file://frontend/src/components/chat/ScrollContext.tsx)
+- [ToolContentBlock.tsx](file://frontend/src/components/chat/ToolContentBlock.tsx)
+- [chatUtils.ts](file://frontend/src/lib/chatUtils.ts)
+- [chatUtilsHelpers.ts](file://frontend/src/lib/chatUtilsHelpers.ts)
+- [chatGroupingHandlers.ts](file://frontend/src/lib/chatGroupingHandlers.ts)
+- [planStore.ts](file://frontend/src/stores/planStore.ts)
 - [chatStore.ts](file://frontend/src/stores/chatStore.ts)
 - [panelStore.ts](file://frontend/src/stores/panelStore.ts)
 - [dagLayout.ts](file://frontend/src/lib/dagLayout.ts)
-- [chatUtils.ts](file://frontend/src/lib/chatUtils.ts)
+- [markdownConfig.tsx](file://frontend/src/lib/markdownConfig.tsx)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added new CollapsibleBlock component as the foundation for all collapsible UI elements
+- Introduced ScrollContext for step navigation coordination across components
+- Added ToolContentBlock for unified tool arguments/results display with show-more functionality
+- Completely rewrote chatUtils.ts and chatUtilsHelpers.ts with advanced message grouping capabilities
+- Updated chatGroupingHandlers.ts with specialized handlers for plan steps, tools, and actions
+- Migrated from panel-based to plan-based architecture with planStore integration
+- Updated all specialized blocks (ThoughtBlock, ReflectionBlock, ToolBlock, PlanStepBlock) to use CollapsibleBlock
+- Enhanced ExecutionPanels to work with the new plan-based system
+- Updated ChatMessageRenderer to use the new component architecture
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -36,16 +54,17 @@
 11. [Conclusion](#conclusion)
 
 ## Introduction
-This document provides comprehensive documentation for C0WRK's chat interface components. It covers the core messaging components (AssistantMessage, UserMessage, ChatInput), specialized execution visualization components (PlanView, DAGGraph, ExecutionPanels), and the rendering pipeline (ChatArea, ChatMessageRenderer) along with specialized blocks (ThoughtBlock, ReflectionBlock, ToolBlock). It also explains component composition patterns, state management via Zustand stores, accessibility features, and customization options for different message types and execution contexts.
+This document provides comprehensive documentation for C0WRK's chat interface components. It covers the core messaging components (AssistantMessage, UserMessage, ChatInput), specialized execution visualization components (PlanView, DAGGraph, ExecutionPanels), and the rendering pipeline (ChatArea, ChatMessageRenderer) along with specialized blocks (ThoughtBlock, ReflectionBlock, ToolBlock). The system has been completely rewritten with a new plan-based architecture featuring CollapsibleBlock.tsx, ScrollContext.tsx, and ToolContentBlock.tsx, providing enhanced message grouping capabilities and improved component composition patterns.
 
 ## Project Structure
 The chat UI is organized under frontend/src/components/chat with supporting libraries and stores under frontend/src/lib and frontend/src/stores respectively. The key areas are:
 - Messaging and input: AssistantMessage, UserMessage, ChatInput
 - Rendering pipeline: ChatArea, ChatMessageRenderer
 - Specialized blocks: ThoughtBlock, ReflectionBlock, ToolBlock, ThoughtGroupBlock, PlanStepBlock
+- Foundation components: CollapsibleBlock, ToolContentBlock, ScrollContext
 - Execution visualization: PlanView, DAGGraph, ExecutionPanels
-- Stores: chatStore (message grouping and UI state), panelStore (execution plan state), dagLayout (DAG layout computation)
-- Utilities: markdownConfig (ReactMarkdown configuration), chatUtils (history conversion), dagLayout (DAG layout)
+- Stores: chatStore (message grouping and UI state), planStore (execution plan state), dagLayout (DAG layout computation)
+- Utilities: markdownConfig (ReactMarkdown configuration), chatUtils (advanced history conversion), chatUtilsHelpers (message grouping helpers), chatGroupingHandlers (specialized handlers)
 
 ```mermaid
 graph TB
@@ -63,15 +82,20 @@ THB["ThoughtBlock"]
 RFB["ReflectionBlock"]
 PSB["PlanStepBlock"]
 TGB["ThoughtGroupBlock"]
+CB["CollapsibleBlock"]
+TCB["ToolContentBlock"]
+SC["ScrollContext"]
 end
 subgraph "Stores"
 CS["chatStore"]
-PS["panelStore"]
+PS["planStore"]
 end
 subgraph "Libraries"
 MC["markdownConfig"]
 DU["dagLayout"]
 CU["chatUtils"]
+CUH["chatUtilsHelpers"]
+CGH["chatGroupingHandlers"]
 end
 CA --> CMR
 CMR --> AM
@@ -91,36 +115,43 @@ AM --> MC
 CI --> CS
 CI --> PS
 CA --> CU
+CU --> CUH
+CU --> CGH
 ```
 
 **Diagram sources**
-- [ChatArea.tsx:17-174](file://frontend/src/components/chat/ChatArea.tsx#L17-L174)
-- [ChatMessageRenderer.tsx:212-237](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L212-L237)
+- [ChatArea.tsx:17-146](file://frontend/src/components/chat/ChatArea.tsx#L17-L146)
+- [ChatMessageRenderer.tsx:1-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L1-L126)
 - [AssistantMessage.tsx:25-90](file://frontend/src/components/chat/AssistantMessage.tsx#L25-L90)
 - [UserMessage.tsx:10-104](file://frontend/src/components/chat/UserMessage.tsx#L10-L104)
 - [ChatInput.tsx:13-192](file://frontend/src/components/chat/ChatInput.tsx#L13-L192)
-- [PlanView.tsx:117-152](file://frontend/src/components/chat/PlanView.tsx#L117-L152)
+- [PlanView.tsx:1-65](file://frontend/src/components/chat/PlanView.tsx#L1-L65)
 - [DAGGraph.tsx:13-88](file://frontend/src/components/chat/DAGGraph.tsx#L13-L88)
-- [ExecutionPanels.tsx:107-141](file://frontend/src/components/chat/ExecutionPanels.tsx#L107-L141)
-- [ToolBlock.tsx:26-136](file://frontend/src/components/chat/ToolBlock.tsx#L26-L136)
-- [ThoughtBlock.tsx:14-66](file://frontend/src/components/chat/ThoughtBlock.tsx#L14-L66)
-- [ReflectionBlock.tsx:27-114](file://frontend/src/components/chat/ReflectionBlock.tsx#L27-L114)
-- [PlanStepBlock.tsx:42-122](file://frontend/src/components/chat/PlanStepBlock.tsx#L42-L122)
+- [ExecutionPanels.tsx:1-61](file://frontend/src/components/chat/ExecutionPanels.tsx#L1-L61)
+- [ToolBlock.tsx:1-38](file://frontend/src/components/chat/ToolBlock.tsx#L1-L38)
+- [ThoughtBlock.tsx:1-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L1-L45)
+- [ReflectionBlock.tsx:1-63](file://frontend/src/components/chat/ReflectionBlock.tsx#L1-L63)
+- [PlanStepBlock.tsx:1-78](file://frontend/src/components/chat/PlanStepBlock.tsx#L1-L78)
 - [ThoughtGroupBlock.tsx:13-45](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L13-L45)
+- [CollapsibleBlock.tsx:1-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L1-L67)
+- [ToolContentBlock.tsx:1-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L1-L78)
+- [ScrollContext.tsx:1-37](file://frontend/src/components/chat/ScrollContext.tsx#L1-L37)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
+- [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
 - [markdownConfig.tsx:27-77](file://frontend/src/lib/markdownConfig.tsx#L27-L77)
 - [dagLayout.ts:33-237](file://frontend/src/lib/dagLayout.ts#L33-L237)
-- [chatUtils.ts:221-244](file://frontend/src/lib/chatUtils.ts#L221-L244)
+- [chatUtils.ts:1-176](file://frontend/src/lib/chatUtils.ts#L1-L176)
+- [chatUtilsHelpers.ts:1-186](file://frontend/src/lib/chatUtilsHelpers.ts#L1-L186)
+- [chatGroupingHandlers.ts:1-158](file://frontend/src/lib/chatGroupingHandlers.ts#L1-L158)
 
 **Section sources**
-- [ChatArea.tsx:17-174](file://frontend/src/components/chat/ChatArea.tsx#L17-L174)
-- [ChatMessageRenderer.tsx:212-237](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L212-L237)
+- [ChatArea.tsx:17-146](file://frontend/src/components/chat/ChatArea.tsx#L17-L146)
+- [ChatMessageRenderer.tsx:1-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L1-L126)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
+- [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
 
 ## Core Components
-This section documents the primary chat components and their responsibilities.
+This section documents the primary chat components and their responsibilities, now built on the new foundation architecture.
 
 - AssistantMessage
   - Purpose: Renders assistant messages with optional raw/source toggle and streaming cursor.
@@ -148,7 +179,7 @@ This section documents the primary chat components and their responsibilities.
 - [ChatInput.tsx:13-192](file://frontend/src/components/chat/ChatInput.tsx#L13-L192)
 
 ## Architecture Overview
-The chat architecture centers on a rendering pipeline that transforms backend messages into a structured display model, grouped into DisplayItem categories, then rendered by ChatMessageRenderer. Execution plan state is maintained separately in panelStore and visualized via PlanView and DAGGraph. ChatArea orchestrates history loading, pinned user message display, scrolling, and integrates with session events.
+The chat architecture centers on a completely rewritten rendering pipeline that transforms backend messages into a structured display model using advanced grouping capabilities, then rendered by ChatMessageRenderer. The new plan-based architecture maintains execution plan state in planStore and visualizes it via PlanView and DAGGraph. ChatArea orchestrates history loading, pinned user message display, scrolling, and integrates with session events through the new component foundation.
 
 ```mermaid
 sequenceDiagram
@@ -156,9 +187,10 @@ participant User as "User"
 participant Input as "ChatInput"
 participant Session as "sessionStore"
 participant Chat as "chatStore"
-participant Panel as "panelStore"
+participant Plan as "planStore"
 participant Backend as "Wails API"
 participant Area as "ChatArea"
+participant Utils as "chatUtils"
 participant Renderer as "ChatMessageRenderer"
 User->>Input : Type message and press Enter
 Input->>Session : Get activeSessionId
@@ -171,23 +203,116 @@ Input->>Chat : addMessage(user)
 Input->>Chat : setTaskActive(true)
 Input->>Backend : SendMessage(sessionId, text)
 Backend-->>Chat : Stream tokens (setStreaming/appendStreamToken)
-Backend-->>Panel : Events (plan, plan_step_start/complete)
+Backend-->>Plan : Events (plan, plan_step_start/complete)
 Area->>Backend : GetSessionHistory(sessionId)
 Backend-->>Area : History messages
 Area->>Chat : setMessages(sessionId, uiMessages)
-Area->>Panel : rebuildFromEvents(uiMessages)
+Area->>Utils : rebuildPlanFromHistory(uiMessages)
+Utils->>Plan : setPlan(group)
+Area->>Utils : groupMessages(uiMessages)
+Utils->>Plan : handlePlanStepStart/Complete
+Utils->>Chat : handleToolCall/Result
+Utils->>Chat : handleActionMessage
 Renderer->>Chat : Read messages/streamingText
 Renderer-->>User : Rendered UI
 ```
 
 **Diagram sources**
 - [ChatInput.tsx:46-111](file://frontend/src/components/chat/ChatInput.tsx#L46-L111)
-- [ChatArea.tsx:84-101](file://frontend/src/components/chat/ChatArea.tsx#L84-L101)
+- [ChatArea.tsx:48-73](file://frontend/src/components/chat/ChatArea.tsx#L48-L73)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
-- [panelStore.ts:146-220](file://frontend/src/stores/panelStore.ts#L146-L220)
-- [ChatMessageRenderer.tsx:212-237](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L212-L237)
+- [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
+- [ChatMessageRenderer.tsx:111-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L111-L126)
+- [chatUtils.ts:117-175](file://frontend/src/lib/chatUtils.ts#L117-L175)
 
 ## Detailed Component Analysis
+
+### Foundation Components
+
+#### CollapsibleBlock Analysis
+- Purpose: Universal collapsible container providing consistent UI patterns across all collapsible components.
+- Props: icon, label, statusIcon, badge, defaultOpen, open, onOpenChange, className, children, headerExtra.
+- Behavior: Supports both controlled and uncontrolled modes, hover-triggered chevron indicators, and flexible header layouts.
+- Integration: Used as the base for ThoughtBlock, ReflectionBlock, ToolBlock, and PlanStepBlock.
+
+```mermaid
+flowchart TD
+Start(["CollapsibleBlock"]) --> Mode{"Controlled/Uncontrolled"}
+Mode --> |Controlled| Controlled["Use provided open/onOpenChange"]
+Mode --> |Uncontrolled| Uncontrolled["Use internal state"]
+Controlled --> Render["Render with provided props"]
+Uncontrolled --> Render
+Render --> Header["CollapsibleTrigger with icons"]
+Header --> Chevron{"Hover?"}
+Chevron --> |Yes| ShowChevron["Show chevron indicator"]
+Chevron --> |No| HideChevron["Hide chevron"]
+ShowChevron --> Content["CollapsibleContent"]
+HideChevron --> Content
+Content --> Children["Render children"]
+Children --> End(["Done"])
+```
+
+**Diagram sources**
+- [CollapsibleBlock.tsx:23-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L23-L67)
+
+**Section sources**
+- [CollapsibleBlock.tsx:10-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L10-L67)
+
+#### ScrollContext Analysis
+- Purpose: Provides global scroll-to-step functionality for coordinating navigation between plan view and execution details.
+- Props: None (provides context to children).
+- Functionality: Maintains a callback reference that can be triggered from anywhere in the component tree.
+- Integration: Used by PlanView to enable step navigation from plan items.
+
+```mermaid
+flowchart TD
+Start(["ScrollContext"]) --> Provider["ScrollProvider"]
+Provider --> Ref["Store callback in ref"]
+Ref --> Expose["Expose scrollToStep/setScrollToStep"]
+Expose --> Consumer["useScrollContext()"]
+Consumer --> UseCallback["Use stored callback"]
+UseCallback --> End(["Navigation"])
+```
+
+**Diagram sources**
+- [ScrollContext.tsx:12-37](file://frontend/src/components/chat/ScrollContext.tsx#L12-L37)
+
+**Section sources**
+- [ScrollContext.tsx:1-37](file://frontend/src/components/chat/ScrollContext.tsx#L1-L37)
+
+#### ToolContentBlock Analysis
+- Purpose: Unified display component for tool arguments and results with intelligent preview and expand/collapse functionality.
+- Props: args (string), result (string, optional), resultLen (number, optional), borderClass (string, optional).
+- Features: Automatic truncation at 200 characters, show-more toggle, result length formatting (K chars), and consistent styling.
+- Integration: Used by ToolBlock and MemoryBlock for consistent tool display.
+
+```mermaid
+flowchart TD
+Start(["ToolContentBlock"]) --> CheckArgs{"Args > 200 chars?"}
+CheckArgs --> |Yes| TruncateArgs["Truncate args + '...'"]
+CheckArgs --> |No| UseArgs["Use full args"]
+CheckResult{"Result exists?"}
+CheckResult --> |Yes| CheckResultLen{"Result > 200 chars?"}
+CheckResultLen --> |Yes| TruncateResult["Truncate result + '...'"]
+CheckResultLen --> |No| UseResult["Use full result"]
+CheckResult --> |No| NoResult["No result display"]
+TruncateArgs --> HasLong{"Has long content?"}
+UseArgs --> HasLong
+TruncateResult --> HasLong
+UseResult --> HasLong
+NoResult --> HasLong
+HasLong --> |Yes| ShowToggle["Show 'Show more' toggle"]
+HasLong --> |No| Render["Render content"]
+ShowToggle --> Toggle["Expand/collapse state"]
+Toggle --> Render
+Render --> End(["Done"])
+```
+
+**Diagram sources**
+- [ToolContentBlock.tsx:35-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L35-L78)
+
+**Section sources**
+- [ToolContentBlock.tsx:27-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L27-L78)
 
 ### AssistantMessage Analysis
 - Props: content (string), isStreaming (boolean).
@@ -281,99 +406,108 @@ end
 
 ### ChatArea Analysis
 - Props: None.
-- Responsibilities: Loads session history, groups messages, pins the last user message, manages container height for pinned clipping, subscribes to session events, clears panels when no session.
-- Integration: Uses chatStore for messages/streamingText, panelStore for plan rebuild, and chatUtils for history conversion.
+- Responsibilities: Loads session history, groups messages using advanced grouping capabilities, pins the last user message, manages container height for pinned clipping, subscribes to session events, clears plan store when no session.
+- Integration: Uses chatStore for messages/streamingText, planStore for plan state, and chatUtils for history conversion and plan rebuilding.
 
 ```mermaid
 flowchart TD
 Start(["ChatArea mount"]) --> HasSession{"activeSessionId?"}
-HasSession --> |No| Empty["Show empty state"]
+HasSession --> |No| ClearPlan["Clear plan store"]
+ClearPlan --> Empty["Show empty state"]
 HasSession --> |Yes| LoadHistory["GetSessionHistory()"]
 LoadHistory --> Convert["chatMessageToUI()"]
 Convert --> SetMsgs["setMessages()"]
-SetMsgs --> RebuildPanel["panelStore.rebuildFromEvents()"]
-RebuildPanel --> Group["groupMessages()"]
+SetMsgs --> RebuildPlan["rebuildPlanFromHistory()"]
+RebuildPlan --> Group["groupMessages()"]
 Group --> PinLast["Find last user message"]
 PinLast --> Render["Render pinned + scrollable chat"]
 ```
 
 **Diagram sources**
-- [ChatArea.tsx:17-174](file://frontend/src/components/chat/ChatArea.tsx#L17-L174)
-- [chatUtils.ts:221-244](file://frontend/src/lib/chatUtils.ts#L221-L244)
+- [ChatArea.tsx:21-146](file://frontend/src/components/chat/ChatArea.tsx#L21-L146)
+- [chatUtils.ts:117-175](file://frontend/src/lib/chatUtils.ts#L117-L175)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
-- [panelStore.ts:146-220](file://frontend/src/stores/panelStore.ts#L146-L220)
+- [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
 
 **Section sources**
-- [ChatArea.tsx:17-174](file://frontend/src/components/chat/ChatArea.tsx#L17-L174)
-- [chatUtils.ts:221-244](file://frontend/src/lib/chatUtils.ts#L221-L244)
+- [ChatArea.tsx:21-146](file://frontend/src/components/chat/ChatArea.tsx#L21-L146)
+- [chatUtils.ts:117-175](file://frontend/src/lib/chatUtils.ts#L117-L175)
 
 ### ChatMessageRenderer Analysis
-- Props: displayItems (DisplayItem[]), lastUserMessageId (string|null), streamingText (string|null).
-- Composition: Routes DisplayItem kinds to appropriate subcomponents (UserMessage, AssistantMessage, ThoughtBlock, ToolBlock, PlanStepBlock, etc.). Skips the last pinned user message. Renders streaming assistant text and an ActivityIndicator.
+- Props: items (DisplayItem[]).
+- Composition: Routes DisplayItem kinds to appropriate subcomponents using a centralized registry. Now uses CollapsibleBlock as the foundation for all collapsible components.
 - Specialized blocks:
-  - ThoughtBlock: Collapsible reasoning with show more/less.
-  - ReflectionBlock: Collapsible reflection summary with suggested action badges and details.
-  - ToolBlock: Collapsible tool invocation/results with argument/result previews and long-content toggles.
-  - ThoughtGroupBlock: Collapsible group of thoughts.
-  - PlanStepBlock: Collapsible step with status, duration, error, and nested children rendering.
+  - ThoughtBlock: Collapsible reasoning with show more/less using CollapsibleBlock.
+  - ReflectionBlock: Collapsible reflection summary with suggested action badges and details using CollapsibleBlock.
+  - ToolBlock: Collapsible tool invocation/results with ToolContentBlock for unified display.
+  - PlanStepBlock: Collapsible step with status, duration, error, and nested children rendering using CollapsibleBlock.
+  - MemoryBlock: Specialized memory read block using CollapsibleBlock and ToolContentBlock.
 
 ```mermaid
 classDiagram
 class ChatMessageRenderer {
-+displayItems : DisplayItem[]
-+lastUserMessageId : string?
-+streamingText : string?
-+renderDisplayItem(item)
++items : DisplayItem[]
++render()
 }
 class ThoughtBlock
 class ReflectionBlock
 class ToolBlock
-class ThoughtGroupBlock
 class PlanStepBlock
-class UserMessage
-class AssistantMessage
+class MemoryBlock
+class CollapsibleBlock
+class ToolContentBlock
 ChatMessageRenderer --> ThoughtBlock : "renders"
 ChatMessageRenderer --> ReflectionBlock : "renders"
 ChatMessageRenderer --> ToolBlock : "renders"
-ChatMessageRenderer --> ThoughtGroupBlock : "renders"
 ChatMessageRenderer --> PlanStepBlock : "renders"
-ChatMessageRenderer --> UserMessage : "renders"
-ChatMessageRenderer --> AssistantMessage : "renders"
+ChatMessageRenderer --> MemoryBlock : "renders"
+ThoughtBlock --> CollapsibleBlock : "extends"
+ReflectionBlock --> CollapsibleBlock : "extends"
+ToolBlock --> CollapsibleBlock : "extends"
+PlanStepBlock --> CollapsibleBlock : "extends"
+ToolBlock --> ToolContentBlock : "uses"
+MemoryBlock --> CollapsibleBlock : "extends"
+MemoryBlock --> ToolContentBlock : "uses"
 ```
 
 **Diagram sources**
-- [ChatMessageRenderer.tsx:212-237](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L212-L237)
-- [ThoughtBlock.tsx:14-66](file://frontend/src/components/chat/ThoughtBlock.tsx#L14-L66)
-- [ReflectionBlock.tsx:27-114](file://frontend/src/components/chat/ReflectionBlock.tsx#L27-L114)
-- [ToolBlock.tsx:26-136](file://frontend/src/components/chat/ToolBlock.tsx#L26-L136)
-- [ThoughtGroupBlock.tsx:13-45](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L13-L45)
-- [PlanStepBlock.tsx:42-122](file://frontend/src/components/chat/PlanStepBlock.tsx#L42-L122)
-- [UserMessage.tsx:10-104](file://frontend/src/components/chat/UserMessage.tsx#L10-L104)
-- [AssistantMessage.tsx:25-90](file://frontend/src/components/chat/AssistantMessage.tsx#L25-L90)
+- [ChatMessageRenderer.tsx:75-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L75-L126)
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+- [ReflectionBlock.tsx:13-63](file://frontend/src/components/chat/ReflectionBlock.tsx#L13-L63)
+- [ToolBlock.tsx:16-38](file://frontend/src/components/chat/ToolBlock.tsx#L16-L38)
+- [PlanStepBlock.tsx:17-78](file://frontend/src/components/chat/PlanStepBlock.tsx#L17-L78)
+- [MemoryBlock.tsx:52-74](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L52-L74)
+- [CollapsibleBlock.tsx:23-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L23-L67)
+- [ToolContentBlock.tsx:35-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L35-L78)
 
 **Section sources**
-- [ChatMessageRenderer.tsx:212-237](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L212-L237)
+- [ChatMessageRenderer.tsx:75-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L75-L126)
 
 ### PlanView Analysis
 - Purpose: Displays the latest execution plan as a list of steps with status, duration, and optional details.
-- Data: Reads from panelStore.planGroups[0] and maps to view model (PlanStepView).
-- Interactions: Expandable details per step; derived labels from summary or description; status icons and badges.
+- Data: Reads from planStore.planGroups[0] and maps to view model (PlanItem[]).
+- Interactions: Clickable step items that trigger scroll-to-step functionality via ScrollContext; derived labels from summary or description; status icons and badges.
 
 ```mermaid
 flowchart TD
 Start(["PlanView"]) --> Latest{"Has plan?"}
 Latest --> |No| Empty["No plan generated message"]
-Latest --> |Yes| Map["Map planGroups[0].items to PlanStepView[]"]
-Map --> Render["Render PlanStepItem list"]
+Latest --> |Yes| Items["Map planGroups[0].items"]
+Items --> Render["Render PlanStepItem list"]
+Render --> Click{"User clicks step?"}
+Click --> |Yes| Scroll["scrollToStep(stepId)"]
+Click --> |No| End(["Done"])
+Scroll --> End
 ```
 
 **Diagram sources**
-- [PlanView.tsx:117-152](file://frontend/src/components/chat/PlanView.tsx#L117-L152)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
+- [PlanView.tsx:47-65](file://frontend/src/components/chat/PlanView.tsx#L47-L65)
+- [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
+- [ScrollContext.tsx:32-37](file://frontend/src/components/chat/ScrollContext.tsx#L32-L37)
 
 **Section sources**
-- [PlanView.tsx:117-152](file://frontend/src/components/chat/PlanView.tsx#L117-L152)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
+- [PlanView.tsx:1-65](file://frontend/src/components/chat/PlanView.tsx#L1-L65)
+- [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
 
 ### DAGGraph Analysis
 - Purpose: Visualizes task dependencies as a DAG using SVG connectors.
@@ -399,7 +533,7 @@ Connectors --> Render
 
 ### ExecutionPanels Analysis
 - Purpose: Collapsible panel showing execution plan with DAG visualization and step list.
-- Data: Uses panelStore.planGroups; integrates with scrollStore to jump to steps.
+- Data: Uses planStore.planGroups; integrates with ScrollContext to jump to steps.
 - UI: PanelHeader with counters; PlanContent renders DAGGraph plus step list with status icons and tooltips.
 
 ```mermaid
@@ -412,22 +546,54 @@ Content --> End(["Rendered"])
 ```
 
 **Diagram sources**
-- [ExecutionPanels.tsx:107-141](file://frontend/src/components/chat/ExecutionPanels.tsx#L107-L141)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
+- [ExecutionPanels.tsx:11-61](file://frontend/src/components/chat/ExecutionPanels.tsx#L11-L61)
+- [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
 
 **Section sources**
-- [ExecutionPanels.tsx:107-141](file://frontend/src/components/chat/ExecutionPanels.tsx#L107-L141)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
+- [ExecutionPanels.tsx:1-61](file://frontend/src/components/chat/ExecutionPanels.tsx#L1-L61)
+- [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
 
 ### Specialized Blocks
-- ThoughtBlock: Collapsible reasoning with preview and expand/collapse.
-- ReflectionBlock: Collapsible reflection summary with suggested action badges and optional details.
-- ToolBlock: Collapsible tool call/results with argument/result previews and long-content toggles; distinguishes status with icons.
-- ThoughtGroupBlock: Collapsible group of thoughts with reasoning/content.
-- PlanStepBlock: Collapsible step with status, duration, error, context fill indicators, and nested children rendering.
+
+#### ThoughtBlock Analysis
+- Purpose: Collapsible reasoning display with intelligent preview and expand/collapse functionality.
+- Implementation: Extends CollapsibleBlock with brain circuit icon and reasoning content.
+- Features: Auto-truncation at 500 characters, show more/less toggle, and responsive design.
+
+#### ReflectionBlock Analysis
+- Purpose: Collapsible reflection summary with suggested action badges and detailed analysis.
+- Implementation: Extends CollapsibleBlock with warning triangle icon and detailed information panel.
+- Features: Action-specific badge colors, attempt tracking, and expandable details section.
+
+#### ToolBlock Analysis
+- Purpose: Collapsible tool invocation/results display with unified arguments/results presentation.
+- Implementation: Extends CollapsibleBlock with wrench icon and uses ToolContentBlock for content display.
+- Features: Status-specific icons, MCP source indication, and intelligent argument parsing.
+
+#### PlanStepBlock Analysis
+- Purpose: Collapsible execution step with status, duration, error handling, and nested child rendering.
+- Implementation: Extends CollapsibleBlock with status-specific icons and duration display.
+- Features: Auto-open when running, user override capability, retry indication, and nested ChatMessageRenderer.
+
+#### MemoryBlock Analysis
+- Purpose: Specialized memory read operation display using unified ToolContentBlock.
+- Implementation: Uses CollapsibleBlock with book icon and accent color scheme.
+- Features: Memory operation type labeling and ToolContentBlock integration.
 
 ```mermaid
 classDiagram
+class CollapsibleBlock {
++icon? : ReactNode
++label : ReactNode
++statusIcon? : ReactNode
++badge? : ReactNode
++defaultOpen? : boolean
++open? : boolean
++onOpenChange? : Function
++className? : string
++children : ReactNode
++headerExtra? : ReactNode
+}
 class ThoughtBlock {
 +content : string
 +reasoning? : string
@@ -452,9 +618,6 @@ class ToolBlock {
 +status : "running"|"success"|"error"|"awaiting_confirmation"
 +source? : string
 }
-class ThoughtGroupBlock {
-+thoughts : {content : string, reasoning? : string}[]
-}
 class PlanStepBlock {
 +stepId : string
 +stepNum : number
@@ -466,36 +629,62 @@ class PlanStepBlock {
 +isRetry? : boolean
 +children : DisplayItem[]
 }
+class MemoryBlock {
++toolName : string
++args : string
++parsedArgs? : Record<string,unknown>
++result? : string
++resultLen? : number
++status : "running"|"success"|"error"
+}
+class ToolContentBlock {
++args : string
++result? : string
++resultLen? : number
++borderClass? : string
+}
+ThoughtBlock --|> CollapsibleBlock
+ReflectionBlock --|> CollapsibleBlock
+ToolBlock --|> CollapsibleBlock
+PlanStepBlock --|> CollapsibleBlock
+MemoryBlock --|> CollapsibleBlock
+ToolBlock --> ToolContentBlock
+MemoryBlock --> ToolContentBlock
 ```
 
 **Diagram sources**
-- [ThoughtBlock.tsx:9-66](file://frontend/src/components/chat/ThoughtBlock.tsx#L9-L66)
-- [ReflectionBlock.tsx:9-114](file://frontend/src/components/chat/ReflectionBlock.tsx#L9-L114)
-- [ToolBlock.tsx:9-136](file://frontend/src/components/chat/ToolBlock.tsx#L9-L136)
-- [ThoughtGroupBlock.tsx:9-45](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L9-L45)
-- [PlanStepBlock.tsx:13-122](file://frontend/src/components/chat/PlanStepBlock.tsx#L13-L122)
+- [CollapsibleBlock.tsx:10-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L10-L67)
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+- [ReflectionBlock.tsx:13-63](file://frontend/src/components/chat/ReflectionBlock.tsx#L13-L63)
+- [ToolBlock.tsx:16-38](file://frontend/src/components/chat/ToolBlock.tsx#L16-L38)
+- [PlanStepBlock.tsx:17-78](file://frontend/src/components/chat/PlanStepBlock.tsx#L17-L78)
+- [MemoryBlock.tsx:52-74](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L52-L74)
+- [ToolContentBlock.tsx:35-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L35-L78)
 
 **Section sources**
-- [ThoughtBlock.tsx:9-66](file://frontend/src/components/chat/ThoughtBlock.tsx#L9-L66)
-- [ReflectionBlock.tsx:9-114](file://frontend/src/components/chat/ReflectionBlock.tsx#L9-L114)
-- [ToolBlock.tsx:9-136](file://frontend/src/components/chat/ToolBlock.tsx#L9-L136)
-- [ThoughtGroupBlock.tsx:9-45](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L9-L45)
-- [PlanStepBlock.tsx:13-122](file://frontend/src/components/chat/PlanStepBlock.tsx#L13-L122)
+- [ThoughtBlock.tsx:1-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L1-L45)
+- [ReflectionBlock.tsx:1-63](file://frontend/src/components/chat/ReflectionBlock.tsx#L1-L63)
+- [ToolBlock.tsx:1-38](file://frontend/src/components/chat/ToolBlock.tsx#L1-L38)
+- [PlanStepBlock.tsx:1-78](file://frontend/src/components/chat/PlanStepBlock.tsx#L1-L78)
+- [ChatMessageRenderer.tsx:52-74](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L52-L74)
+- [ToolContentBlock.tsx:1-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L1-L78)
 
 ## Dependency Analysis
 - Stores:
   - chatStore: Holds messages, streamingText, isThinking, isTaskActive, activityStatus, and provides actions to add/update messages, stream tokens, set activity, resolve actions, and clear session UI state. Also exposes selectors for pending actions and grouping logic.
-  - panelStore: Manages planGroups, session stats, and rebuilds plan state from chat messages/events.
+  - planStore: Manages planGroups, session stats, and provides actions to set plan, update step status, add steps, and clear plan state. Now central to the new plan-based architecture.
 - Libraries:
   - markdownConfig: Provides customSchema and markdownComponents for ReactMarkdown rendering.
   - dagLayout: Computes DAG layout for visualization.
-  - chatUtils: Converts persisted session messages to ChatMessageUI for rendering parity with live events.
+  - chatUtils: Advanced message conversion and grouping with plan reconstruction capabilities.
+  - chatUtilsHelpers: Message grouping helpers including tool key generation and content reconstruction.
+  - chatGroupingHandlers: Specialized handlers for plan steps, tool calls/results, and action messages.
 - Components depend on stores for state and on libraries for rendering/formatting.
 
 ```mermaid
 graph LR
 CS["chatStore"] --> CMR["ChatMessageRenderer"]
-PS["panelStore"] --> EP["ExecutionPanels"]
+PS["planStore"] --> EP["ExecutionPanels"]
 PS --> PV["PlanView"]
 DG["DAGGraph"] --> DL["dagLayout"]
 AM["AssistantMessage"] --> MC["markdownConfig"]
@@ -507,36 +696,42 @@ CMR --> RFB["ReflectionBlock"]
 CMR --> TB["ToolBlock"]
 CMR --> TGB["ThoughtGroupBlock"]
 CMR --> PSB["PlanStepBlock"]
+CMR --> CB["CollapsibleBlock"]
+CMR --> TCB["ToolContentBlock"]
+CU --> CUH["chatUtilsHelpers"]
+CU --> CGH["chatGroupingHandlers"]
 ```
 
 **Diagram sources**
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
-- [ChatMessageRenderer.tsx:212-237](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L212-L237)
+- [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
+- [ChatMessageRenderer.tsx:111-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L111-L126)
 - [DAGGraph.tsx:13-88](file://frontend/src/components/chat/DAGGraph.tsx#L13-L88)
 - [dagLayout.ts:33-237](file://frontend/src/lib/dagLayout.ts#L33-L237)
 - [markdownConfig.tsx:27-77](file://frontend/src/lib/markdownConfig.tsx#L27-L77)
-- [chatUtils.ts:221-244](file://frontend/src/lib/chatUtils.ts#L221-L244)
+- [chatUtils.ts:1-176](file://frontend/src/lib/chatUtils.ts#L1-L176)
+- [chatUtilsHelpers.ts:1-186](file://frontend/src/lib/chatUtilsHelpers.ts#L1-L186)
+- [chatGroupingHandlers.ts:1-158](file://frontend/src/lib/chatGroupingHandlers.ts#L1-L158)
 
 **Section sources**
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
-- [panelStore.ts:66-221](file://frontend/src/stores/panelStore.ts#L66-L221)
-- [ChatMessageRenderer.tsx:212-237](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L212-L237)
+- [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
+- [ChatMessageRenderer.tsx:1-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L1-L126)
 
 ## Performance Considerations
 - Memoization and lazy rendering:
   - AssistantMessage memoizes highlighted raw Markdown to avoid repeated highlighting.
+  - All collapsible blocks use React.memo for optimal re-render performance.
   - ChatMessageRenderer uses React.memo for MemoryBlock and ThoughtGroupBlock to minimize re-renders.
   - ChatArea measures container height efficiently using ResizeObserver and requestAnimationFrame fallbacks.
 - Streaming:
   - ChatInput sets isTaskActive and activityStatus during send; streamingText is appended incrementally via chatStore to avoid full re-renders of the entire message list.
 - Collapsing and virtualization:
-  - Thought blocks and plan steps are collapsible to reduce DOM size.
+  - All collapsible components use CollapsibleBlock for consistent performance and reduced DOM complexity.
   - Pinned user message is rendered outside the scrollable region to keep the list lean.
 - Rendering optimization:
   - Markdown rendering uses plugins and sanitization once per component; Mermaid diagrams are wrapped in ErrorBoundary to prevent cascading failures.
-
-[No sources needed since this section provides general guidance]
+  - ToolContentBlock uses efficient truncation algorithms and conditional rendering.
 
 ## Accessibility Features
 - Interactive elements:
@@ -546,12 +741,15 @@ CMR --> PSB["PlanStepBlock"]
   - Pinned messages use tabIndex and onBlur handlers to manage expansion/collapse.
   - Collapsible components expose trigger buttons with appropriate ARIA attributes.
 - Semantic structure:
-  - Collapsible components use native HTML semantics with proper headings and lists.
-  - ToolBlock and ReflectionBlock provide concise summaries with expandable details.
-
-[No sources needed since this section provides general guidance]
+  - CollapsibleBlock uses native HTML semantics with proper headings and lists.
+  - All collapsible components provide consistent keyboard navigation and screen reader support.
+  - ToolContentBlock provides accessible expand/collapse functionality.
 
 ## Customization Options
+- Foundation components:
+  - CollapsibleBlock allows custom icons, labels, status indicators, badges, and styling through props.
+  - ToolContentBlock supports custom border classes and integrates with various content types.
+  - ScrollContext enables global navigation coordination across components.
 - Markdown rendering:
   - customSchema extends rehype-sanitize to allow code spans/classes and heading IDs.
   - markdownComponents override code blocks, enabling language badges, Mermaid diagrams, and pre wrappers.
@@ -563,11 +761,14 @@ CMR --> PSB["PlanStepBlock"]
   - ToolBlock supports source differentiation (e.g., MCP) and long argument/result previews with expand/collapse.
 
 **Section sources**
+- [CollapsibleBlock.tsx:10-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L10-L67)
+- [ToolContentBlock.tsx:27-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L27-L78)
+- [ScrollContext.tsx:1-37](file://frontend/src/components/chat/ScrollContext.tsx#L1-L37)
 - [markdownConfig.tsx:7-77](file://frontend/src/lib/markdownConfig.tsx#L7-L77)
 - [chatStore.ts:3-41](file://frontend/src/stores/chatStore.ts#L3-L41)
-- [PlanView.tsx:117-152](file://frontend/src/components/chat/PlanView.tsx#L117-L152)
+- [PlanView.tsx:1-65](file://frontend/src/components/chat/PlanView.tsx#L1-L65)
 - [DAGGraph.tsx:13-88](file://frontend/src/components/chat/DAGGraph.tsx#L13-L88)
-- [ToolBlock.tsx:26-136](file://frontend/src/components/chat/ToolBlock.tsx#L26-L136)
+- [ToolBlock.tsx:16-38](file://frontend/src/components/chat/ToolBlock.tsx#L16-L38)
 
 ## Troubleshooting Guide
 - Messages not appearing:
@@ -576,17 +777,25 @@ CMR --> PSB["PlanStepBlock"]
 - Streaming text not visible:
   - Ensure chatStore.streamingText is being updated; ChatMessageRenderer renders streamingText as an AssistantMessage with isStreaming.
 - Plan not visible:
-  - Confirm panelStore.planGroups is populated; ExecutionPanels only renders when both planGroups and activeSessionId exist.
+  - Confirm planStore.planGroups is populated; ExecutionPanels only renders when both planGroups and activeSessionId exist.
 - Tool results missing:
-  - Results may arrive before tool_call; chatStore.groupMessages buffers results keyed by tool_call_id or composite keys and applies them when tool_call arrives.
+  - Results may arrive before tool_call; chatUtils.groupMessages buffers results keyed by tool_call_id or composite keys and applies them when tool_call arrives.
 - Pinned message not expanding:
   - Ensure maxHeight is set and ResizeObserver is available; pinned messages require naturalHeight measurement to decide overflow.
+- Collapsible components not working:
+  - Verify CollapsibleBlock is properly imported and used as the base component.
+  - Check that controlled/uncontrolled mode props are correctly configured.
+- Scroll navigation issues:
+  - Ensure ScrollContext provider is wrapping the component tree.
+  - Verify that scrollToStep callback is properly set and used.
 
 **Section sources**
-- [ChatArea.tsx:118-140](file://frontend/src/components/chat/ChatArea.tsx#L118-L140)
+- [ChatArea.tsx:91-140](file://frontend/src/components/chat/ChatArea.tsx#L91-L140)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
-- [panelStore.ts:107-144](file://frontend/src/stores/panelStore.ts#L107-L144)
-- [chatUtils.ts:221-244](file://frontend/src/lib/chatUtils.ts#L221-L244)
+- [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
+- [chatUtils.ts:117-175](file://frontend/src/lib/chatUtils.ts#L117-L175)
+- [CollapsibleBlock.tsx:23-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L23-L67)
+- [ScrollContext.tsx:12-37](file://frontend/src/components/chat/ScrollContext.tsx#L12-L37)
 
 ## Conclusion
-C0WRK’s chat interface is a modular, state-driven system that separates concerns between message rendering, execution plan visualization, and session/state management. The rendering pipeline converts backend messages into a rich, interactive UI with collapsible blocks, streaming support, and robust error boundaries. Stores provide efficient state updates and grouping logic, while libraries encapsulate rendering configuration and DAG layout computation. The design balances accessibility, performance, and extensibility for diverse execution contexts.
+C0WRK's chat interface has been completely rewritten with a modern, plan-based architecture that provides enhanced message grouping capabilities and improved component composition patterns. The new foundation includes CollapsibleBlock.tsx for consistent collapsible UI patterns, ScrollContext.tsx for coordinated navigation, and ToolContentBlock.tsx for unified tool display. The chatUtils.ts and chatUtilsHelpers.ts libraries now feature advanced message grouping with specialized handlers for plan steps, tools, and actions. The migration from panel-based to plan-based architecture provides better execution visualization and state management through planStore.ts. The rendering pipeline converts backend messages into a rich, interactive UI with collapsible blocks, streaming support, and robust error boundaries, while maintaining accessibility, performance, and extensibility for diverse execution contexts.

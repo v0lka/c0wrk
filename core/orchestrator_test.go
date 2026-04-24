@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1880,5 +1882,155 @@ func TestOrchestrator_VectorSearchHints_ErrorSkipped(t *testing.T) {
 	hints := VectorSearchHintsFromContext(ctx)
 	if hints != nil {
 		t.Error("expected nil hints when search returns error")
+	}
+}
+
+// --- AGENTS.md integration tests ---
+
+// TestOrchestrator_AgentsMD_InjectedWhenPresent verifies that when AGENTS.md
+// exists in the workspace root, its content is injected into the context
+// and it appears as the first VectorSearchHint.
+func TestOrchestrator_AgentsMD_InjectedWhenPresent(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsContent := "# Project Instructions\nAlways run tests before committing."
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	o := &Orchestrator{}
+	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
+	ctx = o.injectVectorSearchHints(ctx, "test query")
+
+	// Verify AgentsMD is in context
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil {
+		t.Fatal("expected AgentsMD in context")
+	}
+	if amd.Content != agentsContent {
+		t.Errorf("expected AgentsMD content %q, got %q", agentsContent, amd.Content)
+	}
+
+	// Verify AGENTS.md appears as the first hint
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints == nil {
+		t.Fatal("expected VectorSearchHints in context")
+	}
+	if len(hints.Files) != 1 {
+		t.Fatalf("expected 1 hint (AGENTS.md), got %d", len(hints.Files))
+	}
+	if hints.Files[0].FilePath != "AGENTS.md" {
+		t.Errorf("expected hint file path 'AGENTS.md', got %q", hints.Files[0].FilePath)
+	}
+}
+
+// TestOrchestrator_AgentsMD_AbsentWhenNoWorkspace verifies that no AgentsMD
+// is injected when there is no workspace path in the context.
+func TestOrchestrator_AgentsMD_AbsentWhenNoWorkspace(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := o.injectVectorSearchHints(context.Background(), "test query")
+
+	amd := AgentsMDFromContext(ctx)
+	if amd != nil {
+		t.Error("expected nil AgentsMD when no workspace path")
+	}
+}
+
+// TestOrchestrator_AgentsMD_AbsentWhenFileMissing verifies that no AgentsMD
+// is injected when the workspace exists but has no AGENTS.md file.
+func TestOrchestrator_AgentsMD_AbsentWhenFileMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	o := &Orchestrator{}
+	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
+	ctx = o.injectVectorSearchHints(ctx, "test query")
+
+	amd := AgentsMDFromContext(ctx)
+	if amd != nil {
+		t.Error("expected nil AgentsMD when AGENTS.md file is missing")
+	}
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints != nil {
+		t.Error("expected nil VectorSearchHints when no vector results and no AGENTS.md")
+	}
+}
+
+// TestOrchestrator_AgentsMD_WithVectorSearch verifies that when both vector
+// search results and AGENTS.md exist, AGENTS.md is prepended as the first hint.
+func TestOrchestrator_AgentsMD_WithVectorSearch(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsContent := "# Project Instructions\nRun make test before committing."
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+		return []builtins.VectorSearchResult{
+			{
+				FilePath: "src/main.go",
+				FileName: "main.go",
+				Content:  "package main",
+				Score:    0.9,
+			},
+		}, nil
+	}
+
+	o := &Orchestrator{
+		vectorSearchFunc: searchFunc,
+	}
+
+	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
+	ctx = o.injectVectorSearchHints(ctx, "test query")
+
+	// Verify AgentsMD is in context
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil {
+		t.Fatal("expected AgentsMD in context")
+	}
+
+	// Verify AGENTS.md is the first hint, followed by vector results
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints == nil {
+		t.Fatal("expected VectorSearchHints in context")
+	}
+	if len(hints.Files) != 2 {
+		t.Fatalf("expected 2 hints (AGENTS.md + vector result), got %d", len(hints.Files))
+	}
+	if hints.Files[0].FilePath != "AGENTS.md" {
+		t.Errorf("expected first hint to be 'AGENTS.md', got %q", hints.Files[0].FilePath)
+	}
+	if hints.Files[1].FilePath != "src/main.go" {
+		t.Errorf("expected second hint to be 'src/main.go', got %q", hints.Files[1].FilePath)
+	}
+}
+
+// TestOrchestrator_AgentsMD_NilVectorSearchFunc verifies that AGENTS.md
+// is still injected even when vectorSearchFunc is nil.
+func TestOrchestrator_AgentsMD_NilVectorSearchFunc(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsContent := "# Instructions\nUse go test."
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	o := &Orchestrator{
+		vectorSearchFunc: nil, // no vector search
+	}
+
+	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
+	ctx = o.injectVectorSearchHints(ctx, "test query")
+
+	// AgentsMD should still be injected
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil {
+		t.Fatal("expected AgentsMD in context even with nil vectorSearchFunc")
+	}
+
+	// VectorSearchHints should contain only AGENTS.md
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints == nil {
+		t.Fatal("expected VectorSearchHints with AGENTS.md hint")
+	}
+	if len(hints.Files) != 1 || hints.Files[0].FilePath != "AGENTS.md" {
+		t.Errorf("expected single AGENTS.md hint, got %v", hints.Files)
 	}
 }
