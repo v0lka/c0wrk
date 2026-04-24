@@ -18,15 +18,17 @@
 - [api/index.ts](file://frontend/src/api/index.ts)
 - [vitest.config.ts](file://frontend/vitest.config.ts)
 - [README.md](file://README.md)
+- [package.json](file://frontend/wailsjs/runtime/package.json)
+- [runtime.d.ts](file://frontend/wailsjs/runtime/runtime.d.ts)
+- [runtime.js](file://frontend/wailsjs/runtime/runtime.js)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated ESLint configuration section to reflect new flat config format with TypeScript ESLint integration
-- Enhanced Vite configuration documentation to include version definition constant and improved plugin setup
-- Added comprehensive coverage of the new API-driven architecture with runtime wrapper and typed event handling
-- Expanded TypeScript configuration documentation with new strictness options and module detection features
-- Updated build system documentation to reflect the new API module structure and improved performance optimizations
+- Updated Wails integration section to reflect security improvements for runtime JavaScript bindings file permissions
+- Enhanced security considerations for Wails runtime files with non-executable permissions (644) instead of executable (755)
+- Added security best practices documentation for Wails runtime file management
+- Updated troubleshooting guide to include security-related runtime issues
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -36,12 +38,13 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Dependency Analysis](#dependency-analysis)
 7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
-10. [Appendices](#appendices)
+8. [Security Considerations](#security-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
+11. [Appendices](#appendices)
 
 ## Introduction
-This document explains the frontend build system and development environment for C0WRK. It covers Vite configuration, TypeScript and ESLint setup, Tailwind CSS integration, Wails desktop integration, development server and hot reload, debugging tools, and production build preparation. The build system now features an API-driven architecture with improved performance optimizations and enhanced type safety.
+This document explains the frontend build system and development environment for C0WRK. It covers Vite configuration, TypeScript and ESLint setup, Tailwind CSS integration, Wails desktop integration, development server and hot reload, debugging tools, and production build preparation. The build system now features an API-driven architecture with improved performance optimizations, enhanced type safety, and strengthened security practices for Wails runtime file management.
 
 ## Project Structure
 The frontend is organized under the frontend directory with the following build-related files:
@@ -52,6 +55,7 @@ The frontend is organized under the frontend directory with the following build-
 - Tailwind CSS integrates via plugin and theme tokens with custom design system
 - Wails configuration connects the frontend build to the Go backend for desktop packaging
 - API module structure provides typed runtime access and event handling
+- Wails runtime files include security improvements with non-executable permissions
 
 ```mermaid
 graph TB
@@ -67,6 +71,8 @@ end
 subgraph "Desktop Integration"
 WAILS["Wails Config<br/>wails.json"]
 RUNTIME["Runtime Wrapper<br/>frontend/src/api/runtime.ts"]
+WAILS_RUNTIME["Wails Runtime Files<br/>frontend/wailsjs/runtime/*"]
+SECURITY["Security Improvements<br/>Non-executable Permissions"]
 end
 VCFG --> PKG
 TS --> VCFG
@@ -75,6 +81,9 @@ TW --> HTML
 HTML --> VCFG
 WAILS --> PKG
 WAILS --> RUNTIME
+WAILS --> WAILS_RUNTIME
+RUNTIME --> WAILS_RUNTIME
+WAILS_RUNTIME --> SECURITY
 API --> RUNTIME
 ```
 
@@ -90,6 +99,9 @@ API --> RUNTIME
 - [wails.json](file://wails.json)
 - [runtime.ts](file://frontend/src/api/runtime.ts)
 - [api/index.ts](file://frontend/src/api/index.ts)
+- [package.json](file://frontend/wailsjs/runtime/package.json)
+- [runtime.d.ts](file://frontend/wailsjs/runtime/runtime.d.ts)
+- [runtime.js](file://frontend/wailsjs/runtime/runtime.js)
 
 **Section sources**
 - [vite.config.ts](file://frontend/vite.config.ts)
@@ -127,6 +139,7 @@ API --> RUNTIME
   - Connects frontend build to Go backend for desktop packaging
   - Provides typed runtime access and event subscription
   - Supports session-scoped event handling with automatic prefixing
+  - **Security Enhancement**: Wails runtime files now use non-executable permissions (644) for improved security
 - API module system
   - Centralized runtime wrapper for Wails bindings
   - Typed event subscription and emission
@@ -145,7 +158,7 @@ API --> RUNTIME
 - [api/index.ts](file://frontend/src/api/index.ts)
 
 ## Architecture Overview
-The frontend build pipeline integrates Vite, React, Tailwind CSS, and TypeScript with an enhanced API-driven architecture. Wails bridges the frontend to the Go backend for desktop distribution. The development server serves assets with hot reload, while the production build optimizes resources and bundles. The new API module system provides centralized runtime access with improved type safety and event handling.
+The frontend build pipeline integrates Vite, React, Tailwind CSS, and TypeScript with an enhanced API-driven architecture. Wails bridges the frontend to the Go backend for desktop distribution. The development server serves assets with hot reload, while the production build optimizes resources and bundles. The new API module system provides centralized runtime access with improved type safety and event handling. **Security improvements** include non-executable permissions for Wails runtime files to prevent accidental execution.
 
 ```mermaid
 graph TB
@@ -157,7 +170,9 @@ TS["TypeScript Compiler<br/>Enhanced Strictness"]
 ESL["ESLint<br/>Flat Config + TypeScript Rules"]
 WailsCfg["Wails Config<br/>wails.json"]
 Runtime["Runtime Wrapper<br/>API Module System"]
+WailsRuntime["Wails Runtime Files<br/>Non-executable Permissions"]
 GoApp["Go Backend App State<br/>desktop/app.go"]
+Security["Security Layer<br/>File Permission Management"]
 Dev --> Vite
 Vite --> React
 React --> TW
@@ -165,6 +180,8 @@ Vite --> TS
 Vite --> ESL
 WailsCfg --> Vite
 WailsCfg --> Runtime
+WailsCfg --> WailsRuntime
+WailsRuntime --> Security
 Runtime --> GoApp
 React --> Runtime
 ```
@@ -177,6 +194,7 @@ React --> Runtime
 - [wails.json](file://wails.json)
 - [runtime.ts](file://frontend/src/api/runtime.ts)
 - [app.go](file://desktop/app.go)
+- [package.json](file://frontend/wailsjs/runtime/package.json)
 
 ## Detailed Component Analysis
 
@@ -316,6 +334,7 @@ Components --> TSX["TSX Enabled"]
   - Typed event maps for compile-time safety
 - Backend state
   - Go App struct holds application state and exposes methods to the frontend
+- **Security Enhancement**: Wails runtime files now use non-executable permissions (644) instead of executable (755) for improved security posture
 
 ```mermaid
 sequenceDiagram
@@ -496,13 +515,14 @@ Utils["utils.ts cn()<br/>Enhanced Type Safety"] --> MergeClasses["clsx + tailwin
 - Asset bundling
   - Custom design system and font assets included in final bundle
   - Version constants embedded for build tracking
+- **Security Enhancement**: Wails runtime files are distributed with non-executable permissions (644) to prevent accidental execution
 
 **Section sources**
 - [wails.json](file://wails.json)
 - [runtime.ts](file://frontend/src/api/runtime.ts)
 
 ## Dependency Analysis
-The frontend build stack comprises Vite, React, Tailwind CSS, TypeScript, and ESLint with enhanced API integration. Wails ties the frontend to the Go backend for desktop distribution with improved type safety.
+The frontend build stack comprises Vite, React, Tailwind CSS, TypeScript, and ESLint with enhanced API integration. Wails ties the frontend to the Go backend for desktop distribution with improved type safety and **security enhancements**.
 
 ```mermaid
 graph TB
@@ -514,6 +534,8 @@ ESL["ESLint (Flat Config)"]
 TW["Tailwind CSS"]
 Wails["Wails"]
 API["API Module System"]
+WailsRuntime["Wails Runtime Files"]
+Security["Security Layer"]
 Vite --> React
 Vite --> Tailwind
 Vite --> TS
@@ -521,6 +543,8 @@ Vite --> ESL
 TW --> Vite
 Wails --> Vite
 Wails --> TS
+Wails --> WailsRuntime
+WailsRuntime --> Security
 API --> Wails
 API --> Runtime["Typed Runtime Access"]
 ```
@@ -530,6 +554,7 @@ API --> Runtime["Typed Runtime Access"]
 - [package.json](file://frontend/package.json)
 - [wails.json](file://wails.json)
 - [runtime.ts](file://frontend/src/api/runtime.ts)
+- [package.json](file://frontend/wailsjs/runtime/package.json)
 
 **Section sources**
 - [vite.config.ts](file://frontend/vite.config.ts)
@@ -556,6 +581,26 @@ API --> Runtime["Typed Runtime Access"]
   - Analyze bundle composition using Vite's build analyzer plugin to identify large dependencies
   - Monitor API module usage and optimize event subscription patterns
 
+## Security Considerations
+- **Wails Runtime File Permissions**
+  - Wails runtime files (package.json, runtime.d.ts, runtime.js) now use non-executable permissions (644)
+  - This prevents accidental execution of JavaScript bindings files
+  - Maintains full functionality while improving security posture
+  - Aligns with security best practices for desktop applications
+- **File Permission Management**
+  - Runtime files are distributed with restrictive permissions (644) instead of executable (755)
+  - Ensures files cannot be executed as standalone programs
+  - Reduces attack surface for desktop packaging scenarios
+- **Security Best Practices**
+  - Regular security audits of generated runtime files
+  - Automated permission validation during build process
+  - Secure file handling in desktop packaging workflows
+
+**Section sources**
+- [package.json](file://frontend/wailsjs/runtime/package.json)
+- [runtime.d.ts](file://frontend/wailsjs/runtime/runtime.d.ts)
+- [runtime.js](file://frontend/wailsjs/runtime/runtime.js)
+
 ## Troubleshooting Guide
 - Hot reload not working
   - Ensure Vite dev server is running and no port conflicts exist
@@ -577,6 +622,10 @@ API --> Runtime["Typed Runtime Access"]
   - Ensure runtime wrapper is properly initialized before use
   - Verify session-scoped event naming follows expected conventions
   - Check typed event maps for compile-time validation errors
+- **Security-related runtime issues**
+  - Verify Wails runtime files have correct permissions (644) if experiencing execution errors
+  - Check desktop packaging process for proper file permission handling
+  - Ensure runtime files are not being accidentally marked as executable
 
 **Section sources**
 - [eslint.config.js](file://frontend/eslint.config.js)
@@ -586,7 +635,7 @@ API --> Runtime["Typed Runtime Access"]
 - [api/index.ts](file://frontend/src/api/index.ts)
 
 ## Conclusion
-C0WRK's frontend build system leverages Vite, React, Tailwind CSS, TypeScript, and ESLint for a modern, efficient development experience with enhanced API-driven architecture. The new build system emphasizes strict type safety, modular imports, centralized runtime access, and a cohesive styling architecture with custom design tokens. The integration of Wails provides seamless desktop distribution with improved type safety and event handling. Following the provided guidance ensures reliable development, testing, and production builds with optimal performance characteristics.
+C0WRK's frontend build system leverages Vite, React, Tailwind CSS, TypeScript, and ESLint for a modern, efficient development experience with enhanced API-driven architecture. The new build system emphasizes strict type safety, modular imports, centralized runtime access, and a cohesive styling architecture with custom design tokens. The integration of Wails provides seamless desktop distribution with improved type safety and event handling. **Recent security enhancements** include non-executable permissions for Wails runtime files to prevent accidental execution while maintaining full functionality. Following the provided guidance ensures reliable development, testing, and production builds with optimal performance characteristics and strengthened security practices.
 
 ## Appendices
 - Quick references
@@ -603,3 +652,7 @@ C0WRK's frontend build system leverages Vite, React, Tailwind CSS, TypeScript, a
   - Custom One Dark theme with comprehensive token system
   - Consistent typography and spacing across components
   - Enhanced accessibility with focus management and semantic colors
+- **Security enhancements**
+  - Wails runtime files use non-executable permissions (644)
+  - Prevents accidental execution while maintaining functionality
+  - Aligns with security best practices for desktop applications
