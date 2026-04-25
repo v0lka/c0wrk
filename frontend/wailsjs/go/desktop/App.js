@@ -38,6 +38,10 @@ export function DeleteSession(arg1) {
   return window['go']['desktop']['App']['DeleteSession'](arg1);
 }
 
+export function GetBlackboardState(arg1) {
+  return window['go']['desktop']['App']['GetBlackboardState'](arg1);
+}
+
 export function GetCodebaseProjectName() {
   return window['go']['desktop']['App']['GetCodebaseProjectName']();
 }

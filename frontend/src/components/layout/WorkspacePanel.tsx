@@ -2,7 +2,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { FileTreePanel } from './FileTreePanel'
 import { VectorStorePanel } from './VectorStorePanel'
-import { FolderTree, GitBranch, Brain } from 'lucide-react'
+import { FolderTree, GitBranch, Database } from 'lucide-react'
 
 export function WorkspacePanel() {
   return (
@@ -23,7 +23,7 @@ export function WorkspacePanel() {
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <TabsTrigger value="semantics" className="px-2"><Brain className="size-4" /></TabsTrigger>
+              <TabsTrigger value="semantics" className="px-2"><Database className="size-4" /></TabsTrigger>
             </TooltipTrigger>
             <TooltipContent side="bottom">Semantics</TooltipContent>
           </Tooltip>

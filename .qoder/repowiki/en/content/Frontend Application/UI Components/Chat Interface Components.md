@@ -18,21 +18,28 @@
 - [CollapsibleBlock.tsx](file://frontend/src/components/chat/CollapsibleBlock.tsx)
 - [ScrollContext.tsx](file://frontend/src/components/chat/ScrollContext.tsx)
 - [ToolContentBlock.tsx](file://frontend/src/components/chat/ToolContentBlock.tsx)
+- [BlackboardPanel.tsx](file://frontend/src/components/chat/BlackboardPanel.tsx)
 - [chatUtils.ts](file://frontend/src/lib/chatUtils.ts)
 - [chatUtilsHelpers.ts](file://frontend/src/lib/chatUtilsHelpers.ts)
 - [chatGroupingHandlers.ts](file://frontend/src/lib/chatGroupingHandlers.ts)
 - [planStore.ts](file://frontend/src/stores/planStore.ts)
 - [chatStore.ts](file://frontend/src/stores/chatStore.ts)
 - [panelStore.ts](file://frontend/src/stores/panelStore.ts)
+- [blackboardStore.ts](file://frontend/src/stores/blackboardStore.ts)
 - [dagLayout.ts](file://frontend/src/lib/dagLayout.ts)
 - [markdownConfig.tsx](file://frontend/src/lib/markdownConfig.tsx)
+- [blackboard.ts](file://frontend/src/api/blackboard.ts)
+- [useBlackboardEvents.ts](file://frontend/src/hooks/events/useBlackboardEvents.ts)
+- [models.ts](file://frontend/src/types/models.ts)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated ReflectionBlock component to remove `space-y-0.5` CSS class from list items for improved layout spacing consistency
-- Enhanced UI refinement in specialized blocks for better visual hierarchy and spacing
-- Maintained all other component functionality and architectural patterns
+- Added comprehensive documentation for the new BlackboardPanel component that provides real-time visibility into agent task execution
+- Integrated blackboard state management with debounced event handling and search functionality
+- Added badge indicators for different blackboard elements (plan steps, results, facts, reflections)
+- Updated ChatArea integration to include BlackboardPanel alongside existing components
+- Enhanced component composition patterns with new real-time execution monitoring capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -50,6 +57,8 @@
 ## Introduction
 This document provides comprehensive documentation for C0WRK's chat interface components. It covers the core messaging components (AssistantMessage, UserMessage, ChatInput), specialized execution visualization components (PlanView, DAGGraph, ExecutionPanels), and the rendering pipeline (ChatArea, ChatMessageRenderer) along with specialized blocks (ThoughtBlock, ReflectionBlock, ToolBlock). The system has been completely rewritten with a new plan-based architecture featuring CollapsibleBlock.tsx, ScrollContext.tsx, and ToolContentBlock.tsx, providing enhanced message grouping capabilities and improved component composition patterns.
 
+**Updated** The interface now includes a new BlackboardPanel component that provides real-time visibility into agent task execution, featuring debounced state updates, search functionality, and badge indicators for different blackboard elements.
+
 ## Project Structure
 The chat UI is organized under frontend/src/components/chat with supporting libraries and stores under frontend/src/lib and frontend/src/stores respectively. The key areas are:
 - Messaging and input: AssistantMessage, UserMessage, ChatInput
@@ -57,7 +66,8 @@ The chat UI is organized under frontend/src/components/chat with supporting libr
 - Specialized blocks: ThoughtBlock, ReflectionBlock, ToolBlock, ThoughtGroupBlock, PlanStepBlock
 - Foundation components: CollapsibleBlock, ToolContentBlock, ScrollContext
 - Execution visualization: PlanView, DAGGraph, ExecutionPanels
-- Stores: chatStore (message grouping and UI state), planStore (execution plan state), dagLayout (DAG layout computation)
+- Real-time monitoring: BlackboardPanel
+- Stores: chatStore (message grouping and UI state), planStore (execution plan state), blackboardStore (real-time execution state)
 - Utilities: markdownConfig (ReactMarkdown configuration), chatUtils (advanced history conversion), chatUtilsHelpers (message grouping helpers), chatGroupingHandlers (specialized handlers)
 
 ```mermaid
@@ -71,6 +81,7 @@ CI["ChatInput"]
 PB["PlanView"]
 DG["DAGGraph"]
 EP["ExecutionPanels"]
+BB["BlackboardPanel"]
 TB["ToolBlock"]
 THB["ThoughtBlock"]
 RFB["ReflectionBlock"]
@@ -83,6 +94,7 @@ end
 subgraph "Stores"
 CS["chatStore"]
 PS["planStore"]
+BS["blackboardStore"]
 end
 subgraph "Libraries"
 MC["markdownConfig"]
@@ -90,6 +102,10 @@ DU["dagLayout"]
 CU["chatUtils"]
 CUH["chatUtilsHelpers"]
 CGH["chatGroupingHandlers"]
+end
+subgraph "API Layer"
+BA["blackboard API"]
+UBE["useBlackboardEvents"]
 end
 CA --> CMR
 CMR --> AM
@@ -105,6 +121,9 @@ PS --> PSB
 DG --> DU
 CA --> CS
 EP --> PS
+BB --> BS
+BS --> BA
+BS --> UBE
 AM --> MC
 CI --> CS
 CI --> PS
@@ -122,6 +141,7 @@ CU --> CGH
 - [PlanView.tsx:1-65](file://frontend/src/components/chat/PlanView.tsx#L1-L65)
 - [DAGGraph.tsx:13-88](file://frontend/src/components/chat/DAGGraph.tsx#L13-L88)
 - [ExecutionPanels.tsx:1-61](file://frontend/src/components/chat/ExecutionPanels.tsx#L1-L61)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
 - [ToolBlock.tsx:1-38](file://frontend/src/components/chat/ToolBlock.tsx#L1-L38)
 - [ThoughtBlock.tsx:1-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L1-L45)
 - [ReflectionBlock.tsx:1-63](file://frontend/src/components/chat/ReflectionBlock.tsx#L1-L63)
@@ -132,17 +152,21 @@ CU --> CGH
 - [ScrollContext.tsx:1-37](file://frontend/src/components/chat/ScrollContext.tsx#L1-L37)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
 - [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
+- [blackboardStore.ts:1-54](file://frontend/src/stores/blackboardStore.ts#L1-L54)
 - [markdownConfig.tsx:27-77](file://frontend/src/lib/markdownConfig.tsx#L27-L77)
 - [dagLayout.ts:33-237](file://frontend/src/lib/dagLayout.ts#L33-L237)
 - [chatUtils.ts:1-176](file://frontend/src/lib/chatUtils.ts#L1-L176)
 - [chatUtilsHelpers.ts:1-186](file://frontend/src/lib/chatUtilsHelpers.ts#L1-L186)
 - [chatGroupingHandlers.ts:1-158](file://frontend/src/lib/chatGroupingHandlers.ts#L1-L158)
+- [blackboard.ts:1-17](file://frontend/src/api/blackboard.ts#L1-L17)
+- [useBlackboardEvents.ts:1-59](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-L59)
 
 **Section sources**
 - [ChatArea.tsx:17-146](file://frontend/src/components/chat/ChatArea.tsx#L17-L146)
 - [ChatMessageRenderer.tsx:1-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L1-L126)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
 - [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
+- [blackboardStore.ts:1-54](file://frontend/src/stores/blackboardStore.ts#L1-L54)
 
 ## Core Components
 This section documents the primary chat components and their responsibilities, now built on the new foundation architecture.
@@ -166,14 +190,23 @@ This section documents the primary chat components and their responsibilities, n
   - Interaction pattern: Optimistically adds user message; creates session if missing; marks task active; sends via Wails API; handles cancellation; disables input when blocked; shows blocking message.
   - State management: Uses sessionStore, projectStore, chatStore, and Wails hook; manages textarea height and placeholder text dynamically.
 
+**Updated** BlackboardPanel
+  - Purpose: Provides real-time visibility into agent task execution with debounced state updates, search functionality, and badge indicators.
+  - Props: None (uses stores/hooks internally).
+  - Features: Collapsible interface with expand/collapse toggle, search bar for filtering content, badge indicators showing counts for different blackboard elements, and automatic state updates via event listeners.
+  - Integration: Renders within ChatArea alongside other components, positioned below execution panels and above input controls.
+
 **Section sources**
 - [AssistantMessage.tsx:20-90](file://frontend/src/components/chat/AssistantMessage.tsx#L20-L90)
 - [markdownConfig.tsx:27-77](file://frontend/src/lib/markdownConfig.tsx#L27-L77)
 - [UserMessage.tsx:3-104](file://frontend/src/components/chat/UserMessage.tsx#L3-L104)
 - [ChatInput.tsx:13-192](file://frontend/src/components/chat/ChatInput.tsx#L13-L192)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
 
 ## Architecture Overview
 The chat architecture centers on a completely rewritten rendering pipeline that transforms backend messages into a structured display model using advanced grouping capabilities, then rendered by ChatMessageRenderer. The new plan-based architecture maintains execution plan state in planStore and visualizes it via PlanView and DAGGraph. ChatArea orchestrates history loading, pinned user message display, scrolling, and integrates with session events through the new component foundation.
+
+**Updated** The architecture now includes real-time blackboard monitoring through a dedicated event system that debounces frequent updates and provides searchable access to execution state.
 
 ```mermaid
 sequenceDiagram
@@ -182,6 +215,7 @@ participant Input as "ChatInput"
 participant Session as "sessionStore"
 participant Chat as "chatStore"
 participant Plan as "planStore"
+participant Blackboard as "blackboardStore"
 participant Backend as "Wails API"
 participant Area as "ChatArea"
 participant Utils as "chatUtils"
@@ -198,6 +232,7 @@ Input->>Chat : setTaskActive(true)
 Input->>Backend : SendMessage(sessionId, text)
 Backend-->>Chat : Stream tokens (setStreaming/appendStreamToken)
 Backend-->>Plan : Events (plan, plan_step_start/complete)
+Backend-->>Blackboard : Events (blackboard_updated)
 Area->>Backend : GetSessionHistory(sessionId)
 Backend-->>Area : History messages
 Area->>Chat : setMessages(sessionId, uiMessages)
@@ -216,6 +251,7 @@ Renderer-->>User : Rendered UI
 - [ChatArea.tsx:48-73](file://frontend/src/components/chat/ChatArea.tsx#L48-L73)
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
 - [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
+- [blackboardStore.ts:44-53](file://frontend/src/stores/blackboardStore.ts#L44-L53)
 - [ChatMessageRenderer.tsx:111-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L111-L126)
 - [chatUtils.ts:117-175](file://frontend/src/lib/chatUtils.ts#L117-L175)
 
@@ -400,21 +436,26 @@ end
 
 ### ChatArea Analysis
 - Props: None.
-- Responsibilities: Loads session history, groups messages using advanced grouping capabilities, pins the last user message, manages container height for pinned clipping, subscribes to session events, clears plan store when no session.
-- Integration: Uses chatStore for messages/streamingText, planStore for plan state, and chatUtils for history conversion and plan rebuilding.
+- Responsibilities: Loads session history, groups messages using advanced grouping capabilities, pins the last user message, manages container height for pinned clipping, subscribes to session events, clears plan store when no session, and integrates BlackboardPanel for real-time execution monitoring.
+- Integration: Uses chatStore for messages/streamingText, planStore for plan state, blackboardStore for real-time execution state, and chatUtils for history conversion and plan rebuilding.
+
+**Updated** BlackboardPanel Integration
+- The BlackboardPanel is rendered twice in the ChatArea component - once in the empty state (lines 117-118) and once in the full content state (line 142).
+- It automatically adapts to sidebar and file viewer panel states for proper spacing.
+- Only renders when there is blackboard state available and an active session exists.
 
 ```mermaid
 flowchart TD
 Start(["ChatArea mount"]) --> HasSession{"activeSessionId?"}
 HasSession --> |No| ClearPlan["Clear plan store"]
-ClearPlan --> Empty["Show empty state"]
+ClearPlan --> Empty["Show empty state<br/>with BlackboardPanel"]
 HasSession --> |Yes| LoadHistory["GetSessionHistory()"]
 LoadHistory --> Convert["chatMessageToUI()"]
 Convert --> SetMsgs["setMessages()"]
 SetMsgs --> RebuildPlan["rebuildPlanFromHistory()"]
 RebuildPlan --> Group["groupMessages()"]
 Group --> PinLast["Find last user message"]
-PinLast --> Render["Render pinned + scrollable chat"]
+PinLast --> Render["Render pinned + scrollable chat<br/>with BlackboardPanel"]
 ```
 
 **Diagram sources**
@@ -547,6 +588,52 @@ Content --> End(["Rendered"])
 - [ExecutionPanels.tsx:1-61](file://frontend/src/components/chat/ExecutionPanels.tsx#L1-L61)
 - [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
 
+### BlackboardPanel Analysis
+- Purpose: Provides real-time visibility into agent task execution with debounced state updates, search functionality, and badge indicators.
+- Props: None (uses stores/hooks internally).
+- State Management: Integrates with blackboardStore for state management and useBlackboardEvents for event-driven updates.
+- Features:
+  - Collapsible interface with expand/collapse toggle using hover indicators
+  - Badge system showing counts for plan steps, results, facts, and reflections
+  - Search functionality with debounced filtering across all blackboard elements
+  - Responsive design that adapts to sidebar and file viewer panel states
+  - Automatic loading states and error handling
+
+**Updated** Component Structure
+- BlackboardBadges: Displays badge indicators for plan steps, results, facts, and reflections
+- SearchBar: Provides search functionality with icon and input field
+- BlackboardContent: Main content area with collapsible sections for different blackboard elements
+- CollapsibleSection: Individual collapsible sections for plan, step results, facts, and reflections
+
+```mermaid
+flowchart TD
+Start(["BlackboardPanel"]) --> CheckState{"hasBB && activeSessionId && bbState?"}
+CheckState --> |No| Null["Return null (do not render)"]
+CheckState --> |Yes| Container["Main container with adaptive margins"]
+Container --> Header["Header with expand/collapse toggle"]
+Header --> Badges["BlackboardBadges component"]
+Header --> Toggle{"open?"}
+Toggle --> |No| End(["Collapsed view"])
+Toggle --> |Yes| Content["Render content with search and sections"]
+Content --> Search["SearchBar component"]
+Content --> Sections["Collapsible sections:<br/>- Plan<br/>- Step Results<br/>- Facts<br/>- Reflections<br/>- Final Output"]
+Sections --> End(["Expanded view"])
+```
+
+**Diagram sources**
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [BlackboardPanel.tsx:54-67](file://frontend/src/components/chat/BlackboardPanel.tsx#L54-L67)
+- [BlackboardPanel.tsx:69-82](file://frontend/src/components/chat/BlackboardPanel.tsx#L69-L82)
+- [BlackboardPanel.tsx:84-177](file://frontend/src/components/chat/BlackboardPanel.tsx#L84-L177)
+- [BlackboardPanel.tsx:179-196](file://frontend/src/components/chat/BlackboardPanel.tsx#L179-L196)
+
+**Section sources**
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [BlackboardPanel.tsx:54-67](file://frontend/src/components/chat/BlackboardPanel.tsx#L54-L67)
+- [BlackboardPanel.tsx:69-82](file://frontend/src/components/chat/BlackboardPanel.tsx#L69-L82)
+- [BlackboardPanel.tsx:84-177](file://frontend/src/components/chat/BlackboardPanel.tsx#L84-L177)
+- [BlackboardPanel.tsx:179-196](file://frontend/src/components/chat/BlackboardPanel.tsx#L179-L196)
+
 ### Specialized Blocks
 
 #### ThoughtBlock Analysis
@@ -638,6 +725,27 @@ class ToolContentBlock {
 +resultLen? : number
 +borderClass? : string
 }
+class BlackboardPanel {
++open : boolean
++search : string
++bbState : BlackboardState
+}
+class BlackboardBadges {
++state : BlackboardState
+}
+class SearchBar {
++value : string
++onChange : Function
+}
+class BlackboardContent {
++state : BlackboardState
++search : string
+}
+class CollapsibleSection {
++title : string
++count : number
++children : ReactNode
+}
 ThoughtBlock --|> CollapsibleBlock
 ReflectionBlock --|> CollapsibleBlock
 ToolBlock --|> CollapsibleBlock
@@ -645,6 +753,10 @@ PlanStepBlock --|> CollapsibleBlock
 MemoryBlock --|> CollapsibleBlock
 ToolBlock --> ToolContentBlock
 MemoryBlock --> ToolContentBlock
+BlackboardPanel --> BlackboardBadges
+BlackboardPanel --> SearchBar
+BlackboardPanel --> BlackboardContent
+BlackboardContent --> CollapsibleSection
 ```
 
 **Diagram sources**
@@ -655,6 +767,11 @@ MemoryBlock --> ToolContentBlock
 - [PlanStepBlock.tsx:17-78](file://frontend/src/components/chat/PlanStepBlock.tsx#L17-L78)
 - [MemoryBlock.tsx:52-74](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L52-L74)
 - [ToolContentBlock.tsx:35-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L35-L78)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [BlackboardPanel.tsx:54-67](file://frontend/src/components/chat/BlackboardPanel.tsx#L54-L67)
+- [BlackboardPanel.tsx:69-82](file://frontend/src/components/chat/BlackboardPanel.tsx#L69-L82)
+- [BlackboardPanel.tsx:84-177](file://frontend/src/components/chat/BlackboardPanel.tsx#L84-L177)
+- [BlackboardPanel.tsx:179-196](file://frontend/src/components/chat/BlackboardPanel.tsx#L179-L196)
 
 **Section sources**
 - [ThoughtBlock.tsx:1-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L1-L45)
@@ -663,11 +780,13 @@ MemoryBlock --> ToolContentBlock
 - [PlanStepBlock.tsx:1-78](file://frontend/src/components/chat/PlanStepBlock.tsx#L1-L78)
 - [ChatMessageRenderer.tsx:52-74](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L52-L74)
 - [ToolContentBlock.tsx:1-78](file://frontend/src/components/chat/ToolContentBlock.tsx#L1-L78)
+- [BlackboardPanel.tsx:1-196](file://frontend/src/components/chat/BlackboardPanel.tsx#L1-L196)
 
 ## Dependency Analysis
 - Stores:
   - chatStore: Holds messages, streamingText, isThinking, isTaskActive, activityStatus, and provides actions to add/update messages, stream tokens, set activity, resolve actions, and clear session UI state. Also exposes selectors for pending actions and grouping logic.
   - planStore: Manages planGroups, session stats, and provides actions to set plan, update step status, add steps, and clear plan state. Now central to the new plan-based architecture.
+  - blackboardStore: Manages real-time execution state with loading, error, and state properties. Provides stable selectors for state queries and debounced state updates.
 - Libraries:
   - markdownConfig: Provides customSchema and markdownComponents for ReactMarkdown rendering.
   - dagLayout: Computes DAG layout for visualization.
@@ -675,12 +794,17 @@ MemoryBlock --> ToolContentBlock
   - chatUtilsHelpers: Message grouping helpers including tool key generation and content reconstruction.
   - chatGroupingHandlers: Specialized handlers for plan steps, tool calls/results, and action messages.
 - Components depend on stores for state and on libraries for rendering/formatting.
+- **Updated** Event System:
+  - useBlackboardEvents: Handles debounced blackboard state updates via session events with 300ms debounce timing.
+  - blackboard API: Provides direct access to blackboard state retrieval through Wails RPC calls.
 
 ```mermaid
 graph LR
 CS["chatStore"] --> CMR["ChatMessageRenderer"]
 PS["planStore"] --> EP["ExecutionPanels"]
 PS --> PV["PlanView"]
+BS["blackboardStore"] --> BB["BlackboardPanel"]
+BS --> UBE["useBlackboardEvents"]
 DG["DAGGraph"] --> DL["dagLayout"]
 AM["AssistantMessage"] --> MC["markdownConfig"]
 CA["ChatArea"] --> CU["chatUtils"]
@@ -695,11 +819,13 @@ CMR --> CB["CollapsibleBlock"]
 CMR --> TCB["ToolContentBlock"]
 CU --> CUH["chatUtilsHelpers"]
 CU --> CGH["chatGroupingHandlers"]
+BB --> BA["blackboard API"]
 ```
 
 **Diagram sources**
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
 - [planStore.ts:57-99](file://frontend/src/stores/planStore.ts#L57-L99)
+- [blackboardStore.ts:1-54](file://frontend/src/stores/blackboardStore.ts#L1-L54)
 - [ChatMessageRenderer.tsx:111-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L111-L126)
 - [DAGGraph.tsx:13-88](file://frontend/src/components/chat/DAGGraph.tsx#L13-L88)
 - [dagLayout.ts:33-237](file://frontend/src/lib/dagLayout.ts#L33-L237)
@@ -707,11 +833,16 @@ CU --> CGH["chatGroupingHandlers"]
 - [chatUtils.ts:1-176](file://frontend/src/lib/chatUtils.ts#L1-L176)
 - [chatUtilsHelpers.ts:1-186](file://frontend/src/lib/chatUtilsHelpers.ts#L1-L186)
 - [chatGroupingHandlers.ts:1-158](file://frontend/src/lib/chatGroupingHandlers.ts#L1-L158)
+- [useBlackboardEvents.ts:1-59](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-L59)
+- [blackboard.ts:1-17](file://frontend/src/api/blackboard.ts#L1-L17)
 
 **Section sources**
 - [chatStore.ts:468-570](file://frontend/src/stores/chatStore.ts#L468-L570)
 - [planStore.ts:1-100](file://frontend/src/stores/planStore.ts#L1-L100)
+- [blackboardStore.ts:1-54](file://frontend/src/stores/blackboardStore.ts#L1-L54)
 - [ChatMessageRenderer.tsx:1-126](file://frontend/src/components/chat/ChatMessageRenderer.tsx#L1-L126)
+- [useBlackboardEvents.ts:1-59](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-L59)
+- [blackboard.ts:1-17](file://frontend/src/api/blackboard.ts#L1-L17)
 
 ## Performance Considerations
 - Memoization and lazy rendering:
@@ -719,26 +850,35 @@ CU --> CGH["chatGroupingHandlers"]
   - All collapsible blocks use React.memo for optimal re-render performance.
   - ChatMessageRenderer uses React.memo for MemoryBlock and ThoughtGroupBlock to minimize re-renders.
   - ChatArea measures container height efficiently using ResizeObserver and requestAnimationFrame fallbacks.
+  - **Updated** BlackboardPanel uses useMemo for filtered content to optimize search performance.
 - Streaming:
   - ChatInput sets isTaskActive and activityStatus during send; streamingText is appended incrementally via chatStore to avoid full re-renders of the entire message list.
 - Collapsing and virtualization:
   - All collapsible components use CollapsibleBlock for consistent performance and reduced DOM complexity.
   - Pinned user message is rendered outside the scrollable region to keep the list lean.
+  - **Updated** BlackboardPanel sections use local state for individual collapsible sections to minimize re-renders.
 - Rendering optimization:
   - Markdown rendering uses plugins and sanitization once per component; Mermaid diagrams are wrapped in ErrorBoundary to prevent cascading failures.
   - ToolContentBlock uses efficient truncation algorithms and conditional rendering.
+  - **Updated** BlackboardPanel implements debounced search with 300ms delay to prevent excessive re-computation.
+- **Updated** Event System Performance:
+  - Blackboard state updates are debounced with 300ms delay to handle rapid state changes efficiently.
+  - Event cleanup ensures timers are properly cleared when components unmount.
 
 ## Accessibility Features
 - Interactive elements:
   - Buttons and toggles include aria-labels and titles for screen readers.
   - Hover states reveal opacity-based controls for discoverability.
+  - **Updated** BlackboardPanel search input includes proper ARIA attributes and keyboard navigation.
 - Focus management:
   - Pinned messages use tabIndex and onBlur handlers to manage expansion/collapse.
   - Collapsible components expose trigger buttons with appropriate ARIA attributes.
+  - **Updated** BlackboardPanel sections maintain focus order and keyboard navigation.
 - Semantic structure:
   - CollapsibleBlock uses native HTML semantics with proper headings and lists.
   - All collapsible components provide consistent keyboard navigation and screen reader support.
   - ToolContentBlock provides accessible expand/collapse functionality.
+  - **Updated** BlackboardPanel uses semantic HTML structure with proper sectioning and labeling.
 
 ## Customization Options
 - Foundation components:
@@ -754,6 +894,11 @@ CU --> CGH["chatGroupingHandlers"]
   - PlanView and DAGGraph adapt to backend-provided plan data; durations, statuses, and dependencies are rendered with appropriate icons and colors.
 - Tool rendering:
   - ToolBlock supports source differentiation (e.g., MCP) and long argument/result previews with expand/collapse.
+- **Updated** BlackboardPanel Customization:
+  - Adaptive spacing based on sidebar and file viewer panel states.
+  - Configurable search functionality with customizable placeholder text.
+  - Badge indicators can be extended to show additional blackboard element types.
+  - Collapsible sections can be customized for different content types.
 
 **Section sources**
 - [CollapsibleBlock.tsx:10-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L10-L67)
@@ -764,6 +909,7 @@ CU --> CGH["chatGroupingHandlers"]
 - [PlanView.tsx:1-65](file://frontend/src/components/chat/PlanView.tsx#L1-L65)
 - [DAGGraph.tsx:13-88](file://frontend/src/components/chat/DAGGraph.tsx#L13-L88)
 - [ToolBlock.tsx:16-38](file://frontend/src/components/chat/ToolBlock.tsx#L16-L38)
+- [BlackboardPanel.tsx:24-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L24-L52)
 
 ## Troubleshooting Guide
 - Messages not appearing:
@@ -783,6 +929,11 @@ CU --> CGH["chatGroupingHandlers"]
 - Scroll navigation issues:
   - Ensure ScrollContext provider is wrapping the component tree.
   - Verify that scrollToStep callback is properly set and used.
+- **Updated** BlackboardPanel Issues:
+  - Blackboard state not updating: Check useBlackboardEvents hook for proper event subscription and debounce timing.
+  - Search not working: Verify search state is properly managed and filtered content is computed correctly.
+  - Badges not showing: Ensure blackboard state contains the expected data structure with non-empty arrays.
+  - Panel not rendering: Confirm hasBB flag is true and activeSessionId exists before component mounts.
 
 **Section sources**
 - [ChatArea.tsx:91-140](file://frontend/src/components/chat/ChatArea.tsx#L91-L140)
@@ -791,8 +942,10 @@ CU --> CGH["chatGroupingHandlers"]
 - [chatUtils.ts:117-175](file://frontend/src/lib/chatUtils.ts#L117-L175)
 - [CollapsibleBlock.tsx:23-67](file://frontend/src/components/chat/CollapsibleBlock.tsx#L23-L67)
 - [ScrollContext.tsx:12-37](file://frontend/src/components/chat/ScrollContext.tsx#L12-L37)
+- [useBlackboardEvents.ts:12-44](file://frontend/src/hooks/events/useBlackboardEvents.ts#L12-L44)
+- [blackboardStore.ts:44-53](file://frontend/src/stores/blackboardStore.ts#L44-L53)
 
 ## Conclusion
 C0WRK's chat interface has been completely rewritten with a modern, plan-based architecture that provides enhanced message grouping capabilities and improved component composition patterns. The new foundation includes CollapsibleBlock.tsx for consistent collapsible UI patterns, ScrollContext.tsx for coordinated navigation, and ToolContentBlock.tsx for unified tool display. The chatUtils.ts and chatUtilsHelpers.ts libraries now feature advanced message grouping with specialized handlers for plan steps, tools, and actions. The migration from panel-based to plan-based architecture provides better execution visualization and state management through planStore.ts. The rendering pipeline converts backend messages into a rich, interactive UI with collapsible blocks, streaming support, and robust error boundaries, while maintaining accessibility, performance, and extensibility for diverse execution contexts.
 
-**Updated** Recent UI refinements include improved layout spacing consistency in specialized blocks, particularly in ReflectionBlock where `space-y-0.5` was removed from list items for better visual hierarchy and spacing control.
+**Updated** Recent additions include the BlackboardPanel component that provides real-time visibility into agent task execution through a sophisticated event system with debounced updates, comprehensive search functionality, and badge indicators for different execution elements. The integration with blackboardStore and useBlackboardEvents ensures efficient state management and responsive user experience. The component seamlessly adapts to application layout changes and provides essential debugging and monitoring capabilities for complex agent workflows.

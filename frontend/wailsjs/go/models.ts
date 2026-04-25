@@ -1,5 +1,161 @@
 export namespace backend {
 	
+	export class BlackboardFactResponse {
+	    keywords: string[];
+	    content: string;
+	    author: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BlackboardFactResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.keywords = source["keywords"];
+	        this.content = source["content"];
+	        this.author = source["author"];
+	    }
+	}
+	export class BlackboardPlanStepResponse {
+	    id: string;
+	    summary: string;
+	    description: string;
+	    depends_on: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BlackboardPlanStepResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.summary = source["summary"];
+	        this.description = source["description"];
+	        this.depends_on = source["depends_on"];
+	    }
+	}
+	export class BlackboardPlanResponse {
+	    steps: BlackboardPlanStepResponse[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BlackboardPlanResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.steps = this.convertValues(source["steps"], BlackboardPlanStepResponse);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class BlackboardReflectionResponse {
+	    summary: string;
+	    hypotheses?: string[];
+	    suggested_action?: string;
+	    reasoning?: string;
+	    failure_analysis?: string;
+	    root_cause?: string;
+	    action_plan?: string;
+	    timestamp: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BlackboardReflectionResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.summary = source["summary"];
+	        this.hypotheses = source["hypotheses"];
+	        this.suggested_action = source["suggested_action"];
+	        this.reasoning = source["reasoning"];
+	        this.failure_analysis = source["failure_analysis"];
+	        this.root_cause = source["root_cause"];
+	        this.action_plan = source["action_plan"];
+	        this.timestamp = source["timestamp"];
+	    }
+	}
+	export class BlackboardStepResponse {
+	    step_id: string;
+	    summary: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BlackboardStepResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.step_id = source["step_id"];
+	        this.summary = source["summary"];
+	        this.error = source["error"];
+	    }
+	}
+	export class BlackboardStateResponse {
+	    task_id: string;
+	    session_id: string;
+	    status: string;
+	    original_request: string;
+	    plan?: BlackboardPlanResponse;
+	    step_results: Record<string, BlackboardStepResponse>;
+	    reflections: BlackboardReflectionResponse[];
+	    facts: BlackboardFactResponse[];
+	    final_output?: string;
+	    file_changes: Record<string, number>;
+	
+	    static createFrom(source: any = {}) {
+	        return new BlackboardStateResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.task_id = source["task_id"];
+	        this.session_id = source["session_id"];
+	        this.status = source["status"];
+	        this.original_request = source["original_request"];
+	        this.plan = this.convertValues(source["plan"], BlackboardPlanResponse);
+	        this.step_results = this.convertValues(source["step_results"], BlackboardStepResponse, true);
+	        this.reflections = this.convertValues(source["reflections"], BlackboardReflectionResponse);
+	        this.facts = this.convertValues(source["facts"], BlackboardFactResponse);
+	        this.final_output = source["final_output"];
+	        this.file_changes = source["file_changes"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class ConfigProviderFull {
 	    base_url: string;
 	    api_key: string;

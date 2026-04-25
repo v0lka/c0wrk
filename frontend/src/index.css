@@ -58,6 +58,11 @@
   --color-hljs-keyword: #c678dd;
   --color-hljs-literal: #56b6c2;
 
+  /* Terminal (XTerm) tokens — ANSI 16-color mapping */
+  --color-terminal-cursor: #528bff;
+  --color-terminal-selection: #3e4451;
+  --color-terminal-bright-white: #ffffff;
+
   /* Border radii */
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;

@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { terminalInput, terminalResize, startTerminal, stopTerminal } from '@/api/terminal'
 import { onSessionEvent } from '@/api/runtime'
+import { useXTermTheme } from '@/hooks/useXTermTheme'
 import { logger } from '@/lib/logger'
 
 interface TerminalProps {
@@ -16,6 +17,7 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
     const termRef = useRef<XTerm | null>(null)
     const fitAddonRef = useRef<FitAddon | null>(null)
     const unsubscribeRef = useRef<(() => void) | null>(null)
+    const theme = useXTermTheme()
 
     useEffect(() => {
         const container = containerRef.current
@@ -23,30 +25,9 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
 
         const term = new XTerm({
             cursorBlink: true,
-            fontSize: 13,
+            fontSize: 10,
             fontFamily: 'SauceCodePro NF, Menlo, Monaco, "Courier New", monospace',
-            theme: {
-                background: '#282c34',
-                foreground: '#abb2bf',
-                cursor: '#528bff',
-                selectionBackground: '#3e4451',
-                black: '#282c34',
-                red: '#e06c75',
-                green: '#98c379',
-                yellow: '#e5c07b',
-                blue: '#61afef',
-                magenta: '#c678dd',
-                cyan: '#56b6c2',
-                white: '#abb2bf',
-                brightBlack: '#5c6370',
-                brightRed: '#e06c75',
-                brightGreen: '#98c379',
-                brightYellow: '#e5c07b',
-                brightBlue: '#61afef',
-                brightMagenta: '#c678dd',
-                brightCyan: '#56b6c2',
-                brightWhite: '#ffffff',
-            },
+            theme,
             scrollback: 10000,
         })
 
@@ -114,7 +95,7 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
             fitAddonRef.current = null
             unsubscribeRef.current = null
         }
-    }, [sessionId, onReady])
+    }, [sessionId, onReady, theme])
 
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | undefined

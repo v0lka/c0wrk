@@ -25,6 +25,8 @@ export function DeleteProject(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
+export function GetBlackboardState(arg1:string):Promise<backend.BlackboardStateResponse>;
+
 export function GetCodebaseProjectName():Promise<string>;
 
 export function GetConfig():Promise<backend.ConfigResponse>;

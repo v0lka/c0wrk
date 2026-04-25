@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { ChevronDown, ChevronRight, Brain, Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardList, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useBlackboardState, useHasBlackboardState } from '@/stores/blackboardStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -36,7 +36,7 @@ export function BlackboardPanel() {
                             ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                     </span>
-                    <Brain className="h-3.5 w-3.5 text-muted-foreground" />
+                    <ClipboardList className="h-3.5 w-3.5 text-muted-foreground" />
                     <span className="text-sm font-medium">Blackboard</span>
                     <BlackboardBadges state={bbState} />
                 </button>
@@ -51,6 +51,12 @@ export function BlackboardPanel() {
     )
 }
 
+function formatStepId(id: string): string {
+    const match = id.match(/^step_(\d+)$/i)
+    if (match) return `Step ${match[1]}`
+    return id
+}
+
 function BlackboardBadges({ state }: { state: BlackboardState }) {
     const stepCount = Object.keys(state.step_results).length
     const factCount = state.facts.length
@@ -58,7 +64,6 @@ function BlackboardBadges({ state }: { state: BlackboardState }) {
 
     return (
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            {state.plan && <span>{state.plan.steps.length} steps</span>}
             {stepCount > 0 && <span>{stepCount} results</span>}
             {factCount > 0 && <span>{factCount} facts</span>}
             {reflectionCount > 0 && <span>{reflectionCount} reflections</span>}
@@ -111,24 +116,12 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
 
     return (
         <div className="space-y-2 text-xs">
-            {/* Plan */}
-            {state.plan && state.plan.steps.length > 0 && (
-                <CollapsibleSection title="Plan" count={state.plan.steps.length}>
-                    {state.plan.steps.map((s) => (
-                        <div key={s.id} className="py-0.5 pl-2 border-l border-border">
-                            <span className="font-medium text-foreground">{s.id}</span>
-                            <span className="text-muted-foreground ml-1.5">{s.summary || s.description}</span>
-                        </div>
-                    ))}
-                </CollapsibleSection>
-            )}
-
             {/* Step Results */}
             {filteredSteps.length > 0 && (
                 <CollapsibleSection title="Step Results" count={filteredSteps.length}>
                     {filteredSteps.map(([id, sr]) => (
                         <div key={id} className="py-0.5 pl-2 border-l border-border">
-                            <span className="font-medium text-foreground">{id}</span>
+                            <span className="font-medium text-foreground">{formatStepId(id)}</span>
                             {sr.error && <span className="ml-1.5 text-destructive">[error]</span>}
                             <p className="text-muted-foreground mt-0.5 line-clamp-2">{sr.summary}</p>
                         </div>
