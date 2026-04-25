@@ -62,6 +62,7 @@ export interface TaskFailedResumableData { message?: string }
 export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string; error?: string }
 export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
+export interface BlackboardUpdatedData { change_type: string }
 
 // --- Session event map ---
 
@@ -99,6 +100,7 @@ export interface SessionEventMap {
   session_renamed: SessionRenamedData
   terminal_output: TerminalOutputData
   skills_activated: SkillsActivatedData
+  blackboard_updated: BlackboardUpdatedData
 }
 
 export type SessionEventKey = keyof SessionEventMap
@@ -156,6 +158,7 @@ export function isSessionRenamedData(d: unknown): d is SessionRenamedData { retu
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData { return isObj(d) }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
+export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }
 
 // --- Global event type guards ---
 

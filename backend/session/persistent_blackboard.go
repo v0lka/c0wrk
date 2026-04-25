@@ -36,6 +36,7 @@ type PersistentBlackboard struct {
 	emitterMu          sync.RWMutex
 	emitter            core.Emitter  // optional, nil-safe; used to surface persistence warnings to the user
 	persistenceTimeout time.Duration // timeout for persistence operations
+	onChanged          func(changeType string) // optional callback for BB change notifications, nil-safe
 }
 
 // NewPersistentBlackboard creates a PersistentBlackboard that wraps a fresh MapBlackboard.
@@ -62,6 +63,20 @@ func (pb *PersistentBlackboard) SetEmitter(emitter core.Emitter) {
 	pb.emitterMu.Lock()
 	pb.emitter = emitter
 	pb.emitterMu.Unlock()
+}
+
+// SetOnChanged sets an optional callback invoked after every successful
+// blackboard write. The changeType argument describes what changed (e.g. "plan",
+// "step_result", "fact", "reflection"). The callback is nil-safe.
+func (pb *PersistentBlackboard) SetOnChanged(fn func(changeType string)) {
+	pb.onChanged = fn
+}
+
+// notifyChanged invokes the onChanged callback if set.
+func (pb *PersistentBlackboard) notifyChanged(changeType string) {
+	if pb.onChanged != nil {
+		pb.onChanged(changeType)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +140,7 @@ func (pb *PersistentBlackboard) SetPlan(plan *core.Plan) {
 	pb.persistSafe("plan", func() error {
 		return pb.store.PersistPlan(pb.taskID, plan)
 	})
+	pb.notifyChanged("plan")
 }
 
 // SetStepResult records a step result and persists it.
@@ -153,6 +169,7 @@ func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, 
 	pb.persistSafe("step result ("+stepID+")", func() error {
 		return pb.store.PersistStepResult(pb.taskID, stepID, summary, output, errText, steps)
 	})
+	pb.notifyChanged("step_result")
 }
 
 // AddReflection appends a reflection and persists it.
@@ -161,6 +178,7 @@ func (pb *PersistentBlackboard) AddReflection(r core.Reflection) {
 	pb.persistSafe("reflection", func() error {
 		return pb.store.PersistReflection(pb.taskID, r)
 	})
+	pb.notifyChanged("reflection")
 }
 
 // SetStepFileChanges stores file changes for a step and persists them.
@@ -169,6 +187,7 @@ func (pb *PersistentBlackboard) SetStepFileChanges(stepID string, changes []core
 	pb.persistSafe("step file changes ("+stepID+")", func() error {
 		return pb.store.PersistStepFileChanges(pb.taskID, stepID, changes)
 	})
+	pb.notifyChanged("file_changes")
 }
 
 // StoreFact appends a fact and persists the full facts list.
@@ -178,6 +197,7 @@ func (pb *PersistentBlackboard) StoreFact(fact core.Fact) {
 	pb.persistSafe("facts", func() error {
 		return pb.store.PersistFacts(pb.taskID, facts)
 	})
+	pb.notifyChanged("fact")
 }
 
 // SetFinalResult sets the final result string.
@@ -204,6 +224,7 @@ func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 	pb.persistSafe("task completion", func() error {
 		return pb.store.PersistCompletion(pb.taskID, finalOutput, attemptCount)
 	})
+	pb.notifyChanged("completed")
 }
 
 // FailTask marks the task as failed.

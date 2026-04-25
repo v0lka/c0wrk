@@ -133,3 +133,60 @@ type OptimizePromptResponse struct {
 	Keywords        []string `json:"keywords"`
 	UsedContext     bool     `json:"used_context"`
 }
+
+// ---------------------------------------------------------------------------
+// Blackboard Viewer DTOs
+// ---------------------------------------------------------------------------
+
+// BlackboardStateResponse holds the current blackboard state for the frontend viewer.
+type BlackboardStateResponse struct {
+	TaskID          string                              `json:"task_id"`
+	SessionID       string                              `json:"session_id"`
+	Status          string                              `json:"status"` // "in_progress", "completed", "failed"
+	OriginalRequest string                              `json:"original_request"`
+	Plan            *BlackboardPlanResponse              `json:"plan,omitempty"`
+	StepResults     map[string]BlackboardStepResponse    `json:"step_results"`
+	Reflections     []BlackboardReflectionResponse       `json:"reflections"`
+	Facts           []BlackboardFactResponse             `json:"facts"`
+	FinalOutput     string                              `json:"final_output,omitempty"`
+	FileChanges     map[string]int                      `json:"file_changes"` // stepID -> change count
+}
+
+// BlackboardPlanResponse is a simplified plan for the blackboard viewer.
+type BlackboardPlanResponse struct {
+	Steps []BlackboardPlanStepResponse `json:"steps"`
+}
+
+// BlackboardPlanStepResponse is a simplified plan step for the blackboard viewer.
+type BlackboardPlanStepResponse struct {
+	ID          string   `json:"id"`
+	Summary     string   `json:"summary"`
+	Description string   `json:"description"`
+	DependsOn   []string `json:"depends_on"`
+}
+
+// BlackboardStepResponse is a simplified step result for the blackboard viewer.
+type BlackboardStepResponse struct {
+	StepID  string `json:"step_id"`
+	Summary string `json:"summary"`
+	Error   string `json:"error,omitempty"`
+}
+
+// BlackboardReflectionResponse is a reflection entry for the blackboard viewer.
+type BlackboardReflectionResponse struct {
+	Summary         string   `json:"summary"`
+	Hypotheses      []string `json:"hypotheses,omitempty"`
+	SuggestedAction string   `json:"suggested_action,omitempty"`
+	Reasoning       string   `json:"reasoning,omitempty"`
+	FailureAnalysis string   `json:"failure_analysis,omitempty"`
+	RootCause       string   `json:"root_cause,omitempty"`
+	ActionPlan      string   `json:"action_plan,omitempty"`
+	Timestamp       string   `json:"timestamp"`
+}
+
+// BlackboardFactResponse is a fact entry for the blackboard viewer.
+type BlackboardFactResponse struct {
+	Keywords []string `json:"keywords"`
+	Content  string   `json:"content"`
+	Author   string   `json:"author"`
+}

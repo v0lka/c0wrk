@@ -13,7 +13,20 @@
 - [prompt_optimize_rewrite.md](file://core/prompts/prompt_optimize_rewrite.md)
 - [types.go](file://backend/types.go)
 - [provider.go](file://sdk/llm/provider.go)
+- [builder.go](file://sdk/prompt/builder.go)
+- [provider_anthropic.go](file://sdk/llm/provider_anthropic.go)
+- [provider_helpers.go](file://sdk/llm/provider_helpers.go)
+- [systemprompt.go](file://core/systemprompt.go)
+- [builder.go](file://core/builder.go)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added Cache Control Mechanisms section documenting Anthropic cache control implementation
+- Updated Core Components section to include CacheBreak functionality
+- Enhanced Architecture Overview with cache control flow
+- Added ExtractSystemPromptParts functionality documentation
+- Updated Performance Considerations to include cache benefits
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -34,7 +47,7 @@
 
 The Prompt Optimization Feature is a user-triggered enhancement that automatically improves the quality and specificity of user prompts for AI coding agents. This feature implements a sophisticated three-stage pipeline that translates user input to English, extracts relevant keywords, performs semantic search, and generates an optimized prompt that is more specific, actionable, and effective for AI coding tasks.
 
-The implementation follows the project's layered architecture constraints, ensuring proper separation of concerns between frontend, desktop, backend, and core components while maintaining security and performance standards.
+The implementation follows the project's layered architecture constraints, ensuring proper separation of concerns between frontend, desktop, backend, and core components while maintaining security and performance standards. Recent enhancements include advanced cache control mechanisms for Anthropic models and improved system prompt construction with ExtractSystemPromptParts functionality.
 
 ## Feature Overview
 
@@ -46,6 +59,8 @@ The prompt optimization feature provides users with an intelligent tool to enhan
 - **Keyword Extraction**: Identifies 3-5 concise keywords suitable for semantic search
 - **Semantic Enhancement**: Retrieves relevant codebase context using vector search
 - **Intelligent Rewriting**: Generates a more specific, actionable prompt based on extracted context
+- **Cache Control**: Implements Anthropic-compatible cache control for improved performance
+- **System Prompt Optimization**: Enhanced system prompt construction with dynamic content separation
 
 ### User Experience
 
@@ -65,6 +80,7 @@ participant API as "prompt.ts"
 participant Desktop as "Desktop API"
 participant Backend as "FrontendAPI"
 participant Core as "Core Builder"
+participant PromptBuilder as "Prompt Builder"
 participant LLM as "LLM Provider"
 participant Vector as "Vector Search"
 User->>UI : Click Optimize Prompt
@@ -82,6 +98,10 @@ Vector-->>Backend : Context snippets
 Note over Backend : Stage 3 : Prompt Rewriting
 Backend->>LLM : Rewrite prompt with context
 LLM-->>Backend : Optimized prompt
+Note over Backend : Cache Control Integration
+Backend->>PromptBuilder : Build with CacheBreak
+PromptBuilder->>PromptBuilder : Split stable/dynamic parts
+PromptBuilder-->>Backend : System prompt with cache markers
 Backend-->>Desktop : OptimizePromptResponse
 Desktop-->>API : Response
 API-->>UI : Optimized prompt
@@ -93,6 +113,7 @@ UI->>UI : Reset loading state
 - [ChatInput.tsx:110-121](file://frontend/src/components/chat/ChatInput.tsx#L110-L121)
 - [prompt.ts:12-20](file://frontend/src/api/prompt.ts#L12-L20)
 - [frontend_api_prompt.go:13-36](file://backend/frontend_api_prompt.go#L13-L36)
+- [builder.go:96-113](file://core/builder.go#L96-L113)
 
 ## Core Components
 
@@ -132,6 +153,61 @@ PromptTemplates --> RewriteTemplate : "provides"
 - [prompts.go:109-115](file://core/prompts/prompts.go#L109-L115)
 - [prompt_optimize_extract.md:1-12](file://core/prompts/prompt_optimize_extract.md#L1-L12)
 - [prompt_optimize_rewrite.md:1-19](file://core/prompts/prompt_optimize_rewrite.md#L1-L19)
+
+### Cache Control Mechanisms
+
+**Updated** Enhanced with Anthropic-compatible cache control implementation
+
+The system now implements sophisticated cache control mechanisms for improved performance with Anthropic models:
+
+#### CacheBreak Marker System
+- **CacheBreakMarker**: Sentinel `\x00CACHE_BREAK\x00` used to separate stable and dynamic prompt content
+- **SplitCacheBreak**: Function that splits system prompts on cache break markers into manageable parts
+- **CacheBreak() Method**: Builder method that marks the boundary between stable (cacheable) and dynamic content
+
+#### Anthropic Cache Control Implementation
+- **MultiSystem Parts**: System prompts are split into multiple parts for Anthropic's ephemeral cache control
+- **Cache Control Types**: Stable parts receive `CacheControlTypeEphemeral`, dynamic parts remain uncached
+- **Provider-Level Caching**: Enables Anthropic's native prompt caching for improved latency
+
+```mermaid
+flowchart TD
+A[System Prompt] --> B[CacheBreakMarker]
+B --> C[SplitCacheBreak]
+C --> D[Part 1 - Stable]
+C --> E[Part 2 - Dynamic]
+D --> F[Anthropic MultiSystem[0]]
+F --> G[CacheControl: Ephemeral]
+E --> H[Anthropic MultiSystem[1]]
+H --> I[CacheControl: None]
+G --> J[Combined Request]
+I --> J
+```
+
+**Diagram sources**
+- [builder.go:5-24](file://sdk/prompt/builder.go#L5-L24)
+- [builder.go:66-72](file://sdk/prompt/builder.go#L66-L72)
+- [provider_anthropic.go:197-215](file://sdk/llm/provider_anthropic.go#L197-L215)
+
+**Section sources**
+- [builder.go:5-24](file://sdk/prompt/builder.go#L5-L24)
+- [builder.go:66-72](file://sdk/prompt/builder.go#L66-L72)
+- [provider_anthropic.go:197-215](file://sdk/llm/provider_anthropic.go#L197-L215)
+- [provider_helpers.go:45-60](file://sdk/llm/provider_helpers.go#L45-L60)
+
+### ExtractSystemPromptParts Functionality
+
+**Updated** Improved system prompt construction with ExtractSystemPromptParts
+
+The system now includes enhanced functionality for extracting and managing system prompt parts:
+
+- **ExtractSystemPromptParts**: Function that separates system messages from other messages
+- **Multi-Part Preservation**: Maintains system prompt structure for cache control compatibility
+- **Filtered Messages**: Returns remaining non-system messages for normal processing
+
+**Section sources**
+- [provider_helpers.go:45-60](file://sdk/llm/provider_helpers.go#L45-L60)
+- [provider_anthropic.go:175-176](file://sdk/llm/provider_anthropic.go#L175-L176)
 
 ### Algorithm Stages
 
@@ -290,6 +366,17 @@ The implementation targets specific performance benchmarks:
 - **p95**: ≤ 6.0 seconds  
 - **Hard timeout**: 12 seconds configurable
 
+### Cache Control Benefits
+
+**Updated** Enhanced with cache control optimizations
+
+The new cache control mechanisms provide significant performance improvements:
+
+- **Anthropic Ephemeral Cache**: Stable system prompt parts cached across requests
+- **Reduced API Calls**: Cached system prompts eliminate redundant processing
+- **Improved Response Times**: Cached content served instantly for subsequent requests
+- **Provider-Specific Optimization**: Leverages Anthropic's native caching infrastructure
+
 ### Optimization Strategies
 
 To meet performance requirements:
@@ -297,6 +384,7 @@ To meet performance requirements:
 - Vector search is constrained to top_k=5 for balanced performance
 - Context caching mechanisms are available for future enhancement
 - Timeout guards prevent resource exhaustion
+- Cache control reduces repeated computation for stable content
 
 ### Monitoring and Logging
 
@@ -305,9 +393,11 @@ Comprehensive logging captures:
 - Total request duration
 - Error rates and patterns
 - Resource utilization metrics
+- Cache hit rates and effectiveness
 
 **Section sources**
 - [prompt-optimization-spec.md:305-333](file://specs/prompt-optimization-spec.md#L305-L333)
+- [provider_anthropic.go:197-215](file://sdk/llm/provider_anthropic.go#L197-L215)
 
 ## Testing Strategy
 
@@ -319,6 +409,7 @@ The testing strategy covers all critical failure modes:
 2. **Backend Orchestration Tests**: Happy path, parse failures, search errors, timeouts
 3. **Contract Tests**: JSON marshaling/unmarshaling, field validation
 4. **Frontend Tests**: Manual verification through typecheck and UI checks
+5. **Cache Control Tests**: Anthropic cache behavior, multi-system parts handling
 
 ### Verification Gates
 
@@ -327,6 +418,7 @@ Implementation progress is verified through:
 - Manual QA checklists for frontend integration
 - Performance benchmark validation
 - Error handling scenario testing
+- Cache control functionality verification
 
 **Section sources**
 - [prompt-optimization-roadmap.md:239-279](file://specs/prompt-optimization-roadmap.md#L239-L279)
@@ -347,6 +439,7 @@ Post-deployment monitoring focuses on:
 - Latency percentile tracking against targets
 - User feedback on prompt quality improvements
 - Security and policy compliance validation
+- Cache effectiveness metrics and performance improvements
 
 ### Future Enhancements
 
@@ -356,6 +449,7 @@ The current implementation provides foundation for:
 - Language control options
 - Preview diff functionality
 - Context caching for improved performance
+- Advanced cache control strategies
 
 **Section sources**
 - [prompt-optimization-roadmap.md:292-312](file://specs/prompt-optimization-roadmap.md#L292-L312)
@@ -364,4 +458,6 @@ The current implementation provides foundation for:
 
 The Prompt Optimization Feature represents a significant enhancement to the AI coding agent's usability, providing users with intelligent prompt improvement capabilities while maintaining the project's architectural integrity and performance standards. The implementation successfully balances sophistication with reliability, offering a robust foundation for future enhancements while delivering immediate value through improved prompt quality and user experience.
 
-Through careful attention to error handling, performance optimization, and user experience design, this feature integrates seamlessly with the existing system architecture while providing clear pathways for future expansion and refinement.
+Recent enhancements with cache control mechanisms for Anthropic models and improved system prompt construction significantly boost performance and reliability. Through careful attention to error handling, performance optimization, and user experience design, this feature integrates seamlessly with the existing system architecture while providing clear pathways for future expansion and refinement.
+
+The addition of CacheBreak functionality and ExtractSystemPromptParts ensures that the system can leverage provider-specific caching capabilities while maintaining flexibility for dynamic content. These improvements position the prompt optimization feature for continued growth and enhanced user satisfaction.

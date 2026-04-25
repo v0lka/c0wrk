@@ -563,6 +563,7 @@ type TaskStore interface {
 	SaveFacts(taskID string, factsJSON json.RawMessage) error
 	LoadFacts(taskID string) (json.RawMessage, error)
 	GetUnfinishedTask(sessionID string) (*TaskRecord, error)
+	GetLatestTaskID(sessionID string) (string, error)
 	ReactivateTask(taskID string) error
 }
 
@@ -848,6 +849,24 @@ func (s *SQLiteSessionStore) GetUnfinishedTask(sessionID string) (*TaskRecord, e
 	}
 
 	return &task, nil
+}
+
+// GetLatestTaskID returns the ID of the most recent task for a session, regardless of status.
+// Returns "", nil if no tasks exist.
+func (s *SQLiteSessionStore) GetLatestTaskID(sessionID string) (string, error) {
+	var taskID string
+	err := s.db.QueryRowContext(context.Background(), `
+		SELECT id FROM tasks WHERE session_id = ? ORDER BY created_at DESC LIMIT 1`,
+		sessionID,
+	).Scan(&taskID)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to get latest task ID: %w", err)
+	}
+	return taskID, nil
 }
 
 // SaveFacts inserts or replaces the facts JSON blob for a task.

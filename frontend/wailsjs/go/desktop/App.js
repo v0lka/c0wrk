@@ -206,10 +206,6 @@ export function UpdateSecuritySettings(arg1) {
   return window['go']['desktop']['App']['UpdateSecuritySettings'](arg1);
 }
 
-export function UpdateSessionTokens(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['desktop']['App']['UpdateSessionTokens'](arg1, arg2, arg3, arg4, arg5);
-}
-
 export function WatchDirectory(arg1) {
   return window['go']['desktop']['App']['WatchDirectory'](arg1);
 }

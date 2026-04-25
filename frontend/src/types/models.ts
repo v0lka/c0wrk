@@ -192,3 +192,52 @@ export interface RtkStatus {
   path: string
   version: string
 }
+
+// --- Blackboard Viewer types ---
+
+export interface BlackboardState {
+  task_id: string
+  session_id: string
+  status: string
+  original_request: string
+  plan?: BlackboardPlan
+  step_results: Record<string, BlackboardStepResult>
+  reflections: BlackboardReflection[]
+  facts: BlackboardFact[]
+  final_output?: string
+  file_changes: Record<string, number>
+}
+
+export interface BlackboardPlan {
+  steps: BlackboardPlanStep[]
+}
+
+export interface BlackboardPlanStep {
+  id: string
+  summary: string
+  description: string
+  depends_on: string[]
+}
+
+export interface BlackboardStepResult {
+  step_id: string
+  summary: string
+  error?: string
+}
+
+export interface BlackboardReflection {
+  summary: string
+  hypotheses?: string[]
+  suggested_action?: string
+  reasoning?: string
+  failure_analysis?: string
+  root_cause?: string
+  action_plan?: string
+  timestamp: string
+}
+
+export interface BlackboardFact {
+  keywords: string[]
+  content: string
+  author: string
+}

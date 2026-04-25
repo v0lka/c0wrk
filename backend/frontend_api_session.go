@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/user/agent/backend/session"
+	"github.com/user/agent/core"
 )
 
 // CreateSession creates a new agent session within the active project.
@@ -187,4 +188,95 @@ func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error
 		return f.store.LoadMessages(id)
 	}
 	return []session.ChatMessage{}, nil
+}
+
+// GetBlackboardState returns the current blackboard state for a session.
+// Returns nil if no task state is available.
+func (f *FrontendAPI) GetBlackboardState(sessionID string) (*BlackboardStateResponse, error) {
+	if f.app == nil || f.app.Manager() == nil {
+		return nil, errors.New("session manager not initialized")
+	}
+
+	bbState, err := f.app.Manager().GetBlackboardState(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get blackboard state: %w", err)
+	}
+	if bbState == nil || bbState.TaskState == nil {
+		return nil, nil
+	}
+
+	return convertBlackboardState(bbState.TaskState), nil
+}
+
+// convertBlackboardState maps a core.TaskState to the frontend DTO.
+func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
+	resp := &BlackboardStateResponse{
+		TaskID:          state.TaskID,
+		SessionID:       state.SessionID,
+		Status:          state.Status,
+		OriginalRequest: state.OriginalRequest,
+		FinalOutput:     state.FinalOutput,
+		StepResults:     make(map[string]BlackboardStepResponse, len(state.StepResults)),
+		Reflections:     make([]BlackboardReflectionResponse, 0, len(state.Reflections)),
+		Facts:           make([]BlackboardFactResponse, 0, len(state.Facts)),
+		FileChanges:     make(map[string]int, len(state.FileChanges)),
+	}
+
+	// Plan
+	if state.Plan != nil && len(state.Plan.Steps) > 0 {
+		planResp := &BlackboardPlanResponse{
+			Steps: make([]BlackboardPlanStepResponse, len(state.Plan.Steps)),
+		}
+		for i, s := range state.Plan.Steps {
+			planResp.Steps[i] = BlackboardPlanStepResponse{
+				ID:          s.ID,
+				Summary:     s.Summary,
+				Description: s.Description,
+				DependsOn:   s.DependsOn,
+			}
+		}
+		resp.Plan = planResp
+	}
+
+	// Step results (summaries only, no full output)
+	for stepID, sr := range state.StepResults {
+		entry := BlackboardStepResponse{
+			StepID:  stepID,
+			Summary: sr.Summary,
+		}
+		if sr.Error != nil {
+			entry.Error = sr.Error.Error()
+		}
+		resp.StepResults[stepID] = entry
+	}
+
+	// Reflections
+	for _, r := range state.Reflections {
+		resp.Reflections = append(resp.Reflections, BlackboardReflectionResponse{
+			Summary:         r.Summary,
+			Hypotheses:      r.Hypotheses,
+			SuggestedAction: r.SuggestedAction,
+			Reasoning:       r.Reasoning,
+			FailureAnalysis: r.FailureAnalysis,
+			RootCause:       r.RootCause,
+			ActionPlan:      r.ActionPlan,
+			Timestamp:       r.Timestamp.Format(time.RFC3339),
+		})
+	}
+
+	// Facts
+	for _, fact := range state.Facts {
+		resp.Facts = append(resp.Facts, BlackboardFactResponse{
+			Keywords: fact.Keywords,
+			Content:  fact.Content,
+			Author:   fact.Author,
+		})
+	}
+
+	// File changes (count per step)
+	for stepID, changes := range state.FileChanges {
+		resp.FileChanges[stepID] = len(changes)
+	}
+
+	return resp
 }

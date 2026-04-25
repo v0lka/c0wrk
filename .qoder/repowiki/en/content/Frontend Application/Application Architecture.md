@@ -19,6 +19,7 @@
 - [frontend/src/hooks/useSessionEvents.ts](file://frontend/src/hooks/useSessionEvents.ts)
 - [frontend/src/components/ErrorBoundary.tsx](file://frontend/src/components/ErrorBoundary.tsx)
 - [frontend/src/stores/vectorIndexStore.ts](file://frontend/src/stores/vectorIndexStore.ts)
+- [frontend/src/components/layout/StatusBar.tsx](file://frontend/src/components/layout/StatusBar.tsx)
 - [backend/frontend_api.go](file://backend/frontend_api.go)
 - [backend/frontend_api_config.go](file://backend/frontend_api_config.go)
 - [backend/frontend_api_project.go](file://backend/frontend_api_project.go)
@@ -28,11 +29,11 @@
 
 ## Update Summary
 **Changes Made**
-- Removed references to useWails hook pattern and replaced with new typed API modules
-- Updated architecture to reflect new API layer pattern through window.go.desktop.App
-- Revised Wails integration patterns to use typed API modules instead of direct useWails() hook usage
-- Updated examples to demonstrate new API module usage patterns
-- Revised backend integration to show FrontendAPI composition approach
+- Updated workspace API documentation to reflect the removal of getSessionWorkspace function from frontend API module
+- Enhanced StatusBar component documentation with responsive design features and text truncation patterns
+- Updated workspace management interface documentation to highlight improved error handling and file operations
+- Revised API type definitions to match current implementation
+- Added documentation for responsive design patterns in UI components
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -48,7 +49,7 @@
 ## Introduction
 This document describes the architecture of the C0WRK React 19 desktop application powered by Wails. It explains the main App component structure, Wails integration through typed API modules, event handling and streaming, startup error handling, vector index status monitoring, and real-time session event subscriptions. It also covers the backend initialization flow, error boundary implementation, and startup validation processes, with practical examples of event handling patterns and Wails API integration techniques.
 
-**Updated** The architecture now focuses on typed Go methods bound to window.go.desktop.App through new API modules rather than direct useWails() hook usage.
+**Updated** The architecture now focuses on typed Go methods bound to window.go.desktop.App through new API modules rather than direct useWails() hook usage. Recent improvements include workspace API simplification and responsive design enhancements for UI components.
 
 ## Project Structure
 The application follows a layered structure:
@@ -75,6 +76,7 @@ CFG["frontend/src/api/config.ts<br/>Config API module"]
 ESE["frontend/src/hooks/useSessionEvents.ts<br/>Session event handlers"]
 EB["frontend/src/components/ErrorBoundary.tsx<br/>Error boundary"]
 VIS["frontend/src/stores/vectorIndexStore.ts<br/>Vector index state"]
+STS["frontend/src/components/layout/StatusBar.tsx<br/>Responsive status bar"]
 end
 subgraph "Backend (Go)"
 FAP["backend/frontend_api.go<br/>FrontendAPI composition"]
@@ -97,6 +99,7 @@ APP --> WS
 APP --> CFG
 APP --> VIS
 APP --> EB
+APP --> STS
 DSTART --> DEVT
 DAPP --> FAP
 FAP --> FAPCFG
@@ -116,11 +119,12 @@ DSTART --> DAPP
 - [frontend/src/api/projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
 - [frontend/src/api/sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
 - [frontend/src/api/chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
-- [frontend/src/api/workspace.ts:1-86](file://frontend/src/api/workspace.ts#L1-L86)
+- [frontend/src/api/workspace.ts:1-76](file://frontend/src/api/workspace.ts#L1-L76)
 - [frontend/src/api/config.ts:1-79](file://frontend/src/api/config.ts#L1-L79)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
 - [frontend/src/components/ErrorBoundary.tsx:13-47](file://frontend/src/components/ErrorBoundary.tsx#L13-L47)
 - [frontend/src/stores/vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
+- [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
 - [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
 - [backend/frontend_api_config.go:15-317](file://backend/frontend_api_config.go#L15-L317)
 - [backend/frontend_api_project.go:24-320](file://backend/frontend_api_project.go#L24-L320)
@@ -140,11 +144,12 @@ DSTART --> DAPP
 - [frontend/src/api/projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
 - [frontend/src/api/sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
 - [frontend/src/api/chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
-- [frontend/src/api/workspace.ts:1-86](file://frontend/src/api/workspace.ts#L1-L86)
+- [frontend/src/api/workspace.ts:1-76](file://frontend/src/api/workspace.ts#L1-L76)
 - [frontend/src/api/config.ts:1-79](file://frontend/src/api/config.ts#L1-L79)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
 - [frontend/src/components/ErrorBoundary.tsx:13-47](file://frontend/src/components/ErrorBoundary.tsx#L13-L47)
 - [frontend/src/stores/vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
+- [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
 - [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
 - [backend/frontend_api_config.go:15-317](file://backend/frontend_api_config.go#L15-L317)
 - [backend/frontend_api_project.go:24-320](file://backend/frontend_api_project.go#L24-L320)
@@ -160,6 +165,7 @@ DSTART --> DAPP
 - ErrorBoundary wraps the root to gracefully handle React errors.
 - Session event subscription hook wires per-session event streams and updates chat and panel stores.
 - Backend FrontendAPI composes the orchestrator, session manager, persistence, and emits Wails events.
+- Responsive StatusBar component with text truncation and overflow handling for optimal UI presentation.
 
 Key responsibilities:
 - API modules: Provide typed access to Wails Go bindings with proper error handling and logging.
@@ -167,8 +173,9 @@ Key responsibilities:
 - ErrorBoundary: Captures React errors and displays a minimal fallback.
 - useSessionEvents: Subscribes to session-scoped events and updates UI stores.
 - FrontendAPI: Composes backend subsystems, validates configuration, wires event handlers, and emits readiness.
+- StatusBar: Displays session information with responsive text handling and status indicators.
 
-**Updated** The architecture now uses typed API modules instead of a generic useWails hook for better type safety and organization.
+**Updated** The architecture now uses typed API modules instead of a generic useWails hook for better type safety and organization. The StatusBar component includes responsive design features for optimal text presentation.
 
 **Section sources**
 - [frontend/src/api/runtime.ts:1-45](file://frontend/src/api/runtime.ts#L1-L45)
@@ -176,6 +183,7 @@ Key responsibilities:
 - [frontend/src/components/ErrorBoundary.tsx:13-47](file://frontend/src/components/ErrorBoundary.tsx#L13-L47)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
 - [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
+- [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
 
 ## Architecture Overview
 The app uses Wails to host a React frontend alongside a Go backend. The backend initializes logging, configuration, databases, stores, and the orchestrator. It exposes methods through FrontendAPI that are bound to window.go.desktop.App and emits events to the frontend. The frontend consumes these methods through typed API modules and subscribes to session-scoped and global events, updates stores, and renders UI.
@@ -281,7 +289,6 @@ Implementation highlights:
 
 ### Workspace API Module
 The workspace API module provides:
-- getSessionWorkspace(sessionId): Returns the workspace directory path.
 - listDirectory(path, recursive): Lists directory contents with sorting and filtering.
 - getGitStatus(path): Returns git status for files in the workspace.
 - watchDirectory(path): Adds a directory to the file watcher.
@@ -290,14 +297,17 @@ The workspace API module provides:
 - getFileDiff(filePath): Returns unified diff for file changes.
 - getFileIcon(filePath): Returns Nerd Font icon and color for file paths.
 
+**Updated** The workspace API has been simplified and enhanced with improved error handling and security validation. The getSessionWorkspace function has been removed from the frontend API module as workspace management is now handled through the active project context.
+
 Implementation highlights:
 - Implements comprehensive path validation and security checks.
 - Handles both flat and recursive directory listing.
 - Provides git integration for status and diff operations.
 - Supports file icon resolution with Nerd Fonts.
+- Enhanced error handling with detailed logging for all operations.
 
 **Section sources**
-- [frontend/src/api/workspace.ts:1-86](file://frontend/src/api/workspace.ts#L1-L86)
+- [frontend/src/api/workspace.ts:1-76](file://frontend/src/api/workspace.ts#L1-L76)
 
 ### Configuration API Module
 The config API module provides:
@@ -436,6 +446,23 @@ The frontend:
 - [desktop/startup.go:427-434](file://desktop/startup.go#L427-L434)
 - [frontend/src/App.tsx:26-35](file://frontend/src/App.tsx#L26-L35)
 
+### Responsive StatusBar Component
+The StatusBar component provides a responsive status bar with:
+- Text truncation using `min-w-0` and `truncate` classes for long session names and domain labels.
+- Flexible spacing with `gap-0.5` and `flex-1` spacer for optimal layout.
+- Status indicators with `shrink-0` to prevent text compression.
+- Badge components with responsive sizing using `h-5` and `text-[10px]` classes.
+- Overflow handling with `overflow-hidden` on the main container.
+
+Responsive design features:
+- Uses `min-w-0` to allow text to shrink below its minimum content size.
+- Implements `truncate` for text overflow control.
+- Utilizes `flex-1` spacer for automatic width distribution.
+- Responsive badge sizing with `max-w-full` and `truncate` for domain labels.
+
+**Section sources**
+- [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
+
 ### Typed API Integration Techniques
 Examples of integration patterns:
 - Importing specific API modules (projects, sessions, chat, workspace, config).
@@ -462,8 +489,9 @@ High-level dependencies:
 - frontend/src/App.tsx depends on runtime.subscribe and vectorIndexStore.
 - frontend/src/hooks/useSessionEvents.ts depends on runtime.subscribe and multiple stores.
 - FrontendAPI modules provide typed access to backend functionality.
+- frontend/src/components/layout/StatusBar.tsx depends on multiple store modules for status display.
 
-**Updated** Dependencies now flow through typed API modules instead of useWails hook.
+**Updated** Dependencies now flow through typed API modules instead of useWails hook, with enhanced workspace management and responsive UI components.
 
 ```mermaid
 graph LR
@@ -484,6 +512,7 @@ APP --> WS["frontend/src/api/workspace.ts"]
 APP --> CFG["frontend/src/api/config.ts"]
 APP --> ESE["frontend/src/hooks/useSessionEvents.ts"]
 APP --> VIS["frontend/src/stores/vectorIndexStore.ts"]
+APP --> STS["frontend/src/components/layout/StatusBar.tsx"]
 ESE --> RT
 ```
 
@@ -502,6 +531,7 @@ ESE --> RT
 - [frontend/src/api/index.ts:1-10](file://frontend/src/api/index.ts#L1-L10)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
 - [frontend/src/stores/vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
+- [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
 
 **Section sources**
 - [main.go:31-35](file://main.go#L31-L35)
@@ -516,8 +546,10 @@ ESE --> RT
 - Vector index store normalization: Keep state updates minimal and idempotent to reduce UI churn.
 - Backend readiness: Emit "backend:ready" to coordinate UI transitions and avoid redundant queries.
 - API module caching: Consider caching API module instances to avoid repeated getApp() calls.
+- Responsive UI optimization: Use CSS utilities like `min-w-0` and `truncate` to prevent layout thrashing during text overflow.
+- Workspace API efficiency: Simplified workspace operations reduce unnecessary API calls and improve responsiveness.
 
-**Updated** Added consideration for API module caching benefits.
+**Updated** Added performance considerations for responsive UI components and workspace API optimizations.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -534,14 +566,23 @@ Common issues and remedies:
   - Confirm isWailsReady() returns true.
   - Validate window.go.desktop.App method signatures and parameters.
   - Check that specific API modules are imported correctly.
+- Workspace API errors:
+  - Verify path validation and security checks are passing.
+  - Check that workspace operations are performed within active project boundaries.
+- Responsive UI issues:
+  - Ensure CSS utilities like `min-w-0` and `truncate` are properly applied.
+  - Verify text overflow handling for long session names and domain labels.
 
-**Updated** Added troubleshooting guidance for API module failures.
+**Updated** Added troubleshooting guidance for workspace API failures and responsive UI issues.
 
 **Section sources**
 - [desktop/startup.go:427-434](file://desktop/startup.go#L427-L434)
 - [frontend/src/App.tsx:26-55](file://frontend/src/App.tsx#L26-L55)
 - [frontend/src/api/runtime.ts:21-24](file://frontend/src/api/runtime.ts#L21-L24)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
+- [frontend/src/components/layout/StatusBar.tsx:30-98](file://frontend/src/components/layout/StatusBar.tsx#L30-L98)
 
 ## Conclusion
-C0WRK's architecture cleanly separates concerns between a React frontend and a Go backend, orchestrated by Wails. The frontend leverages typed API modules for structured access to backend functionality, robust event subscriptions, and centralized stores to deliver a responsive, real-time experience. The backend performs comprehensive initialization, validation, and emits a rich stream of events that drive the UI. The new typed API module approach provides better type safety, organization, and developer experience compared to the previous useWails hook pattern. Together, these patterns provide a scalable foundation for agent-driven workflows with cross-platform compatibility.
+C0WRK's architecture cleanly separates concerns between a React frontend and a Go backend, orchestrated by Wails. The frontend leverages typed API modules for structured access to backend functionality, robust event subscriptions, and centralized stores to deliver a responsive, real-time experience. The backend performs comprehensive initialization, validation, and emits a rich stream of events that drive the UI. 
+
+Recent improvements include workspace API simplification with enhanced error handling and security validation, and responsive design enhancements in the StatusBar component with text truncation and overflow handling. The new typed API module approach provides better type safety, organization, and developer experience compared to the previous useWails hook pattern. Together, these patterns provide a scalable foundation for agent-driven workflows with cross-platform compatibility and optimal user interface responsiveness.

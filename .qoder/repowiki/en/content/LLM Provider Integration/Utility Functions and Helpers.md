@@ -7,6 +7,7 @@
 - [provider_helpers.go](file://sdk/llm/provider_helpers.go)
 - [schema_sanitize.go](file://sdk/llm/schema_sanitize.go)
 - [reasoning.go](file://sdk/llm/reasoning.go)
+- [reasoning_test.go](file://sdk/llm/reasoning_test.go)
 - [family.go](file://sdk/llm/family.go)
 - [message.go](file://sdk/llm/message.go)
 - [modelregistry.go](file://sdk/llm/modelregistry.go)
@@ -16,7 +17,19 @@
 - [provider_anthropic.go](file://sdk/llm/provider_anthropic.go)
 - [provider_gemini.go](file://sdk/llm/provider_gemini.go)
 - [provider_lmstudio.go](file://sdk/llm/provider_lmstudio.go)
+- [builder.go](file://core/builder.go)
+- [router_test.go](file://core/router_test.go)
+- [reflector.go](file://core/reflector.go)
+- [reflector_test.go](file://core/reflector_test.go)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added comprehensive reasoning effort management system documentation
+- Updated reasoning configuration section with resolveBaseEffort function
+- Enhanced testing infrastructure documentation for reasoning system
+- Added AgentReasoningMode support documentation
+- Updated orchestrator integration examples with reasoning effort management
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -30,7 +43,9 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the utility functions and helper components in C0WRK’s LLM SDK that power token counting, usage tracking, cost estimation, reasoning configuration, schema sanitization, and response validation. It also covers how these utilities integrate with provider implementations and orchestrator workflows, along with performance characteristics, accuracy considerations, and best practices for monitoring usage and controlling costs.
+This document explains the utility functions and helper components in C0WRK's LLM SDK that power token counting, usage tracking, cost estimation, reasoning configuration, schema sanitization, and response validation. It also covers how these utilities integrate with provider implementations and orchestrator workflows, along with performance characteristics, accuracy considerations, and best practices for monitoring usage and controlling costs.
+
+**Updated** Added comprehensive reasoning effort management system with resolveBaseEffort function, AgentReasoningMode support, and enhanced testing infrastructure.
 
 ## Project Structure
 The LLM utilities live primarily under sdk/llm and are organized by responsibility:
@@ -38,7 +53,7 @@ The LLM utilities live primarily under sdk/llm and are organized by responsibili
 - Usage tracking and reporting
 - Provider helpers (stop reason mapping, system prompt extraction, streaming tool call accumulation, message normalization)
 - Schema sanitization for provider-specific JSON Schema strictness
-- Reasoning effort mapping to provider-specific parameters
+- Reasoning effort mapping to provider-specific parameters with base effort resolution
 - Model family detection and metadata registry
 - Router that validates context windows and routes calls to providers
 - Provider implementations that consume these utilities
@@ -51,7 +66,7 @@ CT["ContextTokenTracker"]
 UT["UsageTracker<br/>TrackingCaller"]
 PH["Provider Helpers<br/>StopReason Mapping<br/>System Prompt Extraction<br/>StreamToolCallAccumulator<br/>NormalizeMistralMessages"]
 SS["Schema Sanitizers<br/>SanitizeSchemaForGemini<br/>SanitizeSchemaForOpenAI<br/>SanitizeSchemaForAnthropic"]
-RE["Reasoning Config<br/>ResolveReasoning"]
+RE["Reasoning Config<br/>ResolveReasoning<br/>resolveBaseEffort<br/>AgentReasoningMode"]
 MR["ModelRegistry<br/>ModelCapabilities"]
 RF["ModelFamily Detection"]
 MS["Message Types<br/>TokenUsage"]
@@ -91,7 +106,7 @@ RO --> LS
 - [usage.go:9-161](file://sdk/llm/usage.go#L9-L161)
 - [provider_helpers.go:5-140](file://sdk/llm/provider_helpers.go#L5-L140)
 - [schema_sanitize.go:9-433](file://sdk/llm/schema_sanitize.go#L9-L433)
-- [reasoning.go:3-107](file://sdk/llm/reasoning.go#L3-L107)
+- [reasoning.go:3-111](file://sdk/llm/reasoning.go#L3-L111)
 - [modelregistry.go:16-532](file://sdk/llm/modelregistry.go#L16-L532)
 - [family.go:5-74](file://sdk/llm/family.go#L5-L74)
 - [message.go:8-70](file://sdk/llm/message.go#L8-L70)
@@ -106,7 +121,7 @@ RO --> LS
 - [usage.go:9-161](file://sdk/llm/usage.go#L9-L161)
 - [provider_helpers.go:5-140](file://sdk/llm/provider_helpers.go#L5-L140)
 - [schema_sanitize.go:9-433](file://sdk/llm/schema_sanitize.go#L9-L433)
-- [reasoning.go:3-107](file://sdk/llm/reasoning.go#L3-L107)
+- [reasoning.go:3-111](file://sdk/llm/reasoning.go#L3-L111)
 - [modelregistry.go:16-532](file://sdk/llm/modelregistry.go#L16-L532)
 - [family.go:5-74](file://sdk/llm/family.go#L5-L74)
 - [message.go:8-70](file://sdk/llm/message.go#L8-L70)
@@ -133,36 +148,46 @@ RO --> LS
   - Anthropic passthrough placeholder.
 - Reasoning configuration
   - Effort levels mapped to provider-specific parameters (Anthropic budget, OpenAI effort, Gemini thinking level/budget).
+  - Base effort resolution from model metadata with resolveBaseEffort function.
+  - Agent-specific reasoning modes with AgentReasoningMode for different agent types.
 - Model family and registry
   - ModelFamily detection from model IDs.
-  - ModelRegistry with multi-tier resolution and caching.
+  - ModelRegistry with multi-tier resolution and caching including reasoning capability detection.
 - Router
   - Context window validation with safety margins and output token reserves.
   - Default temperature application based on model capabilities and sampling function.
   - Retry/backoff logic and request normalization.
+
+**Updated** Enhanced reasoning system with comprehensive effort management including base effort resolution and agent-specific modes.
 
 **Section sources**
 - [tokencount.go:11-184](file://sdk/llm/tokencount.go#L11-L184)
 - [usage.go:9-161](file://sdk/llm/usage.go#L9-L161)
 - [provider_helpers.go:5-140](file://sdk/llm/provider_helpers.go#L5-L140)
 - [schema_sanitize.go:9-433](file://sdk/llm/schema_sanitize.go#L9-L433)
-- [reasoning.go:3-107](file://sdk/llm/reasoning.go#L3-L107)
+- [reasoning.go:3-111](file://sdk/llm/reasoning.go#L3-L111)
 - [family.go:5-74](file://sdk/llm/family.go#L5-L74)
 - [modelregistry.go:16-532](file://sdk/llm/modelregistry.go#L16-L532)
 - [router.go:31-336](file://sdk/llm/router.go#L31-L336)
 
 ## Architecture Overview
-The utilities integrate across the call stack: Router validates context and prepares requests, Providers consume helpers for message conversion and schema sanitation, UsageTracker and TrackingCaller collect usage metrics, and ContextTokenTracker keeps running estimates synchronized with API-reported usage.
+The utilities integrate across the call stack: Router validates context and prepares requests, Providers consume helpers for message conversion and schema sanitation, UsageTracker and TrackingCaller collect usage metrics, and ContextTokenTracker keeps running estimates synchronized with API-reported usage. The reasoning system integrates at the orchestrator level with base effort resolution and agent-specific modes.
 
 ```mermaid
 sequenceDiagram
 participant Orchestrator as "Orchestrator"
 participant Router as "Router"
+participant Builder as "Builder.resolveBaseEffort"
+participant Registry as "ModelRegistry"
 participant Tracker as "UsageTracker"
 participant Caller as "TrackingCaller"
 participant Provider as "Provider"
 participant Counter as "ContextTokenTracker"
-Orchestrator->>Router : "Call/Stream(req)"
+Orchestrator->>Builder : "resolveBaseEffort(model, registry)"
+Builder->>Registry : "Resolve(model)"
+Registry-->>Builder : "ModelMetadata{Capabilities.Reasoning}"
+Builder-->>Orchestrator : "ReasoningEffort"
+Orchestrator->>Router : "Call/Stream(req) with ReasoningEffort"
 Router->>Router : "validateContextWindow()"
 Router->>Provider : "ChatCompletion/StreamChatCompletion(req)"
 Provider-->>Caller : "response/chunks"
@@ -177,6 +202,8 @@ Router-->>Orchestrator : "final response"
 - [router.go:157-192](file://sdk/llm/router.go#L157-L192)
 - [usage.go:89-142](file://sdk/llm/usage.go#L89-L142)
 - [tokencount.go:123-184](file://sdk/llm/tokencount.go#L123-L184)
+- [builder.go:571-583](file://core/builder.go#L571-L583)
+- [modelregistry.go:77-137](file://sdk/llm/modelregistry.go#L77-L137)
 - [provider_openai.go:53-82](file://sdk/llm/provider_openai.go#L53-L82)
 - [provider_anthropic.go:52-65](file://sdk/llm/provider_anthropic.go#L52-L65)
 - [provider_gemini.go:78-89](file://sdk/llm/provider_gemini.go#L78-L89)
@@ -335,7 +362,11 @@ K --> L["Marshal sanitized schema"]
   - OpenAI: OpenAIEffort ("low", "medium", "high").
   - Gemini: ThinkingLevel and ThinkingBudget.
 - ResolveReasoning maps effort to provider-specific config based on family.
+- resolveBaseEffort determines base reasoning effort from model metadata, returning empty for non-reasoning models.
 - AgentReasoningMode adjusts effort for agent roles (full for orchestrator/planner, reduced for auxiliary agents).
+- Enhanced testing infrastructure validates reasoning behavior across families and agent types.
+
+**Updated** Comprehensive reasoning system with base effort resolution and agent-specific modes.
 
 ```mermaid
 classDiagram
@@ -354,14 +385,24 @@ class ReasoningConfig {
 +int GeminiThinkingBudget
 +bool Enabled
 }
+class ReasoningSystem {
+-resolveBaseEffort(model, registry) ReasoningEffort
+-AgentReasoningMode(role, baseEffort) ReasoningEffort
+-ResolveReasoning(effort, family) ReasoningConfig
+}
 ReasoningEffort --> ReasoningConfig : "resolved by"
+ReasoningSystem --> ReasoningEffort : "manages"
+ReasoningSystem --> ReasoningConfig : "creates"
 ```
 
 **Diagram sources**
-- [reasoning.go:3-107](file://sdk/llm/reasoning.go#L3-L107)
+- [reasoning.go:3-111](file://sdk/llm/reasoning.go#L3-L111)
+- [builder.go:571-583](file://core/builder.go#L571-L583)
 
 **Section sources**
-- [reasoning.go:3-107](file://sdk/llm/reasoning.go#L3-L107)
+- [reasoning.go:3-111](file://sdk/llm/reasoning.go#L3-L111)
+- [reasoning_test.go:1-142](file://sdk/llm/reasoning_test.go#L1-L142)
+- [builder.go:571-583](file://core/builder.go#L571-L583)
 
 ### Model Families and Registry
 - ModelFamily detection from model IDs supports Anthropic, OpenAI flagship/standard/codex, Gemini, Mistral, DeepSeek, Kimi/Moonshot, and default.
@@ -372,6 +413,9 @@ ReasoningEffort --> ReasoningConfig : "resolved by"
   - External sources (e.g., LM Studio, Gemini)
   - Fallback defaults
 - Metadata includes context window, output limit, tokenizer type, family, capabilities, and cost fields.
+- ModelCapabilities now includes Reasoning flag for determining base effort support.
+
+**Updated** ModelRegistry now includes Reasoning capability detection for base effort resolution.
 
 ```mermaid
 flowchart TD
@@ -401,6 +445,9 @@ FoundSrc --> |No| Fallback["Return fallback defaults"]
 - Router composes providers, retries with exponential backoff and jitter, and applies default temperature based on sampling function and model capabilities.
 - validateContextWindow estimates token usage using TokenCounter and compares against effective context window minus output reserve and safety margin.
 - applyDefaultTemperature sets temperature defaults when supported by the model.
+- Router.SetBaseReasoningEffort allows setting base reasoning effort for routing decisions.
+
+**Updated** Router now supports reasoning effort configuration for routing decisions.
 
 ```mermaid
 flowchart TD
@@ -430,6 +477,8 @@ G --> H["Return"]
 - LMStudioProvider
   - Implements both native LM Studio API and OpenAI-compatible endpoints; supports stats and tool call streaming.
 
+**Updated** Providers now handle reasoning effort parameters based on resolved configurations.
+
 ```mermaid
 sequenceDiagram
 participant Router as "Router"
@@ -458,18 +507,54 @@ Prov-->>Router : "normalized response"
 - [provider_gemini.go:30-200](file://sdk/llm/provider_gemini.go#L30-L200)
 - [provider_lmstudio.go:24-200](file://sdk/llm/provider_lmstudio.go#L24-L200)
 
+### Orchestrator Integration and Reasoning Management
+- Builder.resolveBaseEffort determines base reasoning effort from active model metadata, returning empty for non-reasoning models.
+- Router.SetBaseReasoningEffort sets base reasoning effort for routing decisions.
+- AgentReasoningMode applies agent-specific reasoning reduction for auxiliary agents.
+- Enhanced testing validates reasoning behavior across different model families and agent types.
+
+**Updated** Comprehensive orchestrator integration with reasoning effort management system.
+
+```mermaid
+flowchart TD
+A["Builder.buildCoreAgents"] --> B["resolveBaseEffort(cfg.LLM.Model, modelRegistry)"]
+B --> C{"meta.Capabilities.Reasoning?"}
+C --> |Yes| D["return ReasoningHigh"]
+C --> |No| E["return empty"]
+D --> F["coreRouter.SetBaseReasoningEffort(baseEffort)"]
+E --> F
+F --> G["AgentReasoningMode(role, baseEffort)"]
+G --> H["Apply reduced reasoning for auxiliary agents"]
+```
+
+**Diagram sources**
+- [builder.go:571-583](file://core/builder.go#L571-L583)
+- [router.go:47-50](file://core/router.go#L47-L50)
+- [reasoning.go:91-110](file://sdk/llm/reasoning.go#L91-L110)
+
+**Section sources**
+- [builder.go:571-583](file://core/builder.go#L571-L583)
+- [router.go:47-50](file://core/router.go#L47-L50)
+- [reasoning.go:91-110](file://sdk/llm/reasoning.go#L91-L110)
+- [router_test.go:406-428](file://core/router_test.go#L406-L428)
+- [reflector.go:40-43](file://core/reflector.go#L40-L43)
+- [reflector_test.go:350-399](file://core/reflector_test.go#L350-L399)
+
 ## Dependency Analysis
 - Coupling
   - Router depends on ModelRegistry, TokenCounter, and SamplingFunc; it orchestrates Provider calls.
   - Providers depend on utility helpers for message conversion, schema sanitation, and stop reason mapping.
   - UsageTracker and TrackingCaller depend on Caller interface and TokenUsage.
   - ContextTokenTracker depends on TokenCounter for predictive estimates.
+  - Reasoning system integrates with ModelRegistry for base effort determination and with orchestrator components for agent-specific modes.
 - Cohesion
   - Each utility module focuses on a single concern: counting, usage, sanitization, reasoning, or routing.
 - External dependencies
   - tiktoken-go for precise token counting.
   - Official provider SDKs for OpenAI, Anthropic, and Google GenAI.
   - HTTP client for LM Studio and HuggingFace metadata retrieval.
+
+**Updated** Enhanced dependency analysis to include reasoning system integration.
 
 ```mermaid
 graph LR
@@ -484,6 +569,9 @@ UsageTracker --> Caller
 TrackingCaller --> UsageTracker
 TrackingCaller --> ContextTokenTracker
 ContextTokenTracker --> TokenCounter
+ReasoningSystem --> ModelRegistry
+ReasoningSystem --> Router
+ReasoningSystem --> OrchestratorComponents
 ```
 
 **Diagram sources**
@@ -492,6 +580,8 @@ ContextTokenTracker --> TokenCounter
 - [tokencount.go:123-184](file://sdk/llm/tokencount.go#L123-L184)
 - [schema_sanitize.go:9-433](file://sdk/llm/schema_sanitize.go#L9-L433)
 - [provider_helpers.go:5-140](file://sdk/llm/provider_helpers.go#L5-L140)
+- [reasoning.go:28-42](file://sdk/llm/reasoning.go#L28-L42)
+- [builder.go:571-583](file://core/builder.go#L571-L583)
 
 **Section sources**
 - [router.go:31-107](file://sdk/llm/router.go#L31-L107)
@@ -499,6 +589,8 @@ ContextTokenTracker --> TokenCounter
 - [tokencount.go:123-184](file://sdk/llm/tokencount.go#L123-L184)
 - [schema_sanitize.go:9-433](file://sdk/llm/schema_sanitize.go#L9-L433)
 - [provider_helpers.go:5-140](file://sdk/llm/provider_helpers.go#L5-L140)
+- [reasoning.go:28-42](file://sdk/llm/reasoning.go#L28-L42)
+- [builder.go:571-583](file://core/builder.go#L571-L583)
 
 ## Performance Considerations
 - Token counting
@@ -514,8 +606,12 @@ ContextTokenTracker --> TokenCounter
 - Schema sanitization
   - OpenAI sanitizer performs recursive processing; cache sanitized schemas when reused frequently.
   - Gemini sanitizer enforces stricter typing; ensure tool schemas conform to avoid repeated sanitization work.
+- Reasoning system
+  - Base effort resolution is performed once per orchestrator initialization and cached in components.
+  - AgentReasoningMode applies constant-time transformations without additional overhead.
+  - Testing infrastructure validates reasoning behavior efficiently across model families.
 
-[No sources needed since this section provides general guidance]
+**Updated** Added performance considerations for reasoning system integration.
 
 ## Troubleshooting Guide
 - Context window exceeded
@@ -535,6 +631,17 @@ ContextTokenTracker --> TokenCounter
   - Actions: Sanitize IDs with sanitizeAnthropicToolID before sending requests.
 - Cost control
   - Use UsageTracker observers to monitor cumulative input/output tokens; pair with ContextTokenTracker for real-time estimates.
+- Reasoning effort issues
+  - Symptom: Models not using reasoning despite configuration.
+  - Actions: Verify ModelRegistry metadata includes Reasoning=true; check resolveBaseEffort returns non-empty for the model.
+- Agent reasoning mode problems
+  - Symptom: Auxiliary agents not getting reduced reasoning.
+  - Actions: Ensure AgentReasoningMode receives non-empty base effort; verify model supports reasoning capability.
+- Testing reasoning behavior
+  - Symptom: Tests failing for reasoning system.
+  - Actions: Use provided test cases to validate ResolveReasoning, AgentReasoningMode, and resolveBaseEffort behavior.
+
+**Updated** Added troubleshooting guidance for reasoning system issues.
 
 **Section sources**
 - [router.go:157-192](file://sdk/llm/router.go#L157-L192)
@@ -543,6 +650,9 @@ ContextTokenTracker --> TokenCounter
 - [provider_anthropic.go:13-20](file://sdk/llm/provider_anthropic.go#L13-L20)
 - [usage.go:9-161](file://sdk/llm/usage.go#L9-L161)
 - [tokencount.go:123-184](file://sdk/llm/tokencount.go#L123-L184)
+- [reasoning.go:91-110](file://sdk/llm/reasoning.go#L91-L110)
+- [reasoning_test.go:100-142](file://sdk/llm/reasoning_test.go#L100-L142)
+- [router_test.go:406-428](file://core/router_test.go#L406-L428)
 
 ## Conclusion
-C0WRK’s LLM utilities provide a robust foundation for token accounting, usage reporting, schema compliance, and reasoning configuration across multiple providers. By combining fast approximate counting with API-driven corrections, structured usage tracking, and provider-specific sanitization and normalization, the system enables reliable context window management, accurate cost monitoring, and smooth integration with orchestrator workflows. Adopt the best practices outlined here to maintain performance, accuracy, and cost control in production deployments.
+C0WRK's LLM utilities provide a robust foundation for token accounting, usage reporting, schema compliance, and reasoning configuration across multiple providers. By combining fast approximate counting with API-driven corrections, structured usage tracking, and provider-specific sanitization and normalization, the system enables reliable context window management, accurate cost monitoring, and smooth integration with orchestrator workflows. The comprehensive reasoning effort management system adds sophisticated agent-specific reasoning control with base effort resolution from model metadata, ensuring optimal performance and cost control across different model families and agent types. Adopt the best practices outlined here to maintain performance, accuracy, and cost control in production deployments.

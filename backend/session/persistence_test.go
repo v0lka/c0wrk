@@ -1720,3 +1720,47 @@ func TestListSessionsIncludesModelFamily(t *testing.T) {
 		t.Errorf("by-project family mismatch: got %q, want %q", byProject[0].Family, "openai")
 	}
 }
+
+func TestGetLatestTaskID(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	base := time.Now().Truncate(time.Second)
+
+	// Create tasks with known ordering.
+	if err := store.SaveTask(TaskRecord{
+		ID: "task-old", SessionID: sessionID, OriginalRequest: "old task",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: base,
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	if err := store.SaveTask(TaskRecord{
+		ID: "task-new", SessionID: sessionID, OriginalRequest: "new task",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: base.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+
+	got, err := store.GetLatestTaskID(sessionID)
+	if err != nil {
+		t.Fatalf("GetLatestTaskID failed: %v", err)
+	}
+	if got != "task-new" {
+		t.Errorf("expected task-new, got %q", got)
+	}
+}
+
+func TestGetLatestTaskID_NoTasks(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	got, err := store.GetLatestTaskID(sessionID)
+	if err != nil {
+		t.Fatalf("GetLatestTaskID failed: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}

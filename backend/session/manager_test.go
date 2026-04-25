@@ -853,6 +853,9 @@ func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ string) (*TaskRecord, er
 	return m.unfinished, nil
 }
 func (m *mockTaskStoreForResumable) ReactivateTask(_ string) error { return nil }
+func (m *mockTaskStoreForResumable) GetLatestTaskID(_ string) (string, error) {
+	return "", nil
+}
 
 // TestEmitResumableIfUnfinished_EmitsWhenUnfinishedTaskExists verifies that
 // emitResumableIfUnfinished emits a "task_failed_resumable" event when the

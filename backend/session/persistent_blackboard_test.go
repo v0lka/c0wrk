@@ -591,3 +591,51 @@ func TestRestoreBlackboard_WithFileChanges(t *testing.T) {
 		t.Errorf("expected 2 changes for step_1, got %d", len(all["step_1"]))
 	}
 }
+
+func TestPersistentBlackboard_NotifyChanged(t *testing.T) {
+	mock := &mockTaskPersistence{}
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+
+	var changes []string
+	var mu sync.Mutex
+	pb.SetOnChanged(func(changeType string) {
+		mu.Lock()
+		changes = append(changes, changeType)
+		mu.Unlock()
+	})
+
+	// Each write method should trigger a notifyChanged call.
+	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1", Description: "d"}}})
+	pb.SetStepResult("step_1", "output", nil, nil)
+	pb.AddReflection(core.Reflection{Summary: "r1"})
+	pb.SetStepFileChanges("step_1", []core.FileChange{{Path: "f.go", Operation: "CREATE"}})
+	pb.StoreFact(core.Fact{Keywords: []string{"k"}, Content: "c"})
+	pb.CompleteTask(1)
+
+	// Wait briefly for async persistence goroutines to finish.
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	got := append([]string{}, changes...)
+	mu.Unlock()
+
+	expected := []string{"plan", "step_result", "reflection", "file_changes", "fact", "completed"}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d change notifications, got %d: %v", len(expected), len(got), got)
+	}
+	for i, want := range expected {
+		if got[i] != want {
+			t.Errorf("change[%d]: got %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+func TestPersistentBlackboard_NotifyChanged_NilSafe(t *testing.T) {
+	mock := &mockTaskPersistence{}
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+
+	// No callback set — should not panic.
+	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1", Description: "d"}}})
+	pb.StoreFact(core.Fact{Keywords: []string{"k"}, Content: "c"})
+	pb.CompleteTask(0)
+}

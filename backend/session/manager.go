@@ -254,11 +254,22 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	if ts != nil {
 		adapter = NewTaskStoreAdapter(ts)
 		sessionID := id // capture for closure
+		emitFunc := m.emitFunc
 		bbFactory = func(taskID string) core.Blackboard {
+			var pbb *PersistentBlackboard
 			if maxSumLen > 0 {
-				return NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+			} else {
+				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 			}
-			return NewPersistentBlackboard(taskID, sessionID, adapter, logger)
+			pbb.SetOnChanged(func(changeType string) {
+				emitFunc(Event{
+					SessionID: sessionID,
+					Type:      "blackboard_updated",
+					Data:      map[string]any{"change_type": changeType},
+				})
+			})
+			return pbb
 		}
 	}
 
@@ -288,8 +299,20 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// Wire task persistence into orchestrator.
 	if adapter != nil {
 		orchestrator.SetTaskStore(adapter)
+		emitFn := m.emitFunc
+		capturedSessionID := id
 		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...core.MapBlackboardOption) (core.PersistableBlackboard, error) {
-			return RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+			pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+			if pbb != nil {
+				pbb.SetOnChanged(func(changeType string) {
+					emitFn(Event{
+						SessionID: capturedSessionID,
+						Type:      "blackboard_updated",
+						Data:      map[string]any{"change_type": changeType},
+					})
+				})
+			}
+			return pbb, err
 		})
 	}
 
@@ -413,11 +436,22 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	if ts != nil {
 		adapter = NewTaskStoreAdapter(ts)
 		sessionID := id // capture for closure
+		emitFunc := m.emitFunc
 		bbFactory = func(taskID string) core.Blackboard {
+			var pbb *PersistentBlackboard
 			if maxSumLen > 0 {
-				return NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+			} else {
+				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 			}
-			return NewPersistentBlackboard(taskID, sessionID, adapter, logger)
+			pbb.SetOnChanged(func(changeType string) {
+				emitFunc(Event{
+					SessionID: sessionID,
+					Type:      "blackboard_updated",
+					Data:      map[string]any{"change_type": changeType},
+				})
+			})
+			return pbb
 		}
 	}
 
@@ -448,8 +482,20 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Wire task persistence into core orchestrator for continuations
 	if adapter != nil {
 		orchestrator.SetTaskStore(adapter)
+		emitFn := m.emitFunc
+		capturedSessionID := id
 		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...core.MapBlackboardOption) (core.PersistableBlackboard, error) {
-			return RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+			pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+			if pbb != nil {
+				pbb.SetOnChanged(func(changeType string) {
+					emitFn(Event{
+						SessionID: capturedSessionID,
+						Type:      "blackboard_updated",
+						Data:      map[string]any{"change_type": changeType},
+					})
+				})
+			}
+			return pbb, err
 		})
 	}
 
@@ -1150,6 +1196,61 @@ func (s *Session) IsActive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.active
+}
+
+// GetBlackboardState returns the current blackboard state for a session.
+// It uses the in-memory lastCompletedTaskID if available, otherwise falls back
+// to the most recent task ID from the database.
+// Returns nil, nil if no task state is available.
+func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error) {
+	sess, err := m.getOrRestoreSession(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to restore session: %w", err)
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+
+	if ts == nil {
+		return nil, nil // no task persistence — no blackboard state
+	}
+
+	// Try in-memory lastCompletedTaskID first.
+	sess.mu.Lock()
+	taskID := sess.lastCompletedTaskID
+	sess.mu.Unlock()
+
+	// Fallback: query the database for the latest task.
+	if taskID == "" {
+		dbTaskID, dbErr := ts.GetLatestTaskID(sessionID)
+		if dbErr != nil {
+			return nil, fmt.Errorf("failed to get latest task ID: %w", dbErr)
+		}
+		if dbTaskID == "" {
+			return nil, nil // no tasks for this session
+		}
+		taskID = dbTaskID
+	}
+
+	adapter := NewTaskStoreAdapter(ts)
+	state, err := adapter.LoadTaskState(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load task state: %w", err)
+	}
+	if state == nil {
+		return nil, nil
+	}
+
+	return &BlackboardState{TaskState: state}, nil
+}
+
+// BlackboardState wraps a core.TaskState for the GetBlackboardState API.
+type BlackboardState struct {
+	TaskState *core.TaskState
 }
 
 // Shutdown closes all sessions and releases resources.

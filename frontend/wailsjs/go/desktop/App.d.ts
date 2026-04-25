@@ -109,6 +109,4 @@ export function UpdateSearchSettings(arg1:backend.SearchSettingsRequest):Promise
 
 export function UpdateSecuritySettings(arg1:backend.SecuritySettingsResponse):Promise<void>;
 
-export function UpdateSessionTokens(arg1:string,arg2:number,arg3:number,arg4:string,arg5:string):Promise<void>;
-
 export function WatchDirectory(arg1:string):Promise<void>;

@@ -12,6 +12,7 @@ import { ActivityIndicator } from './ActivityIndicator'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import { ExecutionPanels } from './ExecutionPanels'
+import { BlackboardPanel } from './BlackboardPanel'
 import { PendingActionsBar } from './PendingActionsBar'
 import { ChatInput } from './ChatInput'
 import { ScrollProvider } from './ScrollContext'
@@ -114,6 +115,7 @@ export function ChatArea() {
           </div>
         </div>
         <ExecutionPanels />
+        <BlackboardPanel />
         <PendingActionsBar />
         <ChatInput />
       </div>
@@ -137,6 +139,7 @@ export function ChatArea() {
           </div>
         </ChatScrollManager>
         <ExecutionPanels />
+        <BlackboardPanel />
         <PendingActionsBar />
         <ChatInput />
       </div>
