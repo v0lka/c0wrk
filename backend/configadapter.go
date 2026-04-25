@@ -95,8 +95,9 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
 			},
 			ToolOutputPruning: core.BuilderToolOutputPruning{
-				KeepLastN:      cfg.Executor.ToolOutputPruning.KeepLastN,
-				ProtectedTools: cfg.Executor.ToolOutputPruning.ProtectedTools,
+				KeepLastN:        cfg.Executor.ToolOutputPruning.KeepLastN,
+				ProtectedTools:   cfg.Executor.ToolOutputPruning.ProtectedTools,
+				ThresholdPercent: cfg.Executor.ToolOutputPruning.ThresholdPercent,
 			},
 			CircuitBreaker: core.BuilderCircuitBreaker{
 				RepeatNudgeThreshold:         cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,

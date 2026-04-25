@@ -77,4 +77,6 @@ type StepConfig struct {
 	SystemPrompt       string                 // custom prompt override (empty = use factory)
 	SystemPromptSuffix string                 // appended to system prompt (empty = no suffix)
 	CompactionStrategy string                 // compaction strategy name (empty = default)
+	KeepLastN          int                    // tool output pruning: keep last N results (0 = use global default)
+	ProtectedTools     []string               // tool output pruning: always preserve these tools' output
 }

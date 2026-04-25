@@ -128,8 +128,9 @@ type BuilderToolResultBudget struct {
 
 // BuilderToolOutputPruning configures selective pruning of old tool outputs.
 type BuilderToolOutputPruning struct {
-	KeepLastN      int
-	ProtectedTools []string
+	KeepLastN        int
+	ProtectedTools   []string
+	ThresholdPercent float64 // Context fill % below which pruning is skipped (0 = always prune)
 }
 
 // BuilderCircuitBreaker holds circuit-breaker thresholds.

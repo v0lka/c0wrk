@@ -119,8 +119,9 @@ executor:
 
   # --- Tool Output Pruning --------------------------------------------------
   toolOutputPruning:
-    keepLastN: 3 # Recent tool outputs to keep intact
-    protectedTools: ["read_evidence"] # Tools whose outputs are never pruned
+    keepLastN: 3 # Recent tool outputs to keep intact (role-based per-step defaults override this)
+    protectedTools: ["store_fact", "search_facts"] # Tools whose outputs are never pruned
+    thresholdPercent: 50 # Context fill % below which pruning is skipped entirely (0 = always prune)
 
   # --- Circuit Breaker (loop protection) ------------------------------------
   circuitBreaker:

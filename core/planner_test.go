@@ -11,6 +11,7 @@ import (
 	coretools "github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/orchestration"
 	tools "github.com/user/agent/sdk/tools"
 )
 
@@ -773,7 +774,7 @@ func newPlannerTestRegistry(defs []struct{ name, source string }) *coretools.Too
 
 // plannerContextFactory returns a ContextManagerFactory that creates mockContextManagers.
 func plannerContextFactory() ContextManagerFactory {
-	return func(systemPrompt string, _ llm.ModelMetadata, _ string) ContextManager {
+	return func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) ContextManager {
 		return &mockContextManager{systemPrompt: systemPrompt}
 	}
 }

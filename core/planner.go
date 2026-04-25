@@ -98,6 +98,14 @@ Example:
 - "coder": Write code/config files as needed. Summarize what was done through finish.
 - "executor": Files only when the file IS the deliverable.
 
+## Research Task Decomposition
+
+For tasks that require gathering information from multiple sources and then synthesizing a report or analysis:
+
+1. **Split reading from writing.** Never combine extensive research (reading many files, running searches) with writing a final deliverable in the same step. The step that writes the output will not have access to the tool outputs from early research steps.
+2. **Use store_fact aggressively.** Each research step's description MUST instruct the executor to call store_fact after every significant finding. This is critical because earlier tool outputs are pruned from context as the step progresses.
+3. **Final synthesis step depends on all research.** The final "write report" step should be a separate step that depends on all research steps and begins by calling search_facts to retrieve stored findings.
+
 ## Parallelization
 
 Steps are parallelizable when they have NO data dependencies — step B can run in parallel with step A only if B does not need A's output. If B needs A's output, B MUST list A in depends_on.
@@ -111,7 +119,7 @@ Step executors follow the tool priority order from the system prompt. When writi
 
 	planModeTail = "REFLECTIONS\n"
 
-	planModeJSONExample = `{"steps": [{"id": "step_1", "summary": "Implement auth middleware", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "domain": "code"}}]}`
+	planModeJSONExample = `{"steps": [{"id": "step_1", "summary": "Implement auth middleware", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "domain": "code", "keep_last_n": 5, "protected_tools": ["store_fact", "search_facts"]}}]}`
 )
 
 // Continuation mode template content.

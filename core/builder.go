@@ -22,6 +22,7 @@ import (
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	sdkmemory "github.com/user/agent/sdk/memory"
+	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/prompt"
 	"github.com/user/agent/sdk/tools/builtins"
 )
@@ -630,7 +631,7 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
 	compactionEffort := llm.AgentReasoningMode("compaction", resolveBaseEffort(cfg.LLM.Model, modelRegistry))
 
-	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
+	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...orchestration.PruningOverride) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
 		if err != nil {
 			b.log().Warn("token counter fallback", "tokenizer", modelMeta.TokenizerType, "error", err)
@@ -686,8 +687,20 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 		}
 
 		pruning := sdkmemory.ToolOutputPruning{
-			KeepLastN:      cfg.Executor.ToolOutputPruning.KeepLastN,
-			ProtectedTools: cfg.Executor.ToolOutputPruning.ProtectedTools,
+			KeepLastN:        cfg.Executor.ToolOutputPruning.KeepLastN,
+			ProtectedTools:   cfg.Executor.ToolOutputPruning.ProtectedTools,
+			ThresholdPercent: cfg.Executor.ToolOutputPruning.ThresholdPercent,
+			Logger:           b.logger,
+		}
+		// Apply per-step pruning overrides from StepConfig (via planner role assignment).
+		if len(pruningOverrides) > 0 {
+			po := pruningOverrides[0]
+			if po.KeepLastN > 0 {
+				pruning.KeepLastN = po.KeepLastN
+			}
+			if po.ProtectedTools != nil {
+				pruning.ProtectedTools = po.ProtectedTools
+			}
 		}
 
 		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy, cfg.Executor.Compaction.SafetyMarginPercent, pruning)

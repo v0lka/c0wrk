@@ -50,7 +50,7 @@ func createTestRegistry() *tools.ToolRegistry {
 }
 
 // Helper to create a context factory for tests
-func testContextFactory(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
+func testContextFactory(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, _ ...orchestration.PruningOverride) ContextManager {
 	return &mockContextManager{
 		systemPrompt:   systemPrompt,
 		taskDefinition: "",

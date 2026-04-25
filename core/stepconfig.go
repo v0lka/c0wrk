@@ -16,6 +16,30 @@ var roleSuffixes = map[string]string{
 	"tester":     "## Role: Tester\nYour primary function is verification and testing. Run tests, check builds, and report results clearly. Do NOT modify source code — only test infrastructure if necessary.",
 }
 
+// rolePruningDefaults defines role-specific tool output pruning parameters.
+// Researchers need more retained context and read-tool protection; coders/testers need less.
+var rolePruningDefaults = map[string]struct {
+	KeepLastN      int
+	ProtectedTools []string
+}{
+	"researcher": {
+		KeepLastN:      10,
+		ProtectedTools: []string{"store_fact", "search_facts", "read_file", "search_content", "ripgrep", "semantic_search"},
+	},
+	"coder": {
+		KeepLastN:      5,
+		ProtectedTools: []string{"store_fact", "search_facts"},
+	},
+	"tester": {
+		KeepLastN:      5,
+		ProtectedTools: []string{"store_fact", "search_facts", "bash_exec"},
+	},
+	"executor": {
+		KeepLastN:      5,
+		ProtectedTools: []string{"store_fact", "search_facts"},
+	},
+}
+
 // coreStepConfigurator resolves AgentProfile from PlanStep.Profile.
 // Applies tool filtering based on AgentProfile.AllowedTools or role-based ToolProfiles.
 func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegistry, logger *slog.Logger) orchestration.StepConfigurator {
@@ -66,12 +90,31 @@ func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegist
 			suffix = roleSuffixes[profile.Role]
 		}
 
+		// Resolve pruning parameters: explicit profile override > role default.
+		keepLastN := profile.KeepLastN
+		var protectedTools []string
+		if profile.ProtectedTools != nil {
+			protectedTools = profile.ProtectedTools
+		}
+		if keepLastN == 0 || protectedTools == nil {
+			if roleDefaults, ok := rolePruningDefaults[profile.Role]; ok {
+				if keepLastN == 0 {
+					keepLastN = roleDefaults.KeepLastN
+				}
+				if protectedTools == nil {
+					protectedTools = roleDefaults.ProtectedTools
+				}
+			}
+		}
+
 		return orchestration.StepConfig{
 			MaxSteps:           profile.MaxSteps,
 			AllowedTools:       allowed,
 			SystemPrompt:       profile.SystemPrompt,
 			SystemPromptSuffix: suffix,
 			CompactionStrategy: applyCompactionStrategy(profile.Domain, 3),
+			KeepLastN:          keepLastN,
+			ProtectedTools:     protectedTools,
 		}
 	}
 }

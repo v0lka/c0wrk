@@ -48,8 +48,9 @@ type OrchestratorConfig struct {
 
 // ContextManagerFactory creates a ContextManager for a new task.
 // The compactionStrategy parameter allows selecting the appropriate strategy.
+// pruningOverrides, when provided, override the global pruning configuration.
 // This allows the Orchestrator to remain decoupled from the memory package.
-type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager
+type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...orchestration.PruningOverride) ContextManager
 
 // BlackboardFactory creates a Blackboard for a new task.
 // The taskID is a unique identifier for the orchestration request.
@@ -127,8 +128,8 @@ func NewOrchestrator(
 		TokenCounter:  counter,
 		Model:         cfg.Model,
 		ModelRegistry: modelRegistry,
-		ContextFactory: func(sys string, meta llm.ModelMetadata, compact string) agent.ContextManager {
-			return contextFactory(sys, meta, compact)
+		ContextFactory: func(sys string, meta llm.ModelMetadata, compact string, pruningOverrides ...orchestration.PruningOverride) agent.ContextManager {
+			return contextFactory(sys, meta, compact, pruningOverrides...)
 		},
 		ContextSetup: func(cm agent.ContextManager, taskDesc string) {
 			if ccm, ok := cm.(interface{ SetTask(string) }); ok {

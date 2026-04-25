@@ -1,10 +1,7 @@
 package config
 
-// defaultSafeTool is the tool name allowed without user confirmation by default.
-const defaultSafeTool = "read_evidence"
-
-// defaultSafeTools is the default list of tools allowed without user confirmation.
-var defaultSafeTools = []string{defaultSafeTool}
+// defaultProtectedTools is the default list of tools whose output is always preserved during pruning.
+var defaultProtectedTools = []string{"store_fact", "search_facts"}
 
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
@@ -83,7 +80,10 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.ToolOutputPruning.KeepLastN = 3
 	}
 	if cfg.Executor.ToolOutputPruning.ProtectedTools == nil {
-		cfg.Executor.ToolOutputPruning.ProtectedTools = defaultSafeTools
+		cfg.Executor.ToolOutputPruning.ProtectedTools = defaultProtectedTools
+	}
+	if cfg.Executor.ToolOutputPruning.ThresholdPercent == 0 {
+		cfg.Executor.ToolOutputPruning.ThresholdPercent = 50
 	}
 
 	// Circuit breaker defaults

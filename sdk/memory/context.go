@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	sdkagent "github.com/user/agent/sdk/agent"
@@ -20,9 +21,11 @@ type CompactionThresholds struct {
 
 // ToolOutputPruning configures selective pruning of old tool outputs.
 type ToolOutputPruning struct {
-	KeepLastN       int
-	ProtectedTools  []string
-	PlaceholderText string
+	KeepLastN        int
+	ProtectedTools   []string
+	PlaceholderText  string
+	ThresholdPercent float64      // Context fill % below which pruning is skipped (default: 50)
+	Logger           *slog.Logger // Optional logger for pruning diagnostics
 }
 
 // ContextWindow — managed representation of the LLM context window.
@@ -69,8 +72,10 @@ func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker 
 		cw.pruning = pruning[0]
 	}
 	if cw.pruning.PlaceholderText == "" {
-		cw.pruning.PlaceholderText = "[Tool output omitted to save context. Rely on the information already gathered above.]"
+		cw.pruning.PlaceholderText = "[Tool output pruned — not available in context. Use search_facts for stored findings, or re-read the file if needed. Do NOT fabricate content you cannot see.]"
 	}
+	// ThresholdPercent is left at zero-value (disabled) unless explicitly set.
+	// The config layer sets the default (e.g. 50%) via config.yaml.
 	return cw
 }
 
@@ -221,6 +226,24 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 	// Determine which step indices have tool results and should be pruned
 	protectedIndices := cw.computeProtectedIndices()
 
+	if cw.pruning.Logger != nil && cw.pruning.KeepLastN > 0 {
+		totalToolSteps := 0
+		for _, step := range cw.steps {
+			if step.Action.ID != "" {
+				totalToolSteps++
+			}
+		}
+		cw.pruning.Logger.Debug("tool output pruning summary",
+			"totalSteps", len(cw.steps),
+			"totalToolSteps", totalToolSteps,
+			"protectedCount", len(protectedIndices),
+			"prunedCount", totalToolSteps-len(protectedIndices),
+			"keepLastN", cw.pruning.KeepLastN,
+			"fillPercent", cw.FillPercent(),
+			"thresholdPercent", cw.pruning.ThresholdPercent,
+		)
+	}
+
 	var messages []llm.Message
 	for i := 0; i < len(cw.steps); {
 		step := cw.steps[i]
@@ -343,6 +366,22 @@ func (cw *ContextWindow) computeProtectedIndices() map[int]struct{} {
 
 	if cw.pruning.KeepLastN <= 0 {
 		return protected // No pruning, nothing is protected (everything is kept)
+	}
+
+	// Skip pruning when context fill is below threshold — all tool outputs preserved.
+	if cw.pruning.ThresholdPercent > 0 && cw.FillPercent() < cw.pruning.ThresholdPercent {
+		if cw.pruning.Logger != nil {
+			cw.pruning.Logger.Debug("pruning skipped: context fill below threshold",
+				"fillPercent", cw.FillPercent(),
+				"thresholdPercent", cw.pruning.ThresholdPercent,
+			)
+		}
+		for i, step := range cw.steps {
+			if step.Action.ID != "" {
+				protected[i] = struct{}{}
+			}
+		}
+		return protected
 	}
 
 	// First pass: collect indices of steps with tool results

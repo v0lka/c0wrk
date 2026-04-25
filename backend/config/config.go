@@ -126,8 +126,9 @@ type ToolResultBudgetConfig struct {
 
 // ToolOutputPruningConfig configures selective pruning of old tool outputs to save context.
 type ToolOutputPruningConfig struct {
-	KeepLastN      int      `yaml:"keepLastN"`
-	ProtectedTools []string `yaml:"protectedTools"`
+	KeepLastN        int      `yaml:"keepLastN"`
+	ProtectedTools   []string `yaml:"protectedTools"`
+	ThresholdPercent float64  `yaml:"thresholdPercent"` // Context fill % below which pruning is skipped (default: 50)
 }
 
 // CircuitBreakerConfig holds circuit breaker thresholds for executor protection.

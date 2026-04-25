@@ -49,7 +49,16 @@ type RetryScopable interface {
 }
 
 // ContextManagerFactory creates a ContextManager for a new task step.
-type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) agent.ContextManager
+// pruningOverrides, when provided, override the global pruning configuration
+// with step-specific KeepLastN and ProtectedTools values.
+type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...PruningOverride) agent.ContextManager
+
+// PruningOverride carries per-step overrides for tool output pruning.
+// Zero values mean "use global default".
+type PruningOverride struct {
+	KeepLastN      int      // 0 = use global default
+	ProtectedTools []string // nil = use global default
+}
 
 // BlackboardFactory creates a Blackboard for a new task.
 type BlackboardFactory func(taskID string) Blackboard

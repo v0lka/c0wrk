@@ -575,7 +575,7 @@ func TestExecuteAdHocStep_AppendsToBlackboard(t *testing.T) {
 	bb.SetStepResult("step_1", "output from step 1", nil, nil)
 
 	o := New(Config{
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
 		LLM:          &mockLLMForAdHoc{},
@@ -634,7 +634,7 @@ func TestExecuteAdHocStep_ExtendsPlan(t *testing.T) {
 	bb.SetStepResult("step_2", "output 2", nil, nil)
 
 	o := New(Config{
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
 		LLM:          &mockLLMForAdHoc{},
@@ -829,7 +829,7 @@ func TestExecute_ContextCancelled_ReturnsImmediately(t *testing.T) {
 				return &Plan{Steps: []PlanStep{{ID: "s1", Description: "step 1"}}}, nil
 			},
 		},
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
 		LLM:          &mockLLMForAdHoc{},
@@ -866,7 +866,7 @@ func TestExecute_ContextCancelledDuringStep_NoRetry(t *testing.T) {
 				return &Plan{Steps: []PlanStep{{ID: "s1", Description: "step 1"}}}, nil
 			},
 		},
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
 		LLM:          cLLM,
@@ -905,7 +905,7 @@ func TestExecuteAdHocStep_ContextCancelled_ReturnsFunctionError(t *testing.T) {
 	bb.SetStepResult("step_1", "output from step 1", nil, nil)
 
 	o := New(Config{
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string) agent.ContextManager {
+		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
 		LLM:          &cancellingLLM{cancelFn: cancel},

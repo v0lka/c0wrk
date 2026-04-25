@@ -1209,3 +1209,191 @@ func TestBuildStepMessages_GroupedStepsBackwardCompat(t *testing.T) {
 		t.Errorf("Expected standalone assistant with 1 tool_call")
 	}
 }
+
+// --- Adaptive pruning threshold tests ---
+
+// TestPruningThreshold_SkipsWhenBelowThreshold verifies that pruning is skipped when
+// context fill is below the configured threshold.
+func TestPruningThreshold_SkipsWhenBelowThreshold(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        2,
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 80, // Set threshold high so fill is below it
+	}
+	// Large context window → fill will be very low (well under 80%)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	for i := 1; i <= 10; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
+	}
+
+	messages := cw.BuildPrompt()
+
+	// system (1) + 10 steps (2 each) = 21 messages
+	if len(messages) != 21 {
+		t.Fatalf("Expected 21 messages, got %d", len(messages))
+	}
+
+	// ALL tool outputs should be preserved (no pruning) because fill < threshold
+	toolMessageIndices := []int{2, 4, 6, 8, 10, 12, 14, 16, 18, 20}
+	for i, msgIdx := range toolMessageIndices {
+		expectedContent := fmt.Sprintf("Observation %d", i+1)
+		if messages[msgIdx].Content != expectedContent {
+			t.Errorf("Tool message at index %d (step %d) should NOT be pruned when fill < threshold, got %q",
+				msgIdx, i+1, messages[msgIdx].Content)
+		}
+	}
+}
+
+// TestPruningThreshold_PrunesWhenAboveThreshold verifies that pruning activates when
+// context fill exceeds the configured threshold.
+func TestPruningThreshold_PrunesWhenAboveThreshold(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	// Small context window so fill naturally exceeds the threshold.
+	// EffectiveMax = 5000 - 500 - 250 = 4250
+	modelMeta := llm.ModelMetadata{
+		ContextWindow: 5000,
+		OutputLimit:   500,
+		TokenizerType: "approximate",
+	}
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        3,
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 2, // Low threshold; 10 steps at ~3% fill will exceed it
+	}
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, pruning)
+
+	for i := 1; i <= 10; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
+	}
+
+	fillPct := cw.FillPercent()
+	if fillPct < 2 {
+		t.Skipf("Fill percent %f is below threshold; test needs larger steps", fillPct)
+	}
+
+	messages := cw.BuildPrompt()
+
+	if len(messages) != 21 {
+		t.Fatalf("Expected 21 messages, got %d", len(messages))
+	}
+
+	// Last 3 tool outputs (steps 8, 9, 10) should be preserved
+	for i := 7; i < 10; i++ {
+		msgIdx := 2 + i*2 // tool message indices: 2, 4, 6, ..., 20
+		expectedContent := fmt.Sprintf("Observation %d", i+1)
+		if messages[msgIdx].Content != expectedContent {
+			t.Errorf("Tool message at index %d (step %d) should be preserved (within KeepLastN), got %q",
+				msgIdx, i+1, messages[msgIdx].Content)
+		}
+	}
+
+	// First 7 tool outputs (steps 1-7) should be pruned
+	for i := 0; i < 7; i++ {
+		msgIdx := 2 + i*2
+		if messages[msgIdx].Content != "[PRUNED]" {
+			t.Errorf("Tool message at index %d (step %d) should be pruned when fill > threshold, got %q",
+				msgIdx, i+1, messages[msgIdx].Content)
+		}
+	}
+}
+
+// TestPruningThreshold_ZeroMeansDisabled verifies that ThresholdPercent=0 (zero-value)
+// means no threshold check — pruning always applies. This preserves backward compatibility.
+func TestPruningThreshold_ZeroMeansDisabled(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        2,
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 0, // Zero = no threshold, pruning always active
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	for i := 1; i <= 5; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
+	}
+
+	messages := cw.BuildPrompt()
+
+	// system (1) + 5 steps (2 each) = 11 messages
+	if len(messages) != 11 {
+		t.Fatalf("Expected 11 messages, got %d", len(messages))
+	}
+
+	// First 3 tool results (steps 1-3) should be pruned; last 2 (steps 4-5) preserved
+	for i := 0; i < 3; i++ {
+		msgIdx := 2 + i*2
+		if messages[msgIdx].Content != "[PRUNED]" {
+			t.Errorf("Step %d should be pruned with ThresholdPercent=0, got %q", i+1, messages[msgIdx].Content)
+		}
+	}
+	for i := 3; i < 5; i++ {
+		msgIdx := 2 + i*2
+		expectedContent := fmt.Sprintf("Observation %d", i+1)
+		if messages[msgIdx].Content != expectedContent {
+			t.Errorf("Step %d should be preserved (within KeepLastN), got %q", i+1, messages[msgIdx].Content)
+		}
+	}
+}
+
+// TestPruningThreshold_SmallContextWindow verifies threshold behavior with a realistically
+// small context window where fill naturally crosses the threshold.
+func TestPruningThreshold_SmallContextWindow(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	// Very small context window: EffectiveMax = 3000 - 500 - 150 = 2350
+	modelMeta := llm.ModelMetadata{
+		ContextWindow: 3000,
+		OutputLimit:   500,
+		TokenizerType: "approximate",
+	}
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        2,
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 20, // Low threshold to ensure we cross it
+	}
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, pruning)
+
+	// Add enough steps to push fill above 20%
+	for i := 1; i <= 30; i++ {
+		cw.AddStep(makeStep(
+			fmt.Sprintf("Step %d thinking about the problem at hand", i),
+			fmt.Sprintf("Step %d result from tool execution with content", i),
+			i,
+		))
+	}
+
+	// At this point, fill should be well above 20%
+	fillPct := cw.FillPercent()
+	if fillPct < 20 {
+		t.Skipf("Fill percent %f is still below threshold; test needs larger steps", fillPct)
+	}
+
+	messages := cw.BuildPrompt()
+
+	// Verify pruning IS happening: early tool outputs should be pruned
+	// Message layout: system + 30*(assistant+tool) = 61 messages
+	if len(messages) != 61 {
+		t.Fatalf("Expected 61 messages, got %d", len(messages))
+	}
+
+	// First step's tool output (index 2) should be pruned
+	if messages[2].Content != "[PRUNED]" {
+		t.Errorf("Step 1 tool output should be pruned when fill > threshold, got %q", messages[2].Content)
+	}
+
+	// Last step's tool output (index 60) should be preserved
+	if messages[60].Content != "Step 30 result from tool execution with content" {
+		t.Errorf("Step 30 tool output should be preserved (within KeepLastN), got %q", messages[60].Content)
+	}
+}
