@@ -16,6 +16,7 @@
 - [frontend/src/api/chat.ts](file://frontend/src/api/chat.ts)
 - [frontend/src/api/workspace.ts](file://frontend/src/api/workspace.ts)
 - [frontend/src/api/config.ts](file://frontend/src/api/config.ts)
+- [frontend/src/api/mcp.ts](file://frontend/src/api/mcp.ts)
 - [frontend/src/hooks/useSessionEvents.ts](file://frontend/src/hooks/useSessionEvents.ts)
 - [frontend/src/components/ErrorBoundary.tsx](file://frontend/src/components/ErrorBoundary.tsx)
 - [frontend/src/stores/vectorIndexStore.ts](file://frontend/src/stores/vectorIndexStore.ts)
@@ -25,15 +26,19 @@
 - [backend/frontend_api_project.go](file://backend/frontend_api_project.go)
 - [backend/frontend_api_session.go](file://backend/frontend_api_session.go)
 - [backend/frontend_api_workspace.go](file://backend/frontend_api_workspace.go)
+- [backend/frontend_api_mcp.go](file://backend/frontend_api_mcp.go)
+- [backend/application.go](file://backend/application.go)
+- [core/tools/registry.go](file://core/tools/registry.go)
+- [core/tools/mcp/mcptool.go](file://core/tools/mcp/mcptool.go)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated workspace API documentation to reflect the removal of getSessionWorkspace function from frontend API module
-- Enhanced StatusBar component documentation with responsive design features and text truncation patterns
-- Updated workspace management interface documentation to highlight improved error handling and file operations
-- Revised API type definitions to match current implementation
-- Added documentation for responsive design patterns in UI components
+- Updated desktop startup process documentation to reflect simplified initialization without complex tool filtering and parameter injection systems
+- Removed references to codebase-memory MCP tool filtering, schema sanitization, project scoping injection, and pre-execution hooks
+- Updated MCP API documentation to reflect current tool listing behavior without internal tool filtering
+- Enhanced startup error handling documentation with streamlined validation process
+- Revised vector index status monitoring documentation to match current implementation
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -49,7 +54,7 @@
 ## Introduction
 This document describes the architecture of the C0WRK React 19 desktop application powered by Wails. It explains the main App component structure, Wails integration through typed API modules, event handling and streaming, startup error handling, vector index status monitoring, and real-time session event subscriptions. It also covers the backend initialization flow, error boundary implementation, and startup validation processes, with practical examples of event handling patterns and Wails API integration techniques.
 
-**Updated** The architecture now focuses on typed Go methods bound to window.go.desktop.App through new API modules rather than direct useWails() hook usage. Recent improvements include workspace API simplification and responsive design enhancements for UI components.
+**Updated** The architecture now focuses on a simplified desktop startup process that eliminates complex tool filtering, schema sanitization, and pre-execution hook systems. The application uses typed Go methods bound to window.go.desktop.App through new API modules rather than direct useWails() hook usage.
 
 ## Project Structure
 The application follows a layered structure:
@@ -73,6 +78,7 @@ SESS["frontend/src/api/sessions.ts<br/>Session API module"]
 CHAT["frontend/src/api/chat.ts<br/>Chat API module"]
 WS["frontend/src/api/workspace.ts<br/>Workspace API module"]
 CFG["frontend/src/api/config.ts<br/>Config API module"]
+MCP["frontend/src/api/mcp.ts<br/>MCP API module"]
 ESE["frontend/src/hooks/useSessionEvents.ts<br/>Session event handlers"]
 EB["frontend/src/components/ErrorBoundary.tsx<br/>Error boundary"]
 VIS["frontend/src/stores/vectorIndexStore.ts<br/>Vector index state"]
@@ -84,10 +90,12 @@ FAPCFG["backend/frontend_api_config.go<br/>Config API methods"]
 FAPPROJ["backend/frontend_api_project.go<br/>Project API methods"]
 FAPSESS["backend/frontend_api_session.go<br/>Session API methods"]
 FAPWS["backend/frontend_api_workspace.go<br/>Workspace API methods"]
+FAPMCP["backend/frontend_api_mcp.go<br/>MCP API methods"]
 DAPP["desktop/app.go<br/>App state + fields"]
 DSTART["desktop/startup.go<br/>Startup + event wiring"]
 DEVT["desktop/events.go<br/>Event names"]
-end
+APP["backend/application.go<br/>Application composition"]
+END
 M --> DAPP
 WCFG --> M
 MAIN --> APP
@@ -97,6 +105,7 @@ APP --> SESS
 APP --> CHAT
 APP --> WS
 APP --> CFG
+APP --> MCP
 APP --> VIS
 APP --> EB
 APP --> STS
@@ -106,7 +115,9 @@ FAP --> FAPCFG
 FAP --> FAPPROJ
 FAP --> FAPSESS
 FAP --> FAPWS
+FAP --> FAPMCP
 DSTART --> DAPP
+APP --> FAP
 ```
 
 **Diagram sources**
@@ -115,24 +126,27 @@ DSTART --> DAPP
 - [frontend/src/main.tsx:10-16](file://frontend/src/main.tsx#L10-L16)
 - [frontend/src/App.tsx:21-88](file://frontend/src/App.tsx#L21-L88)
 - [frontend/src/api/runtime.ts:1-45](file://frontend/src/api/runtime.ts#L1-L45)
-- [frontend/src/api/index.ts:1-10](file://frontend/src/api/index.ts#L1-L10)
+- [frontend/src/api/index.ts:1-13](file://frontend/src/api/index.ts#L1-L13)
 - [frontend/src/api/projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
 - [frontend/src/api/sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
 - [frontend/src/api/chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
 - [frontend/src/api/workspace.ts:1-76](file://frontend/src/api/workspace.ts#L1-L76)
 - [frontend/src/api/config.ts:1-79](file://frontend/src/api/config.ts#L1-L79)
+- [frontend/src/api/mcp.ts:1-56](file://frontend/src/api/mcp.ts#L1-L56)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
 - [frontend/src/components/ErrorBoundary.tsx:13-47](file://frontend/src/components/ErrorBoundary.tsx#L13-L47)
 - [frontend/src/stores/vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
 - [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
-- [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
+- [backend/frontend_api.go:16-157](file://backend/frontend_api.go#L16-L157)
 - [backend/frontend_api_config.go:15-317](file://backend/frontend_api_config.go#L15-L317)
 - [backend/frontend_api_project.go:24-320](file://backend/frontend_api_project.go#L24-L320)
 - [backend/frontend_api_session.go:11-185](file://backend/frontend_api_session.go#L11-L185)
 - [backend/frontend_api_workspace.go:20-509](file://backend/frontend_api_workspace.go#L20-L509)
-- [desktop/app.go:18-72](file://desktop/app.go#L18-L72)
+- [backend/frontend_api_mcp.go:1-186](file://backend/frontend_api_mcp.go#L1-L186)
+- [desktop/app.go:18-64](file://desktop/app.go#L18-L64)
 - [desktop/startup.go:40-786](file://desktop/startup.go#L40-L786)
 - [desktop/events.go:7-45](file://desktop/events.go#L7-L45)
+- [backend/application.go:17-200](file://backend/application.go#L17-L200)
 
 **Section sources**
 - [main.go:18-44](file://main.go#L18-L44)
@@ -140,24 +154,27 @@ DSTART --> DAPP
 - [frontend/src/main.tsx:10-16](file://frontend/src/main.tsx#L10-L16)
 - [frontend/src/App.tsx:21-88](file://frontend/src/App.tsx#L21-L88)
 - [frontend/src/api/runtime.ts:1-45](file://frontend/src/api/runtime.ts#L1-L45)
-- [frontend/src/api/index.ts:1-10](file://frontend/src/api/index.ts#L1-L10)
+- [frontend/src/api/index.ts:1-13](file://frontend/src/api/index.ts#L1-L13)
 - [frontend/src/api/projects.ts:1-66](file://frontend/src/api/projects.ts#L1-L66)
 - [frontend/src/api/sessions.ts:1-56](file://frontend/src/api/sessions.ts#L1-L56)
 - [frontend/src/api/chat.ts:1-56](file://frontend/src/api/chat.ts#L1-L56)
 - [frontend/src/api/workspace.ts:1-76](file://frontend/src/api/workspace.ts#L1-L76)
 - [frontend/src/api/config.ts:1-79](file://frontend/src/api/config.ts#L1-L79)
+- [frontend/src/api/mcp.ts:1-56](file://frontend/src/api/mcp.ts#L1-L56)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
 - [frontend/src/components/ErrorBoundary.tsx:13-47](file://frontend/src/components/ErrorBoundary.tsx#L13-L47)
 - [frontend/src/stores/vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
 - [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
-- [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
+- [backend/frontend_api.go:16-157](file://backend/frontend_api.go#L16-L157)
 - [backend/frontend_api_config.go:15-317](file://backend/frontend_api_config.go#L15-L317)
 - [backend/frontend_api_project.go:24-320](file://backend/frontend_api_project.go#L24-L320)
 - [backend/frontend_api_session.go:11-185](file://backend/frontend_api_session.go#L11-L185)
 - [backend/frontend_api_workspace.go:20-509](file://backend/frontend_api_workspace.go#L20-L509)
-- [desktop/app.go:18-72](file://desktop/app.go#L18-L72)
+- [backend/frontend_api_mcp.go:1-186](file://backend/frontend_api_mcp.go#L1-L186)
+- [desktop/app.go:18-64](file://desktop/app.go#L18-L64)
 - [desktop/startup.go:40-786](file://desktop/startup.go#L40-L786)
 - [desktop/events.go:7-45](file://desktop/events.go#L7-L45)
+- [backend/application.go:17-200](file://backend/application.go#L17-L200)
 
 ## Core Components
 - Typed API modules that provide structured access to Wails Go bindings through window.go.desktop.App.
@@ -175,14 +192,14 @@ Key responsibilities:
 - FrontendAPI: Composes backend subsystems, validates configuration, wires event handlers, and emits readiness.
 - StatusBar: Displays session information with responsive text handling and status indicators.
 
-**Updated** The architecture now uses typed API modules instead of a generic useWails hook for better type safety and organization. The StatusBar component includes responsive design features for optimal text presentation.
+**Updated** The architecture now uses typed API modules instead of a generic useWails hook for better type safety and organization. The startup process is streamlined without complex tool filtering and parameter injection systems.
 
 **Section sources**
 - [frontend/src/api/runtime.ts:1-45](file://frontend/src/api/runtime.ts#L1-L45)
 - [frontend/src/App.tsx:21-88](file://frontend/src/App.tsx#L21-L88)
 - [frontend/src/components/ErrorBoundary.tsx:13-47](file://frontend/src/components/ErrorBoundary.tsx#L13-L47)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
-- [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
+- [backend/frontend_api.go:16-157](file://backend/frontend_api.go#L16-L157)
 - [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
 
 ## Architecture Overview
@@ -220,7 +237,7 @@ React->>React : Show startup error banner
 The API modules encapsulate Wails runtime access and expose:
 - runtime: Typed getRuntime() and getApp() functions for accessing window.go.desktop.App.
 - isWailsReady(): Boolean indicating whether Wails runtime is available.
-- Individual API modules for different domains (projects, sessions, chat, workspace, config).
+- Individual API modules for different domains (projects, sessions, chat, workspace, config, mcp).
 
 Implementation highlights:
 - Uses global window interface extensions for type safety.
@@ -228,7 +245,7 @@ Implementation highlights:
 - Centralized error handling with logging for all API calls.
 
 Integration patterns:
-- Components import specific API modules (e.g., projects, sessions) rather than using a generic hook.
+- Components import specific API modules (e.g., projects, sessions, mcp) rather than using a generic hook.
 - API calls return Promises; errors are caught and logged.
 - Event subscriptions use centralized subscribe/emit functions.
 
@@ -236,7 +253,7 @@ Integration patterns:
 
 **Section sources**
 - [frontend/src/api/runtime.ts:1-45](file://frontend/src/api/runtime.ts#L1-L45)
-- [frontend/src/api/index.ts:1-10](file://frontend/src/api/index.ts#L1-L10)
+- [frontend/src/api/index.ts:1-13](file://frontend/src/api/index.ts#L1-L13)
 
 ### Project Management API Module
 The projects API module provides:
@@ -297,7 +314,7 @@ The workspace API module provides:
 - getFileDiff(filePath): Returns unified diff for file changes.
 - getFileIcon(filePath): Returns Nerd Font icon and color for file paths.
 
-**Updated** The workspace API has been simplified and enhanced with improved error handling and security validation. The getSessionWorkspace function has been removed from the frontend API module as workspace management is now handled through the active project context.
+**Updated** The workspace API has been simplified and enhanced with improved error handling and security validation. The API now focuses on core workspace operations without complex filtering or parameter injection systems.
 
 Implementation highlights:
 - Implements comprehensive path validation and security checks.
@@ -327,6 +344,25 @@ Implementation highlights:
 
 **Section sources**
 - [frontend/src/api/config.ts:1-79](file://frontend/src/api/config.ts#L1-L79)
+
+### MCP API Module
+The MCP API module provides:
+- getMCPStatus(): Returns current MCP server connection statuses.
+- getMCPServers(): Returns current MCP server configurations.
+- updateMCPServers(servers): Updates MCP server configuration and hot-reloads the gateway.
+- getToolList(): Returns all registered tools with source and policy info.
+- listProviderModels(provider): Lists available models for a provider.
+
+**Updated** The MCP API now returns all registered tools without filtering out internal tools. The tool listing reflects the simplified startup process where internal tools are not filtered out during registration.
+
+Implementation highlights:
+- Returns complete tool list including internal tools.
+- Provides MCP server management capabilities.
+- Supports dynamic configuration updates.
+
+**Section sources**
+- [frontend/src/api/mcp.ts:1-56](file://frontend/src/api/mcp.ts#L1-L56)
+- [backend/frontend_api_mcp.go:56-88](file://backend/frontend_api_mcp.go#L56-L88)
 
 ### Top-Level App Component and Event Subscriptions
 The App component:
@@ -390,17 +426,19 @@ The FrontendAPI composes the backend Application and wires:
 - Emits "backend:ready" after subsystems are initialized.
 
 Cross-cutting concerns:
-- Blocking codebase-memory MCP tools while indexing.
+- Simplified startup process without blocking MCP tools during indexing.
 - Emitting "vector_index:status" for global monitoring.
 - Emitting "session:*" events scoped by session ID.
 
+**Updated** The startup process is streamlined without complex tool filtering, schema sanitization, or pre-execution hooks that previously blocked MCP tool calls during indexing.
+
 **Section sources**
-- [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
+- [backend/frontend_api.go:16-157](file://backend/frontend_api.go#L16-L157)
 - [backend/frontend_api_config.go:15-317](file://backend/frontend_api_config.go#L15-L317)
 - [backend/frontend_api_project.go:24-320](file://backend/frontend_api_project.go#L24-L320)
 - [backend/frontend_api_session.go:11-185](file://backend/frontend_api_session.go#L11-L185)
 - [backend/frontend_api_workspace.go:20-509](file://backend/frontend_api_workspace.go#L20-L509)
-- [desktop/app.go:18-72](file://desktop/app.go#L18-L72)
+- [desktop/app.go:18-64](file://desktop/app.go#L18-L64)
 - [desktop/startup.go:40-786](file://desktop/startup.go#L40-L786)
 - [desktop/events.go:7-45](file://desktop/events.go#L7-L45)
 
@@ -441,6 +479,8 @@ The backend:
 The frontend:
 - Subscribes to "startup_error" and renders a dismissible banner with message and error details.
 
+**Updated** The startup error handling is streamlined with simplified validation logic during initialization.
+
 **Section sources**
 - [desktop/startup.go:325-332](file://desktop/startup.go#L325-L332)
 - [desktop/startup.go:427-434](file://desktop/startup.go#L427-L434)
@@ -465,7 +505,7 @@ Responsive design features:
 
 ### Typed API Integration Techniques
 Examples of integration patterns:
-- Importing specific API modules (projects, sessions, chat, workspace, config).
+- Importing specific API modules (projects, sessions, chat, workspace, config, mcp).
 - Using getApp() to access window.go.desktop.App methods with proper error handling.
 - Using runtime.subscribe() to subscribe to named events and runtime.emit() to send responses back to the backend.
 - Returning unsubscribe functions from subscriptions to clean up on component unmount.
@@ -479,8 +519,24 @@ Type safety:
 
 **Section sources**
 - [frontend/src/api/runtime.ts:1-45](file://frontend/src/api/runtime.ts#L1-L45)
-- [frontend/src/api/index.ts:1-10](file://frontend/src/api/index.ts#L1-L10)
+- [frontend/src/api/index.ts:1-13](file://frontend/src/api/index.ts#L1-L13)
 - [frontend/src/hooks/useSessionEvents.ts:124-127](file://frontend/src/hooks/useSessionEvents.ts#L124-L127)
+
+### Simplified Desktop Startup Process
+The desktop startup process has been streamlined to eliminate complex tool filtering and parameter injection systems:
+
+- **Configuration Loading**: Shell environment variables are loaded first, followed by logger initialization and configuration resolution.
+- **Database Setup**: SQLite database is initialized with appropriate pragmas for optimal performance.
+- **Component Initialization**: Project manager, session stores, and terminal manager are created in sequence.
+- **Application Creation**: The backend Application is constructed without complex tool filtering or pre-execution hooks.
+- **Event Wiring**: Frontend API is created and event listeners are registered for confirmation responses, judge requests, ask_user responses, and step limit decisions.
+- **Backend Ready**: The application emits "backend:ready" event to signal initialization completion.
+
+**Updated** Removed filtering of codebase-memory MCP tools, schema sanitization for project parameters, auto-injection of project scoping, and pre-execution hooks that previously blocked MCP tool calls during indexing.
+
+**Section sources**
+- [desktop/startup.go:41-723](file://desktop/startup.go#L41-L723)
+- [backend/application.go:65-133](file://backend/application.go#L65-L133)
 
 ## Dependency Analysis
 High-level dependencies:
@@ -502,6 +558,7 @@ FAP --> FAPCFG["backend/frontend_api_config.go"]
 FAP --> FAPPROJ["backend/frontend_api_project.go"]
 FAP --> FAPSESS["backend/frontend_api_session.go"]
 FAP --> FAPWS["backend/frontend_api_workspace.go"]
+FAP --> FAPMCP["backend/frontend_api_mcp.go"]
 MAIN --> FE["frontend/src/main.tsx"]
 FE --> APP["frontend/src/App.tsx"]
 APP --> RT["frontend/src/api/runtime.ts"]
@@ -510,6 +567,7 @@ APP --> SESS["frontend/src/api/sessions.ts"]
 APP --> CHAT["frontend/src/api/chat.ts"]
 APP --> WS["frontend/src/api/workspace.ts"]
 APP --> CFG["frontend/src/api/config.ts"]
+APP --> MCP["frontend/src/api/mcp.ts"]
 APP --> ESE["frontend/src/hooks/useSessionEvents.ts"]
 APP --> VIS["frontend/src/stores/vectorIndexStore.ts"]
 APP --> STS["frontend/src/components/layout/StatusBar.tsx"]
@@ -518,17 +576,18 @@ ESE --> RT
 
 **Diagram sources**
 - [main.go:31-35](file://main.go#L31-L35)
-- [desktop/app.go:18-72](file://desktop/app.go#L18-L72)
+- [desktop/app.go:18-64](file://desktop/app.go#L18-L64)
 - [desktop/startup.go:40-786](file://desktop/startup.go#L40-L786)
-- [backend/frontend_api.go:16-99](file://backend/frontend_api.go#L16-L99)
+- [backend/frontend_api.go:16-157](file://backend/frontend_api.go#L16-L157)
 - [backend/frontend_api_config.go:15-317](file://backend/frontend_api_config.go#L15-L317)
 - [backend/frontend_api_project.go:24-320](file://backend/frontend_api_project.go#L24-L320)
 - [backend/frontend_api_session.go:11-185](file://backend/frontend_api_session.go#L11-L185)
 - [backend/frontend_api_workspace.go:20-509](file://backend/frontend_api_workspace.go#L20-L509)
+- [backend/frontend_api_mcp.go:1-186](file://backend/frontend_api_mcp.go#L1-L186)
 - [frontend/src/main.tsx:10-16](file://frontend/src/main.tsx#L10-L16)
 - [frontend/src/App.tsx:21-88](file://frontend/src/App.tsx#L21-L88)
 - [frontend/src/api/runtime.ts:1-45](file://frontend/src/api/runtime.ts#L1-L45)
-- [frontend/src/api/index.ts:1-10](file://frontend/src/api/index.ts#L1-L10)
+- [frontend/src/api/index.ts:1-13](file://frontend/src/api/index.ts#L1-L13)
 - [frontend/src/hooks/useSessionEvents.ts:95-703](file://frontend/src/hooks/useSessionEvents.ts#L95-L703)
 - [frontend/src/stores/vectorIndexStore.ts:30-55](file://frontend/src/stores/vectorIndexStore.ts#L30-L55)
 - [frontend/src/components/layout/StatusBar.tsx:1-101](file://frontend/src/components/layout/StatusBar.tsx#L1-L101)
@@ -548,8 +607,9 @@ ESE --> RT
 - API module caching: Consider caching API module instances to avoid repeated getApp() calls.
 - Responsive UI optimization: Use CSS utilities like `min-w-0` and `truncate` to prevent layout thrashing during text overflow.
 - Workspace API efficiency: Simplified workspace operations reduce unnecessary API calls and improve responsiveness.
+- Streamlined startup: Removed complex tool filtering and parameter injection systems improve initialization performance.
 
-**Updated** Added performance considerations for responsive UI components and workspace API optimizations.
+**Updated** Added performance considerations for streamlined startup process and simplified tool management.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -569,11 +629,14 @@ Common issues and remedies:
 - Workspace API errors:
   - Verify path validation and security checks are passing.
   - Check that workspace operations are performed within active project boundaries.
+- MCP tool issues:
+  - Verify that all tools, including internal tools, are available in the tool list.
+  - Check MCP server configurations and connectivity.
 - Responsive UI issues:
   - Ensure CSS utilities like `min-w-0` and `truncate` are properly applied.
   - Verify text overflow handling for long session names and domain labels.
 
-**Updated** Added troubleshooting guidance for workspace API failures and responsive UI issues.
+**Updated** Added troubleshooting guidance for simplified MCP tool availability and streamlined startup process.
 
 **Section sources**
 - [desktop/startup.go:427-434](file://desktop/startup.go#L427-L434)
@@ -583,6 +646,6 @@ Common issues and remedies:
 - [frontend/src/components/layout/StatusBar.tsx:30-98](file://frontend/src/components/layout/StatusBar.tsx#L30-L98)
 
 ## Conclusion
-C0WRK's architecture cleanly separates concerns between a React frontend and a Go backend, orchestrated by Wails. The frontend leverages typed API modules for structured access to backend functionality, robust event subscriptions, and centralized stores to deliver a responsive, real-time experience. The backend performs comprehensive initialization, validation, and emits a rich stream of events that drive the UI. 
+C0WRK's architecture cleanly separates concerns between a React frontend and a Go backend, orchestrated by Wails. The frontend leverages typed API modules for structured access to backend functionality, robust event subscriptions, and centralized stores to deliver a responsive, real-time experience. The backend performs comprehensive initialization, validation, and emits a rich stream of events that drive the UI.
 
-Recent improvements include workspace API simplification with enhanced error handling and security validation, and responsive design enhancements in the StatusBar component with text truncation and overflow handling. The new typed API module approach provides better type safety, organization, and developer experience compared to the previous useWails hook pattern. Together, these patterns provide a scalable foundation for agent-driven workflows with cross-platform compatibility and optimal user interface responsiveness.
+**Updated** The recent improvements include a simplified desktop startup process that eliminates complex tool filtering, schema sanitization, and pre-execution hook systems. The MCP API now returns all registered tools without filtering, and the startup validation is streamlined for better performance. These changes provide a cleaner foundation for agent-driven workflows with optimal user interface responsiveness and reduced complexity in the desktop initialization process.

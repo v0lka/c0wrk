@@ -21,7 +21,7 @@
 
 ## Update Summary
 **Changes Made**
-- Updated planner system documentation to reflect simplified tool priority guidance
+- Updated planner system documentation to reflect simplified tool guidance system
 - Removed explicit tool priority tier instructions from planner templates
 - Consolidated tool recommendations into broader guidance patterns
 - Updated prompt engineering system documentation to reflect streamlined approach

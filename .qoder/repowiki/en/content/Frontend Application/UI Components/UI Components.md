@@ -18,8 +18,6 @@
 - [FileViewerPanel.tsx](file://frontend/src/components/fileViewer/FileViewerPanel.tsx)
 - [FileViewerContent.tsx](file://frontend/src/components/fileViewer/FileViewerContent.tsx)
 - [FileViewerTabBar.tsx](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx)
-- [CodebaseMemoryBanner.tsx](file://frontend/src/components/CodebaseMemoryBanner.tsx)
-- [RtkBanner.tsx](file://frontend/src/components/RtkBanner.tsx)
 - [MCPServerCard.tsx](file://frontend/src/components/settings/MCPServerCard.tsx)
 - [MCPServerForm.tsx](file://frontend/src/components/settings/MCPServerForm.tsx)
 - [MCPSettings.tsx](file://frontend/src/components/settings/MCPSettings.tsx)
@@ -35,11 +33,11 @@
 
 ## Update Summary
 **Changes Made**
-- Updated Icon Consistency section to reflect comprehensive icon replacement improvements
-- Revised chat components documentation to reflect brain icon replacements with clipboard-list and database icons
-- Updated workspace panel documentation to reflect database icon usage for semantics tab
-- Enhanced component analysis with improved icon consistency patterns
-- Updated troubleshooting guide to address icon-related UI issues
+- Updated MCP settings documentation to reflect simplified UI without external tool installation prompts
+- Removed references to CodebaseMemoryBanner.tsx and RtkBanner.tsx components
+- Updated MCPSettings component documentation to reflect server-only management functionality
+- Revised architecture overview to remove external tool installation flows
+- Updated troubleshooting guide to address simplified MCP settings behavior
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -59,7 +57,6 @@ This document describes C0WRK's React component library and UI system. It focuse
 - Layout components: AppLayout, Sidebar, WorkspacePanel, FileTreePanel
 - UI primitives from shadcn/ui: Button, Dialog, Tooltip, Input
 - File viewer system: FileViewerPanel, FileViewerContent, FileViewerTabBar
-- Utility components: CodebaseMemoryBanner, RtkBanner
 - MCP settings system: MCPServerCard, MCPServerForm, MCPSettings
 - Settings modal with comprehensive configuration tabs
 It explains component responsibilities, props, customization, styling patterns, accessibility, and composition patterns for building complex UI interactions.
@@ -71,7 +68,6 @@ C0WRK organizes UI under frontend/src/components, grouped by domain:
 - fileViewer: FileViewerPanel, FileViewerContent, FileViewerTabBar
 - settings: MCPServerCard, MCPServerForm, MCPSettings, SettingsModal, and other configuration components
 - ui: shadcn/ui wrappers and variants for Button, Dialog, Tooltip, Input
-- utilities: CodebaseMemoryBanner, RtkBanner for system notifications
 - stores: chatStore, sessionStore, fileViewerStore, panelStore, etc.
 - lib: markdownConfig, diffParser, formatters, utils
 
@@ -99,10 +95,6 @@ FVP["FileViewerPanel"]
 FVC["FileViewerContent"]
 FVTB["FileViewerTabBar"]
 end
-subgraph "Utility Components"
-CMB["CodebaseMemoryBanner"]
-RTKB["RtkBanner"]
-end
 subgraph "MCP Settings"
 MSC["MCPServerCard"]
 MSF["MCPServerForm"]
@@ -121,8 +113,6 @@ AL --> SB
 AL --> CI
 AL --> PV
 AL --> FVP
-AL --> CMB
-AL --> RTKB
 SB --> WP
 WP --> FTP
 FTP --> FI
@@ -158,11 +148,9 @@ TGB --> TIP
 - [FileViewerPanel.tsx:1-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L37)
 - [FileViewerContent.tsx:1-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L208)
 - [FileViewerTabBar.tsx:1-157](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L1-L157)
-- [CodebaseMemoryBanner.tsx:1-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L1-L54)
-- [RtkBanner.tsx:1-54](file://frontend/src/components/RtkBanner.tsx#L1-L54)
 - [MCPServerCard.tsx:1-79](file://frontend/src/components/settings/MCPServerCard.tsx#L1-L79)
 - [MCPServerForm.tsx:1-172](file://frontend/src/components/settings/MCPServerForm.tsx#L1-L172)
-- [MCPSettings.tsx:1-150](file://frontend/src/components/settings/MCPSettings.tsx#L1-L150)
+- [MCPSettings.tsx:1-93](file://frontend/src/components/settings/MCPSettings.tsx#L1-L93)
 - [SettingsModal.tsx:1-121](file://frontend/src/components/settings/SettingsModal.tsx#L1-L121)
 - [button.tsx:1-32](file://frontend/src/components/ui/button.tsx#L1-L32)
 - [dialog.tsx:1-159](file://frontend/src/components/ui/dialog.tsx#L1-L159)
@@ -177,11 +165,9 @@ TGB --> TIP
 - [FileViewerPanel.tsx:1-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L37)
 - [FileViewerContent.tsx:1-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L208)
 - [FileViewerTabBar.tsx:1-157](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L1-L157)
-- [CodebaseMemoryBanner.tsx:1-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L1-L54)
-- [RtkBanner.tsx:1-54](file://frontend/src/components/RtkBanner.tsx#L1-L54)
 - [MCPServerCard.tsx:1-79](file://frontend/src/components/settings/MCPServerCard.tsx#L1-L79)
 - [MCPServerForm.tsx:1-172](file://frontend/src/components/settings/MCPServerForm.tsx#L1-L172)
-- [MCPSettings.tsx:1-150](file://frontend/src/components/settings/MCPSettings.tsx#L1-L150)
+- [MCPSettings.tsx:1-93](file://frontend/src/components/settings/MCPSettings.tsx#L1-L93)
 - [SettingsModal.tsx:1-121](file://frontend/src/components/settings/SettingsModal.tsx#L1-L121)
 - [button.tsx:1-32](file://frontend/src/components/ui/button.tsx#L1-L32)
 - [dialog.tsx:1-159](file://frontend/src/components/ui/dialog.tsx#L1-L159)
@@ -201,7 +187,6 @@ TGB --> TIP
 - WorkspacePanel: Tabs for Explorer, Git, Semantics; currently routes to FileTreePanel with database icon for semantics.
 - FileTreePanel: Hierarchical file tree with filtering (glob/regex), lazy loading, and Git status coloring.
 - FileViewerPanel/Content/TabBar: Multi-tab file viewer with syntax highlighting, Markdown rendering, diffs, and scroll preservation.
-- CodebaseMemoryBanner/RtkBanner: System notification banners for MCP and RTK installation prompts.
 - MCPServerCard/Form/Settings: Complete MCP server management system with collapsible cards and enhanced forms.
 - SettingsModal: Comprehensive settings interface with six configuration tabs including LLM settings with brain icon.
 - UI primitives: Button, Dialog, Tooltip, Input wrappers around shadcn/ui and Radix primitives.
@@ -222,11 +207,9 @@ TGB --> TIP
 - [FileViewerPanel.tsx:9-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L37)
 - [FileViewerContent.tsx:18-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L18-L208)
 - [FileViewerTabBar.tsx:18-157](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L18-L157)
-- [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
-- [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
-- [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [MCPSettings.tsx:13-93](file://frontend/src/components/settings/MCPSettings.tsx#L13-L93)
 - [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
 - [button.tsx:8-32](file://frontend/src/components/ui/button.tsx#L8-L32)
 - [dialog.tsx:10-159](file://frontend/src/components/ui/dialog.tsx#L10-L159)
@@ -239,7 +222,6 @@ The UI is composed of:
 - Domain-specific panels (Sidebar, WorkspacePanel, FileTreePanel)
 - Chat subsystem (AssistantMessage, UserMessage, ChatInput, PlanView, BlackboardPanel, ContextBadge, ThoughtBlock, ThoughtGroupBlock)
 - File viewer subsystem (FileViewerPanel, FileViewerContent, FileViewerTabBar)
-- Utility components (CodebaseMemoryBanner, RtkBanner) for system notifications
 - MCP settings subsystem (MCPServerCard, MCPServerForm, MCPSettings) for server management
 - Settings modal (SettingsModal) for comprehensive configuration management
 - UI primitives (Button, Dialog, Tooltip, Input) wrapping shadcn/ui and Radix
@@ -250,20 +232,13 @@ AL["AppLayout"] --> SB["Sidebar"]
 AL --> CHAT["ChatArea<br/>ChatInput"]
 AL --> PV["PlanView"]
 AL --> FVP["FileViewerPanel"]
-AL --> CMB["CodebaseMemoryBanner"]
-AL --> RTKB["RtkBanner"]
 SB --> WP["WorkspacePanel"]
 WP --> FTP["FileTreePanel"]
 FVP --> FVTB["FileViewerTabBar"]
 FVP --> FVC["FileViewerContent"]
-CMB --> MCF["MCP API"]
-RTKB --> MCF
 SM["SettingsModal"] --> MCP
-SM --> MCF
-MSC["MCPServerCard"] --> MCF
-MSF["MCPServerForm"] --> MCF
-MCP["MCPSettings"] --> MSC
-MCP --> MSF
+MCP --> MSC["MCPServerCard"]
+MCP --> MSF["MCPServerForm"]
 BB["BlackboardPanel"] --> CB["ContextBadge"]
 TB["ThoughtBlock"] --> TIP["Tooltip"]
 TGB["ThoughtGroupBlock"] --> TIP
@@ -281,12 +256,10 @@ FVC --> INP["Input"]
 - [FileViewerPanel.tsx:9-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L37)
 - [FileViewerContent.tsx:18-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L18-L208)
 - [FileViewerTabBar.tsx:18-157](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L18-L157)
-- [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
-- [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
 - [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
-- [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [MCPSettings.tsx:13-93](file://frontend/src/components/settings/MCPSettings.tsx#L13-L93)
 - [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
 - [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
 - [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
@@ -496,13 +469,12 @@ CI->>CS : "setTaskActive(false)"
   - Collapsible sidebar and file viewer with expand triggers.
   - Empty state when no projects are present.
   - Integrates ChatInput, PlanView, and FileViewerPanel.
-  - Hosts utility banners for system notifications.
 - Stores:
   - Uses UI store for sidebar collapse state and file viewer store for widths and collapse state.
 - Accessibility:
   - Buttons with titles and aria-labels for collapsing/expanding panels.
 
-**Updated** Now includes CodebaseMemoryBanner and RtkBanner integration at the top of the layout.
+**Updated** Removed CodebaseMemoryBanner and RtkBanner integration as these components have been removed from the UI.
 
 **Section sources**
 - [AppLayout.tsx:30-91](file://frontend/src/components/layout/AppLayout.tsx#L30-L91)
@@ -637,41 +609,6 @@ FVC->>FVC : "Restore scroll position"
 **Section sources**
 - [FileViewerContent.tsx:12-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L12-L208)
 
-### Utility Components
-
-#### CodebaseMemoryBanner
-- Purpose: Prompts users to install Codebase Memory MCP for enhanced context awareness.
-- Behavior:
-  - Checks installation status on mount using sessionStorage for dismissal tracking.
-  - Shows installation prompt with download button and dismiss option.
-  - Handles installation progress and error states.
-  - Uses sessionStorage to persist dismissal preferences.
-- API Integration:
-  - Integrates with checkCodebaseMemoryMCP and installCodebaseMemoryMCP APIs.
-- Accessibility:
-  - Proper button states and aria-labels for dismiss controls.
-
-**New Component** Added as part of the modernization effort.
-
-**Section sources**
-- [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
-
-#### RtkBanner
-- Purpose: Prompts users to install Runtime Toolkit for enhanced tool capabilities.
-- Behavior:
-  - Similar pattern to CodebaseMemoryBanner with installation checking and prompting.
-  - Handles RTK installation progress and error states.
-  - Uses sessionStorage for dismissal tracking.
-- API Integration:
-  - Integrates with checkRtk and installRtk APIs.
-- Accessibility:
-  - Consistent with CodebaseMemoryBanner patterns.
-
-**New Component** Added as part of the modernization effort.
-
-**Section sources**
-- [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
-
 ### MCP Settings Components
 
 #### MCPServerCard
@@ -737,20 +674,17 @@ FVC->>FVC : "Restore scroll position"
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
 
 #### MCPSettings
-- Purpose: Main MCP settings page managing server configurations and system integrations.
+- Purpose: Main MCP settings page managing server configurations.
 - Features:
-  - Dual installer cards for Codebase Memory and RTK with progress tracking.
   - Server management with add/edit/delete operations.
   - Real-time status monitoring and refresh capabilities.
   - Comprehensive error handling and user feedback.
 - Components:
-  - Integrates CodebaseMemoryBanner and RtkBanner for system notifications.
   - Uses MCPServerCard for server display and MCPServerForm for editing.
-  - Implements InstallerCard component for MCP system management.
+  - Simplified interface without external tool installation prompts.
 - API Integration:
   - Manages MCP status, tool lists, and server configurations.
-  - Handles installation progress events and status updates.
-  - Supports server configuration updates and deletions.
+  - Handles server configuration updates and deletions.
 - State Management:
   - Tracks loading states, saving states, and error conditions.
   - Manages expanded server cards and form modal states.
@@ -758,10 +692,10 @@ FVC->>FVC : "Restore scroll position"
   - Proper loading states and error messaging.
   - Clear action buttons with appropriate disabled states.
 
-**New Component** Completely rewritten MCP settings system replacing the previous implementation.
+**Updated** Simplified to focus solely on server management without external tool installation prompts. Removed CodebaseMemoryBanner and RtkBanner integration.
 
 **Section sources**
-- [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [MCPSettings.tsx:13-93](file://frontend/src/components/settings/MCPSettings.tsx#L13-L93)
 
 ### Settings Modal
 
@@ -879,7 +813,6 @@ The icon changes follow consistent patterns:
   - FileTreePanel depends on fileTreeStore and emits workspace events.
   - FileViewer components depend on fileViewerStore.
   - Chat components depend on chatStore and sessionStore.
-  - Utility components (CodebaseMemoryBanner, RtkBanner) depend on MCP API.
   - MCP settings components depend on MCP API and form state management.
   - Settings modal integrates with all major configuration systems.
 - External libraries:
@@ -896,16 +829,15 @@ The icon changes follow consistent patterns:
 graph LR
 AL["AppLayout"] --> SB["Sidebar"]
 AL --> FVP["FileViewerPanel"]
-AL --> CMB["CodebaseMemoryBanner"]
-AL --> RTKB["RtkBanner"]
 AL --> CHAT["ChatInput/PlanView"]
 SB --> WP["WorkspacePanel"]
 WP --> FTP["FileTreePanel"]
 FVP --> FVTB["FileViewerTabBar"]
 FVP --> FVC["FileViewerContent"]
-WP --> VSP["VectorStorePanel"]
 SM["SettingsModal"] --> MCP
-SM --> MCF["MCP API"]
+MCP --> MSC["MCPServerCard"]
+MCP --> MSF["MCPServerForm"]
+WP --> VSP["VectorStorePanel"]
 FTP --> FI["FileIcon"]
 AM["AssistantMessage"] --> MC["markdownConfig"]
 CI["ChatInput"] --> SS["sessionStore"]
@@ -915,12 +847,8 @@ TB["ThoughtBlock"] --> TIP["Tooltip"]
 TGB["ThoughtGroupBlock"] --> TIP
 FVC --> HL["highlight.js"]
 FTP --> PM["picomatch"]
-CMB --> MCF
-RTKB --> MCF
-MSC --> MCF
+MSC --> MCF["MCP API"]
 MSF --> MCF
-MCP --> MSC
-MCP --> MSF
 ```
 
 **Diagram sources**
@@ -937,11 +865,9 @@ MCP --> MSF
 - [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
 - [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
 - [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
-- [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
-- [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
-- [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [MCPSettings.tsx:13-93](file://frontend/src/components/settings/MCPSettings.tsx#L13-L93)
 - [markdownConfig.tsx](file://frontend/src/lib/markdownConfig.tsx)
 - [sessionStore.ts](file://frontend/src/stores/sessionStore.ts)
 - [chatStore.ts](file://frontend/src/stores/chatStore.ts)
@@ -960,11 +886,9 @@ MCP --> MSF
 - [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
 - [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
 - [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
-- [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
-- [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
-- [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [MCPSettings.tsx:13-93](file://frontend/src/components/settings/MCPSettings.tsx#L13-L93)
 - [markdownConfig.tsx](file://frontend/src/lib/markdownConfig.tsx)
 - [sessionStore.ts](file://frontend/src/stores/sessionStore.ts)
 - [chatStore.ts](file://frontend/src/stores/chatStore.ts)
@@ -1004,14 +928,7 @@ MCP --> MSF
   - Verify scroll preservation logic is working correctly.
 - MCP settings not loading:
   - Check MCP API connectivity and server configurations.
-  - Verify installer progress events are received correctly.
-- Utility banners not appearing:
-  - Ensure CodebaseMemoryBanner and RtkBanner are included in AppLayout.
-  - Check MCP API status and installation states.
-- Icon consistency issues:
-  - Verify that brain icons have been replaced with appropriate alternatives.
-  - Check that clipboard-list icons are used consistently for task-oriented contexts.
-  - Ensure database icons are used for semantic storage representations.
+  - Verify server configurations are properly formatted and saved.
 - Settings modal icon problems:
   - Verify that LLM tab uses brain icon and other tabs use appropriate icons.
   - Check that icon sizes and styling are consistent across all tabs.
@@ -1021,11 +938,9 @@ MCP --> MSF
 - [AssistantMessage.tsx:25-91](file://frontend/src/components/chat/AssistantMessage.tsx#L25-L91)
 - [FileTreePanel.tsx:270-483](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L483)
 - [FileViewerContent.tsx:12-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L12-L208)
-- [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
-- [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
-- [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [MCPSettings.tsx:13-93](file://frontend/src/components/settings/MCPSettings.tsx#L13-L93)
 - [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
 - [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
 - [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
@@ -1036,4 +951,4 @@ MCP --> MSF
 - [dialog.tsx:10-159](file://frontend/src/components/ui/dialog.tsx#L10-L159)
 
 ## Conclusion
-C0WRK's UI system combines a robust layout with specialized chat and file viewer components, backed by shadcn/ui primitives. The chat components emphasize Markdown rendering, streaming UX, and plan visualization, with recent icon consistency improvements that replace brain icons with clipboard-list and database icons for better UI clarity. The file tree and viewer provide efficient filtering, syntax highlighting, and diff visualization with improved scroll preservation and workspace event handling. The new utility components (CodebaseMemoryBanner, RtkBanner) provide seamless system integration and installation prompts. The completely rewritten MCP settings system offers a modern, user-friendly interface for managing server configurations with enhanced form validation and real-time status monitoring. The settings modal provides comprehensive configuration management with appropriate icon usage across all tabs. The layout is highly configurable with resizable and collapsible panels, and the icon consistency improvements enhance the overall user experience through clearer visual communication. Together, these components enable a flexible, accessible, and performant developer experience with modernized file navigation, comprehensive system management capabilities, and improved UI clarity through thoughtful icon choices.
+C0WRK's UI system combines a robust layout with specialized chat and file viewer components, backed by shadcn/ui primitives. The chat components emphasize Markdown rendering, streaming UX, and plan visualization, with recent icon consistency improvements that replace brain icons with clipboard-list and database icons for better UI clarity. The file tree and viewer provide efficient filtering, syntax highlighting, and diff visualization with improved scroll preservation and workspace event handling. The MCP settings system has been simplified to focus on server management without external tool installation prompts, providing a cleaner and more streamlined user experience. The settings modal provides comprehensive configuration management with appropriate icon usage across all tabs. The layout is highly configurable with resizable and collapsible panels, and the icon consistency improvements enhance the overall user experience through clearer visual communication. Together, these components enable a flexible, accessible, and performant developer experience with modernized file navigation, comprehensive system management capabilities, and improved UI clarity through thoughtful icon choices.

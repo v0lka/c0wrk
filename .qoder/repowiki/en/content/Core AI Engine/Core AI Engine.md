@@ -18,6 +18,13 @@
 - [builderconfig.go](file://core/builderconfig.go)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated Planner component documentation to reflect simplified implementation with reduced complexity
+- Streamlined System Prompt Builder documentation to reflect streamlined prompt optimization features
+- Updated testing documentation to reflect reduced test suite complexity
+- Enhanced performance considerations section to reflect simplified agent prompting strategies
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -31,7 +38,9 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document explains C0WRK’s core AI reasoning engine centered on a ReAct-style Plan&Execute loop. It covers how the orchestrator coordinates planning, reasoning, and execution; the planner’s adaptive strategies and exploration loop; the router’s tool-driven classification; the reflector’s self-improvement mechanism; the agent executor’s circuit breaker and context management; the orchestrator factory pattern; step configuration management; and persistent blackboard systems. It also illustrates reasoning loop flows, decision-making processes, and integration patterns with LLM providers.
+This document explains C0WRK's core AI reasoning engine centered on a ReAct-style Plan&Execute loop. It covers how the orchestrator coordinates planning, reasoning, and execution; the planner's adaptive strategies and exploration loop; the router's tool-driven classification; the reflector's self-improvement mechanism; the agent executor's circuit breaker and context management; the orchestrator factory pattern; step configuration management; and persistent blackboard systems. It also illustrates reasoning loop flows, decision-making processes, and integration patterns with LLM providers.
+
+**Updated** Simplified core planning functionality with streamlined prompt optimization features and reduced complexity in agent prompting strategies.
 
 ## Project Structure
 The core engine spans the core package (routing, planning, reflection, orchestration wiring) and the SDK orchestration layer (generic Plan&Execute engine). Key areas:
@@ -83,10 +92,10 @@ BUILDER --> REFLECTOR
 **Diagram sources**
 - [orchestrator.go:1-599](file://core/orchestrator.go#L1-L599)
 - [router.go:1-172](file://core/router.go#L1-L172)
-- [planner.go:1-979](file://core/planner.go#L1-L979)
+- [planner.go:1-1033](file://core/planner.go#L1-L1033)
 - [reflector.go:1-177](file://core/reflector.go#L1-L177)
 - [stepconfig.go:1-92](file://core/stepconfig.go#L1-L92)
-- [systemprompt.go:1-107](file://core/systemprompt.go#L1-L107)
+- [systemprompt.go:1-176](file://core/systemprompt.go#L1-L176)
 - [persistent_blackboard.go:1-69](file://core/persistent_blackboard.go#L1-L69)
 - [types.go:1-302](file://core/types.go#L1-L302)
 - [builder.go:1-723](file://core/builder.go#L1-L723)
@@ -102,13 +111,15 @@ BUILDER --> REFLECTOR
 ## Core Components
 - Orchestrator: central coordinator that routes, plans, executes, evaluates, and reflects; integrates with the SDK Plan&Execute engine; manages conversation history and persistent blackboard lifecycle.
 - Router: classifies user requests by domain and complexity; selects execution strategy and determines whether clarification is needed.
-- Planner: generates DAG plans via direct LLM calls or an informed exploration loop; supports replanning and continuation planning.
+- Planner: generates DAG plans via direct LLM calls or an informed exploration loop; supports replanning and continuation planning with simplified prompt optimization.
 - Reflector: analyzes execution trajectories to produce structured self-corrections guiding replanning or step-level retries.
 - OrchestratorBuilder: factory that builds per-session orchestrators with shared tool registry, MCP gateway, LLM router, and tool judge; wires context factories and tracking callers.
 - StepConfigurator: resolves per-step execution parameters (allowed tools, system prompt suffix, max steps, compaction strategy) from plan steps and agent profiles.
 - Persistent Blackboard: abstraction for task state persistence and restoration; supports routing, plan, step results, reflections, file changes, and facts.
-- System Prompt Builder: constructs dynamic system prompts for executors, including workspace context, plan-mode context, environment, and auto-RAG hints.
+- System Prompt Builder: constructs dynamic system prompts for executors, including workspace context, plan-mode context, environment, and auto-RAG hints with streamlined optimization.
 - Tool Profiles: role-based tool filtering for router, planner, and reflector.
+
+**Updated** Simplified planner implementation reduces complexity while maintaining core functionality. System prompt builder streamlines prompt optimization features for improved performance.
 
 **Section sources**
 - [orchestrator.go:55-189](file://core/orchestrator.go#L55-L189)
@@ -118,11 +129,13 @@ BUILDER --> REFLECTOR
 - [builder.go:27-208](file://core/builder.go#L27-L208)
 - [stepconfig.go:19-92](file://core/stepconfig.go#L19-L92)
 - [persistent_blackboard.go:9-69](file://core/persistent_blackboard.go#L9-L69)
-- [systemprompt.go:44-107](file://core/systemprompt.go#L44-L107)
+- [systemprompt.go:44-176](file://core/systemprompt.go#L44-L176)
 - [toolprofiles.go:3-12](file://core/toolprofiles.go#L3-L12)
 
 ## Architecture Overview
-The ReAct Plan&Execute loop is orchestrated by the core Orchestrator, which delegates to the SDK Orchestrator for DAG execution, retries, replanning, and reflection. The Router classifies tasks; the Planner generates or refines plans; the Reflector guides self-improvement; the Builder wires components and context managers; and the Blackboard persists state across sessions.
+The ReAct Plan&Execute loop is orchestrated by the core Orchestrator, which delegates to the SDK Orchestrator for DAG execution, retries, replanning, and reflection. The Router classifies tasks; the Planner generates or refines plans with streamlined prompt optimization; the Reflector guides self-improvement; the Builder wires components and context managers; and the Blackboard persists state across sessions.
+
+**Updated** Simplified planner exploration loop maintains robust functionality while reducing implementation complexity.
 
 ```mermaid
 sequenceDiagram
@@ -206,11 +219,11 @@ ReturnClarify --> Done
 
 **Section sources**
 - [orchestrator.go:205-599](file://core/orchestrator.go#L205-L599)
-- [systemprompt.go:44-107](file://core/systemprompt.go#L44-L107)
+- [systemprompt.go:44-176](file://core/systemprompt.go#L44-L176)
 
 ### Router
 Responsibilities:
-- Classifies user requests into domains (“code”, “research”, “general”, “mixed”) and complexity (1–5).
+- Classifies user requests into domains ("code", "research", "general", "mixed") and complexity (1–5).
 - Determines whether clarification is needed.
 - Builds a system prompt that includes available tools and recent history.
 
@@ -240,7 +253,7 @@ Validate --> RDone(["RoutingDecision"])
 ### Planner
 Responsibilities:
 - Generates DAG execution plans for tasks.
-- Uses direct LLM planning for “general” domain or when no exploration tools are available.
+- Uses direct LLM planning for "general" domain or when no exploration tools are available.
 - Employs an informed exploration loop for domain-specific tasks, using a bounded ReAct executor to discover and plan.
 - Supports replanning after failures and continuation planning for follow-ups.
 
@@ -249,6 +262,8 @@ Adaptive strategies:
 - Tool filtering: prioritizes codebase-memory MCP tools and core FS tools for exploration.
 - Circuit breaker and token budgeting during exploration.
 - Reflection-aware planning and replanning.
+
+**Updated** Simplified implementation reduces complexity while maintaining robust exploration capabilities and fallback mechanisms.
 
 ```mermaid
 flowchart TD
@@ -433,6 +448,8 @@ class TaskState {
 - Persistence:
   - Persist routing, plan, reflections, and task completion/failure.
 
+**Updated** Simplified planner implementation streamlines the reasoning loop while maintaining robust decision-making capabilities.
+
 ```mermaid
 flowchart TD
 RMStart(["HandleMessage"]) --> RouteRM["Router.Route"]
@@ -471,6 +488,8 @@ PostRM --> DoneRM(["Output"])
 - Reflector depends on LLM and environment/context for reflection.
 - Builder composes all components and wires context factories, tracking callers, and vector search integration.
 
+**Updated** Simplified planner implementation reduces dependency complexity while maintaining core orchestration functionality.
+
 ```mermaid
 graph LR
 Router["Router"] --> Planner["Planner"]
@@ -502,8 +521,9 @@ Orchestrator --> BB["Blackboard"]
 - Tool result budgets and observation truncation cap memory growth.
 - Sliding window, summarization, and hierarchical compaction strategies manage context window pressure.
 - Vector search hints improve relevance and reduce search iterations.
+- **Updated** Streamlined prompt optimization features reduce computational overhead while maintaining prompt effectiveness.
 
-[No sources needed since this section provides general guidance]
+**Updated** Simplified system prompt builder reduces computational overhead through streamlined prompt optimization features.
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -512,6 +532,9 @@ Common issues and diagnostics:
 - Reflection parsing errors: reflector defaults to retry suggestion; review reflection templates and environment injection.
 - Step limit reached: StepLimitFunc can allow one-time extension; otherwise budget exhaustion halts execution.
 - File changes rollback failures: tracked via FileChangeTracker; monitor rollback errors and adjust workspace permissions.
+- **Updated** Simplified planner implementation reduces edge cases while maintaining graceful fallback mechanisms.
+
+**Updated** Simplified planner implementation provides more predictable behavior with streamlined error handling and fallback mechanisms.
 
 **Section sources**
 - [router.go:85-114](file://core/router.go#L85-L114)
@@ -520,9 +543,9 @@ Common issues and diagnostics:
 - [orchestrator.go:450-476](file://core/orchestrator.go#L450-L476)
 
 ## Conclusion
-C0WRK’s core AI engine combines domain-aware routing, adaptive planning, robust execution with circuit breakers, and reflective self-improvement into a cohesive ReAct Plan&Execute loop. The OrchestratorBuilder’s factory pattern ensures flexible, per-session composition while maintaining shared infrastructure. Persistent blackboards and step configuration enable reliable continuations and role-based specialization. Integration with LLM providers is streamlined through the builder and SDK orchestration layer.
+C0WRK's core AI engine combines domain-aware routing, adaptive planning, robust execution with circuit breakers, and reflective self-improvement into a cohesive ReAct Plan&Execute loop. The OrchestratorBuilder's factory pattern ensures flexible, per-session composition while maintaining shared infrastructure. Persistent blackboards and step configuration enable reliable continuations and role-based specialization. Integration with LLM providers is streamlined through the builder and SDK orchestration layer.
 
-[No sources needed since this section summarizes without analyzing specific files]
+**Updated** Recent simplifications streamline the core planning functionality while maintaining robust performance and reliability. The reduced complexity improves maintainability and reduces computational overhead without sacrificing core capabilities.
 
 ## Appendices
 
@@ -530,6 +553,8 @@ C0WRK’s core AI engine combines domain-aware routing, adaptive planning, robus
 - Simple task: Router → Synthetic Plan → Execute → Complete.
 - Complex task: Router → Planner → Plan → Execute → Reflect/Replan → Execute → Complete.
 - Follow-up: Router → Planner.Continuation → Merge Plan → Resume → Execute → Complete.
+
+**Updated** Simplified planner implementation streamlines typical workflows while maintaining flexibility for complex scenarios.
 
 **Section sources**
 - [router.go:45-114](file://core/router.go#L45-L114)

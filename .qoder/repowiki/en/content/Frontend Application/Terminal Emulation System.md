@@ -14,30 +14,34 @@
 - [backend/session/persistence.go](file://backend/session/persistence.go)
 - [backend/application.go](file://backend/application.go)
 - [frontend/src/stores/sessionStore.ts](file://frontend/src/stores/sessionStore.ts)
+- [backend/session/events.go](file://backend/session/events.go)
+- [backend/session/types.go](file://backend/session/types.go)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive terminal theming system documentation
-- Updated Terminal Component Architecture section to include useXTermTheme hook
-- Enhanced Frontend Integration section with dynamic theming capabilities
-- Added new Terminal Theming System section covering CSS-based theming
-- Updated architecture diagrams to reflect the new theming integration
+- Enhanced terminal output handling with base64 encoding to preserve raw bytes through JSON serialization
+- Updated Terminal Component Architecture section to include base64 decoding for terminal output
+- Improved Frontend Integration section with enhanced error handling for binary data
+- Updated Terminal Theming System section to reflect dynamic CSS-based theme resolution
+- Added new Base64 Encoding for Raw Bytes section documenting the preservation mechanism
+- Enhanced troubleshooting guide with base64-related debugging procedures
 
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [System Architecture](#system-architecture)
 3. [Core Components](#core-components)
 4. [Terminal Management](#terminal-management)
-5. [Terminal Theming System](#terminal-theming-system)
-6. [Frontend Integration](#frontend-integration)
-7. [Session Integration](#session-integration)
-8. [Data Persistence](#data-persistence)
-9. [Platform Support](#platform-support)
-10. [Error Handling](#error-handling)
-11. [Performance Considerations](#performance-considerations)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
+5. [Base64 Encoding for Raw Bytes](#base64-encoding-for-raw-bytes)
+6. [Terminal Theming System](#terminal-theming-system)
+7. [Frontend Integration](#frontend-integration)
+8. [Session Integration](#session-integration)
+9. [Data Persistence](#data-persistence)
+10. [Platform Support](#platform-support)
+11. [Error Handling](#error-handling)
+12. [Performance Considerations](#performance-considerations)
+13. [Troubleshooting Guide](#troubleshooting-guide)
+14. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -45,7 +49,7 @@ The Terminal Emulation System provides a PTY-based terminal interface for the de
 
 The system supports Unix-like systems through PTY (pseudo-terminal) functionality while providing graceful degradation on Windows platforms. It maintains full integration with the application's event-driven architecture, ensuring consistent user experience across all components.
 
-**Updated** The system now features a comprehensive terminal theming system that dynamically applies CSS custom properties to xterm.js themes, providing seamless integration with the application's design system.
+**Updated** The system now features enhanced terminal output handling that preserves raw PTY bytes through base64 encoding during JSON serialization, preventing corruption of escape sequences used by shell completion, autosuggestions, and cursor movement. Additionally, it includes a comprehensive terminal theming system that dynamically applies CSS custom properties to xterm.js themes.
 
 ## System Architecture
 
@@ -59,12 +63,14 @@ T[Terminal Component]
 API[Terminal API]
 THEME[useXTermTheme Hook]
 CSS[CSS Custom Properties]
+BASE64[Base64 Encoding]
 end
 subgraph "Backend Layer"
 FA[FrontendAPI]
 TM[Terminal Manager]
 SM[Session Manager]
 SS[SQLite Session Store]
+EMIT[Event Emission]
 end
 subgraph "System Layer"
 PTY[PTY Process]
@@ -82,6 +88,8 @@ TM --> PTY
 PTY --> SHELL
 SM --> SS
 SS --> FS
+T --> BASE64
+BASE64 --> EMIT
 T -.->|"Real-time output"| TP
 API -.->|"Event handling"| FA
 ```
@@ -163,7 +171,8 @@ User->>Term : Type Command
 Term->>API : terminalInput()
 API->>Backend : TerminalInput()
 Backend->>Backend : Write to PTY
-Backend-->>Term : Output Data
+Backend-->>Term : Output Data (Base64 Encoded)
+Term->>Term : Decode Base64 to Raw Bytes
 Term-->>User : Display Output
 User->>Term : Resize Window
 Term->>API : terminalResize()
@@ -203,7 +212,8 @@ Ready --> UserInput{"User Input?"}
 UserInput --> |Yes| WritePTY["Write to PTY"]
 UserInput --> |No| CheckExit{"Process Exited?"}
 WritePTY --> ReadOutput["Read Output"]
-ReadOutput --> EmitOutput["Emit Output Event"]
+ReadOutput --> EncodeOutput["Encode to Base64"]
+EncodeOutput --> EmitOutput["Emit Output Event"]
 EmitOutput --> UserInput
 CheckExit --> |Yes| Cleanup["Cleanup Resources"]
 CheckExit --> |No| UserInput
@@ -222,9 +232,70 @@ The terminal system integrates with the session management framework to provide 
 - [backend/terminal/manager.go:47-140](file://backend/terminal/manager.go#L47-L140)
 - [backend/frontend_api_terminal.go:11-28](file://backend/frontend_api_terminal.go#L11-L28)
 
+## Base64 Encoding for Raw Bytes
+
+**New Section** The terminal system implements base64 encoding to preserve raw PTY bytes during JSON serialization, preventing corruption of escape sequences and multi-byte character sequences.
+
+### Encoding Strategy
+
+The system uses base64 encoding to ensure that raw PTY output maintains its integrity when transmitted through JSON-based event systems:
+
+```mermaid
+flowchart TD
+RawBytes[Raw PTY Bytes] --> CheckUTF8{"Valid UTF-8?"}
+CheckUTF8 --> |Yes| DirectJSON[Direct JSON Serialization]
+CheckUTF8 --> |No| Base64Encode[Base64 Encode Bytes]
+DirectJSON --> EmitEvent[Emit Event]
+Base64Encode --> EmitEvent
+EmitEvent --> DecodeEvent[Decode Base64 on Frontend]
+DecodeEvent --> Uint8Array[Convert to Uint8Array]
+Uint8Array --> WriteToTerminal[Write to xterm.js]
+WriteToTerminal --> ValidOutput[Valid Terminal Output]
+```
+
+**Diagram sources**
+- [frontend/src/components/terminal/Terminal.tsx:51-62](file://frontend/src/components/terminal/Terminal.tsx#L51-L62)
+- [backend/terminal/manager.go:197-224](file://backend/terminal/manager.go#L197-L224)
+
+### Frontend Decoding Process
+
+The frontend component handles base64 decoding to restore raw binary data:
+
+```mermaid
+sequenceDiagram
+participant Backend as Backend Manager
+participant Event as Terminal Output Event
+participant Frontend as Terminal Component
+participant Decoder as Base64 Decoder
+participant XTerm as xterm.js
+Backend->>Event : Emit Base64 Encoded Data
+Event->>Frontend : Receive Event
+Frontend->>Decoder : atob(data.data)
+Decoder-->>Frontend : ASCII String
+Frontend->>Frontend : Convert to Uint8Array
+Frontend->>XTerm : term.write(bytes)
+XTerm-->>Frontend : Render Terminal Output
+```
+
+**Diagram sources**
+- [frontend/src/components/terminal/Terminal.tsx:51-62](file://frontend/src/components/terminal/Terminal.tsx#L51-L62)
+
+### Benefits of Base64 Encoding
+
+The base64 encoding approach provides several critical benefits:
+
+- **Preserves Escape Sequences**: Shell completion, autosuggestions, and cursor movement escape sequences remain intact
+- **Handles Multi-byte Characters**: Properly manages UTF-8 sequences that may be split across read boundaries
+- **Maintains Binary Integrity**: Raw terminal control characters are preserved without corruption
+- **JSON-Compatible**: Ensures safe transmission through JSON-based event systems
+
+**Section sources**
+- [frontend/src/components/terminal/Terminal.tsx:51-62](file://frontend/src/components/terminal/Terminal.tsx#L51-L62)
+- [backend/terminal/manager.go:197-224](file://backend/terminal/manager.go#L197-L224)
+
 ## Terminal Theming System
 
-**New Section** The terminal theming system provides dynamic, CSS-based theming for the xterm.js terminal component, ensuring seamless integration with the application's design system.
+**Updated** The terminal theming system provides dynamic, CSS-based theming for the xterm.js terminal component, ensuring seamless integration with the application's design system.
 
 ### useXTermTheme Hook Architecture
 
@@ -251,7 +322,7 @@ The theming system maps XTerm theme tokens to CSS custom properties defined in t
 
 | XTerm Token | CSS Variable | Purpose |
 |-------------|--------------|---------|
-| `background` | `--color-background` | Terminal background color |
+| `background` | `--color-popover` | Terminal background color |
 | `foreground` | `--color-foreground` | Default text color |
 | `cursor` | `--color-terminal-cursor` | Cursor color |
 | `selectionBackground` | `--color-terminal-selection` | Selection highlight |
@@ -358,7 +429,7 @@ useXTermTheme --> CSS : "reads from"
 - [frontend/src/components/terminal/TerminalPanel.tsx:10-47](file://frontend/src/components/terminal/TerminalPanel.tsx#L10-L47)
 - [frontend/src/api/terminal.ts:6-56](file://frontend/src/api/terminal.ts#L6-L56)
 
-**Updated** The Terminal component now integrates the `useXTermTheme` hook to dynamically apply CSS-based themes, eliminating the need for hardcoded theme configurations and ensuring consistency with the application's design system.
+**Updated** The Terminal component now integrates the `useXTermTheme` hook to dynamically apply CSS-based themes, eliminating the need for hardcoded theme configurations and ensuring consistency with the application's design system. The component also implements enhanced error handling for base64 decoding operations.
 
 **Section sources**
 - [frontend/src/components/terminal/Terminal.tsx:14-144](file://frontend/src/components/terminal/Terminal.tsx#L14-L144)
@@ -500,10 +571,12 @@ CheckType --> |Session Not Found| SessionError["Session Not Found"]
 CheckType --> |PTY Operation| PtyError["PTY Operation Failed"]
 CheckType --> |Resource Access| ResourceError["Resource Access Denied"]
 CheckType --> |Theme Resolution| ThemeError["Theme Resolution Failed"]
+CheckType --> |Base64 Decode| DecodeError["Base64 Decode Failed"]
 ManagerError --> LogError["Log Error Details"]
 SessionError --> LogError
 PtyError --> LogError
 ThemeError --> LogError
+DecodeError --> LogError
 ResourceError --> LogError
 LogError --> UserFeedback["Display User-Friendly Message"]
 UserFeedback --> Cleanup["Cleanup Resources"]
@@ -518,6 +591,8 @@ Cleanup --> ReturnError([Return Error])
 ### Error Recovery Strategies
 
 The system employs multiple strategies for error recovery and user feedback:
+
+**Updated** Enhanced error handling for base64 decoding operations with fallback mechanisms to prevent terminal corruption.
 
 **Section sources**
 - [backend/frontend_api_terminal.go:12-26](file://backend/frontend_api_terminal.go#L12-L26)
@@ -534,6 +609,7 @@ The terminal system implements efficient memory management for large outputs and
 - Thread-safe session management
 - Efficient event emission
 - **Updated** Memoized theme resolution to prevent unnecessary re-computation
+- **Updated** Base64 encoding overhead minimized through efficient conversion algorithms
 
 ### Concurrency Patterns
 
@@ -561,6 +637,7 @@ The system uses goroutines for non-blocking I/O operations while maintaining thr
 - Validate terminal resize operations
 - Check buffer management
 - Ensure proper encoding handling
+- **Updated** Verify base64 decoding is functioning correctly
 
 #### **New** Theme Not Applying
 - Verify CSS custom properties are defined in `:root`
@@ -568,7 +645,20 @@ The system uses goroutines for non-blocking I/O operations while maintaining thr
 - Ensure theme tokens match the expected XTerm token names
 - Confirm CSS variables resolve to valid hex color values
 
+#### **New** Base64 Decoding Errors
+- Verify that backend is sending base64-encoded data
+- Check browser console for decode errors
+- Ensure proper MIME type handling for binary data
+- Validate that escape sequences are preserved after decoding
+
 ### Debugging Procedures
+
+**Updated** Enhanced debugging procedures for base64 encoding/decoding issues:
+
+1. **Backend Verification**: Check that terminal output is being base64 encoded before emission
+2. **Frontend Inspection**: Monitor network traffic for proper base64 data transmission
+3. **Console Logging**: Enable detailed logging for decode operations
+4. **Escape Sequence Testing**: Verify that terminal control sequences remain intact after processing
 
 **Section sources**
 - [backend/terminal/manager.go:81-82](file://backend/terminal/manager.go#L81-L82)
@@ -578,7 +668,7 @@ The system uses goroutines for non-blocking I/O operations while maintaining thr
 
 The Terminal Emulation System provides a robust, cross-platform solution for interactive shell access within the desktop application. Through careful separation of concerns, comprehensive error handling, and seamless integration with the session management framework, it delivers a reliable terminal experience across different operating systems.
 
-**Updated** The system's architecture now includes a sophisticated terminal theming system that dynamically applies CSS custom properties to xterm.js themes, ensuring perfect visual consistency with the application's design system. This enhancement eliminates the need for hardcoded theme configurations and provides a scalable foundation for future theming features.
+**Updated** The system's architecture now includes sophisticated enhancements including base64 encoding for raw byte preservation and a comprehensive terminal theming system that dynamically applies CSS custom properties to xterm.js themes. These improvements eliminate the risk of escape sequence corruption and ensure perfect visual consistency with the application's design system.
 
 The system's architecture supports future enhancements including improved error recovery, enhanced logging capabilities, and expanded platform support. Its modular design ensures maintainability and extensibility while preserving backward compatibility.
 
@@ -590,5 +680,7 @@ Key strengths include:
 - Integration with the broader event-driven architecture
 - Efficient resource management
 - **New** Dynamic CSS-based terminal theming system
+- **New** Base64 encoding for raw byte preservation
+- **New** Enhanced escape sequence handling
 
 The implementation demonstrates best practices in system design, providing a solid foundation for advanced terminal features and integrations.
