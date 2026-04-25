@@ -40,17 +40,11 @@ type FrontendAPI struct {
 	watcher *workspace.Watcher
 
 	// Project
-	projectManager      *project.Manager
-	projectsDir         string
-	activeProjectID     string
-	activeProjectPath   string
-	activeProjectMu     sync.RWMutex
-	codebaseProjectName string
-
-	// Codebase indexing
-	restoreAutoIndex func()
-	indexingDone     chan struct{}
-	indexingMu       sync.Mutex
+	projectManager    *project.Manager
+	projectsDir       string
+	activeProjectID   string
+	activeProjectPath string
+	activeProjectMu   sync.RWMutex
 
 	// Vector search
 	vectorManager *vectorindex.Manager
@@ -127,9 +121,6 @@ func (f *FrontendAPI) Cleanup() {
 	if f.terminalManager != nil {
 		f.terminalManager.StopAll()
 	}
-	if f.restoreAutoIndex != nil {
-		f.restoreAutoIndex()
-	}
 	if f.vectorManager != nil {
 		f.vectorManager.Shutdown()
 	}
@@ -154,26 +145,6 @@ func (f *FrontendAPI) Cleanup() {
 			f.log().Error("failed to close session logger", "error", err)
 		}
 	}
-}
-
-// GetCodebaseProjectName returns the current codebase project name (thread-safe).
-func (f *FrontendAPI) GetCodebaseProjectName() string {
-	f.activeProjectMu.RLock()
-	defer f.activeProjectMu.RUnlock()
-	return f.codebaseProjectName
-}
-
-// IndexingDoneChan returns the channel that is closed when codebase indexing
-// completes, or nil when no indexing is in progress.
-func (f *FrontendAPI) IndexingDoneChan() chan struct{} {
-	f.indexingMu.Lock()
-	defer f.indexingMu.Unlock()
-	return f.indexingDone
-}
-
-// SetRestoreAutoIndex sets the callback to restore auto_index settings on shutdown.
-func (f *FrontendAPI) SetRestoreAutoIndex(fn func()) {
-	f.restoreAutoIndex = fn
 }
 
 // log returns the instance logger, falling back to slog.Default() when nil.

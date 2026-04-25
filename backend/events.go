@@ -24,13 +24,7 @@ const (
 	// Vector index events
 	EventVectorIndexStatus = "vector_index:status"
 
-	// Codebase-memory-mcp events
-	EventCodeMemoryStatus          = "codememory:status"
-	EventCodeMemoryInstallProgress = "codememory:install-progress"
 
-	// RTK events
-	EventRtkStatus          = "rtk:status"
-	EventRtkInstallProgress = "rtk:install-progress"
 )
 
 // ---------------------------------------------------------------------------

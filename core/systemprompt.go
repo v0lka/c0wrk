@@ -71,28 +71,6 @@ type activeSkillsKeyType struct{}
 
 var activeSkillsKey = activeSkillsKeyType{}
 
-// codebaseMemoryAvailableKeyType is the context key for signaling whether
-// codebase-memory MCP tools are registered.
-type codebaseMemoryAvailableKeyType struct{}
-
-var codebaseMemoryAvailableKey = codebaseMemoryAvailableKeyType{}
-
-// WithCodebaseMemoryAvailable returns a context annotated with whether
-// codebase-memory tools (search_graph, trace_path, etc.) are available.
-func WithCodebaseMemoryAvailable(ctx context.Context, available bool) context.Context {
-	return context.WithValue(ctx, codebaseMemoryAvailableKey, available)
-}
-
-// codebaseMemoryAvailableFromContext returns whether codebase-memory tools
-// are available. Defaults to true when the key is not set (preserves
-// existing behavior for callers that don't set it).
-func codebaseMemoryAvailableFromContext(ctx context.Context) bool {
-	if v, ok := ctx.Value(codebaseMemoryAvailableKey).(bool); ok {
-		return v
-	}
-	return true // conservative default
-}
-
 // ActiveSkills holds the full skill data for skills matched to the current task.
 type ActiveSkills struct {
 	Skills []*skills.Skill
@@ -138,11 +116,6 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		CacheBreak().
 		Replace("WORKSPACE-CONTEXT", workspaceCtxStr).
 		Build()
-
-	// When codebase-memory tools are not available, adjust tool priority guidance.
-	if !codebaseMemoryAvailableFromContext(ctx) {
-		result += "\n\n**Note**: Codebase-memory tools (search_graph, trace_path, get_code_snippet) are not available for this project. Use semantic_search as your primary code discovery tool, supplemented by ripgrep and glob for exact pattern matches."
-	}
 
 	// Append mode-specific context.
 	if ctx.Value(PlanModeKey) != nil {

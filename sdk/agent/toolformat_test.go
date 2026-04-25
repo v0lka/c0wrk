@@ -70,7 +70,7 @@ func TestBuildGroupedToolList_SingleTier(t *testing.T) {
 func TestBuildGroupedToolList_MCPServerNames(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
 		{Name: "read_file", Description: "reads a file", Source: "core"},
-		{Name: "mem_search", Description: "memory search", Source: "codebase-memory"},
+		{Name: "mem_search", Description: "memory search", Source: "mcp:test-server"},
 		{Name: "deploy", Description: "deploy tool", Source: "my-server"},
 		{Name: "bash_exec", Description: "run bash", Source: "core"},
 	}

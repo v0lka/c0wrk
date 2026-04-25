@@ -11,6 +11,10 @@
 - [UserMessage.tsx](file://frontend/src/components/chat/UserMessage.tsx)
 - [ChatInput.tsx](file://frontend/src/components/chat/ChatInput.tsx)
 - [PlanView.tsx](file://frontend/src/components/chat/PlanView.tsx)
+- [BlackboardPanel.tsx](file://frontend/src/components/chat/BlackboardPanel.tsx)
+- [ContextBadge.tsx](file://frontend/src/components/chat/ContextBadge.tsx)
+- [ThoughtBlock.tsx](file://frontend/src/components/chat/ThoughtBlock.tsx)
+- [ThoughtGroupBlock.tsx](file://frontend/src/components/chat/ThoughtGroupBlock.tsx)
 - [FileViewerPanel.tsx](file://frontend/src/components/fileViewer/FileViewerPanel.tsx)
 - [FileViewerContent.tsx](file://frontend/src/components/fileViewer/FileViewerContent.tsx)
 - [FileViewerTabBar.tsx](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx)
@@ -19,6 +23,7 @@
 - [MCPServerCard.tsx](file://frontend/src/components/settings/MCPServerCard.tsx)
 - [MCPServerForm.tsx](file://frontend/src/components/settings/MCPServerForm.tsx)
 - [MCPSettings.tsx](file://frontend/src/components/settings/MCPSettings.tsx)
+- [SettingsModal.tsx](file://frontend/src/components/settings/SettingsModal.tsx)
 - [button.tsx](file://frontend/src/components/ui/button.tsx)
 - [dialog.tsx](file://frontend/src/components/ui/dialog.tsx)
 - [tooltip.tsx](file://frontend/src/components/ui/tooltip.tsx)
@@ -30,11 +35,11 @@
 
 ## Update Summary
 **Changes Made**
-- Updated File Viewer Components section to reflect modernized file navigation and improved scroll preservation
-- Added new utility components section for CodebaseMemoryBanner and RtkBanner
-- Completely rewrote MCP Settings section to document the new MCPServerCard, MCPServerForm, and MCPSettings components
-- Updated AppLayout integration to include new banner components
-- Enhanced file viewer component analysis with improved error handling and workspace event subscription
+- Updated Icon Consistency section to reflect comprehensive icon replacement improvements
+- Revised chat components documentation to reflect brain icon replacements with clipboard-list and database icons
+- Updated workspace panel documentation to reflect database icon usage for semantics tab
+- Enhanced component analysis with improved icon consistency patterns
+- Updated troubleshooting guide to address icon-related UI issues
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -42,27 +47,29 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Icon Consistency Improvements](#icon-consistency-improvements)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 This document describes C0WRK's React component library and UI system. It focuses on:
-- Chat interface components: AssistantMessage, UserMessage, ChatInput, PlanView
+- Chat interface components: AssistantMessage, UserMessage, ChatInput, PlanView, BlackboardPanel, ContextBadge, ThoughtBlock, ThoughtGroupBlock
 - Layout components: AppLayout, Sidebar, WorkspacePanel, FileTreePanel
 - UI primitives from shadcn/ui: Button, Dialog, Tooltip, Input
 - File viewer system: FileViewerPanel, FileViewerContent, FileViewerTabBar
 - Utility components: CodebaseMemoryBanner, RtkBanner
 - MCP settings system: MCPServerCard, MCPServerForm, MCPSettings
+- Settings modal with comprehensive configuration tabs
 It explains component responsibilities, props, customization, styling patterns, accessibility, and composition patterns for building complex UI interactions.
 
 ## Project Structure
 C0WRK organizes UI under frontend/src/components, grouped by domain:
 - layout: AppLayout, Sidebar, WorkspacePanel, FileTreePanel, FileIcon
-- chat: AssistantMessage, UserMessage, ChatInput, PlanView, and related helpers
+- chat: AssistantMessage, UserMessage, ChatInput, PlanView, BlackboardPanel, ContextBadge, ThoughtBlock, ThoughtGroupBlock, and related helpers
 - fileViewer: FileViewerPanel, FileViewerContent, FileViewerTabBar
-- settings: MCPServerCard, MCPServerForm, MCPSettings, and other configuration components
+- settings: MCPServerCard, MCPServerForm, MCPSettings, SettingsModal, and other configuration components
 - ui: shadcn/ui wrappers and variants for Button, Dialog, Tooltip, Input
 - utilities: CodebaseMemoryBanner, RtkBanner for system notifications
 - stores: chatStore, sessionStore, fileViewerStore, panelStore, etc.
@@ -82,6 +89,10 @@ AM["AssistantMessage"]
 UM["UserMessage"]
 CI["ChatInput"]
 PV["PlanView"]
+BB["BlackboardPanel"]
+CB["ContextBadge"]
+TB["ThoughtBlock"]
+TGB["ThoughtGroupBlock"]
 end
 subgraph "File Viewer"
 FVP["FileViewerPanel"]
@@ -96,6 +107,9 @@ subgraph "MCP Settings"
 MSC["MCPServerCard"]
 MSF["MCPServerForm"]
 MCP["MCPSettings"]
+end
+subgraph "Settings Modal"
+SM["SettingsModal"]
 end
 subgraph "UI Primitives"
 BTN["Button"]
@@ -114,25 +128,33 @@ WP --> FTP
 FTP --> FI
 FVP --> FVTB
 FVP --> FVC
-MSC --> MCF
+SM --> MCP
+SM --> MCF
 MCP --> MSC
 MCP --> MSF
 AM --> DLG
 UM --> TIP
 CI --> BTN
 FVC --> INP
+BB --> CB
+TB --> TIP
+TGB --> TIP
 ```
 
 **Diagram sources**
 - [AppLayout.tsx:1-91](file://frontend/src/components/layout/AppLayout.tsx#L1-L91)
 - [Sidebar.tsx:1-627](file://frontend/src/components/layout/Sidebar.tsx#L1-L627)
-- [WorkspacePanel.tsx:1-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L1-L71)
+- [WorkspacePanel.tsx:1-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L1-L47)
 - [FileTreePanel.tsx:1-483](file://frontend/src/components/layout/FileTreePanel.tsx#L1-L483)
 - [FileIcon.tsx](file://frontend/src/components/layout/FileIcon.tsx)
 - [AssistantMessage.tsx:1-91](file://frontend/src/components/chat/AssistantMessage.tsx#L1-L91)
 - [UserMessage.tsx:1-104](file://frontend/src/components/chat/UserMessage.tsx#L1-L104)
 - [ChatInput.tsx:1-193](file://frontend/src/components/chat/ChatInput.tsx#L1-L193)
 - [PlanView.tsx:1-153](file://frontend/src/components/chat/PlanView.tsx#L1-L153)
+- [BlackboardPanel.tsx:1-189](file://frontend/src/components/chat/BlackboardPanel.tsx#L1-L189)
+- [ContextBadge.tsx:1-57](file://frontend/src/components/chat/ContextBadge.tsx#L1-L57)
+- [ThoughtBlock.tsx:1-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L1-L45)
+- [ThoughtGroupBlock.tsx:1-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L1-L32)
 - [FileViewerPanel.tsx:1-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L37)
 - [FileViewerContent.tsx:1-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L208)
 - [FileViewerTabBar.tsx:1-157](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L1-L157)
@@ -141,6 +163,7 @@ FVC --> INP
 - [MCPServerCard.tsx:1-79](file://frontend/src/components/settings/MCPServerCard.tsx#L1-L79)
 - [MCPServerForm.tsx:1-172](file://frontend/src/components/settings/MCPServerForm.tsx#L1-L172)
 - [MCPSettings.tsx:1-150](file://frontend/src/components/settings/MCPSettings.tsx#L1-L150)
+- [SettingsModal.tsx:1-121](file://frontend/src/components/settings/SettingsModal.tsx#L1-L121)
 - [button.tsx:1-32](file://frontend/src/components/ui/button.tsx#L1-L32)
 - [dialog.tsx:1-159](file://frontend/src/components/ui/dialog.tsx#L1-L159)
 - [tooltip.tsx:1-56](file://frontend/src/components/ui/tooltip.tsx#L1-L56)
@@ -149,7 +172,7 @@ FVC --> INP
 **Section sources**
 - [AppLayout.tsx:1-91](file://frontend/src/components/layout/AppLayout.tsx#L1-L91)
 - [Sidebar.tsx:1-627](file://frontend/src/components/layout/Sidebar.tsx#L1-L627)
-- [WorkspacePanel.tsx:1-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L1-L71)
+- [WorkspacePanel.tsx:1-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L1-L47)
 - [FileTreePanel.tsx:1-483](file://frontend/src/components/layout/FileTreePanel.tsx#L1-L483)
 - [FileViewerPanel.tsx:1-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L37)
 - [FileViewerContent.tsx:1-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L208)
@@ -159,6 +182,7 @@ FVC --> INP
 - [MCPServerCard.tsx:1-79](file://frontend/src/components/settings/MCPServerCard.tsx#L1-L79)
 - [MCPServerForm.tsx:1-172](file://frontend/src/components/settings/MCPServerForm.tsx#L1-L172)
 - [MCPSettings.tsx:1-150](file://frontend/src/components/settings/MCPSettings.tsx#L1-L150)
+- [SettingsModal.tsx:1-121](file://frontend/src/components/settings/SettingsModal.tsx#L1-L121)
 - [button.tsx:1-32](file://frontend/src/components/ui/button.tsx#L1-L32)
 - [dialog.tsx:1-159](file://frontend/src/components/ui/dialog.tsx#L1-L159)
 - [tooltip.tsx:1-56](file://frontend/src/components/ui/tooltip.tsx#L1-L56)
@@ -169,13 +193,17 @@ FVC --> INP
 - UserMessage: Renders user content with optional pinning, overflow handling, and time display.
 - ChatInput: Text input with auto-resize, optimistic UI updates, session lifecycle, and cancellation.
 - PlanView: Renders a plan as a list of steps with status badges, durations, and tooltips.
+- BlackboardPanel: Displays blackboard state with clipboard-list icon and searchable content.
+- ContextBadge: Shows context information with brain circuit icon (replaced for better clarity).
+- ThoughtBlock/ThoughtGroupBlock: Renders reasoning content blocks with brain circuit icon.
 - AppLayout: Orchestrates sidebar, main chat area, pending actions, execution panels, file viewer, and status bar.
 - Sidebar: Project/session management, settings, and workspace panel.
-- WorkspacePanel: Tabs for Explorer, Git, Semantics; currently routes to FileTreePanel.
+- WorkspacePanel: Tabs for Explorer, Git, Semantics; currently routes to FileTreePanel with database icon for semantics.
 - FileTreePanel: Hierarchical file tree with filtering (glob/regex), lazy loading, and Git status coloring.
 - FileViewerPanel/Content/TabBar: Multi-tab file viewer with syntax highlighting, Markdown rendering, diffs, and scroll preservation.
 - CodebaseMemoryBanner/RtkBanner: System notification banners for MCP and RTK installation prompts.
 - MCPServerCard/Form/Settings: Complete MCP server management system with collapsible cards and enhanced forms.
+- SettingsModal: Comprehensive settings interface with six configuration tabs including LLM settings with brain icon.
 - UI primitives: Button, Dialog, Tooltip, Input wrappers around shadcn/ui and Radix primitives.
 
 **Section sources**
@@ -183,9 +211,13 @@ FVC --> INP
 - [UserMessage.tsx:3-104](file://frontend/src/components/chat/UserMessage.tsx#L3-L104)
 - [ChatInput.tsx:13-193](file://frontend/src/components/chat/ChatInput.tsx#L13-L193)
 - [PlanView.tsx:16-153](file://frontend/src/components/chat/PlanView.tsx#L16-L153)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+- [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
 - [AppLayout.tsx:30-91](file://frontend/src/components/layout/AppLayout.tsx#L30-L91)
 - [Sidebar.tsx:64-627](file://frontend/src/components/layout/Sidebar.tsx#L64-L627)
-- [WorkspacePanel.tsx:26-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L71)
+- [WorkspacePanel.tsx:7-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L47)
 - [FileTreePanel.tsx:270-483](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L483)
 - [FileViewerPanel.tsx:9-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L37)
 - [FileViewerContent.tsx:18-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L18-L208)
@@ -195,6 +227,7 @@ FVC --> INP
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
 - [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
 - [button.tsx:8-32](file://frontend/src/components/ui/button.tsx#L8-L32)
 - [dialog.tsx:10-159](file://frontend/src/components/ui/dialog.tsx#L10-L159)
 - [tooltip.tsx:19-56](file://frontend/src/components/ui/tooltip.tsx#L19-L56)
@@ -204,10 +237,11 @@ FVC --> INP
 The UI is composed of:
 - Layout container (AppLayout) coordinating sidebar, chat, and file viewer panels
 - Domain-specific panels (Sidebar, WorkspacePanel, FileTreePanel)
-- Chat subsystem (AssistantMessage, UserMessage, ChatInput, PlanView)
+- Chat subsystem (AssistantMessage, UserMessage, ChatInput, PlanView, BlackboardPanel, ContextBadge, ThoughtBlock, ThoughtGroupBlock)
 - File viewer subsystem (FileViewerPanel, FileViewerContent, FileViewerTabBar)
 - Utility components (CodebaseMemoryBanner, RtkBanner) for system notifications
 - MCP settings subsystem (MCPServerCard, MCPServerForm, MCPSettings) for server management
+- Settings modal (SettingsModal) for comprehensive configuration management
 - UI primitives (Button, Dialog, Tooltip, Input) wrapping shadcn/ui and Radix
 
 ```mermaid
@@ -224,10 +258,15 @@ FVP --> FVTB["FileViewerTabBar"]
 FVP --> FVC["FileViewerContent"]
 CMB --> MCF["MCP API"]
 RTKB --> MCF
+SM["SettingsModal"] --> MCP
+SM --> MCF
 MSC["MCPServerCard"] --> MCF
 MSF["MCPServerForm"] --> MCF
 MCP["MCPSettings"] --> MSC
 MCP --> MSF
+BB["BlackboardPanel"] --> CB["ContextBadge"]
+TB["ThoughtBlock"] --> TIP["Tooltip"]
+TGB["ThoughtGroupBlock"] --> TIP
 AM["AssistantMessage"] --> DLG["Dialog"]
 UM["UserMessage"] --> TIP["Tooltip"]
 CI["ChatInput"] --> BTN["Button"]
@@ -237,16 +276,21 @@ FVC --> INP["Input"]
 **Diagram sources**
 - [AppLayout.tsx:30-91](file://frontend/src/components/layout/AppLayout.tsx#L30-L91)
 - [Sidebar.tsx:64-627](file://frontend/src/components/layout/Sidebar.tsx#L64-L627)
-- [WorkspacePanel.tsx:26-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L71)
+- [WorkspacePanel.tsx:7-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L47)
 - [FileTreePanel.tsx:270-483](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L483)
 - [FileViewerPanel.tsx:9-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L9-L37)
 - [FileViewerContent.tsx:18-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L18-L208)
 - [FileViewerTabBar.tsx:18-157](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L18-L157)
 - [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
 - [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
+- [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
 - [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+- [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
 - [AssistantMessage.tsx:25-91](file://frontend/src/components/chat/AssistantMessage.tsx#L25-L91)
 - [UserMessage.tsx:10-104](file://frontend/src/components/chat/UserMessage.tsx#L10-L104)
 - [ChatInput.tsx:13-193](file://frontend/src/components/chat/ChatInput.tsx#L13-L193)
@@ -374,6 +418,75 @@ CI->>CS : "setTaskActive(false)"
 **Section sources**
 - [PlanView.tsx:16-153](file://frontend/src/components/chat/PlanView.tsx#L16-L153)
 
+#### BlackboardPanel
+- Purpose: Display blackboard state with searchable content and clipboard-list icon.
+- Props: none (reads from stores)
+- Behavior:
+  - Collapsible panel showing step results, facts, reflections, and final output.
+  - Searchable content with live filtering across all categories.
+  - Clipboard-list icon for clear task-oriented representation.
+  - Badge indicators for counts of different blackboard items.
+- Stores:
+  - Reads blackboard state from blackboardStore and session state from sessionStore.
+- Accessibility:
+  - Collapsible sections with chevron indicators; proper ARIA attributes for interactive elements.
+
+**Updated** Now uses clipboard-list icon for better task-oriented clarity.
+
+**Section sources**
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+
+#### ContextBadge
+- Purpose: Show context information with brain circuit icon (replaced for better clarity).
+- Props: none (reads from stores)
+- Behavior:
+  - Displays model information, token usage, and session statistics.
+  - Brain circuit icon replaced with more appropriate icon for context display.
+  - Tooltip with detailed breakdown of token usage and model information.
+- Stores:
+  - Reads token information from chatStore and session information from sessionStore.
+- Accessibility:
+  - Proper tooltip with detailed information; accessible color contrast.
+
+**Updated** Brain circuit icon replaced with clipboard-list icon for better UI clarity.
+
+**Section sources**
+- [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
+
+#### ThoughtBlock
+- Purpose: Render individual thought reasoning with brain circuit icon (replaced for better clarity).
+- Props:
+  - item: ThoughtItem with reasoning and content properties
+- Behavior:
+  - Collapsible block showing reasoning content with character limit.
+  - Expand/collapse functionality for long reasoning content.
+  - Brain circuit icon replaced with more appropriate icon for thought processes.
+- Stores: none
+- Accessibility:
+  - Collapsible sections with chevron indicators; keyboard navigation support.
+
+**Updated** Brain circuit icon replaced with clipboard-list icon for better UI clarity.
+
+**Section sources**
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+
+#### ThoughtGroupBlock
+- Purpose: Render grouped thoughts with brain circuit icon (replaced for better clarity).
+- Props:
+  - item: ThoughtGroupItem containing multiple thoughts
+- Behavior:
+  - Collapsible block showing multiple thoughts in a group.
+  - Individual thought reasoning and content display.
+  - Brain circuit icon replaced with more appropriate icon for thought processes.
+- Stores: none
+- Accessibility:
+  - Collapsible sections with chevron indicators; proper spacing and indentation.
+
+**Updated** Brain circuit icon replaced with clipboard-list icon for better UI clarity.
+
+**Section sources**
+- [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
+
 ### Layout Components
 
 #### AppLayout
@@ -413,12 +526,15 @@ CI->>CS : "setTaskActive(false)"
 - Purpose: Tabbed workspace area with Explorer, Git, Semantics.
 - Behavior:
   - Uses Tabs/TabsList/TabsTrigger with TooltipProvider.
+  - Explorer tab uses folder-tree icon, Git tab uses git-branch icon, Semantics tab uses database icon.
   - Currently renders FileTreePanel in Explorer tab.
 - Accessibility:
   - Tooltip labels for tab triggers; aria-labels on triggers.
 
+**Updated** Semantics tab now uses database icon for better semantic storage representation.
+
 **Section sources**
-- [WorkspacePanel.tsx:26-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L71)
+- [WorkspacePanel.tsx:7-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L47)
 
 #### FileTreePanel
 - Purpose: Hierarchical file tree with filtering, lazy loading, and Git status indicators.
@@ -647,6 +763,26 @@ FVC->>FVC : "Restore scroll position"
 **Section sources**
 - [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
 
+### Settings Modal
+
+#### SettingsModal
+- Purpose: Comprehensive settings interface with six configuration tabs.
+- Features:
+  - Six tabs: General, LLM, Search, MCP, Security, About.
+  - LLM tab uses brain icon for AI model configuration.
+  - Other tabs use appropriate icons: Settings, Search, Server, Shield, Info.
+  - Responsive design with proper spacing and typography.
+- Components:
+  - Integrates ConfigWarningBanner for configuration validation.
+  - Uses Tabs/TabsList/TabsTrigger with proper icon/tab combinations.
+  - Responsive layout with proper content area sizing.
+- Accessibility:
+  - Proper tab navigation with keyboard support.
+  - Clear visual hierarchy and readable typography.
+
+**Section sources**
+- [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
+
 ### UI Primitive Components (shadcn/ui)
 
 #### Button
@@ -689,6 +825,53 @@ FVC->>FVC : "Restore scroll position"
 **Section sources**
 - [input.tsx:5-22](file://frontend/src/components/ui/input.tsx#L5-L22)
 
+## Icon Consistency Improvements
+
+### Overview
+C0WRK has implemented comprehensive icon consistency improvements to enhance UI clarity and provide better visual communication. The primary change involves replacing brain icons with more appropriate alternatives for better user understanding.
+
+### Icon Replacement Strategy
+- **Brain Icons**: Replaced with clipboard-list icons for task-oriented contexts
+- **Database Icons**: Used appropriately for semantic storage and vector databases
+- **Consistency**: All related components now use consistent icon patterns
+
+### Specific Changes
+
+#### BlackboardPanel
+- **Icon**: Changed from brain circuit to clipboard-list
+- **Rationale**: Better represents task completion and planning functionality
+- **Usage**: Clear visual indicator for blackboard state management
+
+#### ContextBadge
+- **Icon**: Changed from brain circuit to clipboard-list
+- **Rationale**: More appropriate for context display and information sharing
+- **Usage**: Shows model and token usage information
+
+#### Thought Components
+- **Icons**: Changed from brain circuit to clipboard-list
+- **Rationale**: Better represents thinking and reasoning processes
+- **Usage**: ThoughtBlock and ThoughtGroupBlock for reasoning content display
+
+#### WorkspacePanel Semantics Tab
+- **Icon**: Changed from brain to database
+- **Rationale**: Better represents semantic storage and vector database functionality
+- **Usage**: VectorStorePanel integration for semantic search capabilities
+
+### Implementation Details
+The icon changes follow consistent patterns:
+- Task-oriented components use clipboard-list icons
+- Information display components use appropriate informational icons
+- Semantic functionality uses database icons
+- All icons maintain consistent sizing and styling
+
+**Section sources**
+- [BlackboardPanel.tsx:39](file://frontend/src/components/chat/BlackboardPanel.tsx#L39)
+- [ContextBadge.tsx:23](file://frontend/src/components/chat/ContextBadge.tsx#L23)
+- [ContextBadge.tsx:41](file://frontend/src/components/chat/ContextBadge.tsx#L41)
+- [ThoughtBlock.tsx:23](file://frontend/src/components/chat/ThoughtBlock.tsx#L23)
+- [ThoughtGroupBlock.tsx:14](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L14)
+- [WorkspacePanel.tsx:26](file://frontend/src/components/layout/WorkspacePanel.tsx#L26)
+
 ## Dependency Analysis
 - Component coupling:
   - AppLayout depends on Sidebar, FileViewerPanel, and chat components.
@@ -698,11 +881,12 @@ FVC->>FVC : "Restore scroll position"
   - Chat components depend on chatStore and sessionStore.
   - Utility components (CodebaseMemoryBanner, RtkBanner) depend on MCP API.
   - MCP settings components depend on MCP API and form state management.
+  - Settings modal integrates with all major configuration systems.
 - External libraries:
   - Markdown rendering via remark/rehype ecosystem.
   - Syntax highlighting via highlight.js.
   - Pattern matching via picomatch.
-  - Icons via lucide-react.
+  - Icons via lucide-react with updated icon consistency.
   - State via stores (Zustand-like stores).
   - Collapsible components via shadcn/ui.
 - Potential circular dependencies:
@@ -719,13 +903,19 @@ SB --> WP["WorkspacePanel"]
 WP --> FTP["FileTreePanel"]
 FVP --> FVTB["FileViewerTabBar"]
 FVP --> FVC["FileViewerContent"]
+WP --> VSP["VectorStorePanel"]
+SM["SettingsModal"] --> MCP
+SM --> MCF["MCP API"]
 FTP --> FI["FileIcon"]
 AM["AssistantMessage"] --> MC["markdownConfig"]
 CI["ChatInput"] --> SS["sessionStore"]
 CI --> CS["chatStore"]
+BB["BlackboardPanel"] --> CB["ContextBadge"]
+TB["ThoughtBlock"] --> TIP["Tooltip"]
+TGB["ThoughtGroupBlock"] --> TIP
 FVC --> HL["highlight.js"]
 FTP --> PM["picomatch"]
-CMB --> MCF["MCP API"]
+CMB --> MCF
 RTKB --> MCF
 MSC --> MCF
 MSF --> MCF
@@ -736,12 +926,17 @@ MCP --> MSF
 **Diagram sources**
 - [AppLayout.tsx:30-91](file://frontend/src/components/layout/AppLayout.tsx#L30-L91)
 - [Sidebar.tsx:64-627](file://frontend/src/components/layout/Sidebar.tsx#L64-L627)
-- [WorkspacePanel.tsx:26-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L71)
+- [WorkspacePanel.tsx:7-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L47)
 - [FileTreePanel.tsx:270-483](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L483)
 - [FileViewerPanel.tsx:7-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L7-L37)
 - [FileViewerContent.tsx:12-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L12-L208)
+- [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
 - [AssistantMessage.tsx:25-91](file://frontend/src/components/chat/AssistantMessage.tsx#L25-L91)
 - [ChatInput.tsx:13-193](file://frontend/src/components/chat/ChatInput.tsx#L13-L193)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+- [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
 - [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
 - [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
@@ -754,12 +949,17 @@ MCP --> MSF
 **Section sources**
 - [AppLayout.tsx:30-91](file://frontend/src/components/layout/AppLayout.tsx#L30-L91)
 - [Sidebar.tsx:64-627](file://frontend/src/components/layout/Sidebar.tsx#L64-L627)
-- [WorkspacePanel.tsx:26-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L26-L71)
+- [WorkspacePanel.tsx:7-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L47)
 - [FileTreePanel.tsx:270-483](file://frontend/src/components/layout/FileTreePanel.tsx#L270-L483)
 - [FileViewerPanel.tsx:7-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L7-L37)
 - [FileViewerContent.tsx:12-208](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L12-L208)
+- [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
 - [AssistantMessage.tsx:25-91](file://frontend/src/components/chat/AssistantMessage.tsx#L25-L91)
 - [ChatInput.tsx:13-193](file://frontend/src/components/chat/ChatInput.tsx#L13-L193)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+- [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
 - [CodebaseMemoryBanner.tsx:8-54](file://frontend/src/components/CodebaseMemoryBanner.tsx#L8-L54)
 - [RtkBanner.tsx:8-54](file://frontend/src/components/RtkBanner.tsx#L8-L54)
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
@@ -782,8 +982,10 @@ MCP --> MSF
   - FileTreePanel avoids rendering hidden nodes when filters are active.
   - FileViewerContent preserves scroll position to avoid jank during updates using requestAnimationFrame.
   - MCP settings components use efficient state management with minimal re-renders.
+  - Icon consistency improvements maintain performance while enhancing clarity.
 - Accessibility:
   - Components use proper roles and aria attributes to minimize assistive tech overhead.
+  - Icon changes improve accessibility through clearer visual communication.
 
 ## Troubleshooting Guide
 - ChatInput does not enable:
@@ -806,6 +1008,13 @@ MCP --> MSF
 - Utility banners not appearing:
   - Ensure CodebaseMemoryBanner and RtkBanner are included in AppLayout.
   - Check MCP API status and installation states.
+- Icon consistency issues:
+  - Verify that brain icons have been replaced with appropriate alternatives.
+  - Check that clipboard-list icons are used consistently for task-oriented contexts.
+  - Ensure database icons are used for semantic storage representations.
+- Settings modal icon problems:
+  - Verify that LLM tab uses brain icon and other tabs use appropriate icons.
+  - Check that icon sizes and styling are consistent across all tabs.
 
 **Section sources**
 - [ChatInput.tsx:13-193](file://frontend/src/components/chat/ChatInput.tsx#L13-L193)
@@ -817,8 +1026,14 @@ MCP --> MSF
 - [MCPServerCard.tsx:16-79](file://frontend/src/components/settings/MCPServerCard.tsx#L16-L79)
 - [MCPServerForm.tsx:48-172](file://frontend/src/components/settings/MCPServerForm.tsx#L48-L172)
 - [MCPSettings.tsx:13-150](file://frontend/src/components/settings/MCPSettings.tsx#L13-L150)
+- [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
+- [ContextBadge.tsx:6-57](file://frontend/src/components/chat/ContextBadge.tsx#L6-L57)
+- [ThoughtBlock.tsx:10-45](file://frontend/src/components/chat/ThoughtBlock.tsx#L10-L45)
+- [ThoughtGroupBlock.tsx:11-32](file://frontend/src/components/chat/ThoughtGroupBlock.tsx#L11-L32)
+- [WorkspacePanel.tsx:7-47](file://frontend/src/components/layout/WorkspacePanel.tsx#L7-L47)
+- [SettingsModal.tsx:18-121](file://frontend/src/components/settings/SettingsModal.tsx#L18-L121)
 - [tooltip.tsx:19-56](file://frontend/src/components/ui/tooltip.tsx#L19-L56)
 - [dialog.tsx:10-159](file://frontend/src/components/ui/dialog.tsx#L10-L159)
 
 ## Conclusion
-C0WRK's UI system combines a robust layout with specialized chat and file viewer components, backed by shadcn/ui primitives. The chat components emphasize Markdown rendering, streaming UX, and plan visualization. The file tree and viewer provide efficient filtering, syntax highlighting, and diff visualization with improved scroll preservation and workspace event handling. The new utility components (CodebaseMemoryBanner, RtkBanner) provide seamless system integration and installation prompts. The completely rewritten MCP settings system offers a modern, user-friendly interface for managing server configurations with enhanced form validation and real-time status monitoring. The layout is highly configurable with resizable and collapsible panels. Together, these components enable a flexible, accessible, and performant developer experience with modernized file navigation and comprehensive system management capabilities.
+C0WRK's UI system combines a robust layout with specialized chat and file viewer components, backed by shadcn/ui primitives. The chat components emphasize Markdown rendering, streaming UX, and plan visualization, with recent icon consistency improvements that replace brain icons with clipboard-list and database icons for better UI clarity. The file tree and viewer provide efficient filtering, syntax highlighting, and diff visualization with improved scroll preservation and workspace event handling. The new utility components (CodebaseMemoryBanner, RtkBanner) provide seamless system integration and installation prompts. The completely rewritten MCP settings system offers a modern, user-friendly interface for managing server configurations with enhanced form validation and real-time status monitoring. The settings modal provides comprehensive configuration management with appropriate icon usage across all tabs. The layout is highly configurable with resizable and collapsible panels, and the icon consistency improvements enhance the overall user experience through clearer visual communication. Together, these components enable a flexible, accessible, and performant developer experience with modernized file navigation, comprehensive system management capabilities, and improved UI clarity through thoughtful icon choices.

@@ -6,7 +6,7 @@ You have access to tools for codebase exploration. Use them to gather facts befo
 
 ### Tool Priority
 
-1. **Tier 1 (preferred — always start here)**: codebase-memory-mcp tools (`search_graph`, `trace_path`, `get_code_snippet`, `query_graph`) and `semantic_search` for semantic code exploration. These are always available and understand code structure and relationships.
+1. **Tier 1 (preferred — always start here)**: `semantic_search` for semantic code exploration. Use for concept-based discovery of code patterns, functions, and relationships.
 2. **Tier 2 (targeted matches)**: `ripgrep` for exact text/regex matching, `glob` for file name patterns, `read_file` for viewing specific files discovered via Tier 1.
 3. **Tier 3 (fallback only)**: `bash_exec` for complex operations not covered by built-in tools.
 

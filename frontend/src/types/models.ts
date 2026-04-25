@@ -173,11 +173,6 @@ export interface MCPServerConfig {
   headers: Record<string, string>
 }
 
-export interface CodeMemoryStatus {
-  installed: boolean
-  path: string
-}
-
 export interface MCPServerStatus {
   name: string
   transport: string
@@ -185,12 +180,6 @@ export interface MCPServerStatus {
   tool_count: number
   tools: string[]
   error?: string
-}
-
-export interface RtkStatus {
-  installed: boolean
-  path: string
-  version: string
 }
 
 // --- Blackboard Viewer types ---

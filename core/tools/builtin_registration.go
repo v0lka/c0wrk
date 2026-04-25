@@ -31,7 +31,6 @@ type BuiltinToolsConfig struct {
 	WebSearchLimits WebSearchLimits
 	BashTimeouts    BashTimeouts
 	BashBlacklist   []string
-	RtkPath         string
 
 	// Search provider configuration.
 	SearchProvider string
@@ -53,7 +52,7 @@ type BuiltinToolsConfig struct {
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
 func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	// Bash
-	registry.Register(builtins.NewBashExecToolWithTimeouts(cfg.BashBlacklist, cfg.BashTimeouts, cfg.RtkPath))
+	registry.Register(builtins.NewBashExecToolWithTimeouts(cfg.BashBlacklist, cfg.BashTimeouts))
 
 	// File operations
 	registry.Register(builtins.NewReadFileToolWithLimits(cfg.FileLimits))

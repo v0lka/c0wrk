@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -212,19 +211,6 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 	}
 }
 
-// hasCodebaseMemoryTools checks if any codebase-memory MCP tools are registered.
-func (o *Orchestrator) hasCodebaseMemoryTools() bool {
-	if o.toolRegistry == nil {
-		return false
-	}
-	for _, t := range o.toolRegistry.List() {
-		if strings.HasPrefix(t.Source, "codebase-memory") {
-			return true
-		}
-	}
-	return false
-}
-
 // Handle executes the agent reasoning cycle for the given user message.
 // This is a backwards-compatible wrapper around HandleMessage that uses
 // Plan&Execute mode for first messages.
@@ -241,9 +227,6 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
 		ctx = o.injectVectorSearchHints(ctx, origReq)
 	}
-
-	// Inject codebase-memory tool availability.
-	ctx = WithCodebaseMemoryAvailable(ctx, o.hasCodebaseMemoryTools())
 
 	// Wire emitter into restored PersistentBlackboard so persistence warnings
 	// are surfaced to the user (the backend creates the BB without an emitter).
@@ -465,16 +448,11 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// 3. Get available tools
 	availableTools := o.toolRegistry.List()
 	mcpCount := 0
-	hasCodebaseMem := false
 	for _, t := range availableTools {
 		if t.Source != "" && t.Source != "core" {
 			mcpCount++
 		}
-		if strings.HasPrefix(t.Source, "codebase-memory") {
-			hasCodebaseMem = true
-		}
 	}
-	ctx = WithCodebaseMemoryAvailable(ctx, hasCodebaseMem)
 	o.logDebug("orchestrator: tools loaded from registry", "total", len(availableTools), "mcp", mcpCount)
 
 	// 4. Route the message

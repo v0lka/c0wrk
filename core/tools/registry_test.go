@@ -1059,7 +1059,7 @@ func TestPreExecuteHook_NotCalledForInternalTools(t *testing.T) {
 func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockReadOnlyTool("mcp_search", "An MCP tool")
-	registry.RegisterWithSource(tool, "mcp:codebase-memory")
+	registry.RegisterWithSource(tool, "mcp:test-server")
 
 	var mu sync.Mutex
 	var capturedName, capturedSource string
@@ -1084,8 +1084,8 @@ func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
 	if capturedName != "mcp_search" {
 		t.Errorf("expected hook toolName %q, got %q", "mcp_search", capturedName)
 	}
-	if capturedSource != "mcp:codebase-memory" {
-		t.Errorf("expected hook source %q, got %q", "mcp:codebase-memory", capturedSource)
+	if capturedSource != "mcp:test-server" {
+		t.Errorf("expected hook source %q, got %q", "mcp:test-server", capturedSource)
 	}
 }
 

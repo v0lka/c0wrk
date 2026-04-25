@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,9 +19,7 @@ import (
 	"github.com/user/agent/backend"
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/backend/logger"
-	beMcp "github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
-	beRtk "github.com/user/agent/backend/rtk"
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/backend/terminal"
 	"github.com/user/agent/backend/vectorindex"
@@ -136,9 +135,12 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// Terminal manager: emits raw PTY output as session-scoped events.
+	// Output is base64-encoded to preserve raw bytes through JSON serialization
+	// (string(data) would corrupt invalid UTF-8 split across read boundaries,
+	// and json.Marshal replaces invalid UTF-8 with U+FFFD).
 	termManager := terminal.NewManager(log, func(sessionID string, data []byte) {
 		eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
-		wailsRuntime.EventsEmit(a.ctx, eventName, map[string]string{"data": string(data)})
+		wailsRuntime.EventsEmit(a.ctx, eventName, map[string]string{"data": base64.StdEncoding.EncodeToString(data)})
 	})
 
 	// --- Desktop UI callbacks ---
@@ -407,52 +409,6 @@ func (a *App) Startup(ctx context.Context) {
 			log.Warn("failed to pre-load projects for early emit", "error", pErr)
 		}
 	}
-
-	// Filter out codebase-memory-mcp management tools that should not be exposed to the LLM.
-	a.app.Builder().ToolRegistry().SetToolFilter(func(toolName, source string) bool {
-		if source == "codebase-memory" {
-			return toolName != "list_projects" && toolName != "delete_project"
-		}
-		return true
-	})
-	// Clean up already-registered tools (gateway registered them before filter was set).
-	a.app.Builder().ToolRegistry().Unregister("list_projects")
-	a.app.Builder().ToolRegistry().Unregister("delete_project")
-
-	// Strip the "project" parameter from codebase-memory-mcp tool schemas so the
-	// LLM never sees it. The correct project name is auto-injected at execution
-	// time by the ParamInjector below.
-	if gw := a.app.Builder().MCPGateway(); gw != nil {
-		gw.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
-			if source != "codebase-memory" {
-				return schema
-			}
-			return backend.MCPStripParamsFromSchema(schema, map[string]bool{"project": true})
-		})
-	}
-
-	// Auto-inject project scoping for codebase-memory-mcp tools.
-	a.app.Builder().ToolRegistry().SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
-		if source != "codebase-memory" {
-			return input
-		}
-		projectName := a.GetCodebaseProjectName()
-		if projectName == "" {
-			return input
-		}
-		var params map[string]any
-		if err := json.Unmarshal(input, &params); err != nil {
-			return input
-		}
-		// Always set project; the parameter is stripped from the schema so the LLM
-		// should never provide it, but we override regardless for safety.
-		params["project"] = projectName
-		modified, err := json.Marshal(params)
-		if err != nil {
-			return input
-		}
-		return modified
-	})
 
 	// Validate LLM provider configuration at startup (fail-fast).
 	if cfg.LLM.ActiveProvider == "" {
@@ -748,53 +704,6 @@ func (a *App) Startup(ctx context.Context) {
 		}
 		a.pendingStepLimit.Delete(requestID)
 	})
-
-	// Check codebase-memory-mcp availability and emit status
-	cmStatus := beMcp.CheckCodebaseMemoryMCP()
-	wailsRuntime.EventsEmit(a.ctx, backend.EventCodeMemoryStatus, cmStatus)
-
-	// Ensure auto_index is enabled if codebase-memory-mcp is installed
-	if cmStatus.Installed {
-		restoreFn, err := beMcp.EnsureAutoIndex(a.ctx)
-		if err != nil {
-			a.log().Warn("failed to ensure codebase-memory-mcp auto_index", "error", err)
-		}
-		a.SetRestoreAutoIndex(restoreFn)
-	}
-
-	// Set pre-execute hook to block codebase-memory MCP tools during indexing
-	a.app.Builder().ToolRegistry().SetPreExecuteHook(func(ctx context.Context, toolName, source string) error {
-		if source != "codebase-memory" {
-			return nil
-		}
-		ch := a.IndexingDoneChan()
-		if ch == nil {
-			return nil // not indexing
-		}
-
-		sessionID := session.SessionIDFromContext(ctx)
-		if sessionID != "" {
-			wailsRuntime.EventsEmit(a.ctx, backend.EventSessionEvent, session.Event{
-				SessionID: sessionID,
-				Type:      "service",
-				Data: map[string]any{
-					"content": "Waiting for codebase indexing to complete...",
-				},
-			})
-		}
-
-		a.log().Info("blocking MCP tool call until indexing completes", "tool", toolName)
-		select {
-		case <-ch:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	})
-
-	// Check rtk availability and emit status
-	rtkStatus := beRtk.CheckRtk()
-	wailsRuntime.EventsEmit(a.ctx, backend.EventRtkStatus, rtkStatus)
 
 	// Signal frontend that all backend subsystems are ready.
 	// Pre-load projects so the frontend doesn't need a separate round-trip.

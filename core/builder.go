@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -269,19 +268,6 @@ func (b *OrchestratorBuilder) UpdateSearchTool(cfg *BuilderConfig) {
 		Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 	}
 	tools.UpdateSearchTool(b.registry, cfg.Search.Provider, apiKey, limits)
-}
-
-// SetBashRtkPath updates the rtk binary path on the registered bash_exec tool.
-// This is called after rtk is installed at runtime.
-func (b *OrchestratorBuilder) SetBashRtkPath(path string) {
-	tool, ok := b.registry.Get("bash_exec")
-	if !ok {
-		return
-	}
-	if bashTool, ok := tool.(*builtins.BashExecTool); ok {
-		bashTool.SetRtkPath(path)
-		b.log().Info("updated bash_exec rtk path", "path", path)
-	}
 }
 
 // GenerateTitle generates a concise title for a conversation using the cached LLM router.
@@ -799,19 +785,10 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},
 		BashBlacklist:  bashBlacklist,
-		RtkPath:        detectRtkPath(),
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 	}
-}
-
-// detectRtkPath returns the path to the rtk binary if it's available.
-func detectRtkPath() string {
-	if path, err := exec.LookPath("rtk"); err == nil {
-		return path
-	}
-	return ""
 }
 
 // configToGatewayConfig converts BuilderConfig to MCP GatewayConfig.

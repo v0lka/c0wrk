@@ -441,31 +441,13 @@ func (p *Planner) getPlannerTools() []tools.ToolDescriptor {
 	var result []tools.ToolDescriptor
 
 	for _, t := range allTools {
-		// Tier 1: codebase-memory MCP tools
-		if strings.HasPrefix(t.Source, "codebase-memory") {
-			result = append(result, t)
-			continue
-		}
-		// Tier 2: well-known FS tools (core)
+		// Well-known FS tools (core)
 		if fsToolNames[t.Name] {
 			result = append(result, t)
 		}
 	}
 
 	return result
-}
-
-// hasCodebaseMemoryTools checks if codebase-memory-mcp tools are registered.
-func (p *Planner) hasCodebaseMemoryTools() bool {
-	if p.toolRegistry == nil {
-		return false
-	}
-	for _, t := range p.toolRegistry.List() {
-		if strings.HasPrefix(t.Source, "codebase-memory") {
-			return true
-		}
-	}
-	return false
 }
 
 // ---------------------------------------------------------------------------

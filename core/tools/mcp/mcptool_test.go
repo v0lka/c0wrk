@@ -298,7 +298,7 @@ func TestStripParamsFromSchema_InvalidJSON(t *testing.T) {
 }
 
 func TestNewTool_WithSanitizer(t *testing.T) {
-	server := newServer("codebase-memory")
+	server := newServer("test-mcp")
 	info := ToolInfo{
 		Name:        "search_graph",
 		Description: "Search the code graph",
@@ -306,7 +306,7 @@ func TestNewTool_WithSanitizer(t *testing.T) {
 	}
 
 	sanitizer := func(source string, schema json.RawMessage) json.RawMessage {
-		if source != "codebase-memory" {
+		if source != "test-mcp" {
 			return schema
 		}
 		return StripParamsFromSchema(schema, map[string]bool{"project": true})
@@ -365,9 +365,9 @@ func TestNewTool_SanitizerSkippedForOtherSource(t *testing.T) {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"project":{"type":"string"}}}`),
 	}
 
-	// Sanitizer that only strips project for codebase-memory source
+	// Sanitizer that only strips project for test-mcp source
 	sanitizer := func(source string, schema json.RawMessage) json.RawMessage {
-		if source != "codebase-memory" {
+		if source != "test-mcp" {
 			return schema
 		}
 		return StripParamsFromSchema(schema, map[string]bool{"project": true})
@@ -375,8 +375,8 @@ func TestNewTool_SanitizerSkippedForOtherSource(t *testing.T) {
 
 	tool := NewTool(server, info, sanitizer)
 
-	// Schema should be unchanged for non-codebase-memory server
+	// Schema should be unchanged for non-test-mcp server
 	if string(tool.InputSchema()) != string(info.InputSchema) {
-		t.Errorf("expected schema unchanged for non-codebase-memory server, got %s", tool.InputSchema())
+		t.Errorf("expected schema unchanged for non-test-mcp server, got %s", tool.InputSchema())
 	}
 }

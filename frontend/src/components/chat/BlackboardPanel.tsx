@@ -22,7 +22,7 @@ export function BlackboardPanel() {
 
     return (
         <div className={cn(
-            'border-t border-x border-border bg-card mt-1',
+            'border-t border-x border-border bg-card',
             sidebarCollapsed && 'ml-1',
             viewerCollapsed && hasViewerTabs && 'mr-1',
         )}>

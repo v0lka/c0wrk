@@ -10,14 +10,6 @@ export function CancelTask(arg1) {
   return window['go']['desktop']['App']['CancelTask'](arg1);
 }
 
-export function CheckCodebaseMemoryMCP() {
-  return window['go']['desktop']['App']['CheckCodebaseMemoryMCP']();
-}
-
-export function CheckRtk() {
-  return window['go']['desktop']['App']['CheckRtk']();
-}
-
 export function Cleanup() {
   return window['go']['desktop']['App']['Cleanup']();
 }
@@ -40,10 +32,6 @@ export function DeleteSession(arg1) {
 
 export function GetBlackboardState(arg1) {
   return window['go']['desktop']['App']['GetBlackboardState'](arg1);
-}
-
-export function GetCodebaseProjectName() {
-  return window['go']['desktop']['App']['GetCodebaseProjectName']();
 }
 
 export function GetConfig() {
@@ -96,18 +84,6 @@ export function GetTerminalHistory(arg1) {
 
 export function GetToolList() {
   return window['go']['desktop']['App']['GetToolList']();
-}
-
-export function IndexingDoneChan() {
-  return window['go']['desktop']['App']['IndexingDoneChan']();
-}
-
-export function InstallCodebaseMemoryMCP() {
-  return window['go']['desktop']['App']['InstallCodebaseMemoryMCP']();
-}
-
-export function InstallRtk() {
-  return window['go']['desktop']['App']['InstallRtk']();
 }
 
 export function ListDirectory(arg1, arg2) {
@@ -164,10 +140,6 @@ export function SetConfigLoadState(arg1, arg2, arg3) {
 
 export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
-}
-
-export function SetRestoreAutoIndex(arg1) {
-  return window['go']['desktop']['App']['SetRestoreAutoIndex'](arg1);
 }
 
 export function StartTerminal(arg1) {

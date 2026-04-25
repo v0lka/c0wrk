@@ -169,7 +169,7 @@ export function ChatInput() {
   return (
     <div
       className={cn(
-        'flex flex-col flex-shrink-0 border-t border-x border-border bg-card mb-1 overflow-hidden',
+        'flex flex-col flex-shrink-0 border-t border-x border-border bg-card overflow-hidden',
         sidebarCollapsed && 'ml-1',
         viewerCollapsed && hasViewerTabs && 'mr-1',
       )}

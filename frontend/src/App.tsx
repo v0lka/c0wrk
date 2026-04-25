@@ -3,8 +3,6 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { subscribe } from '@/api/runtime'
 import { AlertCircle, X } from 'lucide-react'
-import { CodebaseMemoryBanner } from '@/components/CodebaseMemoryBanner'
-import { RtkBanner } from '@/components/RtkBanner'
 import { SettingsModal } from '@/components/settings/SettingsModal'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
@@ -45,12 +43,6 @@ function App() {
   return (
     <TooltipProvider>
       <div className="fixed top-0 left-0 right-0 z-50 flex flex-col pointer-events-none">
-        <div className="pointer-events-auto">
-          <CodebaseMemoryBanner />
-        </div>
-        <div className="pointer-events-auto">
-          <RtkBanner />
-        </div>
         {startupError && (
           <div className="bg-destructive/95 text-destructive-foreground p-4 shadow-lg pointer-events-auto">
             <div className="max-w-4xl mx-auto flex items-start gap-3">

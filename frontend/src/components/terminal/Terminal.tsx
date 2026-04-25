@@ -49,7 +49,16 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
         fitAddonRef.current = fitAddon
 
         const unsubscribe = onSessionEvent(sessionId, 'terminal_output', (data) => {
-            term.write(data.data)
+            // Data is base64-encoded to preserve raw PTY bytes through JSON serialization.
+            // Without base64, invalid UTF-8 (e.g. split multi-byte sequences across read
+            // boundaries) gets replaced with U+FFFD by Go's json.Marshal, corrupting
+            // escape sequences used by shell completion, autosuggestions, and cursor movement.
+            const decoded = atob(data.data)
+            const bytes = new Uint8Array(decoded.length)
+            for (let i = 0; i < decoded.length; i++) {
+                bytes[i] = decoded.charCodeAt(i)
+            }
+            term.write(bytes)
         })
         unsubscribeRef.current = unsubscribe
 

@@ -4,7 +4,7 @@ import type {
   ProjectInfo, SessionInfo, ChatMessage, TokenInfo,
   FileEntry, GitStatusEntry, ConfigResponse, SecuritySettingsResponse,
   LLMSettingsRequest, SearchSettingsRequest,
-  CodeMemoryStatus, MCPServerStatus, MCPServerConfig, ToolInfo, RtkStatus,
+  MCPServerStatus, MCPServerConfig, ToolInfo,
 } from './models'
 
 export interface ProjectAPI {
@@ -54,10 +54,6 @@ export interface ConfigAPI {
 }
 
 export interface McpAPI {
-  checkCodebaseMemoryMCP(): Promise<CodeMemoryStatus>
-  installCodebaseMemoryMCP(): Promise<void>
-  checkRtk(): Promise<RtkStatus>
-  installRtk(): Promise<void>
   getMCPStatus(): Promise<MCPServerStatus[]>
   getMCPServers(): Promise<Record<string, MCPServerConfig>>
   updateMCPServers(servers: Record<string, MCPServerConfig>): Promise<void>

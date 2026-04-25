@@ -1,48 +1,8 @@
-// MCP and RTK API wrappers
+// MCP API wrappers
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import type { CodeMemoryStatus, MCPServerStatus, MCPServerConfig, ToolInfo, RtkStatus } from '@/types/models'
-
-export async function checkCodebaseMemoryMCP(): Promise<CodeMemoryStatus> {
-  try {
-    const app = getApp()
-    return await app.CheckCodebaseMemoryMCP() as CodeMemoryStatus
-  } catch (err) {
-    logger.error('Failed to check codebase memory MCP:', err)
-    throw err
-  }
-}
-
-export async function installCodebaseMemoryMCP(): Promise<void> {
-  try {
-    const app = getApp()
-    await app.InstallCodebaseMemoryMCP()
-  } catch (err) {
-    logger.error('Failed to install codebase memory MCP:', err)
-    throw err
-  }
-}
-
-export async function checkRtk(): Promise<RtkStatus> {
-  try {
-    const app = getApp()
-    return await app.CheckRtk() as RtkStatus
-  } catch (err) {
-    logger.error('Failed to check RTK:', err)
-    throw err
-  }
-}
-
-export async function installRtk(): Promise<void> {
-  try {
-    const app = getApp()
-    await app.InstallRtk()
-  } catch (err) {
-    logger.error('Failed to install RTK:', err)
-    throw err
-  }
-}
+import type { MCPServerStatus, MCPServerConfig, ToolInfo } from '@/types/models'
 
 export async function getMCPStatus(): Promise<MCPServerStatus[]> {
   try {

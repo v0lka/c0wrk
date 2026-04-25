@@ -1,25 +1,13 @@
 package backend
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
-	"time"
 
-	"github.com/user/agent/backend/mcp"
 	"github.com/user/agent/backend/project"
 	"github.com/user/agent/backend/vectorindex"
 	"github.com/user/agent/backend/workspace"
 )
-
-// checkCodebaseMemoryFunc is the function used to check codebase-memory-mcp installation.
-// It can be overridden in tests.
-var checkCodebaseMemoryFunc = mcp.CheckCodebaseMemoryMCP
-
-// execCommandFunc is used to create exec commands. It can be overridden in tests.
-var execCommandFunc = exec.CommandContext
 
 // CreateProject creates a new project. If externalPath is empty, an internal workspace is created.
 func (f *FrontendAPI) CreateProject(name, externalPath string) (*project.ProjectInfo, error) {
@@ -31,139 +19,9 @@ func (f *FrontendAPI) CreateProject(name, externalPath string) (*project.Project
 		return nil, err
 	}
 
-	// Trigger async codebase indexing (non-blocking, non-fatal)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				f.log().Error("panic in codebase indexing", "recover", r)
-			}
-		}()
-		f.triggerCodebaseIndexing(p.WorkspacePath)
-	}()
-
 	f.emitEvent(EventProjectCreated, p)
 
 	return p, nil
-}
-
-// triggerCodebaseIndexing runs codebase-memory-mcp index_repository for the
-// given workspace path. It is designed to run in a goroutine and never panics.
-// Errors are logged as warnings and are non-fatal.
-func (f *FrontendAPI) triggerCodebaseIndexing(workspacePath string) {
-	f.indexingMu.Lock()
-	if f.indexingDone != nil {
-		// Another indexing run is already in progress; skip.
-		f.indexingMu.Unlock()
-		f.log().Info("codebase indexing already in progress, skipping", "workspace", workspacePath)
-		return
-	}
-	ch := make(chan struct{})
-	f.indexingDone = ch
-	f.indexingMu.Unlock()
-	defer func() {
-		f.indexingMu.Lock()
-		close(ch)
-		if f.indexingDone == ch {
-			f.indexingDone = nil
-		}
-		f.indexingMu.Unlock()
-	}()
-
-	status := checkCodebaseMemoryFunc()
-	if !status.Installed {
-		return
-	}
-
-	parentCtx := f.appCtx()
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
-	defer cancel()
-
-	jsonBytes, err := json.Marshal(map[string]string{"workspace_path": workspacePath})
-	if err != nil {
-		f.log().Warn("failed to marshal codebase indexing JSON arg", "error", err)
-		return
-	}
-	jsonArg := string(jsonBytes)
-
-	cmd := execCommandFunc(ctx, status.Path, "cli", "index_repository", jsonArg)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		f.log().Warn("codebase-memory-mcp indexing failed",
-			"workspace", workspacePath,
-			"error", err,
-			"output", string(output),
-		)
-		return
-	}
-
-	f.log().Info("codebase-memory-mcp indexing triggered", "workspace", workspacePath)
-	f.resolveCodebaseProjectName(workspacePath)
-}
-
-// resolveCodebaseProjectName queries codebase-memory-mcp for the project name
-// that matches the given workspace path. The result is stored in codebaseProjectName.
-// Errors are logged as warnings and are non-fatal.
-func (f *FrontendAPI) resolveCodebaseProjectName(workspacePath string) {
-	status := checkCodebaseMemoryFunc()
-	if !status.Installed {
-		return
-	}
-
-	parentCtx := f.appCtx()
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
-	defer cancel()
-
-	cmd := execCommandFunc(ctx, status.Path, "cli", "list_projects")
-	output, err := cmd.Output()
-	if err != nil {
-		f.log().Warn("failed to list codebase-memory-mcp projects", "error", err)
-		return
-	}
-
-	// Parse MCP response: {"content":[{"type":"text","text":"{\"projects\":[...]}"}]}
-	var mcpResp struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(output, &mcpResp); err != nil {
-		f.log().Warn("failed to parse list_projects response", "error", err)
-		return
-	}
-	if len(mcpResp.Content) == 0 {
-		return
-	}
-
-	var projectList struct {
-		Projects []struct {
-			Name     string `json:"name"`
-			RootPath string `json:"root_path"`
-		} `json:"projects"`
-	}
-	if err := json.Unmarshal([]byte(mcpResp.Content[0].Text), &projectList); err != nil {
-		f.log().Warn("failed to parse project list", "error", err)
-		return
-	}
-
-	for _, p := range projectList.Projects {
-		if p.RootPath != workspacePath {
-			continue
-		}
-		f.activeProjectMu.Lock()
-		f.codebaseProjectName = p.Name
-		f.activeProjectMu.Unlock()
-		f.log().Info("resolved codebase-memory-mcp project name", "name", p.Name, "path", workspacePath)
-		return
-	}
-
-	f.log().Warn("codebase-memory-mcp project not found for workspace", "workspace", workspacePath)
 }
 
 // DeleteProject deletes a project and all its sessions.
@@ -245,16 +103,12 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	f.activeProjectMu.Lock()
 	f.activeProjectID = p.ID
 	f.activeProjectPath = p.WorkspacePath
-	f.codebaseProjectName = "" // clear stale name
 	f.activeProjectMu.Unlock()
 
 	// Set MCP working directory to the new project workspace
 	if f.app != nil {
 		f.app.Builder().SetMCPWorkDir(p.WorkspacePath)
 	}
-
-	// Resolve codebase-memory-mcp project name for new project (fast CLI call)
-	f.resolveCodebaseProjectName(p.WorkspacePath)
 
 	// Update project activity timestamp
 	_ = f.projStore.UpdateProjectActivity(id) // Best-effort; error is non-critical.

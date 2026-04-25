@@ -41,7 +41,7 @@ function getCSSVar(name: string): string {
  * which token feeds which ANSI slot.
  */
 const TOKEN_MAP: Record<ThemeTokenKey, string> = {
-  background: '--color-background',
+  background: '--color-popover',
   foreground: '--color-foreground',
   cursor: '--color-terminal-cursor',
   selectionBackground: '--color-terminal-selection',

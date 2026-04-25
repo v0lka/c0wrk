@@ -6,11 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -26,18 +24,15 @@ type BashExecTool struct {
 	blacklist []string
 	compiled  []*regexp.Regexp
 	timeouts  BashTimeouts
-	rtkPath   string
-	rtkMu     sync.RWMutex
-	logger    *slog.Logger
 }
 
 // NewBashExecTool creates a new BashExecTool with the given blacklist.
 func NewBashExecTool(blacklist []string) *BashExecTool {
-	return NewBashExecToolWithTimeouts(blacklist, DefaultBashTimeouts(), "")
+	return NewBashExecToolWithTimeouts(blacklist, DefaultBashTimeouts())
 }
 
 // NewBashExecToolWithTimeouts creates a new BashExecTool with the given blacklist and timeouts.
-func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts, rtkPath string) *BashExecTool {
+func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) *BashExecTool {
 	compiled := make([]*regexp.Regexp, 0, len(blacklist))
 	for _, pattern := range blacklist {
 		re, err := regexp.Compile(pattern)
@@ -56,58 +51,7 @@ func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts, rtkP
 		blacklist: blacklist,
 		compiled:  compiled,
 		timeouts:  timeouts,
-		rtkPath:   rtkPath,
 	}
-}
-
-// SetRtkPath updates the rtk binary path at runtime (thread-safe).
-func (t *BashExecTool) SetRtkPath(path string) {
-	t.rtkMu.Lock()
-	defer t.rtkMu.Unlock()
-	t.rtkPath = path
-}
-
-// SetLogger sets the logger for the bash tool.
-func (t *BashExecTool) SetLogger(l *slog.Logger) { t.logger = l }
-
-func (t *BashExecTool) log() *slog.Logger {
-	if t.logger != nil {
-		return t.logger
-	}
-	return slog.Default()
-}
-
-// getRtkPath returns the current rtk binary path (thread-safe).
-func (t *BashExecTool) getRtkPath() string {
-	t.rtkMu.RLock()
-	defer t.rtkMu.RUnlock()
-	return t.rtkPath
-}
-
-// rtkRewrite calls `rtk rewrite` to get an optimized version of the command.
-// Returns the rewritten command, or empty string if no rewrite applies or on any error.
-func (t *BashExecTool) rtkRewrite(ctx context.Context, rtkPath, command string) string {
-	rtkTimeout := t.timeouts.RtkTimeout
-	if rtkTimeout == 0 {
-		rtkTimeout = 500 * time.Millisecond
-	}
-	rewriteCtx, cancel := context.WithTimeout(ctx, rtkTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(rewriteCtx, rtkPath, "rewrite", command)
-	output, err := cmd.Output()
-	if err != nil {
-		t.log().Debug("rtk rewrite failed, using original command", "error", err)
-		return ""
-	}
-
-	rewritten := strings.TrimSpace(string(output))
-	if rewritten == "" || rewritten == command {
-		return ""
-	}
-
-	t.log().Debug("rtk rewrote command", "original", command, "rewritten", rewritten)
-	return rewritten
 }
 
 // bashInput represents the input parameters for bash command execution.
@@ -141,15 +85,8 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ParseInputError(err)
 	}
 
-	// RTK command rewrite (if available)
-	command := params.Command
-	if rtkPath := t.getRtkPath(); rtkPath != "" {
-		if rewritten := t.rtkRewrite(ctx, rtkPath, command); rewritten != "" {
-			command = rewritten
-		}
-	}
-
 	// Parse timeout (default 60s, max from config)
+	command := params.Command
 	timeoutStr := params.Timeout
 	if timeoutStr == "" {
 		timeoutStr = "60s"

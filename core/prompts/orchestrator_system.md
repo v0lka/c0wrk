@@ -14,18 +14,9 @@ When investigating, exploring, or understanding code, use tools in this priority
 
 ### Tier 1 — Code Exploration (always start here)
 
-- **codebase-memory-mcp tools** — `search_graph` (find functions, classes, routes by pattern), `trace_path` (trace call relationships), `get_code_snippet` (read specific function/class source), `query_graph` (Cypher queries for complex patterns), `get_architecture` (high-level project overview). These tools understand code structure and relationships.
 - **semantic_search** — searches the entire codebase by semantic similarity in a single call. Use for concept-based discovery: "authentication middleware", "error handling patterns", "database connection logic".
 
 ALWAYS start with Tier 1 tools when exploring code. They understand code semantics and structure, providing more relevant results than text-based search. ALWAYS prefer these over ripgrep/glob/search_files for code discovery.
-
-#### Tier 1 Usage Guide
-
-1. `search_graph` — find functions, classes, routes, variables by pattern (e.g., `search_graph(name_pattern=".*OrderHandler.*")`)
-2. `trace_path` — trace who calls a function or what it calls (e.g., `trace_path(function_name="OrderHandler", direction="inbound")`)
-3. `get_code_snippet` — read specific function/class source code (e.g., `get_code_snippet(qualified_name="pkg/orders.OrderHandler")`)
-4. `query_graph` — run Cypher queries for complex patterns
-5. `get_architecture` — high-level project summary
 
 Fall back to Tier 2 when searching for exact string literals, error messages, config values, non-code files, or when Tier 1 returns insufficient results.
 

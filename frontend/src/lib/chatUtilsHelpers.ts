@@ -158,7 +158,7 @@ export function buildHistoryId(
       return requestId ? `ask-user-${requestId}` : `history-${dbId}`
     }
     case 'status':
-      return `status-${timestamp}`
+      return `status-${dbId}`
     case 'task_resumed':
       return `task-resumed-${timestamp}`
     default:

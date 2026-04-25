@@ -1204,8 +1204,8 @@ func TestGateway_SetDefaultWorkDir(t *testing.T) {
 func TestGateway_SetSchemaSanitizer(t *testing.T) {
 	gateway := newGateway()
 
-	// Add a codebase-memory server with a project parameter
-	server := newServer("codebase-memory")
+	// Add a test MCP server with a project parameter
+	server := newServer("test-mcp")
 	server.tools = []ToolInfo{
 		{
 			Name:        "search_graph",
@@ -1213,11 +1213,11 @@ func TestGateway_SetSchemaSanitizer(t *testing.T) {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"project":{"type":"string"},"name_pattern":{"type":"string"}},"required":["project","name_pattern"]}`),
 		},
 	}
-	gateway.servers["codebase-memory"] = server
+	gateway.servers["test-mcp"] = server
 
-	// Set sanitizer to strip 'project' param from codebase-memory tools
+	// Set sanitizer to strip 'project' param from test-mcp tools
 	gateway.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
-		if source != "codebase-memory" {
+		if source != "test-mcp" {
 			return schema
 		}
 		return StripParamsFromSchema(schema, map[string]bool{"project": true})
@@ -1244,7 +1244,7 @@ func TestGateway_SetSchemaSanitizer(t *testing.T) {
 		t.Fatalf("properties is not valid JSON: %v", err)
 	}
 	if _, exists := props["project"]; exists {
-		t.Error("'project' should be stripped from codebase-memory tool schema")
+		t.Error("'project' should be stripped from test-mcp tool schema")
 	}
 	if _, exists := props["name_pattern"]; !exists {
 		t.Error("'name_pattern' should still be present in tool schema")
@@ -1265,7 +1265,7 @@ func TestGateway_SetSchemaSanitizer(t *testing.T) {
 func TestGateway_SetSchemaSanitizer_OtherSourceUntouched(t *testing.T) {
 	gateway := newGateway()
 
-	// Add a non-codebase-memory server with a project parameter
+	// Add a non-test-mcp server with a project parameter
 	server := newServer("other-mcp")
 	server.tools = []ToolInfo{
 		{
@@ -1276,9 +1276,9 @@ func TestGateway_SetSchemaSanitizer_OtherSourceUntouched(t *testing.T) {
 	}
 	gateway.servers["other-mcp"] = server
 
-	// Set sanitizer that only strips project for codebase-memory
+	// Set sanitizer that only strips project for test-mcp
 	gateway.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
-		if source != "codebase-memory" {
+		if source != "test-mcp" {
 			return schema
 		}
 		return StripParamsFromSchema(schema, map[string]bool{"project": true})
@@ -1305,7 +1305,7 @@ func TestGateway_SetSchemaSanitizer_OtherSourceUntouched(t *testing.T) {
 		t.Fatalf("properties is not valid JSON: %v", err)
 	}
 	if _, exists := props["project"]; !exists {
-		t.Error("'project' should still be present for non-codebase-memory server")
+		t.Error("'project' should still be present for non-test-mcp server")
 	}
 }
 

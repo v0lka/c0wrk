@@ -497,20 +497,6 @@ export namespace backend {
 
 export namespace mcp {
 	
-	export class CodeMemoryStatus {
-	    installed: boolean;
-	    path: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new CodeMemoryStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.installed = source["installed"];
-	        this.path = source["path"];
-	    }
-	}
 	export class ServerStatus {
 	    name: string;
 	    transport: string;
@@ -558,27 +544,6 @@ export namespace project {
 	        this.is_external = source["is_external"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
-	    }
-	}
-
-}
-
-export namespace rtk {
-	
-	export class RtkStatus {
-	    installed: boolean;
-	    path: string;
-	    version: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new RtkStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.installed = source["installed"];
-	        this.path = source["path"];
-	        this.version = source["version"];
 	    }
 	}
 

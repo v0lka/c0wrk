@@ -23,15 +23,16 @@
 - [blackboard.ts](file://frontend/src/api/blackboard.ts)
 - [models.ts](file://frontend/src/types/models.ts)
 - [events.ts](file://frontend/src/types/events.ts)
+- [models.ts](file://frontend/wailsjs/go/models.ts)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive Blackboard viewer system documentation with real-time state visualization
-- Enhanced backend with PersistentBlackboard state retrieval and API endpoints
-- Integrated frontend components for real-time blackboard monitoring
-- Added event-driven architecture with debounced state updates
-- Documented change notifications and real-time monitoring capabilities
+- Enhanced GetBlackboardState API endpoint with comprehensive state retrieval capabilities
+- Added comprehensive TypeScript models for blackboard state management with detailed type definitions
+- Improved real-time monitoring capabilities with debounced state updates and event-driven architecture
+- Expanded frontend integration with robust state visualization and user interaction features
+- Enhanced backend conversion logic for seamless data transfer between Go and TypeScript
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -39,27 +40,29 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Real-Time Blackboard Viewer System](#real-time-blackboard-viewer-system)
-7. [Event-Driven Architecture](#event-driven-architecture)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
-12. [Appendices](#appendices)
+6. [Enhanced GetBlackboardState API](#enhanced-getblackboardstate-api)
+7. [Comprehensive TypeScript Models](#comprehensive-typescript-models)
+8. [Real-Time Blackboard Viewer System](#real-time-blackboard-viewer-system)
+9. [Event-Driven Architecture](#event-driven-architecture)
+10. [Dependency Analysis](#dependency-analysis)
+11. [Performance Considerations](#performance-considerations)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Conclusion](#conclusion)
+14. [Appendices](#appendices)
 
 ## Introduction
 This document explains C0WRK's blackboard architecture for shared state management in the orchestration engine. The blackboard is a central, thread-safe state container that enables coordinated execution across multiple components: the orchestrator, planner, executor, tools, and persistence layer. It supports both in-memory and persistent modes, event-driven updates, and robust session management. The blackboard pattern allows decoupled components to read and write shared state while maintaining consistency, enabling features such as plan execution, reflection, replanning, and artifact tracking.
 
-**Updated** Added comprehensive real-time blackboard viewer system with frontend integration and event-driven state monitoring.
+**Updated** Enhanced with comprehensive GetBlackboardState API endpoint for real-time state retrieval, extensive TypeScript models for type-safe state management, and advanced real-time monitoring capabilities with debounced updates and event-driven architecture.
 
 ## Project Structure
-The blackboard system spans several packages:
+The blackboard system spans several packages with enhanced API integration:
 - sdk/orchestration: Defines the core blackboard interface, in-memory implementation, and orchestration types.
 - core: Exposes the persistent blackboard interface and task persistence abstractions used by backend components.
-- backend/session: Implements the persistent blackboard decorator and session/event infrastructure.
+- backend/session: Implements the persistent blackboard decorator and session/event infrastructure with enhanced state retrieval.
 - backend/application: Integrates persistence, event emission, and orchestrator factory wiring.
-- backend/frontend_api_session.go: Provides API endpoints for blackboard state retrieval and monitoring.
-- frontend: Contains the real-time blackboard viewer with React components, state management, and event handling.
+- backend/frontend_api_session.go: Provides comprehensive GetBlackboardState endpoint with detailed state conversion.
+- frontend: Contains the real-time blackboard viewer with React components, state management, and enhanced event handling.
 
 ```mermaid
 graph TB
@@ -71,6 +74,7 @@ Ctx["BB Context Keys"]
 end
 subgraph "core"
 BBIntf["PersistableBlackboard<br/>TaskPersistence"]
+TaskState["TaskState<br/>Core Data Model"]
 end
 subgraph "backend/session"
 PBB["PersistentBlackboard<br/>Decorator + Safety"]
@@ -84,6 +88,7 @@ end
 subgraph "backend/frontend_api"
 API["Frontend API<br/>GetBlackboardState"]
 DTO["DTO Models<br/>BlackboardStateResponse"]
+Converter["State Converter<br/>Core ↔ Frontend"]
 end
 subgraph "frontend"
 VIEW["BlackboardPanel<br/>Real-time Viewer"]
@@ -91,18 +96,22 @@ STORE["blackboardStore<br/>Zustand State"]
 EVENTS["useBlackboardEvents<br/>Debounced Updates"]
 APIFE["blackboard.ts<br/>RPC Wrapper"]
 MODELS["models.ts<br/>Type Definitions"]
+WAILS["Wails Models<br/>Go ↔ TS Bridge"]
 end
 BBInt --> BBMem
 BBIntf --> PBB
+TaskState --> DTO
 BBMem --> PBB
 EM --> EVT
 MGR --> PBB
 APP --> MGR
 API --> DTO
+API --> Converter
 VIEW --> STORE
 STORE --> EVENTS
 EVENTS --> APIFE
 APIFE --> MODELS
+MODELS --> WAILS
 ```
 
 **Diagram sources**
@@ -115,9 +124,13 @@ APIFE --> MODELS
 - [manager.go:80-98](file://backend/session/manager.go#L80-L98)
 - [application.go:41-53](file://backend/application.go#L41-L53)
 - [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
+- [frontend_api_session.go:211-282](file://backend/frontend_api_session.go#L211-L282)
 - [BlackboardPanel.tsx:10-52](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L52)
 - [blackboardStore.ts:44-53](file://frontend/src/stores/blackboardStore.ts#L44-L53)
 - [useBlackboardEvents.ts:12-45](file://frontend/src/hooks/events/useBlackboardEvents.ts#L12-L45)
+- [blackboard.ts:7-16](file://frontend/src/api/blackboard.ts#L7-L16)
+- [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
+- [models.ts:110-139](file://frontend/wailsjs/go/models.ts#L110-L139)
 
 **Section sources**
 - [blackboard.go:16-28](file://sdk/orchestration/blackboard.go#L16-L28)
@@ -135,11 +148,11 @@ APIFE --> MODELS
 - PersistableBlackboard: Extends Blackboard with persistence lifecycle methods and task completion/failure/reactivation.
 - PersistentBlackboard: Decorator that wraps MapBlackboard and persists writes to a TaskPersistence store with best-effort guarantees and timeouts.
 - TaskPersistence: Abstraction for storing task state, including plan, routing, step results, reflections, file changes, facts, and completion/failure.
-- TaskState: Restored state snapshot used to hydrate a PersistentBlackboard.
+- TaskState: Restored state snapshot used to hydrate a PersistentBlackboard with comprehensive field coverage.
 - EventEmitter: Typed event emitter for session lifecycle and orchestration events.
 - Session Manager: Creates orchestrators, wires persistence, and manages session lifecycle and task factories.
-- Frontend API: Exposes GetBlackboardState endpoint for real-time state retrieval.
-- Blackboard Viewer: React components for real-time state visualization and monitoring.
+- **Updated** Frontend API: Enhanced GetBlackboardState endpoint with comprehensive state retrieval and conversion logic.
+- **Updated** Blackboard Viewer: React components for real-time state visualization with advanced filtering and monitoring capabilities.
 
 **Section sources**
 - [interfaces.go:61-87](file://sdk/orchestration/interfaces.go#L61-L87)
@@ -152,7 +165,7 @@ APIFE --> MODELS
 - [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
 
 ## Architecture Overview
-The blackboard architecture integrates orchestration, persistence, eventing, and real-time monitoring:
+The blackboard architecture integrates orchestration, persistence, eventing, and enhanced real-time monitoring:
 
 ```mermaid
 sequenceDiagram
@@ -412,15 +425,149 @@ Success --> End
 - [blackboard.go:278-334](file://sdk/orchestration/blackboard.go#L278-L334)
 - [blackboard.go:355-410](file://sdk/orchestration/blackboard.go#L355-L410)
 
+## Enhanced GetBlackboardState API
+
+### Comprehensive State Retrieval Endpoint
+The GetBlackboardState API provides robust state retrieval with comprehensive coverage of all blackboard components:
+
+- **Task State Loading**: Retrieves the most recent task state for a session, falling back from in-memory to database storage.
+- **State Conversion**: Maps core.TaskState to frontend DTO with detailed field preservation including plan, step results, reflections, facts, and file changes.
+- **Error Handling**: Graceful handling of missing sessions, tasks, and persistence layers with informative error messages.
+- **Type Safety**: Strongly typed responses with comprehensive field validation and conversion logic.
+
+```mermaid
+sequenceDiagram
+participant Client as "Client"
+participant API as "FrontendAPI"
+participant Manager as "Session Manager"
+participant Store as "TaskStoreAdapter"
+participant DB as "TaskPersistence"
+Client->>API : "GetBlackboardState(sessionID)"
+API->>Manager : "GetBlackboardState(sessionID)"
+Manager->>Manager : "getOrRestoreSession(sessionID)"
+Manager->>Store : "GetLatestTaskID(sessionID)"
+Store->>DB : "GetLatestTaskID(sessionID)"
+DB-->>Store : "taskID"
+Store->>Store : "LoadTaskState(taskID)"
+Store->>DB : "LoadTaskState(taskID)"
+DB-->>Store : "TaskState"
+Store-->>Manager : "TaskState"
+Manager-->>API : "BlackboardState{TaskState}"
+API->>API : "convertBlackboardState(TaskState)"
+API-->>Client : "BlackboardStateResponse"
+```
+
+**Diagram sources**
+- [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
+- [frontend_api_session.go:211-282](file://backend/frontend_api_session.go#L211-L282)
+- [manager.go:1205-1249](file://backend/session/manager.go#L1205-L1249)
+
+### State Conversion Logic
+The conversion process transforms core.TaskState into frontend-compatible DTOs with comprehensive field mapping:
+
+- **Plan Conversion**: Converts core.Plan to BlackboardPlanResponse with step arrays and dependency information.
+- **Step Results**: Maps StepResult to BlackboardStepResponse with step_id, summary, and error details.
+- **Reflections**: Converts Reflection to BlackboardReflectionResponse with comprehensive analysis fields.
+- **Facts**: Transforms Fact to BlackboardFactResponse with keywords, content, and author information.
+- **File Changes**: Aggregates file changes by counting per-step modifications.
+
+**Section sources**
+- [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
+- [frontend_api_session.go:211-282](file://backend/frontend_api_session.go#L211-L282)
+- [manager.go:1205-1249](file://backend/session/manager.go#L1205-L1249)
+
+## Comprehensive TypeScript Models
+
+### Frontend State Model
+The TypeScript models provide comprehensive type safety for blackboard state management:
+
+- **BlackboardState**: Root state interface with task_id, session_id, status, original_request, plan, step_results, reflections, facts, final_output, and file_changes.
+- **BlackboardPlan**: Plan structure with steps array containing step details including id, summary, description, and depends_on dependencies.
+- **BlackboardStepResult**: Individual step result with step_id, summary, and optional error information.
+- **BlackboardReflection**: Comprehensive reflection data with summary, hypotheses, suggested_action, reasoning, failure_analysis, root_cause, action_plan, and timestamp.
+- **BlackboardFact**: Fact data with keywords array, content, and author information.
+
+```mermaid
+classDiagram
+class BlackboardState {
++task_id : string
++session_id : string
++status : string
++original_request : string
++plan? : BlackboardPlan
++step_results : Record~string, BlackboardStepResult~
++reflections : BlackboardReflection[]
++facts : BlackboardFact[]
++final_output? : string
++file_changes : Record~string, number~
+}
+class BlackboardPlan {
++steps : BlackboardPlanStep[]
+}
+class BlackboardPlanStep {
++id : string
++summary : string
++description : string
++depends_on : string[]
+}
+class BlackboardStepResult {
++step_id : string
++summary : string
++error? : string
+}
+class BlackboardReflection {
++summary : string
++hypotheses? : string[]
++suggested_action? : string
++reasoning? : string
++failure_analysis? : string
++root_cause? : string
++action_plan? : string
++timestamp : string
+}
+class BlackboardFact {
++keywords : string[]
++content : string
++author : string
+}
+BlackboardState --> BlackboardPlan
+BlackboardPlan --> BlackboardPlanStep
+BlackboardState --> BlackboardStepResult
+BlackboardState --> BlackboardReflection
+BlackboardState --> BlackboardFact
+```
+
+**Diagram sources**
+- [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
+- [models.ts:211-220](file://frontend/src/types/models.ts#L211-L220)
+- [models.ts:222-226](file://frontend/src/types/models.ts#L222-L226)
+- [models.ts:228-237](file://frontend/src/types/models.ts#L228-L237)
+- [models.ts:239-243](file://frontend/src/types/models.ts#L239-L243)
+
+### Backend Response Models
+The backend response models provide Go-side type definitions for seamless Wails integration:
+
+- **BlackboardStateResponse**: Complete response structure mirroring frontend models with proper JSON serialization.
+- **BlackboardPlanResponse**: Plan structure with steps array and dependency tracking.
+- **BlackboardStepResponse**: Step result with error handling and summary information.
+- **BlackboardReflectionResponse**: Reflection data with comprehensive analysis fields.
+- **BlackboardFactResponse**: Fact data with keyword tagging and author attribution.
+
+**Section sources**
+- [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
+- [models.ts:110-139](file://frontend/wailsjs/go/models.ts#L110-L139)
+- [models.ts:37-93](file://frontend/wailsjs/go/models.ts#L37-L93)
+- [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
+
 ## Real-Time Blackboard Viewer System
 
-### Frontend Architecture
-The real-time blackboard viewer provides comprehensive state visualization with the following components:
+### Advanced Frontend Architecture
+The real-time blackboard viewer provides comprehensive state visualization with enhanced features:
 
-- **BlackboardPanel**: Main React component that renders the blackboard state with collapsible sections and search functionality.
-- **blackboardStore**: Zustand-based state management for blackboard data with loading states and error handling.
-- **useBlackboardEvents**: Custom hook that handles debounced state updates via session events.
-- **getBlackboardState**: API wrapper that communicates with the backend through Wails RPC.
+- **BlackboardPanel**: Main React component that renders the blackboard state with collapsible sections, search functionality, and responsive design.
+- **blackboardStore**: Zustand-based state management with loading states, error handling, and stable selectors for efficient re-renders.
+- **useBlackboardEvents**: Enhanced custom hook with debounced state updates via session events and proper cleanup handling.
+- **getBlackboardState**: API wrapper that communicates with the backend through Wails RPC with comprehensive error handling.
 
 ```mermaid
 graph TB
@@ -440,6 +587,7 @@ subgraph "Backend Integration"
 API["FrontendAPI<br/>GetBlackboardState"]
 SM["Session Manager<br/>State Retrieval"]
 TS["TaskStoreAdapter<br/>State Loading"]
+CONV["State Converter<br/>Core ↔ Frontend"]
 end
 BP --> BB
 BP --> SB
@@ -450,6 +598,11 @@ UE --> GB
 GB --> API
 API --> SM
 SM --> TS
+TS --> CONV
+CONV --> API
+API --> SM
+SM --> TS
+TS --> CONV
 ```
 
 **Diagram sources**
@@ -458,42 +611,46 @@ SM --> TS
 - [useBlackboardEvents.ts:12-45](file://frontend/src/hooks/events/useBlackboardEvents.ts#L12-L45)
 - [blackboard.ts:7-16](file://frontend/src/api/blackboard.ts#L7-L16)
 - [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
+- [frontend_api_session.go:211-282](file://backend/frontend_api_session.go#L211-L282)
 
-### State Visualization Features
+### Enhanced State Visualization Features
 - **Real-time Updates**: Debounced RPC calls (300ms) prevent excessive API requests while ensuring timely state refresh.
-- **Search Functionality**: Filter facts, reflections, and step results by content or keywords.
-- **Collapsible Sections**: Organized display of plan steps, step results, facts, reflections, and final output.
-- **Badge Indicators**: Show counts for steps, facts, and reflections for quick state assessment.
-- **Responsive Design**: Adapts to sidebar and file viewer panel states.
+- **Advanced Search**: Filter facts, reflections, and step results by content or keywords with case-insensitive matching.
+- **Collapsible Sections**: Organized display of plan steps, step results, facts, reflections, and final output with expandable groups.
+- **Badge Indicators**: Show counts for steps, facts, and reflections for quick state assessment with color-coded indicators.
+- **Responsive Design**: Adapts to sidebar and file viewer panel states with proper spacing and layout adjustments.
+- **Error Handling**: Comprehensive error states with user-friendly messages and loading indicators.
 
 **Section sources**
-- [BlackboardPanel.tsx:10-196](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L196)
-- [blackboardStore.ts:1-54](file://frontend/src/stores/blackboardStore.ts#L1-54)
-- [useBlackboardEvents.ts:1-59](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-59)
+- [BlackboardPanel.tsx:10-189](file://frontend/src/components/chat/BlackboardPanel.tsx#L10-L189)
+- [blackboardStore.ts:1-53](file://frontend/src/stores/blackboardStore.ts#L1-53)
+- [useBlackboardEvents.ts:1-58](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-58)
 - [blackboard.ts:1-16](file://frontend/src/api/blackboard.ts#L1-16)
 
-### Backend State Retrieval
-The backend provides comprehensive state retrieval through:
+### Backend State Retrieval Enhancement
+The backend provides comprehensive state retrieval through enhanced mechanisms:
 
-- **GetBlackboardState Endpoint**: Returns current blackboard state for any session.
-- **State Conversion**: Maps core.TaskState to frontend DTO with proper serialization.
-- **Task State Loading**: Uses TaskStoreAdapter to load state from persistence layer.
-- **Fallback Logic**: Handles cases where no task state is available.
+- **GetBlackboardState Endpoint**: Returns current blackboard state for any session with robust error handling.
+- **State Conversion**: Maps core.TaskState to frontend DTO with proper serialization and field validation.
+- **Task State Loading**: Uses TaskStoreAdapter to load state from persistence layer with fallback logic.
+- **Fallback Logic**: Handles cases where no task state is available with graceful degradation.
+- **Type Safety**: Strongly typed responses ensure reliable data handling across the API boundary.
 
 **Section sources**
 - [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
 - [frontend_api_session.go:211-282](file://backend/frontend_api_session.go#L211-L282)
-- [manager.go:1204-1248](file://backend/session/manager.go#L1204-L1248)
+- [manager.go:1205-1249](file://backend/session/manager.go#L1205-L1249)
 
 ## Event-Driven Architecture
 
-### Change Notification System
-The blackboard system implements a sophisticated event-driven architecture for real-time monitoring:
+### Sophisticated Change Notification System
+The blackboard system implements a comprehensive event-driven architecture for real-time monitoring:
 
-- **blackboard_updated Events**: Emitted whenever blackboard state changes occur.
-- **Debounced Fetching**: 300ms debounce prevents API overload during rapid state changes.
-- **Session-Specific Updates**: Events are scoped to individual sessions for isolation.
-- **Type Safety**: Strongly typed event payloads ensure reliable data handling.
+- **blackboard_updated Events**: Emitted whenever blackboard state changes occur with detailed change type information.
+- **Debounced Fetching**: 300ms debounce prevents API overload during rapid state changes while maintaining responsiveness.
+- **Session-Specific Updates**: Events are scoped to individual sessions for isolation and proper cleanup.
+- **Type Safety**: Strongly typed event payloads ensure reliable data handling with comprehensive validation.
+- **Cleanup Management**: Proper cleanup of event listeners and timers prevents memory leaks and resource exhaustion.
 
 ```mermaid
 sequenceDiagram
@@ -511,30 +668,32 @@ FE->>API : "Fetch state (if timer expires)"
 API-->>FE : "BlackboardState"
 FE->>UI : "Update view"
 UI-->>UI : "Render new state"
+Note over FE : Timer cleanup on unmount
 ```
 
 **Diagram sources**
 - [useBlackboardEvents.ts:12-45](file://frontend/src/hooks/events/useBlackboardEvents.ts#L12-L45)
 - [events.ts:65](file://frontend/src/types/events.ts#L65)
 
-### State Monitoring Capabilities
+### Advanced State Monitoring Capabilities
 - **Comprehensive Coverage**: Monitors all aspects of blackboard state including plans, step results, reflections, and facts.
 - **Performance Optimization**: Debounce mechanism balances real-time updates with performance considerations.
-- **Error Handling**: Robust error handling with user-friendly error messages.
-- **Loading States**: Visual feedback during state fetching operations.
+- **Robust Error Handling**: Comprehensive error handling with user-friendly error messages and loading states.
+- **Resource Management**: Proper cleanup of event listeners and timers prevents memory leaks.
+- **Stable Selectors**: Zustand store provides efficient state updates with stable selector patterns.
 
 **Section sources**
 - [events.ts:65](file://frontend/src/types/events.ts#L65)
-- [useBlackboardEvents.ts:1-59](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-59)
-- [blackboardStore.ts:1-54](file://frontend/src/stores/blackboardStore.ts#L1-54)
+- [useBlackboardEvents.ts:1-58](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-58)
+- [blackboardStore.ts:1-53](file://frontend/src/stores/blackboardStore.ts#L1-53)
 
 ## Dependency Analysis
-The blackboard system exhibits clear separation of concerns with enhanced frontend integration:
+The blackboard system exhibits clear separation of concerns with enhanced frontend integration and comprehensive type safety:
 - sdk/orchestration depends on core types and defines the blackboard contract and in-memory implementation.
-- backend/session depends on core for persistence interfaces and implements the decorator and eventing.
+- backend/session depends on core for persistence interfaces and implements the decorator and eventing with enhanced state retrieval.
 - backend/application orchestrates wiring between persistence, eventing, and orchestrator construction.
-- backend/frontend_api_session provides the bridge between backend state and frontend visualization.
-- frontend components handle real-time state presentation and user interaction.
+- backend/frontend_api_session provides the bridge between backend state and frontend visualization with comprehensive conversion logic.
+- frontend components handle real-time state presentation, user interaction, and enhanced event handling with robust state management.
 
 ```mermaid
 graph LR
@@ -550,6 +709,8 @@ BACK_FE["backend/frontend_api_session.go"] --> FRONT_MODELS["frontend/src/types/
 FRONT_VIEW["frontend/src/components/chat/BlackboardPanel.tsx"] --> FRONT_STORE["frontend/src/stores/blackboardStore.ts"]
 FRONT_STORE --> FRONT_EVENTS["frontend/src/hooks/events/useBlackboardEvents.ts"]
 FRONT_EVENTS --> FRONT_API["frontend/src/api/blackboard.ts"]
+FRONT_API --> FRONT_WAILS["frontend/wailsjs/go/models.ts"]
+FRONT_WAILS --> FRONT_MODELS
 ```
 
 **Diagram sources**
@@ -564,6 +725,7 @@ FRONT_EVENTS --> FRONT_API["frontend/src/api/blackboard.ts"]
 - [events.go:12-186](file://backend/session/events.go#L12-L186)
 - [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
 - [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
+- [models.ts:110-139](file://frontend/wailsjs/go/models.ts#L110-L139)
 
 **Section sources**
 - [persistent_blackboard.go:13-49](file://core/persistent_blackboard.go#L13-L49)
@@ -572,6 +734,7 @@ FRONT_EVENTS --> FRONT_API["frontend/src/api/blackboard.ts"]
 - [manager.go:380-502](file://backend/session/manager.go#L380-L502)
 - [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
 - [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
+- [models.ts:110-139](file://frontend/wailsjs/go/models.ts#L110-L139)
 
 ## Performance Considerations
 - Concurrency: MapBlackboard uses read-write locks to minimize contention; consider batching frequent writes to reduce lock pressure.
@@ -579,27 +742,31 @@ FRONT_EVENTS --> FRONT_API["frontend/src/api/blackboard.ts"]
 - Persistence overhead: Best-effort persistence with timeouts prevents stalls; monitor persistence warnings via the Emitter.
 - Event volume: EventEmitter scopes events by plan step and retry attempt to reduce noise and improve UI responsiveness.
 - **Updated** Real-time monitoring: Debounced 300ms fetch intervals balance responsiveness with performance; adjust debounce timing based on workload characteristics.
-- **Updated** Frontend optimization: Zustand store provides efficient state updates; consider implementing selective re-rendering for large state objects.
+- **Updated** Frontend optimization: Zustand store provides efficient state updates with stable selectors; consider implementing selective re-rendering for large state objects.
+- **Updated** Type conversion: Efficient conversion between core.TaskState and frontend DTOs with minimal memory allocation.
+- **Updated** Event cleanup: Proper cleanup of event listeners and timers prevents memory leaks and resource exhaustion.
 
 ## Troubleshooting Guide
 - Persistence failures: The decorator runs persistence inside a timeout and panic guard; failures are logged and optionally emitted as service messages. Check logs and verify TaskPersistence availability.
 - Task not found: RestoreBlackboard returns nil when a task is not found; ensure correct taskID/sessionID pairing.
 - Inconsistent state: Verify that all writes go through the decorator to ensure persistence; confirm that restoration hydrates all fields (plan, step results, reflections, file changes, facts).
 - Event delivery: Confirm that the combined emit function routes events to both UI and persistence.
-- **Updated** Real-time viewer issues: Check network connectivity for RPC calls, verify debounce timer configuration, and ensure proper event subscription cleanup.
-- **Updated** State synchronization: Monitor for race conditions in state updates and verify proper event ordering in the frontend component lifecycle.
+- **Updated** Real-time viewer issues: Check network connectivity for RPC calls, verify debounce timer configuration, and ensure proper event subscription cleanup with automatic timer management.
+- **Updated** State synchronization: Monitor for race conditions in state updates and verify proper event ordering in the frontend component lifecycle with debounced fetch logic.
+- **Updated** Type conversion errors: Verify that all fields in TaskState are properly mapped to frontend DTOs; check for missing or mismatched field types.
+- **Updated** Memory leaks: Ensure proper cleanup of event listeners and timers in useBlackboardEvents hook; verify cleanup functions are called on component unmount.
 
 **Section sources**
 - [persistent_blackboard.go:71-108](file://backend/session/persistent_blackboard.go#L71-L108)
 - [persistent_blackboard.go:232-276](file://backend/session/persistent_blackboard.go#L232-L276)
 - [persistent_blackboard_test.go:467-477](file://backend/session/persistent_blackboard_test.go#L467-L477)
 - [application.go:78-84](file://backend/application.go#L78-L84)
-- [useBlackboardEvents.ts:1-59](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-59)
+- [useBlackboardEvents.ts:1-58](file://frontend/src/hooks/events/useBlackboardEvents.ts#L1-58)
 
 ## Conclusion
 C0WRK's blackboard architecture provides a robust, event-driven foundation for shared state management across orchestration, persistence, and session lifecycles. The MapBlackboard offers thread-safe, defensive state access, while the PersistentBlackboard decorator ensures durable state with best-effort guarantees. Together with typed events and a session manager, the system enables reliable coordination among components, supports resumable execution, and maintains strong consistency for artifacts and inter-step communication.
 
-**Updated** The addition of the comprehensive real-time blackboard viewer system enhances the architecture with powerful monitoring capabilities, enabling developers and users to observe execution progress, track state changes, and debug complex workflows through intuitive visual interfaces. The event-driven architecture with debounced state updates ensures optimal performance while maintaining real-time responsiveness for critical debugging and monitoring scenarios.
+**Updated** The enhanced GetBlackboardState API endpoint, comprehensive TypeScript models, and improved real-time monitoring capabilities significantly strengthen the architecture's observability and developer experience. The comprehensive state retrieval system provides detailed insights into execution progress, while the type-safe models ensure reliable data handling across the entire stack. The debounced event-driven architecture with proper cleanup mechanisms ensures optimal performance while maintaining real-time responsiveness for critical debugging and monitoring scenarios.
 
 ## Appendices
 
@@ -609,8 +776,9 @@ C0WRK's blackboard architecture provides a robust, event-driven foundation for s
 - TaskPersistence: CRUD for task state and lifecycle.
 - EventEmitter: Typed event emission with scoping.
 - Session Manager: Orchestrator factory and session lifecycle.
-- **Updated** Frontend API: GetBlackboardState endpoint for real-time state retrieval.
-- **Updated** Blackboard Viewer: React components for state visualization and monitoring.
+- **Updated** Frontend API: Enhanced GetBlackboardState endpoint with comprehensive state retrieval and conversion logic.
+- **Updated** Blackboard Viewer: React components for state visualization with advanced filtering and monitoring capabilities.
+- **Updated** TypeScript Models: Comprehensive type definitions for blackboard state management with detailed field coverage.
 
 **Section sources**
 - [interfaces.go:61-87](file://sdk/orchestration/interfaces.go#L61-L87)
@@ -619,14 +787,17 @@ C0WRK's blackboard architecture provides a robust, event-driven foundation for s
 - [manager.go:80-98](file://backend/session/manager.go#L80-L98)
 - [frontend_api_session.go:193-209](file://backend/frontend_api_session.go#L193-L209)
 - [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
+- [models.ts:110-139](file://frontend/wailsjs/go/models.ts#L110-L139)
 
 ### Data Model Reference
-- **BlackboardState**: Comprehensive state representation including task_id, session_id, status, original_request, plan, step_results, reflections, facts, and file_changes.
-- **BlackboardPlan**: Plan structure with steps array containing step details.
+- **BlackboardState**: Comprehensive state representation including task_id, session_id, status, original_request, plan, step_results, reflections, facts, final_output, and file_changes.
+- **BlackboardPlan**: Plan structure with steps array containing step details including id, summary, description, and depends_on dependencies.
 - **BlackboardStepResult**: Individual step result with step_id, summary, and optional error information.
-- **BlackboardReflection**: Reflection data with summary, hypotheses, suggested_action, reasoning, and timestamps.
-- **BlackboardFact**: Fact data with keywords, content, and author information.
+- **BlackboardReflection**: Comprehensive reflection data with summary, hypotheses, suggested_action, reasoning, failure_analysis, root_cause, action_plan, and timestamp.
+- **BlackboardFact**: Fact data with keywords array, content, and author information.
+- **BlackboardStateResponse**: Backend DTO mirroring frontend models with proper JSON serialization and field validation.
 
 **Section sources**
 - [models.ts:198-244](file://frontend/src/types/models.ts#L198-L244)
 - [frontend_api_session.go:211-282](file://backend/frontend_api_session.go#L211-L282)
+- [models.ts:110-139](file://frontend/wailsjs/go/models.ts#L110-L139)

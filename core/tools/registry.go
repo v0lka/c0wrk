@@ -201,7 +201,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}
 	}
 
-	// Param injection (e.g., project scoping for codebase-memory MCP tools)
+	// Param injection (e.g., project scoping for MCP tools)
 	r.mu.RLock()
 	injector := r.paramInjector
 	r.mu.RUnlock()

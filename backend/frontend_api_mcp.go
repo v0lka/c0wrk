@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/user/agent/backend/config"
-	beMcp "github.com/user/agent/backend/mcp"
 )
 
 // GetMCPStatus returns current MCP server connection statuses.
@@ -182,59 +181,5 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 		return fmt.Errorf("server %q: unsupported transport: %q", name, transport)
 	}
 
-	return nil
-}
-
-// CheckCodebaseMemoryMCP checks if codebase-memory-mcp is installed and returns its status.
-func (f *FrontendAPI) CheckCodebaseMemoryMCP() beMcp.CodeMemoryStatus {
-	return beMcp.CheckCodebaseMemoryMCP()
-}
-
-// InstallCodebaseMemoryMCP downloads and installs the codebase-memory-mcp binary.
-func (f *FrontendAPI) InstallCodebaseMemoryMCP() error {
-	if f.config == nil {
-		return errors.New("config not initialized")
-	}
-
-	progress := func(status string) {
-		if f.emitEvent != nil {
-			f.emitEvent(EventCodeMemoryInstallProgress, status)
-		}
-	}
-
-	installPath, err := beMcp.InstallCodebaseMemoryMCP(progress, nil)
-	if err != nil {
-		return err
-	}
-
-	f.log().Info("codebase-memory-mcp installed", "path", installPath)
-	f.emitEvent(EventCodeMemoryInstallProgress, "configuring")
-
-	// Add MCP config entry
-	f.configMu.Lock()
-	defer f.configMu.Unlock()
-
-	if f.config.MCP.Servers == nil {
-		f.config.MCP.Servers = make(map[string]config.MCPServerConfig)
-	}
-	f.config.MCP.Servers["codebase-memory"] = config.MCPServerConfig{
-		Transport: "stdio",
-		Command:   installPath,
-	}
-
-	// Persist config
-	if err := f.persistConfig(); err != nil {
-		f.log().Warn("failed to persist MCP server settings", "error", err)
-	}
-
-	// Reconfigure MCP gateway via the backend builder.
-	if f.app != nil {
-		if err := f.app.Builder().ReconfigureMCP(context.Background(), ToBuilderConfig(f.config)); err != nil {
-			f.emitEvent(EventCodeMemoryInstallProgress, "error")
-			return fmt.Errorf("failed to reconfigure MCP gateway: %w", err)
-		}
-	}
-
-	f.emitEvent(EventCodeMemoryInstallProgress, "done")
 	return nil
 }

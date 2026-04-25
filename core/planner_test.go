@@ -823,7 +823,7 @@ func TestPlanWithExploration_InformedPath(t *testing.T) {
 	}
 
 	reg := newPlannerTestRegistry([]struct{ name, source string }{
-		{"get_architecture", "codebase-memory-server"},
+		{"get_architecture", "mcp:test-server"},
 		{"read_file", ""},
 		{"list_directory", ""},
 		{"glob", ""},
@@ -865,7 +865,7 @@ func TestPlanWithExploration_InformedPath(t *testing.T) {
 }
 
 func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
-	// Only FS tools, no codebase-memory tools — should still use exploration
+	// Only FS tools — should still use exploration
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return finishWithPlan(validPlanJSON), nil
@@ -887,11 +887,6 @@ func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
 
 	// Verify getPlannerTools returns only FS tools
 	plannerTools := planner.getPlannerTools()
-	for _, pt := range plannerTools {
-		if strings.HasPrefix(pt.Source, "codebase-memory") {
-			t.Errorf("unexpected codebase-memory tool: %s", pt.Name)
-		}
-	}
 	if len(plannerTools) == 0 {
 		t.Fatal("expected FS planner tools, got none")
 	}
@@ -926,9 +921,9 @@ func TestPlanDirect_GeneralDomain(t *testing.T) {
 		},
 	}
 
-	// Register codebase-memory tools — should still use planDirect for "general" domain
+	// Register MCP tools — should still use planDirect for "general" domain
 	reg := newPlannerTestRegistry([]struct{ name, source string }{
-		{"get_architecture", "codebase-memory-server"},
+		{"get_architecture", "mcp:test-server"},
 		{"read_file", ""},
 	})
 
@@ -1019,10 +1014,10 @@ func TestPlanDirect_NoToolsAvailable(t *testing.T) {
 }
 
 func TestGetPlannerTools(t *testing.T) {
-	t.Run("codebase_memory_and_fs", func(t *testing.T) {
+	t.Run("mixed_registry_fs_only", func(t *testing.T) {
 		reg := newPlannerTestRegistry([]struct{ name, source string }{
-			{"get_architecture", "codebase-memory-server"},
-			{"query_codebase", "codebase-memory-server"},
+			{"get_architecture", "mcp:test-server"},
+			{"query_codebase", "mcp:test-server"},
 			{"read_file", ""},
 			{"list_directory", ""},
 			{"glob", ""},
@@ -1034,20 +1029,26 @@ func TestGetPlannerTools(t *testing.T) {
 		p := &Planner{toolRegistry: reg}
 		result := p.getPlannerTools()
 
-		// Should include both codebase-memory and FS tools, but not write_file
+		// Should include only FS tools, not MCP or write tools
 		names := map[string]bool{}
 		for _, td := range result {
 			names[td.Name] = true
 		}
 
-		expected := []string{"get_architecture", "query_codebase", "read_file", "list_directory", "glob", "ripgrep", "search_files"}
-		for _, e := range expected {
+		expectedFS := []string{"read_file", "list_directory", "glob", "ripgrep", "search_files"}
+		for _, e := range expectedFS {
 			if !names[e] {
 				t.Errorf("expected tool %q in result", e)
 			}
 		}
 		if names["write_file"] {
 			t.Error("write_file should NOT be included in planner tools")
+		}
+		if names["get_architecture"] {
+			t.Error("MCP tool get_architecture should NOT be included in planner tools")
+		}
+		if names["query_codebase"] {
+			t.Error("MCP tool query_codebase should NOT be included in planner tools")
 		}
 	})
 
@@ -1068,12 +1069,6 @@ func TestGetPlannerTools(t *testing.T) {
 		if !names["read_file"] || !names["glob"] {
 			t.Errorf("expected FS tools in result, got %v", names)
 		}
-
-		for _, td := range result {
-			if strings.HasPrefix(td.Source, "codebase-memory") {
-				t.Errorf("unexpected codebase-memory tool: %s", td.Name)
-			}
-		}
 	})
 
 	t.Run("nil_registry", func(t *testing.T) {
@@ -1081,39 +1076,6 @@ func TestGetPlannerTools(t *testing.T) {
 		result := p.getPlannerTools()
 		if result != nil {
 			t.Errorf("expected nil for nil registry, got %v", result)
-		}
-	})
-}
-
-func TestHasCodebaseMemoryTools(t *testing.T) {
-	t.Run("with_codebase_memory", func(t *testing.T) {
-		reg := newPlannerTestRegistry([]struct{ name, source string }{
-			{"get_architecture", "codebase-memory-server"},
-			{"read_file", ""},
-		})
-
-		p := &Planner{toolRegistry: reg}
-		if !p.hasCodebaseMemoryTools() {
-			t.Error("expected hasCodebaseMemoryTools() to return true")
-		}
-	})
-
-	t.Run("without_codebase_memory", func(t *testing.T) {
-		reg := newPlannerTestRegistry([]struct{ name, source string }{
-			{"read_file", ""},
-			{"glob", ""},
-		})
-
-		p := &Planner{toolRegistry: reg}
-		if p.hasCodebaseMemoryTools() {
-			t.Error("expected hasCodebaseMemoryTools() to return false")
-		}
-	})
-
-	t.Run("nil_registry", func(t *testing.T) {
-		p := &Planner{}
-		if p.hasCodebaseMemoryTools() {
-			t.Error("expected hasCodebaseMemoryTools() to return false for nil registry")
 		}
 	})
 }
@@ -1131,7 +1093,7 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 			}
 
 			reg := newPlannerTestRegistry([]struct{ name, source string }{
-				{"get_architecture", "codebase-memory-server"},
+				{"get_architecture", "mcp:test-server"},
 				{"read_file", ""},
 			})
 
@@ -1177,7 +1139,7 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 		}
 
 		reg := newPlannerTestRegistry([]struct{ name, source string }{
-			{"get_architecture", "codebase-memory-server"},
+			{"get_architecture", "mcp:test-server"},
 			{"read_file", ""},
 		})
 
@@ -1220,7 +1182,7 @@ func TestPlanWithExploration_ExecutorError_FallsBackToDirect(t *testing.T) {
 	}
 
 	reg := newPlannerTestRegistry([]struct{ name, source string }{
-		{"get_architecture", "codebase-memory-server"},
+		{"get_architecture", "mcp:test-server"},
 		{"read_file", ""},
 		{"list_directory", ""},
 		{"glob", ""},
@@ -1266,7 +1228,7 @@ func TestPlanWithExploration_ContextCancellation_Propagates(t *testing.T) {
 	}
 
 	reg := newPlannerTestRegistry([]struct{ name, source string }{
-		{"get_architecture", "codebase-memory-server"},
+		{"get_architecture", "mcp:test-server"},
 		{"read_file", ""},
 	})
 

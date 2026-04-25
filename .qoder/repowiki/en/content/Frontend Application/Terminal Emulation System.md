@@ -7,32 +7,45 @@
 - [backend/terminal/manager_stub.go](file://backend/terminal/manager_stub.go)
 - [frontend/src/components/terminal/Terminal.tsx](file://frontend/src/components/terminal/Terminal.tsx)
 - [frontend/src/components/terminal/TerminalPanel.tsx](file://frontend/src/components/terminal/TerminalPanel.tsx)
+- [frontend/src/hooks/useXTermTheme.ts](file://frontend/src/hooks/useXTermTheme.ts)
 - [frontend/src/api/terminal.ts](file://frontend/src/api/terminal.ts)
+- [frontend/src/index.css](file://frontend/src/index.css)
 - [backend/session/manager.go](file://backend/session/manager.go)
 - [backend/session/persistence.go](file://backend/session/persistence.go)
 - [backend/application.go](file://backend/application.go)
 - [frontend/src/stores/sessionStore.ts](file://frontend/src/stores/sessionStore.ts)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Added comprehensive terminal theming system documentation
+- Updated Terminal Component Architecture section to include useXTermTheme hook
+- Enhanced Frontend Integration section with dynamic theming capabilities
+- Added new Terminal Theming System section covering CSS-based theming
+- Updated architecture diagrams to reflect the new theming integration
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [System Architecture](#system-architecture)
 3. [Core Components](#core-components)
 4. [Terminal Management](#terminal-management)
-5. [Frontend Integration](#frontend-integration)
-6. [Session Integration](#session-integration)
-7. [Data Persistence](#data-persistence)
-8. [Platform Support](#platform-support)
-9. [Error Handling](#error-handling)
-10. [Performance Considerations](#performance-considerations)
-11. [Troubleshooting Guide](#troubleshooting-guide)
-12. [Conclusion](#conclusion)
+5. [Terminal Theming System](#terminal-theming-system)
+6. [Frontend Integration](#frontend-integration)
+7. [Session Integration](#session-integration)
+8. [Data Persistence](#data-persistence)
+9. [Platform Support](#platform-support)
+10. [Error Handling](#error-handling)
+11. [Performance Considerations](#performance-considerations)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Terminal Emulation System provides a PTY-based terminal interface for the desktop application, enabling users to interact with shell environments directly from the UI. This system integrates seamlessly with the broader session management framework, offering real-time terminal emulation with proper event handling, persistence, and cross-platform compatibility.
 
 The system supports Unix-like systems through PTY (pseudo-terminal) functionality while providing graceful degradation on Windows platforms. It maintains full integration with the application's event-driven architecture, ensuring consistent user experience across all components.
+
+**Updated** The system now features a comprehensive terminal theming system that dynamically applies CSS custom properties to xterm.js themes, providing seamless integration with the application's design system.
 
 ## System Architecture
 
@@ -44,6 +57,8 @@ subgraph "Frontend Layer"
 TP[TerminalPanel]
 T[Terminal Component]
 API[Terminal API]
+THEME[useXTermTheme Hook]
+CSS[CSS Custom Properties]
 end
 subgraph "Backend Layer"
 FA[FrontendAPI]
@@ -58,6 +73,8 @@ FS[File System]
 end
 TP --> T
 T --> API
+T --> THEME
+THEME --> CSS
 API --> FA
 FA --> TM
 FA --> SM
@@ -71,6 +88,8 @@ API -.->|"Event handling"| FA
 
 **Diagram sources**
 - [frontend/src/components/terminal/TerminalPanel.tsx:1-47](file://frontend/src/components/terminal/TerminalPanel.tsx#L1-L47)
+- [frontend/src/components/terminal/Terminal.tsx:1-134](file://frontend/src/components/terminal/Terminal.tsx#L1-L134)
+- [frontend/src/hooks/useXTermTheme.ts:1-90](file://frontend/src/hooks/useXTermTheme.ts#L1-L90)
 - [backend/frontend_api_terminal.go:1-74](file://backend/frontend_api_terminal.go#L1-L74)
 - [backend/terminal/manager.go:1-194](file://backend/terminal/manager.go#L1-L194)
 
@@ -128,10 +147,13 @@ sequenceDiagram
 participant User as User
 participant Panel as TerminalPanel
 participant Term as Terminal Component
+participant ThemeHook as useXTermTheme Hook
 participant API as Terminal API
 participant Backend as Backend Manager
 User->>Panel : Open Terminal
 Panel->>Term : Render Terminal
+Term->>ThemeHook : Resolve Theme from CSS
+ThemeHook-->>Term : Return ITheme Object
 Term->>API : startTerminal()
 API->>Backend : StartTerminal()
 Backend->>Backend : Start PTY Process
@@ -151,6 +173,7 @@ Backend->>Backend : Resize PTY
 
 **Diagram sources**
 - [frontend/src/components/terminal/Terminal.tsx:20-117](file://frontend/src/components/terminal/Terminal.tsx#L20-L117)
+- [frontend/src/hooks/useXTermTheme.ts:81-89](file://frontend/src/hooks/useXTermTheme.ts#L81-L89)
 - [frontend/src/api/terminal.ts:6-44](file://frontend/src/api/terminal.ts#L6-L44)
 - [backend/frontend_api_terminal.go:11-28](file://backend/frontend_api_terminal.go#L11-L28)
 
@@ -199,11 +222,94 @@ The terminal system integrates with the session management framework to provide 
 - [backend/terminal/manager.go:47-140](file://backend/terminal/manager.go#L47-L140)
 - [backend/frontend_api_terminal.go:11-28](file://backend/frontend_api_terminal.go#L11-L28)
 
+## Terminal Theming System
+
+**New Section** The terminal theming system provides dynamic, CSS-based theming for the xterm.js terminal component, ensuring seamless integration with the application's design system.
+
+### useXTermTheme Hook Architecture
+
+The `useXTermTheme` hook serves as the central mechanism for resolving terminal themes from CSS custom properties:
+
+```mermaid
+flowchart TD
+CSSVars[CSS Custom Properties] --> getTokenMap[TOKEN_MAP Mapping]
+getTokenMap --> getCSSVar[getCSSVar Function]
+getCSSVar --> resolveTheme[resolveThemeFromCSS]
+resolveTheme --> useMemo[useMemo Cache]
+useMemo --> ITheme[ITheme Object]
+ITheme --> TerminalComponent[Terminal Component]
+```
+
+**Diagram sources**
+- [frontend/src/hooks/useXTermTheme.ts:43-64](file://frontend/src/hooks/useXTermTheme.ts#L43-L64)
+- [frontend/src/hooks/useXTermTheme.ts:70-79](file://frontend/src/hooks/useXTermTheme.ts#L70-L79)
+- [frontend/src/hooks/useXTermTheme.ts:87-89](file://frontend/src/hooks/useXTermTheme.ts#L87-L89)
+
+### CSS Custom Property Mapping
+
+The theming system maps XTerm theme tokens to CSS custom properties defined in the design system:
+
+| XTerm Token | CSS Variable | Purpose |
+|-------------|--------------|---------|
+| `background` | `--color-background` | Terminal background color |
+| `foreground` | `--color-foreground` | Default text color |
+| `cursor` | `--color-terminal-cursor` | Cursor color |
+| `selectionBackground` | `--color-terminal-selection` | Selection highlight |
+| `black` | `--color-background` | ANSI black |
+| `red` | `--color-destructive` | ANSI red |
+| `green` | `--color-success` | ANSI green |
+| `yellow` | `--color-highlight` | ANSI yellow |
+| `blue` | `--color-info` | ANSI blue |
+| `magenta` | `--color-hljs-keyword` | ANSI magenta |
+| `cyan` | `--color-hljs-literal` | ANSI cyan |
+| `white` | `--color-foreground` | ANSI white |
+| `brightBlack` | `--color-hljs-comment` | ANSI bright black |
+| `brightRed` | `--color-destructive` | ANSI bright red |
+| `brightGreen` | `--color-success` | ANSI bright green |
+| `brightYellow` | `--color-highlight` | ANSI bright yellow |
+| `brightBlue` | `--color-info` | ANSI bright blue |
+| `brightMagenta` | `--color-hljs-keyword` | ANSI bright magenta |
+| `brightCyan` | `--color-hljs-literal` | ANSI bright cyan |
+| `brightWhite` | `--color-terminal-bright-white` | ANSI bright white |
+
+### Theme Resolution Process
+
+The theme resolution process follows a systematic approach to ensure optimal performance and compatibility:
+
+```mermaid
+sequenceDiagram
+participant Component as Terminal Component
+participant Hook as useXTermTheme Hook
+participant CSS as CSS Variables
+participant Resolver as Theme Resolver
+Component->>Hook : Request Theme
+Hook->>Resolver : resolveThemeFromCSS()
+loop For each token in TOKEN_MAP
+Resolver->>CSS : getCSSVar(token)
+CSS-->>Resolver : Return hex value or empty
+alt Value exists and non-empty
+Resolver->>Resolver : Add to theme object
+else No value or empty
+Resolver->>Resolver : Skip token
+end
+end
+Resolver-->>Hook : Return ITheme object
+Hook-->>Component : Provide theme
+```
+
+**Diagram sources**
+- [frontend/src/hooks/useXTermTheme.ts:70-79](file://frontend/src/hooks/useXTermTheme.ts#L70-L79)
+- [frontend/src/hooks/useXTermTheme.ts:34-36](file://frontend/src/hooks/useXTermTheme.ts#L34-L36)
+
+**Section sources**
+- [frontend/src/hooks/useXTermTheme.ts:1-90](file://frontend/src/hooks/useXTermTheme.ts#L1-L90)
+- [frontend/src/index.css:61-64](file://frontend/src/index.css#L61-L64)
+
 ## Frontend Integration
 
 ### Terminal Component Architecture
 
-The frontend terminal component provides a comprehensive terminal interface with real-time interaction capabilities:
+The frontend terminal component provides a comprehensive terminal interface with real-time interaction capabilities and dynamic theming:
 
 ```mermaid
 classDiagram
@@ -212,12 +318,18 @@ class Terminal {
 -XTerm termRef
 -FitAddon fitAddonRef
 -(() => void) unsubscribeRef
+-ITheme theme
 +sessionId string
 +visible boolean
 +onReady() void
 +useEffect() void
 +handleResize() void
 +handleClick() void
+}
+class useXTermTheme {
++resolveThemeFromCSS() ITheme
++TOKEN_MAP mapping
++getCSSVar(name) string
 }
 class TerminalAPI {
 +startTerminal(sessionId) Promise~void~
@@ -236,12 +348,17 @@ class TerminalPanel {
 }
 TerminalPanel --> Terminal : "renders"
 Terminal --> TerminalAPI : "uses"
+Terminal --> useXTermTheme : "uses"
+useXTermTheme --> CSS : "reads from"
 ```
 
 **Diagram sources**
 - [frontend/src/components/terminal/Terminal.tsx:14-144](file://frontend/src/components/terminal/Terminal.tsx#L14-L144)
+- [frontend/src/hooks/useXTermTheme.ts:81-89](file://frontend/src/hooks/useXTermTheme.ts#L81-L89)
 - [frontend/src/components/terminal/TerminalPanel.tsx:10-47](file://frontend/src/components/terminal/TerminalPanel.tsx#L10-L47)
 - [frontend/src/api/terminal.ts:6-56](file://frontend/src/api/terminal.ts#L6-L56)
+
+**Updated** The Terminal component now integrates the `useXTermTheme` hook to dynamically apply CSS-based themes, eliminating the need for hardcoded theme configurations and ensuring consistency with the application's design system.
 
 **Section sources**
 - [frontend/src/components/terminal/Terminal.tsx:14-144](file://frontend/src/components/terminal/Terminal.tsx#L14-L144)
@@ -382,9 +499,11 @@ CheckType --> |Missing Manager| ManagerError["Terminal Manager Not Initialized"]
 CheckType --> |Session Not Found| SessionError["Session Not Found"]
 CheckType --> |PTY Operation| PtyError["PTY Operation Failed"]
 CheckType --> |Resource Access| ResourceError["Resource Access Denied"]
+CheckType --> |Theme Resolution| ThemeError["Theme Resolution Failed"]
 ManagerError --> LogError["Log Error Details"]
 SessionError --> LogError
 PtyError --> LogError
+ThemeError --> LogError
 ResourceError --> LogError
 LogError --> UserFeedback["Display User-Friendly Message"]
 UserFeedback --> Cleanup["Cleanup Resources"]
@@ -394,6 +513,7 @@ Cleanup --> ReturnError([Return Error])
 **Diagram sources**
 - [backend/frontend_api_terminal.go:12-26](file://backend/frontend_api_terminal.go#L12-L26)
 - [backend/terminal/manager.go:86-98](file://backend/terminal/manager.go#L86-L98)
+- [frontend/src/hooks/useXTermTheme.ts:70-79](file://frontend/src/hooks/useXTermTheme.ts#L70-L79)
 
 ### Error Recovery Strategies
 
@@ -413,6 +533,7 @@ The terminal system implements efficient memory management for large outputs and
 - Proper resource cleanup on termination
 - Thread-safe session management
 - Efficient event emission
+- **Updated** Memoized theme resolution to prevent unnecessary re-computation
 
 ### Concurrency Patterns
 
@@ -441,6 +562,12 @@ The system uses goroutines for non-blocking I/O operations while maintaining thr
 - Check buffer management
 - Ensure proper encoding handling
 
+#### **New** Theme Not Applying
+- Verify CSS custom properties are defined in `:root`
+- Check that `useXTermTheme` hook is properly imported and used
+- Ensure theme tokens match the expected XTerm token names
+- Confirm CSS variables resolve to valid hex color values
+
 ### Debugging Procedures
 
 **Section sources**
@@ -451,6 +578,8 @@ The system uses goroutines for non-blocking I/O operations while maintaining thr
 
 The Terminal Emulation System provides a robust, cross-platform solution for interactive shell access within the desktop application. Through careful separation of concerns, comprehensive error handling, and seamless integration with the session management framework, it delivers a reliable terminal experience across different operating systems.
 
+**Updated** The system's architecture now includes a sophisticated terminal theming system that dynamically applies CSS custom properties to xterm.js themes, ensuring perfect visual consistency with the application's design system. This enhancement eliminates the need for hardcoded theme configurations and provides a scalable foundation for future theming features.
+
 The system's architecture supports future enhancements including improved error recovery, enhanced logging capabilities, and expanded platform support. Its modular design ensures maintainability and extensibility while preserving backward compatibility.
 
 Key strengths include:
@@ -460,5 +589,6 @@ Key strengths include:
 - Cross-platform compatibility
 - Integration with the broader event-driven architecture
 - Efficient resource management
+- **New** Dynamic CSS-based terminal theming system
 
 The implementation demonstrates best practices in system design, providing a solid foundation for advanced terminal features and integrations.

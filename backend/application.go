@@ -249,13 +249,6 @@ func (app *Application) Shutdown() {
 	}
 }
 
-// SetBashRtkPath updates the rtk binary path on the bash_exec tool.
-func (app *Application) SetBashRtkPath(path string) {
-	if app.builder != nil {
-		app.builder.SetBashRtkPath(path)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Sentinel errors
 // ---------------------------------------------------------------------------
