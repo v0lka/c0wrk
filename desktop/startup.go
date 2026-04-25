@@ -138,7 +138,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Terminal manager: emits raw PTY output as session-scoped events.
 	termManager := terminal.NewManager(log, func(sessionID string, data []byte) {
 		eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
-		wailsRuntime.EventsEmit(a.ctx, eventName, string(data))
+		wailsRuntime.EventsEmit(a.ctx, eventName, map[string]string{"data": string(data)})
 	})
 
 	// --- Desktop UI callbacks ---
