@@ -2,6 +2,27 @@ package prompt
 
 import "strings"
 
+// CacheBreakMarker is the sentinel used to split a system prompt string into
+// cacheable (stable) and dynamic parts. Consumers like ContextWindow check for
+// this marker to emit multiple system messages, enabling provider-level prompt
+// caching (e.g. Anthropic's ephemeral cache control).
+const CacheBreakMarker = "\x00CACHE_BREAK\x00"
+
+// SplitCacheBreak splits a system prompt on CacheBreakMarker.
+// Returns the parts (1 if no marker, 2 if marker present).
+// Empty parts are omitted.
+func SplitCacheBreak(systemPrompt string) []string {
+	parts := strings.Split(systemPrompt, CacheBreakMarker)
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
 type section struct {
 	content string
 }
@@ -10,6 +31,7 @@ type section struct {
 type Builder struct {
 	sections      []section
 	substitutions map[string]string
+	cacheBreakIdx int // index in sections after which dynamic content starts; -1 = no break
 }
 
 // NewBuilder creates a new prompt Builder.
@@ -17,6 +39,7 @@ func NewBuilder() *Builder {
 	return &Builder{
 		sections:      nil,
 		substitutions: make(map[string]string),
+		cacheBreakIdx: -1,
 	}
 }
 
@@ -40,20 +63,46 @@ func (b *Builder) ReplaceAll(substitutions map[string]string) *Builder {
 	return b
 }
 
-// Build assembles the final prompt string.
-// It includes all non-empty sections, applies all registered
-// substitutions, and joins sections with double newlines.
-func (b *Builder) Build() string {
-	var included []string
+// CacheBreak marks the current position as the boundary between stable
+// (cacheable) and dynamic prompt content. Sections added before this call
+// form the stable part; sections added after form the dynamic part.
+func (b *Builder) CacheBreak() *Builder {
+	b.cacheBreakIdx = len(b.sections)
+	return b
+}
 
-	for _, s := range b.sections {
-		if s.content == "" {
-			continue
-		}
-		included = append(included, s.content)
+// BuildParts returns the prompt split at the CacheBreak boundary.
+// If no CacheBreak was set, stable contains the full prompt and dynamic is empty.
+// Substitutions are applied to each part independently.
+func (b *Builder) BuildParts() (stable, dynamic string) {
+	if b.cacheBreakIdx < 0 {
+		return b.Build(), ""
 	}
 
-	result := strings.Join(included, "\n\n")
+	stable = joinSections(b.sections[:b.cacheBreakIdx])
+	dynamic = joinSections(b.sections[b.cacheBreakIdx:])
+
+	for placeholder, value := range b.substitutions {
+		stable = strings.ReplaceAll(stable, placeholder, value)
+		dynamic = strings.ReplaceAll(dynamic, placeholder, value)
+	}
+
+	return stable, dynamic
+}
+
+// Build assembles the final prompt string.
+// When CacheBreak() was called, a CacheBreakMarker is inserted between
+// the stable and dynamic parts. Otherwise sections are joined with double newlines.
+func (b *Builder) Build() string {
+	if b.cacheBreakIdx >= 0 {
+		stable, dynamic := b.BuildParts()
+		if dynamic == "" {
+			return stable
+		}
+		return stable + CacheBreakMarker + dynamic
+	}
+
+	result := joinSections(b.sections)
 
 	// Apply substitutions
 	for placeholder, value := range b.substitutions {
@@ -61,4 +110,16 @@ func (b *Builder) Build() string {
 	}
 
 	return result
+}
+
+// joinSections concatenates non-empty section contents with double newlines.
+func joinSections(sections []section) string {
+	var included []string
+	for _, s := range sections {
+		if s.content == "" {
+			continue
+		}
+		included = append(included, s.content)
+	}
+	return strings.Join(included, "\n\n")
 }

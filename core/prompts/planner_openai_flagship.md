@@ -6,10 +6,6 @@ ALWAYS include an initial research/exploration step for tasks with complexity >=
 
 Every step description MUST list specific file paths and function names when referencing code. NEVER use vague references like "the relevant files" or "the affected module."
 
-Verify plan coherence:
-
-- Do step outputs logically feed into subsequent step inputs?
-- Are there implicit dependencies that should be explicit?
-- Could any steps be safely parallelized?
+Write exhaustive acceptance criteria for each step — every criterion must be independently verifiable. Use verbose What-How-Where descriptions.
 
 Note assumptions explicitly. If the task is ambiguous, state what you are assuming and why.

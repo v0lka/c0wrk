@@ -13,7 +13,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolSearchContentDescription = `Recursively searches all files under the given directory for lines matching a regular expression. Returns matching lines with their file paths and line numbers. Results are capped at a configured maximum. For faster, more feature-rich content search (with .gitignore support, context lines, etc.), prefer ripgrep instead.`
+const toolSearchContentDescription = `Recursively searches all files under the given directory for lines matching a regular expression. Returns matching lines with their file paths and line numbers. Results are capped at a configured maximum.`
 
 // SearchContentTool searches file contents for regex matches.
 type SearchContentTool struct {

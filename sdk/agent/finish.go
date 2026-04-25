@@ -7,7 +7,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolFinishDescription = `Signal task completion and deliver the final result. Call this tool exactly once, only after all work is done. The answer parameter should contain the complete result: findings, analysis, code summaries, or any deliverable relevant to the task. This output is stored and made available to subsequent steps in the pipeline, so it must be self-contained and comprehensive.`
+const toolFinishDescription = `Signal task completion and deliver the final result. Call this tool exactly once, only after all work is done. The answer parameter should contain the complete result: findings, analysis, code summaries, or any deliverable relevant to the task. Include the specific deliverables requested by the task. Summarize key findings concisely.`
 
 // FinishTool is a special tool that signals task completion.
 type FinishTool struct{}

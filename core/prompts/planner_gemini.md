@@ -8,10 +8,6 @@ All file references in step descriptions MUST use absolute paths. NEVER use rela
 
 **New project**: Plan scaffolding steps before implementation. Explain architectural choices in step descriptions.
 
-Verify plan coherence:
-
-- Do step outputs logically feed into subsequent step inputs?
-- Are there implicit dependencies that should be explicit?
-- Could any steps be safely parallelized?
+Assign an explicit workflow mode (existing vs. greenfield) in each step description when applicable. Use prescriptive step descriptions — tell the executor exactly what to do, not what to consider.
 
 Note assumptions explicitly.

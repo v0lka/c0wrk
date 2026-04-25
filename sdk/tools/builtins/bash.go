@@ -18,7 +18,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolBashDescription = `Execute shell commands via bash -c. Use this for build commands, running scripts, installing packages, git operations, and system tasks not covered by dedicated tools. Prefer read_file/write_file/edit_file for file operations, glob for finding files by name, and ripgrep for searching file contents — only fall back to bash_exec when no higher-level tool fits. DO NOT use bash_exec for operations that can be performed using higher-level tools. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). An optional working_directory can be set for the command's execution context.`
+const toolBashDescription = `Execute shell commands via bash -c. Use this for build commands, running scripts, installing packages, git operations, and system tasks. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). An optional working_directory can be set for the command's execution context.`
 
 // BashExecTool executes bash commands in a shell.
 type BashExecTool struct {

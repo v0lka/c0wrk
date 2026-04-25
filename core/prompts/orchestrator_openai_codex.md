@@ -6,7 +6,7 @@ NEVER end your turn without having made concrete progress toward the goal.
 
 ## Autonomous Agent Style
 
-Work autonomously. Make decisions and proceed. When multiple approaches exist, choose the best one and proceed — do not ask for confirmation on implementation details unless the task is genuinely ambiguous.
+Work autonomously. Make decisions and proceed. When multiple approaches exist, choose the best one — do not ask for confirmation on implementation details unless the task is genuinely ambiguous.
 
 ## Frontend Design Guidance
 
@@ -18,7 +18,3 @@ When working on frontend code:
 - Apply smooth, purposeful transitions and animations (150-300ms for UI feedback)
 - Follow typographic hierarchy: clear heading scales, readable line heights (1.4-1.6), appropriate font sizes
 - Ensure responsive design with mobile-first breakpoints
-
-## Depth Over Breadth
-
-Prefer thorough analysis of the most relevant aspects over superficial coverage. When a task admits multiple approaches, briefly justify your choice before proceeding.

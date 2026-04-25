@@ -162,6 +162,199 @@ func TestBuilderChaining(t *testing.T) {
 	}
 }
 
+func TestCacheBreak(t *testing.T) {
+	t.Parallel()
+
+	t.Run("CacheBreak returns same builder", func(t *testing.T) {
+		t.Parallel()
+		b := NewBuilder()
+		if b.CacheBreak() != b {
+			t.Error("CacheBreak() should return the same builder")
+		}
+	})
+
+	t.Run("Build inserts marker between stable and dynamic", func(t *testing.T) {
+		t.Parallel()
+		got := NewBuilder().
+			Core("stable part").
+			CacheBreak().
+			Core("dynamic part").
+			Build()
+
+		want := "stable part" + CacheBreakMarker + "dynamic part"
+		if got != want {
+			t.Errorf("Build() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("Build without CacheBreak has no marker", func(t *testing.T) {
+		t.Parallel()
+		got := NewBuilder().
+			Core("a").
+			Core("b").
+			Build()
+
+		if strings.Contains(got, CacheBreakMarker) {
+			t.Error("Build() should not contain CacheBreakMarker when CacheBreak not called")
+		}
+	})
+
+	t.Run("Build with CacheBreak at end omits marker", func(t *testing.T) {
+		t.Parallel()
+		got := NewBuilder().
+			Core("only stable").
+			CacheBreak().
+			Build()
+
+		if strings.Contains(got, CacheBreakMarker) {
+			t.Error("Build() should not contain marker when no dynamic content follows")
+		}
+		if got != "only stable" {
+			t.Errorf("Build() = %q, want %q", got, "only stable")
+		}
+	})
+
+	t.Run("Build with substitutions across cache break", func(t *testing.T) {
+		t.Parallel()
+		got := NewBuilder().
+			Core("Hello {{NAME}}").
+			CacheBreak().
+			Core("Workspace: {{WS}}").
+			Replace("{{NAME}}", "Agent").
+			Replace("{{WS}}", "/home").
+			Build()
+
+		want := "Hello Agent" + CacheBreakMarker + "Workspace: /home"
+		if got != want {
+			t.Errorf("Build() = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestBuildParts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with CacheBreak", func(t *testing.T) {
+		t.Parallel()
+		stable, dynamic := NewBuilder().
+			Core("section1").
+			Core("section2").
+			CacheBreak().
+			Core("section3").
+			BuildParts()
+
+		if stable != "section1\n\nsection2" {
+			t.Errorf("stable = %q, want %q", stable, "section1\n\nsection2")
+		}
+		if dynamic != "section3" {
+			t.Errorf("dynamic = %q, want %q", dynamic, "section3")
+		}
+	})
+
+	t.Run("without CacheBreak returns full in stable", func(t *testing.T) {
+		t.Parallel()
+		stable, dynamic := NewBuilder().
+			Core("a").
+			Core("b").
+			BuildParts()
+
+		if stable != "a\n\nb" {
+			t.Errorf("stable = %q, want %q", stable, "a\n\nb")
+		}
+		if dynamic != "" {
+			t.Errorf("dynamic = %q, want empty", dynamic)
+		}
+	})
+
+	t.Run("substitutions applied to both parts", func(t *testing.T) {
+		t.Parallel()
+		stable, dynamic := NewBuilder().
+			Core("Hello {{X}}").
+			CacheBreak().
+			Core("World {{X}}").
+			Replace("{{X}}", "!").
+			BuildParts()
+
+		if stable != "Hello !" {
+			t.Errorf("stable = %q, want %q", stable, "Hello !")
+		}
+		if dynamic != "World !" {
+			t.Errorf("dynamic = %q, want %q", dynamic, "World !")
+		}
+	})
+
+	t.Run("CacheBreak at start means empty stable", func(t *testing.T) {
+		t.Parallel()
+		stable, dynamic := NewBuilder().
+			CacheBreak().
+			Core("all dynamic").
+			BuildParts()
+
+		if stable != "" {
+			t.Errorf("stable = %q, want empty", stable)
+		}
+		if dynamic != "all dynamic" {
+			t.Errorf("dynamic = %q, want %q", dynamic, "all dynamic")
+		}
+	})
+}
+
+func TestSplitCacheBreak(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "no marker",
+			input: "single part",
+			want:  []string{"single part"},
+		},
+		{
+			name:  "with marker",
+			input: "stable" + CacheBreakMarker + "dynamic",
+			want:  []string{"stable", "dynamic"},
+		},
+		{
+			name:  "empty dynamic after marker",
+			input: "stable" + CacheBreakMarker,
+			want:  []string{"stable"},
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "only marker",
+			input: CacheBreakMarker,
+			want:  nil,
+		},
+		{
+			name:  "whitespace parts trimmed and empty dropped",
+			input: "  a  " + CacheBreakMarker + "  b  ",
+			want:  []string{"a", "b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := SplitCacheBreak(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("SplitCacheBreak() returned %d parts, want %d: got %v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("part[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestBuilderImmutabilityOfSlices(t *testing.T) {
 	t.Parallel()
 

@@ -10,7 +10,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolListDirectoryDescription = `Lists the immediate contents of a directory, returning each entry's name, type (file or dir), and size in bytes. Does not recurse into subdirectories. For finding files by name pattern across a directory tree, use the glob tool instead.`
+const toolListDirectoryDescription = `Lists the immediate contents of a directory, returning each entry's name, type (file or dir), and size in bytes. Does not recurse into subdirectories.`
 
 // ListDirectoryTool lists directory contents.
 type ListDirectoryTool struct {

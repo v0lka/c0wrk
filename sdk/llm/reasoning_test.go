@@ -120,6 +120,14 @@ func TestAgentReasoningMode(t *testing.T) {
 
 		// Unknown role passes through
 		{"custom_role", ReasoningHigh, ReasoningHigh},
+
+		// Empty base effort returns empty for all roles
+		{"orchestrator", "", ""},
+		{"router", "", ""},
+		{"reflector", "", ""},
+		{"compaction", "", ""},
+		{"title", "", ""},
+		{"custom_role", "", ""},
 	}
 
 	for _, tt := range tests {

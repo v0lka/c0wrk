@@ -31,18 +31,22 @@ AVAILABLE-TOOLS
 Available skills:
 AVAILABLE-SKILLS
 
-If any available skill is relevant to the user's request, include the skill name in the "matched_skills" array. Match a skill only if its description and purpose directly relate to the task. If no skills are relevant, omit "matched_skills" or set it to an empty array.
+If any available skill is relevant to the user's request, include the skill name in the "matched_skills" array. Match a skill only if its description and purpose directly relate to the task. If no skills are relevant, set "matched_skills" to `[]`.
+
+## Classification Guidance
+
+Consider the full context of the request when classifying. Some requests may appear simple but have hidden complexity — for example, a seemingly simple code change might require research into existing patterns first. When in doubt between two domains, prefer "mixed" to ensure adequate tool availability.
 
 ## Examples
 
 Request: "Hello, how are you?"
-{"domain":"general","complexity":1,"needs_clarification":false}
+{"domain":"general","complexity":1,"needs_clarification":false,"matched_skills":[]}
 
 Request: "Fix the login bug in auth.go"
-{"domain":"code","complexity":3,"needs_clarification":false}
+{"domain":"code","complexity":3,"needs_clarification":false,"matched_skills":[]}
 
 Request: "Make it better"
-{"domain":"general","complexity":1,"needs_clarification":true}
+{"domain":"general","complexity":1,"needs_clarification":true,"matched_skills":[]}
 
 Respond ONLY with a JSON object:
 {"domain": "code|research|general|mixed", "complexity": 1-5, "needs_clarification": false, "matched_skills": ["skill-name"]}

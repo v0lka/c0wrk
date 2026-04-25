@@ -172,8 +172,8 @@ func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRe
 
 // buildRequest converts ChatRequest to anthropic.MessagesRequest.
 func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRequest, error) {
-	// Extract system prompt from messages
-	systemPrompt, filteredMsgs := ExtractSystemPrompt(req.Messages)
+	// Extract system prompt parts from messages (preserves multi-part for caching)
+	systemParts, filteredMsgs := ExtractSystemPromptParts(req.Messages)
 	var messages []anthropic.Message
 
 	for _, msg := range filteredMsgs {
@@ -194,8 +194,24 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 		MaxTokens: req.MaxTokens,
 	}
 
-	if systemPrompt != "" {
-		anthropicReq.System = systemPrompt
+	// Set system prompt: use MultiSystem with cache control when multiple parts exist
+	if len(systemParts) > 1 {
+		multiSystem := make([]anthropic.MessageSystemPart, len(systemParts))
+		for i, part := range systemParts {
+			multiSystem[i] = anthropic.MessageSystemPart{
+				Type: "text",
+				Text: part,
+			}
+			// Mark all parts except the last as cacheable (stable content)
+			if i < len(systemParts)-1 {
+				multiSystem[i].CacheControl = &anthropic.MessageCacheControl{
+					Type: anthropic.CacheControlTypeEphemeral,
+				}
+			}
+		}
+		anthropicReq.MultiSystem = multiSystem
+	} else if len(systemParts) == 1 {
+		anthropicReq.System = systemParts[0]
 	}
 
 	if req.Temperature != nil {

@@ -8,5 +8,6 @@ Before acting, state your plan in one clear sentence. Execute one action at a ti
 - Verify command output rather than assuming success.
 - Be concise and action-oriented.
 - Simple, flat instructions — avoid complex conditional reasoning.
+- One tool call per reasoning step when possible.
 
 When finished, call the finish tool with your result.

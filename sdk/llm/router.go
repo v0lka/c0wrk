@@ -290,6 +290,11 @@ func (r *Router) GetDefaultProvider() Provider {
 	return r.activeProvider
 }
 
+// ActiveModel returns the active model name.
+func (r *Router) ActiveModel() string {
+	return r.activeModel
+}
+
 // Stream sends a streaming chat request to the active provider.
 func (r *Router) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
 	// Set model if not specified

@@ -85,16 +85,10 @@ var OrchestratorOpenAICodex string
 //go:embed reflector_system.md
 var ReflectorSystem string
 
-//go:embed reflector_instructions.md
-var ReflectorInstructions string
-
 // Router prompt (auxiliary agent — fixed prompt, no family variants)
 
 //go:embed router_system.md
 var RouterSystem string
-
-//go:embed router_instructions.md
-var RouterInstructions string
 
 // Verification mandate — injected into tool-enabled system prompts
 

@@ -146,7 +146,7 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// Build context factory
-	contextFactory := b.buildContextFactory(trackingCaller, cfg, dumpWriter)
+	contextFactory := b.buildContextFactory(trackingCaller, cfg, modelReg, dumpWriter)
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
@@ -288,20 +288,23 @@ func (b *OrchestratorBuilder) SetBashRtkPath(path string) {
 func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage string) (string, error) {
 	b.mu.RLock()
 	router := b.llmRouter
+	modelReg := b.modelRegistry
 	b.mu.RUnlock()
 
 	if router == nil {
 		return "", errors.New("llm router not available")
 	}
 
+	titleEffort := llm.AgentReasoningMode("title", resolveBaseEffort(router.ActiveModel(), modelReg))
 	temp := 1.0
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."},
 			{Role: "user", Content: userMessage},
 		},
-		MaxTokens:   30,
-		Temperature: &temp,
+		MaxTokens:       30,
+		Temperature:     &temp,
+		ReasoningEffort: titleEffort,
 	}
 	resp, err := router.Call(ctx, req)
 	if err != nil {
@@ -426,11 +429,14 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 	b.mu.RLock()
 	router := b.llmRouter
 	searchFunc := b.vectorSearchFunc
+	modelReg := b.modelRegistry
 	b.mu.RUnlock()
 
 	if router == nil {
 		return nil, errors.New("llm router not available")
 	}
+
+	summaryEffort := llm.AgentReasoningMode("summary", resolveBaseEffort(router.ActiveModel(), modelReg))
 
 	// Step A: Translate + extract keywords
 	extractTemp := 0.3
@@ -439,8 +445,9 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 			{Role: "system", Content: coreprompts.PromptOptimizeExtract},
 			{Role: "user", Content: userPrompt},
 		},
-		MaxTokens:   500,
-		Temperature: &extractTemp,
+		MaxTokens:       500,
+		Temperature:     &extractTemp,
+		ReasoningEffort: summaryEffort,
 	}
 	extractResp, err := router.Call(ctx, extractReq)
 	if err != nil {
@@ -499,8 +506,9 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 			{Role: "system", Content: coreprompts.PromptOptimizeRewrite},
 			{Role: "user", Content: userMsg.String()},
 		},
-		MaxTokens:   2000,
-		Temperature: &rewriteTemp,
+		MaxTokens:       2000,
+		Temperature:     &rewriteTemp,
+		ReasoningEffort: summaryEffort,
 	}
 	rewriteResp, err := router.Call(ctx, rewriteReq)
 	if err != nil {
@@ -560,6 +568,20 @@ func (b *OrchestratorBuilder) buildRouter(cfg *BuilderConfig) (*llm.Router, *llm
 	return router, modelRegistry, nil
 }
 
+// resolveBaseEffort determines the base reasoning effort from the active model.
+// If the model supports reasoning, returns ReasoningHigh; otherwise returns empty
+// (which causes providers to skip reasoning parameters entirely).
+func resolveBaseEffort(model string, registry *llm.ModelRegistry) llm.ReasoningEffort {
+	if registry == nil {
+		return ""
+	}
+	meta, ok := registry.Resolve(model)
+	if !ok || !meta.Capabilities.Reasoning {
+		return ""
+	}
+	return llm.ReasoningHigh
+}
+
 // buildCoreAgents creates the core Router, Planner, Reflector.
 func (b *OrchestratorBuilder) buildCoreAgents(
 	caller agent.LLMCaller,
@@ -585,6 +607,11 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 		planner.SetModelRegistry(modelRegistry)
 		reflector.SetModelRegistry(modelRegistry)
 	}
+
+	// Wire reasoning effort for auxiliary agents
+	baseEffort := resolveBaseEffort(cfg.LLM.Model, modelRegistry)
+	coreRouter.SetBaseReasoningEffort(baseEffort)
+	reflector.SetBaseReasoningEffort(baseEffort)
 
 	// Wire planner exploration dependencies
 	planner.SetLogger(logger)
@@ -612,9 +639,10 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 
 // buildContextFactory creates a ContextManagerFactory using the tracking caller for
 // compaction summarization (ensuring those tokens are counted in session totals).
-func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, dumpWriter io.Writer) ContextManagerFactory {
+func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer) ContextManagerFactory {
 	var summarizeCaller agent.LLMCaller = caller
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
+	compactionEffort := llm.AgentReasoningMode("compaction", resolveBaseEffort(cfg.LLM.Model, modelRegistry))
 
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
@@ -655,6 +683,7 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 						{Role: "system", Content: coreprompts.CompactionSummarize},
 						{Role: "user", Content: blockText},
 					},
+					ReasoningEffort: compactionEffort,
 				}
 				resp, err := summarizeCaller.Call(ctx, req)
 				if err != nil {

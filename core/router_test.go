@@ -354,3 +354,74 @@ func TestRoute_RetriesOnInvalidJSON(t *testing.T) {
 		t.Errorf("expected 2 LLM calls (original + retry), got %d", callCount)
 	}
 }
+
+func TestRoute_SetsReasoningEffort(t *testing.T) {
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{Role: "assistant", Content: `{"domain":"code","complexity":2}`},
+			}, nil
+		},
+	}
+
+	router := NewRouter(mock, 5)
+	router.SetBaseReasoningEffort(llm.ReasoningHigh)
+
+	_, err := router.Route(context.Background(), "test", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+
+	// AgentReasoningMode("router", ReasoningHigh) should return ReasoningLow
+	got := mock.lastCall().ReasoningEffort
+	if got != llm.ReasoningLow {
+		t.Errorf("expected ReasoningEffort=%q, got %q", llm.ReasoningLow, got)
+	}
+}
+
+func TestRoute_NoReasoningEffortWhenBaseEmpty(t *testing.T) {
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{Role: "assistant", Content: `{"domain":"code","complexity":2}`},
+			}, nil
+		},
+	}
+
+	router := NewRouter(mock, 5)
+	// No SetBaseReasoningEffort call — base is empty
+
+	_, err := router.Route(context.Background(), "test", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+
+	// AgentReasoningMode("router", "") returns "" — providers skip reasoning
+	got := mock.lastCall().ReasoningEffort
+	if got != "" {
+		t.Errorf("expected empty ReasoningEffort, got %q", got)
+	}
+}
+
+func TestResolveBaseEffort(t *testing.T) {
+	// nil registry returns empty
+	if got := resolveBaseEffort("any-model", nil); got != "" {
+		t.Errorf("nil registry: expected empty, got %q", got)
+	}
+
+	// unknown model returns empty
+	reg := llm.NewModelRegistry(nil)
+	if got := resolveBaseEffort("unknown-model-xyz", reg); got != "" {
+		t.Errorf("unknown model: expected empty, got %q", got)
+	}
+
+	// non-reasoning model (claude-sonnet has Temperature=true, Reasoning=false)
+	if got := resolveBaseEffort("claude-sonnet-4-20250514", reg); got != "" {
+		t.Errorf("non-reasoning model: expected empty, got %q", got)
+	}
+
+	// reasoning model (o3 has Reasoning=true)
+	if got := resolveBaseEffort("o3", reg); got != llm.ReasoningHigh {
+		t.Errorf("reasoning model: expected %q, got %q", llm.ReasoningHigh, got)
+	}
+}

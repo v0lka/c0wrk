@@ -8,6 +8,7 @@ import (
 
 	sdkagent "github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
+	"github.com/user/agent/sdk/prompt"
 )
 
 // CompactionThresholds configures when context compaction triggers.
@@ -168,12 +169,17 @@ func (cw *ContextWindow) SetStrategy(s sdkagent.CompactionStrategy) {
 func (cw *ContextWindow) BuildPrompt() []llm.Message {
 	var messages []llm.Message
 
-	// 1. System message with systemPrompt
+	// 1. System message(s) with systemPrompt.
+	// When the prompt contains a CacheBreakMarker, split into multiple system
+	// messages so that providers can apply prompt caching to the stable parts.
 	if cw.systemPrompt != "" {
-		messages = append(messages, llm.Message{
-			Role:    "system",
-			Content: cw.systemPrompt,
-		})
+		parts := prompt.SplitCacheBreak(cw.systemPrompt)
+		for _, part := range parts {
+			messages = append(messages, llm.Message{
+				Role:    "system",
+				Content: part,
+			})
+		}
 	}
 
 	// 2. User message with task content (pre-formatted by caller)

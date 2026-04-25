@@ -8,7 +8,6 @@ Before modifying files, always read them first. Verify command results rather th
 
 - Code citations must be at most 125 characters. Truncate with `...` if longer.
 - Use flat bullet lists only. Do not nest lists.
-- Prefer ripgrep and glob for file discovery. Use semantic_search only when concept-based exploration is needed.
-- Keep reasoning to short, direct sentences. Avoid multi-paragraph analysis blocks.
+- **Tool priority adjustment**: Use ripgrep and glob as primary discovery tools when you know specific patterns or file names. Use semantic_search for broader concept-based exploration when exact search terms are unclear.
 
 When finished, call the finish tool immediately with your result.

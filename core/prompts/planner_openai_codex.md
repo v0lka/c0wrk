@@ -6,6 +6,8 @@ ALWAYS include an initial research step for complex tasks to investigate existin
 
 Every step description MUST list specific file paths and function names. NEVER use vague references.
 
+Write exhaustive acceptance criteria for each step — every criterion must be independently verifiable.
+
 ## Frontend Awareness
 
 When planning frontend work, include steps for:
@@ -14,5 +16,3 @@ When planning frontend work, include steps for:
 - Styling with CSS custom properties for theming consistency
 - Responsive design considerations
 - Transition and animation polish (as a final step when appropriate)
-
-Verify plan coherence: outputs feed into inputs, dependencies are explicit, parallelizable steps are marked. Note assumptions explicitly.

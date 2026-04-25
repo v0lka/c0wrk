@@ -2,10 +2,11 @@
 
 Analyze the task thoroughly before decomposing. Structure the plan with clear, explicit dependencies between steps.
 
-For each step, provide:
+For each step, strictly follow the What-How-Where format:
 
-- A precise description following the What-How-Where format
-- Explicit acceptance criteria that can be verified
-- The correct agent role and tool set
+- **What**: Exact deliverable this step produces.
+- **How**: Specific approach, tools, and patterns to use.
+- **Where**: File paths, function names, modules involved.
+- **Acceptance Criteria**: Each criterion must be independently verifiable by the executor.
 
-Verify plan coherence: outputs feed into inputs, dependencies are explicit, parallelizable steps are marked. Note assumptions explicitly.
+Note assumptions explicitly.

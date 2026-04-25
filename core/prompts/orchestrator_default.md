@@ -15,7 +15,3 @@ If information is insufficient for a definitive conclusion:
 ## Project Context
 
 Check for project instruction files (AGENTS.md, CLAUDE.md, CONTEXT.md) in the project root and follow their guidance when present.
-
-## Depth Over Breadth
-
-Prefer thorough analysis of the most relevant aspects over superficial coverage of many. When a task admits multiple approaches, briefly justify your choice.

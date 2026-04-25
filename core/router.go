@@ -22,9 +22,10 @@ var (
 
 // Router classifies user requests by complexity and determines execution strategy.
 type Router struct {
-	llm           LLMCaller
-	historyWindow int // number of recent messages to include
-	modelRegistry *llm.ModelRegistry
+	llm                  LLMCaller
+	historyWindow        int // number of recent messages to include
+	modelRegistry        *llm.ModelRegistry
+	baseReasoningEffort  llm.ReasoningEffort
 }
 
 // NewRouter creates a new Router.
@@ -43,6 +44,11 @@ func (r *Router) SetModelRegistry(registry *llm.ModelRegistry) {
 	r.modelRegistry = registry
 }
 
+// SetBaseReasoningEffort sets the base reasoning effort for the router.
+func (r *Router) SetBaseReasoningEffort(effort llm.ReasoningEffort) {
+	r.baseReasoningEffort = effort
+}
+
 // Route analyzes the user's request and determines the best execution strategy.
 // availableSkills are included in the routing prompt so the LLM can match relevant skills.
 func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message, availableSkills []skills.SkillDescriptor) (decision *RoutingDecision, err error) {
@@ -55,7 +61,6 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	// Build system prompt
 	systemPrompt := prompt.NewBuilder().
 		Core(prompts.RouterSystem).
-		Core(prompts.RouterInstructions).
 		Replace("AVAILABLE-TOOLS", toolListStr).
 		Replace("AVAILABLE-SKILLS", skillListStr).
 		Build()
@@ -78,8 +83,10 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	})
 
 	// Create chat request
+	reasoningEffort := llm.AgentReasoningMode("router", r.baseReasoningEffort)
 	req := llm.ChatRequest{
-		Messages: messages,
+		Messages:        messages,
+		ReasoningEffort: reasoningEffort,
 	}
 
 	// Call LLM
@@ -103,7 +110,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 			Content: "Your previous response was not valid JSON. Respond with ONLY a JSON object in this exact format:\n{\"domain\":\"general\",\"complexity\":1,\"needs_clarification\":false}",
 		}
 
-		retryResp, retryErr := r.llm.Call(ctx, llm.ChatRequest{Messages: repairMessages})
+		retryResp, retryErr := r.llm.Call(ctx, llm.ChatRequest{Messages: repairMessages, ReasoningEffort: reasoningEffort})
 		if retryErr != nil {
 			return nil, fmt.Errorf("failed to parse routing decision: %w", err)
 		}

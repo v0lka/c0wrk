@@ -23,13 +23,17 @@ export function StatusBar() {
   const tokens = activeSessionId ? sessionTokens[activeSessionId] : undefined
   const stats: SessionStats | undefined = activeSessionId ? sessionStats[activeSessionId] : undefined
 
+  const domainLabel = stats?.routingDomain
+    ? (domainLabels[stats.routingDomain] ?? stats.routingDomain)
+    : undefined
+
   return (
-    <div className="flex h-8 shrink-0 items-center gap-0.5 border-t border-border bg-background px-3 text-xs text-muted-foreground">
+    <div className="flex h-8 shrink-0 items-center gap-0.5 overflow-hidden border-t border-border bg-background px-3 text-xs text-muted-foreground">
       {/* Thinking indicator */}
       {activityStatus && (
         <>
-          <Loader2 className="size-3 animate-spin text-info" />
-          <span className="truncate">{activityStatus}</span>
+          <Loader2 className="size-3 shrink-0 animate-spin text-info" />
+          <span className="min-w-0 truncate" title={activityStatus}>{activityStatus}</span>
           <Sep />
         </>
       )}
@@ -37,16 +41,16 @@ export function StatusBar() {
       {/* Session name */}
       {session && (
         <>
-          <span className="max-w-[140px] truncate">{session.name}</span>
+          <span className="min-w-0 truncate" title={session.name}>{session.name}</span>
           <Sep />
         </>
       )}
 
       {/* Routing domain badge */}
-      {stats?.routingDomain && (
+      {domainLabel && (
         <>
-          <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-            {domainLabels[stats.routingDomain] ?? stats.routingDomain}
+          <Badge variant="secondary" className="h-5 min-w-0 shrink max-w-full px-1.5 text-[10px] truncate" title={domainLabel}>
+            {domainLabel}
           </Badge>
           <Sep />
         </>
@@ -55,7 +59,7 @@ export function StatusBar() {
       {/* Attempt counter */}
       {stats?.attemptCount != null && stats.attemptCount > 0 && (
         <>
-          <span>
+          <span className="shrink-0">
             Attempt {stats.attemptCount}
             {stats.maxAttempts != null && stats.maxAttempts > 0 ? `/${stats.maxAttempts}` : ''}
           </span>
@@ -66,16 +70,16 @@ export function StatusBar() {
       {/* Context badge: model, family, input/output token counts */}
       {tokens && (
         <>
-          <span className="flex items-center gap-1">
+          <span className="flex min-w-0 items-center gap-1">
             {tokens.model && (
-              <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+              <Badge variant="outline" className="h-5 min-w-0 shrink max-w-full px-1.5 text-[10px] truncate" title={tokens.model}>
                 {tokens.model}
               </Badge>
             )}
             {tokens.family && (
-              <span className="text-[10px] text-muted-foreground/70">{tokens.family}</span>
+              <span className="min-w-0 truncate text-[10px] text-muted-foreground/70" title={tokens.family}>{tokens.family}</span>
             )}
-            <span className="tabular-nums">
+            <span className="shrink-0 tabular-nums">
               {formatTokenCount(tokens.total_input_tokens)}↑ {formatTokenCount(tokens.total_output_tokens)}↓
             </span>
           </span>
@@ -90,7 +94,7 @@ export function StatusBar() {
       <div className="flex-1" />
 
       {/* Version */}
-      <span className="text-muted-foreground/60">c0wrk v{__APP_VERSION__}</span>
+      <span className="shrink-0 text-muted-foreground/60">c0wrk v{__APP_VERSION__}</span>
     </div>
   )
 }

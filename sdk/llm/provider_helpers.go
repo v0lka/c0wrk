@@ -42,6 +42,23 @@ func ExtractSystemPrompt(messages []Message) (string, []Message) {
 	return systemPrompt, filtered
 }
 
+// ExtractSystemPromptParts collects each system message's content as a separate part.
+// Returns the parts in order and the remaining non-system messages.
+// This preserves the multi-part structure needed for Anthropic prompt caching.
+func ExtractSystemPromptParts(messages []Message) (parts []string, filtered []Message) {
+	filtered = make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			if msg.Content != "" {
+				parts = append(parts, msg.Content)
+			}
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	return parts, filtered
+}
+
 // StreamToolCallAccumulator tracks partial tool calls across streaming chunks.
 // OpenAI-style streaming sends tool call data incrementally: first the ID and name,
 // then argument fragments across multiple deltas. This accumulator assembles

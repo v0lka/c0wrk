@@ -16,9 +16,7 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"OrchestratorSystem", OrchestratorSystem},
 		{"OrchestratorPlanContext", OrchestratorPlanContext},
 		{"ReflectorSystem", ReflectorSystem},
-		{"ReflectorInstructions", ReflectorInstructions},
 		{"RouterSystem", RouterSystem},
-		{"RouterInstructions", RouterInstructions},
 		{"VerificationMandate", VerificationMandate},
 		{"CompactionSummarize", CompactionSummarize},
 		// Prompt optimizer prompts

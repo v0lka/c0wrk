@@ -419,6 +419,130 @@ func TestAnthropicProvider_WrapError(t *testing.T) {
 	})
 }
 
+func TestAnthropicProvider_BuildRequest_MultiSystem(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	t.Run("single system message uses scalar System field", func(t *testing.T) {
+		req := ChatRequest{
+			Model:     "claude-3-sonnet",
+			MaxTokens: 1024,
+			Messages: []Message{
+				{Role: "system", Content: "You are helpful."},
+				{Role: "user", Content: "Hello"},
+			},
+		}
+
+		anthropicReq, err := p.buildRequest(req)
+		if err != nil {
+			t.Fatalf("buildRequest failed: %v", err)
+		}
+
+		if anthropicReq.System != "You are helpful." {
+			t.Errorf("System = %q, want %q", anthropicReq.System, "You are helpful.")
+		}
+		if len(anthropicReq.MultiSystem) != 0 {
+			t.Errorf("MultiSystem should be empty for single system message, got %d parts", len(anthropicReq.MultiSystem))
+		}
+	})
+
+	t.Run("multiple system messages use MultiSystem with cache control", func(t *testing.T) {
+		req := ChatRequest{
+			Model:     "claude-3-sonnet",
+			MaxTokens: 1024,
+			Messages: []Message{
+				{Role: "system", Content: "Stable instructions"},
+				{Role: "system", Content: "Dynamic context"},
+				{Role: "user", Content: "Hello"},
+			},
+		}
+
+		anthropicReq, err := p.buildRequest(req)
+		if err != nil {
+			t.Fatalf("buildRequest failed: %v", err)
+		}
+
+		if anthropicReq.System != "" {
+			t.Errorf("scalar System should be empty for multi-system, got %q", anthropicReq.System)
+		}
+		if len(anthropicReq.MultiSystem) != 2 {
+			t.Fatalf("MultiSystem should have 2 parts, got %d", len(anthropicReq.MultiSystem))
+		}
+
+		// First part: stable, should have cache control
+		if anthropicReq.MultiSystem[0].Text != "Stable instructions" {
+			t.Errorf("MultiSystem[0].Text = %q, want %q", anthropicReq.MultiSystem[0].Text, "Stable instructions")
+		}
+		if anthropicReq.MultiSystem[0].CacheControl == nil {
+			t.Error("MultiSystem[0].CacheControl should be set (stable part)")
+		} else if anthropicReq.MultiSystem[0].CacheControl.Type != anthropic.CacheControlTypeEphemeral {
+			t.Errorf("MultiSystem[0].CacheControl.Type = %q, want %q", anthropicReq.MultiSystem[0].CacheControl.Type, anthropic.CacheControlTypeEphemeral)
+		}
+
+		// Last part: dynamic, should NOT have cache control
+		if anthropicReq.MultiSystem[1].Text != "Dynamic context" {
+			t.Errorf("MultiSystem[1].Text = %q, want %q", anthropicReq.MultiSystem[1].Text, "Dynamic context")
+		}
+		if anthropicReq.MultiSystem[1].CacheControl != nil {
+			t.Error("MultiSystem[1].CacheControl should be nil (last/dynamic part)")
+		}
+	})
+
+	t.Run("three system messages caches all but last", func(t *testing.T) {
+		req := ChatRequest{
+			Model:     "claude-3-sonnet",
+			MaxTokens: 1024,
+			Messages: []Message{
+				{Role: "system", Content: "Part A"},
+				{Role: "system", Content: "Part B"},
+				{Role: "system", Content: "Part C"},
+				{Role: "user", Content: "Hello"},
+			},
+		}
+
+		anthropicReq, err := p.buildRequest(req)
+		if err != nil {
+			t.Fatalf("buildRequest failed: %v", err)
+		}
+
+		if len(anthropicReq.MultiSystem) != 3 {
+			t.Fatalf("MultiSystem should have 3 parts, got %d", len(anthropicReq.MultiSystem))
+		}
+
+		// Parts 0 and 1 should have cache control
+		for i := 0; i < 2; i++ {
+			if anthropicReq.MultiSystem[i].CacheControl == nil {
+				t.Errorf("MultiSystem[%d].CacheControl should be set", i)
+			}
+		}
+		// Part 2 (last) should NOT
+		if anthropicReq.MultiSystem[2].CacheControl != nil {
+			t.Error("MultiSystem[2].CacheControl should be nil (last part)")
+		}
+	})
+
+	t.Run("no system messages produces empty system", func(t *testing.T) {
+		req := ChatRequest{
+			Model:     "claude-3-sonnet",
+			MaxTokens: 1024,
+			Messages: []Message{
+				{Role: "user", Content: "Hello"},
+			},
+		}
+
+		anthropicReq, err := p.buildRequest(req)
+		if err != nil {
+			t.Fatalf("buildRequest failed: %v", err)
+		}
+
+		if anthropicReq.System != "" {
+			t.Errorf("System = %q, want empty", anthropicReq.System)
+		}
+		if len(anthropicReq.MultiSystem) != 0 {
+			t.Errorf("MultiSystem should be empty, got %d", len(anthropicReq.MultiSystem))
+		}
+	})
+}
+
 // stringPtr is a helper to create *string from string for anthropic MessageContent.
 func stringPtr(s string) *string {
 	return &s

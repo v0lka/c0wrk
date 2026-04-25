@@ -11,7 +11,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolSearchFilesDescription = `Recursively searches a directory tree for files whose names match a glob pattern. Returns the full paths of all matching files. For more powerful file-name matching with extended glob syntax, prefer the glob tool. For searching within file contents, use ripgrep or search_content instead.`
+const toolSearchFilesDescription = `Recursively searches a directory tree for files whose names match a glob pattern. Returns the full paths of all matching files.`
 
 // SearchFilesTool searches for files by name pattern.
 type SearchFilesTool struct {

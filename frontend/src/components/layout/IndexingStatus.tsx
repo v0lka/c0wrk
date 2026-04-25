@@ -9,8 +9,8 @@ export function IndexingStatus() {
 
   if (status.state === 'ready') {
     return (
-      <div className="flex items-center gap-1 text-xs text-success">
-        <CheckCircle2 className="size-3" />
+      <div className="flex shrink-0 items-center gap-1 text-xs text-success">
+        <CheckCircle2 className="size-3 shrink-0" />
         <span>Index ready</span>
       </div>
     )
@@ -20,15 +20,15 @@ export function IndexingStatus() {
   const pct = Math.round(status.progress * 100)
 
   return (
-    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+    <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
       {isReindexing ? (
         <>
-          <Loader2 className="size-3 animate-spin" />
+          <Loader2 className="size-3 shrink-0 animate-spin" />
           <span>Updating...</span>
         </>
       ) : (
         <>
-          <span className="relative flex size-3">
+          <span className="relative flex size-3 shrink-0">
             <span className="absolute inline-flex size-full animate-ping rounded-full bg-info opacity-75" />
             <span className="relative inline-flex size-3 rounded-full bg-info" />
           </span>

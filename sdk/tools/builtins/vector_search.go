@@ -9,7 +9,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolVectorSearchDescription = `Recommended first choice for codebase investigation and discovery. Searches the entire project in a single call using semantic understanding — far more efficient than multiple grep or glob calls. Understands code intent, concepts, and relationships, not just text patterns. Excels at: finding implementations of a concept (e.g. "authentication middleware"), locating related functionality across files, discovering architecture patterns and data flows, and understanding how subsystems connect. Returns file paths, line ranges, relevance scores, and content previews. Prefer ripgrep/glob only for exact string literals, specific error messages, or known file-name patterns.`
+const toolVectorSearchDescription = `Search the project codebase using semantic similarity matching. Finds code by meaning and intent rather than exact text patterns. Returns file paths, line ranges, relevance scores, and content previews. Effective for: finding implementations of a concept (e.g. "authentication middleware"), locating related functionality across files, discovering architecture patterns and data flows. For exact string literals or known file-name patterns, use ripgrep or glob.`
 
 // VectorSearchResult represents a single search result.
 type VectorSearchResult struct {

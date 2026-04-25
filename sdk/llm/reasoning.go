@@ -90,7 +90,11 @@ func resolveGeminiReasoning(effort ReasoningEffort) ReasoningConfig {
 
 // AgentReasoningMode returns the appropriate reasoning effort for an agent type.
 // Main agents (orchestrator, planner) use full reasoning; auxiliary agents use minimal.
+// Returns empty when baseEffort is empty (non-reasoning model), so providers skip reasoning.
 func AgentReasoningMode(agentRole string, baseEffort ReasoningEffort) ReasoningEffort {
+	if baseEffort == "" {
+		return ""
+	}
 	switch agentRole {
 	case "orchestrator", "planner", "coder", "executor":
 		return baseEffort // full mode

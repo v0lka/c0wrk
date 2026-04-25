@@ -287,3 +287,92 @@ func TestStreamToolCallAccumulator_JSONInput(t *testing.T) {
 		t.Errorf("query = %v, want %q", parsed["query"], "test")
 	}
 }
+
+func TestExtractSystemPromptParts(t *testing.T) {
+	tests := []struct {
+		name         string
+		messages     []Message
+		wantParts    []string
+		wantFiltered int
+	}{
+		{
+			name:         "no messages",
+			messages:     []Message{},
+			wantParts:    nil,
+			wantFiltered: 0,
+		},
+		{
+			name: "no system messages",
+			messages: []Message{
+				{Role: "user", Content: "hello"},
+				{Role: "assistant", Content: "hi"},
+			},
+			wantParts:    nil,
+			wantFiltered: 2,
+		},
+		{
+			name: "single system message",
+			messages: []Message{
+				{Role: "system", Content: "You are helpful"},
+				{Role: "user", Content: "hello"},
+			},
+			wantParts:    []string{"You are helpful"},
+			wantFiltered: 1,
+		},
+		{
+			name: "multiple system messages become separate parts",
+			messages: []Message{
+				{Role: "system", Content: "Stable instructions"},
+				{Role: "system", Content: "Dynamic context"},
+				{Role: "user", Content: "hello"},
+			},
+			wantParts:    []string{"Stable instructions", "Dynamic context"},
+			wantFiltered: 1,
+		},
+		{
+			name: "empty system message content is skipped",
+			messages: []Message{
+				{Role: "system", Content: "First"},
+				{Role: "system", Content: ""},
+				{Role: "system", Content: "Third"},
+				{Role: "user", Content: "hello"},
+			},
+			wantParts:    []string{"First", "Third"},
+			wantFiltered: 1,
+		},
+		{
+			name: "system messages interleaved with others",
+			messages: []Message{
+				{Role: "system", Content: "Part A"},
+				{Role: "user", Content: "q1"},
+				{Role: "system", Content: "Part B"},
+				{Role: "assistant", Content: "a1"},
+			},
+			wantParts:    []string{"Part A", "Part B"},
+			wantFiltered: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parts, filtered := ExtractSystemPromptParts(tt.messages)
+			if len(parts) != len(tt.wantParts) {
+				t.Fatalf("parts count = %d, want %d: %v", len(parts), len(tt.wantParts), parts)
+			}
+			for i := range parts {
+				if parts[i] != tt.wantParts[i] {
+					t.Errorf("parts[%d] = %q, want %q", i, parts[i], tt.wantParts[i])
+				}
+			}
+			if len(filtered) != tt.wantFiltered {
+				t.Errorf("filtered count = %d, want %d", len(filtered), tt.wantFiltered)
+			}
+			// Verify no system messages in filtered
+			for _, msg := range filtered {
+				if msg.Role == "system" {
+					t.Errorf("filtered still contains system message: %q", msg.Content)
+				}
+			}
+		})
+	}
+}

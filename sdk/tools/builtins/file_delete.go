@@ -10,7 +10,7 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
-const toolDeleteFileDescription = `Deletes a single file at the specified path. This is a destructive operation — verify the target path is correct before executing. Fails if the path points to a directory — use delete_directory for directories. Prefer creating new files over deleting existing ones when possible.`
+const toolDeleteFileDescription = `Deletes a single file at the specified path. Fails if the path points to a directory — use delete_directory for directories.`
 
 // DeleteFileTool deletes files.
 type DeleteFileTool struct {

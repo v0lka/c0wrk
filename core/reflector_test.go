@@ -347,3 +347,52 @@ func TestParseReflectionResponse_Defaults(t *testing.T) {
 		t.Error("expected nil hypotheses slice")
 	}
 }
+
+func TestReflector_SetsReasoningEffort(t *testing.T) {
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"summary":"ok","suggested_action":"retry"}`},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reflector := NewReflector(mock)
+	reflector.SetBaseReasoningEffort(llm.ReasoningHigh)
+
+	_, err := reflector.Reflect(context.Background(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Reflect returned error: %v", err)
+	}
+
+	// AgentReasoningMode("reflector", ReasoningHigh) should return ReasoningLow
+	got := mock.lastCall().ReasoningEffort
+	if got != llm.ReasoningLow {
+		t.Errorf("expected ReasoningEffort=%q, got %q", llm.ReasoningLow, got)
+	}
+}
+
+func TestReflector_NoReasoningEffortWhenBaseEmpty(t *testing.T) {
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"summary":"ok","suggested_action":"retry"}`},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	reflector := NewReflector(mock)
+	// No SetBaseReasoningEffort — base is empty
+
+	_, err := reflector.Reflect(context.Background(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Reflect returned error: %v", err)
+	}
+
+	got := mock.lastCall().ReasoningEffort
+	if got != "" {
+		t.Errorf("expected empty ReasoningEffort, got %q", got)
+	}
+}

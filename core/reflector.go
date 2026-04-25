@@ -22,8 +22,9 @@ const reflectorAnalyzeFooter = "Please analyze this execution and provide a stru
 // Reflector analyzes execution trajectory to produce
 // structured self-correction insights per AD 4.6.
 type Reflector struct {
-	llm           LLMCaller
-	modelRegistry *llm.ModelRegistry
+	llm                 LLMCaller
+	modelRegistry       *llm.ModelRegistry
+	baseReasoningEffort llm.ReasoningEffort
 }
 
 // NewReflector creates a new Reflector with the given LLM caller.
@@ -34,6 +35,11 @@ func NewReflector(caller LLMCaller) *Reflector {
 // SetModelRegistry sets the model registry for model metadata resolution.
 func (r *Reflector) SetModelRegistry(registry *llm.ModelRegistry) {
 	r.modelRegistry = registry
+}
+
+// SetBaseReasoningEffort sets the base reasoning effort for the reflector.
+func (r *Reflector) SetBaseReasoningEffort(effort llm.ReasoningEffort) {
+	r.baseReasoningEffort = effort
 }
 
 // Reflect analyzes execution trajectory to produce structured self-correction insights.
@@ -60,7 +66,8 @@ func (r *Reflector) Reflect(
 	}
 
 	req := llm.ChatRequest{
-		Messages: messages,
+		Messages:        messages,
+		ReasoningEffort: llm.AgentReasoningMode("reflector", r.baseReasoningEffort),
 	}
 
 	resp, err := r.llm.Call(ctx, req)
@@ -83,7 +90,6 @@ func (r *Reflector) Reflect(
 func (r *Reflector) buildSystemPrompt() string {
 	return prompt.NewBuilder().
 		Core(prompts.ReflectorSystem).
-		Core(prompts.ReflectorInstructions).
 		Build()
 }
 
