@@ -30,7 +30,7 @@ func TestTool_ImplementsToolInterface(t *testing.T) {
 }
 
 func TestTool_Execute_InvalidJSON(t *testing.T) {
-	server := NewServer("test")
+	server := newServer("test")
 	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -51,7 +51,7 @@ func TestTool_Execute_InvalidJSON(t *testing.T) {
 }
 
 func TestTool_Execute_NilClient(t *testing.T) {
-	server := NewServer("test")
+	server := newServer("test")
 	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -72,7 +72,7 @@ func TestTool_Execute_NilClient(t *testing.T) {
 }
 
 func TestTool_Execute_EmptyInput(t *testing.T) {
-	server := NewServer("test")
+	server := newServer("test")
 	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -90,7 +90,7 @@ func TestTool_Execute_EmptyInput(t *testing.T) {
 }
 
 func TestTool_Execute_NilInput(t *testing.T) {
-	server := NewServer("test")
+	server := newServer("test")
 	tool := NewTool(server, ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -298,7 +298,7 @@ func TestStripParamsFromSchema_InvalidJSON(t *testing.T) {
 }
 
 func TestNewTool_WithSanitizer(t *testing.T) {
-	server := NewServer("codebase-memory")
+	server := newServer("codebase-memory")
 	info := ToolInfo{
 		Name:        "search_graph",
 		Description: "Search the code graph",
@@ -344,7 +344,7 @@ func TestNewTool_WithSanitizer(t *testing.T) {
 }
 
 func TestNewTool_WithNilSanitizer(t *testing.T) {
-	server := NewServer("test-server")
+	server := newServer("test-server")
 	info := ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -358,7 +358,7 @@ func TestNewTool_WithNilSanitizer(t *testing.T) {
 }
 
 func TestNewTool_SanitizerSkippedForOtherSource(t *testing.T) {
-	server := NewServer("other-server")
+	server := newServer("other-server")
 	info := ToolInfo{
 		Name:        "some_tool",
 		Description: "A tool",

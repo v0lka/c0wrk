@@ -4,16 +4,6 @@ import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
-export async function getSessionWorkspace(sessionId: string): Promise<string> {
-  try {
-    const app = getApp()
-    return await app.GetSessionWorkspace(sessionId) as string
-  } catch (err) {
-    logger.error('Failed to get session workspace:', err)
-    throw err
-  }
-}
-
 export async function listDirectory(path: string, recursive = false): Promise<FileEntry[]> {
   try {
     const app = getApp()

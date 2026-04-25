@@ -482,14 +482,6 @@ func (f *FrontendAPI) UnwatchDirectory(dirPath string) error {
 	return f.watcher.UnwatchDir(dirPath)
 }
 
-// UpdateSessionTokens persists accumulated token counts for a session.
-func (f *FrontendAPI) UpdateSessionTokens(sessionID string, inputTokens, outputTokens int, model, family string) error {
-	if f.store == nil {
-		return nil
-	}
-	return f.store.UpdateSessionTokens(sessionID, inputTokens, outputTokens, model, family)
-}
-
 // GetSessionTokens returns persisted token counts for a session.
 func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 	var result SessionTokensResponse

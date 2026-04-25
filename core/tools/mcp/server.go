@@ -48,8 +48,8 @@ type ToolInfo struct {
 	InputSchema json.RawMessage
 }
 
-// NewServer creates a new Server instance with the given name.
-func NewServer(name string) *Server {
+// newServer creates a new Server instance with the given name.
+func newServer(name string) *Server {
 	return &Server{
 		name:  name,
 		tools: make([]ToolInfo, 0),

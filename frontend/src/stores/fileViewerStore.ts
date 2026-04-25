@@ -41,7 +41,6 @@ interface FileViewerActions {
   setCollapsed: (collapsed: boolean) => void
   setFileIcon: (path: string, icon: string, iconColor: string) => void
   clearHighlightLine: () => void
-  refreshAllFiles: () => void
   closeAllFiles: () => void
 }
 
@@ -185,14 +184,6 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       })),
 
       clearHighlightLine: () => set({ highlightLine: null }),
-
-      refreshAllFiles: () => set((s) => {
-        const updated: Record<string, FileData> = {}
-        for (const [path, data] of Object.entries(s.files)) {
-          updated[path] = { ...data, loading: true }
-        }
-        return { files: updated }
-      }),
 
       closeAllFiles: () => set({
         files: {},

@@ -22,8 +22,8 @@ type Gateway struct {
 	mu                sync.RWMutex
 }
 
-// NewGateway creates a new Gateway instance.
-func NewGateway() *Gateway {
+// newGateway creates a new Gateway instance.
+func newGateway() *Gateway {
 	return &Gateway{
 		servers: make(map[string]*Server),
 	}
@@ -66,7 +66,7 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 		if cfg.WorkDir == "" && g.defaultWorkDir != "" {
 			cfg.WorkDir = g.defaultWorkDir
 		}
-		server := NewServer(name)
+		server := newServer(name)
 		server.logger = g.logger
 
 		if err := server.Connect(ctx, cfg); err != nil {
@@ -233,7 +233,7 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 		}
 
 		// Connect new server
-		server := NewServer(name)
+		server := newServer(name)
 		server.logger = g.logger
 		if err := server.Connect(ctx, newCfg); err != nil {
 			errs = append(errs, fmt.Errorf("server %s: connect: %w", name, err))
@@ -469,7 +469,7 @@ func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRe
 		}
 	}
 
-	gateway := NewGateway()
+	gateway := newGateway()
 	gateway.config = cfg // Store the original config for diffing in Reconfigure
 	gateway.defaultWorkDir = cfg.DefaultWorkDir
 	gateway.logger = logger

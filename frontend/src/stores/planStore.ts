@@ -18,7 +18,6 @@ interface PlanState {
 interface PlanActions {
   setPlan: (plan: PlanGroup) => void
   updateStepStatus: (stepId: string, status: PlanItem['status'], duration?: number) => void
-  addStepToCurrentPlan: (step: PlanItem) => void
   setSessionStats: (sessionId: string, stats: Partial<SessionStats>) => void
   clearPlan: () => void
   clearAll: () => void
@@ -74,15 +73,6 @@ export const usePlanStore = create<PlanState & PlanActions>((set) => ({
     ).length
     return {
       planGroups: [{ ...latest, items: updatedItems, completedCount }, ...rest],
-    }
-  }),
-
-  addStepToCurrentPlan: (step) => set((s) => {
-    if (s.planGroups.length === 0) return s
-    const latest = s.planGroups[0]!
-    const rest = s.planGroups.slice(1)
-    return {
-      planGroups: [{ ...latest, items: [...latest.items, step] }, ...rest],
     }
   }),
 

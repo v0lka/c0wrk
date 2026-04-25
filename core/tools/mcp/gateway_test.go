@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewGateway(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	if gateway == nil {
 		t.Fatal("NewGateway returned nil")
 	}
@@ -30,7 +30,7 @@ func TestNewGateway(t *testing.T) {
 }
 
 func TestNewServer(t *testing.T) {
-	server := NewServer("test-server")
+	server := newServer("test-server")
 	if server == nil {
 		t.Fatal("NewServer returned nil")
 	}
@@ -49,7 +49,7 @@ func TestNewServer(t *testing.T) {
 }
 
 func TestNewTool(t *testing.T) {
-	server := NewServer("test-server")
+	server := newServer("test-server")
 
 	info := ToolInfo{
 		Name:        "test_tool",
@@ -90,7 +90,7 @@ func TestNewTool(t *testing.T) {
 }
 
 func TestToolImplementsToolInterface(t *testing.T) {
-	server := NewServer("test-server")
+	server := newServer("test-server")
 	info := ToolInfo{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -104,10 +104,10 @@ func TestToolImplementsToolInterface(t *testing.T) {
 }
 
 func TestGatewayRegisterTools(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Manually add a mock server with tools for testing
-	server := NewServer("mock-server")
+	server := newServer("mock-server")
 	server.tools = []ToolInfo{
 		{
 			Name:        "mock_tool_1",
@@ -149,10 +149,10 @@ func TestGatewayRegisterTools(t *testing.T) {
 }
 
 func TestGatewayStop(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Add a mock server (not actually connected)
-	server := NewServer("mock-server")
+	server := newServer("mock-server")
 	gateway.servers["mock-server"] = server
 
 	err := gateway.Stop()
@@ -290,7 +290,7 @@ func (e *mockError) Error() string {
 }
 
 func TestGateway_GetServer(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// GetServer on empty gateway should return nil
 	if s := gateway.GetServer("nonexistent"); s != nil {
@@ -298,7 +298,7 @@ func TestGateway_GetServer(t *testing.T) {
 	}
 
 	// Add a server and retrieve it
-	server := NewServer("my-server")
+	server := newServer("my-server")
 	gateway.servers["my-server"] = server
 
 	got := gateway.GetServer("my-server")
@@ -316,11 +316,11 @@ func TestGateway_GetServer(t *testing.T) {
 }
 
 func TestGateway_ServerNames_Multiple(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
-	gateway.servers["alpha"] = NewServer("alpha")
-	gateway.servers["beta"] = NewServer("beta")
-	gateway.servers["gamma"] = NewServer("gamma")
+	gateway.servers["alpha"] = newServer("alpha")
+	gateway.servers["beta"] = newServer("beta")
+	gateway.servers["gamma"] = newServer("gamma")
 
 	names := gateway.ServerNames()
 	if len(names) != 3 {
@@ -340,15 +340,15 @@ func TestGateway_ServerNames_Multiple(t *testing.T) {
 }
 
 func TestGateway_ToolCount_Multiple(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
-	server1 := NewServer("s1")
+	server1 := newServer("s1")
 	server1.tools = []ToolInfo{
 		{Name: "tool1"},
 		{Name: "tool2"},
 	}
 
-	server2 := NewServer("s2")
+	server2 := newServer("s2")
 	server2.tools = []ToolInfo{
 		{Name: "tool3"},
 	}
@@ -362,14 +362,14 @@ func TestGateway_ToolCount_Multiple(t *testing.T) {
 }
 
 func TestGateway_ToolCount_Empty(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	if count := gateway.ToolCount(); count != 0 {
 		t.Errorf("expected ToolCount()=0, got %d", count)
 	}
 }
 
 func TestGateway_Stop_EmptyGateway(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	err := gateway.Stop()
 	if err != nil {
 		t.Errorf("Stop on empty gateway should return nil, got: %v", err)
@@ -377,9 +377,9 @@ func TestGateway_Stop_EmptyGateway(t *testing.T) {
 }
 
 func TestGateway_Stop_ClearsServers(t *testing.T) {
-	gateway := NewGateway()
-	gateway.servers["s1"] = NewServer("s1")
-	gateway.servers["s2"] = NewServer("s2")
+	gateway := newGateway()
+	gateway.servers["s1"] = newServer("s1")
+	gateway.servers["s2"] = newServer("s2")
 
 	err := gateway.Stop()
 	if err != nil {
@@ -392,7 +392,7 @@ func TestGateway_Stop_ClearsServers(t *testing.T) {
 }
 
 func TestGateway_RegisterTools_Empty(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	registry := tools.NewToolRegistry()
 
 	err := gateway.RegisterTools(registry)
@@ -406,14 +406,14 @@ func TestGateway_RegisterTools_Empty(t *testing.T) {
 }
 
 func TestGateway_RegisterTools_MultipleServers(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
-	server1 := NewServer("s1")
+	server1 := newServer("s1")
 	server1.tools = []ToolInfo{
 		{Name: "s1_tool1", Description: "tool from s1", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 
-	server2 := NewServer("s2")
+	server2 := newServer("s2")
 	server2.tools = []ToolInfo{
 		{Name: "s2_tool1", Description: "tool from s2", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "s2_tool2", Description: "another tool from s2", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -435,7 +435,7 @@ func TestGateway_RegisterTools_MultipleServers(t *testing.T) {
 }
 
 func TestGateway_Start_EmptyConfigs(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Starting with empty configs should succeed with no errors
 	err := gateway.Start(context.Background(), map[string]ServerConfig{})
@@ -445,7 +445,7 @@ func TestGateway_Start_EmptyConfigs(t *testing.T) {
 }
 
 func TestGateway_Start_InvalidCommand(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	configs := map[string]ServerConfig{
 		"bad-server": {
@@ -476,7 +476,7 @@ func TestGateway_Start_InvalidCommand(t *testing.T) {
 }
 
 func TestGateway_Start_MultipleInvalidCommands(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	configs := map[string]ServerConfig{
 		"bad1": {
@@ -509,7 +509,7 @@ func TestGatewayIntegration(t *testing.T) {
 	t.Skip("Integration test: requires actual MCP server (e.g., npx @modelcontextprotocol/server-filesystem)")
 
 	ctx := context.Background()
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	configs := map[string]ServerConfig{
 		"filesystem": {
@@ -564,7 +564,7 @@ func TestToolExecuteIntegration(t *testing.T) {
 	t.Skip("Integration test: requires actual MCP server (e.g., npx @modelcontextprotocol/server-filesystem)")
 
 	ctx := context.Background()
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	configs := map[string]ServerConfig{
 		"filesystem": {
@@ -611,11 +611,11 @@ func TestToolExecuteIntegration(t *testing.T) {
 // Reconfigure tests
 
 func TestGateway_Reconfigure_AddServer(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	registry := tools.NewToolRegistry()
 
 	// Start with one mock server
-	server1 := NewServer("server1")
+	server1 := newServer("server1")
 	server1.tools = []ToolInfo{
 		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -667,15 +667,15 @@ func TestGateway_Reconfigure_AddServer(t *testing.T) {
 }
 
 func TestGateway_Reconfigure_RemoveServer(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	registry := tools.NewToolRegistry()
 
 	// Start with two mock servers
-	server1 := NewServer("server1")
+	server1 := newServer("server1")
 	server1.tools = []ToolInfo{
 		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
-	server2 := NewServer("server2")
+	server2 := newServer("server2")
 	server2.tools = []ToolInfo{
 		{Name: "tool2", Description: "tool from server2", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -729,11 +729,11 @@ func TestGateway_Reconfigure_RemoveServer(t *testing.T) {
 }
 
 func TestGateway_Reconfigure_UnchangedServer(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	registry := tools.NewToolRegistry()
 
 	// Start with one mock server
-	server1 := NewServer("server1")
+	server1 := newServer("server1")
 	server1.tools = []ToolInfo{
 		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -776,11 +776,11 @@ func TestGateway_Reconfigure_UnchangedServer(t *testing.T) {
 }
 
 func TestGateway_Reconfigure_EmptyConfig(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	registry := tools.NewToolRegistry()
 
 	// Start with one mock server
-	server1 := NewServer("server1")
+	server1 := newServer("server1")
 	server1.tools = []ToolInfo{
 		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -822,11 +822,11 @@ func TestGateway_Reconfigure_EmptyConfig(t *testing.T) {
 }
 
 func TestGateway_Reconfigure_ChangedConfig(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	registry := tools.NewToolRegistry()
 
 	// Start with one mock server
-	server1 := NewServer("server1")
+	server1 := newServer("server1")
 	server1.tools = []ToolInfo{
 		{Name: "tool1", Description: "tool from server1", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -998,7 +998,7 @@ func TestReconfigureError(t *testing.T) {
 // Status tests
 
 func TestGateway_Status_EmptyGateway(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 	status := gateway.Status()
 	if status == nil {
 		t.Fatal("Status() should not return nil")
@@ -1009,10 +1009,10 @@ func TestGateway_Status_EmptyGateway(t *testing.T) {
 }
 
 func TestGateway_Status_ConnectedServers(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Add mock servers with tools
-	server1 := NewServer("alpha")
+	server1 := newServer("alpha")
 	server1.tools = []ToolInfo{
 		{Name: "tool1", Description: "first tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "tool2", Description: "second tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -1020,7 +1020,7 @@ func TestGateway_Status_ConnectedServers(t *testing.T) {
 	server1.connected = true
 	server1.transportType = "stdio"
 
-	server2 := NewServer("beta")
+	server2 := newServer("beta")
 	server2.tools = []ToolInfo{
 		{Name: "tool3", Description: "third tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -1070,10 +1070,10 @@ func TestGateway_Status_ConnectedServers(t *testing.T) {
 }
 
 func TestGateway_Status_DisconnectedServer(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Add a server that failed to connect
-	server := NewServer("failed-server")
+	server := newServer("failed-server")
 	server.connected = false
 	server.transportType = "stdio"
 	server.lastError = "connection refused"
@@ -1097,12 +1097,12 @@ func TestGateway_Status_DisconnectedServer(t *testing.T) {
 }
 
 func TestGateway_Status_SortedByName(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Add servers in non-alphabetical order
 	names := []string{"zebra", "alpha", "mike"}
 	for _, name := range names {
-		server := NewServer(name)
+		server := newServer(name)
 		server.connected = true
 		server.transportType = "stdio"
 		gateway.servers[name] = server
@@ -1123,7 +1123,7 @@ func TestGateway_Status_SortedByName(t *testing.T) {
 }
 
 func TestServer_Status(t *testing.T) {
-	server := NewServer("test-server")
+	server := newServer("test-server")
 	server.tools = []ToolInfo{
 		{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "write_file", Description: "Write a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -1159,7 +1159,7 @@ func TestServer_Status(t *testing.T) {
 }
 
 func TestServer_Status_NoTools(t *testing.T) {
-	server := NewServer("empty-server")
+	server := newServer("empty-server")
 	server.connected = true
 	server.transportType = "stdio"
 
@@ -1174,7 +1174,7 @@ func TestServer_Status_NoTools(t *testing.T) {
 }
 
 func TestServer_Status_WithError(t *testing.T) {
-	server := NewServer("error-server")
+	server := newServer("error-server")
 	server.connected = false
 	server.lastError = "failed to connect: connection refused"
 
@@ -1189,7 +1189,7 @@ func TestServer_Status_WithError(t *testing.T) {
 }
 
 func TestGateway_SetDefaultWorkDir(t *testing.T) {
-	gw := NewGateway()
+	gw := newGateway()
 	gw.SetDefaultWorkDir("/test/workspace")
 
 	gw.mu.RLock()
@@ -1202,10 +1202,10 @@ func TestGateway_SetDefaultWorkDir(t *testing.T) {
 }
 
 func TestGateway_SetSchemaSanitizer(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Add a codebase-memory server with a project parameter
-	server := NewServer("codebase-memory")
+	server := newServer("codebase-memory")
 	server.tools = []ToolInfo{
 		{
 			Name:        "search_graph",
@@ -1263,10 +1263,10 @@ func TestGateway_SetSchemaSanitizer(t *testing.T) {
 }
 
 func TestGateway_SetSchemaSanitizer_OtherSourceUntouched(t *testing.T) {
-	gateway := NewGateway()
+	gateway := newGateway()
 
 	// Add a non-codebase-memory server with a project parameter
-	server := NewServer("other-mcp")
+	server := newServer("other-mcp")
 	server.tools = []ToolInfo{
 		{
 			Name:        "my_tool",
@@ -1326,7 +1326,7 @@ func TestStartGateway_DefaultWorkDir(t *testing.T) {
 }
 
 func TestGateway_StartAppliesDefaultWorkDir(t *testing.T) {
-	gw := NewGateway()
+	gw := newGateway()
 	gw.defaultWorkDir = "/default/dir"
 
 	// Start with an invalid command but verify the WorkDir was applied

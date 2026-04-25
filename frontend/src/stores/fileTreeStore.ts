@@ -19,8 +19,6 @@ interface FileTreeActions {
   setRootPath: (path: string | null) => void
   setEntries: (dirPath: string, entries: FileEntry[]) => void
   toggleDir: (path: string) => void
-  collapseDir: (path: string) => void
-  expandDir: (path: string) => void
   setLoading: (path: string, loading: boolean) => void
   setSearchEntries: (entries: FileEntry[]) => void
   setGitStatus: (status: Record<string, GitStatusEntry>) => void
@@ -59,18 +57,6 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
     }
     set({ expandedDirs: next })
   },
-
-  collapseDir: (path) => set((s) => {
-    const next = new Set(s.expandedDirs)
-    next.delete(path)
-    return { expandedDirs: next }
-  }),
-
-  expandDir: (path) => set((s) => {
-    const next = new Set(s.expandedDirs)
-    next.add(path)
-    return { expandedDirs: next }
-  }),
 
   setLoading: (path, loading) => set((s) => {
     const next = new Set(s.loadingDirs)

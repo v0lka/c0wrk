@@ -18,7 +18,7 @@ func TestNewServer_Initialization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := NewServer(tt.serverName)
+			s := newServer(tt.serverName)
 			if s == nil {
 				t.Fatal("NewServer returned nil")
 			}
@@ -36,7 +36,7 @@ func TestNewServer_Initialization(t *testing.T) {
 }
 
 func TestServer_CallTool_NilClient(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	_, err := s.CallTool(context.Background(), "some_tool", nil)
 	if err == nil {
@@ -50,7 +50,7 @@ func TestServer_CallTool_NilClient(t *testing.T) {
 }
 
 func TestServer_CallTool_NilClientWithArgs(t *testing.T) {
-	s := NewServer("my-server")
+	s := newServer("my-server")
 
 	args := map[string]any{
 		"path": "/tmp",
@@ -67,7 +67,7 @@ func TestServer_CallTool_NilClientWithArgs(t *testing.T) {
 }
 
 func TestServer_DiscoverTools_NilClient(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	err := s.DiscoverTools(context.Background())
 	if err == nil {
@@ -81,7 +81,7 @@ func TestServer_DiscoverTools_NilClient(t *testing.T) {
 }
 
 func TestServer_Close_NilClient(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	// Closing a server with no client should return nil
 	err := s.Close()
@@ -91,7 +91,7 @@ func TestServer_Close_NilClient(t *testing.T) {
 }
 
 func TestServer_Close_NilClient_ClearsState(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 	// Manually set some tools
 	s.tools = []ToolInfo{
 		{Name: "tool1", Description: "desc", InputSchema: json.RawMessage(`{}`)},
@@ -112,7 +112,7 @@ func TestServer_Close_NilClient_ClearsState(t *testing.T) {
 }
 
 func TestServer_Close_MultipleTimes(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	// Multiple closes should be safe
 	for i := 0; i < 3; i++ {
@@ -124,7 +124,7 @@ func TestServer_Close_MultipleTimes(t *testing.T) {
 }
 
 func TestServer_Tools_ReturnsCopy(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 	s.tools = []ToolInfo{
 		{Name: "tool1", Description: "desc1", InputSchema: json.RawMessage(`{}`)},
 		{Name: "tool2", Description: "desc2", InputSchema: json.RawMessage(`{}`)},
@@ -152,7 +152,7 @@ func TestServer_Tools_ReturnsCopy(t *testing.T) {
 }
 
 func TestServer_IsConnected(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	if s.IsConnected() {
 		t.Error("new server should not be connected")
@@ -174,7 +174,7 @@ func TestServer_Name(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := NewServer(tt.expected)
+			s := newServer(tt.expected)
 			if got := s.Name(); got != tt.expected {
 				t.Errorf("Name() = %q, want %q", got, tt.expected)
 			}
@@ -183,7 +183,7 @@ func TestServer_Name(t *testing.T) {
 }
 
 func TestServer_Connect_UnsupportedTransport(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	cfg := ServerConfig{
 		Transport: "unsupported",
@@ -201,7 +201,7 @@ func TestServer_Connect_UnsupportedTransport(t *testing.T) {
 }
 
 func TestServer_Connect_HTTP_MissingURL(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	cfg := ServerConfig{
 		Transport: "http",
@@ -220,7 +220,7 @@ func TestServer_Connect_HTTP_MissingURL(t *testing.T) {
 }
 
 func TestServer_Connect_HTTP_InvalidURL(t *testing.T) {
-	s := NewServer("test")
+	s := newServer("test")
 
 	cfg := ServerConfig{
 		Transport: "http",
@@ -246,7 +246,7 @@ func TestServerConfig_DefaultsToStdio(t *testing.T) {
 		Command:   "/nonexistent/command",
 	}
 
-	s := NewServer("test")
+	s := newServer("test")
 	err := s.Connect(context.Background(), cfg)
 
 	// Should fail because command doesn't exist, not because of transport type
@@ -267,7 +267,7 @@ func TestServerConfig_TransportStdioExplicit(t *testing.T) {
 		Command:   "/nonexistent/command",
 	}
 
-	s := NewServer("test")
+	s := newServer("test")
 	err := s.Connect(context.Background(), cfg)
 
 	// Should fail because command doesn't exist
