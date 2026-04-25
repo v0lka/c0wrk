@@ -2,6 +2,7 @@
 
 <cite>
 **Referenced Files in This Document**
+- [prompt-review-report.md](file://docs/prompt-review-report.md)
 - [prompt-optimization-spec.md](file://specs/prompt-optimization-spec.md)
 - [prompt-optimization-roadmap.md](file://specs/prompt-optimization-roadmap.md)
 - [ChatInput.tsx](file://frontend/src/components/chat/ChatInput.tsx)
@@ -18,15 +19,17 @@
 - [provider_helpers.go](file://sdk/llm/provider_helpers.go)
 - [systemprompt.go](file://core/systemprompt.go)
 - [builder.go](file://core/builder.go)
+- [router.go](file://core/router.go)
+- [router.go](file://sdk/llm/router.go)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added Cache Control Mechanisms section documenting Anthropic cache control implementation
-- Updated Core Components section to include CacheBreak functionality
-- Enhanced Architecture Overview with cache control flow
-- Added ExtractSystemPromptParts functionality documentation
-- Updated Performance Considerations to include cache benefits
+- Added comprehensive analysis of 41 prompt artifacts from the new prompt review report
+- Enhanced router logic documentation with improved prompt validation capabilities
+- Updated reasoning content handling section with new insights from prompt review
+- Expanded architecture overview to include enhanced prompt optimization pipeline
+- Added detailed analysis of prompt optimization capabilities and improvements
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -41,13 +44,14 @@
 10. [Performance Considerations](#performance-considerations)
 11. [Testing Strategy](#testing-strategy)
 12. [Rollout Considerations](#rollout-considerations)
-13. [Conclusion](#conclusion)
+13. [Enhanced Prompt Review Analysis](#enhanced-prompt-review-analysis)
+14. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Prompt Optimization Feature is a user-triggered enhancement that automatically improves the quality and specificity of user prompts for AI coding agents. This feature implements a sophisticated three-stage pipeline that translates user input to English, extracts relevant keywords, performs semantic search, and generates an optimized prompt that is more specific, actionable, and effective for AI coding tasks.
 
-The implementation follows the project's layered architecture constraints, ensuring proper separation of concerns between frontend, desktop, backend, and core components while maintaining security and performance standards. Recent enhancements include advanced cache control mechanisms for Anthropic models and improved system prompt construction with ExtractSystemPromptParts functionality.
+The implementation follows the project's layered architecture constraints, ensuring proper separation of concerns between frontend, desktop, backend, and core components while maintaining security and performance standards. Recent enhancements include advanced cache control mechanisms for Anthropic models, improved system prompt construction with ExtractSystemPromptParts functionality, and comprehensive analysis of 41 prompt artifacts that reveal opportunities for enhanced prompt optimization capabilities.
 
 ## Feature Overview
 
@@ -61,6 +65,7 @@ The prompt optimization feature provides users with an intelligent tool to enhan
 - **Intelligent Rewriting**: Generates a more specific, actionable prompt based on extracted context
 - **Cache Control**: Implements Anthropic-compatible cache control for improved performance
 - **System Prompt Optimization**: Enhanced system prompt construction with dynamic content separation
+- **Enhanced Router Logic**: Improved prompt validation and classification capabilities
 
 ### User Experience
 
@@ -98,6 +103,10 @@ Vector-->>Backend : Context snippets
 Note over Backend : Stage 3 : Prompt Rewriting
 Backend->>LLM : Rewrite prompt with context
 LLM-->>Backend : Optimized prompt
+Note over Backend : Enhanced Router Validation
+Backend->>Core : Validate with Router logic
+Core->>Core : ExtractSystemPromptParts
+Core->>Core : CacheBreak marker processing
 Note over Backend : Cache Control Integration
 Backend->>PromptBuilder : Build with CacheBreak
 PromptBuilder->>PromptBuilder : Split stable/dynamic parts
@@ -208,6 +217,46 @@ The system now includes enhanced functionality for extracting and managing syste
 **Section sources**
 - [provider_helpers.go:45-60](file://sdk/llm/provider_helpers.go#L45-L60)
 - [provider_anthropic.go:175-176](file://sdk/llm/provider_anthropic.go#L175-L176)
+
+### Enhanced Router Logic for Prompt Validation
+
+**Updated** New section documenting improved router capabilities
+
+The router system has been enhanced with improved prompt validation and classification capabilities:
+
+#### Advanced Prompt Classification
+- **Complexity Scoring**: Ranks prompts from 1-5 based on task complexity
+- **Domain Classification**: Categorizes requests into code, research, general, or mixed domains
+- **Skill Matching**: Identifies relevant skills for prompt processing
+- **Validation Logic**: Sanitizes and corrects routing decisions
+
+#### JSON Extraction and Repair
+- **Markdown Code Block Handling**: Extracts JSON from fenced code blocks
+- **Raw JSON Detection**: Finds JSON objects in plain text
+- **Repair Mechanism**: Retries with repair prompts when JSON parsing fails
+
+```mermaid
+flowchart TD
+A[User Request] --> B[Router Route]
+B --> C[Extract JSON]
+C --> D{Valid JSON?}
+D --> |Yes| E[Parse Decision]
+D --> |No| F[Repair Prompt]
+F --> G[Retry with JSON format]
+G --> H{Valid JSON?}
+H --> |Yes| E
+H --> |No| I[Return Error]
+E --> J[Validate Decision]
+J --> K[Apply Compaction Strategy]
+```
+
+**Diagram sources**
+- [router.go:52-127](file://core/router.go#L52-L127)
+- [router.go:129-148](file://core/router.go#L129-L148)
+
+**Section sources**
+- [router.go:52-127](file://core/router.go#L52-L127)
+- [router.go:129-148](file://core/router.go#L129-L148)
 
 ### Algorithm Stages
 
@@ -410,6 +459,7 @@ The testing strategy covers all critical failure modes:
 3. **Contract Tests**: JSON marshaling/unmarshaling, field validation
 4. **Frontend Tests**: Manual verification through typecheck and UI checks
 5. **Cache Control Tests**: Anthropic cache behavior, multi-system parts handling
+6. **Router Logic Tests**: Prompt classification, JSON extraction, validation
 
 ### Verification Gates
 
@@ -419,6 +469,7 @@ Implementation progress is verified through:
 - Performance benchmark validation
 - Error handling scenario testing
 - Cache control functionality verification
+- Router logic validation and prompt classification accuracy
 
 **Section sources**
 - [prompt-optimization-roadmap.md:239-279](file://specs/prompt-optimization-roadmap.md#L239-L279)
@@ -440,6 +491,7 @@ Post-deployment monitoring focuses on:
 - User feedback on prompt quality improvements
 - Security and policy compliance validation
 - Cache effectiveness metrics and performance improvements
+- Router classification accuracy and prompt validation effectiveness
 
 ### Future Enhancements
 
@@ -450,14 +502,60 @@ The current implementation provides foundation for:
 - Preview diff functionality
 - Context caching for improved performance
 - Advanced cache control strategies
+- Enhanced router logic for better prompt validation
 
 **Section sources**
 - [prompt-optimization-roadmap.md:292-312](file://specs/prompt-optimization-roadmap.md#L292-L312)
+
+## Enhanced Prompt Review Analysis
+
+### Comprehensive Prompt Artifact Analysis
+
+**Updated** New section analyzing 41 prompt artifacts comprehensively
+
+The recent prompt review report provides extensive analysis of the c0wrk codebase's 41 distinct prompt artifacts, revealing critical insights for prompt optimization enhancement:
+
+#### Prompt Inventory Distribution
+
+The system organizes prompts across three categories:
+- **29 standalone `.md` files** under `core/prompts/` and `core/tools/prompts/`, embedded via `//go:embed`
+- **11 hardcoded Go string constants** in `core/planner.go`
+- **1 hardcoded inline string** in `core/systemprompt.go`
+
+#### Critical Issues Identified
+
+**Pattern 1: Duplication Between .md Files and Go Constants**
+The planner prompt content exists in two places, creating maintenance burdens and potential contradictions. The `planModePreamble`, `planModeDomainAssignment`, and `planModeAgentProfiles` constants overlap with `planner_base.md` content.
+
+**Pattern 2: Empty/Placeholder Variants**
+All 8 planner provider-specific variants (`planner_anthropic.md` through `planner_openai_codex.md`) are empty strings, providing no value. Additionally, 5 orchestrator variants are effectively identical.
+
+**Pattern 3: Missing Context Usage Instructions**
+The `prompt_optimize_extract.md` and `prompt_optimize_rewrite.md` prompts lack explicit instructions for using codebase exploration tools, despite being designed for optimization.
+
+**Pattern 4: Inconsistent Completion/Error Handling**
+The `finish` tool requirement is mentioned in at least 5 different locations without comprehensive coverage of error scenarios.
+
+#### Priority Improvements for Prompt Optimization
+
+Based on the review, several enhancements can significantly improve prompt optimization capabilities:
+
+1. **Eliminate Duplication**: Consolidate all planner instructions into `.md` files, keeping only dynamic content in Go
+2. **Populate Empty Variants**: Either fill planner variants with model-specific instructions or remove them entirely
+3. **Add Tool Usage Instructions**: Include explicit guidance for using `search_graph` and `semantic_search` in optimization prompts
+4. **Create Unified Completion Guidance**: Develop comprehensive completion and error handling guidelines
+5. **Add Concrete Examples**: Include annotated examples in under-documented prompts
+
+**Section sources**
+- [prompt-review-report.md:11-16](file://docs/prompt-review-report.md#L11-L16)
+- [prompt-review-report.md:475-563](file://docs/prompt-review-report.md#L475-L563)
 
 ## Conclusion
 
 The Prompt Optimization Feature represents a significant enhancement to the AI coding agent's usability, providing users with intelligent prompt improvement capabilities while maintaining the project's architectural integrity and performance standards. The implementation successfully balances sophistication with reliability, offering a robust foundation for future enhancements while delivering immediate value through improved prompt quality and user experience.
 
-Recent enhancements with cache control mechanisms for Anthropic models and improved system prompt construction significantly boost performance and reliability. Through careful attention to error handling, performance optimization, and user experience design, this feature integrates seamlessly with the existing system architecture while providing clear pathways for future expansion and refinement.
+Recent enhancements with cache control mechanisms for Anthropic models, improved system prompt construction, enhanced router logic for prompt validation, and comprehensive analysis of 41 prompt artifacts significantly boost performance, reliability, and maintainability. Through careful attention to error handling, performance optimization, and user experience design, this feature integrates seamlessly with the existing system architecture while providing clear pathways for future expansion and refinement.
 
-The addition of CacheBreak functionality and ExtractSystemPromptParts ensures that the system can leverage provider-specific caching capabilities while maintaining flexibility for dynamic content. These improvements position the prompt optimization feature for continued growth and enhanced user satisfaction.
+The addition of CacheBreak functionality, ExtractSystemPromptParts, enhanced router validation, and insights from the comprehensive prompt review analysis positions the prompt optimization feature for continued growth and enhanced user satisfaction. These improvements ensure that the system can leverage provider-specific caching capabilities while maintaining flexibility for dynamic content, and that prompt optimization aligns with the broader prompt architecture improvements identified in the analysis.
+
+The enhanced router logic with improved JSON extraction, repair mechanisms, and validation capabilities provides a solid foundation for future prompt optimization enhancements, while the comprehensive prompt review analysis offers clear guidance for maintaining and improving the quality of the 41 prompt artifacts that form the backbone of the c0wrk system.
