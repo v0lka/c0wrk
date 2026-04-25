@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"sync"
 )
@@ -94,7 +93,7 @@ func (r *ToolRegistry) List() []ToolDescriptor {
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (ToolResult, error) {
 	tool, ok := r.Get(name)
 	if !ok {
-		return ToolResult{}, fmt.Errorf("tool not found: %s", name)
+		return ToolResult{Content: "tool not found: " + name, IsError: true}, nil
 	}
 	return tool.Execute(ctx, input)
 }

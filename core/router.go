@@ -22,10 +22,10 @@ var (
 
 // Router classifies user requests by complexity and determines execution strategy.
 type Router struct {
-	llm                  LLMCaller
-	historyWindow        int // number of recent messages to include
-	modelRegistry        *llm.ModelRegistry
-	baseReasoningEffort  llm.ReasoningEffort
+	llm                 LLMCaller
+	historyWindow       int // number of recent messages to include
+	modelRegistry       *llm.ModelRegistry
+	baseReasoningEffort llm.ReasoningEffort
 }
 
 // NewRouter creates a new Router.
@@ -104,7 +104,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 		// Retry with repair prompt
 		repairMessages := make([]llm.Message, len(messages)+2)
 		copy(repairMessages, messages)
-		repairMessages[len(messages)] = llm.Message{Role: "assistant", Content: resp.Message.Content}
+		repairMessages[len(messages)] = llm.Message{Role: "assistant", Content: resp.Message.Content, ReasoningContent: resp.Message.ReasoningContent}
 		repairMessages[len(messages)+1] = llm.Message{
 			Role:    "user",
 			Content: "Your previous response was not valid JSON. Respond with ONLY a JSON object in this exact format:\n{\"domain\":\"general\",\"complexity\":1,\"needs_clarification\":false}",

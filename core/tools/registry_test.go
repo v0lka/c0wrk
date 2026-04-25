@@ -111,14 +111,17 @@ func TestToolRegistry_ExecuteNonExistent(t *testing.T) {
 	ctx := context.Background()
 	input := json.RawMessage(`{}`)
 
-	// Execute non-existent tool should return error
-	_, err := registry.Execute(ctx, "nonexistent", input)
-	if err == nil {
-		t.Fatal("expected error when executing non-existent tool, got nil")
+	// Execute non-existent tool should return an error result, not an infrastructure error
+	result, err := registry.Execute(ctx, "nonexistent", input)
+	if err != nil {
+		t.Fatalf("expected nil infrastructure error for non-existent tool, got %v", err)
 	}
-	expectedErrMsg := "tool not found: nonexistent"
-	if err.Error() != expectedErrMsg {
-		t.Errorf("expected error message %q, got %q", expectedErrMsg, err.Error())
+	if !result.IsError {
+		t.Error("expected IsError=true for non-existent tool result")
+	}
+	expectedContent := "tool not found: nonexistent"
+	if result.Content != expectedContent {
+		t.Errorf("expected content %q, got %q", expectedContent, result.Content)
 	}
 }
 

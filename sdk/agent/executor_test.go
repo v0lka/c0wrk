@@ -265,6 +265,44 @@ func TestExecutor_Run_ToolExecutionError(t *testing.T) {
 	}
 }
 
+func TestExecutor_Run_ToolNotFound_Recovers(t *testing.T) {
+	// When LLM hallucinates a tool name, the registry returns IsError=true.
+	// Executor should NOT treat this as an infrastructure error;
+	// it should feed the error back to the LLM so it can correct itself.
+	toolInput := json.RawMessage(`{}`)
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			llmResponseWithToolCall("trying ghost", "ghost_tool", toolInput),
+			llmResponseFinish("fixed", "done"),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	mockTools.results["ghost_tool"] = tools.ToolResult{Content: "tool not found: ghost_tool", IsError: true}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "read_file", Description: "read a file", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Finished {
+		t.Error("expected Finished=true after recovery")
+	}
+	if result.Output != "done" {
+		t.Errorf("Output = %q, want %q", result.Output, "done")
+	}
+	// First step should contain the tool-not-found observation
+	if len(result.Steps) < 1 {
+		t.Fatalf("expected at least 1 step, got %d", len(result.Steps))
+	}
+	if result.Steps[0].Observation != "tool not found: ghost_tool" {
+		t.Errorf("expected observation %q, got %q", "tool not found: ghost_tool", result.Steps[0].Observation)
+	}
+}
+
 func TestExecutor_Run_CircuitBreaker_Abort(t *testing.T) {
 	// Same tool call repeated ≥ RepeatAbortThreshold (4) times
 	sameInput := json.RawMessage(`{"q":"same"}`)

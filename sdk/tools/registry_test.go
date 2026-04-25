@@ -219,12 +219,15 @@ func TestExecuteSuccess(t *testing.T) {
 
 func TestExecuteNotFound(t *testing.T) {
 	reg := NewToolRegistry()
-	_, err := reg.Execute(context.Background(), "ghost", nil)
-	if err == nil {
-		t.Fatal("expected error for missing tool")
+	result, err := reg.Execute(context.Background(), "ghost", nil)
+	if err != nil {
+		t.Fatalf("expected nil infrastructure error for missing tool, got %v", err)
 	}
-	if err.Error() != "tool not found: ghost" {
-		t.Errorf("unexpected error message: %v", err)
+	if !result.IsError {
+		t.Fatal("expected IsError=true for missing tool result")
+	}
+	if result.Content != "tool not found: ghost" {
+		t.Errorf("unexpected result content: %q", result.Content)
 	}
 }
 

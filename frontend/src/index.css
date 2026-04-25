@@ -341,75 +341,97 @@ body {
 }
 
 /* ==========================================================================
-   File Viewer — Line Styling
+   CodeMirror — Editor Structural Overrides
    ========================================================================== */
 
-.file-viewer-line {
-  display: flex;
-  min-height: 1.25rem;
+.cm-viewer-container .cm-editor {
+  background: transparent;
+  font-size: 0.75rem;
+  height: 100%;
 }
 
-.file-viewer-line-number {
-  display: inline-block;
-  width: 3.5rem;
-  flex-shrink: 0;
-  text-align: right;
-  padding-right: 0.75rem;
+.cm-viewer-container .cm-scroller {
+  font-family: 'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace;
+  overflow: auto;
+}
+
+.cm-viewer-container .cm-gutters {
+  background: transparent;
+  border-right: none;
   color: var(--color-hljs-comment);
-  user-select: none;
 }
 
-.file-viewer-line-content {
-  flex: none;
-  white-space: pre;
+.cm-viewer-container .cm-activeLineGutter,
+.cm-viewer-container .cm-activeLine {
+  background: transparent;
+}
+
+.cm-viewer-container .cm-content {
+  caret-color: transparent;
+  padding: 1rem 0;
+}
+
+.cm-viewer-container .cm-cursor,
+.cm-viewer-container .cm-dropCursor {
+  display: none;
+}
+
+.cm-viewer-container .cm-lineNumbers .cm-gutterElement {
+  min-width: 3rem;
+  padding: 0 0.75rem 0 0;
 }
 
 /* ==========================================================================
-   File Viewer — Diff Line Styles
+   CodeMirror — Diff Decorations
    ========================================================================== */
 
-.diff-line-added {
+.cm-diff-added {
   background-color: rgba(var(--color-success-rgb), 0.15);
 }
 
-.diff-line-added .file-viewer-line-number {
-  color: var(--color-success);
-}
-
-.diff-line-removed {
-  background-color: rgba(var(--color-destructive-rgb), 0.15);
-}
-
-.diff-line-removed .file-viewer-line-number {
-  color: var(--color-destructive);
-}
-
-.diff-line-modified {
+.cm-diff-modified {
   background-color: rgba(var(--color-success-rgb), 0.10);
 }
 
-.diff-line-modified .file-viewer-line-number {
-  color: var(--color-success);
-}
-
-/* Inline character-level diff highlights */
-.diff-char-added {
+.cm-diff-char-added {
   background-color: rgba(var(--color-success-rgb), 0.35);
   border-radius: 2px;
 }
 
-.diff-char-removed {
+.cm-diff-char-removed {
   background-color: rgba(var(--color-destructive-rgb), 0.35);
   text-decoration: line-through;
   border-radius: 2px;
 }
 
+.cm-diff-removed-widget {
+  display: flex;
+  min-height: 1.25rem;
+  background-color: rgba(var(--color-destructive-rgb), 0.15);
+  color: var(--color-destructive);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  white-space: pre;
+}
+
+.cm-diff-removed-gutter {
+  display: inline-block;
+  min-width: 3rem;
+  padding-right: 0.75rem;
+  flex-shrink: 0;
+}
+
+.cm-diff-removed-text {
+  white-space: pre;
+}
+
 /* ==========================================================================
-   File Viewer — Line Highlight (e.g. from vector store click-to-jump)
+   CodeMirror — Line Highlight (e.g. from vector store click-to-jump)
    ========================================================================== */
 
-.file-viewer-line-highlighted {
+.cm-highlighted-line {
   background-color: rgba(var(--color-primary-rgb), 0.12);
   outline: 2px solid var(--color-primary);
   outline-offset: -2px;
 }
+

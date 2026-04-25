@@ -1,13 +1,24 @@
-import { useMemo, useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Code, Eye, Loader2 } from 'lucide-react'
+import { EditorView } from '@codemirror/view'
+import { EditorState, Compartment } from '@codemirror/state'
+import { lineNumbers } from '@codemirror/view'
 import { Button } from '@/components/ui/button'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { subscribe } from '@/api/runtime'
 import { readFile, getFileDiff } from '@/api/workspace'
-import { parseUnifiedDiff, buildDisplayLines, type DisplayLine } from '@/lib/diffParser'
+import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
 import { Markdown } from '@/lib/markdownConfig'
-import { highlightLines, detectLanguageFromPath, isBinaryContent } from '@/lib/fileViewerUtils'
-import { cn } from '@/lib/utils'
+import { isBinaryContent } from '@/lib/fileViewerUtils'
+import { detectLanguageFromPath } from '@/lib/cmLanguages'
+import { createOneDarkCMTheme } from '@/lib/cmTheme'
+import {
+  diffDecorationField,
+  highlightLineField,
+  setDiffEffect,
+  setHighlightLineEffect,
+} from '@/lib/cmDiffDecorations'
+import { loadLanguageByName } from '@/lib/cmLanguages'
 
 export function FileViewerContent() {
   const activeFile = useFileViewerStore((s) => s.activeFile)
@@ -19,8 +30,6 @@ export function FileViewerContent() {
   const setFileError = useFileViewerStore((s) => s.setFileError)
   const setFileBinary = useFileViewerStore((s) => s.setFileBinary)
   const setFileLoading = useFileViewerStore((s) => s.setFileLoading)
-
-  const scrollRef = useRef<HTMLDivElement>(null)
 
   const loadFile = useCallback(async (path: string, silent: boolean) => {
     if (!silent) setFileLoading(path, true)
@@ -48,13 +57,9 @@ export function FileViewerContent() {
   // Auto-refresh on workspace:tree_changed — silently reload all open files
   useEffect(() => {
     const unsub = subscribe('workspace:tree_changed', () => {
-      const savedScroll = scrollRef.current?.scrollTop ?? 0
       for (const path of openTabs) {
         loadFile(path, true)
       }
-      requestAnimationFrame(() => {
-        if (scrollRef.current) scrollRef.current.scrollTop = savedScroll
-      })
     })
     return unsub
   }, [openTabs, loadFile])
@@ -88,68 +93,155 @@ export function FileViewerContent() {
   }
 
   return (
-    <HighlightedContent
+    <CodeMirrorViewer
       content={fileData.content}
-      language={fileData.language ?? 'plaintext'}
+      language={fileData.language ?? 'text/plain'}
       diff={fileData.diff}
       highlightLine={highlightLine}
-      scrollRef={scrollRef}
     />
   )
 }
 
-// --- Highlighted content with diff overlay ---
+// -- CodeMirror-based viewer -------------------------------------------------
 
-function HighlightedContent({ content, language, diff, highlightLine, scrollRef }: {
+function CodeMirrorViewer({ content, language, diff, highlightLine }: {
   content: string
   language: string
   diff?: string
   highlightLine: number | null
-  scrollRef: React.RefObject<HTMLDivElement | null>
 }) {
   const [showRaw, setShowRaw] = useState(false)
-  const isMarkdown = language === 'markdown'
-  const lines = useMemo(() => content.split('\n'), [content])
-
-  const displayLines = useMemo((): DisplayLine[] => {
-    if (!diff) return []
-    const { hunks } = parseUnifiedDiff(diff)
-    return hunks.length > 0 ? buildDisplayLines(lines, hunks) : []
-  }, [diff, lines])
-
-  const highlighted = useMemo(
-    () => highlightLines(content, language),
-    [content, language],
-  )
-
+  const isMarkdown = language === 'Markdown' || language === 'markdown'
+  const containerRef = useRef<HTMLDivElement>(null)
+  const viewRef = useRef<EditorView | null>(null)
+  const langCompartment = useRef(new Compartment())
   const clearHighlightLine = useFileViewerStore((s) => s.clearHighlightLine)
 
-  // Scroll to the highlighted line and clear after a delay
-  useEffect(() => {
-    if (highlightLine == null) return
-    const container = scrollRef.current
-    if (!container) return
+  // Memoize the theme so it's only resolved once
+  const theme = useMemo(() => createOneDarkCMTheme(), [])
 
-    // Find the line element by data-line-number attribute
-    const lineEl = container.querySelector<HTMLElement>(
-      `[data-line-number="${highlightLine}"]`
-    )
-    if (lineEl) {
-      lineEl.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  // Create EditorView on mount, destroy on unmount
+  useEffect(() => {
+    if (!containerRef.current) return
+
+    const state = EditorState.create({
+      doc: content,
+      extensions: [
+        EditorView.editable.of(false),
+        EditorState.readOnly.of(true),
+        theme,
+        lineNumbers(),
+        langCompartment.current.of([]),
+        diffDecorationField,
+        highlightLineField,
+      ],
+    })
+
+    const view = new EditorView({
+      state,
+      parent: containerRef.current,
+    })
+
+    viewRef.current = view
+
+    return () => {
+      view.destroy()
+      viewRef.current = null
     }
+    // Intentionally only run on mount/unmount. Content/language/diff updates
+    // are handled by separate effects that dispatch to the existing view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Update document content when it changes
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+
+    const currentDoc = view.state.doc.toString()
+    if (currentDoc === content) return
+
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: content },
+    })
+  }, [content])
+
+  // Load language asynchronously and reconfigure compartment
+  useEffect(() => {
+    let cancelled = false
+    const view = viewRef.current
+
+    loadLanguageByName(language).then((langSupport) => {
+      if (cancelled || !viewRef.current) return
+      viewRef.current.dispatch({
+        effects: langCompartment.current.reconfigure(langSupport ? [langSupport] : []),
+      })
+    })
+
+    // If the language is already loaded synchronously, reconfigure immediately
+    if (view) {
+      // Language loading is async; the .then() above handles it.
+    }
+
+    return () => { cancelled = true }
+  }, [language])
+
+  // Update diff decorations when diff or content changes
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+
+    if (!diff) {
+      view.dispatch({ effects: setDiffEffect.of(null) })
+      return
+    }
+
+    const lines = content.split('\n')
+    const { hunks } = parseUnifiedDiff(diff)
+    const displayLines = hunks.length > 0 ? buildDisplayLines(lines, hunks) : []
+
+    if (displayLines.length > 0) {
+      view.dispatch({ effects: setDiffEffect.of(displayLines) })
+    } else {
+      view.dispatch({ effects: setDiffEffect.of(null) })
+    }
+  }, [diff, content])
+
+  // Handle scroll-to-line and highlight
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+
+    if (highlightLine == null) {
+      view.dispatch({ effects: setHighlightLineEffect.of(null) })
+      return
+    }
+
+    if (highlightLine < 1 || highlightLine > view.state.doc.lines) return
+
+    const line = view.state.doc.line(highlightLine)
+    view.dispatch({
+      effects: [
+        setHighlightLineEffect.of(highlightLine),
+        EditorView.scrollIntoView(line.from, { y: 'center' }),
+      ],
+    })
 
     const timer = setTimeout(() => {
       clearHighlightLine()
+      if (viewRef.current) {
+        viewRef.current.dispatch({ effects: setHighlightLineEffect.of(null) })
+      }
     }, 3000)
 
     return () => clearTimeout(timer)
-  }, [highlightLine, scrollRef, clearHighlightLine])
+  }, [highlightLine, clearHighlightLine])
 
   // Markdown preview mode
   if (isMarkdown && !showRaw) {
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div ref={scrollRef} className="flex-1 overflow-auto custom-scrollbar p-4">
+        <div className="flex-1 overflow-auto custom-scrollbar p-4">
           <Button
             variant="ghost"
             size="icon-xs"
@@ -167,68 +259,19 @@ function HighlightedContent({ content, language, diff, highlightLine, scrollRef 
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div ref={scrollRef} className="flex-1 overflow-auto custom-scrollbar p-4">
-        {isMarkdown && (
+      {isMarkdown && (
+        <div className="flex justify-end p-1">
           <Button
             variant="ghost"
             size="icon-xs"
             onClick={() => setShowRaw(false)}
-            className="float-right ml-3 mb-3"
             title="Preview"
           >
             <Eye className="size-4" />
           </Button>
-        )}
-        <pre className="text-xs leading-5 font-mono min-w-max">
-          <code className={`hljs language-${language}`}>
-            {displayLines.length > 0
-              ? displayLines.map((dl, i) => (
-                <DiffLine key={i} dl={dl} highlighted={highlighted} highlightLine={highlightLine} />
-              ))
-              : lines.map((_, i) => (
-                <div key={i} className={cn('file-viewer-line', highlightLine === i + 1 && 'file-viewer-line-highlighted')} data-line-number={i + 1}>
-                  <span className="file-viewer-line-number">{i + 1}</span>
-                  <span className="file-viewer-line-content" dangerouslySetInnerHTML={{ __html: highlighted[i] ?? '' }} />
-                </div>
-              ))}
-          </code>
-        </pre>
-      </div>
-    </div>
-  )
-}
-
-
-
-function DiffLine({ dl, highlighted, highlightLine }: { dl: DisplayLine; highlighted: string[]; highlightLine: number | null }) {
-  const isHighlighted = dl.lineNumber != null && highlightLine === dl.lineNumber
-  if (dl.type === 'removed') {
-    return (
-      <div className={cn('file-viewer-line', 'diff-line-removed', isHighlighted && 'file-viewer-line-highlighted')} data-hunk-id={dl.hunkId}>
-        <span className="file-viewer-line-number" />
-        <span className="file-viewer-line-content">{dl.content}</span>
-      </div>
-    )
-  }
-  if (dl.type === 'modified' && dl.charDiff) {
-    return (
-      <div className={cn('file-viewer-line', 'diff-line-modified', isHighlighted && 'file-viewer-line-highlighted')} data-line-number={dl.lineNumber} data-hunk-id={dl.hunkId}>
-        <span className="file-viewer-line-number">{dl.lineNumber}</span>
-        <span className="file-viewer-line-content">
-          {dl.charDiff.map((part, idx) => (
-            <span key={idx} className={part.type === 'added' ? 'diff-char-added' : part.type === 'removed' ? 'diff-char-removed' : undefined}>
-              {part.value}
-            </span>
-          ))}
-        </span>
-      </div>
-    )
-  }
-  const html = dl.lineNumber ? (highlighted[dl.lineNumber - 1] ?? '') : ''
-  return (
-    <div className={cn('file-viewer-line', dl.type === 'added' && 'diff-line-added', isHighlighted && 'file-viewer-line-highlighted')} data-line-number={dl.lineNumber} data-hunk-id={dl.hunkId}>
-      <span className="file-viewer-line-number">{dl.lineNumber}</span>
-      <span className="file-viewer-line-content" dangerouslySetInnerHTML={{ __html: html }} />
+        </div>
+      )}
+      <div ref={containerRef} className="flex-1 overflow-hidden cm-viewer-container" />
     </div>
   )
 }

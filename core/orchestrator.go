@@ -277,6 +277,22 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	return result, nil
 }
 
+// lastReasoningContent extracts the last non-empty reasoning content from the
+// blackboard's step results. This is needed so that assistant messages echoed
+// back to reasoning models (e.g. DeepSeek) include the reasoning_content field
+// those models require.
+func lastReasoningContent(bb Blackboard) string {
+	var last string
+	for _, sr := range bb.GetAllStepResults() {
+		for _, step := range sr.Steps {
+			if step.ReasoningContent != "" {
+				last = step.ReasoningContent
+			}
+		}
+	}
+	return last
+}
+
 // buildSkillPolicyOverrides creates tool policy overrides from active skills.
 // Tools listed in a skill's allowed-tools field get PolicyAlwaysAllow,
 // enabling the agent to use them without manual confirmation.
@@ -665,7 +681,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// 9. Accumulate conversation history for future routing context
 	o.conversationHistory = append(o.conversationHistory,
 		llm.Message{Role: "user", Content: message},
-		llm.Message{Role: "assistant", Content: result.Output},
+		llm.Message{Role: "assistant", Content: result.Output, ReasoningContent: lastReasoningContent(bb)},
 	)
 	maxHistory := o.config.MaxHistoryMessages
 	if maxHistory == 0 {
