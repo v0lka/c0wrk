@@ -1,6 +1,4 @@
-import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Code, Eye } from 'lucide-react'
 import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
 import remarkBreaks from 'remark-breaks'
@@ -49,38 +47,11 @@ interface MarkdownProps {
   content: string
   className?: string
   compact?: boolean
-  showSourceToggle?: boolean
 }
 
-export function Markdown({ content, className, compact, showSourceToggle }: MarkdownProps) {
-  const [showSource, setShowSource] = useState(false)
-
-  if (showSource && showSourceToggle) {
-    return (
-      <div>
-        <button
-          onClick={() => setShowSource(false)}
-          className="float-right ml-3 mb-3 p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-          title="Preview"
-        >
-          <Eye className="size-4" />
-        </button>
-        <pre className="whitespace-pre-wrap font-mono text-sm m-0 text-foreground">{content}</pre>
-      </div>
-    )
-  }
-
+export function Markdown({ content, className, compact }: MarkdownProps) {
   return (
     <div className={cn('prose prose-sm max-w-none', compact && 'prose-xs', className)}>
-      {showSourceToggle && (
-        <button
-          onClick={() => setShowSource(true)}
-          className="float-right ml-3 mb-3 p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-          title="Source"
-        >
-          <Code className="size-4" />
-        </button>
-      )}
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}

@@ -66,6 +66,10 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (too
 		return tools.ParseInputError(err)
 	}
 
+	if params.Path == "" {
+		return tools.ToolResult{Content: "validation error: path is required", IsError: true}, nil
+	}
+
 	params.Path = resolvePath(ctx, params.Path)
 
 	tracker := agent.FileTrackerFromContext(ctx)

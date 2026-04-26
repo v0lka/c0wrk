@@ -2,7 +2,6 @@
 
 <cite>
 **Referenced Files in This Document**
-- [prompt-review-report.md](file://docs/prompt-review-report.md)
 - [prompt-optimization-spec.md](file://specs/prompt-optimization-spec.md)
 - [prompt-optimization-roadmap.md](file://specs/prompt-optimization-roadmap.md)
 - [ChatInput.tsx](file://frontend/src/components/chat/ChatInput.tsx)
@@ -12,24 +11,24 @@
 - [prompts.go](file://core/prompts/prompts.go)
 - [prompt_optimize_extract.md](file://core/prompts/prompt_optimize_extract.md)
 - [prompt_optimize_rewrite.md](file://core/prompts/prompt_optimize_rewrite.md)
+- [builder.go](file://core/builder.go)
 - [types.go](file://backend/types.go)
 - [provider.go](file://sdk/llm/provider.go)
 - [builder.go](file://sdk/prompt/builder.go)
 - [provider_anthropic.go](file://sdk/llm/provider_anthropic.go)
 - [provider_helpers.go](file://sdk/llm/provider_helpers.go)
 - [systemprompt.go](file://core/systemprompt.go)
-- [builder.go](file://core/builder.go)
 - [router.go](file://core/router.go)
 - [router.go](file://sdk/llm/router.go)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive analysis of 41 prompt artifacts from the new prompt review report
-- Enhanced router logic documentation with improved prompt validation capabilities
-- Updated reasoning content handling section with new insights from prompt review
-- Expanded architecture overview to include enhanced prompt optimization pipeline
-- Added detailed analysis of prompt optimization capabilities and improvements
+- Removed reference to docs/prompt-review-report.md which was completely removed from codebase
+- Simplified documentation to focus on core prompt optimization features without external review report
+- Consolidated architecture overview to emphasize the three-stage pipeline implementation
+- Updated frontend integration section to reflect current implementation patterns
+- Streamlined backend implementation details to match actual codebase structure
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -44,14 +43,13 @@
 10. [Performance Considerations](#performance-considerations)
 11. [Testing Strategy](#testing-strategy)
 12. [Rollout Considerations](#rollout-considerations)
-13. [Enhanced Prompt Review Analysis](#enhanced-prompt-review-analysis)
-14. [Conclusion](#conclusion)
+13. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Prompt Optimization Feature is a user-triggered enhancement that automatically improves the quality and specificity of user prompts for AI coding agents. This feature implements a sophisticated three-stage pipeline that translates user input to English, extracts relevant keywords, performs semantic search, and generates an optimized prompt that is more specific, actionable, and effective for AI coding tasks.
 
-The implementation follows the project's layered architecture constraints, ensuring proper separation of concerns between frontend, desktop, backend, and core components while maintaining security and performance standards. Recent enhancements include advanced cache control mechanisms for Anthropic models, improved system prompt construction with ExtractSystemPromptParts functionality, and comprehensive analysis of 41 prompt artifacts that reveal opportunities for enhanced prompt optimization capabilities.
+The implementation follows the project's layered architecture constraints, ensuring proper separation of concerns between frontend, desktop, backend, and core components while maintaining security and performance standards. The feature leverages specialized prompt templates and integrates seamlessly with the existing LLM provider infrastructure and vector search capabilities.
 
 ## Feature Overview
 
@@ -65,7 +63,6 @@ The prompt optimization feature provides users with an intelligent tool to enhan
 - **Intelligent Rewriting**: Generates a more specific, actionable prompt based on extracted context
 - **Cache Control**: Implements Anthropic-compatible cache control for improved performance
 - **System Prompt Optimization**: Enhanced system prompt construction with dynamic content separation
-- **Enhanced Router Logic**: Improved prompt validation and classification capabilities
 
 ### User Experience
 
@@ -103,10 +100,6 @@ Vector-->>Backend : Context snippets
 Note over Backend : Stage 3 : Prompt Rewriting
 Backend->>LLM : Rewrite prompt with context
 LLM-->>Backend : Optimized prompt
-Note over Backend : Enhanced Router Validation
-Backend->>Core : Validate with Router logic
-Core->>Core : ExtractSystemPromptParts
-Core->>Core : CacheBreak marker processing
 Note over Backend : Cache Control Integration
 Backend->>PromptBuilder : Build with CacheBreak
 PromptBuilder->>PromptBuilder : Split stable/dynamic parts
@@ -165,7 +158,7 @@ PromptTemplates --> RewriteTemplate : "provides"
 
 ### Cache Control Mechanisms
 
-**Updated** Enhanced with Anthropic-compatible cache control implementation
+Enhanced with Anthropic-compatible cache control implementation
 
 The system now implements sophisticated cache control mechanisms for improved performance with Anthropic models:
 
@@ -206,7 +199,7 @@ I --> J
 
 ### ExtractSystemPromptParts Functionality
 
-**Updated** Improved system prompt construction with ExtractSystemPromptParts
+Improved system prompt construction with ExtractSystemPromptParts
 
 The system now includes enhanced functionality for extracting and managing system prompt parts:
 
@@ -220,7 +213,7 @@ The system now includes enhanced functionality for extracting and managing syste
 
 ### Enhanced Router Logic for Prompt Validation
 
-**Updated** New section documenting improved router capabilities
+New section documenting improved router capabilities
 
 The router system has been enhanced with improved prompt validation and classification capabilities:
 
@@ -264,7 +257,7 @@ The optimization pipeline consists of three distinct stages:
 
 1. **Translation and Keyword Extraction**: Translates prompts to English and extracts 3-5 relevant keywords
 2. **Semantic Search**: Queries vector index with extracted keywords to retrieve context
-3. **Prompt Rewriting**: Generates an optimized, more specific prompt using the extracted context
+3. **Prompt Rewriting**: Generates an optimized prompt using the extracted context
 
 **Section sources**
 - [prompt-optimization-spec.md:163-217](file://specs/prompt-optimization-spec.md#L163-L217)
@@ -369,11 +362,9 @@ The optimization response provides essential information for UI replacement:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `optimizedPrompt` | string | The enhanced prompt text |
-| `translatedPromptEn` | string | English translation of original |
+| `optimized_prompt` | string | The enhanced prompt text |
 | `keywords` | string[] | Extracted keyword phrases |
-| `searchResults` | array | Retrieved context snippets |
-| `meta` | object | Performance and diagnostic metadata |
+| `used_context` | boolean | Whether context was utilized in optimization |
 
 **Section sources**
 - [prompt-optimization-spec.md:222-283](file://specs/prompt-optimization-spec.md#L222-L283)
@@ -417,7 +408,7 @@ The implementation targets specific performance benchmarks:
 
 ### Cache Control Benefits
 
-**Updated** Enhanced with cache control optimizations
+Enhanced with cache control optimizations
 
 The new cache control mechanisms provide significant performance improvements:
 
@@ -506,49 +497,6 @@ The current implementation provides foundation for:
 
 **Section sources**
 - [prompt-optimization-roadmap.md:292-312](file://specs/prompt-optimization-roadmap.md#L292-L312)
-
-## Enhanced Prompt Review Analysis
-
-### Comprehensive Prompt Artifact Analysis
-
-**Updated** New section analyzing 41 prompt artifacts comprehensively
-
-The recent prompt review report provides extensive analysis of the c0wrk codebase's 41 distinct prompt artifacts, revealing critical insights for prompt optimization enhancement:
-
-#### Prompt Inventory Distribution
-
-The system organizes prompts across three categories:
-- **29 standalone `.md` files** under `core/prompts/` and `core/tools/prompts/`, embedded via `//go:embed`
-- **11 hardcoded Go string constants** in `core/planner.go`
-- **1 hardcoded inline string** in `core/systemprompt.go`
-
-#### Critical Issues Identified
-
-**Pattern 1: Duplication Between .md Files and Go Constants**
-The planner prompt content exists in two places, creating maintenance burdens and potential contradictions. The `planModePreamble`, `planModeDomainAssignment`, and `planModeAgentProfiles` constants overlap with `planner_base.md` content.
-
-**Pattern 2: Empty/Placeholder Variants**
-All 8 planner provider-specific variants (`planner_anthropic.md` through `planner_openai_codex.md`) are empty strings, providing no value. Additionally, 5 orchestrator variants are effectively identical.
-
-**Pattern 3: Missing Context Usage Instructions**
-The `prompt_optimize_extract.md` and `prompt_optimize_rewrite.md` prompts lack explicit instructions for using codebase exploration tools, despite being designed for optimization.
-
-**Pattern 4: Inconsistent Completion/Error Handling**
-The `finish` tool requirement is mentioned in at least 5 different locations without comprehensive coverage of error scenarios.
-
-#### Priority Improvements for Prompt Optimization
-
-Based on the review, several enhancements can significantly improve prompt optimization capabilities:
-
-1. **Eliminate Duplication**: Consolidate all planner instructions into `.md` files, keeping only dynamic content in Go
-2. **Populate Empty Variants**: Either fill planner variants with model-specific instructions or remove them entirely
-3. **Add Tool Usage Instructions**: Include explicit guidance for using `search_graph` and `semantic_search` in optimization prompts
-4. **Create Unified Completion Guidance**: Develop comprehensive completion and error handling guidelines
-5. **Add Concrete Examples**: Include annotated examples in under-documented prompts
-
-**Section sources**
-- [prompt-review-report.md:11-16](file://docs/prompt-review-report.md#L11-L16)
-- [prompt-review-report.md:475-563](file://docs/prompt-review-report.md#L475-L563)
 
 ## Conclusion
 

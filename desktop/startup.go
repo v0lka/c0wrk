@@ -290,6 +290,35 @@ func (a *App) Startup(ctx context.Context) {
 		projectMgr = project.NewManager(projStore, projectsDir)
 	}
 
+	// Pre-load projects and sessions and emit to frontend immediately.
+	// This happens before the slow NewApplication() call so the sidebar
+	// populates right away. The project resolver is wired later, so lazy
+	// session restoration only works after backend:ready fires.
+	if projectMgr != nil {
+		projects, pErr := projectMgr.ListProjects()
+		if pErr == nil && len(projects) > 0 {
+			// NOTE: We intentionally do NOT set activeProjectID here.
+			// Setting it prematurely causes SwitchProject's idempotency guard
+			// to reject the frontend's first call, which skips vector index
+			// initialization entirely. The frontend will call SwitchProject
+			// after receiving this event, which sets activeProjectID properly.
+
+			wailsRuntime.EventsEmit(a.ctx, backend.EventProjectsLoaded, projects)
+
+			// Also pre-load sessions for the most recent project
+			if store != nil {
+				sessions, sErr := store.ListSessionsByProject(projects[0].ID)
+				if sErr == nil {
+					wailsRuntime.EventsEmit(a.ctx, backend.EventSessionsLoaded, sessions)
+				} else {
+					log.Warn("failed to pre-load sessions for early emit", "error", sErr)
+				}
+			}
+		} else if pErr != nil {
+			log.Warn("failed to pre-load projects for early emit", "error", pErr)
+		}
+	}
+
 	// Wire vector search callbacks into Application config.
 	var vectorSearchFunc backend.VectorSearchFunc
 	var vectorSearchWaitFunc backend.VectorSearchWaitFunc
@@ -380,34 +409,6 @@ func (a *App) Startup(ctx context.Context) {
 			}
 			return proj.WorkspacePath, nil
 		})
-	}
-
-	// Pre-load projects and sessions and emit to frontend AFTER the project
-	// resolver is wired, so that lazy session restoration works if the user
-	// interacts with a session before backend:ready fires.
-	if projectMgr != nil {
-		projects, pErr := projectMgr.ListProjects()
-		if pErr == nil && len(projects) > 0 {
-			// NOTE: We intentionally do NOT set activeProjectID here.
-			// Setting it prematurely causes SwitchProject's idempotency guard
-			// to reject the frontend's first call, which skips vector index
-			// initialization entirely. The frontend will call SwitchProject
-			// after receiving this event, which sets activeProjectID properly.
-
-			wailsRuntime.EventsEmit(a.ctx, backend.EventProjectsLoaded, projects)
-
-			// Also pre-load sessions for the most recent project
-			if store != nil {
-				sessions, sErr := store.ListSessionsByProject(projects[0].ID)
-				if sErr == nil {
-					wailsRuntime.EventsEmit(a.ctx, backend.EventSessionsLoaded, sessions)
-				} else {
-					log.Warn("failed to pre-load sessions for early emit", "error", sErr)
-				}
-			}
-		} else if pErr != nil {
-			log.Warn("failed to pre-load projects for early emit", "error", pErr)
-		}
 	}
 
 	// Validate LLM provider configuration at startup (fail-fast).

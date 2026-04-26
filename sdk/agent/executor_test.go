@@ -1983,6 +1983,61 @@ func TestExecutor_Run_SameToolRepeat_ResetOnSizeChange(t *testing.T) {
 	}
 }
 
+func TestExecutor_Run_SameToolRepeat_StoreFactExcluded(t *testing.T) {
+	// store_fact should NOT trigger the same-tool repetition detector even when
+	// called many times in a row with similar-sized confirmation results.
+	sameToolConfig := CircuitBreakerConfig{
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         4,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      50,
+		FruitlessAbortThreshold:      60,
+		FruitlessMaxResultLen:        32,
+		SameToolRepeatNudgeThreshold: 3,
+		SameToolRepeatAbortThreshold: 5,
+		SameToolResultSizeDelta:      64,
+	}
+
+	// 6 calls to store_fact (would normally trigger abort) followed by finish
+	responses := make([]*llm.ChatResponse, 7)
+	for i := 0; i < 6; i++ {
+		responses[i] = llmResponseWithToolCall(
+			fmt.Sprintf("store fact %d", i+1),
+			"store_fact",
+			json.RawMessage(fmt.Sprintf(`{"fact":"fact %d"}`, i+1)),
+		)
+	}
+	responses[6] = llmResponseFinish("done", "completed")
+
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	// store_fact returns similar-sized confirmations
+	mockTools.results["store_fact"] = tools.ToolResult{Content: "Fact stored.", IsError: false}
+
+	cm := newMockContextManager()
+	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "store_fact", Description: "store a fact", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Finished {
+		t.Error("expected Finished=true (store_fact should not trigger same-tool abort)")
+	}
+
+	// Should NOT have triggered nudge or abort
+	for _, s := range result.Steps {
+		if strings.Contains(s.Observation, "consistently similar results") || strings.Contains(s.Observation, "Aborted") {
+			t.Error("store_fact should NOT trigger same-tool repeat nudge or abort")
+			break
+		}
+	}
+}
+
 // --- Multi-Tool-Call tests ---
 
 func TestExecutor_Run_MultiToolCall_AllExecuted(t *testing.T) {

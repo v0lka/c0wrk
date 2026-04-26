@@ -37,13 +37,16 @@ Steps can depend on other steps (DependsOn) and can be parallelizable.
 
 ## Granularity
 
-Prefer fewer, broader steps over many granular ones. Each step should represent meaningful progress, not a single tool call.
+Match step granularity to task scope. Each step must be bounded so a single executor can complete it within its context window.
 
 - Simple tasks (complexity 1-2): 1-2 steps
 - Medium tasks (complexity 3): 2-4 steps
-- Complex tasks (complexity 4-5): 3-7 steps
+- Complex tasks (complexity 4): 4-7 steps
+- Large tasks (complexity 5): 6-10 steps
 
-Limit plans to MAX-STEPS steps maximum. If a task seems to require more, combine related work into broader steps.
+CRITICAL: A single step CANNOT read an entire large codebase and retain all findings. For tasks requiring broad codebase analysis, decompose research into multiple parallel steps, each covering a bounded area. Then add a synthesis step that depends on all research steps.
+
+Limit plans to MAX-STEPS steps maximum.
 `
 
 	planModeDomainAssignment = `
@@ -271,7 +274,8 @@ func (p *Planner) Plan(
 	domain := DomainFromContext(ctx)
 	plannerTools := p.getPlannerTools()
 
-	if domain == "general" || len(plannerTools) == 0 {
+	complexity := ComplexityFromContext(ctx)
+	if (domain == "general" && complexity < 4) || len(plannerTools) == 0 {
 		p.log().Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools))
 		return p.planDirect(ctx, task, availableTools, reflections)
 	}

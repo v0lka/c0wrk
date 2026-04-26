@@ -85,6 +85,10 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ParseInputError(err)
 	}
 
+	if params.Command == "" {
+		return tools.ToolResult{Content: "validation error: command is required", IsError: true}, nil
+	}
+
 	// Parse timeout (default 60s, max from config)
 	command := params.Command
 	timeoutStr := params.Timeout

@@ -26,6 +26,23 @@ func DomainFromContext(ctx context.Context) string {
 	return ""
 }
 
+// complexityKey is the context key for the routing complexity.
+type complexityKey struct{}
+
+// WithComplexity returns a new context with the routing complexity attached.
+func WithComplexity(ctx context.Context, complexity int) context.Context {
+	return context.WithValue(ctx, complexityKey{}, complexity)
+}
+
+// ComplexityFromContext extracts the routing complexity from the context.
+// Returns 0 if not found.
+func ComplexityFromContext(ctx context.Context) int {
+	if v, ok := ctx.Value(complexityKey{}).(int); ok {
+		return v
+	}
+	return 0
+}
+
 // CoreContextManager wraps sdk/memory.ContextWindow to implement the core-level
 // ContextManager interface which adds SetTask and SetPlan(*Plan).
 type CoreContextManager struct {

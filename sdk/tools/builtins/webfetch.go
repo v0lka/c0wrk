@@ -93,6 +93,16 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ToolResult{Content: "url parameter is required", IsError: true}, nil
 	}
 
+	if params.StartLine < 0 {
+		return tools.ToolResult{Content: fmt.Sprintf("validation error: start_line must be >= 1, got %d", params.StartLine), IsError: true}, nil
+	}
+	if params.EndLine < 0 {
+		return tools.ToolResult{Content: fmt.Sprintf("validation error: end_line must be >= 1, got %d", params.EndLine), IsError: true}, nil
+	}
+	if params.StartLine > 0 && params.EndLine > 0 && params.StartLine > params.EndLine {
+		return tools.ToolResult{Content: fmt.Sprintf("validation error: start_line (%d) must not exceed end_line (%d)", params.StartLine, params.EndLine), IsError: true}, nil
+	}
+
 	parsedURL, err := url.Parse(params.URL)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("invalid URL: %v", err), IsError: true}, nil

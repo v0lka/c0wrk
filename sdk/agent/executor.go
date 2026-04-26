@@ -612,48 +612,56 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			// --- End fruitless result detector ---
 		
 			// --- Same-tool repetition detector: same tool, varied args, similar results ---
-			resultLen := len(result.Content)
-			sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
-			if sizeDelta == 0 {
-				sizeDelta = 64 // default
-			}
-			// Calculate absolute difference without importing math
-			lenDiff := resultLen - e.sameToolLastResultLen
-			if lenDiff < 0 {
-				lenDiff = -lenDiff
-			}
-		
-			if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
-				e.sameToolConsecutiveCount++
-				e.sameToolLastResultLen = resultLen
-			} else {
-				e.sameToolConsecutiveCount = 1
-				e.sameToolLastName = action.Name
-				e.sameToolLastResultLen = resultLen
-			}
-		
-			// Check same-tool thresholds (skip if threshold is 0 = disabled)
-			if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
-				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-				return &ExecutorResult{
-					Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
-					Steps:    allSteps,
-					Finished: false,
-				}, nil
-			}
-		
-			if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
-				e.sameToolNudgeAttempted = true
-				e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-				nudgeStep := Step{
-					Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
+			// Skip for store_fact: it's legitimate to store many facts in a row with similar-sized confirmations.
+			if action.Name != "store_fact" {
+				resultLen := len(result.Content)
+				sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
+				if sizeDelta == 0 {
+					sizeDelta = 64 // default
 				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-				circuitBreakerTriggered = true
-				break
+				// Calculate absolute difference without importing math
+				lenDiff := resultLen - e.sameToolLastResultLen
+				if lenDiff < 0 {
+					lenDiff = -lenDiff
+				}
+			
+				if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
+					e.sameToolConsecutiveCount++
+					e.sameToolLastResultLen = resultLen
+				} else {
+					e.sameToolConsecutiveCount = 1
+					e.sameToolLastName = action.Name
+					e.sameToolLastResultLen = resultLen
+				}
+			
+				// Check same-tool thresholds (skip if threshold is 0 = disabled)
+				if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
+					e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+					e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
+					return &ExecutorResult{
+						Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
+						Steps:    allSteps,
+						Finished: false,
+					}, nil
+				}
+			
+				if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
+					e.sameToolNudgeAttempted = true
+					e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+					e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
+					nudgeStep := Step{
+						Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
+					}
+					allSteps = append(allSteps, nudgeStep)
+					cw.AddStep(nudgeStep)
+					circuitBreakerTriggered = true
+					break
+				}
+			} else {
+				// Reset tracker when store_fact is used so the next non-store_fact tool starts fresh
+				e.sameToolConsecutiveCount = 0
+				e.sameToolLastName = ""
+				e.sameToolLastResultLen = 0
 			}
 			// --- End same-tool repetition detector ---
 		

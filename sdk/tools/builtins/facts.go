@@ -62,6 +62,16 @@ func (t *StoreFactTool) Execute(ctx context.Context, input json.RawMessage) (too
 		return tools.ParseInputError(err)
 	}
 
+	if len(params.Keywords) < 3 {
+		return tools.ToolResult{Content: fmt.Sprintf("validation error: keywords must have at least 3 items, got %d", len(params.Keywords)), IsError: true}, nil
+	}
+	if len(params.Keywords) > 5 {
+		return tools.ToolResult{Content: fmt.Sprintf("validation error: keywords must have at most 5 items, got %d", len(params.Keywords)), IsError: true}, nil
+	}
+	if strings.TrimSpace(params.Content) == "" {
+		return tools.ToolResult{Content: "validation error: content is required", IsError: true}, nil
+	}
+
 	fs := agent.FactStoreFromContext(ctx)
 	if fs == nil {
 		return tools.ErrorResult("Fact store not available"), nil
@@ -114,6 +124,10 @@ func (t *SearchFactsTool) Execute(ctx context.Context, input json.RawMessage) (t
 	var params SearchFactsInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)
+	}
+
+	if len(params.Keywords) == 0 {
+		return tools.ToolResult{Content: "validation error: keywords must have at least 1 item", IsError: true}, nil
 	}
 
 	fs := agent.FactStoreFromContext(ctx)

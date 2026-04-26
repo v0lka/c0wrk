@@ -35,8 +35,8 @@ type Manager struct {
 	embedder core.Embedder
 	service  *Service
 
-	indexer    *Indexer
-	gitMonitor *GitMonitor
+	indexer     *Indexer
+	gitMonitor  *GitMonitor
 	indexCancel context.CancelFunc
 	mu          sync.RWMutex
 
@@ -94,12 +94,17 @@ func (m *Manager) Service() *Service {
 	return m.service
 }
 
+// DeleteProjectData removes the on-disk vector data for a project.
+func (m *Manager) DeleteProjectData(projectID string) error {
+	return m.service.DeleteProjectData(projectID)
+}
+
 // SwitchProject sets up vector indexing for the given project and workspace.
 // It cancels any in-flight indexing, configures the service for the project,
 // detects the git branch, creates an indexer, starts background indexing,
 // and starts a git branch monitor.
 func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCallbacks) error {
-	// Cancel previous indexing.
+	// Cancel previous indexing and any pending debounced incremental runs.
 	m.mu.Lock()
 	if m.indexCancel != nil {
 		m.indexCancel()
@@ -111,6 +116,8 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 	}
 	m.indexer = nil
 	m.mu.Unlock()
+
+	m.stopDebounce()
 
 	// Set project on service.
 	if err := m.service.SetProject(projectID); err != nil {
@@ -233,7 +240,7 @@ func (m *Manager) NotifyFileChange(workspacePath string) {
 	m.debounceMu.Unlock()
 }
 
-// CancelIndexing cancels any in-flight indexing operation.
+// CancelIndexing cancels any in-flight indexing operation and stops pending debounces.
 func (m *Manager) CancelIndexing() {
 	m.mu.Lock()
 	if m.indexCancel != nil {
@@ -241,6 +248,18 @@ func (m *Manager) CancelIndexing() {
 		m.indexCancel = nil
 	}
 	m.mu.Unlock()
+
+	m.stopDebounce()
+}
+
+// stopDebounce stops any pending debounced incremental indexing.
+func (m *Manager) stopDebounce() {
+	m.debounceMu.Lock()
+	if m.debounceTimer != nil {
+		m.debounceTimer.Stop()
+		m.debounceTimer = nil
+	}
+	m.debounceMu.Unlock()
 }
 
 // Shutdown performs orderly cleanup: cancel indexing, stop monitor,
@@ -259,12 +278,7 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.Unlock()
 
-	m.debounceMu.Lock()
-	if m.debounceTimer != nil {
-		m.debounceTimer.Stop()
-		m.debounceTimer = nil
-	}
-	m.debounceMu.Unlock()
+	m.stopDebounce()
 
 	if m.service != nil {
 		if err := m.service.Close(); err != nil {

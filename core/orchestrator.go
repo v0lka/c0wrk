@@ -535,6 +535,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	case "":
 		// === First message: plan first, then decide mode ===
 		ctx = WithDomain(ctx, routing.Domain)
+		ctx = WithComplexity(ctx, routing.Complexity)
 
 		var plan *Plan
 
@@ -580,6 +581,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		// === Continuation (TaskID != "") ===
 		o.logDebug("orchestrator: executing in Plan&Execute mode (continuation)")
 		ctx = WithDomain(ctx, routing.Domain)
+		ctx = WithComplexity(ctx, routing.Complexity)
 
 		// Get existing plan
 		existingPlan := bb.GetPlan()

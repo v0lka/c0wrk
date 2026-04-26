@@ -81,7 +81,7 @@ func TestStoreFactTool_ValidInput(t *testing.T) {
 func TestStoreFactTool_NoFactStore(t *testing.T) {
 	tool := NewStoreFactTool()
 	input, _ := json.Marshal(StoreFactInput{
-		Keywords: []string{"test"},
+		Keywords: []string{"test", "unit", "check"},
 		Content:  "test content",
 	})
 

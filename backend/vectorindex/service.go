@@ -74,10 +74,12 @@ func (s *Service) SetProject(projectID string) error {
 
 	s.SetReady(false)
 
-	// Close existing DB if switching projects.
+	// Drop references to the previous project so any lingering goroutines
+	// can't modify the old collection after we've switched.
 	s.collection = nil
 	s.currentBranch = ""
 	s.projectID = projectID
+	s.db = nil
 
 	if s.persistPath != "" {
 		projectPath := filepath.Join(s.persistPath, projectID)
@@ -270,6 +272,19 @@ func (s *Service) CurrentBranchName() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.currentBranch
+}
+
+// DeleteProjectData removes the on-disk vector data for a project.
+// It is safe to call even if the project was never indexed.
+func (s *Service) DeleteProjectData(projectID string) error {
+	if s.persistPath == "" {
+		return nil
+	}
+	projectPath := filepath.Join(s.persistPath, projectID)
+	if err := os.RemoveAll(projectPath); err != nil {
+		return fmt.Errorf("removing vector data for project %s: %w", projectID, err)
+	}
+	return nil
 }
 
 // Close cleans up resources.

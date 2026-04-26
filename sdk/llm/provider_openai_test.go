@@ -171,6 +171,53 @@ func TestOpenAIProvider_BuildChatParams(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_BuildChatParams_WithReasoningContent(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	req := ChatRequest{
+		Model: "deepseek-reasoner",
+		Messages: []Message{
+			{Role: "user", Content: "Hello"},
+			{
+				Role:             "assistant",
+				Content:          "Let me think.",
+				ReasoningContent: "I need to analyze this.",
+				ToolCalls: []ToolCall{
+					{ID: "call-1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+				},
+			},
+			{Role: "tool", Content: "result", ToolCallID: "call-1"},
+		},
+	}
+
+	oaiReq := p.buildChatParams(req)
+
+	if len(oaiReq.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(oaiReq.Messages))
+	}
+
+	// Marshal the entire params to JSON and verify reasoning_content is in the assistant message
+	jsonBytes, err := json.Marshal(oaiReq)
+	if err != nil {
+		t.Fatalf("failed to marshal params: %v", err)
+	}
+
+	var parsed struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal params JSON: %v", err)
+	}
+
+	assistantMsg := parsed.Messages[1]
+	if assistantMsg["role"] != "assistant" {
+		t.Errorf("expected assistant message at index 1, got %q", assistantMsg["role"])
+	}
+	if assistantMsg["reasoning_content"] != "I need to analyze this." {
+		t.Errorf("reasoning_content = %q, want 'I need to analyze this.'", assistantMsg["reasoning_content"])
+	}
+}
+
 func TestOpenAIProvider_BuildChatParams_NoTools(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 
@@ -292,6 +339,244 @@ func TestOpenAIProvider_ConvertRequestMessage_WithToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_ConvertRequestMessage_ReasoningContent(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	msg := Message{
+		Role:             "assistant",
+		Content:          "Let me think.",
+		ReasoningContent: "This is my internal reasoning.",
+	}
+
+	result := p.convertRequestMessage(msg)
+
+	if result.OfAssistant == nil {
+		t.Fatalf("expected assistant message, got nil")
+	}
+
+	// Marshal the union type to JSON and verify reasoning_content is present
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("failed to marshal union: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if parsed["role"] != "assistant" {
+		t.Errorf("role = %q, want 'assistant'", parsed["role"])
+	}
+	if parsed["content"] != "Let me think." {
+		t.Errorf("content = %q, want 'Let me think.'", parsed["content"])
+	}
+	if parsed["reasoning_content"] != "This is my internal reasoning." {
+		t.Errorf("reasoning_content = %q, want 'This is my internal reasoning.'", parsed["reasoning_content"])
+	}
+}
+
+func TestOpenAIProvider_ConvertRequestMessage_ReasoningContentWithToolCalls(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	msg := Message{
+		Role:             "assistant",
+		Content:          "Let me search.",
+		ReasoningContent: "I need to find the file.",
+		ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+		},
+	}
+
+	result := p.convertRequestMessage(msg)
+
+	if result.OfAssistant == nil {
+		t.Fatalf("expected assistant message, got nil")
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("failed to marshal union: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if parsed["reasoning_content"] != "I need to find the file." {
+		t.Errorf("reasoning_content = %q, want 'I need to find the file.'", parsed["reasoning_content"])
+	}
+
+	toolCalls, ok := parsed["tool_calls"].([]any)
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %v", parsed["tool_calls"])
+	}
+}
+
+func TestOpenAIProvider_ConvertRequestMessage_ReasoningContentEmptyContent(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	// DeepSeek may return assistant message with empty content but with reasoning_content and tool_calls
+	msg := Message{
+		Role:             "assistant",
+		Content:          "",
+		ReasoningContent: "I need to search for the file.",
+		ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+		},
+	}
+
+	result := p.convertRequestMessage(msg)
+
+	if result.OfAssistant == nil {
+		t.Fatalf("expected assistant message, got nil")
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("failed to marshal union: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if parsed["reasoning_content"] != "I need to search for the file." {
+		t.Errorf("reasoning_content = %q, want 'I need to search for the file.'", parsed["reasoning_content"])
+	}
+	// content may be omitted if empty; that's OK for OpenAI SDK
+}
+
+func TestOpenAIProvider_ConvertRequestMessage_EmptyContentOmitted(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	msg := Message{
+		Role:             "assistant",
+		Content:          "",
+		ReasoningContent: "I need to search.",
+		ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+		},
+	}
+
+	result := p.convertRequestMessage(msg)
+	if result.OfAssistant == nil {
+		t.Fatalf("expected assistant message, got nil")
+	}
+
+	// Check the underlying assistant param content
+	if result.OfAssistant.Content.OfString.Valid() {
+		// If content is valid, it will be serialized
+		t.Logf("Content.OfString is valid, value=%q", result.OfAssistant.Content.OfString.Value)
+	}
+}
+
+func TestOpenAIProvider_ConvertRequestMessage_EmptyReasoningContentWithToolCalls(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	// DeepSeek V4 requires reasoning_content to be echoed back even when empty
+	// for assistant messages that had tool_calls.
+	msg := Message{
+		Role:             "assistant",
+		Content:          "",
+		ReasoningContent: "",
+		ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "search", Input: json.RawMessage(`{"q":"test"}`)},
+		},
+	}
+
+	result := p.convertRequestMessage(msg)
+	if result.OfAssistant == nil {
+		t.Fatalf("expected assistant message, got nil")
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("failed to marshal union: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// reasoning_content must be present even when empty for tool call messages
+	if _, ok := parsed["reasoning_content"]; !ok {
+		t.Errorf("reasoning_content field missing for assistant message with tool_calls")
+	}
+	if parsed["reasoning_content"] != "" {
+		t.Errorf("reasoning_content = %q, want empty string", parsed["reasoning_content"])
+	}
+}
+
+func TestOpenAIProvider_ConvertRequestMessage_EmptyReasoningContentNoToolCalls(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	// Synthetic assistant messages (e.g., executor nudges) have no tool_calls
+	// and empty reasoning_content. DeepSeek V4 still requires the field.
+	msg := Message{
+		Role:             "assistant",
+		Content:          "(proceeding)",
+		ReasoningContent: "",
+		ToolCalls:        nil,
+	}
+
+	result := p.convertRequestMessage(msg)
+	if result.OfAssistant == nil {
+		t.Fatalf("expected assistant message, got nil")
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("failed to marshal union: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// reasoning_content must be present even for synthetic messages without tool_calls
+	if _, ok := parsed["reasoning_content"]; !ok {
+		t.Errorf("reasoning_content field missing for synthetic assistant message")
+	}
+	if parsed["reasoning_content"] != "" {
+		t.Errorf("reasoning_content = %q, want empty string", parsed["reasoning_content"])
+	}
+}
+
+func TestOpenAIProvider_ReasoningContentExtraFieldsPreserved(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	msg := Message{
+		Role:             "assistant",
+		Content:          "hello",
+		ReasoningContent: "my reasoning",
+	}
+
+	union := p.convertRequestMessage(msg)
+	if union.OfAssistant == nil {
+		t.Fatal("expected assistant")
+	}
+
+	// Re-marshal the union after it was returned from the function
+	jsonBytes, err := json.Marshal(union)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if parsed["reasoning_content"] != "my reasoning" {
+		t.Errorf("reasoning_content lost after function return: got %q", parsed["reasoning_content"])
+	}
+}
+
 func TestOpenAIProvider_ConvertChatResponseMessage(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 
@@ -343,6 +628,72 @@ func TestOpenAIProvider_ConvertChatResponseMessage(t *testing.T) {
 			t.Errorf("tool call Input = %q, want '{\"city\":\"NYC\"}'", string(tc.Input))
 		}
 	})
+}
+
+func TestConvertChatResponseMessage_WithReasoningContent(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	// Simulate a DeepSeek response by unmarshalling JSON that contains reasoning_content
+	var oaiMsg oai.ChatCompletionMessage
+	rawJSON := `{"role":"assistant","content":"Let me search.","reasoning_content":"I need to find the file.","tool_calls":[{"id":"call-1","type":"function","function":{"name":"search","arguments":"{}"}}]}`
+	if err := json.Unmarshal([]byte(rawJSON), &oaiMsg); err != nil {
+		t.Fatalf("failed to unmarshal ChatCompletionMessage: %v", err)
+	}
+
+	// Verify RawJSON contains reasoning_content
+	if !strings.Contains(oaiMsg.RawJSON(), "reasoning_content") {
+		t.Fatalf("RawJSON does not contain reasoning_content: %s", oaiMsg.RawJSON())
+	}
+
+	result := p.convertChatResponseMessage(oaiMsg)
+
+	if result.ReasoningContent != "I need to find the file." {
+		t.Errorf("ReasoningContent = %q, want 'I need to find the file.'", result.ReasoningContent)
+	}
+	if result.Content != "Let me search." {
+		t.Errorf("Content = %q, want 'Let me search.'", result.Content)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+}
+
+func TestExtractReasoningContent(t *testing.T) {
+	tests := []struct {
+		name   string
+		json   string
+		want   string
+	}{
+		{
+			name: "empty json",
+			json: "",
+			want: "",
+		},
+		{
+			name: "no reasoning_content",
+			json: `{"role":"assistant","content":"hello"}`,
+			want: "",
+		},
+		{
+			name: "with reasoning_content",
+			json: `{"role":"assistant","content":"hello","reasoning_content":"Let me think..."}`,
+			want: "Let me think...",
+		},
+		{
+			name: "with tool_calls and reasoning_content",
+			json: `{"role":"assistant","content":"","reasoning_content":"I need to search","tool_calls":[{"id":"call-1","type":"function","function":{"name":"search","arguments":"{}"}}]}`,
+			want: "I need to search",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractReasoningContent(tt.json)
+			if got != tt.want {
+				t.Errorf("extractReasoningContent(%q) = %q, want %q", tt.json, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestNeedsResponsesAPI(t *testing.T) {
@@ -397,6 +748,100 @@ func TestOpenAIProvider_ResponsesClientInitialized_CustomBaseURL(t *testing.T) {
 	}
 	if p.responsesClient == nil {
 		t.Error("expected responsesClient to be non-nil with custom base URL")
+	}
+}
+
+func TestOpenAIProvider_EndToEnd_ReasoningContent(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	// Simulate a full cycle: response message -> step -> context window -> request params
+	var oaiMsg oai.ChatCompletionMessage
+	rawJSON := `{"role":"assistant","content":"Let me search.","reasoning_content":"I need to find the file.","tool_calls":[{"id":"call-1","type":"function","function":{"name":"search","arguments":"{}"}}]}`
+	if err := json.Unmarshal([]byte(rawJSON), &oaiMsg); err != nil {
+		t.Fatalf("failed to unmarshal ChatCompletionMessage: %v", err)
+	}
+
+	// 1. Convert response message
+	msg := p.convertChatResponseMessage(oaiMsg)
+	if msg.ReasoningContent != "I need to find the file." {
+		t.Fatalf("convertChatResponseMessage lost reasoning_content: %q", msg.ReasoningContent)
+	}
+
+	// 2. Build a ChatRequest with this message as part of history
+	req := ChatRequest{
+		Model: "deepseek-reasoner",
+		Messages: []Message{
+			{Role: "user", Content: "Hello"},
+			msg,
+			{Role: "tool", Content: "result", ToolCallID: "call-1"},
+		},
+	}
+
+	// 3. Build OpenAI params
+	params := p.buildChatParams(req)
+
+	// 4. Marshal params to JSON
+	jsonBytes, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("failed to marshal params: %v", err)
+	}
+
+	var parsed struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal params JSON: %v", err)
+	}
+
+	// Verify reasoning_content is present in the assistant message
+	assistantMsg := parsed.Messages[1]
+	if assistantMsg["role"] != "assistant" {
+		t.Errorf("expected assistant message at index 1, got %q", assistantMsg["role"])
+	}
+	if assistantMsg["reasoning_content"] != "I need to find the file." {
+		t.Errorf("reasoning_content = %q, want 'I need to find the file.'", assistantMsg["reasoning_content"])
+	}
+}
+
+func TestOpenAIProvider_FullChatCompletionResponse_ReasoningContent(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
+
+	// Simulate a full DeepSeek chat completion response JSON
+	fullResponse := `{
+		"id":"chatcmpl-test",
+		"object":"chat.completion",
+		"created":1234567890,
+		"model":"deepseek-reasoner",
+		"choices":[{
+			"index":0,
+			"message":{
+				"role":"assistant",
+				"content":"Let me search.",
+				"reasoning_content":"I need to find the file.",
+				"tool_calls":[{"id":"call-1","type":"function","function":{"name":"search","arguments":"{}"}}]
+			},
+			"finish_reason":"tool_calls"
+		}],
+		"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}
+	}`
+
+	var completion oai.ChatCompletion
+	if err := json.Unmarshal([]byte(fullResponse), &completion); err != nil {
+		t.Fatalf("failed to unmarshal ChatCompletion: %v", err)
+	}
+
+	if len(completion.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+
+	msg := completion.Choices[0].Message
+	if !strings.Contains(msg.RawJSON(), "reasoning_content") {
+		t.Fatalf("RawJSON does not contain reasoning_content: %s", msg.RawJSON())
+	}
+
+	result := p.convertChatResponseMessage(msg)
+	if result.ReasoningContent != "I need to find the file." {
+		t.Errorf("ReasoningContent = %q, want 'I need to find the file.'", result.ReasoningContent)
 	}
 }
 

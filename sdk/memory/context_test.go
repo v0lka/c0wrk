@@ -56,6 +56,67 @@ func makeStepWithTool(thought, observation, toolName string, toolID int) sdkagen
 	}
 }
 
+// Helper to create a test step with reasoning content
+func makeStepWithReasoning(thought, reasoning, observation string, toolID int) sdkagent.Step {
+	return sdkagent.Step{
+		Thought:          thought,
+		ReasoningContent: reasoning,
+		Action: llm.ToolCall{
+			ID:    fmt.Sprintf("call_%d", toolID),
+			Name:  "test_tool",
+			Input: json.RawMessage(`{"arg": "value"}`),
+		},
+		Observation: observation,
+		TokensUsed:  100,
+	}
+}
+
+// TestBuildPromptWithReasoningContent verifies that ReasoningContent is preserved in BuildPrompt.
+func TestBuildPromptWithReasoningContent(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	strategy := NewSlidingWindowStrategy(5, 5)
+
+	cw := NewContextWindow("You are helpful.", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
+	cw.SetTask("Do something")
+
+	// Add a step with reasoning content
+	cw.AddStep(makeStepWithReasoning("Let me think", "I need to find the file.", "found it", 1))
+
+	messages := cw.BuildPrompt()
+
+	// Find the assistant message (should be after system and user messages)
+	var assistantMsg *llm.Message
+	for i := range messages {
+		if messages[i].Role == "assistant" {
+			assistantMsg = &messages[i]
+			break
+		}
+	}
+
+	if assistantMsg == nil {
+		t.Fatal("expected assistant message in BuildPrompt output")
+	}
+	if assistantMsg.ReasoningContent != "I need to find the file." {
+		t.Errorf("ReasoningContent = %q, want 'I need to find the file.'", assistantMsg.ReasoningContent)
+	}
+	if len(assistantMsg.ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(assistantMsg.ToolCalls))
+	}
+
+	// Verify tool message follows
+	toolMsgIdx := -1
+	for i, msg := range messages {
+		if msg.Role == "tool" {
+			toolMsgIdx = i
+			break
+		}
+	}
+	if toolMsgIdx == -1 {
+		t.Error("expected tool message after assistant message")
+	}
+}
+
 // TestBuildPromptOrdering verifies that BuildPrompt returns messages in correct order.
 func TestBuildPromptOrdering(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()

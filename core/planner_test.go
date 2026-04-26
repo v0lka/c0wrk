@@ -905,59 +905,103 @@ func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
 }
 
 func TestPlanDirect_GeneralDomain(t *testing.T) {
-	var capturedRequest llm.ChatRequest
-	callCount := 0
+	t.Run("low_complexity_uses_direct", func(t *testing.T) {
+		var capturedRequest llm.ChatRequest
+		callCount := 0
 
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			callCount++
-			capturedRequest = req
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: `{"steps": [{"id": "step_1", "description": "Do general task", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
-				},
-				StopReason: "end_turn",
-			}, nil
-		},
-	}
+		mockLLM := &mockLLMCaller{
+			callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+				callCount++
+				capturedRequest = req
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"steps": [{"id": "step_1", "description": "Do general task", "depends_on": [], "parallelizable": true, "estimated_tools": ["bash"]}]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			},
+		}
 
-	// Register MCP tools — should still use planDirect for "general" domain
-	reg := newPlannerTestRegistry([]struct{ name, source string }{
-		{"get_architecture", "mcp:test-server"},
-		{"read_file", ""},
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"get_architecture", "mcp:test-server"},
+			{"read_file", ""},
+		})
+
+		planner := NewPlanner(mockLLM)
+		planner.SetToolRegistry(reg)
+		planner.SetContextFactory(plannerContextFactory())
+
+		// domain="general" with no/low complexity → still uses planDirect
+		ctx := WithDomain(context.Background(), "general")
+
+		plan, err := planner.Plan(ctx, "Write a poem", nil, nil)
+		if err != nil {
+			t.Fatalf("Plan() returned error: %v", err)
+		}
+
+		// planDirect uses exactly 1 LLM call
+		if callCount != 1 {
+			t.Errorf("expected 1 LLM call (planDirect), got %d", callCount)
+		}
+
+		if len(capturedRequest.Messages) != 2 {
+			t.Errorf("expected 2 messages (system + user), got %d", len(capturedRequest.Messages))
+		}
+		if capturedRequest.Messages[0].Role != "system" {
+			t.Errorf("expected first message role 'system', got %q", capturedRequest.Messages[0].Role)
+		}
+		if capturedRequest.Messages[1].Role != "user" {
+			t.Errorf("expected second message role 'user', got %q", capturedRequest.Messages[1].Role)
+		}
+
+		if len(plan.Steps) != 1 {
+			t.Errorf("expected 1 step, got %d", len(plan.Steps))
+		}
 	})
 
-	planner := NewPlanner(mockLLM)
-	planner.SetToolRegistry(reg)
-	planner.SetContextFactory(plannerContextFactory())
+	t.Run("high_complexity_uses_exploration", func(t *testing.T) {
+		callCount := 0
+		mockLLM := &mockLLMCaller{
+			callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+				callCount++
+				return finishWithPlan(validPlanJSON), nil
+			},
+		}
 
-	ctx := WithDomain(context.Background(), "general")
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"get_architecture", "mcp:test-server"},
+			{"read_file", ""},
+			{"list_directory", ""},
+			{"glob", ""},
+			{"ripgrep", ""},
+			{"search_files", ""},
+		})
 
-	plan, err := planner.Plan(ctx, "Write a poem", nil, nil)
-	if err != nil {
-		t.Fatalf("Plan() returned error: %v", err)
-	}
+		planner := NewPlanner(mockLLM)
+		planner.SetToolRegistry(reg)
+		planner.SetContextFactory(plannerContextFactory())
+		planner.SetTokenCounter(llm.NewSimpleTokenCounter())
 
-	// planDirect uses exactly 1 LLM call
-	if callCount != 1 {
-		t.Errorf("expected 1 LLM call (planDirect), got %d", callCount)
-	}
+		// domain="general" with complexity >= 4 → uses exploration (not planDirect)
+		ctx := WithDomain(context.Background(), "general")
+		ctx = WithComplexity(ctx, 5)
+		ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 
-	// Verify it's a direct system+user message pattern (not executor ReAct)
-	if len(capturedRequest.Messages) != 2 {
-		t.Errorf("expected 2 messages (system + user), got %d", len(capturedRequest.Messages))
-	}
-	if capturedRequest.Messages[0].Role != "system" {
-		t.Errorf("expected first message role 'system', got %q", capturedRequest.Messages[0].Role)
-	}
-	if capturedRequest.Messages[1].Role != "user" {
-		t.Errorf("expected second message role 'user', got %q", capturedRequest.Messages[1].Role)
-	}
+		plan, err := planner.Plan(ctx, "Analyze the entire codebase architecture and produce a comprehensive report", nil, nil)
+		if err != nil {
+			t.Fatalf("Plan() returned error: %v", err)
+		}
 
-	if len(plan.Steps) != 1 {
-		t.Errorf("expected 1 step, got %d", len(plan.Steps))
-	}
+		// Exploration uses multiple LLM calls (at least the finish call)
+		if callCount < 1 {
+			t.Errorf("expected at least 1 LLM call (exploration), got %d", callCount)
+		}
+
+		if plan == nil {
+			t.Fatal("expected non-nil plan")
+		}
+	})
 }
 
 func TestPlanDirect_NoToolsAvailable(t *testing.T) {
@@ -1123,8 +1167,8 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 		})
 	}
 
-	// Verify "general" does NOT use exploration
-	t.Run("general_uses_direct", func(t *testing.T) {
+	// Verify "general" with low complexity does NOT use exploration
+	t.Run("general_low_complexity_uses_direct", func(t *testing.T) {
 		callCount := 0
 		mockLLM := &mockLLMCaller{
 			callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -1149,6 +1193,7 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 		planner.SetContextFactory(plannerContextFactory())
 
 		ctx := WithDomain(context.Background(), "general")
+		ctx = WithComplexity(ctx, 2) // below threshold → planDirect
 
 		_, err := planner.Plan(ctx, "General task", nil, nil)
 		if err != nil {
@@ -1157,7 +1202,48 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 
 		// planDirect uses exactly 1 LLM call
 		if callCount != 1 {
-			t.Errorf("expected 1 LLM call (planDirect for 'general'), got %d", callCount)
+			t.Errorf("expected 1 LLM call (planDirect for 'general' low complexity), got %d", callCount)
+		}
+	})
+
+	// Verify "general" with high complexity uses exploration
+	t.Run("general_high_complexity_uses_exploration", func(t *testing.T) {
+		callCount := 0
+		mockLLM := &mockLLMCaller{
+			callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+				callCount++
+				return finishWithPlan(validPlanJSON), nil
+			},
+		}
+
+		reg := newPlannerTestRegistry([]struct{ name, source string }{
+			{"get_architecture", "mcp:test-server"},
+			{"read_file", ""},
+			{"list_directory", ""},
+			{"glob", ""},
+			{"ripgrep", ""},
+			{"search_files", ""},
+		})
+
+		planner := NewPlanner(mockLLM)
+		planner.SetToolRegistry(reg)
+		planner.SetContextFactory(plannerContextFactory())
+		planner.SetTokenCounter(llm.NewSimpleTokenCounter())
+
+		ctx := WithDomain(context.Background(), "general")
+		ctx = WithComplexity(ctx, 5) // >= 4 threshold → exploration
+		ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
+
+		plan, err := planner.Plan(ctx, "Analyze the entire codebase", nil, nil)
+		if err != nil {
+			t.Fatalf("Plan() returned error: %v", err)
+		}
+
+		if plan == nil {
+			t.Fatal("expected non-nil plan")
+		}
+		if len(plan.Steps) != 2 {
+			t.Errorf("expected 2 steps, got %d", len(plan.Steps))
 		}
 	})
 }

@@ -60,6 +60,10 @@ func (t *DeleteFileTool) Execute(ctx context.Context, input json.RawMessage) (to
 		return tools.ParseInputError(err)
 	}
 
+	if params.Path == "" {
+		return tools.ToolResult{Content: "validation error: path is required", IsError: true}, nil
+	}
+
 	params.Path = resolvePath(ctx, params.Path)
 
 	info, err := os.Stat(params.Path)

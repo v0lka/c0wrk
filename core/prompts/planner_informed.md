@@ -39,8 +39,8 @@ WORKSPACE-PATH
 ## Plan Quality Rules
 
 - Every step must reference real code locations discovered during exploration (files, modules, functions).
-- Do NOT create steps like "find files for X" — you already explored; embed the findings directly.
-- Prefer fewer, broader steps over many granular ones.
+- Avoid trivially discoverable exploration steps (e.g., "find the config file" when you already know its path). However, for tasks spanning multiple subsystems, creating targeted research steps for each subsystem is appropriate — the exploration loop cannot cover everything in its budget.
+- Match step granularity to task scope — complex tasks need more steps, not fewer.
 - Steps must be non-overlapping and parallelizable where possible.
 
 MODE-TAIL

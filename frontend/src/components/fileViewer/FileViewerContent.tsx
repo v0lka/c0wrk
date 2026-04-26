@@ -1,14 +1,13 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Code, Eye, Loader2 } from 'lucide-react'
+import { useEffect, useRef, useCallback, useMemo } from 'react'
+import { Loader2 } from 'lucide-react'
 import { EditorView } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { lineNumbers } from '@codemirror/view'
-import { Button } from '@/components/ui/button'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { subscribe } from '@/api/runtime'
 import { readFile, getFileDiff } from '@/api/workspace'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
-import { Markdown } from '@/lib/markdownConfig'
+import { MarkdownViewer } from '@/components/MarkdownViewer'
 import { isBinaryContent } from '@/lib/fileViewerUtils'
 import { detectLanguageFromPath } from '@/lib/cmLanguages'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
@@ -102,16 +101,14 @@ export function FileViewerContent() {
   )
 }
 
-// -- CodeMirror-based viewer -------------------------------------------------
+// -- CodeMirror editor (mounts only when raw/source is needed) ---------------
 
-function CodeMirrorViewer({ content, language, diff, highlightLine }: {
+function CodeMirrorEditor({ content, language, diff, highlightLine }: {
   content: string
   language: string
   diff?: string
   highlightLine: number | null
 }) {
-  const [showRaw, setShowRaw] = useState(false)
-  const isMarkdown = language === 'Markdown' || language === 'markdown'
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const langCompartment = useRef(new Compartment())
@@ -237,41 +234,37 @@ function CodeMirrorViewer({ content, language, diff, highlightLine }: {
     return () => clearTimeout(timer)
   }, [highlightLine, clearHighlightLine])
 
-  // Markdown preview mode
-  if (isMarkdown && !showRaw) {
+  return (
+    <div ref={containerRef} className="flex-1 overflow-hidden cm-viewer-container" />
+  )
+}
+
+// -- Viewer shell (handles markdown preview vs raw toggle) -------------------
+
+function CodeMirrorViewer({ content, language, diff, highlightLine }: {
+  content: string
+  language: string
+  diff?: string
+  highlightLine: number | null
+}) {
+  const isMarkdown = language === 'Markdown' || language === 'markdown'
+
+  if (isMarkdown) {
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 overflow-auto custom-scrollbar p-4">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setShowRaw(true)}
-            className="float-right ml-3 mb-3"
-            title="Source"
-          >
-            <Code className="size-4" />
-          </Button>
-          <Markdown content={content} />
-        </div>
+        <MarkdownViewer content={content} className="flex-1 overflow-auto custom-scrollbar p-4" />
       </div>
     )
   }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {isMarkdown && (
-        <div className="flex justify-end p-1">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setShowRaw(false)}
-            title="Preview"
-          >
-            <Eye className="size-4" />
-          </Button>
-        </div>
-      )}
-      <div ref={containerRef} className="flex-1 overflow-hidden cm-viewer-container" />
+      <CodeMirrorEditor
+        content={content}
+        language={language}
+        diff={diff}
+        highlightLine={highlightLine}
+      />
     </div>
   )
 }

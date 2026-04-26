@@ -42,6 +42,11 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 		return err
 	}
 
+	// Clean up vector index data for the deleted project.
+	if f.vectorManager != nil {
+		_ = f.vectorManager.DeleteProjectData(id) // Best-effort; error is non-critical.
+	}
+
 	// Stop watcher if this was the active project
 	if wasActive && f.watcher != nil {
 		_ = f.watcher.Close() // Best-effort cleanup; error is non-critical.

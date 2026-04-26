@@ -107,8 +107,6 @@ func (m *Manager) Start(sessionID, workDir string) error {
 	// Start goroutine to read output and emit events.
 	go m.readLoop(sessionID, ptmx)
 
-	// m.emit(sessionID, []byte("\r\n\x1b[32m[Terminal ready]\x1b[0m\r\n"))
-
 	m.logger.Info("terminal started", "session_id", sessionID, "shell", shell, "workDir", workDir)
 	return nil
 }

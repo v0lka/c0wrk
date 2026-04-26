@@ -42,6 +42,11 @@ type OrchestratorBuilder struct {
 	logger           *slog.Logger
 	vectorSearchFunc tools.VectorSearchFunc
 	skillManager     *skills.SkillManager
+
+	// Async initialization: MCP gateway and LLM router are initialized in the
+	// background so that NewOrchestratorBuilder returns immediately.
+	initDone chan struct{}
+	initErr  error
 }
 
 func (b *OrchestratorBuilder) log() *slog.Logger {
@@ -55,45 +60,82 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 // built-in tools, MCP gateway, LLM router, and tool judge.
 // The cfg is used for initial setup; runtime changes are applied via the
 // Rebuild* / Reconfigure* methods.
+//
+// MCP gateway and LLM router initialization happens asynchronously so that
+// this function returns immediately. Callers that need those components
+// (Build, GenerateTitle, etc.) block until the background init finishes.
 func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
 	b := &OrchestratorBuilder{
-		logger: logger,
+		logger:   logger,
+		initDone: make(chan struct{}),
 	}
 
-	// 1. Tool registry + built-in tools
+	// 1. Tool registry + built-in tools (fast — synchronous)
 	b.registry = tools.NewToolRegistry()
 
 	toolsCfg := configToBuiltinToolsConfig(cfg)
 	toolsCfg.AskUserFunc = askUserFunc
 	tools.RegisterBuiltinTools(b.registry, toolsCfg)
 
-	// 2. MCP Gateway (optional — failures are non-fatal)
+	// 2. Security policies (fast — synchronous)
+	b.applySecurityPolicies(cfg)
+
+	// 3. Start slow initialization (MCP gateway + LLM router) asynchronously
+	go b.runAsyncInit(cfg)
+
+	return b, nil
+}
+
+// runAsyncInit performs the slow network-dependent initialization:
+// MCP gateway startup and LLM router creation.
+func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
+	defer close(b.initDone)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// MCP Gateway (optional — failures are non-fatal)
 	mcpCfg := configToGatewayConfig(cfg)
-	gw, err := mcp.StartGateway(context.Background(), mcpCfg, b.registry, cfg.ExpandEnvVars, logger)
+	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable
 		// but the orchestrator can still operate with built-in tools.
 		b.log().Warn("MCP gateway startup failed", "error", err)
 	}
+	b.mu.Lock()
 	b.gateway = gw
+	b.mu.Unlock()
 
-	// 3. Security policies
-	b.applySecurityPolicies(cfg)
-
-	// 4. LLM Router (fail-fast validation)
-	router, modelReg, err := b.buildRouter(cfg)
+	// LLM Router
+	router, modelReg, err := b.buildRouter(ctx, cfg)
 	if err != nil {
 		b.log().Warn("failed to initialize LLM router at startup", "error", err)
-		// Non-fatal — router will be rebuilt per-session from current config.
+		b.initErr = err
 	} else {
+		b.mu.Lock()
 		b.llmRouter = router
 		b.modelRegistry = modelReg
+		b.mu.Unlock()
 	}
 
-	// 5. Tool judge
+	// Tool judge
 	b.rebuildJudgeInternal(cfg, b.llmRouter)
+}
 
-	return b, nil
+// waitReady blocks until async initialization completes or the context is cancelled.
+func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
+	select {
+	case <-b.initDone:
+		return b.initErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// WaitReady blocks until async initialization completes or the context is cancelled.
+// Exported for use by the backend package.
+func (b *OrchestratorBuilder) WaitReady(ctx context.Context) error {
+	return b.waitReady(ctx)
 }
 
 // ToolRegistry returns the shared tool registry. The registry is set once during
@@ -103,7 +145,11 @@ func (b *OrchestratorBuilder) ToolRegistry() *tools.ToolRegistry {
 }
 
 // MCPGateway returns the MCP gateway, or nil if not started.
+// Waits up to 30 seconds for async initialization to complete.
 func (b *OrchestratorBuilder) MCPGateway() *mcp.Gateway {
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = b.waitReady(waitCtx)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.gateway
@@ -120,11 +166,18 @@ func (b *OrchestratorBuilder) Build(
 	stepLimitFunc StepLimitFunc,
 	dumpWriter io.Writer,
 ) (*Orchestrator, error) {
+	// Wait for async initialization to complete before building an orchestrator.
+	waitCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := b.waitReady(waitCtx); err != nil {
+		return nil, fmt.Errorf("orchestrator builder not ready: %w", err)
+	}
+
 	// Wrap emitter with logging
 	emitter = NewLoggingEmitter(emitter, logger)
 
 	// Build per-session LLM router + model registry
-	router, modelReg, err := b.buildRouter(cfg)
+	router, modelReg, err := b.buildRouter(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
@@ -216,7 +269,12 @@ func (b *OrchestratorBuilder) Build(
 // RebuildRouter creates a new LLM router from the given config and caches it.
 // This is called when LLM settings change at runtime.
 func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
-	router, modelReg, err := b.buildRouter(cfg)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := b.waitReady(waitCtx); err != nil {
+		return err
+	}
+	router, modelReg, err := b.buildRouter(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
@@ -230,6 +288,12 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 // RebuildJudge recreates the tool judge from the given config.
 // If router is nil, the cached router is used.
 func (b *OrchestratorBuilder) RebuildJudge(cfg *BuilderConfig) {
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := b.waitReady(waitCtx); err != nil {
+		b.log().Warn("rebuildJudge: builder not ready", "error", err)
+		return
+	}
 	b.mu.RLock()
 	router := b.llmRouter
 	b.mu.RUnlock()
@@ -239,6 +303,10 @@ func (b *OrchestratorBuilder) RebuildJudge(cfg *BuilderConfig) {
 // ReconfigureMCP reconfigures the MCP gateway with the given config.
 // If no gateway exists, starts a new one.
 func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderConfig) error {
+	if err := b.waitReady(ctx); err != nil {
+		return err
+	}
+
 	mcpCfg := configToGatewayConfig(cfg)
 
 	b.mu.Lock()
@@ -273,6 +341,10 @@ func (b *OrchestratorBuilder) UpdateSearchTool(cfg *BuilderConfig) {
 
 // GenerateTitle generates a concise title for a conversation using the cached LLM router.
 func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage string) (string, error) {
+	if err := b.waitReady(ctx); err != nil {
+		return "", err
+	}
+
 	b.mu.RLock()
 	router := b.llmRouter
 	modelReg := b.modelRegistry
@@ -336,6 +408,8 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 }
 
 // StopGateway stops the MCP gateway. Called during app shutdown.
+// Does not wait for async init — if the gateway hasn't been created yet,
+// there is nothing to stop.
 func (b *OrchestratorBuilder) StopGateway() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -362,6 +436,9 @@ func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc tools.VectorSearch
 // SetMCPWorkDir updates the default working directory for MCP stdio server processes.
 // New or restarted MCP servers will use this directory as their cwd.
 func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = b.waitReady(waitCtx)
 	b.mu.RLock()
 	gw := b.gateway
 	b.mu.RUnlock()
@@ -514,7 +591,7 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 // ---------------------------------------------------------------------------
 
 // buildRouter creates a fresh LLM Router + ModelRegistry from config.
-func (b *OrchestratorBuilder) buildRouter(cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
+func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
 	overrides := make(map[string]llm.ModelMetadata)
 	for name, override := range cfg.LLM.Models {
 		overrides[name] = llm.ModelMetadata{
@@ -548,7 +625,7 @@ func (b *OrchestratorBuilder) buildRouter(cfg *BuilderConfig) (*llm.Router, *llm
 			return prompt.DefaultSampling(family).Temperature
 		},
 	}
-	router, err := llm.NewRouter(context.Background(), routerCfg, modelRegistry)
+	router, err := llm.NewRouter(ctx, routerCfg, modelRegistry)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -721,7 +798,7 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, router *l
 		judgeProvider = router.GetDefaultProvider()
 	} else {
 		// Try building a fresh router
-		newRouter, _, err := b.buildRouter(cfg)
+		newRouter, _, err := b.buildRouter(context.Background(), cfg)
 		if err == nil && newRouter != nil {
 			judgeProvider = newRouter.GetDefaultProvider()
 		} else if b.logger != nil {

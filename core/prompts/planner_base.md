@@ -4,12 +4,12 @@ MODE-PREAMBLE
 
 DOMAIN-ASSIGNMENT
 
-## Guidance — Prefer
+## Guidance — Balance
 
-- Combine research and implementation in a single step when the executor can research inline
+- Decompose research-heavy tasks into multiple bounded-area steps rather than one monolithic "read everything" step
 - Let the coder verify as they go rather than creating separate verify steps
 - Ensure each step produces concrete progress toward the goal
-- Combine related requirements into broader steps when appropriate — multiple requirements can be addressed in one step
+- Merge related requirements only when a single executor can complete them without context overflow
 
 ## Agent Profiles
 

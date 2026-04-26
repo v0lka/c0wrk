@@ -1,5 +1,5 @@
 import type { DisplayItem } from '@/types/messages'
-import { Markdown } from '@/lib/markdownConfig'
+import { MarkdownViewer } from '@/components/MarkdownViewer'
 
 interface AssistantMessageProps {
   item?: Extract<DisplayItem, { kind: 'assistant' }>
@@ -12,7 +12,7 @@ export function AssistantMessage({ item, content: rawContent, isStreaming }: Ass
 
   return (
     <div className="flex-1 min-w-0 overflow-hidden">
-      <Markdown content={text} showSourceToggle />
+      <MarkdownViewer content={text} />
       {isStreaming && (
         <span className="inline-block w-2 h-4 bg-primary ml-1 animate-pulse" />
       )}

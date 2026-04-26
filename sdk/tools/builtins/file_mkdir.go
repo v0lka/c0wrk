@@ -59,6 +59,10 @@ func (t *CreateDirectoryTool) Execute(ctx context.Context, input json.RawMessage
 		return tools.ParseInputError(err)
 	}
 
+	if params.Path == "" {
+		return tools.ToolResult{Content: "validation error: path is required", IsError: true}, nil
+	}
+
 	params.Path = resolvePath(ctx, params.Path)
 
 	if err := os.MkdirAll(params.Path, 0o755); err != nil {

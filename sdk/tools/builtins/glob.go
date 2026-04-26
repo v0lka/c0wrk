@@ -78,6 +78,10 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 		return tools.ParseInputError(err)
 	}
 
+	if params.Pattern == "" {
+		return tools.ToolResult{Content: "validation error: pattern is required", IsError: true}, nil
+	}
+
 	if params.Path == "" {
 		params.Path = tools.WorkspacePathFrom(ctx)
 		if params.Path == "" {

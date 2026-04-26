@@ -164,6 +164,9 @@ func (app *Application) RebuildFactory(cfg *config.Config) {
 // EvaluateJudge performs an on-demand judge evaluation for a pending tool confirmation.
 // Returns the verdict, reasoning (prefixed with "SAFE: " when allowed), and any error.
 func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict JudgeVerdict, reasoning string, err error) {
+	if err := app.builder.WaitReady(ctx); err != nil {
+		return VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
+	}
 	judge := app.builder.ToolRegistry().GetJudge()
 	if judge == nil {
 		return VerdictConfirm, "", ErrJudgeNotAvailable
