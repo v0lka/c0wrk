@@ -21,11 +21,11 @@
 
 ## Update Summary
 **Changes Made**
-- Updated planner system documentation to reflect simplified tool guidance system
-- Removed explicit tool priority tier instructions from planner templates
-- Consolidated tool recommendations into broader guidance patterns
-- Updated prompt engineering system documentation to reflect streamlined approach
-- Enhanced project-specific instructions integration documentation
+- Enhanced test coverage documentation for planner functionality with improved test coverage for planDirect and exploration modes
+- Added comprehensive documentation for synthetic plan threshold differentiation between low-complexity and high-complexity tasks
+- Expanded documentation for planner context factory functions and token counting integration
+- Updated planner complexity scoring and execution strategy documentation
+- Enhanced synthetic plan threshold configuration documentation
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -33,11 +33,12 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Project-Specific Instructions Integration](#project-specific-instructions-integration)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
+6. [Enhanced Test Coverage](#enhanced-test-coverage)
+7. [Project-Specific Instructions Integration](#project-specific-instructions-integration)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the C0WRK planner system and its role in generating execution plans for AI tasks. The planner supports:
@@ -48,7 +49,8 @@ This document explains the C0WRK planner system and its role in generating execu
 - PlanContinuation for follow-up requests after task completion
 - Prompt engineering with domain-specific templates
 - Relationship between planner complexity scores and execution strategies
-- **Updated**: Simplified tool guidance system with consolidated recommendations
+- **Enhanced**: Comprehensive test coverage for planDirect and exploration modes
+- **Updated**: Improved synthetic plan threshold differentiation between low-complexity and high-complexity tasks
 
 ## Project Structure
 The planner system resides in the core package and integrates with the broader orchestration framework. Key files include:
@@ -58,7 +60,7 @@ The planner system resides in the core package and integrates with the broader o
 - Prompt templates for planner and router
 - Builder wiring components together
 - Types and system prompt utilities
-- **Updated**: Streamlined planner templates with simplified tool guidance
+- **Enhanced**: Comprehensive test coverage for planner functionality
 
 ```mermaid
 graph TB
@@ -72,6 +74,7 @@ Builder["Builder (builder.go)"]
 SysPrompt["System Prompt (systemprompt.go)"]
 Reflector["Reflector (reflector.go)"]
 AgentsMD["AGENTS.md Manager"]
+PlannerTests["Planner Tests (planner_test.go)"]
 end
 subgraph "Prompts"
 PB["planner_base.md"]
@@ -94,6 +97,9 @@ Router --> Types
 Orchestrator --> Types
 AgentsMD --> Planner
 AgentsMD --> Orchestrator
+PlannerTests --> Planner
+PlannerTests --> Router
+PlannerTests --> Orchestrator
 ```
 
 **Diagram sources**
@@ -109,6 +115,7 @@ AgentsMD --> Orchestrator
 - [builder.go:423-471](file://core/builder.go#L423-L471)
 - [systemprompt.go:44-100](file://core/systemprompt.go#L44-L100)
 - [reflector.go:24-80](file://core/reflector.go#L24-L80)
+- [planner_test.go:800-1200](file://core/planner_test.go#L800-L1200)
 
 **Section sources**
 - [planner.go:168-421](file://core/planner.go#L168-L421)
@@ -120,12 +127,12 @@ AgentsMD --> Orchestrator
 - [reflector.go:24-80](file://core/reflector.go#L24-L80)
 
 ## Core Components
-- Planner: Generates DAG execution plans using either synthetic or informed exploration strategies, depending on domain and tool availability. It builds domain-aware system prompts and parses structured JSON plans. **Updated**: Now uses consolidated tool guidance instead of explicit priority tiers.
+- Planner: Generates DAG execution plans using either synthetic or informed exploration strategies, depending on domain and tool availability. It builds domain-aware system prompts and parses structured JSON plans. **Enhanced**: Comprehensive test coverage for planDirect and exploration modes with proper differentiation between low-complexity and high-complexity tasks.
 - Router: Classifies user requests by domain and complexity, enabling adaptive planning and execution strategies.
 - Orchestrator: Coordinates routing, planning, and execution, integrating planner decisions with the broader orchestration engine. It supports synthetic plan thresholds and plan continuation workflows. **Enhanced**: Automatically discovers and injects AGENTS.md content from workspace root.
 - Prompt Templates: Domain-specific and model-family-specific templates guide planner and router behavior with simplified tool guidance.
 - Builder: Wires the planner, router, and orchestrator with shared tool registries, context factories, and model registries.
-- **Updated**: Streamlined planner templates with consolidated tool recommendations replacing explicit priority tier instructions.
+- **Enhanced**: Comprehensive test coverage for planner context factory functions and token counting integration.
 
 **Section sources**
 - [planner.go:168-421](file://core/planner.go#L168-L421)
@@ -189,7 +196,7 @@ Key capabilities:
 - Tool filtering for exploration (codebase-memory MCP tools and filesystem tools).
 - Plan parsing supporting JSON in code blocks and structured fields.
 - Replan and PlanContinuation for failure recovery and follow-ups.
-- **Updated**: Simplified tool guidance system with consolidated recommendations instead of explicit priority tiers.
+- **Enhanced**: Comprehensive test coverage for planDirect and exploration modes with proper differentiation between low-complexity and high-complexity tasks.
 
 ```mermaid
 classDiagram
@@ -290,13 +297,65 @@ Orchestrator-->>Orchestrator : "Resume execution"
 - [orchestrator.go:406-559](file://core/orchestrator.go#L406-L559)
 - [types.go:239-244](file://core/types.go#L239-L244)
 
+### Enhanced Test Coverage
+The planner system now includes comprehensive test coverage for all major functionality:
+
+#### PlanDirect Mode Testing
+- **Low-complexity tasks**: Tests verify that "general" domain with complexity < 4 uses planDirect mode
+- **High-complexity tasks**: Tests verify that complexity >= 4 triggers exploration mode
+- **No tools available**: Tests cover fallback to planDirect when tool registry is nil or has no relevant tools
+- **Domain variants**: Tests cover all domain types (code, research, mixed) with planDirect mode
+
+#### Exploration Mode Testing
+- **Informed exploration**: Tests verify bounded ReAct loop with executor and finish tool integration
+- **File system only tools**: Tests cover scenarios with only file system tools available
+- **Executor error handling**: Tests verify graceful fallback to planDirect on executor failures
+- **Context cancellation**: Tests verify proper error propagation for cancelled contexts
+
+#### Synthetic Plan Threshold Testing
+- **Threshold configuration**: Tests verify proper differentiation between low-complexity (< threshold) and high-complexity (>= threshold) tasks
+- **Default threshold**: Tests verify default threshold of 2 (complexity 1-2 = synthetic, 3+ = full planning)
+- **Custom threshold**: Tests verify configurable threshold behavior
+
+#### Context Factory and Token Counting Integration
+- **Context factory functions**: Tests verify proper integration with context manager factories
+- **Token counting**: Tests verify integration with token counters for context window management
+- **Environment context**: Tests verify proper handling of environment information and workspace paths
+
+```mermaid
+flowchart TD
+TestCoverage["Enhanced Test Coverage"] --> PlanDirect["PlanDirect Mode Tests"]
+TestCoverage --> Exploration["Exploration Mode Tests"]
+TestCoverage --> Threshold["Synthetic Plan Threshold Tests"]
+TestCoverage --> ContextFactory["Context Factory Tests"]
+TestCoverage --> TokenCounting["Token Counting Tests"]
+PlanDirect --> LowComplexity["Low-complexity Tasks"]
+PlanDirect --> HighComplexity["High-complexity Tasks"]
+PlanDirect --> NoTools["No Tools Available"]
+Exploration --> InformedPath["Informed Path"]
+Exploration --> FSOnly["File System Only"]
+Exploration --> ErrorHandling["Error Handling"]
+Exploration --> CancelPropagation["Cancel Propagation"]
+Threshold --> DefaultThreshold["Default Threshold (2)"]
+Threshold --> CustomThreshold["Custom Threshold"]
+Threshold --> DomainSpecific["Domain-specific Behavior"]
+```
+
+**Diagram sources**
+- [planner_test.go:800-1200](file://core/planner_test.go#L800-L1200)
+- [planner_test.go:1200-1758](file://core/planner_test.go#L1200-L1758)
+
+**Section sources**
+- [planner_test.go:800-1200](file://core/planner_test.go#L800-L1200)
+- [planner_test.go:1200-1758](file://core/planner_test.go#L1200-L1758)
+
 ### Prompt Engineering System
 The planner leverages domain-specific and model-family-specific prompts:
 - Base planner prompt defines structure and expectations with consolidated guidance.
 - Informed planner prompt guides exploration with simplified tool recommendations.
 - Router system and instruction prompts guide classification.
 - Family-specific overlays adapt behavior per model family.
-- **Updated**: Planner templates now use consolidated tool guidance instead of explicit priority tiers.
+- **Enhanced**: Comprehensive test coverage for prompt injection including AGENTS.md and active skills.
 - **Enhanced**: AGENTS.md project instructions are automatically appended to all planner prompts when available.
 
 ```mermaid
@@ -310,6 +369,8 @@ FP["FamilyPrompt('planner', family)"] --> Planner
 FR["FamilyPrompt('orchestrator', family)"] --> Orchestrator["Orchestrator"]
 AMD["AGENTS.md Content"] --> Planner
 AMD --> Orchestrator
+ActiveSkills["Active Skills"] --> Planner
+ActiveSkills --> Orchestrator
 ```
 
 **Diagram sources**
@@ -333,7 +394,7 @@ PlanContinuation enables follow-up requests after task completion:
 - Builds a continuation prompt including completed plan summaries and terminal steps.
 - Enforces step ID prefixes and dependency on terminal steps.
 - Merges continuation steps into the existing plan and resumes execution.
-- **Enhanced**: Automatically includes AGENTS.md project instructions in continuation prompts.
+- **Enhanced**: Comprehensive test coverage for continuation functionality including AGENTS.md injection.
 
 ```mermaid
 sequenceDiagram
@@ -361,6 +422,7 @@ Orchestrator->>Orchestrator : "Resume execution"
 The Orchestrator uses a synthetic plan threshold to decide between synthetic and full planning:
 - If complexity ≤ threshold, use CreateSyntheticPlan for minimal overhead.
 - Otherwise, route through the planner's full planning path.
+- **Enhanced**: Comprehensive test coverage verifies proper differentiation between low-complexity and high-complexity tasks.
 
 ```mermaid
 flowchart TD
@@ -387,8 +449,8 @@ Execute --> End(["Return result"])
 - Orchestrator uses complexity to select synthetic vs full planning.
 - Domain influences compaction strategy and tool prioritization in prompts.
 - Replan and reflection integrate feedback loops to refine execution strategies.
+- **Enhanced**: Comprehensive test coverage for complexity scoring and execution strategy selection.
 - **Enhanced**: Project-specific instructions from AGENTS.md influence planning decisions and step descriptions.
-- **Updated**: Simplified tool guidance system reduces complexity while maintaining effectiveness.
 
 **Section sources**
 - [router.go:137-154](file://core/router.go#L137-L154)
@@ -454,8 +516,8 @@ The planner system exhibits clear separation of concerns with enhanced project c
 - Router depends on prompt templates and tool availability.
 - Orchestrator orchestrates both and integrates with the SDK orchestration engine, managing AGENTS.md discovery.
 - Builder wires components and provides shared registries and context factories.
+- **Enhanced**: Comprehensive test coverage ensures reliability across all dependencies.
 - **Enhanced**: AGENTS.md manager provides centralized context management across all components.
-- **Updated**: Simplified tool guidance system reduces template complexity while maintaining functionality.
 
 ```mermaid
 graph TB
@@ -473,6 +535,9 @@ Orchestrator --> SystemPrompt["System Prompt"]
 Orchestrator --> AgentsMD["AGENTS.md Manager"]
 Planner --> AgentsMD
 AgentsMD --> Context["Context Management"]
+PlannerTests["Planner Tests"] --> Planner
+PlannerTests --> Router
+PlannerTests --> Orchestrator
 ```
 
 **Diagram sources**
@@ -494,8 +559,8 @@ AgentsMD --> Context["Context Management"]
 - Informed exploration uses bounded ReAct loops and circuit breakers to prevent runaway token usage.
 - Tool result budgets and context window management mitigate memory pressure.
 - Auto-RAG hints and environment context improve plan quality without excessive prompting.
+- **Enhanced**: Comprehensive test coverage ensures performance optimization across all modes.
 - **Enhanced**: AGENTS.md injection adds minimal overhead while significantly improving plan consistency and adherence to project standards.
-- **Updated**: Simplified tool guidance system reduces prompt complexity and improves processing efficiency.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -503,8 +568,8 @@ Common issues and resolutions:
 - Exploration executor failures: The Planner falls back to direct planning when exploration fails.
 - Context cancellation propagation: Cancellation errors are preserved through the planning process.
 - Plan parsing errors: The Planner falls back to direct planning when exploration output cannot be parsed.
-- **Enhanced**: AGENTS.md context issues: Missing or malformed AGENTS.md content is gracefully handled without affecting planning functionality.
-- **Updated**: Tool guidance confusion: Simplified guidance eliminates priority tier confusion while maintaining effective tool utilization.
+- **Enhanced**: Comprehensive test coverage identifies and resolves edge cases in planDirect and exploration modes.
+- **Enhanced**: Synthetic plan threshold validation ensures proper complexity-based decision making.
 
 **Section sources**
 - [router.go:89-109](file://core/router.go#L89-L109)
@@ -516,7 +581,9 @@ The C0WRK planner system provides a robust, adaptive approach to plan generation
 - It intelligently selects between synthetic and full planning based on domain and complexity.
 - It integrates tightly with the Router and Orchestrator to support seamless execution and continuations.
 - Its prompt engineering system ensures domain-specific, model-family-adapted behavior with simplified tool guidance.
+- **Enhanced**: Comprehensive test coverage validates all major functionality including planDirect and exploration modes.
+- **Enhanced**: Synthetic plan threshold differentiation ensures optimal performance for both simple and complex tasks.
 - **Enhanced**: Project-specific instructions from AGENTS.md provide consistent context across all planning scenarios.
-- **Updated**: Streamlined tool guidance system reduces complexity while maintaining effectiveness.
 - It offers resilience through fallbacks, replanning, and reflection-driven improvements.
-- **New**: Centralized AGENTS.md management ensures all planning contexts maintain project standards and guidelines.
+- **Enhanced**: Centralized AGENTS.md management ensures all planning contexts maintain project standards and guidelines.
+- **Enhanced**: Context factory functions and token counting integration provide reliable performance monitoring and optimization.

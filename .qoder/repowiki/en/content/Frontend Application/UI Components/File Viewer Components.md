@@ -5,6 +5,7 @@
 - [FileViewerPanel.tsx](file://frontend/src/components/fileViewer/FileViewerPanel.tsx)
 - [FileViewerTabBar.tsx](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx)
 - [FileViewerContent.tsx](file://frontend/src/components/fileViewer/FileViewerContent.tsx)
+- [MarkdownViewer.tsx](file://frontend/src/components/MarkdownViewer.tsx)
 - [fileViewerStore.ts](file://frontend/src/stores/fileViewerStore.ts)
 - [cmDiffDecorations.ts](file://frontend/src/lib/cmDiffDecorations.ts)
 - [cmLanguages.ts](file://frontend/src/lib/cmLanguages.ts)
@@ -20,12 +21,10 @@
 
 ## Update Summary
 **Changes Made**
-- Complete replacement of highlight.js implementation with CodeMirror 6 for syntax highlighting and rendering
-- New CodeMirror-based file content rendering with custom diff decorations and theme integration
-- Updated language detection system using @codemirror/language-data
-- Replaced highlight.js decorations with CodeMirror state fields and effects
-- Added new CodeMirror theme system with CSS variable integration
-- Updated file type detection to use CodeMirror language descriptions
+- Added new MarkdownViewer component for enhanced Markdown rendering with source/preview toggle functionality
+- Simplified markdownConfig by removing complex configuration object and streamlining markdown rendering pipeline
+- Integrated MarkdownViewer into FileViewerContent for better Markdown file handling
+- Maintained backward compatibility while improving the Markdown viewing experience
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -39,10 +38,10 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the file viewer system in C0WRK, focusing on three primary UI components: FileViewerPanel as the main container, FileViewerTabBar for tab management, and FileViewerContent for rendering file content. The system has been completely rewritten to use CodeMirror 6 for enhanced syntax highlighting, line numbering, inline diffs, and Markdown rendering. It explains how file type detection, custom diff decorations, theme integration, and CodeMirror language support work together, along with integration points to the workspace system and persistence. It also covers customization options for different file types, performance optimizations for large files, and accessibility features for code reading.
+This document describes the file viewer system in C0WRK, focusing on three primary UI components: FileViewerPanel as the main container, FileViewerTabBar for tab management, and FileViewerContent for rendering file content. The system has been enhanced with a new MarkdownViewer component that provides improved Markdown rendering capabilities with source/preview toggle functionality. The markdownConfig has been streamlined to offer a cleaner interface while maintaining rich markdown features including GitHub Flavored Markdown, emoji support, syntax highlighting, and sanitization. The system continues to use CodeMirror 6 for enhanced syntax highlighting, line numbering, inline diffs, and supports both traditional file viewing and specialized Markdown rendering.
 
 ## Project Structure
-The file viewer now uses CodeMirror 6 as the primary rendering engine with custom decorations and theme integration. The system integrates with the global application layout and workspace panels while maintaining the same component architecture.
+The file viewer system now includes a dedicated MarkdownViewer component that handles Markdown-specific rendering with toggle functionality. The system maintains its CodeMirror 6 foundation while adding specialized components for different file types.
 
 ```mermaid
 graph TB
@@ -50,6 +49,7 @@ subgraph "File Viewer"
 P["FileViewerPanel.tsx"]
 T["FileViewerTabBar.tsx"]
 C["FileViewerContent.tsx"]
+MV["MarkdownViewer.tsx"]
 end
 subgraph "Stores"
 S["fileViewerStore.ts"]
@@ -58,6 +58,9 @@ subgraph "CodeMirror Libraries"
 CD["cmDiffDecorations.ts"]
 CL["cmLanguages.ts"]
 CT["cmTheme.ts"]
+end
+subgraph "Markdown System"
+MC["markdownConfig.tsx"]
 end
 subgraph "Legacy Support"
 HL["hljsLanguages.ts"]
@@ -69,10 +72,12 @@ FTP["FileTreePanel.tsx"]
 end
 P --> T
 P --> C
+C --> MV
 C --> CD
 C --> CL
 C --> CT
 C --> S
+MV --> MC
 T --> S
 C --> S
 S --> AL
@@ -85,11 +90,13 @@ WP --> FTP
 **Diagram sources**
 - [FileViewerPanel.tsx:1-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L37)
 - [FileViewerTabBar.tsx:1-166](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L1-L166)
-- [FileViewerContent.tsx:1-278](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L278)
+- [FileViewerContent.tsx:1-271](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L271)
+- [MarkdownViewer.tsx:1-46](file://frontend/src/components/MarkdownViewer.tsx#L1-L46)
 - [fileViewerStore.ts:1-207](file://frontend/src/stores/fileViewerStore.ts#L1-L207)
 - [cmDiffDecorations.ts:1-208](file://frontend/src/lib/cmDiffDecorations.ts#L1-L208)
 - [cmLanguages.ts:1-81](file://frontend/src/lib/cmLanguages.ts#L1-L81)
 - [cmTheme.ts:1-113](file://frontend/src/lib/cmTheme.ts#L1-L113)
+- [markdownConfig.tsx:1-65](file://frontend/src/lib/markdownConfig.tsx#L1-L65)
 - [hljsLanguages.ts:1-49](file://frontend/src/lib/hljsLanguages.ts#L1-L49)
 - [AppLayout.tsx:24-54](file://frontend/src/components/layout/AppLayout.tsx#L24-L54)
 - [WorkspacePanel.tsx:1-71](file://frontend/src/components/layout/WorkspacePanel.tsx#L1-L71)
@@ -102,40 +109,50 @@ WP --> FTP
 ## Core Components
 - FileViewerPanel: Container that renders tabs and content, hides itself when no files are open or collapsed, and applies width from layout.
 - FileViewerTabBar: Manages open files as tabs, supports switching, closing, scrolling active tab into view, and a dropdown menu for all open files.
-- FileViewerContent: Renders active file content using CodeMirror 6 with syntax highlighting, line numbers, Markdown preview/raw toggle, inline diffs, and binary file handling.
+- FileViewerContent: Renders active file content using CodeMirror 6 with syntax highlighting, line numbers, Markdown preview/preview toggle, inline diffs, and binary file handling.
+- **New**: MarkdownViewer: Dedicated component for rendering Markdown content with source/preview toggle functionality, providing a clean interface for both raw and rendered Markdown views.
 
 Key integration points:
 - Uses fileViewerStore for open files, active file, and panel state.
 - Reads file content and diffs via backend APIs exposed to the frontend.
 - Integrates with workspace events to refresh content silently on external changes.
 - Implements CodeMirror 6 editor view with custom decorations and theme system.
+- **Enhanced**: Markdown files are now handled by the specialized MarkdownViewer component with toggle functionality.
 
 **Section sources**
 - [FileViewerPanel.tsx:7-36](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L7-L36)
 - [FileViewerTabBar.tsx:31-165](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L31-L165)
 - [FileViewerContent.tsx:23-103](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L23-L103)
+- [MarkdownViewer.tsx:11-45](file://frontend/src/components/MarkdownViewer.tsx#L11-L45)
 - [fileViewerStore.ts:53-206](file://frontend/src/stores/fileViewerStore.ts#L53-L206)
 
 ## Architecture Overview
-The file viewer is now powered by CodeMirror 6, providing enhanced syntax highlighting, custom diff decorations, and theme integration. The system maintains the same reactive architecture with Zustand store integration while leveraging CodeMirror's advanced editor capabilities.
+The file viewer system now features a specialized Markdown rendering pipeline with the new MarkdownViewer component. The system maintains its reactive architecture with Zustand store integration while leveraging CodeMirror's advanced editor capabilities and adding dedicated components for different file types.
 
 ```mermaid
 sequenceDiagram
 participant UI as "FileViewerPanel"
 participant Tabs as "FileViewerTabBar"
 participant Content as "FileViewerContent"
+participant MDV as "MarkdownViewer"
 participant Store as "fileViewerStore"
 participant CM as "CodeMirror 6"
 participant Backend as "window.go.desktop.App"
 UI->>Tabs : Render tabs for openFiles
 UI->>Content : Render active file content
+Content->>Store : Check if file is Markdown
+alt Markdown file
+Content->>MDV : Render with toggle functionality
+MDV->>Store : Manage showSource state
+else Non-Markdown file
+Content->>CM : Render with CodeMirror
+Content->>CM : Apply language support and theme
+end
 Content->>Store : Read activeFile/openFiles
 Content->>Backend : ReadFile(path)
 Content->>Backend : GetFileDiff(path)
 Backend-->>Content : {content, diff}
 Content->>Store : Update content, diff, isBinary, isLoading
-Content->>CM : Create EditorView with decorations
-Content->>CM : Apply language support and theme
 Store-->>UI : Subscribe to state changes
 UI-->>Tabs : Re-render tabs
 UI-->>Content : Re-render content
@@ -145,6 +162,7 @@ UI-->>Content : Re-render content
 - [FileViewerPanel.tsx:7-36](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L7-L36)
 - [FileViewerTabBar.tsx:31-165](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L31-L165)
 - [FileViewerContent.tsx:23-103](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L23-L103)
+- [MarkdownViewer.tsx:11-45](file://frontend/src/components/MarkdownViewer.tsx#L11-L45)
 - [fileViewerStore.ts:53-206](file://frontend/src/stores/fileViewerStore.ts#L53-L206)
 
 ## Detailed Component Analysis
@@ -213,25 +231,25 @@ Store-->>Bar : openTabs updated
 - [fileViewerStore.ts:64-122](file://frontend/src/stores/fileViewerStore.ts#L64-L122)
 
 ### FileViewerContent
-- Purpose: Renders the active file's content using CodeMirror 6 with enhanced syntax highlighting, line numbers, and optional Markdown preview.
+- Purpose: Renders the active file's content using CodeMirror 6 with enhanced syntax highlighting, line numbers, and specialized Markdown rendering.
 - Highlights:
   - CodeMirror 6 editor view with syntax highlighting via language support.
   - Line-by-line rendering with numbers and custom theme integration.
   - Inline diffs using custom decorations with added/removed/modified styling.
-  - Markdown preview with GitHub-flavored markdown and sanitization.
+  - **Enhanced**: Markdown files are now handled by the dedicated MarkdownViewer component with source/preview toggle.
   - Binary file detection and graceful handling.
   - Loading and error states with proper cleanup.
   - Scroll position preservation during content updates.
   - Dynamic language loading and theme switching.
 - File type detection and rendering:
   - Language detection using @codemirror/language-data with fallback mappings.
-  - Markdown-specific preview/raw toggle with CodeMirror integration.
+  - **New**: Markdown-specific handling with MarkdownViewer component for toggle functionality.
   - Unified diff parsing and display line construction with custom decorations.
 - Backend integration:
   - Reads file content and diff via Wails-bound APIs.
   - Subscribes to workspace tree changes to silently refresh content.
 
-**Updated** Complete rewrite using CodeMirror 6 with custom decorations and theme system
+**Updated** Enhanced with MarkdownViewer component for specialized Markdown rendering
 
 ```mermaid
 flowchart TD
@@ -243,15 +261,11 @@ CheckLoading --> |No| CheckError["error?"]
 CheckError --> |Yes| ShowError["Show error message"]
 CheckError --> |No| CheckBinary["isBinary?"]
 CheckBinary --> |Yes| BinaryMsg["Show unsupported format"]
-CheckBinary --> |No| DecideMode["Markdown and not raw?"]
-DecideMode --> |Yes| Markdown["Render ReactMarkdown with plugins"]
-DecideMode --> |No| CodeMirror["Render CodeMirror EditorView<br/>with decorations and theme"]
-CodeMirror --> Diffs{"Has diff?"}
-Diffs --> |Yes| DiffDecorations["Apply custom diff decorations"]
-Diffs --> |No| PlainCM["Apply language support and theme"]
-Markdown --> End(["Done"])
-DiffDecorations --> End
-PlainCM --> End
+CheckBinary --> |No| CheckMarkdown["Is Markdown file?"]
+CheckMarkdown --> |Yes| MarkdownViewer["Render MarkdownViewer with toggle"]
+CheckMarkdown --> |No| CodeMirror["Render CodeMirror EditorView<br/>with decorations and theme"]
+MarkdownViewer --> End(["Done"])
+CodeMirror --> End
 Loading --> End
 ShowError --> End
 BinaryMsg --> End
@@ -260,15 +274,46 @@ Null --> End
 
 **Diagram sources**
 - [FileViewerContent.tsx:23-103](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L23-L103)
-- [FileViewerContent.tsx:107-277](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L107-L277)
+- [FileViewerContent.tsx:107-271](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L107-L271)
+- [MarkdownViewer.tsx:11-45](file://frontend/src/components/MarkdownViewer.tsx#L11-L45)
 - [cmDiffDecorations.ts:57-108](file://frontend/src/lib/cmDiffDecorations.ts#L57-L108)
 - [cmTheme.ts:17-112](file://frontend/src/lib/cmTheme.ts#L17-L112)
-- [markdownConfig.tsx:55-92](file://frontend/src/lib/markdownConfig.tsx#L55-L92)
 
 **Section sources**
 - [FileViewerContent.tsx:23-103](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L23-L103)
-- [FileViewerContent.tsx:107-277](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L107-L277)
+- [FileViewerContent.tsx:107-271](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L107-L271)
 - [fileViewerStore.ts:53-206](file://frontend/src/stores/fileViewerStore.ts#L53-L206)
+
+### MarkdownViewer Component
+- Purpose: Dedicated component for rendering Markdown content with source/preview toggle functionality.
+- Features:
+  - State management for showSource toggle with useState hook.
+  - Preview mode using the simplified Markdown component from markdownConfig.
+  - Raw source mode displaying content in a monospace font with syntax highlighting.
+  - Floating action buttons for switching between preview and source modes.
+  - Accessible tooltips and proper ARIA labels.
+- Integration:
+  - Uses the simplified markdownConfig Markdown component for rendering.
+  - Manages its own state independently of the main file viewer store.
+  - Provides a clean interface for Markdown content display.
+
+**New** Dedicated component for enhanced Markdown rendering
+
+```mermaid
+flowchart TD
+Start(["Render MarkdownViewer"]) --> CheckSource["showSource state"]
+CheckSource --> |True| SourceMode["Show raw source<br/>in monospace font"]
+CheckSource --> |False| PreviewMode["Show rendered Markdown"]
+SourceMode --> Buttons["Floating buttons<br/>for mode toggle"]
+PreviewMode --> Buttons
+Buttons --> End(["Done"])
+```
+
+**Diagram sources**
+- [MarkdownViewer.tsx:11-45](file://frontend/src/components/MarkdownViewer.tsx#L11-L45)
+
+**Section sources**
+- [MarkdownViewer.tsx:1-46](file://frontend/src/components/MarkdownViewer.tsx#L1-L46)
 
 ### CodeMirror-Based Rendering System
 - **EditorView Creation**: Creates a CodeMirror 6 EditorView with read-only state, line numbers, and custom theme.
@@ -293,14 +338,16 @@ Null --> End
   - Uses CodeMirror's compartment system for efficient language switching.
   - Falls back to plaintext for unknown or unsupported languages.
 - **Markdown Rendering**:
+  - **Enhanced**: Now uses the dedicated MarkdownViewer component with toggle functionality.
+  - Simplified markdownConfig with streamlined configuration object.
   - GitHub Flavored Markdown with emoji, breaks, slug generation, autolinking, external links, sanitization, and Mermaid diagrams.
-  - Toggle between preview and raw source modes.
+  - Toggle between preview and raw source modes through MarkdownViewer.
 - **Customization Options**:
   - Extend FILENAME_FALLBACK and EXT_FALLBACK maps for new file types.
   - Add new CodeMirror language support via language-data integration.
   - Customize theme colors by modifying CSS variables.
 
-**Updated** Complete rewrite using CodeMirror language detection and dynamic loading
+**Updated** Enhanced with dedicated MarkdownViewer component and simplified markdownConfig
 
 ```mermaid
 flowchart TD
@@ -321,7 +368,7 @@ LangData --> |Not Found| Plaintext["Return 'text/plain'"]
 - [cmLanguages.ts:9-61](file://frontend/src/lib/cmLanguages.ts#L9-L61)
 - [cmLanguages.ts:70-80](file://frontend/src/lib/cmLanguages.ts#L70-L80)
 - [markdownConfig.tsx:17-44](file://frontend/src/lib/markdownConfig.tsx#L17-L44)
-- [markdownConfig.tsx:55-92](file://frontend/src/lib/markdownConfig.tsx#L55-L92)
+- [markdownConfig.tsx:52-63](file://frontend/src/lib/markdownConfig.tsx#L52-L63)
 
 ### Custom Diff Decorations System
 - **State Management**: Uses CodeMirror StateField and StateEffect for efficient diff decoration updates.
@@ -388,8 +435,9 @@ Extensions --> CodeMirror["Applied to EditorView"]
 - **Silent Refresh**: On workspace tree changes, content is refreshed without visual loading indicators to preserve scroll position.
 - **Workspace Filtering**: File tree supports glob and regex filtering for efficient navigation.
 - **CodeMirror Integration**: Uses CodeMirror's built-in subscription system for workspace events.
+- **Markdown Integration**: Markdown files are automatically routed to the MarkdownViewer component for specialized rendering.
 
-**Updated** Enhanced integration with CodeMirror's event system
+**Updated** Enhanced integration with CodeMirror's event system and MarkdownViewer
 
 ```mermaid
 sequenceDiagram
@@ -426,12 +474,17 @@ note over Backend,Store : workspace : tree_changed event triggers silentRefreshA
   - cmDiffDecorations for custom diff rendering and state management.
   - cmTheme for CodeMirror theme integration.
   - diffParser for unified diff parsing and display line construction.
-  - markdownConfig for Markdown rendering and sanitization.
+  - **New**: MarkdownViewer for specialized Markdown rendering.
+  - markdownConfig for simplified Markdown rendering and sanitization.
   - fileViewerUtils for binary content detection.
+- **New**: MarkdownViewer depends on:
+  - useState for toggle state management.
+  - Button component for UI controls.
+  - Markdown component from markdownConfig for rendering.
 - Stores depend on Wails-bound backend APIs for file read and diff retrieval.
 - **Legacy Support**: hljsLanguages.ts remains for backward compatibility but is no longer actively used.
 
-**Updated** Complete dependency rewrite with CodeMirror 6 libraries
+**Updated** Enhanced dependency graph with MarkdownViewer component
 
 ```mermaid
 graph LR
@@ -443,21 +496,24 @@ Content --> CL["cmLanguages"]
 Content --> CD["cmDiffDecorations"]
 Content --> CT["cmTheme"]
 Content --> DP["diffParser"]
+Content --> MV["MarkdownViewer"]
 Content --> MC["markdownConfig"]
 Content --> FU["fileViewerUtils"]
+MV --> MC
 Store --> Backend["window.go.desktop.App"]
 ```
 
 **Diagram sources**
 - [FileViewerPanel.tsx:1-37](file://frontend/src/components/fileViewer/FileViewerPanel.tsx#L1-L37)
 - [FileViewerTabBar.tsx:1-166](file://frontend/src/components/fileViewer/FileViewerTabBar.tsx#L1-L166)
-- [FileViewerContent.tsx:1-278](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L278)
+- [FileViewerContent.tsx:1-271](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L1-L271)
+- [MarkdownViewer.tsx:1-46](file://frontend/src/components/MarkdownViewer.tsx#L1-L46)
 - [fileViewerStore.ts:1-207](file://frontend/src/stores/fileViewerStore.ts#L1-L207)
 - [cmLanguages.ts:1-81](file://frontend/src/lib/cmLanguages.ts#L1-L81)
 - [cmDiffDecorations.ts:1-208](file://frontend/src/lib/cmDiffDecorations.ts#L1-L208)
 - [cmTheme.ts:1-113](file://frontend/src/lib/cmTheme.ts#L1-L113)
 - [diffParser.ts:1-176](file://frontend/src/lib/diffParser.ts#L1-L176)
-- [markdownConfig.tsx:1-94](file://frontend/src/lib/markdownConfig.tsx#L1-L94)
+- [markdownConfig.tsx:1-65](file://frontend/src/lib/markdownConfig.tsx#L1-L65)
 - [fileViewerUtils.ts:1-18](file://frontend/src/lib/fileViewerUtils.ts#L1-L18)
 
 **Section sources**
@@ -484,20 +540,26 @@ Store --> Backend["window.go.desktop.App"]
 - **Theme Optimization**:
   - Themes memoized to avoid unnecessary re-renders.
   - CSS variable integration for dynamic theme switching.
+- **Markdown Performance**:
+  - **Enhanced**: MarkdownViewer component provides efficient toggle functionality.
+  - **Improved**: Simplified markdownConfig reduces overhead while maintaining rich features.
+  - **Optimized**: Separate rendering paths for Markdown vs non-Markdown files.
 
-**Updated** Performance improvements from CodeMirror 6 migration
+**Updated** Performance improvements from MarkdownViewer and simplified markdownConfig
 
 Recommendations:
 - Consider CodeMirror's built-in virtual scrolling for extremely large files.
 - Monitor compartment reconfiguration performance for frequent language switching.
 - Use debounced workspace refresh events to avoid frequent reloads.
 - Leverage CodeMirror's built-in diff rendering for better performance than previous implementations.
+- **New**: Monitor MarkdownViewer component performance for large Markdown files with complex rendering.
 
 **Section sources**
 - [fileViewerStore.ts:58-65](file://frontend/src/stores/fileViewerStore.ts#L58-L65)
 - [fileViewerStore.ts:58-65](file://frontend/src/stores/fileViewerStore.ts#L58-L65)
 - [FileViewerContent.tsx:169-187](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L169-L187)
 - [FileViewerContent.tsx:209-238](file://frontend/src/components/fileViewer/FileViewerContent.tsx#L209-L238)
+- [MarkdownViewer.tsx:11-45](file://frontend/src/components/MarkdownViewer.tsx#L11-L45)
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -507,8 +569,10 @@ Common issues and resolutions:
 - **Binary file shows "unsupported format"**:
   - Binary detection scans the first 8KB for null bytes; this is expected behavior.
 - **Markdown preview not rendering**:
-  - Verify that the file is detected as Markdown and that the preview toggle is enabled.
+  - **Updated**: Check if the file is detected as Markdown and routed to MarkdownViewer.
+  - Verify that the Markdown component from markdownConfig is rendering correctly.
   - Inspect sanitized HTML and plugin configuration.
+  - **New**: If toggle isn't working, check MarkdownViewer state management.
 - **Tabs not updating after workspace changes**:
   - Confirm that the workspace tree changed event is firing and silent refresh is invoked.
 - **Scroll jumps when content updates**:
@@ -522,8 +586,12 @@ Common issues and resolutions:
 - **Theme not applying correctly**:
   - Verify CSS variables are properly defined in the design system.
   - Check that the theme is applied as a CodeMirror extension.
+- **MarkdownViewer toggle not working**:
+  - **New**: Ensure MarkdownViewer component is receiving content prop correctly.
+  - **New**: Check that state management is functioning properly for showSource toggle.
+  - **New**: Verify that floating buttons are properly wired to toggle functionality.
 
-**Updated** Issues specific to CodeMirror 6 implementation
+**Updated** Issues specific to CodeMirror 6 implementation and new MarkdownViewer component
 
 **Section sources**
 - [fileViewerStore.ts:64-78](file://frontend/src/stores/fileViewerStore.ts#L64-L78)
@@ -533,6 +601,7 @@ Common issues and resolutions:
 - [cmLanguages.ts:70-80](file://frontend/src/lib/cmLanguages.ts#L70-L80)
 - [cmDiffDecorations.ts:160-178](file://frontend/src/lib/cmDiffDecorations.ts#L160-L178)
 - [cmTheme.ts:17-112](file://frontend/src/lib/cmTheme.ts#L17-L112)
+- [MarkdownViewer.tsx:11-45](file://frontend/src/components/MarkdownViewer.tsx#L11-L45)
 
 ## Conclusion
-C0WRK's file viewer system has been completely rewritten with CodeMirror 6, providing a modern, performant, and feature-rich solution for viewing and navigating files within the workspace. The new implementation offers enhanced syntax highlighting, custom diff decorations, theme integration, and improved performance characteristics. The modular components—panel, tabs, and content—work together with a centralized store to deliver responsive rendering, dynamic language support, inline diffs, and Markdown previews. Integration with the workspace ensures seamless updates, while the new CodeMirror-based architecture provides better maintainability and extensibility. The system is designed to be customizable for new file types and optimized for performance, especially with large files, representing a significant improvement over the previous highlight.js-based implementation.
+C0WRK's file viewer system has been significantly enhanced with the addition of a dedicated MarkdownViewer component and a simplified markdownConfig system. The new MarkdownViewer component provides specialized rendering capabilities for Markdown files with source/preview toggle functionality, while the streamlined markdownConfig maintains rich markdown features including GitHub Flavored Markdown, emoji support, syntax highlighting, and sanitization. The system continues to use CodeMirror 6 for enhanced syntax highlighting, custom diff decorations, and theme integration, offering a modern, performant, and feature-rich solution for viewing and navigating files within the workspace. The modular components—panel, tabs, content, and the new MarkdownViewer—work together with a centralized store to deliver responsive rendering, dynamic language support, inline diffs, and specialized Markdown previews. Integration with the workspace ensures seamless updates, while the new Markdown-focused architecture provides better maintainability and extensibility. The system is designed to be customizable for new file types and optimized for performance, especially with large files, representing a significant improvement over the previous implementation with enhanced Markdown capabilities.

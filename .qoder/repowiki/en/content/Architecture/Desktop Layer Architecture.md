@@ -13,21 +13,23 @@
 - [backend/frontend_api_workspace.go](file://backend/frontend_api_workspace.go)
 - [backend/frontend_api_mcp.go](file://backend/frontend_api_mcp.go)
 - [backend/frontend_api_rtk.go](file://backend/frontend_api_rtk.go)
+- [backend/events.go](file://backend/events.go)
 - [frontend/src/lib/wails.ts](file://frontend/src/lib/wails.ts)
 - [frontend/src/hooks/useWails.ts](file://frontend/src/hooks/useWails.ts)
 - [frontend/src/stores/sessionStore.ts](file://frontend/src/stores/sessionStore.ts)
 - [frontend/src/stores/projectStore.ts](file://frontend/src/stores/projectStore.ts)
+- [frontend/src/hooks/useProjectLoader.ts](file://frontend/src/hooks/useProjectLoader.ts)
+- [frontend/src/hooks/useSessionLoader.ts](file://frontend/src/hooks/useSessionLoader.ts)
 - [frontend/src/constants/api.ts](file://frontend/src/constants/api.ts)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated architecture overview to reflect the new FrontendAPI system
-- Modified App struct description to show it as a thin wrapper around FrontendAPI
-- Updated API exposure patterns to show methods promoted from FrontendAPI
-- Revised component initialization to show FrontendAPI construction
-- Updated relationship between desktop layer and backend to show clear separation
-- Added new section on FrontendAPI responsibilities and design philosophy
+- Updated component initialization order to reflect optimized startup process with pre-loading
+- Added new section on startup optimization and pre-loading strategy
+- Enhanced performance considerations section with user experience improvements
+- Updated component initialization order and shutdown procedures to show new pre-loading mechanism
+- Revised startup sequence to highlight early project and session emission timing
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -42,10 +44,10 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document describes the desktop layer architecture of C0WRK built with Wails v2. The architecture has been refactored to act as a thin presentation layer wrapper around a new backend FrontendAPI system. The desktop layer focuses on presentation logic while the backend handles core business logic through the FrontendAPI abstraction. The Go-based App struct now embeds the FrontendAPI, exposing all frontend-facing methods through promotion. The Wails runtime is configured via wails.json and launched from main.go, while the frontend is a React application that consumes Wails-generated bindings and communicates via Wails events.
+This document describes the desktop layer architecture of C0WRK built with Wails v2. The architecture has been refactored to act as a thin presentation layer wrapper around a new backend FrontendAPI system. The desktop layer focuses on presentation logic while the backend handles core business logic through the FrontendAPI abstraction. The Go-based App struct now embeds the FrontendAPI, exposing all frontend-facing methods through promotion. The Wails runtime is configured via wails.json and launched from main.go, while the frontend is a React application that consumes Wails-generated bindings and communicates via Wails events. Recent optimizations have improved the startup experience by pre-loading projects and sessions before the slow NewApplication() initialization begins.
 
 ## Project Structure
-The desktop layer is organized around a thin App wrapper that embeds the backend FrontendAPI. The Wails runtime is configured via wails.json and launched from main.go. The frontend is a React application that consumes Wails-generated bindings and communicates via Wails events. The FrontendAPI encapsulates all business logic while the App maintains only lifecycle management and UI-specific functionality.
+The desktop layer is organized around a thin App wrapper that embeds the backend FrontendAPI. The Wails runtime is configured via wails.json and launched from main.go. The frontend is a React application that consumes Wails-generated bindings and communicates via Wails events. The FrontendAPI encapsulates all business logic while the App maintains only lifecycle management and UI-specific functionality. The startup process has been optimized to improve user experience by pre-loading data before slow initialization completes.
 
 ```mermaid
 graph TB
@@ -55,7 +57,7 @@ WailsCfg["wails.json<br/>Build & Dev Config"]
 end
 subgraph "Desktop Layer (Go)"
 App["desktop/app.go<br/>App struct (wrapper)"]
-Startup["desktop/startup.go<br/>Startup/Shutdown"]
+Startup["desktop/startup.go<br/>Optimized Startup/Shutdown"]
 FrontendAPI["backend/frontend_api.go<br/>FrontendAPI (business logic)"]
 end
 subgraph "Backend (Go)"
@@ -66,6 +68,8 @@ WailsJS["frontend/wailsjs/<br/>Generated bindings"]
 Hooks["frontend/src/hooks/useWails.ts"]
 Stores["frontend/src/stores/*.ts"]
 Types["frontend/src/lib/wails.ts"]
+ProjectLoader["frontend/src/hooks/useProjectLoader.ts<br/>Pre-loading optimization"]
+SessionLoader["frontend/src/hooks/useSessionLoader.ts<br/>Session loading"]
 end
 WailsMain --> App
 App --> Startup
@@ -75,16 +79,20 @@ Hooks --> WailsJS
 WailsJS --> App
 Stores --> Hooks
 Types --> Hooks
+ProjectLoader --> Stores
+SessionLoader --> Stores
 ```
 
 **Diagram sources**
 - [main.go:18-44](file://main.go#L18-L44)
 - [wails.json:1-13](file://wails.json#L1-L13)
 - [desktop/app.go:14-58](file://desktop/app.go#L14-L58)
-- [desktop/startup.go:336-356](file://desktop/startup.go#L336-L356)
+- [desktop/startup.go:41-724](file://desktop/startup.go#L41-L724)
 - [backend/frontend_api.go:16-61](file://backend/frontend_api.go#L16-L61)
 - [frontend/src/hooks/useWails.ts:1-61](file://frontend/src/hooks/useWails.ts#L1-L61)
 - [frontend/src/lib/wails.ts:1-205](file://frontend/src/lib/wails.ts#L1-L205)
+- [frontend/src/hooks/useProjectLoader.ts:1-76](file://frontend/src/hooks/useProjectLoader.ts#L1-L76)
+- [frontend/src/hooks/useSessionLoader.ts:1-51](file://frontend/src/hooks/useSessionLoader.ts#L1-L51)
 
 **Section sources**
 - [main.go:18-44](file://main.go#L18-L44)
@@ -94,7 +102,7 @@ Types --> Hooks
 - **App struct**: Thin wrapper that embeds FrontendAPI and retains only lifecycle management (Startup/Shutdown), the native PickDirectory dialog, and Wails event-listener infrastructure. All frontend API methods are promoted from the embedded FrontendAPI.
 - **FrontendAPI**: New backend abstraction that holds all business logic state and methods exposed to the Wails frontend. It encapsulates configuration, persistence stores, session management, project management, workspace handling, vector search, and MCP/RTK integration.
 - **Wails integration**: main.go binds the App instance to Wails and wires OnStartup/OnShutdown callbacks. wails.json defines build/dev commands and asset serving.
-- **Startup routine**: Initializes logging, loads configuration, sets up SQLite, stores, vector index manager, backend Application, constructs FrontendAPI with all dependencies, and wires UI emit functions and event listeners for user confirmations, judge requests, ask-user responses, and step-limit decisions.
+- **Startup routine**: Initializes logging, loads configuration, sets up SQLite, stores, vector index manager, backend Application, constructs FrontendAPI with all dependencies, and wires UI emit functions and event listeners for user confirmations, judge requests, ask-user responses, and step-limit decisions. **Optimized**: Pre-loads projects and sessions before slow NewApplication() initialization.
 - **Shutdown routine**: Delegates cleanup to FrontendAPI.Cleanup() and shuts down the backend Application.
 - **Desktop APIs**: All methods are now promoted from FrontendAPI, providing a clean separation between presentation (App) and business logic (FrontendAPI).
 
@@ -103,11 +111,11 @@ Types --> Hooks
 - [backend/frontend_api.go:16-168](file://backend/frontend_api.go#L16-L168)
 - [main.go:18-44](file://main.go#L18-L44)
 - [wails.json:1-13](file://wails.json#L1-L13)
-- [desktop/startup.go:336-356](file://desktop/startup.go#L336-L356)
-- [desktop/startup.go:808-823](file://desktop/startup.go#L808-L823)
+- [desktop/startup.go:41-724](file://desktop/startup.go#L41-L724)
+- [desktop/startup.go:726-741](file://desktop/startup.go#L726-L741)
 
 ## Architecture Overview
-The desktop layer now acts as a thin presentation wrapper around the new FrontendAPI system. The App struct embeds FrontendAPI, promoting all business logic methods to the App surface. The FrontendAPI encapsulates all backend state and operations while the App maintains only UI lifecycle and presentation concerns.
+The desktop layer now acts as a thin presentation wrapper around the new FrontendAPI system. The App struct embeds FrontendAPI, promoting all business logic methods to the App surface. The FrontendAPI encapsulates all backend state and operations while the App maintains only UI lifecycle and presentation concerns. The startup process has been optimized to improve user experience by pre-loading data before slow initialization completes.
 
 ```mermaid
 graph TB
@@ -126,7 +134,7 @@ EventsIn --> App
 
 **Diagram sources**
 - [main.go:31-35](file://main.go#L31-L35)
-- [desktop/startup.go:336-356](file://desktop/startup.go#L336-L356)
+- [desktop/startup.go:374-395](file://desktop/startup.go#L374-L395)
 - [backend/frontend_api.go:16-61](file://backend/frontend_api.go#L16-L61)
 - [frontend/src/hooks/useWails.ts:44-47](file://frontend/src/hooks/useWails.ts#L44-L47)
 
@@ -223,15 +231,65 @@ FrontendAPIConfig --> FrontendAPI : constructs
 ```
 
 **Diagram sources**
-- [backend/frontend_api.go:63-99](file://backend/frontend_api.go#L63-L99)
+- [backend/frontend_api.go:70-87](file://backend/frontend_api.go#L70-L87)
 - [backend/frontend_api.go:16-61](file://backend/frontend_api.go#L16-L61)
 
 **Section sources**
-- [backend/frontend_api.go:16-168](file://backend/frontend_api.go#L16-L168)
-- [backend/frontend_api.go:63-99](file://backend/frontend_api.go#L63-L99)
+- [backend/frontend_api.go:16-157](file://backend/frontend_api.go#L16-L157)
+- [backend/frontend_api.go:70-87](file://backend/frontend_api.go#L70-L87)
+
+### Optimized Startup Process and Pre-Loading Strategy
+**Updated** The startup process has been optimized to improve user experience by pre-loading projects and sessions before the slow NewApplication() initialization begins:
+
+- **Early project pre-loading**: Project manager is initialized early (line 285-291) to enable immediate data emission.
+- **Pre-loaded project emission**: Projects are fetched and emitted to frontend before slow initialization (lines 297-320).
+- **Pre-loaded session emission**: Sessions for the most recent project are fetched and emitted immediately (lines 308-316).
+- **Backend readiness signaling**: The backend:ready event is emitted after pre-loading is complete (lines 709-723).
+- **Lazy session restoration**: Project resolver is wired after backend:ready to enable lazy session restoration (lines 399-412).
+
+```mermaid
+sequenceDiagram
+participant Wails as "Wails Runtime"
+participant App as "App"
+participant ProjectMgr as "Project Manager"
+participant Store as "Session Store"
+participant Backend as "backend.Application"
+participant FrontendAPI as "FrontendAPI"
+Wails->>App : OnStartup(ctx)
+App->>ProjectMgr : Initialize early
+App->>ProjectMgr : ListProjects()
+ProjectMgr-->>App : Projects list
+App->>Wails : Emit "projects : loaded" with projects
+App->>Store : ListSessionsByProject(projects[0])
+Store-->>App : Sessions list
+App->>Wails : Emit "sessions : loaded" with sessions
+App->>Backend : NewApplication(config, callbacks)
+App->>FrontendAPI : NewFrontendAPI(FrontendAPIConfig{...})
+App->>FrontendAPI : SetConfigLoadState(...)
+App->>FrontendAPI : Wire project resolver
+App->>Wails : Emit "backend : ready" with projects
+Wails->>App : OnShutdown(ctx)
+App->>FrontendAPI : Cleanup()
+App->>Backend : Shutdown()
+```
+
+**Diagram sources**
+- [desktop/startup.go:285-291](file://desktop/startup.go#L285-L291)
+- [desktop/startup.go:297-320](file://desktop/startup.go#L297-L320)
+- [desktop/startup.go:349-371](file://desktop/startup.go#L349-L371)
+- [desktop/startup.go:374-395](file://desktop/startup.go#L374-L395)
+- [desktop/startup.go:399-412](file://desktop/startup.go#L399-L412)
+- [desktop/startup.go:709-723](file://desktop/startup.go#L709-L723)
+
+**Section sources**
+- [desktop/startup.go:285-320](file://desktop/startup.go#L285-L320)
+- [desktop/startup.go:349-371](file://desktop/startup.go#L349-L371)
+- [desktop/startup.go:374-395](file://desktop/startup.go#L374-L395)
+- [desktop/startup.go:399-412](file://desktop/startup.go#L399-L412)
+- [desktop/startup.go:709-723](file://desktop/startup.go#L709-L723)
 
 ### Wails Lifecycle Management
-- **Startup**: Creates backend Application, constructs FrontendAPI with all dependencies, wires UI emit function and event listeners, and delegates business logic to FrontendAPI methods.
+- **Startup**: Creates backend Application, constructs FrontendAPI with all dependencies, wires UI emit function and event listeners, and delegates business logic to FrontendAPI methods. **Optimized**: Pre-loads projects and sessions before slow initialization.
 - **Shutdown**: Delegates cleanup to FrontendAPI.Cleanup() and shuts down backend Application.
 
 ```mermaid
@@ -253,13 +311,14 @@ App->>Backend : Shutdown()
 
 **Diagram sources**
 - [main.go:31-35](file://main.go#L31-L35)
-- [desktop/startup.go:336-356](file://desktop/startup.go#L336-L356)
-- [desktop/startup.go:808-823](file://desktop/startup.go#L808-L823)
+- [desktop/startup.go:374-395](file://desktop/startup.go#L374-L395)
+- [backend/frontend_api.go:16-61](file://backend/frontend_api.go#L16-L61)
+- [frontend/src/hooks/useWails.ts:44-47](file://frontend/src/hooks/useWails.ts#L44-L47)
 
 **Section sources**
 - [main.go:18-44](file://main.go#L18-L44)
-- [desktop/startup.go:336-356](file://desktop/startup.go#L336-L356)
-- [desktop/startup.go:808-823](file://desktop/startup.go#L808-L823)
+- [desktop/startup.go:374-395](file://desktop/startup.go#L374-L395)
+- [desktop/startup.go:726-741](file://desktop/startup.go#L726-L741)
 
 ### Event-Driven Communication and Pending Confirmation Mechanisms
 The desktop layer uses Wails events for bidirectional communication, with FrontendAPI handling the business logic:
@@ -288,12 +347,12 @@ App->>FrontendAPI : Send StepLimitResponse via channel
 ```
 
 **Diagram sources**
-- [desktop/startup.go:139-247](file://desktop/startup.go#L139-L247)
-- [desktop/startup.go:587-721](file://desktop/startup.go#L587-L721)
+- [desktop/startup.go:148-257](file://desktop/startup.go#L148-L257)
+- [desktop/startup.go:425-707](file://desktop/startup.go#L425-L707)
 
 **Section sources**
-- [desktop/startup.go:139-247](file://desktop/startup.go#L139-L247)
-- [desktop/startup.go:587-721](file://desktop/startup.go#L587-L721)
+- [desktop/startup.go:148-257](file://desktop/startup.go#L148-L257)
+- [desktop/startup.go:425-707](file://desktop/startup.go#L425-L707)
 
 ### Desktop API Exposure Patterns
 **Updated** All API methods are now promoted from FrontendAPI, providing a clean separation between presentation and business logic:
@@ -370,7 +429,7 @@ class App {
 ### Relationship Between Desktop Layer and Frontend React Application
 - **Bindings**: The frontend imports generated bindings from frontend/wailsjs/go/desktop/App.* and accesses them via a React hook. The hook exposes an API object and runtime for events.
 - **Event Types**: The frontend defines TypeScript interfaces matching backend event payloads (e.g., ToolConfirmData, AskUserData, SessionTokensData).
-- **State Synchronization**: Zustand stores manage frontend state for projects and sessions, sorting by activity timestamps. The backend pre-sorts lists and emits them to the frontend, which sets stores accordingly.
+- **State Synchronization**: Zustand stores manage frontend state for projects and sessions, sorting by activity timestamps. The backend pre-sorts lists and emits them to the frontend, which sets stores accordingly. **Enhanced**: Pre-loading ensures immediate UI population.
 
 ```mermaid
 sequenceDiagram
@@ -416,29 +475,29 @@ Cross-platform considerations:
 - [main.go:21-39](file://main.go#L21-L39)
 
 ### Component Initialization Order and Shutdown Procedures
-**Updated** Initialization order (Startup):
+**Updated** Initialization order (Startup) with optimization:
 1. Load shell environment and initialize logger.
 2. Resolve and load configuration; re-init logger if level changed.
 3. Open SQLite database and apply pragmas; initialize project and session stores.
 4. Initialize vector index manager and project manager.
-5. Wire vector search callbacks into backend configuration.
-6. Create backend Application with UI emit function and user interaction callbacks.
-7. **Construct FrontendAPI with all dependencies** (NEW).
-8. Wire project resolver for lazy session restoration.
-9. Pre-load projects/sessions and emit to frontend.
-10. Apply tool filters and param injection for codebase-memory MCP.
-11. Validate LLM provider configuration.
-12. Register Wails event listeners for confirmations, judge requests, ask-user responses, and step-limit responses.
-13. Emit backend-ready and related status events.
+5. **Wire vector search callbacks into backend configuration.**
+6. **Create backend Application with UI emit function and user interaction callbacks.**
+7. **Construct FrontendAPI with all dependencies.**
+8. **Wire project resolver for lazy session restoration.**
+9. **Pre-load projects/sessions and emit to frontend immediately.**
+10. **Apply tool filters and param injection for codebase-memory MCP.**
+11. **Validate LLM provider configuration.**
+12. **Register Wails event listeners for confirmations, judge requests, ask-user responses, and step-limit responses.**
+13. **Emit backend-ready and related status events.**
 
 Shutdown:
-1. **Delegate cleanup to FrontendAPI.Cleanup()** (NEW).
+1. **Delegate cleanup to FrontendAPI.Cleanup().**
 2. Shutdown backend Application.
 3. Close shared SQLite database.
 
 **Section sources**
-- [desktop/startup.go:336-356](file://desktop/startup.go#L336-L356)
-- [desktop/startup.go:808-823](file://desktop/startup.go#L808-L823)
+- [desktop/startup.go:41-724](file://desktop/startup.go#L41-L724)
+- [desktop/startup.go:726-741](file://desktop/startup.go#L726-L741)
 
 ### Resource Cleanup Patterns
 **Updated** Resource cleanup is now centralized in FrontendAPI.Cleanup():
@@ -447,8 +506,8 @@ Shutdown:
 - **Channel cleanup**: Pending confirmation channels are cleaned up upon resolution or context cancellation.
 
 **Section sources**
-- [backend/frontend_api.go:109-139](file://backend/frontend_api.go#L109-L139)
-- [desktop/startup.go:808-823](file://desktop/startup.go#L808-L823)
+- [backend/frontend_api.go:118-148](file://backend/frontend_api.go#L118-L148)
+- [desktop/startup.go:726-741](file://desktop/startup.go#L726-L741)
 
 ## Dependency Analysis
 **Updated** The desktop layer now has a clear separation of concerns:
@@ -482,11 +541,14 @@ WailsJS --> App
 - [main.go:12](file://main.go#L12)
 
 ## Performance Considerations
+**Updated** Performance improvements through optimized startup process:
 - **Asynchronous operations**: Codebase indexing and MCP/RTK installation are performed in goroutines to avoid blocking startup.
 - **Debounced indexing**: Vector index manager supports incremental indexing on file changes via watcher callbacks.
 - **Best-effort persistence**: Store writes are logged and continue even if failures occur to avoid disrupting user sessions.
 - **Event-driven UI updates**: Frontend state is updated via pre-sorted arrays from backend to minimize client-side sorting overhead.
 - **Resource pooling**: Shared SQLite connection and vector manager are reused across API calls for efficiency.
+- **Startup optimization**: **New** Projects and sessions are pre-loaded before slow NewApplication() initialization, significantly improving perceived startup performance.
+- **User experience enhancement**: **New** Immediate UI population reduces perceived latency and provides instant feedback during startup.
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -496,15 +558,16 @@ Common issues and diagnostics:
 - **Event parsing**: Event listeners log warnings for malformed payloads or missing fields; ensure frontend emits correct event names and data shapes.
 - **Git operations**: Absence of git or invalid paths returns empty or filtered results; verify git availability and workspace path correctness.
 - **FrontendAPI initialization**: If API methods fail, check that FrontendAPI was properly constructed with all required dependencies.
+- **Pre-loading issues**: **New** If projects/sessions don't appear immediately, check that pre-loading occurs before backend:ready event emission.
 
 **Section sources**
-- [desktop/startup.go:327-333](file://desktop/startup.go#L327-L333)
-- [desktop/startup.go:139-247](file://desktop/startup.go#L139-L247)
-- [desktop/startup.go:609-742](file://desktop/startup.go#L609-L742)
+- [desktop/startup.go:364-371](file://desktop/startup.go#L364-L371)
+- [desktop/startup.go:148-257](file://desktop/startup.go#L148-L257)
+- [desktop/startup.go:425-707](file://desktop/startup.go#L425-L707)
 - [backend/frontend_api_workspace.go:18-92](file://backend/frontend_api_workspace.go#L18-L92)
 
 ## Conclusion
-The desktop layer has been successfully refactored to act as a thin presentation wrapper around the new backend FrontendAPI system. The App struct now embeds FrontendAPI, promoting all business logic methods to the App surface while maintaining only UI lifecycle and presentation concerns. This separation enables cleaner architecture, better testability, and clearer responsibility boundaries between presentation and business logic layers.
+The desktop layer has been successfully refactored to act as a thin presentation wrapper around the new backend FrontendAPI system. The App struct now embeds FrontendAPI, promoting all business logic methods to the App surface while maintaining only UI lifecycle and presentation concerns. **Recent optimizations** have significantly improved user experience by pre-loading projects and sessions before slow initialization begins, reducing startup latency and providing immediate UI feedback. This separation enables cleaner architecture, better testability, and clearer responsibility boundaries between presentation and business logic layers.
 
 ## Appendices
 
@@ -513,18 +576,21 @@ The desktop layer has been successfully refactored to act as a thin presentation
 - **Received from frontend**: tool_confirm_response, tool_judge_request, ask_user_response, step_limit_response.
 
 **Section sources**
-- [desktop/startup.go:744-790](file://desktop/startup.go#L744-L790)
+- [backend/events.go:7-39](file://backend/events.go#L7-L39)
 
 ### Appendix B: Frontend Data Binding and State Synchronization
 - **Typed interfaces** for events and payloads are defined in frontend/src/lib/wails.ts.
 - **The useWails hook** provides access to window.go.desktop.App and window.runtime.
 - **Zustand stores** maintain project and session state, sorting by last activity timestamps.
+- **Pre-loading optimization**: **New** Project and session loaders subscribe to backend:ready and projects:loaded events for immediate UI population.
 
 **Section sources**
 - [frontend/src/lib/wails.ts:1-205](file://frontend/src/lib/wails.ts#L1-L205)
 - [frontend/src/hooks/useWails.ts:1-61](file://frontend/src/hooks/useWails.ts#L1-L61)
 - [frontend/src/stores/projectStore.ts:1-44](file://frontend/src/stores/projectStore.ts#L1-L44)
 - [frontend/src/stores/sessionStore.ts:1-52](file://frontend/src/stores/sessionStore.ts#L1-L52)
+- [frontend/src/hooks/useProjectLoader.ts:1-76](file://frontend/src/hooks/useProjectLoader.ts#L1-L76)
+- [frontend/src/hooks/useSessionLoader.ts:1-51](file://frontend/src/hooks/useSessionLoader.ts#L1-L51)
 
 ### Appendix C: FrontendAPI Construction Parameters
 The FrontendAPIConfig struct provides all dependencies needed for FrontendAPI construction:
@@ -537,4 +603,17 @@ The FrontendAPIConfig struct provides all dependencies needed for FrontendAPI co
 - **Callbacks**: Event emission and context functions
 
 **Section sources**
-- [backend/frontend_api.go:63-99](file://backend/frontend_api.go#L63-L99)
+- [backend/frontend_api.go:70-87](file://backend/frontend_api.go#L70-L87)
+
+### Appendix D: Startup Optimization Details
+**New** The startup optimization includes several key improvements:
+- **Early project manager initialization**: Project manager is created before slow NewApplication() call.
+- **Immediate data emission**: Projects and sessions are emitted to frontend before backend:ready.
+- **Lazy restoration wiring**: Project resolver is wired after backend:ready to enable proper lazy session restoration.
+- **Frontend loader adaptation**: Project and session loaders handle both pre-loaded data and subsequent events.
+
+**Section sources**
+- [desktop/startup.go:285-320](file://desktop/startup.go#L285-L320)
+- [desktop/startup.go:399-412](file://desktop/startup.go#L399-L412)
+- [frontend/src/hooks/useProjectLoader.ts:31-32](file://frontend/src/hooks/useProjectLoader.ts#L31-L32)
+- [frontend/src/hooks/useSessionLoader.ts:20-32](file://frontend/src/hooks/useSessionLoader.ts#L20-L32)

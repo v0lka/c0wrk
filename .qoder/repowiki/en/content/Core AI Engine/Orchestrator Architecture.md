@@ -17,17 +17,18 @@
 - [orchestrator.go](file://sdk/orchestration/orchestrator.go)
 - [blackboard.go](file://sdk/orchestration/blackboard.go)
 - [doc.go](file://sdk/orchestration/doc.go)
+- [manager.go](file://backend/session/manager.go)
 - [main.go](file://main.go)
 - [AGENTS.md](file://AGENTS.md)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added documentation for the new AGENTS.md integration feature
-- Updated the Orchestrator component analysis to include vector search hint injection
-- Enhanced the system prompt building process to incorporate AGENTS.md content
-- Added new sections covering the automatic detection and processing of AGENTS.md files
-- Updated architecture diagrams to reflect the new vector search hint injection mechanism
+- Updated OrchestratorBuilder asynchronous initialization implementation with new initDone channel, initErr fields, runAsyncInit, waitReady, and WaitReady methods
+- Added documentation for proper waiting mechanisms in Build, GenerateTitle, and RebuildRouter methods
+- Enhanced session manager integration to handle asynchronous initialization properly
+- Updated architecture diagrams to reflect asynchronous initialization flow
+- Added new sections covering asynchronous initialization patterns and error handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,19 +36,21 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Asynchronous Initialization System](#asynchronous-initialization-system)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the C0WRK orchestrator architecture as the central coordinator of the ReAct loop workflow. It integrates planning, reasoning, and execution phases while managing conversation history, routing decisions, and event emission. The orchestrator delegates the Plan&Execute loop to the SDK orchestration engine, while retaining control over routing, context management, persistence, and the new vector search hint injection mechanism that automatically detects and processes AGENTS.md files in workspace root.
+This document explains the C0WRK orchestrator architecture as the central coordinator of the ReAct loop workflow. It integrates planning, reasoning, and execution phases while managing conversation history, routing decisions, and event emission. The orchestrator delegates the Plan&Execute loop to the SDK orchestration engine, while retaining control over routing, context management, persistence, and the new asynchronous initialization system that ensures reliable component startup without blocking the main thread.
 
 ## Project Structure
 The orchestrator spans the core orchestration layer and the SDK orchestration engine:
 - Core orchestrator and supporting components live under core/.
 - The SDK orchestration engine resides under sdk/orchestration/.
 - Backend integration and factory pattern are implemented in backend/ and exposed via Application.
+- Asynchronous initialization system ensures non-blocking component startup.
 - AGENTS.md integration provides automatic project instruction injection from workspace root.
 
 ```mermaid
@@ -72,6 +75,7 @@ SDK_DOC["sdk/orchestration/doc.go"]
 end
 subgraph "Backend Integration"
 BACK_APP["backend/application.go"]
+BACK_MANAGER["backend/session/manager.go"]
 MAIN_GO["main.go"]
 end
 CORE_ORCH --> SDK_ORCH
@@ -88,6 +92,7 @@ SDK_ORCH --> SDK_IFACES
 SDK_ORCH --> SDK_BB
 BACK_APP --> CORE_BUILDER
 BACK_APP --> CORE_ORCH
+BACK_MANAGER --> CORE_BUILDER
 MAIN_GO --> BACK_APP
 ```
 
@@ -106,6 +111,7 @@ MAIN_GO --> BACK_APP
 - [blackboard.go:16-60](file://sdk/orchestration/blackboard.go#L16-L60)
 - [doc.go:1-4](file://sdk/orchestration/doc.go#L1-L4)
 - [application.go:41-133](file://backend/application.go#L41-L133)
+- [manager.go:65-134](file://backend/session/manager.go#L65-L134)
 - [main.go:18-44](file://main.go#L18-L44)
 
 **Section sources**
@@ -113,17 +119,19 @@ MAIN_GO --> BACK_APP
 - [config.go:1-81](file://sdk/orchestration/config.go#L1-L81)
 - [interfaces.go:1-88](file://sdk/orchestration/interfaces.go#L1-L88)
 - [application.go:1-270](file://backend/application.go#L1-L270)
+- [manager.go:1-1281](file://backend/session/manager.go#L1-L1281)
 
 ## Core Components
-- Orchestrator: Central coordinator that routes, decides between synthetic/full planning, and delegates Plan&Execute to the SDK engine. Manages conversation history, routing decision persistence, event emission, and vector search hint injection including AGENTS.md processing.
-- Router: Determines domain and complexity of user requests and whether clarification is needed.
-- Planner: Generates DAG execution plans, supports replan and continuation planning, and optionally uses exploration for informed planning. Incorporates AGENTS.md project instructions into system prompts.
-- Reflector: Produces structured self-correction insights after step failures.
-- Emitter: Emits orchestration-level events (routing, plan generation, retries, reflections).
-- OrchestratorBuilder: Factory that builds per-session Orchestrators with shared tool registry, MCP gateway, and LLM router.
-- SDK Orchestrator: Generic Plan&Execute engine that executes DAG plans, manages retries, replanning, and reflection.
-- Blackboard: Shared state container for plan, step results, reflections, and file changes.
-- Vector Search Hints: Automatic file discovery mechanism that enhances context with relevant project files and AGENTS.md content.
+- **Orchestrator**: Central coordinator that routes, decides between synthetic/full planning, and delegates Plan&Execute to the SDK engine. Manages conversation history, routing decision persistence, event emission, and vector search hint injection including AGENTS.md processing.
+- **Router**: Determines domain and complexity of user requests and whether clarification is needed.
+- **Planner**: Generates DAG execution plans, supports replan and continuation planning, and optionally uses exploration for informed planning. Incorporates AGENTS.md project instructions into system prompts.
+- **Reflector**: Produces structured self-correction insights after step failures.
+- **Emitter**: Emits orchestration-level events (routing, plan generation, retries, reflections).
+- **OrchestratorBuilder**: Factory that builds per-session Orchestrators with shared tool registry, MCP gateway, and LLM router. Implements asynchronous initialization with initDone channel and waitReady mechanism.
+- **SDK Orchestrator**: Generic Plan&Execute engine that executes DAG plans, manages retries, replanning, and reflection.
+- **Blackboard**: Shared state container for plan, step results, reflections, and file changes.
+- **Vector Search Hints**: Automatic file discovery mechanism that enhances context with relevant project files and AGENTS.md content.
+- **Asynchronous Initialization System**: Ensures non-blocking component startup with proper error propagation and waiting mechanisms.
 
 **Section sources**
 - [orchestrator.go:55-189](file://core/orchestrator.go#L55-L189)
@@ -143,12 +151,15 @@ The orchestrator sits between the backend session manager and the SDK orchestrat
 - Builds a plan and delegates execution to the SDK engine.
 - Persists routing decisions and maintains conversation history.
 - Emits orchestration events for UI and persistence.
+- **NEW**: Implements asynchronous initialization to ensure non-blocking component startup.
 
 ```mermaid
 sequenceDiagram
 participant Client as "Client"
 participant App as "Application"
 participant Builder as "OrchestratorBuilder"
+participant AsyncInit as "Background Init"
+participant SessionMgr as "Session Manager"
 participant Orchestrator as "Core Orchestrator"
 participant Router as "Router"
 participant Planner as "Planner"
@@ -157,9 +168,14 @@ participant AGENTS as "AGENTS.md"
 participant SDK as "SDK Orchestrator"
 participant Emitter as "Emitter"
 Client->>App : "User message"
-App->>Builder : "Build Orchestrator"
-Builder-->>App : "Orchestrator instance"
-App->>Orchestrator : "HandleMessage(message)"
+App->>Builder : "NewOrchestratorBuilder (immediate return)"
+Builder->>AsyncInit : "runAsyncInit() (goroutine)"
+AsyncInit-->>Builder : "initDone channel closed"
+App->>SessionMgr : "CreateSession(factory)"
+SessionMgr->>Builder : "Build() (waits on initDone)"
+Builder->>Builder : "waitReady(ctx) - blocks until initDone"
+Builder-->>SessionMgr : "Orchestrator instance"
+SessionMgr->>Orchestrator : "HandleMessage(message)"
 Orchestrator->>Emitter : "ServiceWithMeta('Routing request...')"
 Orchestrator->>Router : "Route(message, tools, history)"
 Router-->>Orchestrator : "RoutingDecision"
@@ -179,13 +195,17 @@ Orchestrator->>SDK : "Resume(blackboard with plan)"
 SDK-->>Orchestrator : "ExecutionResult"
 Orchestrator->>Emitter : "PlanGenerated/Step events"
 Orchestrator->>Orchestrator : "Persist routing decision"
-Orchestrator-->>App : "HandleResult"
-App-->>Client : "Response"
+Orchestrator-->>SessionMgr : "HandleResult"
+SessionMgr-->>Client : "Response"
 ```
 
 **Diagram sources**
 - [application.go:104-133](file://backend/application.go#L104-L133)
-- [builder.go:108-208](file://core/builder.go#L108-L208)
+- [builder.go:67-87](file://core/builder.go#L67-L87)
+- [builder.go:89-123](file://core/builder.go#L89-L123)
+- [builder.go:125-139](file://core/builder.go#L125-L139)
+- [builder.go:158-267](file://core/builder.go#L158-L267)
+- [manager.go:403-480](file://backend/session/manager.go#L403-L480)
 - [orchestrator.go:338-598](file://core/orchestrator.go#L338-L598)
 - [router.go:45-114](file://core/router.go#L45-L114)
 - [planner.go:257-276](file://core/planner.go#L257-L276)
@@ -486,15 +506,28 @@ The OrchestratorBuilder encapsulates shared infrastructure and builds per-sessio
 - Logging and dumping wrappers for LLM callers.
 - Factory closure passed to the session manager.
 
+**Updated**: Implements asynchronous initialization with proper waiting mechanisms:
+- **initDone channel**: Signals when background initialization completes.
+- **initErr field**: Captures initialization errors for propagation.
+- **runAsyncInit**: Background goroutine performs slow network-dependent initialization.
+- **waitReady**: Blocks until initialization completes or context is cancelled.
+- **WaitReady**: Exported method for external components to wait for readiness.
+
 ```mermaid
 sequenceDiagram
 participant Backend as "Backend Application"
 participant Builder as "OrchestratorBuilder"
+participant AsyncInit as "Background Init"
 participant Router as "LLM Router"
 participant Tracking as "TrackingCaller"
 participant ContextFactory as "ContextManagerFactory"
 participant Orchestrator as "Core Orchestrator"
+Backend->>Builder : "NewOrchestratorBuilder(builderCfg, askUserFunc, logger)"
+Builder->>Builder : "initDone = make(chan struct{})"
+Builder->>AsyncInit : "go runAsyncInit(cfg)"
+AsyncInit-->>Builder : "initDone closed (success/failure)"
 Backend->>Builder : "Build(builderCfg, emitter, logger, bbFactory, stepLimitFunc, dumpWriter)"
+Builder->>Builder : "waitReady(ctx) - blocks until initDone"
 Builder->>Router : "buildRouter(builderCfg)"
 Builder->>Tracking : "NewTrackingCaller(router)"
 Builder->>ContextFactory : "buildContextFactory(trackingCaller, cfg, dumpWriter)"
@@ -504,12 +537,16 @@ Orchestrator-->>Backend : "Orchestrator instance"
 ```
 
 **Diagram sources**
-- [builder.go:108-208](file://core/builder.go#L108-L208)
+- [builder.go:67-87](file://core/builder.go#L67-L87)
+- [builder.go:89-123](file://core/builder.go#L89-L123)
+- [builder.go:125-139](file://core/builder.go#L125-L139)
+- [builder.go:158-267](file://core/builder.go#L158-L267)
 - [builder.go:381-541](file://core/builder.go#L381-L541)
 
 **Section sources**
 - [builder.go:27-108](file://core/builder.go#L27-L108)
-- [builder.go:108-208](file://core/builder.go#L108-L208)
+- [builder.go:67-139](file://core/builder.go#L67-L139)
+- [builder.go:158-267](file://core/builder.go#L158-L267)
 - [builder.go:381-541](file://core/builder.go#L381-L541)
 
 ### SDK Orchestrator and Plan&Execute Loop
@@ -609,11 +646,88 @@ MapBlackboard ..|> Blackboard
 - [interfaces.go:61-87](file://sdk/orchestration/interfaces.go#L61-L87)
 - [blackboard.go:16-564](file://sdk/orchestration/blackboard.go#L16-L564)
 
+## Asynchronous Initialization System
+
+**NEW**: The OrchestratorBuilder now implements a sophisticated asynchronous initialization system to ensure non-blocking component startup while maintaining reliability.
+
+### Core Components of the Asynchronous System
+
+#### OrchestratorBuilder Fields
+- **initDone chan struct{}**: Channel that signals when background initialization completes
+- **initErr error**: Captures any initialization errors for later propagation
+- **gateway *mcp.Gateway**: Optional MCP gateway (initialized asynchronously)
+- **llmRouter *llm.Router**: LLM router (initialized asynchronously)
+- **modelRegistry *llm.ModelRegistry**: Model registry (initialized asynchronously)
+
+#### Background Initialization Process
+The `runAsyncInit` method performs slow network-dependent initialization:
+1. **MCP Gateway Startup**: Starts gateway with optional non-fatal failures
+2. **LLM Router Creation**: Creates router with error capture and propagation
+3. **Tool Judge Rebuild**: Rebuilds tool judge with available router
+
+#### Waiting Mechanisms
+- **waitReady(ctx)**: Internal method that blocks until initialization completes or context is cancelled
+- **WaitReady(ctx)**: Exported method for external components to wait for readiness
+
+#### Method Implementations with Waiting
+All builder methods now implement proper waiting mechanisms:
+
+```mermaid
+flowchart TD
+Start(["Method Call"]) --> CheckReady{"waitReady(ctx)?"}
+CheckReady --> |Success| Proceed["Proceed with operation"]
+CheckReady --> |Error| ReturnErr["Return error to caller"]
+Proceed --> Operation["Perform operation"]
+Operation --> Success["Return success"]
+ReturnErr --> End(["End"])
+Success --> End
+```
+
+**Diagram sources**
+- [builder.go:125-139](file://core/builder.go#L125-L139)
+- [builder.go:169-174](file://core/builder.go#L169-L174)
+- [builder.go:271-276](file://core/builder.go#L271-L276)
+- [builder.go:343-346](file://core/builder.go#L343-L346)
+
+### Integration with Session Manager
+
+The session manager properly handles the asynchronous initialization:
+- **Factory Creation**: Sessions are created with orchestrator factory closures
+- **Lazy Initialization**: Orchestrator creation waits for builder readiness
+- **Error Propagation**: Initialization errors are propagated to session creation
+
+```mermaid
+sequenceDiagram
+participant Manager as "Session Manager"
+participant Builder as "OrchestratorBuilder"
+participant Factory as "Factory Closure"
+participant Session as "Session"
+Manager->>Factory : "CreateSession()"
+Factory->>Builder : "Build(builderCfg, emitter, logger, bbFactory, stepLimitFunc, dumpWriter)"
+Builder->>Builder : "waitReady(ctx) - blocks until initDone"
+Builder-->>Factory : "Orchestrator instance"
+Factory-->>Manager : "Session with orchestrator"
+```
+
+**Diagram sources**
+- [manager.go:403-480](file://backend/session/manager.go#L403-L480)
+- [builder.go:158-267](file://core/builder.go#L158-L267)
+
+**Section sources**
+- [builder.go:36-50](file://core/builder.go#L36-L50)
+- [builder.go:89-123](file://core/builder.go#L89-L123)
+- [builder.go:125-139](file://core/builder.go#L125-L139)
+- [builder.go:158-267](file://core/builder.go#L158-L267)
+- [builder.go:269-286](file://core/builder.go#L269-L286)
+- [builder.go:342-376](file://core/builder.go#L342-L376)
+- [manager.go:403-480](file://backend/session/manager.go#L403-L480)
+
 ## Dependency Analysis
 The orchestrator's dependencies are intentionally decoupled:
 - Core Orchestrator depends on Router, Planner, LLM caller, ToolRegistry, ContextManagerFactory, Emitter, ModelRegistry, and optional persistence hooks.
 - The SDK Orchestrator depends on Planner, LLM, Tools, ToolRegistry, TokenCounter, ModelRegistry, ContextFactory, Events, and step configuration.
 - Backend Application composes OrchestratorBuilder and passes a factory closure to the session manager.
+- **NEW**: Asynchronous initialization system provides non-blocking component startup with proper error propagation.
 - **NEW**: Vector search integration provides optional context enhancement without breaking changes.
 
 ```mermaid
@@ -630,6 +744,9 @@ CORE_ORCH --> VECTOR_SEARCH["Vector Search"]
 CORE_ORCH --> AGENTS_MD["AGENTS.md"]
 BACK_APP["Backend Application"] --> BUILDER
 BACK_APP --> CORE_ORCH
+BACK_MANAGER["Backend Session Manager"] --> BUILDER
+ASYNC_INIT["Asynchronous Initialization"] --> BUILDER
+WAIT_MECHANISM["Waiting Mechanisms"] --> BUILDER
 ```
 
 **Diagram sources**
@@ -637,40 +754,60 @@ BACK_APP --> CORE_ORCH
 - [config.go:11-62](file://sdk/orchestration/config.go#L11-L62)
 - [interfaces.go:12-59](file://sdk/orchestration/interfaces.go#L12-L59)
 - [application.go:104-133](file://backend/application.go#L104-L133)
+- [manager.go:65-134](file://backend/session/manager.go#L65-L134)
 
 **Section sources**
 - [orchestrator.go:55-189](file://core/orchestrator.go#L55-L189)
 - [config.go:11-62](file://sdk/orchestration/config.go#L11-L62)
 - [interfaces.go:12-59](file://sdk/orchestration/interfaces.go#L12-L59)
 - [application.go:104-133](file://backend/application.go#L104-L133)
+- [manager.go:65-134](file://backend/session/manager.go#L65-L134)
 
 ## Performance Considerations
-- Synthetic planning reduces token usage for low-complexity tasks by bypassing the Planner LLM call when complexity is below the threshold.
-- Sliding window compaction keeps recent context relevant for long executions; hierarchical compaction is used for complex general tasks.
-- Tool result budgets and circuit breakers prevent runaway outputs and repeated failures.
-- Parallel step execution maximizes throughput while respecting per-step budgets and retries.
-- **NEW**: Vector search hints are processed with 2-second timeouts to prevent blocking operations.
-- **NEW**: AGENTS.md processing is lightweight and only occurs when workspace path is available.
-- **NEW**: Graceful degradation ensures system continues functioning even when vector search or AGENTS.md are unavailable.
+- **Asynchronous Initialization**: Background initialization prevents blocking the main thread during slow network operations.
+- **Timeout Management**: Proper timeout handling in vector search and MCP gateway operations.
+- **Component Caching**: Shared components (tool registry, MCP gateway, LLM router) are cached for reuse across sessions.
+- **Non-blocking Operations**: Vector search hints are processed with 2-second timeouts to prevent blocking operations.
+- **Graceful Degradation**: System continues functioning even when vector search or AGENTS.md are unavailable.
+- **Memory Efficiency**: Sliding window compaction keeps recent context relevant for long executions.
+- **Parallel Execution**: Parallel step execution maximizes throughput while respecting per-step budgets and retries.
+
+**Updated**: **Asynchronous Initialization Benefits**:
+- **Immediate Responsiveness**: NewOrchestratorBuilder returns immediately, improving application startup time.
+- **Error Propagation**: Initialization errors are captured and propagated to callers who need them.
+- **Resource Efficiency**: Background initialization allows other operations to proceed while components start.
+- **Reliability**: Non-fatal MCP gateway failures don't prevent orchestrator creation.
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
-- Routing failures: Verify Router LLM availability and prompt formatting; check JSON extraction and validation.
-- Planning failures: Inspect Planner exploration executor outcomes and fallback to direct planning; review tool availability and model metadata.
-- Reflection failures: Ensure Reflection JSON parsing and suggested action validation; confirm environment context injection.
-- Execution errors: Review per-step retry loops, replan outcomes, and file rollback errors; check circuit breaker thresholds.
-- Event emission: Use logging emitter to trace orchestration events and step-level diagnostics.
-- **NEW**: Vector search hint injection failures: Check vector search function configuration and workspace permissions.
-- **NEW**: AGENTS.md processing issues: Verify workspace path existence and file permissions for AGENTS.md.
-- **NEW**: Context priority problems: Ensure AGENTS.md is properly formatted and contains valid project instructions.
+- **Routing failures**: Verify Router LLM availability and prompt formatting; check JSON extraction and validation.
+- **Planning failures**: Inspect Planner exploration executor outcomes and fallback to direct planning; review tool availability and model metadata.
+- **Reflection failures**: Ensure Reflection JSON parsing and suggested action validation; confirm environment context injection.
+- **Execution errors**: Review per-step retry loops, replan outcomes, and file rollback errors; check circuit breaker thresholds.
+- **Event emission**: Use logging emitter to trace orchestration events and step-level diagnostics.
+- **Vector search hint injection failures**: Check vector search function configuration and workspace permissions.
+- **AGENTS.md processing issues**: Verify workspace path existence and file permissions for AGENTS.md.
+- **Context priority problems**: Ensure AGENTS.md is properly formatted and contains valid project instructions.
+- **Asynchronous initialization failures**: Check initErr field and waitReady return values; verify background initialization completed successfully.
+- **Session creation delays**: Monitor builder WaitReady calls and ensure proper timeout handling.
+
+**Updated**: **Asynchronous Initialization Troubleshooting**:
+- **Initialization Timeout**: Check 30-second timeout in waitReady method; consider extending for slow networks.
+- **Background Initialization Errors**: Review runAsyncInit error handling and logging; check MCP gateway and LLM router initialization.
+- **Component Availability**: Use MCPGateway() and other getter methods that internally call waitReady for proper synchronization.
+- **Error Propagation**: Ensure WaitReady errors are properly handled by calling components (Application, Session Manager).
 
 **Section sources**
 - [router.go:85-114](file://core/router.go#L85-L114)
 - [planner.go:390-421](file://core/planner.go#L390-L421)
 - [reflector.go:150-177](file://core/reflector.go#L150-L177)
 - [emitter_logging.go:10-199](file://core/emitter_logging.go#L10-L199)
+- [builder.go:125-139](file://core/builder.go#L125-L139)
+- [application.go:166-169](file://backend/application.go#L166-L169)
 
 ## Conclusion
-The C0WRK orchestrator provides a robust, extensible framework for ReAct-based task orchestration. By delegating the Plan&Execute loop to the SDK engine while maintaining control over routing, planning strategy, context management, and persistence, it achieves a balance between flexibility and reliability. The factory pattern and backend integration enable dynamic configuration and seamless UI integration. 
+The C0WRK orchestrator provides a robust, extensible framework for ReAct-based task orchestration. By delegating the Plan&Execute loop to the SDK engine while maintaining control over routing, planning strategy, context management, and persistence, it achieves a balance between flexibility and reliability.
 
-**NEW**: The integration of AGENTS.md processing and vector search hint injection significantly enhances the system's ability to provide contextually relevant project instructions and file references, improving task execution quality while maintaining graceful degradation and performance optimization. This enhancement demonstrates the orchestrator's commitment to evolving with project needs while preserving backward compatibility and system stability.
+**NEW**: The asynchronous initialization system significantly enhances the system's startup performance and reliability by ensuring non-blocking component startup while maintaining proper error propagation and synchronization. This architectural improvement demonstrates the orchestrator's commitment to evolving with project needs while preserving backward compatibility and system stability.
+
+The integration of AGENTS.md processing and vector search hint injection further enhances the system's ability to provide contextually relevant project instructions and file references, improving task execution quality while maintaining graceful degradation and performance optimization. Together, these enhancements create a comprehensive orchestration framework that scales effectively with project complexity and team size.

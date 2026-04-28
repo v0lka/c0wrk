@@ -15,7 +15,16 @@
 - [vectorIndexStore.ts](file://frontend/src/stores/vectorIndexStore.ts)
 - [IndexingStatus.tsx](file://frontend/src/components/layout/IndexingStatus.tsx)
 - [watcher.go](file://backend/workspace/watcher.go)
+- [frontend_api_project.go](file://backend/frontend_api_project.go)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added documentation for the new DeleteProjectData method in Manager and Service
+- Enhanced project isolation documentation with improved resource management
+- Updated debounce handling section with stopDebounce method
+- Added troubleshooting guidance for project data cleanup
+- Updated architecture diagrams to reflect enhanced resource management
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -29,7 +38,7 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the vector indexing process in the codebase, focusing on how files are discovered, filtered, chunked, embedded, and stored for semantic search. It covers the Indexer implementation, the indexing manager’s coordination of bulk and incremental operations, concurrency handling, and integration with the workspace watcher for real-time updates. It also documents configuration options, chunking strategies, language detection, and troubleshooting techniques.
+This document explains the vector indexing process in the codebase, focusing on how files are discovered, filtered, chunked, embedded, and stored for semantic search. It covers the Indexer implementation, the indexing manager's coordination of bulk and incremental operations, concurrency handling, and integration with the workspace watcher for real-time updates. It also documents configuration options, chunking strategies, language detection, and troubleshooting techniques.
 
 ## Project Structure
 The vector indexing capability spans several packages:
@@ -100,8 +109,8 @@ UIStore --> UIStatus
 
 ## Core Components
 - Indexer: Orchestrates full and incremental indexing, file filtering, chunking, and document creation with metadata.
-- Manager: Lifecycle coordinator for embedder, service, per-project indexing, git monitoring, and graceful shutdown.
-- Service: Manages chromem collections, readiness state, search, and persistence.
+- Manager: Lifecycle coordinator for embedder, service, per-project indexing, git monitoring, and graceful shutdown. Now includes project data cleanup functionality.
+- Service: Manages chromem collections, readiness state, search, and persistence with enhanced project isolation.
 - Collection utilities: Branch-aware collection switching, validation, rebuild, and document operations.
 - GitMonitor: Watches .git/HEAD for branch changes and triggers reindexing.
 - Embedder: ONNX-based text embedding engine with batching and caching.
@@ -207,6 +216,7 @@ The Manager:
 - Starts a GitMonitor to track branch changes and triggers reindexing.
 - Provides debounced file change notifications for incremental updates.
 - Supports cancellation and graceful shutdown.
+- **New**: Provides project data cleanup through DeleteProjectData method.
 
 ```mermaid
 classDiagram
@@ -222,9 +232,11 @@ class Manager {
 +NewManager(cfg) Manager
 +Service() Service
 +SwitchProject(projectID, workspace, callbacks) error
++DeleteProjectData(projectID) error
 +NotifyFileChange(workspacePath) void
 +CancelIndexing() void
 +Shutdown() void
+-stopDebounce() void
 }
 class Indexer {
 -service : Service
@@ -251,6 +263,7 @@ class Service {
 +SearchWithFilter(ctx, query, topK, filter) []SearchResult
 +AddDocuments(ctx, docs) error
 +DeleteDocumentsByIDs(ctx, ids) error
++DeleteProjectData(projectID) error
 +WaitReady(ctx) error
 +SetReady(ready) void
 }
@@ -270,6 +283,7 @@ Indexer --> Service : "uses"
 - [manager.go:97-212](file://backend/vectorindex/manager.go#L97-L212)
 - [manager.go:214-234](file://backend/vectorindex/manager.go#L214-L234)
 - [manager.go:236-280](file://backend/vectorindex/manager.go#L236-L280)
+- [manager.go:97-100](file://backend/vectorindex/manager.go#L97-L100)
 
 ### Service and Collection Management
 The Service:
@@ -277,6 +291,8 @@ The Service:
 - Switches to branch-specific collections and maintains readiness state.
 - Exposes search with optional file path filtering and converts results to a normalized format.
 - Provides write locks around indexing operations and batched add/delete operations.
+- **Enhanced**: Improved project isolation by clearing database references when switching projects.
+- **New**: Provides project data cleanup through DeleteProjectData method.
 
 Collection utilities:
 - ValidateCollection compares stored hashes with current disk state to determine stale/new/deleted files.
@@ -371,11 +387,43 @@ GitMonitor:
 Workspace watcher:
 - Desktop-level watcher debounces file system events and triggers incremental indexing.
 - Manager provides a debounced NotifyFileChange method to avoid thrashing.
+- **Enhanced**: Improved debounce handling with stopDebounce method to prevent race conditions.
 
 **Section sources**
 - [git.go:92-161](file://backend/vectorindex/git.go#L92-L161)
 - [manager.go:214-234](file://backend/vectorindex/manager.go#L214-L234)
 - [watcher.go:87-113](file://backend/workspace/watcher.go#L87-L113)
+
+### Project Data Management and Cleanup
+**New**: The system now provides comprehensive project data management:
+
+Project Data Cleanup:
+- **DeleteProjectData method**: Both Manager and Service expose DeleteProjectData to remove on-disk vector data for a project.
+- **Safe operation**: Method is safe to call even if the project was never indexed.
+- **Integration**: Automatically called during project deletion to clean up vector data.
+
+Project Isolation:
+- **Enhanced SetProject**: Clears database references (collection, branch, projectID, DB) to prevent race conditions.
+- **Resource cleanup**: Ensures no lingering references to old project data after switching.
+- **Thread safety**: Prevents data corruption during concurrent operations.
+
+```mermaid
+flowchart TD
+A["DeleteProjectData(projectID)"] --> B{"PersistPath set?"}
+B --> |No| C["Return nil (no-op)"]
+B --> |Yes| D["Join project path"]
+D --> E["Remove project directory"]
+E --> F["Return success/error"]
+```
+
+**Diagram sources**
+- [manager.go:97-100](file://backend/vectorindex/manager.go#L97-L100)
+- [service.go:277-288](file://backend/vectorindex/service.go#L277-L288)
+
+**Section sources**
+- [manager.go:97-100](file://backend/vectorindex/manager.go#L97-L100)
+- [service.go:277-288](file://backend/vectorindex/service.go#L277-L288)
+- [frontend_api_project.go:45-48](file://backend/frontend_api_project.go#L45-L48)
 
 ### UI Integration and Progress Reporting
 The desktop startup wires vector search into the tool registry and exposes readiness wait semantics. The frontend stores and renders indexing status, including progress percentage, files indexed, and current file being processed.
@@ -409,6 +457,7 @@ UIStatus-->>UI : Render status and progress
 - Manager depends on Embedder and Service; Indexer depends on Service and Chunker; Service depends on chromem DB and Embedder.
 - Indexer progress callbacks integrate with UI stores; Manager coordinates git monitoring and workspace watchers.
 - The OrchestratorBuilder registers vector search as a tool when the vector manager is available.
+- **Enhanced**: Improved resource management reduces coupling between components during project switching.
 
 ```mermaid
 graph LR
@@ -441,8 +490,7 @@ Builder["OrchestratorBuilder"] --> Manager
 - Debouncing: Both GitMonitor and workspace watcher debounce rapid events to avoid redundant indexing.
 - Readiness signaling: Service.SetReady and WaitReady minimize contention and ensure consumers block until indexing is complete.
 - Chunk sizing: Tune MaxChunkSize and Overlap to balance recall and embedding cost; smaller chunks improve precision but increase embedding workload.
-
-[No sources needed since this section provides general guidance]
+- **Enhanced**: Improved project isolation prevents resource leaks and race conditions during concurrent operations.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -452,12 +500,19 @@ Common issues and resolutions:
 - Slow embeddings: Increase MaxSeqLength or HiddenDim cautiously; consider hardware acceleration for ONNX.
 - Branch drift: Confirm GitMonitor is running and branch switching is functioning; reindex after branch changes.
 - UI not updating: Ensure progress callbacks are wired and UI store receives events.
+- **New**: Project data cleanup issues: Use DeleteProjectData method to remove corrupted vector data; check persistPath permissions.
+- **New**: Race conditions during project switching: Enhanced project isolation prevents data corruption; ensure proper cleanup before switching projects.
+- **New**: Memory leaks: Improved resource management automatically cleans up references; monitor for proper shutdown sequences.
 
 **Section sources**
 - [manager.go:49-90](file://backend/vectorindex/manager.go#L49-L90)
 - [service.go:145-195](file://backend/vectorindex/service.go#L145-L195)
 - [git.go:92-161](file://backend/vectorindex/git.go#L92-L161)
 - [startup.go:284-308](file://desktop/startup.go#L284-L308)
+- [manager.go:97-100](file://backend/vectorindex/manager.go#L97-L100)
+- [service.go:277-288](file://backend/vectorindex/service.go#L277-L288)
 
 ## Conclusion
 The vector indexing system combines robust file filtering, language-aware chunking, efficient embedding, and branch-aware persistence to deliver accurate semantic search. The Manager coordinates lifecycle and concurrency, while the Indexer and Service implement reliable bulk and incremental indexing. Integration with GitMonitor and workspace watchers enables real-time updates. The desktop startup and UI provide a cohesive user experience with progress reporting and readiness signaling.
+
+**Enhanced**: Recent improvements include comprehensive project data management with DeleteProjectData functionality, enhanced project isolation preventing race conditions, and improved debounce handling for better resource management. These changes address common issues with project switching, data cleanup, and concurrent operations, making the system more robust and reliable for production use.

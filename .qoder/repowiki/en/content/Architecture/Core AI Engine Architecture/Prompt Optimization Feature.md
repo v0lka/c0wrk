@@ -2,6 +2,7 @@
 
 <cite>
 **Referenced Files in This Document**
+- [prompt-review-report.md](file://docs/prompt-review-report.md)
 - [prompt-optimization-spec.md](file://specs/prompt-optimization-spec.md)
 - [prompt-optimization-roadmap.md](file://specs/prompt-optimization-roadmap.md)
 - [ChatInput.tsx](file://frontend/src/components/chat/ChatInput.tsx)
@@ -20,15 +21,20 @@
 - [systemprompt.go](file://core/systemprompt.go)
 - [router.go](file://core/router.go)
 - [router.go](file://sdk/llm/router.go)
+- [orchestrator_system.md](file://core/prompts/orchestrator_system.md)
+- [planner_base.md](file://core/prompts/planner_base.md)
+- [router_system.md](file://core/prompts/router_system.md)
+- [reflector_system.md](file://core/prompts/reflector_system.md)
+- [planner.go](file://core/planner.go)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Removed reference to docs/prompt-review-report.md which was completely removed from codebase
-- Simplified documentation to focus on core prompt optimization features without external review report
-- Consolidated architecture overview to emphasize the three-stage pipeline implementation
-- Updated frontend integration section to reflect current implementation patterns
-- Streamlined backend implementation details to match actual codebase structure
+- Updated documentation to reflect the comprehensive prompt review report analysis
+- Added detailed analysis of 46 distinct prompt artifacts organized by type and family
+- Incorporated strength assessments and recommendations for all system prompts
+- Enhanced understanding of prompt architecture patterns and improvement priorities
+- Updated sections to reference the comprehensive analysis rather than external reports
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -37,19 +43,22 @@
 4. [Core Components](#core-components)
 5. [Algorithm Implementation](#algorithm-implementation)
 6. [Frontend Integration](#frontend-integration)
-7. [Backend Implementation](#backend-implementation)
+7. [Backend Implementation](#backend-implementations)
 8. [Data Contracts](#data-contracts)
 9. [Error Handling](#error-handling)
 10. [Performance Considerations](#performance-considerations)
 11. [Testing Strategy](#testing-strategy)
 12. [Rollout Considerations](#rollout-considerations)
-13. [Conclusion](#conclusion)
+13. [Comprehensive Prompt Analysis](#comprehensive-prompt-analysis)
+14. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Prompt Optimization Feature is a user-triggered enhancement that automatically improves the quality and specificity of user prompts for AI coding agents. This feature implements a sophisticated three-stage pipeline that translates user input to English, extracts relevant keywords, performs semantic search, and generates an optimized prompt that is more specific, actionable, and effective for AI coding tasks.
 
 The implementation follows the project's layered architecture constraints, ensuring proper separation of concerns between frontend, desktop, backend, and core components while maintaining security and performance standards. The feature leverages specialized prompt templates and integrates seamlessly with the existing LLM provider infrastructure and vector search capabilities.
+
+**Updated** Enhanced with comprehensive analysis of 46 distinct prompt artifacts, revealing architectural patterns and improvement opportunities across the entire prompt ecosystem.
 
 ## Feature Overview
 
@@ -362,9 +371,11 @@ The optimization response provides essential information for UI replacement:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `optimized_prompt` | string | The enhanced prompt text |
+| `optimizedPrompt` | string | The enhanced prompt text |
+| `translatedPromptEn` | string | The translated English prompt |
 | `keywords` | string[] | Extracted keyword phrases |
-| `used_context` | boolean | Whether context was utilized in optimization |
+| `searchResults` | array | Retrieved context snippets |
+| `meta` | object | Performance and execution metadata |
 
 **Section sources**
 - [prompt-optimization-spec.md:222-283](file://specs/prompt-optimization-spec.md#L222-L283)
@@ -498,12 +509,141 @@ The current implementation provides foundation for:
 **Section sources**
 - [prompt-optimization-roadmap.md:292-312](file://specs/prompt-optimization-roadmap.md#L292-L312)
 
+## Comprehensive Prompt Analysis
+
+### 46 Distinct Prompt Artifacts Analysis
+
+The comprehensive prompt review report analyzes 46 distinct prompt artifacts organized across multiple categories, revealing critical insights into the system's prompt architecture and optimization opportunities.
+
+#### Orchestrator System Prompts
+
+The core orchestrator system prompt establishes fundamental agent behavior patterns:
+
+**Orchestrator System** (`core/prompts/orchestrator_system.md`)
+- **Strengths**: Exceptionally well-structured with clear section headings, explicit tool priority system, practical fact memory guidance, and search efficiency budget concept
+- **Weaknesses**: Very long (125 lines, ~6KB) leading to attention distribution challenges, mandates visible text before tool calls without addressing batching scenarios, minimal safety guidance for destructive operations
+- **Recommendations**: Add minimum viable prompt variant (~40 lines), expand safety coverage for bash_exec risks, clarify batching scenarios, define language fallback procedures
+
+**Family-Specific Orchestrator Overlays**
+- **Anthropic**: Structured action-observation-assessment cycles with compact output emphasis
+- **OpenAI Flagship**: Exhaustive research mandate with four-item research checklist
+- **OpenAI Standard**: Pragmatic step-by-step approach with 125-char citation limit and adjusted tool priority
+- **Gemini**: Absolute paths mandate with workflow mode selection and convention matching
+- **DeepSeek**: Hypothesis-driven reasoning with one-thread-at-a-time constraint
+- **Mistral**: One clear sentence plan per action with simple, flat instruction approach
+- **Kimi**: Explicit verification points structure with bullet-point output emphasis
+- **OpenAI Codex**: Autonomous agent style with frontend design guidance
+
+#### Planner System Prompts
+
+The planner system encompasses both base templates and family-specific adaptations:
+
+**Planner Base Template** (`core/prompts/planner_base.md`)
+- **Strengths**: Clean separation of concerns with template placeholders, balanced guidance on decomposition and verification
+- **Weaknesses**: Template itself is skeletal without injected content, lacks MODE-TAIL documentation, positioning issues with final JSON instruction
+- **Recommendations**: Document template variables, ensure MODE-TAIL doesn't push critical instructions out of view, make file self-documenting
+
+**Planner Specialized Templates**
+- **Replan Template**: Rules for preserving successful steps and minimal targeted changes
+- **Informed Planner**: Exploration-first strategy with explicit tool priority tiers and plan quality rules
+- **Family Overlays**: Similar patterns to orchestrator overlays with model-specific adaptations
+
+#### Auxiliary Agent Prompts
+
+**Reflector Agent** (`core/prompts/reflector_system.md`)
+- Exceptionally well-designed with multi-layered failure classification (single-attempt vs cross-attempt, structural vs recoverable)
+- Clear decision tree for retry vs replan vs abort suggestions
+- Concrete examples illustrating expected output format
+
+**Router Agent** (`core/prompts/router_system.md`)
+- Well-defined complexity scale with concrete examples at each level
+- Mixed domain classification recognizing complex task requirements
+- Skill matching with explicit guardrails for "genuinely ambiguous" cases
+
+#### Prompt Optimization Components
+
+**Optimization Extract Template** (`core/prompts/prompt_optimize_extract.md`)
+- Clear task separation between translation and keyword extraction
+- JSON output format with explicit technical term preservation rules
+- Need for concrete examples and keyword fallback guidance
+
+**Optimization Rewrite Template** (`core/prompts/prompt_optimize_rewrite.md`)
+- Five quality criteria framework (Specific, Actionable, Structured, Faithful, Concise)
+- Clear handling of both codebase-context-present and context-absent cases
+- Need for concrete examples and single-execution constraints
+
+#### Tool Safety and Verification
+
+**Verification Mandate** (`core/prompts/verification_mandate.md`)
+- Unambiguous prohibition against fabricating facts with five-category scope definition
+- Clarification rule requiring ask_user for uncertainties
+- Need for positive counterpart guidance and verification cost considerations
+
+**Tool Safety Judge** (`core/tools/prompts/judge_system.md`)
+- Clear ALLOW/CONFIRM classification with explicit examples
+- Defense-in-depth coverage of workspace-paths-outside and system directory operations
+- Need for WARN category and task-context awareness
+
+### Architectural Patterns and Improvement Opportunities
+
+#### Strengths Across Codebase
+1. **Family-specific adaptation works well** - Orchestrator and planner family overlays collectively address model-specific failure modes
+2. **Separation of concerns between static .md and dynamic Go** - Embedded files carry stable instructions; Go code injects session-specific context
+3. **Prompt optimization pipeline is a differentiator** - Sophisticated approach not commonly seen in coding agents
+4. **Universal verification mandate** - Injecting epistemic discipline into every prompt prevents major failure modes
+5. **Exceptionally well-designed reflector** - Multi-layered classification shows deep thought about failure analysis
+
+#### Recurring Weaknesses
+1. **Length inflation** - System prompts + family overlays + verification mandate + workspace context + environment block + vector hints + active skills = 9-10KB
+2. **Redundancy between orchestrator and planner overlays** - Gemini absolute-paths mandate repeats; Anthropic compact descriptions repeat
+3. **Duplication between Go constants and .md files** - Dual-source-of-truth pattern invites drift
+4. **Vague qualifiers** - "When relevant," "when applicable," "when appropriate" appear across prompts without concrete definitions
+5. **Missing examples** - Several prompts describe processes without illustrating them
+6. **Finish tool language inconsistency** - Base system prompt, plan context, and single-step completion prompt each phrase finish mandate differently
+7. **No explicit token budget awareness** - Only search efficiency section addresses budget
+
+#### Priority Improvement Recommendations (Ordered by Impact)
+
+| Priority | Recommendation | Affected Prompts | Effort |
+|----------|---------------|-----------------|--------|
+| **P0** | Add minimum viable prompt variant (40 lines) for tight token budgets | `orchestrator_system.md` | Medium |
+| **P0** | Consolidate Gemini's absolute-paths rule into ONE place (orchestrator only) | `orchestrator_gemini.md`, `planner_gemini.md` | Low |
+| **P1** | Add concrete examples to: Kimi verification cycle, DeepSeek hypotheses, prompt optimizer keywords, planner JSON output | `orchestrator_kimi.md`, `planner_deepseek.md`, `prompt_optimize_extract.md`, `planner_base.md` | Medium |
+| **P1** | Harmonize finish tool language across all prompts | `orchestrator_system.md`, `orchestrator_plan_context.md`, `systemprompt.go:126` | Low |
+| **P1** | Define all vague qualifiers with concrete criteria | ~12 prompts | High |
+| **P2** | Split `planModeExtraSections` into smaller named sections | `core/planner.go:82–119` | Low |
+| **P2** | Consolidate frontend guidance (remove from planner Codex overlay, keep in orchestrator) | `orchestrator_openai_codex.md`, `planner_openai_codex.md` | Low |
+| **P2** | Add project-level info to EnvInfo (primary language, build tool) | `sdk/tools/envinfo.go` | Medium |
+| **P2** | Add WARN verdict category to tool judge | `judge_system.md`, `core/tools/judge.go` | Medium |
+
+### Implementation Impact
+
+The comprehensive analysis reveals several critical areas for improvement:
+
+**Length Management**: The 9-10KB prompt length poses significant challenges for smaller models. The minimum viable prompt variant recommendation addresses token budget constraints while maintaining core functionality.
+
+**Consistency Improvements**: Finish tool language harmonization and vague qualifier definitions would eliminate confusion and improve model performance across different prompt contexts.
+
+**Redundancy Reduction**: Consolidating repeated guidance across orchestrator and planner overlays would simplify maintenance and reduce cognitive load for users.
+
+**Example Integration**: Adding concrete examples to key prompts would dramatically improve model understanding and execution quality.
+
+**Section sources**
+- [prompt-review-report.md:1-931](file://docs/prompt-review-report.md#L1-L931)
+- [orchestrator_system.md:1-100](file://core/prompts/orchestrator_system.md#L1-L100)
+- [planner_base.md:1-25](file://core/prompts/planner_base.md#L1-L25)
+- [router_system.md:1-55](file://core/prompts/router_system.md#L1-L55)
+- [reflector_system.md:1-73](file://core/prompts/reflector_system.md#L1-L73)
+- [planner.go:31-126](file://core/planner.go#L31-L126)
+
 ## Conclusion
 
 The Prompt Optimization Feature represents a significant enhancement to the AI coding agent's usability, providing users with intelligent prompt improvement capabilities while maintaining the project's architectural integrity and performance standards. The implementation successfully balances sophistication with reliability, offering a robust foundation for future enhancements while delivering immediate value through improved prompt quality and user experience.
 
-Recent enhancements with cache control mechanisms for Anthropic models, improved system prompt construction, enhanced router logic for prompt validation, and comprehensive analysis of 41 prompt artifacts significantly boost performance, reliability, and maintainability. Through careful attention to error handling, performance optimization, and user experience design, this feature integrates seamlessly with the existing system architecture while providing clear pathways for future expansion and refinement.
+Recent enhancements with cache control mechanisms for Anthropic models, improved system prompt construction, enhanced router logic for prompt validation, and comprehensive analysis of 46 prompt artifacts significantly boost performance, reliability, and maintainability. Through careful attention to error handling, performance optimization, and user experience design, this feature integrates seamlessly with the existing system architecture while providing clear pathways for future expansion and refinement.
+
+The comprehensive prompt review analysis provides critical insights into the system's architectural patterns and improvement opportunities, revealing both strengths and areas for enhancement across the entire prompt ecosystem. The analysis demonstrates the effectiveness of the family-specific adaptation approach, identifies redundancy issues that need addressing, and highlights the importance of concrete examples and consistent language across the prompt system.
 
 The addition of CacheBreak functionality, ExtractSystemPromptParts, enhanced router validation, and insights from the comprehensive prompt review analysis positions the prompt optimization feature for continued growth and enhanced user satisfaction. These improvements ensure that the system can leverage provider-specific caching capabilities while maintaining flexibility for dynamic content, and that prompt optimization aligns with the broader prompt architecture improvements identified in the analysis.
 
-The enhanced router logic with improved JSON extraction, repair mechanisms, and validation capabilities provides a solid foundation for future prompt optimization enhancements, while the comprehensive prompt review analysis offers clear guidance for maintaining and improving the quality of the 41 prompt artifacts that form the backbone of the c0wrk system.
+The enhanced router logic with improved JSON extraction, repair mechanisms, and validation capabilities provides a solid foundation for future prompt optimization enhancements, while the comprehensive prompt review analysis offers clear guidance for maintaining and improving the quality of the 46 prompt artifacts that form the backbone of the c0wrk system. The analysis serves as both a diagnostic tool and a roadmap for ongoing prompt architecture improvements, ensuring the system continues to evolve toward greater clarity, consistency, and effectiveness.
