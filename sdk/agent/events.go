@@ -30,16 +30,16 @@ type NoopEvents struct{}
 
 var _ AgentEvents = (*NoopEvents)(nil)
 
-func (n *NoopEvents) StepStart(_ int)                                    {}
-func (n *NoopEvents) Thought(_ int, _, _ string)                         {}
-func (n *NoopEvents) ToolCall(_, _ int, _, _, _ string)                  {}
-func (n *NoopEvents) ToolResult(_, _, _ int, _ string)                   {}
-func (n *NoopEvents) StepComplete(_ int, _ time.Duration)                {}
-func (n *NoopEvents) SubAgentLaunch(_, _ string)                         {}
-func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
-func (n *NoopEvents) AssistantChunk(_ string)                            {}
-func (n *NoopEvents) AssistantDone(_ string, _, _ int)                   {}
-func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)       {}
-func (*NoopEvents) Finishing(_ int, _ string)                            {}
-func (*NoopEvents) ContextCompaction(_, _ float64, _ string)             {}
-func (*NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
+func (n *NoopEvents) StepStart(_ int)                                      {}
+func (n *NoopEvents) Thought(_ int, _, _ string)                           {}
+func (n *NoopEvents) ToolCall(_, _ int, _, _, _ string)                    {}
+func (n *NoopEvents) ToolResult(_, _, _ int, _ string)                     {}
+func (n *NoopEvents) StepComplete(_ int, _ time.Duration)                  {}
+func (n *NoopEvents) SubAgentLaunch(_, _ string)                           {}
+func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration)   {}
+func (n *NoopEvents) AssistantChunk(_ string)                              {}
+func (n *NoopEvents) AssistantDone(_ string, _, _ int)                     {}
+func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)         {}
+func (n *NoopEvents) Finishing(_ int, _ string)                            {}
+func (n *NoopEvents) ContextCompaction(_, _ float64, _ string)             {}
+func (n *NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}

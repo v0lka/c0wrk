@@ -23,8 +23,6 @@ const (
 
 	// Vector index events
 	EventVectorIndexStatus = "vector_index:status"
-
-
 )
 
 // ---------------------------------------------------------------------------

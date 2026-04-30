@@ -49,8 +49,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
   return (
     <div
       ref={containerRef}
-      className="mermaid-container bg-muted rounded-lg p-4 overflow-x-auto max-w-full"
-      style={{ height: 'auto' }}
+      className="mermaid-container bg-muted rounded-lg p-4 overflow-x-auto max-w-full h-auto"
     />
   )
 }

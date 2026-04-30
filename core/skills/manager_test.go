@@ -10,23 +10,23 @@ func TestParseFrontmatter(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		content     string
-		wantName    string
-		wantDesc    string
-		wantBody    string
-		wantErr     bool
+		name     string
+		content  string
+		wantName string
+		wantDesc string
+		wantBody string
+		wantErr  bool
 	}{
 		{
-			name: "minimal valid",
-			content: "---\nname: pdf-processing\ndescription: Extract PDF text and tables.\n---\n\nStep 1: Read the PDF.",
+			name:     "minimal valid",
+			content:  "---\nname: pdf-processing\ndescription: Extract PDF text and tables.\n---\n\nStep 1: Read the PDF.",
 			wantName: "pdf-processing",
 			wantDesc: "Extract PDF text and tables.",
 			wantBody: "Step 1: Read the PDF.",
 		},
 		{
-			name: "with optional fields",
-			content: "---\nname: data-analysis\ndescription: Analyze datasets.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.14+\nallowed-tools: Read Bash(jq:*)\nmetadata:\n  author: example-org\n  version: \"1.0\"\n---\n\nAnalyze the data.",
+			name:     "with optional fields",
+			content:  "---\nname: data-analysis\ndescription: Analyze datasets.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.14+\nallowed-tools: Read Bash(jq:*)\nmetadata:\n  author: example-org\n  version: \"1.0\"\n---\n\nAnalyze the data.",
 			wantName: "data-analysis",
 			wantDesc: "Analyze datasets.",
 			wantBody: "Analyze the data.",
@@ -125,9 +125,9 @@ func TestAllowedToolList(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		tools   string
-		want    []string
+		name  string
+		tools string
+		want  []string
 	}{
 		{name: "empty", tools: "", want: nil},
 		{name: "single", tools: "Read", want: []string{"Read"}},

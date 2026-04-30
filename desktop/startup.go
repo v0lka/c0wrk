@@ -2,7 +2,6 @@ package desktop
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -23,8 +22,6 @@ import (
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/backend/terminal"
 	"github.com/user/agent/backend/vectorindex"
-
-	_ "modernc.org/sqlite" // register SQLite driver
 )
 
 // pendingConfirmData holds the state for a pending tool confirmation,
@@ -90,20 +87,11 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Initialize shared SQLite database
 	dbPath := filepath.Join(agentDir, cfg.Memory.Database)
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := backend.OpenDatabase(dbPath, log)
 	if err != nil {
 		log.Error("failed to open sqlite database", "error", err)
 	}
-	if db != nil {
-		// Apply pragmas once on the shared connection
-		if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
-			log.Error("failed to enable WAL mode", "error", err)
-		}
-		if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
-			log.Error("failed to enable foreign keys", "error", err)
-		}
-		a.db = db
-	}
+	a.db = db
 
 	// Project store first (sessions FK references projects)
 	var projStore *project.SQLiteProjectStore

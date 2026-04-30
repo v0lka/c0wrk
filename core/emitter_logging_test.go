@@ -46,7 +46,9 @@ func (s *spyEmitter) ExecutorDiagnostic(n int, e string, d map[string]any) {
 }
 func (s *spyEmitter) Routing(m, d, c string)                     { s.record("Routing", m, d, c) }
 func (s *spyEmitter) PlanGenerated(n int, steps []PlanStepEvent) { s.record("PlanGenerated", n, steps) }
-func (s *spyEmitter) PlanStepStart(id, desc, summary string)     { s.record("PlanStepStart", id, desc, summary) }
+func (s *spyEmitter) PlanStepStart(id, desc, summary string) {
+	s.record("PlanStepStart", id, desc, summary)
+}
 func (s *spyEmitter) PlanStepComplete(id string, ok bool, d time.Duration, errMsg string) {
 	s.record("PlanStepComplete", id, ok, d, errMsg)
 }

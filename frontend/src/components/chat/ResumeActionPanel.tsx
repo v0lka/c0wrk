@@ -3,16 +3,18 @@ import { Button } from '@/components/ui/button'
 import { useChatStore } from '@/stores/chatStore'
 import { resumeTask } from '@/api/chat'
 import type { DisplayItem } from '@/types/messages'
+import { isResolved, resumeResolved } from '@/types/messages'
 
 type ResumeItem = Extract<DisplayItem, { kind: 'resume_action' }>
 
 export function ResumeActionPanel({ item }: { item: ResumeItem }) {
   const { sessionId, content, metadata } = item.message
+  const updateMessage = useChatStore(s => s.updateMessage)
 
-  if (metadata?.resolved === true) return null
+  if (isResolved(metadata)) return null
 
   const handleResume = () => {
-    useChatStore.getState().updateMessage(sessionId, item.message.id, { metadata: { resolved: true } })
+    updateMessage(sessionId, item.message.id, { metadata: resumeResolved() })
     resumeTask(sessionId).catch(() => { /* error event will handle */ })
   }
 

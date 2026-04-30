@@ -23,7 +23,7 @@ type HierarchicalStrategy struct {
 	summarizer          func(ctx context.Context, text string) (string, error)
 	tokenCounter        llm.TokenCounter
 	maxSummarizeTokens  int
-	logger *slog.Logger
+	logger              *slog.Logger
 }
 
 // SetLogger sets the logger for the strategy. If nil, slog.Default() is used.

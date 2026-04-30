@@ -3,23 +3,25 @@ import { Button } from '@/components/ui/button'
 import { emit } from '@/api/runtime'
 import { useChatStore } from '@/stores/chatStore'
 import type { DisplayItem } from '@/types/messages'
+import { getStepLimitResolution, stepLimitResolved } from '@/types/messages'
+import type { StepLimitDecision } from '@/types/messages'
 
 type StepLimitItem = Extract<DisplayItem, { kind: 'step_limit' }>
 
-type StepLimitDecision = 'allow_once' | 'allow_always' | 'deny'
-
 export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
   const { sessionId, metadata } = item.message
+  const updateMessage = useChatStore(s => s.updateMessage)
+  const setActivityStatus = useChatStore(s => s.setActivityStatus)
 
   const requestId = typeof metadata?.request_id === 'string' ? metadata.request_id : undefined
   const currentStep = typeof metadata?.current_step === 'number' ? metadata.current_step : 0
   const maxSteps = typeof metadata?.max_steps === 'number' ? metadata.max_steps : 0
-  const resolved = metadata?.resolved === true ? (metadata?.decision as StepLimitDecision) : null
+  const resolved = getStepLimitResolution(metadata)
 
   const handleResponse = (response: StepLimitDecision) => {
     emit('step_limit_response', { request_id: requestId, response })
-    useChatStore.getState().updateMessage(sessionId, item.message.id, { metadata: { resolved: true, decision: response } })
-    useChatStore.getState().setActivityStatus(response === 'deny' ? null : 'Continuing execution...')
+    updateMessage(sessionId, item.message.id, { metadata: stepLimitResolved(response) })
+    setActivityStatus(response === 'deny' ? null : 'Continuing execution...')
   }
 
   if (resolved === 'allow_once') {

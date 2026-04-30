@@ -475,20 +475,8 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 	// Build available tools string (grouped by priority tier)
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
 
-	// Build reflections string
-	var reflectionsStr string
-	if len(reflections) > 0 {
-		var rb strings.Builder
-		rb.WriteString("Reflections from past attempts (learn from them):\n")
-		for i, r := range reflections {
-			fmt.Fprintf(&rb, "%d. Failure: %s | Root cause: %s | Action plan: %s\n",
-				i+1, r.FailureAnalysis, r.RootCause, r.ActionPlan)
-		}
-		reflectionsStr = rb.String()
-	}
-
-	// Resolve MODE-TAIL
-	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", reflectionsStr)
+	// Resolve MODE-TAIL with reflections
+	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", formatPlanReflections(reflections))
 
 	substitutions := map[string]string{
 		"MODE-PREAMBLE":       planModePreamble,
@@ -510,24 +498,8 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 		ReplaceAll(substitutions).
 		Build()
 
-	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
-		result += "\n\n" + envBlock
-	}
-
-	// Append auto-RAG hints when available.
-	result += formatVectorSearchHints(ctx)
-
-	// Append AGENTS.md project instructions when available.
-	result += formatAgentsMD(ctx)
-
-	// Append active skill instructions when available.
-	result += formatActiveSkills(ctx)
-
-	return result
+	return appendPlannerContextSections(ctx, result)
 }
-
-// Replan generates an updated plan after a step failure.
 func (p *Planner) Replan(
 	ctx context.Context,
 	originalPlan *Plan,
@@ -607,20 +579,9 @@ func (p *Planner) buildPlanSystemPrompt(
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
 
 	// Build reflections string
-	var reflectionsStr string
-	if len(reflections) > 0 {
-		var rb strings.Builder
-		rb.WriteString("Reflections from past attempts (learn from them):\n")
-		for i, r := range reflections {
-			fmt.Fprintf(&rb, "%d. Failure: %s | Root cause: %s | Action plan: %s\n",
-				i+1, r.FailureAnalysis, r.RootCause, r.ActionPlan)
-		}
-		reflectionsStr = rb.String()
-	}
-
 	// Resolve MODE-TAIL: it contains the REFLECTIONS placeholder, so pre-substitute
 	// to avoid order-dependent substitution issues in the builder.
-	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", reflectionsStr)
+	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", formatPlanReflections(reflections))
 
 	// Build substitutions for template placeholders
 	substitutions := map[string]string{
@@ -644,21 +605,7 @@ func (p *Planner) buildPlanSystemPrompt(
 		ReplaceAll(substitutions).
 		Build()
 
-	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
-		result += "\n\n" + envBlock
-	}
-
-	// Append auto-RAG hints when available.
-	result += formatVectorSearchHints(ctx)
-
-	// Append AGENTS.md project instructions when available.
-	result += formatAgentsMD(ctx)
-
-	// Append active skill instructions when available.
-	result += formatActiveSkills(ctx)
-
-	return result
+	return appendPlannerContextSections(ctx, result)
 }
 
 // replanContext groups the parameters needed for replan prompt construction.
@@ -711,18 +658,6 @@ func (p *Planner) buildReplanSystemPrompt(
 `, rc.reflection.FailureAnalysis, rc.reflection.RootCause, rc.reflection.ActionPlan)
 	}
 
-	// Build previous session reflections string (cross-attempt pattern visibility)
-	var prevReflectionsStr string
-	if len(rc.sessionReflections) > 0 {
-		var prb strings.Builder
-		prb.WriteString("Previous session reflections (showing cross-attempt failure patterns):\n")
-		for i, r := range rc.sessionReflections {
-			fmt.Fprintf(&prb, "%d. Summary: %s | Root cause: %s | Action plan: %s | Suggested: %s\n",
-				i+1, r.Summary, r.RootCause, r.ActionPlan, r.SuggestedAction)
-		}
-		prevReflectionsStr = prb.String()
-	}
-
 	// Build substitutions for template placeholders.
 	// PREVIOUS-SESSION-REFLECTIONS must be replaced before CURRENT-REFLECTION
 	// to avoid substring collision, but the builder handles all substitutions
@@ -731,7 +666,7 @@ func (p *Planner) buildReplanSystemPrompt(
 		"ORIGINAL-PLAN":                originalPlanStr,
 		"COMPLETED-STEPS":              completedStepsStr,
 		"FAILED-STEP":                  failedStepStr,
-		"PREVIOUS-SESSION-REFLECTIONS": prevReflectionsStr,
+		"PREVIOUS-SESSION-REFLECTIONS": formatSessionReflections(rc.sessionReflections),
 		"CURRENT-REFLECTION":           reflectionStr,
 		"WORKSPACE-PATH":               formatWorkspacePath(ctx),
 	}
@@ -745,21 +680,7 @@ func (p *Planner) buildReplanSystemPrompt(
 		ReplaceAll(substitutions).
 		Build()
 
-	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
-		result += "\n\n" + envBlock
-	}
-
-	// Append auto-RAG hints when available.
-	result += formatVectorSearchHints(ctx)
-
-	// Append AGENTS.md project instructions when available.
-	result += formatAgentsMD(ctx)
-
-	// Append active skill instructions when available.
-	result += formatActiveSkills(ctx)
-
-	return result
+	return appendPlannerContextSections(ctx, result)
 }
 
 // buildContinuationSystemPrompt constructs the system prompt for continuation planning.
@@ -822,21 +743,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 		ReplaceAll(substitutions).
 		Build()
 
-	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
-		result += "\n\n" + envBlock
-	}
-
-	// Append auto-RAG hints when available.
-	result += formatVectorSearchHints(ctx)
-
-	// Append AGENTS.md project instructions when available.
-	result += formatAgentsMD(ctx)
-
-	// Append active skill instructions when available.
-	result += formatActiveSkills(ctx)
-
-	return result
+	return appendPlannerContextSections(ctx, result)
 }
 
 // FindTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
@@ -859,6 +766,38 @@ func FindTerminalSteps(plan *Plan) []string {
 	return terminal
 }
 
+// formatPlanReflections formats plan-attempt reflections as a numbered list
+// using failure analysis, root cause, and action plan fields.
+// Returns "" for nil/empty input.
+func formatPlanReflections(reflections []Reflection) string {
+	if len(reflections) == 0 {
+		return ""
+	}
+	var rb strings.Builder
+	rb.WriteString("Reflections from past attempts (learn from them):\n")
+	for i, r := range reflections {
+		fmt.Fprintf(&rb, "%d. Failure: %s | Root cause: %s | Action plan: %s\n",
+			i+1, r.FailureAnalysis, r.RootCause, r.ActionPlan)
+	}
+	return rb.String()
+}
+
+// formatSessionReflections formats cross-attempt session reflections as a numbered list
+// using summary, root cause, action plan, and suggested action fields.
+// Returns "" for nil/empty input.
+func formatSessionReflections(reflections []Reflection) string {
+	if len(reflections) == 0 {
+		return ""
+	}
+	var prb strings.Builder
+	prb.WriteString("Previous session reflections (showing cross-attempt failure patterns):\n")
+	for i, r := range reflections {
+		fmt.Fprintf(&prb, "%d. Summary: %s | Root cause: %s | Action plan: %s | Suggested: %s\n",
+			i+1, r.Summary, r.RootCause, r.ActionPlan, r.SuggestedAction)
+	}
+	return prb.String()
+}
+
 // formatWorkspacePath returns the workspace instruction block if a workspace path is set.
 func formatWorkspacePath(ctx context.Context) string {
 	wp := tools.WorkspacePathFrom(ctx)
@@ -866,82 +805,6 @@ func formatWorkspacePath(ctx context.Context) string {
 		return ""
 	}
 	return fmt.Sprintf("Session workspace: %s\nWhen steps produce file artifacts, they must be created inside this workspace unless the task explicitly specifies an external location.", wp)
-}
-
-// formatVectorSearchHints returns a prompt section with auto-RAG file hints,
-// or an empty string when no hints are available in the context.
-func formatVectorSearchHints(ctx context.Context) string {
-	hints := VectorSearchHintsFromContext(ctx)
-	if hints == nil || len(hints.Files) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString("\n\n## Relevant Project Files (auto-detected)\n")
-	sb.WriteString("Based on the task, these files may be relevant:\n")
-	for _, h := range hints.Files {
-		sb.WriteString("- " + h.FilePath)
-		if h.Summary != "" {
-			sb.WriteString(": " + h.Summary)
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
-// formatAgentsMD returns a prompt section with the full AGENTS.md content
-// and strict adherence instructions, or an empty string when not available.
-func formatAgentsMD(ctx context.Context) string {
-	amd := AgentsMDFromContext(ctx)
-	if amd == nil || amd.Content == "" {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString("\n\n## AGENTS.md — Project Instructions\n\n")
-	sb.WriteString("The following instructions are from the project's AGENTS.md file. ")
-	sb.WriteString("When formulating step descriptions (What/How/Where/Acceptance Criteria), ")
-	sb.WriteString("you MUST strictly follow these instructions. ")
-	sb.WriteString("If you encounter a contradiction between these instructions and the codebase, ")
-	sb.WriteString("do NOT resolve it yourself — include an ask_user step or flag the contradiction ")
-	sb.WriteString("in the step description so the user can clarify.\n\n")
-	sb.WriteString("<agents-md>\n")
-	sb.WriteString(amd.Content)
-	sb.WriteString("\n</agents-md>")
-	return sb.String()
-}
-
-// formatActiveSkills returns a prompt section with condensed active skill
-// instructions for the planner, or an empty string when no skills are active.
-// Each skill body is truncated to 2000 characters to stay within token budget.
-func formatActiveSkills(ctx context.Context) string {
-	activeSkills := ActiveSkillsFromContext(ctx)
-	if activeSkills == nil || len(activeSkills.Skills) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString("\n\n## Active Skills\n")
-	sb.WriteString("The following skills have been matched to this task. When formulating steps, ")
-	sb.WriteString("incorporate their guidance into the plan.\n\n")
-	for _, s := range activeSkills.Skills {
-		sb.WriteString("### Skill: " + s.Metadata.Name + "\n")
-		if s.Metadata.Description != "" {
-			sb.WriteString("Description: " + s.Metadata.Description + "\n")
-		}
-		if len(s.Metadata.AllowedToolList()) > 0 {
-			sb.WriteString("Allowed tools: " + s.Metadata.AllowedTools + "\n")
-		}
-		sb.WriteString("\n")
-		// Truncate skill body to conserve tokens in planner context
-		body := s.Body
-		if len(body) > 2000 {
-			body = body[:2000] + "\n... (truncated)"
-		}
-		sb.WriteString(body)
-		sb.WriteString("\n\n")
-	}
-	return sb.String()
 }
 
 // parsePlanResponse extracts a Plan from the LLM response content.
@@ -1041,4 +904,3 @@ func (p *Planner) CreateSyntheticPlan(task, domain string) *Plan {
 		},
 	}
 }
-

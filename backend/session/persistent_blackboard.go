@@ -34,8 +34,8 @@ type PersistentBlackboard struct {
 	store              core.TaskPersistence
 	logger             *slog.Logger
 	emitterMu          sync.RWMutex
-	emitter            core.Emitter  // optional, nil-safe; used to surface persistence warnings to the user
-	persistenceTimeout time.Duration // timeout for persistence operations
+	emitter            core.Emitter            // optional, nil-safe; used to surface persistence warnings to the user
+	persistenceTimeout time.Duration           // timeout for persistence operations
 	onChanged          func(changeType string) // optional callback for BB change notifications, nil-safe
 }
 

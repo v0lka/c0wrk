@@ -14,12 +14,12 @@ import (
 // Gateway manages connections to multiple MCP servers and provides
 // their tools to the agent through the ToolRegistry.
 type Gateway struct {
-	servers           map[string]*Server
-	config            GatewayConfig
-	defaultWorkDir    string
-	schemaSanitizer   SchemaSanitizer
-	logger            *slog.Logger
-	mu                sync.RWMutex
+	servers         map[string]*Server
+	config          GatewayConfig
+	defaultWorkDir  string
+	schemaSanitizer SchemaSanitizer
+	logger          *slog.Logger
+	mu              sync.RWMutex
 }
 
 // newGateway creates a new Gateway instance.

@@ -152,5 +152,3 @@ func NormalizeMistralMessages(messages []Message) []Message {
 
 	return result
 }
-
-

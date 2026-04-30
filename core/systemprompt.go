@@ -9,7 +9,7 @@ import (
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/prompt"
-	tools "github.com/user/agent/sdk/tools"
+	"github.com/user/agent/sdk/tools"
 )
 
 // vectorSearchHintsKeyType is the context key for auto-RAG hints.
@@ -90,6 +90,110 @@ func ActiveSkillsFromContext(ctx context.Context) *ActiveSkills {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Shared prompt context section helpers
+// ---------------------------------------------------------------------------
+
+// formatVectorSearchHints returns a prompt section with auto-RAG file hints,
+// or an empty string when no hints are available in the context.
+// footer is appended after the file list if non-empty.
+func formatVectorSearchHints(ctx context.Context, footer string) string {
+	hints := VectorSearchHintsFromContext(ctx)
+	if hints == nil || len(hints.Files) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Relevant Project Files (auto-detected)\n")
+	sb.WriteString("Based on the task, these files may be relevant:\n")
+	for _, h := range hints.Files {
+		sb.WriteString("- " + h.FilePath)
+		if h.Summary != "" {
+			sb.WriteString(": " + h.Summary)
+		}
+		sb.WriteString("\n")
+	}
+	if footer != "" {
+		sb.WriteString(footer)
+	}
+	return sb.String()
+}
+
+// formatAgentsMD returns a prompt section with the full AGENTS.md content
+// and strict adherence instructions, or an empty string when not available.
+func formatAgentsMD(ctx context.Context) string {
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil || amd.Content == "" {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## AGENTS.md — Project Instructions\n\n")
+	sb.WriteString("The following instructions are from the project's AGENTS.md file. ")
+	sb.WriteString("When formulating step descriptions (What/How/Where/Acceptance Criteria), ")
+	sb.WriteString("you MUST strictly follow these instructions. ")
+	sb.WriteString("If you encounter a contradiction between these instructions and the codebase, ")
+	sb.WriteString("do NOT resolve it yourself — include an ask_user step or flag the contradiction ")
+	sb.WriteString("in the step description so the user can clarify.\n\n")
+	sb.WriteString("<agents-md>\n")
+	sb.WriteString(amd.Content)
+	sb.WriteString("\n</agents-md>")
+	return sb.String()
+}
+
+// formatActiveSkills returns a prompt section with active skill instructions,
+// or an empty string when no skills are active.
+// preamble is the text after the "## Active Skills\n" heading.
+// maxBodyLen is the per-skill body truncation limit; 0 means no truncation.
+func formatActiveSkills(ctx context.Context, preamble string, maxBodyLen int) string {
+	activeSkills := ActiveSkillsFromContext(ctx)
+	if activeSkills == nil || len(activeSkills.Skills) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Active Skills\n")
+	sb.WriteString(preamble)
+	sb.WriteString("\n\n")
+	for _, s := range activeSkills.Skills {
+		sb.WriteString("### Skill: " + s.Metadata.Name + "\n")
+		if s.Metadata.Description != "" {
+			sb.WriteString("Description: " + s.Metadata.Description + "\n")
+		}
+		if len(s.Metadata.AllowedToolList()) > 0 {
+			sb.WriteString("Allowed tools: " + s.Metadata.AllowedTools + "\n")
+		}
+		sb.WriteString("\n")
+		body := s.Body
+		if maxBodyLen > 0 && len(body) > maxBodyLen {
+			body = body[:maxBodyLen] + "\n... (truncated)"
+		}
+		sb.WriteString(body)
+		sb.WriteString("\n\n")
+	}
+	return sb.String()
+}
+
+// appendPlannerContextSections appends the standard env/vector/AGENTS.md/skills
+// sections used by all planner system prompts.
+func appendPlannerContextSections(ctx context.Context, base string) string {
+	result := base
+
+	// Append environment context if available.
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+		result += "\n\n" + envBlock
+	}
+
+	result += formatVectorSearchHints(ctx, "")
+	result += formatAgentsMD(ctx)
+	result += formatActiveSkills(ctx,
+		"The following skills have been matched to this task. When formulating steps, incorporate their guidance into the plan.",
+		2000,
+	)
+
+	return result
+}
+
 // buildSystemPrompt creates the system prompt for executors.
 func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
 	// Build workspace context string
@@ -131,39 +235,14 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		result += "\n\n" + envBlock
 	}
 
-	// Append auto-RAG vector search hints when available.
-	if hints, ok := ctx.Value(vectorSearchHintsKey).(*VectorSearchHints); ok && hints != nil && len(hints.Files) > 0 {
-		var sb strings.Builder
-		sb.WriteString("\n\n## Relevant Project Files (auto-detected)\n")
-		sb.WriteString("Based on your query, these files may be relevant:\n")
-		for _, h := range hints.Files {
-			sb.WriteString("- " + h.FilePath)
-			if h.Summary != "" {
-				sb.WriteString(": " + h.Summary)
-			}
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\nUse semantic_search tool for deeper investigation.")
-		result += sb.String()
-	}
+	// Append auto-RAG vector search hints (with semantic_search guidance for executors).
+	result += formatVectorSearchHints(ctx, "\nUse semantic_search tool for deeper investigation.")
 
-	// Append active Agent Skills when available.
-	if activeSkills, ok := ctx.Value(activeSkillsKey).(*ActiveSkills); ok && activeSkills != nil && len(activeSkills.Skills) > 0 {
-		var sb strings.Builder
-		sb.WriteString("\n\n## Active Skills\n")
-		sb.WriteString("The following skills have been activated for this task. Follow their instructions carefully.\n\n")
-		for _, s := range activeSkills.Skills {
-			sb.WriteString("### Skill: " + s.Metadata.Name + "\n")
-			if s.Metadata.Description != "" {
-				sb.WriteString("Description: " + s.Metadata.Description + "\n")
-			}
-			if len(s.Metadata.AllowedToolList()) > 0 {
-				sb.WriteString("Allowed tools: " + s.Metadata.AllowedTools + "\n")
-			}
-			sb.WriteString("\n" + s.Body + "\n\n")
-		}
-		result += sb.String()
-	}
+	// Append active Agent Skills (full body, no truncation for executors).
+	result += formatActiveSkills(ctx,
+		"The following skills have been activated for this task. Follow their instructions carefully.",
+		0,
+	)
 
 	return result
 }

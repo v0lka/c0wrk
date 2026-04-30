@@ -660,9 +660,9 @@ func TestConvertChatResponseMessage_WithReasoningContent(t *testing.T) {
 
 func TestExtractReasoningContent(t *testing.T) {
 	tests := []struct {
-		name   string
-		json   string
-		want   string
+		name string
+		json string
+		want string
 	}{
 		{
 			name: "empty json",

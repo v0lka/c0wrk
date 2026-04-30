@@ -3,10 +3,10 @@ import { cn } from '@/lib/utils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { createSession, renameSession, archiveSession, deleteSession } from '@/api/sessions'
 import { formatRelativeTime } from '@/lib/formatters'
+import { logger } from '@/lib/logger'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuSeparator, DropdownMenuLabel, DropdownMenuSub,
-  DropdownMenuSubTrigger, DropdownMenuSubContent,
+  DropdownMenuSeparator, DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -50,21 +50,21 @@ export function SessionSelector() {
       const session = await createSession()
       addSession(session)
       setActiveSessionId(session.id)
-    } catch { /* ignore */ }
+    } catch (error) { logger.error('Failed to create session:', error) }
   }, [addSession, setActiveSessionId])
 
   const handleDelete = useCallback(async (id: string) => {
     try {
       await deleteSession(id)
       removeSession(id)
-    } catch { /* ignore */ }
+    } catch (error) { logger.error('Failed to delete session:', error) }
   }, [removeSession])
 
   const handleArchive = useCallback(async (id: string, isArchived: boolean) => {
     try {
       await archiveSession(id)
       updateSession(id, { archived: !isArchived })
-    } catch { /* ignore */ }
+    } catch (error) { logger.error('Failed to archive session:', error) }
   }, [updateSession])
 
   const startRename = useCallback((id: string, currentName: string) => {
@@ -78,7 +78,7 @@ export function SessionSelector() {
     try {
       await renameSession(renamingId, renameValue.trim())
       updateSession(renamingId, { name: renameValue.trim() })
-    } catch { /* ignore */ }
+    } catch (error) { logger.error('Failed to rename session:', error) }
     setRenamingId(null)
   }, [renamingId, renameValue, updateSession])
 
@@ -179,20 +179,29 @@ interface SessionItemProps {
 }
 function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelete }: SessionItemProps) {
   return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger className="gap-2" onClick={(e) => { e.preventDefault(); onSelect() }}>
-        <div className="flex flex-1 items-center gap-1.5 truncate">
-          {session.active && <span className="size-1.5 shrink-0 rounded-full bg-success" />}
-          {isActive && <Check className="size-3.5 shrink-0" />}
-          <span className={cn('truncate', isActive && 'font-medium')}>{session.name}</span>
-        </div>
-        <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent>
-        <DropdownMenuItem onClick={onRename}><Pencil className="size-3.5" />Rename</DropdownMenuItem>
-        <DropdownMenuItem onClick={onArchive}><Archive className="size-3.5" />{session.archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
-        <DropdownMenuItem variant="destructive" onClick={onDelete}><Trash2 className="size-3.5" />Delete</DropdownMenuItem>
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
+    <DropdownMenuItem className="group/item gap-2" onSelect={onSelect}>
+      <div className="flex flex-1 items-center gap-1.5 truncate">
+        {session.active && <span className="size-1.5 shrink-0 rounded-full bg-success" />}
+        {isActive && <Check className="size-3.5 shrink-0" />}
+        <span className={cn('truncate', isActive && 'font-medium')}>{session.name}</span>
+      </div>
+      <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
+      <span
+        className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button type="button" className="rounded p-0.5 hover:bg-accent" onClick={onRename}>
+          <Pencil className="size-3" />
+        </button>
+        <button type="button" className="rounded p-0.5 hover:bg-accent" onClick={onArchive}>
+          <Archive className="size-3" />
+        </button>
+        <button type="button" className="rounded p-0.5 hover:bg-destructive/20" onClick={onDelete}>
+          <Trash2 className="size-3 text-destructive" />
+        </button>
+      </span>
+    </DropdownMenuItem>
   )
 }

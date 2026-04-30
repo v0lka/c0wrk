@@ -8,17 +8,14 @@ import { useUIStore } from '@/stores/uiStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { TerminalPanel } from '@/components/terminal/TerminalPanel'
-import { sendMessage, cancelTask } from '@/api/chat'
+import { useMessageSender } from '@/hooks/useMessageSender'
 import { optimizePrompt } from '@/api/prompt'
-import { createSession } from '@/api/sessions'
-import { generateMessageId } from '@/lib/ids'
 import { Play, Square, Maximize2, Minimize2, MessageSquare, Terminal, Sparkles, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
 export function ChatInput() {
   const [text, setText] = useState('')
-  const [isProcessing, setIsProcessing] = useState(false)
   const [isOptimizing, setIsOptimizing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -36,6 +33,8 @@ export function ChatInput() {
   const setHeight = useInputModeStore(s => s.setHeight)
   const toggleExpanded = useInputModeStore(s => s.toggleExpanded)
 
+  const { send, cancel, isProcessing } = useMessageSender()
+
   useEffect(() => {
     if (mode === 'terminal' && textareaRef.current) {
       textareaRef.current.blur()
@@ -48,64 +47,15 @@ export function ChatInput() {
 
   const handleSend = useCallback(async () => {
     if (!text.trim()) return
-
     const messageText = text.trim()
     setText('')
-    setIsProcessing(true)
-
-    let sessionId = useSessionStore.getState().activeSessionId
-    if (!sessionId) {
-      try {
-        const newSession = await createSession()
-        useSessionStore.getState().addSession(newSession)
-        useSessionStore.getState().setActiveSessionId(newSession.id)
-        sessionId = newSession.id
-      } catch (error) {
-        logger.error('Failed to create session:', error)
-        setIsProcessing(false)
-        setText(messageText)
-        return
-      }
-    }
-
-    useChatStore.getState().addMessage(sessionId, {
-      id: generateMessageId(),
-      sessionId,
-      type: 'user',
-      content: messageText,
-      timestamp: Date.now(),
-    })
-
-    useSessionStore.getState().touchSession(sessionId)
-    useChatStore.getState().setTaskActive(sessionId, true)
-    useChatStore.getState().setActivityStatus('Processing...')
-
     try {
-      await sendMessage(sessionId, messageText)
-    } catch (error) {
-      logger.error('Failed to send message:', error)
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      useChatStore.getState().addMessage(sessionId, {
-        id: generateMessageId(),
-        sessionId,
-        type: 'error',
-        content: `Failed to send message: ${errorMessage}`,
-        timestamp: Date.now(),
-      })
-      useChatStore.getState().setTaskActive(sessionId, false)
-    } finally {
-      setIsProcessing(false)
+      await send(messageText)
+    } catch {
+      // send() threw during session creation — restore the text
+      setText(messageText)
     }
-  }, [text])
-
-  const handleCancel = useCallback(async () => {
-    if (!activeSessionId) return
-    try {
-      await cancelTask(activeSessionId)
-    } catch (error) {
-      logger.error('Failed to cancel task:', error)
-    }
-  }, [activeSessionId])
+  }, [text, send])
 
   const handleOptimize = useCallback(async () => {
     if (!text.trim() || isOptimizing) return
@@ -266,7 +216,7 @@ export function ChatInput() {
           <Button
             variant="outline"
             size="icon"
-            onClick={handleCancel}
+            onClick={cancel}
             className="shrink-0 h-8 w-8 rounded-md border-destructive text-destructive hover:bg-destructive/10 active:bg-destructive/20"
             title="Cancel"
             aria-label="Cancel task"

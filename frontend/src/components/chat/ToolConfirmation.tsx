@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { emit, onSessionEvent } from '@/api/runtime'
 import { useChatStore } from '@/stores/chatStore'
 import type { DisplayItem } from '@/types/messages'
+import { getToolConfirmResolution, toolConfirmResolved } from '@/types/messages'
 
 type ToolConfirmItem = Extract<DisplayItem, { kind: 'tool_confirm' }>
 
@@ -13,10 +14,13 @@ interface ToolConfirmationProps {
 
 export function ToolConfirmation({ item }: ToolConfirmationProps) {
   const { sessionId, metadata } = item.message
-  const resolved = metadata?.resolved === true ? (metadata?.decision as 'confirmed' | 'denied') : null
+  const resolved = getToolConfirmResolution(metadata)
   const [judgeReasoning, setJudgeReasoning] = useState<string | null>(null)
   const [judgeLoading, setJudgeLoading] = useState(false)
   const [judgeError, setJudgeError] = useState<string | null>(null)
+
+  const updateMessage = useChatStore(s => s.updateMessage)
+  const setActivityStatus = useChatStore(s => s.setActivityStatus)
 
   const tool = typeof metadata?.tool === 'string' ? metadata.tool : undefined
   const args = typeof metadata?.args === 'string' ? metadata.args : undefined
@@ -43,10 +47,10 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
     const isConfirm = decision === 'allow_once'
     emit('tool_confirm_response', { confirm_id: confirmId, decision })
     if (toolMsgId) {
-      useChatStore.getState().updateMessage(sessionId, toolMsgId, { metadata: { awaiting_confirmation: false } })
+      updateMessage(sessionId, toolMsgId, { metadata: { awaiting_confirmation: false } })
     }
-    useChatStore.getState().updateMessage(sessionId, item.message.id, { metadata: { resolved: true, decision: isConfirm ? 'confirmed' : 'denied' } })
-    useChatStore.getState().setActivityStatus(isConfirm ? `Running tool: ${tool}...` : null)
+    updateMessage(sessionId, item.message.id, { metadata: toolConfirmResolved(isConfirm ? 'confirmed' : 'denied') })
+    setActivityStatus(isConfirm ? `Running tool: ${tool}...` : null)
   }
 
   const handleAskAgent = () => {

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	sdktools "github.com/user/agent/sdk/tools"
 )
@@ -94,33 +96,16 @@ func (t *ReadSkillResourceTool) Execute(ctx context.Context, input json.RawMessa
 // resolveResourcePath resolves a relative path within a skill directory,
 // preventing path traversal attacks.
 func resolveResourcePath(skillDir, relPath string) (string, error) {
-	cleanSkillDir := cleanPath(skillDir)
-	absPath := cleanPath(skillDir + "/" + relPath)
+	absPath := filepath.Clean(filepath.Join(skillDir, relPath))
+	cleanSkillDir := filepath.Clean(skillDir)
 
-	if absPath != cleanSkillDir && !isSubPathOf(cleanSkillDir, absPath) {
+	rel, err := filepath.Rel(cleanSkillDir, absPath)
+	if err != nil {
 		return "", fmt.Errorf("path %q escapes skill directory", relPath)
 	}
-
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes skill directory", relPath)
+	}
+	// rel == "." means absPath equals skillDir itself, which is acceptable
 	return absPath, nil
-}
-
-// cleanPath is a platform-aware filepath.Clean that normalizes separators.
-func cleanPath(p string) string {
-	// Simple normalization — sufficient for path traversal prevention
-	result := p
-	for len(result) > 1 && result[len(result)-1] == '/' {
-		result = result[:len(result)-1]
-	}
-	return result
-}
-
-// isSubPathOf checks if sub is a descendant of parent.
-func isSubPathOf(parent, sub string) bool {
-	if len(sub) <= len(parent) {
-		return sub == parent
-	}
-	if sub[:len(parent)] != parent {
-		return false
-	}
-	return sub[len(parent)] == '/'
 }

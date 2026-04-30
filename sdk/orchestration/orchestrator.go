@@ -618,9 +618,9 @@ func (o *Orchestrator) executePlanWithSteps(
 					var cm agent.ContextManager
 					if o.cfg.ContextFactory != nil {
 						cm = o.cfg.ContextFactory(systemPrompt, modelMeta, stepCfg.CompactionStrategy, PruningOverride{
-					KeepLastN:      stepCfg.KeepLastN,
-					ProtectedTools: stepCfg.ProtectedTools,
-				})
+							KeepLastN:      stepCfg.KeepLastN,
+							ProtectedTools: stepCfg.ProtectedTools,
+						})
 					} else {
 						return "", completedList, sessionReflections, errors.New("ContextFactory is required but not configured")
 					}
@@ -1028,9 +1028,9 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	var cm agent.ContextManager
 	if o.cfg.ContextFactory != nil {
 		cm = o.cfg.ContextFactory(systemPrompt, modelMeta, stepCfg.CompactionStrategy, PruningOverride{
-					KeepLastN:      stepCfg.KeepLastN,
-					ProtectedTools: stepCfg.ProtectedTools,
-				})
+			KeepLastN:      stepCfg.KeepLastN,
+			ProtectedTools: stepCfg.ProtectedTools,
+		})
 	} else {
 		return nil, errors.New("ContextFactory is required but not configured")
 	}

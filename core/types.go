@@ -157,7 +157,7 @@ var _ Emitter = (*noopEmitter)(nil)
 
 func (n *noopEmitter) Routing(_, _, _ string)                                       {}
 func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)                       {}
-func (n *noopEmitter) PlanStepStart(_, _, _ string)                                {}
+func (n *noopEmitter) PlanStepStart(_, _, _ string)                                 {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
 func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}
 func (n *noopEmitter) Retry(_, _ int)                                               {}
@@ -166,7 +166,7 @@ func (n *noopEmitter) Service(_ string)                                         
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)                   {}
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) FileRollbackError(_ string, _ error)                          {}
-func (n *noopEmitter) SkillsActivated(_ []string)                                    {}
+func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -241,8 +241,8 @@ func (a *emitterEventsAdapter) WithRetryAttempt(attempt int) orchestration.Event
 
 // RoutingDecision — result of Router classification (AD 4.1).
 type RoutingDecision struct {
-	Domain             string   `json:"domain"`               // "code" | "research" | "general" | "mixed"
-	Complexity         int      `json:"complexity"`            // 1-5
+	Domain             string   `json:"domain"`     // "code" | "research" | "general" | "mixed"
+	Complexity         int      `json:"complexity"` // 1-5
 	NeedsClarification bool     `json:"needs_clarification"`
 	MatchedSkills      []string `json:"matched_skills,omitempty"` // skills selected by the router
 }

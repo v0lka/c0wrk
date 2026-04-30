@@ -140,16 +140,16 @@ type OptimizePromptResponse struct {
 
 // BlackboardStateResponse holds the current blackboard state for the frontend viewer.
 type BlackboardStateResponse struct {
-	TaskID          string                              `json:"task_id"`
-	SessionID       string                              `json:"session_id"`
-	Status          string                              `json:"status"` // "in_progress", "completed", "failed"
-	OriginalRequest string                              `json:"original_request"`
-	Plan            *BlackboardPlanResponse              `json:"plan,omitempty"`
-	StepResults     map[string]BlackboardStepResponse    `json:"step_results"`
-	Reflections     []BlackboardReflectionResponse       `json:"reflections"`
-	Facts           []BlackboardFactResponse             `json:"facts"`
-	FinalOutput     string                              `json:"final_output,omitempty"`
-	FileChanges     map[string]int                      `json:"file_changes"` // stepID -> change count
+	TaskID          string                            `json:"task_id"`
+	SessionID       string                            `json:"session_id"`
+	Status          string                            `json:"status"` // "in_progress", "completed", "failed"
+	OriginalRequest string                            `json:"original_request"`
+	Plan            *BlackboardPlanResponse           `json:"plan,omitempty"`
+	StepResults     map[string]BlackboardStepResponse `json:"step_results"`
+	Reflections     []BlackboardReflectionResponse    `json:"reflections"`
+	Facts           []BlackboardFactResponse          `json:"facts"`
+	FinalOutput     string                            `json:"final_output,omitempty"`
+	FileChanges     map[string]int                    `json:"file_changes"` // stepID -> change count
 }
 
 // BlackboardPlanResponse is a simplified plan for the blackboard viewer.

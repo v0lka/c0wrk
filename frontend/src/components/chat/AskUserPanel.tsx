@@ -5,23 +5,21 @@ import { Input } from '@/components/ui/input'
 import { emit } from '@/api/runtime'
 import { useChatStore } from '@/stores/chatStore'
 import type { DisplayItem } from '@/types/messages'
+import { getAskUserResolution, parseAskUserQuestions, askUserResolved } from '@/types/messages'
 
 type AskUserItem = Extract<DisplayItem, { kind: 'ask_user' }>
 
-interface AskUserQuestion {
-  id: string; question: string
-  options: Array<{ label: string; value: string }>
-  multi_select?: boolean; recommended?: string[]
-}
-
 export function AskUserPanel({ item }: { item: AskUserItem }) {
   const { sessionId, metadata } = item.message
-  const resolved = metadata?.resolved === true ? (typeof metadata?.answer === 'string' ? metadata.answer : '') : null
+  const resolved = getAskUserResolution(metadata)
   const [selections, setSelections] = useState<Map<string, Set<string>>>(new Map())
   const [customTexts, setCustomTexts] = useState<Map<string, string>>(new Map())
 
+  const updateMessage = useChatStore(s => s.updateMessage)
+  const setActivityStatus = useChatStore(s => s.setActivityStatus)
+
   const requestId = typeof metadata?.request_id === 'string' ? metadata.request_id : undefined
-  const questions = (metadata?.questions ?? []) as AskUserQuestion[]
+  const questions = parseAskUserQuestions(metadata)
 
   const toggleOption = (questionId: string, value: string) => {
     setSelections(prev => {
@@ -58,8 +56,8 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
       request_id: requestId,
       answers: questions.map(q => ({ id: q.id, selected: Array.from(selections.get(q.id) ?? []), custom_text: customTexts.get(q.id) ?? '' })),
     })
-    useChatStore.getState().updateMessage(sessionId, item.message.id, { metadata: { resolved: true, answer } })
-    useChatStore.getState().setActivityStatus(null)
+    updateMessage(sessionId, item.message.id, { metadata: askUserResolved(answer) })
+    setActivityStatus(null)
   }
 
   if (resolved !== null) {

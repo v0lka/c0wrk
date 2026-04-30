@@ -51,7 +51,7 @@ export function VectorStorePanel() {
         if (status.state === 'ready' && activeProjectId) {
             fetchEntries(query, topK, filePattern)
         }
-    }, [status.state, activeProjectId]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [status.state, activeProjectId, fetchEntries, query, topK, filePattern])
 
     // Reset entries when project changes
     useEffect(() => {
@@ -65,8 +65,11 @@ export function VectorStorePanel() {
     // Re-fetch on vector_index:status ready event
     useEffect(() => {
         const unsub = subscribe('vector_index:status', (data: unknown) => {
-            if (data && typeof data === 'object' && 'state' in data && (data as { state: string }).state === 'ready') {
-                fetchEntries('', topK, '')
+            if (data && typeof data === 'object' && 'state' in data) {
+                const record = data as Record<string, unknown>
+                if (record.state === 'ready') {
+                    fetchEntries('', topK, '')
+                }
             }
         })
         return unsub
@@ -173,8 +176,8 @@ export function VectorStorePanel() {
                 </div>
             ) : (
                 <div className="flex-1 overflow-auto custom-scrollbar">
-                    {entries.map((entry, i) => (
-                        <VectorStoreEntryItem key={`${entry.file_path}:${entry.start_line}:${i}`} entry={entry} showScore={isSearchMode} />
+                    {entries.map((entry) => (
+                        <VectorStoreEntryItem key={`${entry.file_path}:${entry.start_line}:${entry.end_line}`} entry={entry} showScore={isSearchMode} />
                     ))}
                 </div>
             )}

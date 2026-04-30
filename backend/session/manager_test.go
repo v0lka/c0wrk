@@ -1168,7 +1168,7 @@ func (m *mockSessionStoreForRestore) SaveMessage(_ ChatMessage) error      { ret
 func (m *mockSessionStoreForRestore) LoadMessages(_ string) ([]ChatMessage, error) {
 	return []ChatMessage{}, nil
 }
-func (m *mockSessionStoreForRestore) DeleteMessages(_ string) error { return nil }
+func (m *mockSessionStoreForRestore) DeleteMessages(_ string) error         { return nil }
 func (m *mockSessionStoreForRestore) SaveTerminalCommand(_, _ string) error { return nil }
 func (m *mockSessionStoreForRestore) LoadTerminalCommands(_ string, _ int) ([]TerminalCommand, error) {
 	return []TerminalCommand{}, nil

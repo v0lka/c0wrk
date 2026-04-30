@@ -37,17 +37,17 @@ type ParamInjector func(toolName, source string, input json.RawMessage) json.Raw
 // Thread-safe via sync.RWMutex.
 type ToolRegistry struct {
 	*sdktools.ToolRegistry
-	mu                  sync.RWMutex
-	confirmFunc         ConfirmFunc
-	judge               *ToolJudge
-	policyOverrides     map[string]ToolPolicy
+	mu                   sync.RWMutex
+	confirmFunc          ConfirmFunc
+	judge                *ToolJudge
+	policyOverrides      map[string]ToolPolicy
 	skillPolicyOverrides map[string]ToolPolicy
-	defaultPolicy       ToolPolicy
-	hasDefaultPolicy    bool
-	preExecuteHook      PreExecuteHook
-	toolFilter          ToolFilter
-	paramInjector       ParamInjector
-	logger              *slog.Logger
+	defaultPolicy        ToolPolicy
+	hasDefaultPolicy     bool
+	preExecuteHook       PreExecuteHook
+	toolFilter           ToolFilter
+	paramInjector        ParamInjector
+	logger               *slog.Logger
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for

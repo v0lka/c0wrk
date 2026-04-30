@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -144,6 +145,6 @@ func isSubPath(parent, sub string) bool {
 	if err != nil {
 		return false
 	}
-	// If the relative path starts with "..", it escapes the parent
-	return len(rel) >= 1 && rel[0] != '.' || len(rel) > 2 && rel[:2] != ".."
+	// rel is "." for same dir, ".." or "../*" for escapes, anything else is a descendant
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

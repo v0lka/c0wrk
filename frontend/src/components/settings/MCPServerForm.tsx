@@ -24,11 +24,10 @@ interface ServerFormData {
   headers: Record<string, string>
 }
 
-interface KeyValueEntry { id: number; key: string; value: string }
+interface KeyValueEntry { id: string; key: string; value: string }
 
-let nextId = 1
 function makeEntry(key = '', value = ''): KeyValueEntry {
-  return { id: nextId++, key, value }
+  return { id: crypto.randomUUID(), key, value }
 }
 
 const emptyForm: ServerFormData = {

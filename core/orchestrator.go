@@ -28,11 +28,11 @@ var PlanModeKey = planModeKeyType{}
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps                  int
-	KeepFirst                 int // for sliding window compaction
-	KeepLast                  int // for sliding window compaction
-	MaxRetries                int // max retry attempts (default: 2, yielding 3 total executions)
-	MaxHistoryMessages        int // max conversation history messages to retain (default: 20)
-	MaxDependencyContextChars int // max chars for dependency context in step tasks (default: 8000)
+	KeepFirst                 int    // for sliding window compaction
+	KeepLast                  int    // for sliding window compaction
+	MaxRetries                int    // max retry attempts (default: 2, yielding 3 total executions)
+	MaxHistoryMessages        int    // max conversation history messages to retain (default: 20)
+	MaxDependencyContextChars int    // max chars for dependency context in step tasks (default: 8000)
 	Model                     string // active model name for ModelRegistry.Resolve()
 
 	// StepLimitFunc is called when an executor reaches its step limit.
@@ -307,6 +307,7 @@ func (o *Orchestrator) buildSkillPolicyOverrides(activeSkills []*skills.Skill) m
 	}
 	return overrides
 }
+
 // injectVectorSearchHints queries the vector index for relevant files and
 // attaches the results as VectorSearchHints on the returned context.
 // It also reads AGENTS.md from the workspace root and injects its full

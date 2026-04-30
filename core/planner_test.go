@@ -1657,7 +1657,7 @@ func TestFormatActiveSkills(t *testing.T) {
 	t.Parallel()
 
 	t.Run("no skills in context", func(t *testing.T) {
-		result := formatActiveSkills(context.Background())
+		result := formatActiveSkills(context.Background(), "test preamble", 2000)
 		if result != "" {
 			t.Error("expected empty string when no skills in context")
 		}
@@ -1678,7 +1678,7 @@ func TestFormatActiveSkills(t *testing.T) {
 			},
 		})
 
-		result := formatActiveSkills(ctx)
+		result := formatActiveSkills(ctx, "test preamble", 2000)
 		if !strings.Contains(result, "Active Skills") {
 			t.Error("expected Active Skills heading")
 		}
@@ -1708,7 +1708,7 @@ func TestFormatActiveSkills(t *testing.T) {
 			},
 		})
 
-		result := formatActiveSkills(ctx)
+		result := formatActiveSkills(ctx, "test preamble", 2000)
 		if !strings.Contains(result, "truncated") {
 			t.Error("expected truncation marker for long skill body")
 		}
@@ -1740,7 +1740,7 @@ func TestFormatActiveSkills(t *testing.T) {
 			},
 		})
 
-		result := formatActiveSkills(ctx)
+		result := formatActiveSkills(ctx, "test preamble", 2000)
 		if !strings.Contains(result, "skill-a") {
 			t.Error("expected skill-a name")
 		}
@@ -1752,6 +1752,253 @@ func TestFormatActiveSkills(t *testing.T) {
 		}
 		if !strings.Contains(result, "Instructions for B") {
 			t.Error("expected skill-b body")
+		}
+	})
+}
+
+func TestFormatPlanReflections(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input", func(t *testing.T) {
+		result := formatPlanReflections(nil)
+		if result != "" {
+			t.Errorf("expected empty string for nil input, got %q", result)
+		}
+	})
+
+	t.Run("empty slice", func(t *testing.T) {
+		result := formatPlanReflections([]Reflection{})
+		if result != "" {
+			t.Errorf("expected empty string for empty slice, got %q", result)
+		}
+	})
+
+	t.Run("single reflection", func(t *testing.T) {
+		result := formatPlanReflections([]Reflection{
+			{
+				FailureAnalysis: "test failed",
+				RootCause:       "missing import",
+				ActionPlan:      "add the import",
+			},
+		})
+		if !strings.Contains(result, "Reflections from past attempts") {
+			t.Error("expected header")
+		}
+		if !strings.Contains(result, "1. Failure: test failed") {
+			t.Error("expected failure analysis")
+		}
+		if !strings.Contains(result, "Root cause: missing import") {
+			t.Error("expected root cause")
+		}
+		if !strings.Contains(result, "Action plan: add the import") {
+			t.Error("expected action plan")
+		}
+	})
+
+	t.Run("multiple reflections", func(t *testing.T) {
+		result := formatPlanReflections([]Reflection{
+			{FailureAnalysis: "first failure", RootCause: "cause-1", ActionPlan: "plan-1"},
+			{FailureAnalysis: "second failure", RootCause: "cause-2", ActionPlan: "plan-2"},
+		})
+		if !strings.Contains(result, "1. Failure: first failure") {
+			t.Error("expected first reflection numbered 1")
+		}
+		if !strings.Contains(result, "2. Failure: second failure") {
+			t.Error("expected second reflection numbered 2")
+		}
+	})
+}
+
+func TestFormatSessionReflections(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input", func(t *testing.T) {
+		result := formatSessionReflections(nil)
+		if result != "" {
+			t.Errorf("expected empty string for nil input, got %q", result)
+		}
+	})
+
+	t.Run("empty slice", func(t *testing.T) {
+		result := formatSessionReflections([]Reflection{})
+		if result != "" {
+			t.Errorf("expected empty string for empty slice, got %q", result)
+		}
+	})
+
+	t.Run("single reflection", func(t *testing.T) {
+		result := formatSessionReflections([]Reflection{
+			{
+				Summary:         "attempt summary",
+				RootCause:       "root cause here",
+				ActionPlan:      "do this next",
+				SuggestedAction: "retry",
+			},
+		})
+		if !strings.Contains(result, "Previous session reflections") {
+			t.Error("expected header")
+		}
+		if !strings.Contains(result, "1. Summary: attempt summary") {
+			t.Error("expected summary")
+		}
+		if !strings.Contains(result, "Root cause: root cause here") {
+			t.Error("expected root cause")
+		}
+		if !strings.Contains(result, "Action plan: do this next") {
+			t.Error("expected action plan")
+		}
+		if !strings.Contains(result, "Suggested: retry") {
+			t.Error("expected suggested action")
+		}
+	})
+
+	t.Run("multiple reflections", func(t *testing.T) {
+		result := formatSessionReflections([]Reflection{
+			{Summary: "first", RootCause: "c1", ActionPlan: "p1", SuggestedAction: "retry"},
+			{Summary: "second", RootCause: "c2", ActionPlan: "p2", SuggestedAction: "replan"},
+		})
+		if !strings.Contains(result, "1. Summary: first") {
+			t.Error("expected first reflection numbered 1")
+		}
+		if !strings.Contains(result, "2. Summary: second") {
+			t.Error("expected second reflection numbered 2")
+		}
+		if !strings.Contains(result, "Suggested: replan") {
+			t.Error("expected suggested action in second reflection")
+		}
+	})
+}
+
+func TestFormatVectorSearchHints(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil context", func(t *testing.T) {
+		result := formatVectorSearchHints(context.Background(), "")
+		if result != "" {
+			t.Errorf("expected empty string for nil context, got %q", result)
+		}
+	})
+
+	t.Run("with hints no footer", func(t *testing.T) {
+		ctx := WithVectorSearchHints(context.Background(), &VectorSearchHints{
+			Files: []VectorSearchHint{
+				{FilePath: "src/main.go", Summary: "entry point"},
+				{FilePath: "src/util.go"},
+			},
+		})
+		result := formatVectorSearchHints(ctx, "")
+		if !strings.Contains(result, "Relevant Project Files") {
+			t.Error("expected header")
+		}
+		if !strings.Contains(result, "- src/main.go: entry point") {
+			t.Error("expected file with summary")
+		}
+		if !strings.Contains(result, "- src/util.go") {
+			t.Error("expected file without summary")
+		}
+		if strings.Contains(result, "semantic_search") {
+			t.Error("should not contain footer when footer is empty")
+		}
+	})
+
+	t.Run("with hints and footer", func(t *testing.T) {
+		ctx := WithVectorSearchHints(context.Background(), &VectorSearchHints{
+			Files: []VectorSearchHint{
+				{FilePath: "src/main.go"},
+			},
+		})
+		result := formatVectorSearchHints(ctx, "\nUse semantic_search tool for deeper investigation.")
+		if !strings.Contains(result, "semantic_search") {
+			t.Error("expected footer")
+		}
+	})
+}
+
+func TestFormatAgentsMD(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil context", func(t *testing.T) {
+		result := formatAgentsMD(context.Background())
+		if result != "" {
+			t.Errorf("expected empty string for nil context, got %q", result)
+		}
+	})
+
+	t.Run("with content", func(t *testing.T) {
+		ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: "Use Go 1.26."})
+		result := formatAgentsMD(ctx)
+		if !strings.Contains(result, "AGENTS.md") {
+			t.Error("expected header")
+		}
+		if !strings.Contains(result, "<agents-md>") {
+			t.Error("expected agents-md tag")
+		}
+		if !strings.Contains(result, "Use Go 1.26.") {
+			t.Error("expected content")
+		}
+	})
+
+	t.Run("empty content", func(t *testing.T) {
+		ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: ""})
+		result := formatAgentsMD(ctx)
+		if result != "" {
+			t.Errorf("expected empty string for empty content, got %q", result)
+		}
+	})
+}
+
+func TestAppendPlannerContextSections(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty context returns base", func(t *testing.T) {
+		result := appendPlannerContextSections(context.Background(), "base prompt")
+		if result != "base prompt" {
+			t.Errorf("expected unchanged base, got %q", result)
+		}
+	})
+
+	t.Run("all sections present", func(t *testing.T) {
+		ctx := context.Background()
+		ctx = WithVectorSearchHints(ctx, &VectorSearchHints{
+			Files: []VectorSearchHint{{FilePath: "test.go", Summary: "test file"}},
+		})
+		ctx = WithAgentsMD(ctx, &AgentsMD{Content: "Project rules here."})
+		ctx = WithActiveSkills(ctx, &ActiveSkills{
+			Skills: []*skills.Skill{
+				{
+					Metadata: skills.SkillMetadata{Name: "test-skill"},
+					Body:     "Skill instructions",
+				},
+			},
+		})
+
+		result := appendPlannerContextSections(ctx, "base")
+		if !strings.Contains(result, "base") {
+			t.Error("expected base")
+		}
+		if !strings.Contains(result, "Relevant Project Files") {
+			t.Error("expected vector hints section")
+		}
+		if !strings.Contains(result, "test.go") {
+			t.Error("expected file path in hints")
+		}
+		if strings.Contains(result, "semantic_search") {
+			t.Error("planner should not have vector hints footer")
+		}
+		if !strings.Contains(result, "<agents-md>") {
+			t.Error("expected AGENTS.md section")
+		}
+		if !strings.Contains(result, "Project rules here.") {
+			t.Error("expected AGENTS.md content")
+		}
+		if !strings.Contains(result, "Active Skills") {
+			t.Error("expected skills section")
+		}
+		if !strings.Contains(result, "test-skill") {
+			t.Error("expected skill name")
+		}
+		if !strings.Contains(result, "incorporate their guidance") {
+			t.Error("expected planner-specific skill preamble")
 		}
 	})
 }

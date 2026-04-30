@@ -132,8 +132,8 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {/* Facts */}
             {filteredFacts.length > 0 && (
                 <CollapsibleSection title="Facts" count={filteredFacts.length}>
-                    {filteredFacts.map((f, i) => (
-                        <div key={i} className="py-0.5 pl-2 border-l border-border">
+                    {filteredFacts.map((f) => (
+                        <div key={`${f.keywords.join(',')}-${f.author}-${f.content.slice(0, 40)}`} className="py-0.5 pl-2 border-l border-border">
                             <span className="text-info font-medium">[{f.keywords.join(', ')}]</span>
                             <span className="text-muted-foreground ml-1">{f.author}</span>
                             <p className="text-foreground mt-0.5 line-clamp-3">{f.content}</p>
@@ -145,8 +145,8 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {/* Reflections */}
             {filteredReflections.length > 0 && (
                 <CollapsibleSection title="Reflections" count={filteredReflections.length}>
-                    {filteredReflections.map((r, i) => (
-                        <div key={i} className="py-0.5 pl-2 border-l border-warning/40">
+                    {filteredReflections.map((r) => (
+                        <div key={`${r.summary.slice(0, 40)}-${r.root_cause ?? ''}`} className="py-0.5 pl-2 border-l border-warning/40">
                             <p className="text-foreground">{r.summary}</p>
                             {r.suggested_action && (
                                 <span className="text-warning">Action: {r.suggested_action}</span>

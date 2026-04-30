@@ -45,3 +45,80 @@ export interface GroupedMessages {
   items: DisplayItem[]
   pendingActions: DisplayItem[]
 }
+
+// --- Metadata type helpers for action components ---
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+
+// -- Typed resolution metadata (write side) --
+
+export type ToolConfirmDecision = 'confirmed' | 'denied'
+export type StepLimitDecision = 'allow_once' | 'allow_always' | 'deny'
+
+interface ToolConfirmResolved { resolved: true; decision: ToolConfirmDecision; [key: string]: unknown }
+interface StepLimitResolved { resolved: true; decision: StepLimitDecision; [key: string]: unknown }
+interface AskUserResolved { resolved: true; answer: string; [key: string]: unknown }
+interface ResumeResolved { resolved: true; [key: string]: unknown }
+
+export function toolConfirmResolved(decision: ToolConfirmDecision): ToolConfirmResolved {
+  return { resolved: true, decision }
+}
+
+export function stepLimitResolved(decision: StepLimitDecision): StepLimitResolved {
+  return { resolved: true, decision }
+}
+
+export function askUserResolved(answer: string): AskUserResolved {
+  return { resolved: true, answer }
+}
+
+export function resumeResolved(): ResumeResolved {
+  return { resolved: true }
+}
+
+// -- Read-side type guards --
+
+const TOOL_CONFIRM_DECISIONS: ReadonlySet<string> = new Set(['confirmed', 'denied'])
+
+export function getToolConfirmResolution(metadata: Record<string, unknown> | undefined): ToolConfirmDecision | null {
+  if (!isObj(metadata) || metadata.resolved !== true) return null
+  return typeof metadata.decision === 'string' && TOOL_CONFIRM_DECISIONS.has(metadata.decision)
+    ? metadata.decision as ToolConfirmDecision
+    : null
+}
+
+const STEP_LIMIT_DECISIONS: ReadonlySet<string> = new Set(['allow_once', 'allow_always', 'deny'])
+
+export function getStepLimitResolution(metadata: Record<string, unknown> | undefined): StepLimitDecision | null {
+  if (!isObj(metadata) || metadata.resolved !== true) return null
+  return typeof metadata.decision === 'string' && STEP_LIMIT_DECISIONS.has(metadata.decision)
+    ? metadata.decision as StepLimitDecision
+    : null
+}
+
+export function getAskUserResolution(metadata: Record<string, unknown> | undefined): string | null {
+  if (!isObj(metadata) || metadata.resolved !== true) return null
+  return typeof metadata.answer === 'string' ? metadata.answer : ''
+}
+
+export function isResolved(metadata: Record<string, unknown> | undefined): boolean {
+  return isObj(metadata) && metadata.resolved === true
+}
+
+export interface AskUserQuestion {
+  id: string
+  question: string
+  options: Array<{ label: string; value: string }>
+  multi_select?: boolean
+  recommended?: string[]
+}
+
+export function parseAskUserQuestions(metadata: Record<string, unknown> | undefined): AskUserQuestion[] {
+  if (!isObj(metadata) || !Array.isArray(metadata.questions)) return []
+  return metadata.questions.filter(
+    (q): q is AskUserQuestion =>
+      isObj(q) && typeof q.id === 'string' && typeof q.question === 'string' && Array.isArray(q.options),
+  )
+}

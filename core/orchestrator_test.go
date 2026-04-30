@@ -98,8 +98,8 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
-				nil, // skillManager - nil for tests
-						nil, // coreToolRegistry - nil for tests
+		nil, // skillManager - nil for tests
+		nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "do something")
@@ -218,8 +218,8 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
-				nil, // skillManager - nil for tests
-						nil, // coreToolRegistry - nil for tests
+		nil, // skillManager - nil for tests
+		nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
@@ -295,8 +295,8 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
-				nil, // skillManager - nil for tests
-						nil, // coreToolRegistry - nil for tests
+		nil, // skillManager - nil for tests
+		nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "test")
@@ -370,8 +370,8 @@ func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
-				nil, // skillManager - nil for tests
-						nil, // coreToolRegistry - nil for tests
+		nil, // skillManager - nil for tests
+		nil, // coreToolRegistry - nil for tests
 	)
 
 	// Run should return HandleResult (same as Handle)
@@ -480,8 +480,8 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
-				nil, // skillManager - nil for tests
-						nil, // coreToolRegistry - nil for tests
+		nil, // skillManager - nil for tests
+		nil, // coreToolRegistry - nil for tests
 	)
 
 	_, err := orchestrator.Handle(context.Background(), "Run two steps")
@@ -564,8 +564,8 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		nil, // bbFactory - nil for tests
 		nil, // trackingCaller - nil for tests
 		nil, // vectorSearchFunc - nil for tests
-				nil, // skillManager - nil for tests
-						nil, // coreToolRegistry - nil for tests
+		nil, // skillManager - nil for tests
+		nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
@@ -1810,8 +1810,8 @@ func TestBuildSystemPrompt_ReactWithActiveSkills(t *testing.T) {
 		Skills: []*skills.Skill{
 			{
 				Metadata: skills.SkillMetadata{
-					Name:        "data-analysis",
-					Description: "Analyze datasets and generate visualizations.",
+					Name:         "data-analysis",
+					Description:  "Analyze datasets and generate visualizations.",
 					AllowedTools: "Read Write Bash(jq:*)",
 				},
 				Body:    "1. Read the dataset using read_file.\n2. Process with jq.",
@@ -1912,7 +1912,7 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 		nil, // trackingCaller
 		nil, // vectorSearchFunc - nil means no RAG hints
 		nil, // skillManager - nil for tests
-				nil, // coreToolRegistry - nil for tests
+		nil, // coreToolRegistry - nil for tests
 	)
 
 	result, err := orchestrator.Handle(context.Background(), "test query")

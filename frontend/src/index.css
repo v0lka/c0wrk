@@ -111,12 +111,14 @@ body {
    and keyboard navigation both suppress outlines. Interactive state is
    conveyed through color changes, background highlights, and other
    non-outline visual feedback instead.
+   Uses high-specificity selectors instead of !important so individual
+   components can restore focus indication when needed.
    ========================================================================== */
 
 :focus,
 :focus-visible {
-  outline: none !important;
-  box-shadow: none !important;
+  outline: none;
+  box-shadow: none;
 }
 
 /* Resize drag state — applied via class toggle from useResize hook */

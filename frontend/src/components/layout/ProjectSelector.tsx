@@ -1,13 +1,11 @@
 import { useState, useCallback, useRef } from 'react'
 import { useProjectStore } from '@/stores/projectStore'
 import { switchProject, renameProject, deleteProject } from '@/api/projects'
-import { listSessions } from '@/api/sessions'
-import { useSessionStore } from '@/stores/sessionStore'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
+import { logger } from '@/lib/logger'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub,
-  DropdownMenuSubTrigger, DropdownMenuSubContent,
+  DropdownMenuItem, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -34,14 +32,11 @@ export function ProjectSelector() {
       await switchProject(id)
       setActiveProjectId(id)
       setDropdownOpen(false)
-      const sessions = await listSessions()
-      useSessionStore.getState().setSessions(sessions)
-      if (sessions.length > 0) {
-        useSessionStore.getState().setActiveSessionId(sessions[0]!.id)
-      } else {
-        useSessionStore.getState().setActiveSessionId(null)
-      }
-    } catch { /* ignore */ }
+      // Session loading is handled reactively by useSessionLoader
+      // when activeProjectId changes — no manual fetch needed.
+    } catch (error) {
+      logger.error('Failed to switch project:', error)
+    }
   }, [activeProjectId, setActiveProjectId])
 
   const handleDelete = useCallback(async (id: string) => {
@@ -55,8 +50,8 @@ export function ProjectSelector() {
           setActiveProjectId(remaining[0]!.id)
         }
       }
-    } catch { /* ignore */ }
-  }, [activeProjectId, removeProject, setActiveProjectId])
+    } catch (error) { logger.error('Failed to delete project:', error) }
+  }, [removeProject, activeProjectId, setActiveProjectId])
 
   const startRename = useCallback((id: string, currentName: string) => {
     setRenamingId(id)
@@ -69,7 +64,7 @@ export function ProjectSelector() {
     try {
       await renameProject(renamingId, renameValue.trim())
       updateProject(renamingId, { name: renameValue.trim() })
-    } catch { /* ignore */ }
+    } catch (error) { logger.error('Failed to rename project:', error) }
     setRenamingId(null)
   }, [renamingId, renameValue, updateProject])
 
@@ -103,25 +98,27 @@ export function ProjectSelector() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             {projects?.map((project) => (
-              <DropdownMenuSub key={project.id}>
-                <DropdownMenuSubTrigger
-                  className="gap-2"
-                  onClick={(e) => { e.preventDefault(); handleSwitch(project.id) }}
+              <DropdownMenuItem
+                key={project.id}
+                className="group/item gap-2"
+                onSelect={() => handleSwitch(project.id)}
+              >
+                {project.id === activeProjectId && <Check className="size-3.5 shrink-0" />}
+                <span className="flex-1 truncate">{project.name}</span>
+                <span
+                  className="ml-auto flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onPointerUp={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  {project.id === activeProjectId && <Check className="size-3.5" />}
-                  <span className="flex-1 truncate">{project.name}</span>
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuItem onClick={() => startRename(project.id, project.name)}>
-                    <Pencil className="size-3.5" />
-                    Rename
-                  </DropdownMenuItem>
-                  <DropdownMenuItem variant="destructive" onClick={() => handleDelete(project.id)}>
-                    <Trash2 className="size-3.5" />
-                    Delete
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
+                  <button type="button" className="rounded p-0.5 hover:bg-accent" onClick={() => { startRename(project.id, project.name); setDropdownOpen(false) }}>
+                    <Pencil className="size-3" />
+                  </button>
+                  <button type="button" className="rounded p-0.5 hover:bg-destructive/20" onClick={() => { handleDelete(project.id); setDropdownOpen(false) }}>
+                    <Trash2 className="size-3 text-destructive" />
+                  </button>
+                </span>
+              </DropdownMenuItem>
             ))}
             {projects && projects.length > 0 && <DropdownMenuSeparator />}
             <DropdownMenuItem onClick={() => setCreateOpen(true)}>

@@ -69,17 +69,17 @@ type TerminalManager interface {
 
 // FrontendAPIConfig holds all parameters needed to construct a FrontendAPI.
 type FrontendAPIConfig struct {
-	App            *Application
-	Logger         *slog.Logger
-	Config         *config.Config
-	ConfigPath     string
-	Store          *session.SQLiteSessionStore
-	ProjStore      *project.SQLiteProjectStore
-	SessionLogger  *logger.SessionLogger
-	LogLevel       string
-	Watcher        *workspace.Watcher
-	ProjectManager *project.Manager
-	ProjectsDir    string
+	App             *Application
+	Logger          *slog.Logger
+	Config          *config.Config
+	ConfigPath      string
+	Store           *session.SQLiteSessionStore
+	ProjStore       *project.SQLiteProjectStore
+	SessionLogger   *logger.SessionLogger
+	LogLevel        string
+	Watcher         *workspace.Watcher
+	ProjectManager  *project.Manager
+	ProjectsDir     string
 	VectorManager   *vectorindex.Manager
 	TerminalManager TerminalManager
 	EmitEvent       func(string, ...any)
@@ -89,15 +89,15 @@ type FrontendAPIConfig struct {
 // NewFrontendAPI creates a new FrontendAPI with the given configuration.
 func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	return &FrontendAPI{
-		app:            cfg.App,
-		logger:         cfg.Logger,
-		config:         cfg.Config,
-		configPath:     cfg.ConfigPath,
-		store:          cfg.Store,
-		projStore:      cfg.ProjStore,
-		sessionLogger:  cfg.SessionLogger,
-		logLevel:       cfg.LogLevel,
-		watcher:        cfg.Watcher,
+		app:             cfg.App,
+		logger:          cfg.Logger,
+		config:          cfg.Config,
+		configPath:      cfg.ConfigPath,
+		store:           cfg.Store,
+		projStore:       cfg.ProjStore,
+		sessionLogger:   cfg.SessionLogger,
+		logLevel:        cfg.LogLevel,
+		watcher:         cfg.Watcher,
 		projectManager:  cfg.ProjectManager,
 		projectsDir:     cfg.ProjectsDir,
 		vectorManager:   cfg.VectorManager,

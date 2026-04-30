@@ -19,10 +19,14 @@ func NewManager(_ *slog.Logger, _ func(sessionID string, data []byte)) *Manager 
 func (*Manager) Start(_, _ string) error { return errors.New("terminal not supported on Windows") }
 
 // Write returns an error on Windows.
-func (*Manager) Write(_ string, _ []byte) error { return errors.New("terminal not supported on Windows") }
+func (*Manager) Write(_ string, _ []byte) error {
+	return errors.New("terminal not supported on Windows")
+}
 
 // Resize returns an error on Windows.
-func (*Manager) Resize(_ string, _, _ int) error { return errors.New("terminal not supported on Windows") }
+func (*Manager) Resize(_ string, _, _ int) error {
+	return errors.New("terminal not supported on Windows")
+}
 
 // Stop is a no-op on Windows.
 func (*Manager) Stop(_ string) error { return nil }
