@@ -455,6 +455,13 @@ func (o *Orchestrator) executePlanWithSteps(
 			if o.cfg.StepLimitFunc != nil {
 				executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
 			}
+			if o.cfg.ReasoningEffort != "" {
+				stepRole := stepCfg.AgentRole
+				if stepRole == "" {
+					stepRole = "executor"
+				}
+				executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
+			}
 
 			tasks = append(tasks, agent.SubAgentTask{
 				StepID:    step.ID,
@@ -635,6 +642,13 @@ func (o *Orchestrator) executePlanWithSteps(
 					executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
 					if o.cfg.StepLimitFunc != nil {
 						executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
+					}
+					if o.cfg.ReasoningEffort != "" {
+						stepRole := stepCfg.AgentRole
+						if stepRole == "" {
+							stepRole = "executor"
+						}
+						executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
 					}
 
 					retryTask := agent.SubAgentTask{
@@ -1047,6 +1061,13 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 	if o.cfg.StepLimitFunc != nil {
 		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
+	}
+	if o.cfg.ReasoningEffort != "" {
+		stepRole := stepCfg.AgentRole
+		if stepRole == "" {
+			stepRole = "executor"
+		}
+		executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
 	}
 
 	// 5. Inject StepOutputStore into context so tools can read step outputs

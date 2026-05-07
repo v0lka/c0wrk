@@ -26,6 +26,7 @@ type Router struct {
 	historyWindow       int // number of recent messages to include
 	modelRegistry       *llm.ModelRegistry
 	baseReasoningEffort llm.ReasoningEffort
+	roleOverrides       map[string]string
 }
 
 // NewRouter creates a new Router.
@@ -47,6 +48,11 @@ func (r *Router) SetModelRegistry(registry *llm.ModelRegistry) {
 // SetBaseReasoningEffort sets the base reasoning effort for the router.
 func (r *Router) SetBaseReasoningEffort(effort llm.ReasoningEffort) {
 	r.baseReasoningEffort = effort
+}
+
+// SetRoleOverrides sets the per-role reasoning effort overrides.
+func (r *Router) SetRoleOverrides(overrides map[string]string) {
+	r.roleOverrides = overrides
 }
 
 // Route analyzes the user's request and determines the best execution strategy.
@@ -83,7 +89,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	})
 
 	// Create chat request
-	reasoningEffort := llm.AgentReasoningMode("router", r.baseReasoningEffort)
+	reasoningEffort := llm.ResolveAgentReasoningMode("router", r.baseReasoningEffort, r.roleOverrides)
 	req := llm.ChatRequest{
 		Messages:        messages,
 		ReasoningEffort: reasoningEffort,

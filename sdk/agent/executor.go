@@ -91,6 +91,9 @@ type Executor struct {
 	planStepIndex int    // 1-based position in plan (0 if not plan mode)
 	planStepTotal int    // total steps in plan (0 if not plan mode)
 
+	// Reasoning effort for LLM calls (empty = no reasoning control)
+	reasoningEffort llm.ReasoningEffort
+
 	logger *slog.Logger
 }
 
@@ -117,6 +120,9 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 
 // SetLogger sets the logger for the executor.
 func (e *Executor) SetLogger(l *slog.Logger) { e.logger = l }
+
+// SetReasoningEffort sets the reasoning effort for LLM calls.
+func (e *Executor) SetReasoningEffort(effort llm.ReasoningEffort) { e.reasoningEffort = effort }
 
 // log returns the executor's logger or slog.Default() if none was set.
 func (e *Executor) log() *slog.Logger {
@@ -274,9 +280,10 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		// Create chat request
 		req := llm.ChatRequest{
-			Messages:  messages,
-			Tools:     toolDefs,
-			MaxTokens: cw.OutputLimit(),
+			Messages:        messages,
+			Tools:           toolDefs,
+			MaxTokens:       cw.OutputLimit(),
+			ReasoningEffort: e.reasoningEffort,
 		}
 
 		// Call LLM

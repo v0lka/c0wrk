@@ -43,6 +43,10 @@ type OrchestratorBuilder struct {
 	vectorSearchFunc tools.VectorSearchFunc
 	skillManager     *skills.SkillManager
 
+	// Cached reasoning config from config; updated by runAsyncInit/RebuildRouter.
+	baseReasoningEffort llm.ReasoningEffort
+	roleOverrides       map[string]string
+
 	// Async initialization: MCP gateway and LLM router are initialized in the
 	// background so that NewOrchestratorBuilder returns immediately.
 	initDone chan struct{}
@@ -115,6 +119,8 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 		b.mu.Lock()
 		b.llmRouter = router
 		b.modelRegistry = modelReg
+		b.baseReasoningEffort = resolveBaseEffort(cfg.LLM.Model, modelReg, cfg)
+		b.roleOverrides = cfg.Reasoning.RoleOverrides
 		b.mu.Unlock()
 	}
 
@@ -208,6 +214,9 @@ func (b *OrchestratorBuilder) Build(
 		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
 	}
 
+	// Resolve base reasoning effort for step executors
+	baseEffort := resolveBaseEffort(cfg.LLM.Model, modelReg, cfg)
+
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
 		MaxSteps:                  cfg.Executor.MaxReactSteps,
@@ -217,6 +226,8 @@ func (b *OrchestratorBuilder) Build(
 		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		Model:                     cfg.LLM.Model,
+		ReasoningEffort:           baseEffort,
+		RoleOverrides:             cfg.Reasoning.RoleOverrides,
 		StepLimitFunc:             stepLimitFunc,
 		SyntheticPlanThreshold:    cfg.Orchestration.SyntheticPlanThreshold,
 	}
@@ -281,6 +292,8 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.mu.Lock()
 	b.llmRouter = router
 	b.modelRegistry = modelReg
+	b.baseReasoningEffort = resolveBaseEffort(cfg.LLM.Model, modelReg, cfg)
+	b.roleOverrides = cfg.Reasoning.RoleOverrides
 	b.mu.Unlock()
 	return nil
 }
@@ -347,14 +360,15 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 
 	b.mu.RLock()
 	router := b.llmRouter
-	modelReg := b.modelRegistry
+	baseEffort := b.baseReasoningEffort
+	roleOverrides := b.roleOverrides
 	b.mu.RUnlock()
 
 	if router == nil {
 		return "", errors.New("llm router not available")
 	}
 
-	titleEffort := llm.AgentReasoningMode("title", resolveBaseEffort(router.ActiveModel(), modelReg))
+	titleEffort := llm.ResolveAgentReasoningMode("title", baseEffort, roleOverrides)
 	temp := 1.0
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
@@ -493,14 +507,15 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 	b.mu.RLock()
 	router := b.llmRouter
 	searchFunc := b.vectorSearchFunc
-	modelReg := b.modelRegistry
+	baseEffort := b.baseReasoningEffort
+	roleOverrides := b.roleOverrides
 	b.mu.RUnlock()
 
 	if router == nil {
 		return nil, errors.New("llm router not available")
 	}
 
-	summaryEffort := llm.AgentReasoningMode("summary", resolveBaseEffort(router.ActiveModel(), modelReg))
+	summaryEffort := llm.ResolveAgentReasoningMode("summary", baseEffort, roleOverrides)
 
 	// Step A: Translate + extract keywords
 	extractTemp := 0.3
@@ -632,16 +647,21 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	return router, modelRegistry, nil
 }
 
-// resolveBaseEffort determines the base reasoning effort from the active model.
-// If the model supports reasoning, returns ReasoningHigh; otherwise returns empty
-// (which causes providers to skip reasoning parameters entirely).
-func resolveBaseEffort(model string, registry *llm.ModelRegistry) llm.ReasoningEffort {
+// resolveBaseEffort determines the base reasoning effort from the active model
+// and the user-configured base effort. If the model doesn't support reasoning,
+// returns empty string (which disables reasoning). If the model supports reasoning
+// but no base effort is configured, defaults to ReasoningHigh.
+func resolveBaseEffort(model string, registry *llm.ModelRegistry, cfg *BuilderConfig) llm.ReasoningEffort {
 	if registry == nil {
 		return ""
 	}
 	meta, ok := registry.Resolve(model)
 	if !ok || !meta.Capabilities.Reasoning {
 		return ""
+	}
+	// Use configured base effort, or default to high
+	if cfg.Reasoning.BaseEffort != "" {
+		return llm.ReasoningEffort(cfg.Reasoning.BaseEffort)
 	}
 	return llm.ReasoningHigh
 }
@@ -672,10 +692,14 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 		reflector.SetModelRegistry(modelRegistry)
 	}
 
-	// Wire reasoning effort for auxiliary agents
-	baseEffort := resolveBaseEffort(cfg.LLM.Model, modelRegistry)
+	// Wire reasoning effort for all agents
+	baseEffort := resolveBaseEffort(cfg.LLM.Model, modelRegistry, cfg)
 	coreRouter.SetBaseReasoningEffort(baseEffort)
+	coreRouter.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
 	reflector.SetBaseReasoningEffort(baseEffort)
+	reflector.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
+	planner.SetBaseReasoningEffort(baseEffort)
+	planner.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
 
 	// Wire planner exploration dependencies
 	planner.SetLogger(logger)
@@ -706,7 +730,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer) ContextManagerFactory {
 	var summarizeCaller agent.LLMCaller = caller
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
-	compactionEffort := llm.AgentReasoningMode("compaction", resolveBaseEffort(cfg.LLM.Model, modelRegistry))
+	compactionEffort := llm.ResolveAgentReasoningMode("compaction", resolveBaseEffort(cfg.LLM.Model, modelRegistry, cfg), cfg.Reasoning.RoleOverrides)
 
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...orchestration.PruningOverride) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)

@@ -53,6 +53,17 @@ type Config struct {
 	ToolResultBudget          agent.ToolResultBudget
 	CircuitBreaker            agent.CircuitBreakerConfig
 
+	// ReasoningEffort is the base reasoning effort for step executors.
+	// When set, each executor gets AgentReasoningMode(stepRole, effort),
+	// where stepRole comes from StepConfig.AgentRole (e.g. "researcher", "coder", "tester").
+	ReasoningEffort llm.ReasoningEffort
+
+	// RoleOverrides allows overriding the reasoning effort for specific agent roles.
+	// Keys are role names, values are ReasoningEffort levels.
+	// When set, ResolveAgentReasoningMode checks this map before falling back
+	// to AgentReasoningMode's default role-based adaptation.
+	RoleOverrides map[string]string
+
 	// StepConfigurator resolves step-specific execution parameters from a PlanStep.
 	// If nil, default values are used (all tools, cfg.MaxSteps, no custom prompt).
 	StepConfigurator StepConfigurator
@@ -79,4 +90,8 @@ type StepConfig struct {
 	CompactionStrategy string                 // compaction strategy name (empty = default)
 	KeepLastN          int                    // tool output pruning: keep last N results (0 = use global default)
 	ProtectedTools     []string               // tool output pruning: always preserve these tools' output
+
+	// AgentRole is the step's agent role (e.g. "researcher", "coder", "tester", "executor").
+	// Used to resolve per-role reasoning effort. Empty defaults to "executor".
+	AgentRole string
 }

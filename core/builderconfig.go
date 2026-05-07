@@ -5,6 +5,7 @@ package core
 // The backend layer constructs a BuilderConfig from *config.Config via ToBuilderConfig.
 type BuilderConfig struct {
 	LLM           BuilderLLMConfig
+	Reasoning     BuilderReasoningConfig
 	Router        BuilderRouterConfig
 	Executor      BuilderExecutorConfig
 	Security      BuilderSecurityConfig
@@ -57,6 +58,22 @@ type BuilderRetryConfig struct {
 type BuilderModelOverride struct {
 	ContextWindow int
 	OutputLimit   int
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning
+// ---------------------------------------------------------------------------
+
+// BuilderReasoningConfig holds reasoning/thinking settings.
+type BuilderReasoningConfig struct {
+	// BaseEffort is the default reasoning effort level for primary agents.
+	// Valid values: "off", "minimal", "low", "medium", "high", "maximum".
+	// Empty string defaults to "high" when the model supports reasoning.
+	BaseEffort string
+
+	// RoleOverrides allows overriding the reasoning effort for specific agent roles.
+	// Keys are role names (e.g. "researcher", "coder"), values are ReasoningEffort levels.
+	RoleOverrides map[string]string
 }
 
 // ---------------------------------------------------------------------------

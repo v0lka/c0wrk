@@ -391,8 +391,9 @@ func TestReflector_NoReasoningEffortWhenBaseEmpty(t *testing.T) {
 		t.Fatalf("Reflect returned error: %v", err)
 	}
 
+	// AgentReasoningMode("reflector", "") returns ReasoningOff — explicitly disabled
 	got := mock.lastCall().ReasoningEffort
-	if got != "" {
-		t.Errorf("expected empty ReasoningEffort, got %q", got)
+	if got != llm.ReasoningOff {
+		t.Errorf("expected ReasoningEffort=%q, got %q", llm.ReasoningOff, got)
 	}
 }

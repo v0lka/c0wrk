@@ -60,6 +60,10 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			LMStudioBaseURL:     cfg.LLM.LMStudio.BaseURL,
 			LMStudioAPIKey:      cfg.LLM.LMStudio.APIKey,
 		},
+		Reasoning: core.BuilderReasoningConfig{
+			BaseEffort:    cfg.Reasoning.BaseEffort,
+			RoleOverrides: cfg.Reasoning.RoleOverrides,
+		},
 		Router: core.BuilderRouterConfig{
 			HistoryWindow: cfg.Router.HistoryWindow,
 		},

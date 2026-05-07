@@ -35,6 +35,15 @@ type OrchestratorConfig struct {
 	MaxDependencyContextChars int    // max chars for dependency context in step tasks (default: 8000)
 	Model                     string // active model name for ModelRegistry.Resolve()
 
+	// ReasoningEffort is the base reasoning effort for step executors.
+	// When set, each executor receives AgentReasoningMode(stepRole, effort),
+	// where stepRole comes from the step's AgentProfile.Role.
+	ReasoningEffort llm.ReasoningEffort
+
+	// RoleOverrides allows overriding the reasoning effort for specific agent roles.
+	// Keys are role names, values are ReasoningEffort levels.
+	RoleOverrides map[string]string
+
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
 	StepLimitFunc agent.StepLimitFunc
@@ -154,6 +163,8 @@ func NewOrchestrator(
 		MaxDependencyContextChars: cfg.MaxDependencyContextChars,
 		ToolResultBudget:          toolResultBudget,
 		CircuitBreaker:            circuitBreaker,
+		ReasoningEffort:           cfg.ReasoningEffort,
+		RoleOverrides:             cfg.RoleOverrides,
 		StepConfigurator:          coreStepConfigurator(cfg, modelRegistry, logger),
 		StepLimitFunc:             cfg.StepLimitFunc,
 	}

@@ -172,11 +172,21 @@ func (p *OpenAIProvider) buildChatParams(req ChatRequest) oai.ChatCompletionNewP
 		params.Temperature = oai.Float(*req.Temperature)
 	}
 
-	// Apply reasoning effort if set
-	if req.ReasoningEffort != "" {
-		rc := ResolveReasoning(req.ReasoningEffort, "openai_flagship")
+	// Apply reasoning effort if set and not explicitly off
+	if req.ReasoningEffort != "" && req.ReasoningEffort != ReasoningOff {
+		family := req.ModelFamily
+		if family == "" {
+			family = string(DetectFamily(req.Model))
+		}
+		rc := ResolveReasoning(req.ReasoningEffort, family)
 		if rc.Enabled && rc.OpenAIEffort != "" {
 			params.ReasoningEffort = oai.ReasoningEffort(rc.OpenAIEffort)
+		}
+		// DeepSeek V4 requires an explicit thinking toggle in extra_body
+		if rc.DeepSeekThinking != "" {
+			params.SetExtraFields(map[string]any{
+				"thinking": map[string]string{"type": rc.DeepSeekThinking},
+			})
 		}
 	}
 

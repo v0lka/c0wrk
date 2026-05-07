@@ -175,16 +175,18 @@ const (
 
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {
-	llm             LLMCaller
-	logger          *slog.Logger
-	modelRegistry   *llm.ModelRegistry
-	model           string                                        // active model name for Resolve()
-	toolRegistry    *coretools.ToolRegistry                       // to discover available tools
-	tokenCounter    llm.TokenCounter                              // for context window management
-	contextFactory  ContextManagerFactory                         // for creating the exploration ContextManager
-	callerForStep   func(cm agent.ContextManager) agent.LLMCaller // optional, for context tracker correction
-	maxExploreSteps int                                           // budget for exploration (default: 7)
-	emitter         Emitter                                       // for logging/events (optional, nil-safe)
+	llm                 LLMCaller
+	logger              *slog.Logger
+	modelRegistry       *llm.ModelRegistry
+	model               string                                        // active model name for Resolve()
+	toolRegistry        *coretools.ToolRegistry                       // to discover available tools
+	tokenCounter        llm.TokenCounter                              // for context window management
+	contextFactory      ContextManagerFactory                         // for creating the exploration ContextManager
+	callerForStep       func(cm agent.ContextManager) agent.LLMCaller // optional, for context tracker correction
+	maxExploreSteps     int                                           // budget for exploration (default: 7)
+	emitter             Emitter                                       // for logging/events (optional, nil-safe)
+	baseReasoningEffort llm.ReasoningEffort                           // reasoning effort for LLM calls
+	roleOverrides       map[string]string                             // per-role reasoning overrides
 }
 
 // NewPlanner creates a new Planner with the given LLM caller.
@@ -197,6 +199,12 @@ func NewPlanner(caller LLMCaller) *Planner {
 
 // SetLogger sets the logger for the planner. If nil, slog.Default() is used.
 func (p *Planner) SetLogger(l *slog.Logger) { p.logger = l }
+
+// SetBaseReasoningEffort sets the base reasoning effort for the planner.
+func (p *Planner) SetBaseReasoningEffort(effort llm.ReasoningEffort) { p.baseReasoningEffort = effort }
+
+// SetRoleOverrides sets the per-role reasoning effort overrides.
+func (p *Planner) SetRoleOverrides(overrides map[string]string) { p.roleOverrides = overrides }
 
 func (p *Planner) log() *slog.Logger {
 	if p.logger != nil {
@@ -298,7 +306,8 @@ func (p *Planner) planDirect(
 	messages = append(messages, llm.Message{Role: "user", Content: task})
 
 	req := llm.ChatRequest{
-		Messages: messages,
+		Messages:        messages,
+		ReasoningEffort: llm.ResolveAgentReasoningMode("planner", p.baseReasoningEffort, p.roleOverrides),
 	}
 
 	resp, err := p.llm.Call(ctx, req)
@@ -393,6 +402,7 @@ func (p *Planner) planWithExploration(
 			ParseErrorAbortThreshold: defaultParseErrorAbortThreshold,
 		},
 	)
+	exec.SetReasoningEffort(llm.ResolveAgentReasoningMode("researcher", p.baseReasoningEffort, p.roleOverrides))
 
 	// Run the exploration loop
 	p.emitService("Exploring codebase...", map[string]any{"phase": "planning"})
@@ -521,7 +531,8 @@ func (p *Planner) Replan(
 	messages = append(messages, llm.Message{Role: "user", Content: "Please provide the updated plan."})
 
 	req := llm.ChatRequest{
-		Messages: messages,
+		Messages:        messages,
+		ReasoningEffort: llm.ResolveAgentReasoningMode("planner", p.baseReasoningEffort, p.roleOverrides),
 	}
 
 	resp, err := p.llm.Call(ctx, req)
@@ -553,7 +564,8 @@ func (p *Planner) PlanContinuation(
 	messages = append(messages, llm.Message{Role: "user", Content: newMessage})
 
 	req := llm.ChatRequest{
-		Messages: messages,
+		Messages:        messages,
+		ReasoningEffort: llm.ResolveAgentReasoningMode("planner", p.baseReasoningEffort, p.roleOverrides),
 	}
 
 	resp, err := p.llm.Call(ctx, req)

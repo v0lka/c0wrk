@@ -17,9 +17,10 @@ const DefaultAgentDir = ".c0wrk"
 
 // Config is the top-level configuration structure.
 type Config struct {
-	LogLevel string    `yaml:"log_level"`
-	LLM      LLMConfig `yaml:"llm"`
-	MCP      MCPConfig `yaml:"mcp"`
+	LogLevel      string             `yaml:"log_level"`
+	LLM           LLMConfig          `yaml:"llm"`
+	Reasoning     ReasoningConfig    `yaml:"reasoning"`
+	MCP           MCPConfig          `yaml:"mcp"`
 
 	Memory        MemoryConfig        `yaml:"memory"`
 	Router        RouterConfig        `yaml:"router"`
@@ -86,6 +87,24 @@ type LLMRetryConfig struct {
 	MaxRetries     int    `yaml:"max_retries"`     // max retry attempts (0 = no retries)
 	InitialBackoff string `yaml:"initial_backoff"` // initial backoff duration (e.g. "1s")
 	MaxBackoff     string `yaml:"max_backoff"`     // maximum backoff duration (e.g. "30s")
+}
+
+// ReasoningConfig configures LLM reasoning/thinking behavior.
+// When enabled, models that support extended thinking will use it.
+// The base_effort level is automatically adapted per agent role by AgentReasoningMode,
+// unless a role-specific override is set in role_overrides.
+type ReasoningConfig struct {
+	// BaseEffort is the default reasoning effort level for primary agents.
+	// Valid values: "off", "minimal", "low", "medium", "high", "maximum".
+	// Empty string defaults to "high" when the model supports reasoning.
+	BaseEffort string `yaml:"base_effort"`
+
+	// RoleOverrides allows overriding the reasoning effort for specific agent roles.
+	// Keys are role names: "orchestrator", "planner", "coder", "tester", "executor",
+	// "researcher", "router", "reflector", "compaction", "title", "summary", "judge".
+	// Values are ReasoningEffort levels (same as BaseEffort).
+	// Example: {"researcher": "medium"} to give researcher agents more thinking.
+	RoleOverrides map[string]string `yaml:"role_overrides"`
 }
 
 // MCPConfig holds MCP server configurations.

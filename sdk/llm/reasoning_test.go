@@ -86,12 +86,56 @@ func TestResolveReasoning_Gemini(t *testing.T) {
 }
 
 func TestResolveReasoning_UnsupportedFamily(t *testing.T) {
-	families := []string{"deepseek", "mistral", "kimi", "default", "unknown"}
+	families := []string{"mistral", "kimi", "default", "unknown"}
 	for _, family := range families {
 		t.Run(family, func(t *testing.T) {
 			cfg := ResolveReasoning(ReasoningHigh, family)
 			if cfg.Enabled {
 				t.Errorf("expected Enabled=false for family %q", family)
+			}
+		})
+	}
+}
+
+func TestResolveReasoning_DeepSeek(t *testing.T) {
+	tests := []struct {
+		effort           ReasoningEffort
+		wantEnabled      bool
+		wantOpenAIEffort string
+		wantThinking     string
+	}{
+		{ReasoningOff, false, "", "disabled"},
+		{ReasoningLow, true, "high", "enabled"},
+		{ReasoningMedium, true, "high", "enabled"},
+		{ReasoningHigh, true, "high", "enabled"},
+		{ReasoningMaximum, true, "max", "enabled"},
+		{"unknown", true, "high", "enabled"}, // defaults to high
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.effort), func(t *testing.T) {
+			cfg := ResolveReasoning(tt.effort, "deepseek")
+			if cfg.Enabled != tt.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", cfg.Enabled, tt.wantEnabled)
+			}
+			if cfg.DeepSeekThinking != tt.wantThinking {
+				t.Errorf("DeepSeekThinking = %q, want %q", cfg.DeepSeekThinking, tt.wantThinking)
+			}
+			if tt.wantEnabled && cfg.OpenAIEffort != tt.wantOpenAIEffort {
+				t.Errorf("OpenAIEffort = %q, want %q", cfg.OpenAIEffort, tt.wantOpenAIEffort)
+			}
+		})
+	}
+}
+
+func TestResolveReasoning_Off(t *testing.T) {
+	// Verify ReasoningOff disables reasoning across all supported families
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek"}
+	for _, family := range families {
+		t.Run(family, func(t *testing.T) {
+			cfg := ResolveReasoning(ReasoningOff, family)
+			if cfg.Enabled {
+				t.Errorf("expected Enabled=false for family %q with ReasoningOff", family)
 			}
 		})
 	}
@@ -108,26 +152,33 @@ func TestAgentReasoningMode(t *testing.T) {
 		{"planner", ReasoningMaximum, ReasoningMaximum},
 		{"coder", ReasoningMedium, ReasoningMedium},
 		{"executor", ReasoningLow, ReasoningLow},
+		{"tester", ReasoningHigh, ReasoningHigh}, // tester is primary
 
-		// Auxiliary agents get reduced reasoning
+		// Analytical auxiliary agents get reduced reasoning
 		{"router", ReasoningHigh, ReasoningLow},
 		{"router", ReasoningMedium, ReasoningMinimal},
 		{"reflector", ReasoningMaximum, ReasoningLow},
 		{"reflector", ReasoningLow, ReasoningMinimal},
-		{"compaction", ReasoningHigh, ReasoningLow},
-		{"title", ReasoningMedium, ReasoningMinimal},
-		{"summary", ReasoningHigh, ReasoningLow},
+		{"researcher", ReasoningHigh, ReasoningLow},    // researcher is analytical
+		{"researcher", ReasoningMaximum, ReasoningLow}, // researcher is analytical
+		{"researcher", ReasoningMedium, ReasoningMinimal},
+
+		// Mechanical auxiliary agents get reasoning disabled
+		{"compaction", ReasoningHigh, ReasoningOff},
+		{"title", ReasoningMedium, ReasoningOff},
+		{"summary", ReasoningHigh, ReasoningOff},
+		{"judge", ReasoningHigh, ReasoningOff}, // judge is mechanical
 
 		// Unknown role passes through
 		{"custom_role", ReasoningHigh, ReasoningHigh},
 
-		// Empty base effort returns empty for all roles
-		{"orchestrator", "", ""},
-		{"router", "", ""},
-		{"reflector", "", ""},
-		{"compaction", "", ""},
-		{"title", "", ""},
-		{"custom_role", "", ""},
+		// Empty base effort returns ReasoningOff for all roles
+		{"orchestrator", "", ReasoningOff},
+		{"router", "", ReasoningOff},
+		{"reflector", "", ReasoningOff},
+		{"compaction", "", ReasoningOff},
+		{"title", "", ReasoningOff},
+		{"custom_role", "", ReasoningOff},
 	}
 
 	for _, tt := range tests {
@@ -135,6 +186,41 @@ func TestAgentReasoningMode(t *testing.T) {
 			got := AgentReasoningMode(tt.role, tt.base)
 			if got != tt.expected {
 				t.Errorf("AgentReasoningMode(%q, %q) = %q, want %q", tt.role, tt.base, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestResolveAgentReasoningMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		role     string
+		base     ReasoningEffort
+		overrides map[string]string
+		expected ReasoningEffort
+	}{
+		// No overrides: falls back to AgentReasoningMode
+		{"no overrides primary", "coder", ReasoningHigh, nil, ReasoningHigh},
+		{"no overrides analytical", "researcher", ReasoningHigh, nil, ReasoningLow},
+		{"no overrides mechanical", "title", ReasoningHigh, nil, ReasoningOff},
+
+		// Override takes precedence
+		{"override researcher", "researcher", ReasoningHigh, map[string]string{"researcher": "medium"}, ReasoningMedium},
+		{"override coder", "coder", ReasoningHigh, map[string]string{"coder": "low"}, ReasoningLow},
+		{"override judge to enabled", "judge", ReasoningHigh, map[string]string{"judge": "high"}, ReasoningHigh},
+
+		// Override for different role is ignored
+		{"unrelated override", "coder", ReasoningHigh, map[string]string{"researcher": "medium"}, ReasoningHigh},
+
+		// Empty override value falls back to default
+		{"empty override", "researcher", ReasoningHigh, map[string]string{"researcher": ""}, ReasoningLow},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveAgentReasoningMode(tt.role, tt.base, tt.overrides)
+			if got != tt.expected {
+				t.Errorf("ResolveAgentReasoningMode(%q, %q, %v) = %q, want %q", tt.role, tt.base, tt.overrides, got, tt.expected)
 			}
 		})
 	}

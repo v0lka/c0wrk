@@ -199,7 +199,7 @@ func (p *GeminiProvider) buildConfig(req ChatRequest, systemInstruction *genai.C
 		config.Temperature = &temp
 	}
 
-	// Apply reasoning effort if set
+	// Apply reasoning effort if set and not explicitly off
 	if req.ReasoningEffort != "" {
 		rc := ResolveReasoning(req.ReasoningEffort, "gemini")
 		if rc.Enabled {
@@ -212,6 +212,11 @@ func (p *GeminiProvider) buildConfig(req ChatRequest, systemInstruction *genai.C
 				tc.ThinkingBudget = &budget
 			}
 			config.ThinkingConfig = tc
+		} else if req.ReasoningEffort == ReasoningOff {
+			// Explicitly disable thinking for Gemini 2.5+ which defaults to adaptive
+			config.ThinkingConfig = &genai.ThinkingConfig{
+				ThinkingLevel: genai.ThinkingLevel("none"),
+			}
 		}
 	}
 

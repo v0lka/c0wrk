@@ -21,11 +21,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced test coverage documentation for planner functionality with improved test coverage for planDirect and exploration modes
-- Added comprehensive documentation for synthetic plan threshold differentiation between low-complexity and high-complexity tasks
-- Expanded documentation for planner context factory functions and token counting integration
-- Updated planner complexity scoring and execution strategy documentation
-- Enhanced synthetic plan threshold configuration documentation
+- Enhanced planner system with improved context formatting functions and unified context assembly through appendPlannerContextSections
+- Added shared context formatting functions for environment, vector search hints, AGENTS.md, and active skills
+- Improved reflection handling with better structured formatting for plan attempts and session reflections
+- Enhanced integration with vector search hints and project instructions through unified context assembly
+- Added comprehensive test coverage for the new context formatting infrastructure
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -33,12 +33,15 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Enhanced Test Coverage](#enhanced-test-coverage)
-7. [Project-Specific Instructions Integration](#project-specific-instructions-integration)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
+6. [Enhanced Context Formatting Infrastructure](#enhanced-context-formatting-infrastructure)
+7. [Improved Reflection Handling](#improved-reflection-handling)
+8. [Unified Context Assembly System](#unified-context-assembly-system)
+9. [Enhanced Test Coverage](#enhanced-test-coverage)
+10. [Project-Specific Instructions Integration](#project-specific-instructions-integration)
+11. [Dependency Analysis](#dependency-analysis)
+12. [Performance Considerations](#performance-considerations)
+13. [Troubleshooting Guide](#troubleshooting-guide)
+14. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the C0WRK planner system and its role in generating execution plans for AI tasks. The planner supports:
@@ -49,8 +52,9 @@ This document explains the C0WRK planner system and its role in generating execu
 - PlanContinuation for follow-up requests after task completion
 - Prompt engineering with domain-specific templates
 - Relationship between planner complexity scores and execution strategies
-- **Enhanced**: Comprehensive test coverage for planDirect and exploration modes
-- **Updated**: Improved synthetic plan threshold differentiation between low-complexity and high-complexity tasks
+- **Enhanced**: Unified context assembly system with shared formatting functions
+- **Enhanced**: Improved reflection handling with structured formatting
+- **Enhanced**: Better integration with vector search hints and project instructions
 
 ## Project Structure
 The planner system resides in the core package and integrates with the broader orchestration framework. Key files include:
@@ -60,7 +64,7 @@ The planner system resides in the core package and integrates with the broader o
 - Prompt templates for planner and router
 - Builder wiring components together
 - Types and system prompt utilities
-- **Enhanced**: Comprehensive test coverage for planner functionality
+- **Enhanced**: Unified context formatting infrastructure with shared functions
 
 ```mermaid
 graph TB
@@ -127,12 +131,12 @@ PlannerTests --> Orchestrator
 - [reflector.go:24-80](file://core/reflector.go#L24-L80)
 
 ## Core Components
-- Planner: Generates DAG execution plans using either synthetic or informed exploration strategies, depending on domain and tool availability. It builds domain-aware system prompts and parses structured JSON plans. **Enhanced**: Comprehensive test coverage for planDirect and exploration modes with proper differentiation between low-complexity and high-complexity tasks.
+- Planner: Generates DAG execution plans using either synthetic or informed exploration strategies, depending on domain and tool availability. It builds domain-aware system prompts and parses structured JSON plans. **Enhanced**: Unified context assembly through appendPlannerContextSections with shared formatting functions for environment, vector search hints, AGENTS.md, and active skills.
 - Router: Classifies user requests by domain and complexity, enabling adaptive planning and execution strategies.
 - Orchestrator: Coordinates routing, planning, and execution, integrating planner decisions with the broader orchestration engine. It supports synthetic plan thresholds and plan continuation workflows. **Enhanced**: Automatically discovers and injects AGENTS.md content from workspace root.
 - Prompt Templates: Domain-specific and model-family-specific templates guide planner and router behavior with simplified tool guidance.
 - Builder: Wires the planner, router, and orchestrator with shared tool registries, context factories, and model registries.
-- **Enhanced**: Comprehensive test coverage for planner context factory functions and token counting integration.
+- **Enhanced**: Unified context formatting infrastructure with shared functions for consistent prompt construction.
 
 **Section sources**
 - [planner.go:168-421](file://core/planner.go#L168-L421)
@@ -196,7 +200,8 @@ Key capabilities:
 - Tool filtering for exploration (codebase-memory MCP tools and filesystem tools).
 - Plan parsing supporting JSON in code blocks and structured fields.
 - Replan and PlanContinuation for failure recovery and follow-ups.
-- **Enhanced**: Comprehensive test coverage for planDirect and exploration modes with proper differentiation between low-complexity and high-complexity tasks.
+- **Enhanced**: Unified context assembly through appendPlannerContextSections with shared formatting functions.
+- **Enhanced**: Improved reflection handling with structured formatting for plan attempts and session reflections.
 
 ```mermaid
 classDiagram
@@ -297,6 +302,126 @@ Orchestrator-->>Orchestrator : "Resume execution"
 - [orchestrator.go:406-559](file://core/orchestrator.go#L406-L559)
 - [types.go:239-244](file://core/types.go#L239-L244)
 
+### Enhanced Context Formatting Infrastructure
+The planner system now includes a unified context formatting infrastructure with shared functions:
+
+#### Shared Context Formatting Functions
+- **formatVectorSearchHints**: Formats auto-RAG file hints with task-relevant files detection
+- **formatAgentsMD**: Formats AGENTS.md project instructions with strict adherence requirements
+- **formatActiveSkills**: Formats active skill instructions with per-skill details and limitations
+- **appendPlannerContextSections**: Unified function that assembles all context sections consistently
+
+#### Context Assembly Order
+The unified context assembly follows a specific order:
+1. Environment context (if available)
+2. Vector search hints (auto-detected relevant files)
+3. AGENTS.md project instructions
+4. Active skills with guidance incorporation
+
+```mermaid
+flowchart TD
+ContextAssembly["appendPlannerContextSections(ctx, base)"] --> EnvCheck{"Environment available?"}
+EnvCheck --> |Yes| AddEnv["Add environment block"]
+EnvCheck --> |No| SkipEnv["Skip environment"]
+AddEnv --> VectorHints["Add vector search hints"]
+SkipEnv --> VectorHints
+VectorHints --> AgentsMD["Add AGENTS.md instructions"]
+AgentsMD --> ActiveSkills["Add active skills guidance"]
+ActiveSkills --> Result["Return assembled context"]
+```
+
+**Diagram sources**
+- [systemprompt.go:177-195](file://core/systemprompt.go#L177-L195)
+- [systemprompt.go:97-142](file://core/systemprompt.go#L97-L142)
+
+**Section sources**
+- [systemprompt.go:97-195](file://core/systemprompt.go#L97-L195)
+- [planner.go:505-507](file://core/planner.go#L505-L507)
+- [planner.go:614-616](file://core/planner.go#L614-L616)
+- [planner.go:689-691](file://core/planner.go#L689-L691)
+- [planner.go:752-754](file://core/planner.go#L752-L754)
+
+### Improved Reflection Handling
+The planner system now includes enhanced reflection handling with structured formatting:
+
+#### Plan Attempt Reflections
+- **formatPlanReflections**: Formats reflections from past plan attempts with numbered lists
+- Includes failure analysis, root cause, and action plan for each attempt
+- Used in initial planning and continuation planning contexts
+
+#### Session Reflections
+- **formatSessionReflections**: Formats cross-session reflection patterns
+- Includes summary, root cause, action plan, and suggested actions
+- Used in replanning contexts to learn from previous attempts
+
+```mermaid
+flowchart TD
+Reflections["Reflection Handling"] --> PlanReflections["Plan Attempt Reflections"]
+Reflections --> SessionReflections["Session Reflections"]
+PlanReflections --> FormatPlan["formatPlanReflections()"]
+SessionReflections --> FormatSession["formatSessionReflections()"]
+FormatPlan --> Template["Template with numbered entries"]
+FormatSession --> Template
+Template --> Prompt["Injected into planner prompts"]
+```
+
+**Diagram sources**
+- [planner.go:776-806](file://core/planner.go#L776-L806)
+- [planner.go:588-591](file://core/planner.go#L588-L591)
+- [planner.go:668-679](file://core/planner.go#L668-L679)
+
+**Section sources**
+- [planner.go:776-806](file://core/planner.go#L776-L806)
+- [planner.go:588-591](file://core/planner.go#L588-L591)
+- [planner.go:668-679](file://core/planner.go#L668-L679)
+
+### Unified Context Assembly System
+The appendPlannerContextSections function serves as the central hub for context assembly:
+
+#### Function Responsibilities
+- **Consistent Assembly**: Ensures all planner prompts receive identical context formatting
+- **Conditional Inclusion**: Only includes sections when data is available in context
+- **Order Preservation**: Maintains consistent ordering across different prompt types
+- **Performance Optimization**: Minimizes string concatenation overhead through efficient building
+
+#### Integration Points
+The unified assembly is used across all planner prompt construction methods:
+- Initial planning system prompts
+- Informed exploration system prompts  
+- Replanning system prompts
+- Continuation planning system prompts
+
+```mermaid
+sequenceDiagram
+participant Builder as "Prompt Builder"
+participant Context as "Context Manager"
+participant Assembly as "appendPlannerContextSections"
+Builder->>Context : "Get environment data"
+Context-->>Builder : "Environment block"
+Builder->>Context : "Get vector hints"
+Context-->>Builder : "Vector search hints"
+Builder->>Context : "Get AGENTS.md"
+Context-->>Builder : "Project instructions"
+Builder->>Context : "Get active skills"
+Context-->>Builder : "Skill guidance"
+Builder->>Assembly : "Assemble all sections"
+Assembly-->>Builder : "Unified context prompt"
+```
+
+**Diagram sources**
+- [systemprompt.go:177-195](file://core/systemprompt.go#L177-L195)
+- [planner.go:505-507](file://core/planner.go#L505-L507)
+- [planner.go:614-616](file://core/planner.go#L614-L616)
+- [planner.go:689-691](file://core/planner.go#L689-L691)
+- [planner.go:752-754](file://core/planner.go#L752-L754)
+
+**Section sources**
+- [systemprompt.go:177-195](file://core/systemprompt.go#L177-L195)
+- [planner.go:505-507](file://core/planner.go#L505-L507)
+- [planner.go:614-616](file://core/planner.go#L614-L616)
+- [planner.go:689-691](file://core/planner.go#L689-L691)
+- [planner.go:752-754](file://core/planner.go#L752-L754)
+
 ### Enhanced Test Coverage
 The planner system now includes comprehensive test coverage for all major functionality:
 
@@ -322,6 +447,12 @@ The planner system now includes comprehensive test coverage for all major functi
 - **Token counting**: Tests verify integration with token counters for context window management
 - **Environment context**: Tests verify proper handling of environment information and workspace paths
 
+#### Unified Context Assembly Testing
+- **Empty context handling**: Tests verify that empty contexts return unchanged base prompts
+- **All sections present**: Tests verify proper assembly when all context sections are available
+- **Selective inclusion**: Tests verify that only available sections are included
+- **Order preservation**: Tests verify consistent ordering across different context combinations
+
 ```mermaid
 flowchart TD
 TestCoverage["Enhanced Test Coverage"] --> PlanDirect["PlanDirect Mode Tests"]
@@ -329,6 +460,7 @@ TestCoverage --> Exploration["Exploration Mode Tests"]
 TestCoverage --> Threshold["Synthetic Plan Threshold Tests"]
 TestCoverage --> ContextFactory["Context Factory Tests"]
 TestCoverage --> TokenCounting["Token Counting Tests"]
+TestCoverage --> ContextAssembly["Context Assembly Tests"]
 PlanDirect --> LowComplexity["Low-complexity Tasks"]
 PlanDirect --> HighComplexity["High-complexity Tasks"]
 PlanDirect --> NoTools["No Tools Available"]
@@ -339,15 +471,21 @@ Exploration --> CancelPropagation["Cancel Propagation"]
 Threshold --> DefaultThreshold["Default Threshold (2)"]
 Threshold --> CustomThreshold["Custom Threshold"]
 Threshold --> DomainSpecific["Domain-specific Behavior"]
+ContextAssembly --> EmptyContext["Empty Context Handling"]
+ContextAssembly --> AllSections["All Sections Present"]
+ContextAssembly --> SelectiveInclusion["Selective Inclusion"]
+ContextAssembly --> OrderPreservation["Order Preservation"]
 ```
 
 **Diagram sources**
 - [planner_test.go:800-1200](file://core/planner_test.go#L800-L1200)
 - [planner_test.go:1200-1758](file://core/planner_test.go#L1200-L1758)
+- [planner_test.go:1950-2005](file://core/planner_test.go#L1950-L2005)
 
 **Section sources**
 - [planner_test.go:800-1200](file://core/planner_test.go#L800-L1200)
 - [planner_test.go:1200-1758](file://core/planner_test.go#L1200-L1758)
+- [planner_test.go:1950-2005](file://core/planner_test.go#L1950-L2005)
 
 ### Prompt Engineering System
 The planner leverages domain-specific and model-family-specific prompts:
@@ -355,6 +493,7 @@ The planner leverages domain-specific and model-family-specific prompts:
 - Informed planner prompt guides exploration with simplified tool recommendations.
 - Router system and instruction prompts guide classification.
 - Family-specific overlays adapt behavior per model family.
+- **Enhanced**: Unified context assembly ensures consistent formatting across all prompt types.
 - **Enhanced**: Comprehensive test coverage for prompt injection including AGENTS.md and active skills.
 - **Enhanced**: AGENTS.md project instructions are automatically appended to all planner prompts when available.
 
@@ -371,6 +510,8 @@ AMD["AGENTS.md Content"] --> Planner
 AMD --> Orchestrator
 ActiveSkills["Active Skills"] --> Planner
 ActiveSkills --> Orchestrator
+UnifiedContext["Unified Context Assembly"] --> Planner
+UnifiedContext --> Orchestrator
 ```
 
 **Diagram sources**
@@ -394,7 +535,7 @@ PlanContinuation enables follow-up requests after task completion:
 - Builds a continuation prompt including completed plan summaries and terminal steps.
 - Enforces step ID prefixes and dependency on terminal steps.
 - Merges continuation steps into the existing plan and resumes execution.
-- **Enhanced**: Comprehensive test coverage for continuation functionality including AGENTS.md injection.
+- **Enhanced**: Unified context assembly ensures consistent formatting with project instructions and active skills.
 
 ```mermaid
 sequenceDiagram
@@ -516,6 +657,7 @@ The planner system exhibits clear separation of concerns with enhanced project c
 - Router depends on prompt templates and tool availability.
 - Orchestrator orchestrates both and integrates with the SDK orchestration engine, managing AGENTS.md discovery.
 - Builder wires components and provides shared registries and context factories.
+- **Enhanced**: Unified context formatting infrastructure provides centralized formatting functions.
 - **Enhanced**: Comprehensive test coverage ensures reliability across all dependencies.
 - **Enhanced**: AGENTS.md manager provides centralized context management across all components.
 
@@ -535,6 +677,8 @@ Orchestrator --> SystemPrompt["System Prompt"]
 Orchestrator --> AgentsMD["AGENTS.md Manager"]
 Planner --> AgentsMD
 AgentsMD --> Context["Context Management"]
+ContextFormatting["Context Formatting Infrastructure"] --> Planner
+ContextFormatting --> Orchestrator
 PlannerTests["Planner Tests"] --> Planner
 PlannerTests --> Router
 PlannerTests --> Orchestrator
@@ -559,6 +703,8 @@ PlannerTests --> Orchestrator
 - Informed exploration uses bounded ReAct loops and circuit breakers to prevent runaway token usage.
 - Tool result budgets and context window management mitigate memory pressure.
 - Auto-RAG hints and environment context improve plan quality without excessive prompting.
+- **Enhanced**: Unified context assembly minimizes redundant formatting operations.
+- **Enhanced**: Shared formatting functions reduce code duplication and improve maintainability.
 - **Enhanced**: Comprehensive test coverage ensures performance optimization across all modes.
 - **Enhanced**: AGENTS.md injection adds minimal overhead while significantly improving plan consistency and adherence to project standards.
 
@@ -568,6 +714,8 @@ Common issues and resolutions:
 - Exploration executor failures: The Planner falls back to direct planning when exploration fails.
 - Context cancellation propagation: Cancellation errors are preserved through the planning process.
 - Plan parsing errors: The Planner falls back to direct planning when exploration output cannot be parsed.
+- **Enhanced**: Unified context assembly ensures consistent formatting regardless of context state.
+- **Enhanced**: Improved reflection handling provides better debugging information for plan failures.
 - **Enhanced**: Comprehensive test coverage identifies and resolves edge cases in planDirect and exploration modes.
 - **Enhanced**: Synthetic plan threshold validation ensures proper complexity-based decision making.
 
@@ -581,9 +729,13 @@ The C0WRK planner system provides a robust, adaptive approach to plan generation
 - It intelligently selects between synthetic and full planning based on domain and complexity.
 - It integrates tightly with the Router and Orchestrator to support seamless execution and continuations.
 - Its prompt engineering system ensures domain-specific, model-family-adapted behavior with simplified tool guidance.
+- **Enhanced**: Unified context assembly system provides consistent formatting across all planner prompts.
+- **Enhanced**: Improved reflection handling with structured formatting enhances debugging and learning capabilities.
+- **Enhanced**: Shared context formatting functions reduce code duplication and improve maintainability.
 - **Enhanced**: Comprehensive test coverage validates all major functionality including planDirect and exploration modes.
 - **Enhanced**: Synthetic plan threshold differentiation ensures optimal performance for both simple and complex tasks.
 - **Enhanced**: Project-specific instructions from AGENTS.md provide consistent context across all planning scenarios.
 - It offers resilience through fallbacks, replanning, and reflection-driven improvements.
 - **Enhanced**: Centralized AGENTS.md management ensures all planning contexts maintain project standards and guidelines.
 - **Enhanced**: Context factory functions and token counting integration provide reliable performance monitoring and optimization.
+- **Enhanced**: Enhanced context formatting infrastructure provides a solid foundation for future planner enhancements.

@@ -115,6 +115,7 @@ func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegist
 			CompactionStrategy: applyCompactionStrategy(profile.Domain, 3),
 			KeepLastN:          keepLastN,
 			ProtectedTools:     protectedTools,
+			AgentRole:          profile.Role,
 		}
 	}
 }

@@ -123,6 +123,11 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Models = make(map[string]ModelOverride)
 	}
 
+	// Reasoning defaults
+	if cfg.Reasoning.BaseEffort == "" {
+		cfg.Reasoning.BaseEffort = "high"
+	}
+
 	// LLM retry defaults
 	if cfg.LLM.Retry.MaxRetries == 0 {
 		cfg.LLM.Retry.MaxRetries = 3

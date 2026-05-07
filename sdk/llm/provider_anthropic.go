@@ -219,8 +219,8 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 		anthropicReq.Temperature = &temp
 	}
 
-	// Apply reasoning effort if set
-	if req.ReasoningEffort != "" {
+	// Apply reasoning effort if set and not explicitly off
+	if req.ReasoningEffort != "" && req.ReasoningEffort != ReasoningOff {
 		rc := ResolveReasoning(req.ReasoningEffort, "anthropic")
 		if rc.Enabled && rc.BudgetTokens > 0 {
 			anthropicReq.Thinking = &anthropic.Thinking{

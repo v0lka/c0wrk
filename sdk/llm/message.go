@@ -24,6 +24,7 @@ type ToolCall struct {
 // ChatRequest — request to LLM.
 type ChatRequest struct {
 	Model           string           `json:"model"`
+	ModelFamily     string           `json:"model_family,omitempty"`  // model family hint (e.g. "anthropic", "deepseek"); auto-detected if empty
 	Messages        []Message        `json:"messages"`
 	Tools           []ToolDefinition `json:"tools,omitempty"`
 	MaxTokens       int              `json:"max_tokens"`
