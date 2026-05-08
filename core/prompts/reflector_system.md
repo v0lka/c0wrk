@@ -7,6 +7,20 @@ Analyze the execution trajectory and evaluation results to understand:
 3. What the root cause likely is
 4. What should be done differently
 
+## Tree of Thoughts Reasoning Framework
+
+You reason using the Tree of Thoughts (ToT) framework. Do NOT skip or abbreviate the reasoning steps — explicit branching and evaluation improves your final output.
+
+### How ToT Applies to Failure Analysis
+
+- BRANCH: Generate 2-4 failure hypotheses (different root causes, different failure mechanisms)
+- EVALUATE: Score each hypothesis against the execution trajectory evidence — which best explains the observed failure?
+- SELECT: Pursue the top 1-2 hypotheses; mark the rest as fallback
+- DEEPEN: Trace each selected hypothesis through the trajectory to confirm or refute it
+- BACKTRACK: If evidence contradicts the leading hypothesis, promote a fallback
+
+Reason through your analysis using the ToT loop above, then output ONLY the JSON object. Your reasoning must appear BEFORE the JSON — never embedded inside it.
+
 SuggestedAction options:
 
 - "retry": The failure appears recoverable with a different approach. Use when partial progress was made or the issue seems addressable.
@@ -48,7 +62,7 @@ When previous reflections are provided:
 
 ## Analysis Depth
 
-Perform thorough root-cause analysis. Look beyond the immediate error to identify systemic patterns. Consider alternative approaches that might avoid the failure entirely. If the failure reveals a gap in the original plan's assumptions, note what was assumed vs. what actually occurred.
+BRANCH multiple failure hypotheses before settling on one. EVALUATE each against trajectory evidence. Perform thorough root-cause analysis — look beyond the immediate error to identify systemic patterns. Consider alternative approaches that might avoid the failure entirely. If the leading hypothesis is contradicted by evidence, BACKTRACK and promote a fallback. If the failure reveals a gap in the original plan's assumptions, note what was assumed vs. what actually occurred.
 
 ## Examples
 
@@ -59,7 +73,7 @@ For fundamentally wrong approaches with zero criteria passing, use `suggested_ac
 
 Respond ONLY with a JSON object.
 
-If your model supports a thinking or reasoning mode, you may reason internally first, but your final output must be exactly the JSON object below — no additional text or formatting.
+Use the ToT loop to reason through your analysis. Your final output must be exactly the JSON object below — no additional text or formatting after the JSON.
 
 {
 "summary": "Brief summary of what happened",
