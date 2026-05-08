@@ -4,6 +4,7 @@
 import { useCallback, useState } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
+import { useExecutionModeStore } from '@/stores/executionModeStore'
 import { sendMessage, cancelTask } from '@/api/chat'
 import { createSession } from '@/api/sessions'
 import { generateMessageId } from '@/lib/ids'
@@ -20,6 +21,7 @@ interface UseMessageSenderResult {
 
 export function useMessageSender(): UseMessageSenderResult {
   const [isProcessing, setIsProcessing] = useState(false)
+  const executionMode = useExecutionModeStore(s => s.mode)
 
   const send = useCallback(async (messageText: string) => {
     if (!messageText.trim()) return
@@ -52,7 +54,7 @@ export function useMessageSender(): UseMessageSenderResult {
     useChatStore.getState().setActivityStatus('Processing...')
 
     try {
-      await sendMessage(sessionId, messageText)
+      await sendMessage(sessionId, messageText, executionMode)
     } catch (error) {
       logger.error('Failed to send message:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -67,7 +69,7 @@ export function useMessageSender(): UseMessageSenderResult {
     } finally {
       setIsProcessing(false)
     }
-  }, [])
+  }, [executionMode])
 
   const cancel = useCallback(async () => {
     const sessionId = useSessionStore.getState().activeSessionId

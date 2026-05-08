@@ -131,8 +131,8 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 }
 
 // SendMessage sends a user message to a session (async - results come via events).
-// Always uses Plan&Execute mode.
-func (f *FrontendAPI) SendMessage(id, text string) error {
+// mode controls execution strategy: "normal" = synthetic single-step, "advanced" = full Plan&Execute.
+func (f *FrontendAPI) SendMessage(id, text, mode string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
@@ -159,7 +159,7 @@ func (f *FrontendAPI) SendMessage(id, text string) error {
 	// Check if this is the first message (session has default name)
 	// Title generation is handled by the backend session Manager.
 
-	if err := f.app.Manager().SendMessage(f.appCtx(), id, text); err != nil {
+	if err := f.app.Manager().SendMessage(f.appCtx(), id, text, mode); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil

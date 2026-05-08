@@ -4,10 +4,10 @@ import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import type { ChatMessage, TokenInfo } from '@/types/models'
 
-export async function sendMessage(sessionId: string, text: string): Promise<void> {
+export async function sendMessage(sessionId: string, text: string, mode: string): Promise<void> {
   try {
     const app = getApp()
-    await app.SendMessage(sessionId, text)
+    await app.SendMessage(sessionId, text, mode)
   } catch (err) {
     logger.error('Failed to send message:', err)
     throw err

@@ -224,10 +224,10 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 }
 
 // Handle executes the agent reasoning cycle for the given user message.
-// This is a backwards-compatible wrapper around HandleMessage that uses
-// Plan&Execute mode for first messages.
+// This is a backwards-compatible wrapper around HandleMessage that defaults
+// to full Plan&Execute mode.
 func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleResult, error) {
-	return o.HandleMessage(ctx, userMessage, "", HandleOptions{})
+	return o.HandleMessage(ctx, userMessage, "", HandleOptions{ExecutionMode: "advanced"})
 }
 
 // Resume continues execution of a previously interrupted task from its checkpoint state.
@@ -383,6 +383,13 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 	}
 
 	return ctx
+}
+
+// shouldUseSyntheticPlan determines whether to use a synthetic (single-step) plan.
+// Only "normal" mode uses synthetic plans; everything else (including empty string)
+// defaults to full Plan&Execute.
+func (o *Orchestrator) shouldUseSyntheticPlan(mode string) bool {
+	return mode == "normal"
 }
 
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.
@@ -551,13 +558,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 		var plan *Plan
 
-		// Use synthetic plan for simple tasks to save tokens
-		if routing.Complexity <= o.config.SyntheticPlanThreshold {
-			o.logDebug("orchestrator: using synthetic plan", "complexity", routing.Complexity, "threshold", o.config.SyntheticPlanThreshold)
+		// Determine whether to use synthetic plan based on user-selected mode.
+		useSynthetic := o.shouldUseSyntheticPlan(opts.ExecutionMode)
+		if useSynthetic {
+			o.logDebug("orchestrator: using synthetic plan", "mode", opts.ExecutionMode)
 			plan = o.planner.CreateSyntheticPlan(message, routing.Domain)
 		} else {
 			// Generate full plan via LLM
-			o.logDebug("orchestrator: generating full plan")
+			o.logDebug("orchestrator: generating full plan", "mode", opts.ExecutionMode)
 			o.emitter.ServiceWithMeta("Planning approach...", map[string]any{"phase": "orchestration"})
 			var planErr error
 			plan, planErr = o.planner.Plan(ctx, message, availableTools, nil)
@@ -601,9 +609,10 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 			return nil, errors.New("no existing plan found for continuation")
 		}
 
-		// Use synthetic plan for simple continuations to save tokens
-		if routing.Complexity <= o.config.SyntheticPlanThreshold {
-			o.logDebug("orchestrator: using synthetic continuation plan")
+		// Determine whether to use synthetic continuation based on user-selected mode.
+		useSyntheticContinuation := o.shouldUseSyntheticPlan(opts.ExecutionMode)
+		if useSyntheticContinuation {
+			o.logDebug("orchestrator: using synthetic continuation plan", "mode", opts.ExecutionMode)
 
 			terminalSteps := FindTerminalSteps(existingPlan)
 

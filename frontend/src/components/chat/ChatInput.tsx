@@ -10,7 +10,8 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { TerminalPanel } from '@/components/terminal/TerminalPanel'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { optimizePrompt } from '@/api/prompt'
-import { Play, Square, Maximize2, Minimize2, MessageSquare, Terminal, Sparkles, Loader2 } from 'lucide-react'
+import { Play, Square, Maximize2, Minimize2, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow } from 'lucide-react'
+import { useExecutionModeStore } from '@/stores/executionModeStore'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
@@ -34,6 +35,9 @@ export function ChatInput() {
   const toggleExpanded = useInputModeStore(s => s.toggleExpanded)
 
   const { send, cancel, isProcessing } = useMessageSender()
+
+  const executionMode = useExecutionModeStore(s => s.mode)
+  const setExecutionMode = useExecutionModeStore(s => s.setMode)
 
   useEffect(() => {
     if (mode === 'terminal' && textareaRef.current) {
@@ -207,6 +211,39 @@ export function ChatInput() {
               ? <Loader2 className="size-3.5 animate-spin" />
               : <Sparkles className="size-3.5" />}
           </Button>
+        )}
+        {mode === 'chat' && (
+          <>
+            <div className="w-px h-4 bg-border mx-1" />
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn(
+                'text-muted-foreground hover:text-foreground',
+                executionMode === 'normal' && 'text-primary bg-muted/50',
+              )}
+              onClick={() => setExecutionMode('normal')}
+              title="Normal mode — For regular tasks"
+              aria-label="Switch to normal execution mode"
+              disabled={isInputDisabled}
+            >
+              <Zap className="size-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn(
+                'text-muted-foreground hover:text-foreground',
+                executionMode === 'advanced' && 'text-primary bg-muted/50',
+              )}
+              onClick={() => setExecutionMode('advanced')}
+              title="Advanced mode — For complex multi-step tasks"
+              aria-label="Switch to advanced execution mode"
+              disabled={isInputDisabled}
+            >
+              <Workflow className="size-3.5" />
+            </Button>
+          </>
         )}
         {blockingMessage && mode === 'chat' && (
           <span className="text-xs italic text-muted-foreground">{blockingMessage}</span>

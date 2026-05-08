@@ -778,8 +778,7 @@ func (m *Manager) ArchiveSession(id string) error {
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-// Always uses Plan&Execute mode.
-func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
+func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to restore session: %w", err)
@@ -870,7 +869,8 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 		session.mu.Unlock()
 
 		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-			TaskID: lastTaskID,
+			TaskID:       lastTaskID,
+			ExecutionMode: mode,
 		})
 
 		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh
@@ -880,7 +880,8 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string) error {
 			session.lastCompletedTaskID = "" // clear to avoid repeated failures
 			session.mu.Unlock()
 			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-				TaskID: "",
+				TaskID:       "",
+				ExecutionMode: mode,
 			})
 		}
 

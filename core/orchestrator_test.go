@@ -1057,7 +1057,7 @@ func TestHandleMessage_Continuation(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{TaskID: "task-123"})
+	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1158,7 +1158,7 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-456", HandleOptions{TaskID: "task-123"})
+	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1215,7 +1215,7 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 	)
 	// Note: taskStore is nil by default
 
-	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "task-123"})
+	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
 	if err == nil {
 		t.Fatal("expected error when task store is not configured")
 	}
@@ -1274,7 +1274,7 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "non-existent-task"})
+	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "non-existent-task", ExecutionMode: "advanced"})
 	if err == nil {
 		t.Fatal("expected error when task is not found")
 	}
@@ -1352,7 +1352,7 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 		nil, // skillManager
 		nil, // coreToolRegistry
 	)
-	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{})
+	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1475,7 +1475,7 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{TaskID: "task-123"})
+	result, err := orchestrator.HandleMessage(context.Background(), "Continue the work", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1603,7 +1603,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{TaskID: "task-123"})
+	_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1699,7 +1699,7 @@ func TestHandleMessage_Clarification(t *testing.T) {
 		nil, // skillManager
 		nil, // coreToolRegistry
 	)
-	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{})
+	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
