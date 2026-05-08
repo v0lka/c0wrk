@@ -672,6 +672,36 @@ func (e *EventEmitter) SkillsActivated(skillNames []string) {
 	})
 }
 
+// StepTodoUpdate emits a step_todo_update event with the current to-do list for a plan step.
+func (e *EventEmitter) StepTodoUpdate(stepID string, items []core.TodoItem) {
+	e.log().Debug("emitter: step todo update", "sessionID", e.sessionID, "stepID", stepID, "itemCount", len(items))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	itemData := make([]map[string]any, len(items))
+	completedCount := 0
+	for i, item := range items {
+		itemData[i] = map[string]any{
+			"text":    item.Text,
+			"checked": item.Checked,
+		}
+		if item.Checked {
+			completedCount++
+		}
+	}
+
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "step_todo_update",
+		Data: map[string]any{
+			"step_id":         stepID,
+			"items":           itemData,
+			"completed_count": completedCount,
+			"total_count":     len(items),
+		},
+	})
+}
+
 // SessionTokenTotals returns the accumulated session-wide input and output token counts.
 func (e *EventEmitter) SessionTokenTotals() (inputTokens, outputTokens int) {
 	e.tokens.mu.Lock()

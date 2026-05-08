@@ -189,6 +189,11 @@ func (l *loggingEmitter) SkillsActivated(skillNames []string) {
 	l.inner.SkillsActivated(skillNames)
 }
 
+func (l *loggingEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
+	l.logger.Debug("step todo update", "stepID", stepID, "itemCount", len(items))
+	l.inner.StepTodoUpdate(stepID, items)
+}
+
 // EmitSessionTokens forwards session token totals to the inner emitter if it supports it.
 // This enables the UsageTracker observer (registered via builder.go type assertion) to
 // propagate accumulated tokens through the logging wrapper.

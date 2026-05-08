@@ -65,6 +65,9 @@ func (s *spyEmitter) SkillsActivated(skills []string)            { s.record("Ski
 func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	s.record("EmitSessionTokens", totalIn, totalOut, model, family)
 }
+func (s *spyEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
+	s.record("StepTodoUpdate", stepID, items)
+}
 
 // scopableSpyEmitter extends spyEmitter with scoping support.
 type scopableSpyEmitter struct {

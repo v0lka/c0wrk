@@ -74,3 +74,31 @@ func FactStoreFromContext(ctx context.Context) FactStore {
 	fs, _ := ctx.Value(factStoreKey).(FactStore)
 	return fs
 }
+
+// ---------------------------------------------------------------------------
+// StepTodoUpdateFunc — callback for set_step_status tool to emit events
+// ---------------------------------------------------------------------------
+
+// TodoItem represents a single checklist item parsed from the LLM's to-do list.
+type TodoItem struct {
+	Text    string
+	Checked bool
+}
+
+// StepTodoUpdateFunc is the callback signature for emitting to-do updates.
+type StepTodoUpdateFunc func(stepID string, items []TodoItem)
+
+type todoUpdateFuncKeyType struct{}
+
+var todoUpdateFuncKey = todoUpdateFuncKeyType{}
+
+// WithStepTodoUpdateFunc returns a context carrying the given to-do update callback.
+func WithStepTodoUpdateFunc(ctx context.Context, fn StepTodoUpdateFunc) context.Context {
+	return context.WithValue(ctx, todoUpdateFuncKey, fn)
+}
+
+// StepTodoUpdateFuncFromContext returns the StepTodoUpdateFunc from context, or nil.
+func StepTodoUpdateFuncFromContext(ctx context.Context) StepTodoUpdateFunc {
+	fn, _ := ctx.Value(todoUpdateFuncKey).(StepTodoUpdateFunc)
+	return fn
+}

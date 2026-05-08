@@ -256,6 +256,7 @@ func (m *mockEmitter) FileRollbackError(_ string, _ error)                  {}
 func (m *mockEmitter) SkillsActivated(_ []string)                           {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) Finishing(_ int, _ string)                            {}
+func (m *mockEmitter) StepTodoUpdate(_ string, _ []TodoItem)                {}
 
 // ---------------------------------------------------------------------------
 // testPersistableBlackboard — a minimal PersistableBlackboard for core tests

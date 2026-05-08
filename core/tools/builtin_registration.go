@@ -84,6 +84,9 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	registry.Register(builtins.NewReadStepOutputTool())
 	registry.Register(builtins.NewListStepOutputsTool())
 
+	// Step status / to-do checklist tool
+	registry.Register(builtins.NewSetStepStatusTool())
+
 	// Fact memory tools
 	registry.Register(builtins.NewStoreFactTool())
 	registry.Register(builtins.NewSearchFactsTool())

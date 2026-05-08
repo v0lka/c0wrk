@@ -250,5 +250,5 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 // RunSubAgent is a backward-compatible wrapper around agent.RunSubAgent.
 // It accepts a TaskDefinition (c0wrk-specific) and extracts tools/description for the SDK call.
 func RunSubAgent(ctx context.Context, stepID string, executor *agent.Executor, cm ContextManager, task TaskDefinition, emitter Emitter) <-chan SubAgentResult {
-	return agent.RunSubAgent(ctx, stepID, executor, cm, task.Tools, task.Task, emitter)
+	return agent.RunSubAgent(ctx, stepID, executor, cm, task.Tools, task.Task, emitter, nil)
 }

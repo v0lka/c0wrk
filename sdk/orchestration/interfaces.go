@@ -34,6 +34,7 @@ type Events interface {
 	OnServiceMeta(content string, meta map[string]any)
 	OnReplanFailed(err error)
 	OnFileRollbackError(stepID string, err error)
+	OnStepTodoUpdate(stepID string, items []agent.TodoItem)
 }
 
 // StepScopable is an optional interface that Events implementations

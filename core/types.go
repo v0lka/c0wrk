@@ -132,6 +132,14 @@ type Emitter interface {
 	FileRollbackError(stepID string, err error)
 	// SkillsActivated reports the skills matched and activated for the current task.
 	SkillsActivated(skillNames []string)
+	// StepTodoUpdate emits a to-do list update for a plan step.
+	StepTodoUpdate(stepID string, items []TodoItem)
+}
+
+// TodoItem represents a single checklist item in a step's to-do list.
+type TodoItem struct {
+	Text    string
+	Checked bool
 }
 
 // PlanStepScopable is an optional interface that Emitter implementations
@@ -167,6 +175,7 @@ func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)               
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) FileRollbackError(_ string, _ error)                          {}
 func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
+func (n *noopEmitter) StepTodoUpdate(_ string, _ []TodoItem)                        {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -217,6 +226,13 @@ func (a *emitterEventsAdapter) OnReplanFailed(err error) {
 func (a *emitterEventsAdapter) OnFileRollbackError(stepID string, err error) {
 	a.log().Debug("event adapter: file rollback error", "stepID", stepID, "error", err)
 	a.FileRollbackError(stepID, err)
+}
+func (a *emitterEventsAdapter) OnStepTodoUpdate(stepID string, items []agent.TodoItem) {
+	coreItems := make([]TodoItem, len(items))
+	for i, item := range items {
+		coreItems[i] = TodoItem{Text: item.Text, Checked: item.Checked}
+	}
+	a.StepTodoUpdate(stepID, coreItems)
 }
 
 // WithStepID implements orchestration.StepScopable.

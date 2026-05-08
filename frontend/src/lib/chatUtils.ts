@@ -21,6 +21,7 @@ export const roleToType: Record<string, MessageType> = {
   tool_confirm: 'tool_confirm', ask_user: 'ask_user', task_cancelled: 'error',
   status: 'status', task_resumed: 'task_resumed',
   task_failed_resumable: 'error', step_limit: 'assistant', context_compaction: 'assistant',
+  step_todo_update: 'step_todo_update',
 }
 
 /** Convert a persisted ChatMessage to ChatMessageUI, matching live event shape. */
@@ -89,7 +90,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         pushItem({ kind: 'service', id: msg.id, variant: msg.type as 'routing' | 'retry' | 'step_retry', content: msg.content, metadata: meta }, planStepId); break
       case 'status':
         pushItem({ kind: 'service', id: msg.id, variant: 'status', content: msg.content, metadata: meta }, planStepId); break
-      case 'step_done': case 'thinking': case 'subagent_launch': case 'subagent_complete': case 'task_resumed': break
+      case 'step_done': case 'thinking': case 'subagent_launch': case 'subagent_complete': case 'task_resumed': case 'step_todo_update': break
       default: break
     }
   }
@@ -163,6 +164,13 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[]): void {
       if (item) {
         item.status = success ? 'completed' : 'failed'
         if (duration != null) item.duration = duration
+      }
+    } else if (msg.type === 'step_todo_update') {
+      const stepId = msgMeta?.step_id as string | undefined
+      const items = msgMeta?.items as Array<{ text: string; checked: boolean }> | undefined
+      const stepItem = stepId ? group.items.find(it => it.id === stepId) : undefined
+      if (stepItem && items) {
+        stepItem.todoItems = items.map((it) => ({ text: it.text, checked: it.checked }))
       }
     }
   }

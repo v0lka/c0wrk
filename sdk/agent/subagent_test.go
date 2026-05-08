@@ -30,7 +30,7 @@ func TestRunSubAgent_Success(t *testing.T) {
 	cm := newMockContextManager()
 	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
-	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "test task", nil)
+	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "test task", nil, nil)
 	result := <-ch
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -53,7 +53,7 @@ func TestRunSubAgent_WithEmitter(t *testing.T) {
 	events := &recordingEvents{}
 	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
-	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "task desc", events)
+	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "task desc", events, nil)
 	result := <-ch
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -85,7 +85,7 @@ func TestRunSubAgent_LLMError(t *testing.T) {
 	cm := newMockContextManager()
 	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
-	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "test", nil)
+	ch := RunSubAgent(context.Background(), "step_1", exec, cm, nil, "test", nil, nil)
 	result := <-ch
 	if result.Error == nil {
 		t.Fatal("expected error")
@@ -109,7 +109,7 @@ func TestRunSubAgent_MaxStepsExhausted(t *testing.T) {
 
 	ch := RunSubAgent(context.Background(), "step_1", exec, cm, []tools.ToolDescriptor{
 		{Name: "tool1", Description: "t", Source: "core"},
-	}, "test", nil)
+	}, "test", nil, nil)
 	result := <-ch
 	if result.Error == nil {
 		t.Fatal("expected error for max steps exhaustion")

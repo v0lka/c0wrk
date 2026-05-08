@@ -24,19 +24,20 @@ func NewSubAgent(id string, executor *Executor) *SubAgent {
 
 // SubAgentTask bundles an agent with its task tools, context manager, and events.
 type SubAgentTask struct {
-	StepID    string
-	Executor  *Executor
-	CM        ContextManager
-	TaskTools []tools.ToolDescriptor
-	TaskDesc  string      // task description (for SubAgentLaunch event)
-	Emitter   AgentEvents // event emitter (nil-safe)
+	StepID         string
+	Executor       *Executor
+	CM             ContextManager
+	TaskTools      []tools.ToolDescriptor
+	TaskDesc       string             // task description (for SubAgentLaunch event)
+	Emitter        AgentEvents        // event emitter (nil-safe)
+	TodoUpdateFunc StepTodoUpdateFunc // optional callback for set_step_status tool
 }
 
 // RunSubAgent starts the executor in a goroutine and returns a channel for the result.
 // The goroutine respects context cancellation — when ctx is cancelled,
 // executor.Run will return because its LLM calls and tool executions use the same context.
 // emitter is optional (nil-safe) for console output.
-func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm ContextManager, taskTools []tools.ToolDescriptor, taskDesc string, emitter AgentEvents) (resultCh <-chan SubAgentResult) {
+func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm ContextManager, taskTools []tools.ToolDescriptor, taskDesc string, emitter AgentEvents, todoUpdateFunc StepTodoUpdateFunc) (resultCh <-chan SubAgentResult) {
 	// Use NoopEvents if nil to avoid nil checks
 	if emitter == nil {
 		emitter = &NoopEvents{}
@@ -55,6 +56,11 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 
 		// Set step ID so file tracker and other context-aware tools know the current step
 		ctx = WithStepID(ctx, stepID)
+
+		// Set to-do update callback for set_step_status tool
+		if todoUpdateFunc != nil {
+			ctx = WithStepTodoUpdateFunc(ctx, todoUpdateFunc)
+		}
 
 		result, err := executor.Run(ctx, taskTools, cm)
 
@@ -105,7 +111,7 @@ func RunSubAgentsParallel(ctx context.Context, agents []SubAgentTask) (results [
 	// Launch all agents and collect their channels
 	channels := make([]<-chan SubAgentResult, len(agents))
 	for i, ag := range agents {
-		channels[i] = RunSubAgent(ctx, ag.StepID, ag.Executor, ag.CM, ag.TaskTools, ag.TaskDesc, ag.Emitter)
+		channels[i] = RunSubAgent(ctx, ag.StepID, ag.Executor, ag.CM, ag.TaskTools, ag.TaskDesc, ag.Emitter, ag.TodoUpdateFunc)
 	}
 
 	// Collect all results

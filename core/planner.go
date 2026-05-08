@@ -404,7 +404,9 @@ func (p *Planner) planWithExploration(
 	)
 	exec.SetReasoningEffort(llm.ResolveAgentReasoningMode("researcher", p.baseReasoningEffort, p.roleOverrides))
 
-	// Run the exploration loop
+	// Run the exploration loop with a synthetic step ID so context-aware tools
+	// (e.g. set_step_status) know which logical step they belong to.
+	ctx = agent.WithStepID(ctx, "planner-exploration")
 	p.emitService("Exploring codebase...", map[string]any{"phase": "planning"})
 	result, err := exec.Run(ctx, plannerTools, cm)
 	if err != nil {

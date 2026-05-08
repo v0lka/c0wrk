@@ -450,7 +450,7 @@ func (o *Orchestrator) executePlanWithSteps(
 
 			scopedEvents := o.scopeEvents(step.ID)
 			stepCaller := o.callerForStep(cm)
-			executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
+			executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, false, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 			if o.cfg.StepLimitFunc != nil {
 				executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
@@ -463,13 +463,18 @@ func (o *Orchestrator) executePlanWithSteps(
 				executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
 			}
 
+			todoUpdateFunc := func(stepID string, items []agent.TodoItem) {
+				scopedEvents.OnStepTodoUpdate(stepID, items)
+			}
+
 			tasks = append(tasks, agent.SubAgentTask{
-				StepID:    step.ID,
-				Executor:  executor,
-				CM:        cm,
-				TaskTools: taskDef.tools,
-				TaskDesc:  taskDef.task,
-				Emitter:   scopedEvents,
+				StepID:         step.ID,
+				Executor:       executor,
+				CM:             cm,
+				TaskTools:      taskDef.tools,
+				TaskDesc:       taskDef.task,
+				Emitter:        scopedEvents,
+				TodoUpdateFunc: todoUpdateFunc,
 			})
 		}
 
@@ -651,13 +656,18 @@ func (o *Orchestrator) executePlanWithSteps(
 						executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
 					}
 
+					todoUpdateFunc := func(stepID string, items []agent.TodoItem) {
+						scopedEvents.OnStepTodoUpdate(stepID, items)
+					}
+
 					retryTask := agent.SubAgentTask{
-						StepID:    failedStepID,
-						Executor:  executor,
-						CM:        cm,
-						TaskTools: taskDef.tools,
-						TaskDesc:  taskDef.task,
-						Emitter:   scopedEvents,
+						StepID:         failedStepID,
+						Executor:       executor,
+						CM:             cm,
+						TaskTools:      taskDef.tools,
+						TaskDesc:       taskDef.task,
+						Emitter:        scopedEvents,
+						TodoUpdateFunc: todoUpdateFunc,
 					}
 
 					// Execute single step
@@ -973,10 +983,6 @@ func defaultSystemPrompt(_ context.Context, stepDescription string) string {
 	b.WriteString("Your task: " + stepDescription + "\n")
 	return b.String()
 }
-
-// ExecuteAdHocStep executes a single ad-hoc step on an existing Blackboard,
-// using the same machinery as regular plan step execution.
-// This is useful for continuation steps that need to run after the main plan completes.
 func (o *Orchestrator) ExecuteAdHocStep(
 	ctx context.Context,
 	bb Blackboard,

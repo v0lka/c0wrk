@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react'
 import { onSessionEvent } from '@/api/runtime'
-import { isPlanData, isPlanStepStartData, isPlanStepCompleteData } from '@/types/events'
+import { isPlanData, isPlanStepStartData, isPlanStepCompleteData, isStepTodoUpdateData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
 import { generateMessageId } from '@/lib/ids'
@@ -95,6 +95,16 @@ export function usePlanEvents(sessionId: string | null): void {
           },
           timestamp: Date.now(),
         })
+      }),
+    )
+
+    cleanups.push(
+      onSessionEvent(sessionId, 'step_todo_update', (data) => {
+        if (!isStepTodoUpdateData(data)) return
+        usePlanStore.getState().updateStepTodo(
+          data.step_id,
+          data.items.map((item) => ({ text: item.text, checked: item.checked })),
+        )
       }),
     )
 

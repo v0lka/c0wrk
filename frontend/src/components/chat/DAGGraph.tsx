@@ -3,20 +3,36 @@ import { computeDAGLayout } from '@/lib/dagLayout'
 import type { PlanItem } from '@/types/models'
 
 const LANE_WIDTH = 6
-const ROW_HEIGHT = 24
+const BASE_ROW_HEIGHT = 24
+const TODO_ITEM_HEIGHT = 14
 const PADDING = 4
 const STROKE_COLOR = 'var(--color-muted-foreground)'
 const STROKE_WIDTH = 1
 
+function computeRowHeight(item: PlanItem): number {
+  if (!item.todoItems || item.todoItems.length === 0) return BASE_ROW_HEIGHT
+  return BASE_ROW_HEIGHT + item.todoItems.length * TODO_ITEM_HEIGHT + 4
+}
+
 export function DAGGraph({ items }: { items: PlanItem[] }) {
   const layout = useMemo(() => computeDAGLayout(items), [items])
+  const rowHeights = useMemo(() => items.map(computeRowHeight), [items])
+  const rowOffsets = useMemo(() => {
+    const offsets: number[] = []
+    let offset = 0
+    for (let i = 0; i < rowHeights.length; i++) {
+      offsets.push(offset + rowHeights[i]! / 2)
+      offset += rowHeights[i]!
+    }
+    return offsets
+  }, [rowHeights])
 
   if (layout.maxLane === -1) return null
 
   const width = (layout.maxLane + 1) * LANE_WIDTH + PADDING * 2
-  const height = items.length * ROW_HEIGHT
+  const height = rowHeights.reduce((a, b) => a + b, 0)
   const laneX = (lane: number) => lane * LANE_WIDTH + PADDING + LANE_WIDTH / 2
-  const rowY = (row: number) => row * ROW_HEIGHT + ROW_HEIGHT / 2
+  const rowY = (row: number) => rowOffsets[row] ?? 0
 
   return (
     <svg width={width} height={height} className="flex-shrink-0">

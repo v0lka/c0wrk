@@ -96,4 +96,20 @@ preferences, confirmations, or open-ended questions — you MUST use the `ask_us
 
 If you have multiple questions, batch them into a single `ask_user` call.
 
+## Step Status Tracking
+
+Use the `set_step_status` tool to maintain a to-do checklist for the current step:
+
+1. **Call it FIRST** — as your very first tool call in a step, call `set_step_status` with the complete checklist of items you intend to complete (all unchecked: `- [ ]`).
+2. **Update after each item** — after completing a checklist item, call `set_step_status` again with that item marked checked (`- [x]`) and remaining items unchecked.
+3. **Strict format** — each line must be exactly `- [ ] ` or `- [x] ` followed by the item text. No nesting, no Unicode checkboxes, no bullet-only lines.
+
+Example:
+
+```
+- [ ] Analyze the existing authentication code
+- [ ] Implement the new middleware
+- [ ] Add unit tests
+```
+
 WORKSPACE-CONTEXT

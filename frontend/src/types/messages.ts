@@ -6,6 +6,7 @@ export type MessageType =
   | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry'
   | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable' | 'task_resumed' | 'step_limit' | 'context_compaction'
+  | 'step_todo_update'
 
 export interface ChatMessageUI {
   id: string

@@ -73,6 +73,11 @@ export interface TokenInfo {
   family: string
 }
 
+export interface TodoItem {
+  text: string
+  checked: boolean
+}
+
 export interface PlanItem {
   id: string
   title: string
@@ -81,6 +86,7 @@ export interface PlanItem {
   status: 'pending' | 'running' | 'completed' | 'failed'
   duration?: number
   dependsOn: string[]
+  todoItems?: TodoItem[]
 }
 
 export interface PlanGroup {

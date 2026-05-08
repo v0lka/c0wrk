@@ -64,6 +64,14 @@ export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
 export interface BlackboardUpdatedData { change_type: string }
 
+export interface TodoItemData { text: string; checked: boolean }
+export interface StepTodoUpdateData {
+  step_id: string
+  items: TodoItemData[]
+  completed_count: number
+  total_count: number
+}
+
 // --- Session event map ---
 
 export interface SessionEventMap {
@@ -101,6 +109,7 @@ export interface SessionEventMap {
   terminal_output: TerminalOutputData
   skills_activated: SkillsActivatedData
   blackboard_updated: BlackboardUpdatedData
+  step_todo_update: StepTodoUpdateData
 }
 
 export type SessionEventKey = keyof SessionEventMap
@@ -159,6 +168,9 @@ export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableD
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }
+export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
+  return isObj(d) && has(d, 'step_id', 'items') && Array.isArray(d.items)
+}
 
 // --- Global event type guards ---
 

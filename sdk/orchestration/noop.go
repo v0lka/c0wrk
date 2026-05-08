@@ -24,3 +24,4 @@ func (*NoopEvents) OnService(_ string)                                          
 func (*NoopEvents) OnServiceMeta(_ string, _ map[string]any)                    {}
 func (*NoopEvents) OnReplanFailed(_ error)                                      {}
 func (*NoopEvents) OnFileRollbackError(_ string, _ error)                       {}
+func (*NoopEvents) OnStepTodoUpdate(_ string, _ []agent.TodoItem)               {}
