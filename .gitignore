@@ -196,3 +196,6 @@ tmp/
 # Local only docs
 # TODO.md
 build/darwin/Info.dev.plist
+
+# Qoder local-only directory (developer-local, not tracked)
+.qoder/

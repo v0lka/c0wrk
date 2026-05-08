@@ -27,8 +27,8 @@ The desktop binary name is **`c0wrk-desktop`**.
 
 High-level layers and responsibilities:
 
-- **`desktop/`** — Wails app lifecycle and frontend-exposed API methods (`*desktop.App` methods split by domain in `api_*.go`).
-- **`backend/`** — application/view-model layer: config loading, session/project management, persistence wiring, installer/watcher behavior.
+- **`desktop/`** — Wails app lifecycle; embeds `*backend.FrontendAPI` whose promoted methods are exposed to the frontend via Wails bindings.
+- **`backend/`** — application/view-model layer: config loading, session/project management, persistence wiring, installer/watcher behavior. Frontend-callable methods split across `backend/frontend_api_*.go` by area.
 - **`core/`** — orchestration logic: planner, router, reflector, tool registry, MCP gateway, security policy application.
 - **`sdk/`** — reusable engine components: agent executor, LLM providers, memory/compaction, prompt/tool primitives.
 - **`frontend/`** — React + TypeScript UI; communicates with Go via generated Wails bindings (`frontend/wailsjs/go/desktop/App`).
@@ -39,7 +39,7 @@ High-level layers and responsibilities:
 
 - **React 19** + **TypeScript ~5.7** + **Vite 6**
 - **Tailwind CSS v4** (One Dark theme via `@theme` custom properties)
-- **Zustand 5** for state management (9 domain stores: chat, panels, sessions, projects, file tree, file viewer, scroll, settings, UI)
+- **Zustand 5** for state management (12 domain stores: chat, plan, sessions, projects, file tree, file viewer, input mode, execution mode, blackboard, settings, UI, vector index)
 - **shadcn/ui** (new-york style) + **Radix UI** primitives
 - **lucide-react** icons, **react-markdown** 10, **highlight.js** 11, **Mermaid** 11 (lazy-loaded)
 - Communication with Go via Wails-generated RPC bindings + session-scoped events (25+ event types)
@@ -106,7 +106,7 @@ Project-level commands (from `Makefile`):
 
 ```bash
 make frontend-deps   # npm install in frontend/
-make test            # go test ./... && cd frontend && npm test
+make test            # go test ./... && cd frontend && npm test (vitest)
 make lint            # golangci-lint run && cd frontend && npm run lint
 make dev-desktop     # frontend Vite dev server only
 make build           # wails build + fetch ONNX runtime + fetch embedding model
@@ -163,7 +163,7 @@ make fetch-onnx
 
 ```text
 .
-├── desktop/        # Wails app entrypoints, lifecycle, and API methods exposed to frontend
+├── desktop/        # Wails app entrypoints, lifecycle, embeds backend.FrontendAPI
 ├── backend/        # App/view-model layer: config/session/project/persistence/workspace services
 ├── core/           # Planner/router/reflector/orchestration/tool + MCP wiring
 ├── sdk/            # Reusable agent engine (LLM, tools, memory, execution primitives)
@@ -193,7 +193,7 @@ make lint
 make test
 ```
 
-All three must pass clean. There is no frontend test suite; `make test` covers only Go tests.
+All three must pass clean. `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest).
 
 ## License
 

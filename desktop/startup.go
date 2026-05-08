@@ -263,7 +263,7 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	logDir := filepath.Join(agentDir, "logs")
-	projectsDir := filepath.Join(agentDir, "Projects")
+	projectsDir := filepath.Join(agentDir, "projects")
 	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
 		log.Error("failed to create projects directory", "error", err)
 	}
