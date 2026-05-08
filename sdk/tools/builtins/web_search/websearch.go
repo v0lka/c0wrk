@@ -25,7 +25,7 @@ type SearchProvider interface {
 	Name() string
 }
 
-// Limits is an alias for builtins.WebSearchLimits for backward compatibility.
+// Limits is an alias for builtins.WebSearchLimits.
 type Limits = builtins.WebSearchLimits
 
 // DefaultLimits returns the default limits for web_search.

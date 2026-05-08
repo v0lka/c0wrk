@@ -283,7 +283,7 @@ func TestExecutor_ImplicitFinish(t *testing.T) {
 }
 
 func TestExecutor_CompactionTriggered(t *testing.T) {
-	// Test that compaction is triggered when NeedsCompaction returns true
+	// Test that compaction is triggered when CheckFill returns compact status
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{
 			{

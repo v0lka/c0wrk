@@ -96,7 +96,7 @@ func BuildCarryForward(completed []CompletedStep, newPlan *Plan) map[string]Comp
 // trajectory ([]agent.Step) for reflectors and evaluators. When a CompletedStep
 // carries the actual executor steps (tool calls + observations), those are
 // used directly so the evaluator sees real evidence. Otherwise, a synthetic
-// summary step is created as a backward-compatible fallback.
+// summary step is created as a fallback.
 func BuildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []agent.Step {
 	// Build a map from step ID to plan step description
 	stepDescriptions := make(map[string]string)
@@ -110,7 +110,7 @@ func BuildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []agent.
 			// Use actual executor steps (preserves tool calls + observations)
 			steps = append(steps, cs.Steps...)
 		} else {
-			// Fallback: synthetic summary (backward compat)
+			// Fallback: synthetic summary when executor steps are unavailable
 			desc := stepDescriptions[cs.StepID]
 			step := agent.Step{
 				Thought: fmt.Sprintf("Executing plan step %s: %s", cs.StepID, desc),

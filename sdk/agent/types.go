@@ -29,7 +29,7 @@ type Step struct {
 	// ResponseGroup links steps from the same LLM response when multiple tool calls were returned.
 	// Steps with the same non-zero ResponseGroup value came from one response and should be
 	// rendered as one assistant message with multiple tool_calls in BuildPrompt().
-	// Zero means standalone step (backward compatible).
+	// Zero means standalone step (single tool call).
 	ResponseGroup int64 `json:"response_group,omitempty"`
 }
 
@@ -109,7 +109,6 @@ type CompactionResult struct {
 type ContextManager interface {
 	BuildPrompt() []llm.Message
 	AddStep(step Step)
-	NeedsCompaction() bool
 	Compact(ctx context.Context) *CompactionResult
 	SetStrategy(strategy CompactionStrategy)
 	CheckFill() FillCheck

@@ -287,11 +287,11 @@ func TestBashExec_DetectsFileDeletion(t *testing.T) {
 	}
 }
 
-func TestBashExec_NoTracker_BackwardCompat(t *testing.T) {
+func TestBashExec_NoTracker(t *testing.T) {
 	tool := NewBashExecTool(nil)
 
 	input, _ := json.Marshal(map[string]string{
-		"command": "echo backward-compat",
+		"command": "echo hello-world",
 	})
 
 	// No tracker in context — should behave exactly as before
@@ -302,8 +302,8 @@ func TestBashExec_NoTracker_BackwardCompat(t *testing.T) {
 	if result.IsError {
 		t.Errorf("expected IsError=false, got true. Content: %s", result.Content)
 	}
-	if !strings.Contains(result.Content, "backward-compat") {
-		t.Errorf("expected output to contain 'backward-compat', got: %s", result.Content)
+	if !strings.Contains(result.Content, "hello-world") {
+		t.Errorf("expected output to contain 'hello-world', got: %s", result.Content)
 	}
 }
 

@@ -80,6 +80,3 @@ export function useResize({ initialWidth, min, max, direction = 1, onChange }: U
 
   return { handleMouseDown, handleKeyDown }
 }
-
-// Backward-compatible alias for the old hook name
-export { useResize as useResizeHandle }

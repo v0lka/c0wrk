@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { AlertTriangle, Info } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import { getConfig } from '@/api/config'
 
 interface ConfigWarningBannerProps {
@@ -8,8 +8,6 @@ interface ConfigWarningBannerProps {
 }
 
 export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWarningBannerProps) {
-  const [migrated, setMigrated] = useState(false)
-  const [migrationMsg, setMigrationMsg] = useState('')
   const [errors, setErrors] = useState<string[]>([])
   const [loaded, setLoaded] = useState(false)
 
@@ -18,8 +16,6 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
       try {
         const result = await getConfig()
         setLoaded(result?.loaded ?? false)
-        setMigrated(result?.config_migrated ?? false)
-        setMigrationMsg(result?.config_migration_msg ?? '')
         setErrors(result?.config_errors ?? [])
       } catch {
         // Silently fail - config not available yet
@@ -30,19 +26,6 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
 
   if (!loaded) {
     return null
-  }
-
-  // Show migration success message
-  if (migrated && migrationMsg && errors.length === 0) {
-    return (
-      <div className={`flex items-start gap-2 p-3 rounded-md bg-primary/10 border border-primary/20 text-sm ${className}`}>
-        <Info className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
-        <div>
-          <span className="font-medium text-primary">Config migrated: </span>
-          <span className="text-muted-foreground">{migrationMsg}</span>
-        </div>
-      </div>
-    )
   }
 
   // Show errors if present
@@ -60,11 +43,6 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
             </ul>
           </div>
         </div>
-        {migrationMsg && (
-          <div className="text-xs text-muted-foreground ml-6">
-            {migrationMsg}
-          </div>
-        )}
       </div>
     )
   }

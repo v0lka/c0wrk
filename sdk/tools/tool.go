@@ -51,8 +51,6 @@ func ParseToolPolicy(s string) ToolPolicy {
 		return PolicyAlwaysDeny
 	case "user_confirm":
 		return PolicyUserConfirm
-	case "auto":
-		return PolicyUserConfirm // backward compatibility: auto maps to user_confirm
 	default:
 		return PolicyUserConfirm
 	}

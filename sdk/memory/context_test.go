@@ -275,55 +275,6 @@ func TestSlidingWindowNoCompactionNeeded(t *testing.T) {
 	}
 }
 
-// TestNeedsCompaction verifies NeedsCompaction returns true when fill exceeds predictive threshold.
-func TestNeedsCompaction(t *testing.T) {
-	counter := llm.NewSimpleTokenCounter()
-	tracker := llm.NewContextTokenTracker(counter)
-	strategy := NewSlidingWindowStrategy(3, 5)
-
-	// Create with small context window to trigger compaction
-	// ContextWindow: 10000, OutputLimit: 4096, SafetyMargin: 500 (5%)
-	// EffectiveMax = 10000 - 4096 - 500 = 5404
-	// Predictive threshold = 85%, so compaction triggers at ~4593 tokens
-	modelMeta := llm.ModelMetadata{
-		ContextWindow: 10000,
-		OutputLimit:   4096,
-		TokenizerType: "approximate",
-	}
-	cw := NewContextWindow("System prompt", modelMeta, tracker, testThresholds(), strategy, 0)
-
-	// Add many steps to exceed predictive threshold
-	// Each step adds ~60-80 tokens with the simple counter
-	for i := 1; i <= 200; i++ {
-		cw.AddStep(makeStep(
-			fmt.Sprintf("This is a long thought for step %d with lots of text content here", i),
-			fmt.Sprintf("This is a long observation for step %d with lots of text content here", i),
-			i,
-		))
-	}
-
-	if !cw.NeedsCompaction() {
-		t.Error("NeedsCompaction should return true when fill exceeds predictive threshold")
-	}
-}
-
-// TestNeedsCompactionWithinBudget verifies NeedsCompaction returns false when within budget.
-func TestNeedsCompactionWithinBudget(t *testing.T) {
-	counter := llm.NewSimpleTokenCounter()
-	tracker := llm.NewContextTokenTracker(counter)
-	strategy := NewSlidingWindowStrategy(3, 5)
-
-	// Create with high budget
-	cw := NewContextWindow("Hi", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
-
-	// Add just one step
-	cw.AddStep(makeStep("Thought", "Obs", 1))
-
-	if cw.NeedsCompaction() {
-		t.Error("NeedsCompaction should return false when within budget")
-	}
-}
-
 // TestAddStep verifies AddStep appends steps correctly.
 func TestAddStep(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
@@ -1366,7 +1317,7 @@ func TestPruningThreshold_PrunesWhenAboveThreshold(t *testing.T) {
 }
 
 // TestPruningThreshold_ZeroMeansDisabled verifies that ThresholdPercent=0 (zero-value)
-// means no threshold check — pruning always applies. This preserves backward compatibility.
+// means no threshold check — pruning always applies.
 func TestPruningThreshold_ZeroMeansDisabled(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)

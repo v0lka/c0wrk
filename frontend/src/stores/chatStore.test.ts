@@ -70,7 +70,7 @@ describe('groupMessages', () => {
     expect(tool.status).toBe('success')
   })
 
-  it('falls back to composite key when tool_call_id is absent (backward compat)', () => {
+  it('falls back to composite key when tool_call_id is absent', () => {
     const call = makeUI({
       type: 'tool_call',
       metadata: { tool: 'read_file', args: '/foo', step: 1 },

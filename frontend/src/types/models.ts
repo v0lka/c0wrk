@@ -131,8 +131,6 @@ export interface ConfigSearchResp {
 export interface ConfigResponse {
   loaded: boolean
   log_level: string
-  config_migrated: boolean
-  config_migration_msg: string
   config_errors: string[]
   llm: ConfigLLMResponse
   memory: ConfigMemResponse

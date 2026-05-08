@@ -159,10 +159,6 @@ func (m *mockContextManager) AddStep(step Step) {
 	m.steps = append(m.steps, step)
 }
 
-func (m *mockContextManager) NeedsCompaction() bool {
-	return m.needsCompaction
-}
-
 func (m *mockContextManager) Compact(ctx context.Context) *CompactionResult {
 	m.compactCalled = true
 	return nil

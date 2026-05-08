@@ -92,7 +92,6 @@ type mockContextManager struct {
 	mu              sync.Mutex
 	messages        []llm.Message
 	steps           []Step
-	needsCompaction bool
 	compactCalled   int
 	fillCheck       FillCheck
 	availableTokens int
@@ -119,12 +118,6 @@ func (m *mockContextManager) AddStep(step Step) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.steps = append(m.steps, step)
-}
-
-func (m *mockContextManager) NeedsCompaction() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.needsCompaction
 }
 
 func (m *mockContextManager) Compact(_ context.Context) *CompactionResult {

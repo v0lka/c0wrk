@@ -223,13 +223,6 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 	}
 }
 
-// Handle executes the agent reasoning cycle for the given user message.
-// This is a backwards-compatible wrapper around HandleMessage that defaults
-// to full Plan&Execute mode.
-func (o *Orchestrator) Handle(ctx context.Context, userMessage string) (*HandleResult, error) {
-	return o.HandleMessage(ctx, userMessage, "", HandleOptions{ExecutionMode: "advanced"})
-}
-
 // Resume continues execution of a previously interrupted task from its checkpoint state.
 // The blackboard must be pre-loaded with the task's persisted state (via RestoreBlackboard).
 func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *RoutingDecision) (*HandleResult, error) {
@@ -415,12 +408,6 @@ func (o *Orchestrator) SetTaskStore(store TaskPersistence) {
 // SetBlackboardRestoreFunc sets the function used to restore a PersistableBlackboard from persistence.
 func (o *Orchestrator) SetBlackboardRestoreFunc(fn BlackboardRestoreFunc) {
 	o.bbRestoreFunc = fn
-}
-
-// Run is a backwards-compatible method that calls Handle.
-// Kept for compatibility with Phase 1 code.
-func (o *Orchestrator) Run(ctx context.Context, userMessage string) (*HandleResult, error) {
-	return o.Handle(ctx, userMessage)
 }
 
 // HandleMessage is the unified entry point for processing user messages.

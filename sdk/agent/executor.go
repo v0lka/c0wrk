@@ -225,7 +225,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 		// At the boundary: when we've just exceeded maxSteps
 		if !unlimitedSteps && stepNum > e.maxSteps {
 			if e.stepLimitFunc == nil {
-				break // backward compat: no callback means silent exit
+				break // no callback configured: exit silently at step limit
 			}
 			resp, err := e.stepLimitFunc(ctx, stepNum, e.maxSteps)
 			if err != nil {

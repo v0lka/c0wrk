@@ -159,7 +159,7 @@ func detectJavaVersion() string {
 		return ""
 	}
 	version := firstLine[start+1 : start+1+end]
-	// Strip leading "1." from legacy Java versions (e.g., 1.8.0_391 → 8.0_391)
+	// Normalize Java version (1.8.x → 8.x)
 	version = strings.TrimPrefix(version, "1.")
 	return version
 }

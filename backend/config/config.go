@@ -305,10 +305,8 @@ func ExpandEnvVars(s string) string {
 
 // LoadResult contains the result of loading a configuration file.
 type LoadResult struct {
-	Config       *Config
-	Migrated     bool     // true if config was migrated from old format
-	MigrationMsg string   // human-readable migration message
-	LoadErrors   []string // non-fatal errors/warnings encountered during load
+	Config     *Config
+	LoadErrors []string // non-fatal errors/warnings encountered during load
 }
 
 // GetActiveProviderConfig returns (providerType, apiKey, baseURL, model) for the active provider.

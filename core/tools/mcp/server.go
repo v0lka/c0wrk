@@ -74,7 +74,7 @@ func (s *Server) Connect(ctx context.Context, cfg ServerConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Determine transport type (default to stdio for backward compatibility)
+	// Determine transport type (default to stdio when unspecified)
 	transportType := cfg.Transport
 	if transportType == "" {
 		transportType = "stdio"

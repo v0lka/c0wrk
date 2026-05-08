@@ -21,12 +21,10 @@ type FrontendAPI struct {
 	logger *slog.Logger
 
 	// Config state
-	config             *config.Config
-	configMu           sync.RWMutex
-	configPath         string
-	configMigrated     bool
-	configMigrationMsg string
-	configLoadErrors   []string
+	config           *config.Config
+	configMu         sync.RWMutex
+	configPath       string
+	configLoadErrors []string
 
 	// Persistence stores
 	store     *session.SQLiteSessionStore
@@ -109,9 +107,7 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 
 // SetConfigLoadState sets the config loading state for display by GetConfig.
 // Called by desktop after initial config loading.
-func (f *FrontendAPI) SetConfigLoadState(migrated bool, msg string, errors []string) {
-	f.configMigrated = migrated
-	f.configMigrationMsg = msg
+func (f *FrontendAPI) SetConfigLoadState(errors []string) {
 	f.configLoadErrors = errors
 }
 

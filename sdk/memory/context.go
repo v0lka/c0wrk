@@ -49,11 +49,6 @@ type ContextWindow struct {
 // defaultSafetyMargin is the default percentage of context window reserved as safety margin.
 const defaultSafetyMargin = 5 // 5% of context window
 
-// FillCheck is an alias for sdkagent.FillCheck for backward compatibility.
-//
-// Deprecated: Use sdkagent.FillCheck directly.
-type FillCheck = sdkagent.FillCheck
-
 // NewContextWindow creates a new ContextWindow.
 // safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
 func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, pruning ...ToolOutputPruning) *ContextWindow {
@@ -109,8 +104,8 @@ func (cw *ContextWindow) AvailableTokens() int {
 	return available
 }
 
-// CheckFill returns a FillCheck with the current fill status.
-func (cw *ContextWindow) CheckFill() FillCheck {
+// CheckFill returns the current fill status.
+func (cw *ContextWindow) CheckFill() sdkagent.FillCheck {
 	used := cw.tracker.EstimateTotal()
 	effectiveMax := cw.EffectiveMax()
 	percent := float64(0)
@@ -130,7 +125,7 @@ func (cw *ContextWindow) CheckFill() FillCheck {
 		status = "compact"
 	}
 
-	return FillCheck{Percent: percent, Status: status, Used: used, Max: effectiveMax}
+	return sdkagent.FillCheck{Percent: percent, Status: status, Used: used, Max: effectiveMax}
 }
 
 // CorrectTokenCount updates the tracker with the actual API input token count.
@@ -302,7 +297,7 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 
 			i = groupEnd
 		} else {
-			// Original logic for standalone steps (backward compatible)
+			// Handle standalone steps (ResponseGroup == 0)
 			assistantMsg := llm.Message{
 				Role:             "assistant",
 				Content:          strings.TrimRight(step.Thought, invisibleChars),
@@ -432,13 +427,6 @@ func (cw *ContextWindow) computeProtectedIndices() map[int]struct{} {
 	}
 
 	return protected
-}
-
-// NeedsCompaction returns true if compaction is needed based on fill status.
-// This method is kept for backward compatibility; new code should use CheckFill().
-func (cw *ContextWindow) NeedsCompaction() bool {
-	fill := cw.CheckFill()
-	return fill.Status == "compact" || fill.Status == "warning" || fill.Status == "emergency" || fill.Status == "reject"
 }
 
 // CompactionResult is an alias for sdkagent.CompactionResult.

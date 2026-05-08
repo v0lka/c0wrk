@@ -102,7 +102,7 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 		nil, // coreToolRegistry - nil for tests
 	)
 
-	result, err := orchestrator.Handle(context.Background(), "do something")
+	result, err := orchestrator.HandleMessage(context.Background(), "do something", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 		nil, // coreToolRegistry - nil for tests
 	)
 
-	result, err := orchestrator.Handle(context.Background(), "Implement and test a new feature")
+	result, err := orchestrator.HandleMessage(context.Background(), "Implement and test a new feature", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -299,93 +299,13 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 		nil, // coreToolRegistry - nil for tests
 	)
 
-	result, err := orchestrator.Handle(context.Background(), "test")
+	result, err := orchestrator.HandleMessage(context.Background(), "test", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
 
 	if result.RoutingDecision == nil {
 		t.Fatal("RoutingDecision should not be nil")
-	}
-}
-
-// TestOrchestrator_RunBackwardsCompatibility tests that Run() is backwards compatible.
-func TestOrchestrator_RunBackwardsCompatibility(t *testing.T) {
-	callIdx := 0
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			callIdx++
-			if callIdx == 1 {
-				// Router
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			if callIdx == 2 {
-				// Planner
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: `{"steps": [{"id": "step_1", "description": "Respond to greeting", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
-					},
-					StopReason: "end_turn",
-				}, nil
-			}
-			// Executor - finish with greeting
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: "Hello!",
-					ToolCalls: []llm.ToolCall{
-						{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Hello!"}`)},
-					},
-				},
-				StopReason: "tool_use",
-			}, nil
-		},
-	}
-
-	registry := createTestRegistry()
-	counter := llm.NewSimpleTokenCounter()
-
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewPlanner(mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory - nil for tests
-		nil, // trackingCaller - nil for tests
-		nil, // vectorSearchFunc - nil for tests
-		nil, // skillManager - nil for tests
-		nil, // coreToolRegistry - nil for tests
-	)
-
-	// Run should return HandleResult (same as Handle)
-	result, err := orchestrator.Run(context.Background(), "Hi")
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("Run should return non-nil HandleResult")
-	}
-
-	if result.Output != "Hello!" {
-		t.Errorf("unexpected output: %s", result.Output)
 	}
 }
 
@@ -484,7 +404,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		nil, // coreToolRegistry - nil for tests
 	)
 
-	_, err := orchestrator.Handle(context.Background(), "Run two steps")
+	_, err := orchestrator.HandleMessage(context.Background(), "Run two steps", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -568,7 +488,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 		nil, // coreToolRegistry - nil for tests
 	)
 
-	result, err := orchestrator.Handle(context.Background(), "Execute a multi-step task")
+	result, err := orchestrator.HandleMessage(context.Background(), "Execute a multi-step task", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -720,7 +640,7 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 		nil, // skillManager
 		nil, // coreToolRegistry
 	)
-	result, err := orchestrator.Handle(context.Background(), "Run the tests")
+	result, err := orchestrator.HandleMessage(context.Background(), "Run the tests", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1915,7 +1835,7 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 		nil, // coreToolRegistry - nil for tests
 	)
 
-	result, err := orchestrator.Handle(context.Background(), "test query")
+	result, err := orchestrator.HandleMessage(context.Background(), "test query", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}

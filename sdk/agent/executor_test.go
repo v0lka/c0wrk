@@ -1283,7 +1283,7 @@ func TestStepLimit_NilCallback(t *testing.T) {
 	cm := newMockContextManager()
 
 	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	// NO StepLimitFunc set - testing backward compat
+	// NO StepLimitFunc set - testing silent exit at step limit
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -2105,8 +2105,8 @@ func TestExecutor_Run_MultiToolCall_AllExecuted(t *testing.T) {
 	}
 }
 
-func TestExecutor_Run_MultiToolCall_SingleCallBackwardCompat(t *testing.T) {
-	// Single tool call should have ResponseGroup == 0 (backward compatible)
+func TestExecutor_Run_MultiToolCall_SingleCallStandalone(t *testing.T) {
+	// Single tool call should have ResponseGroup == 0 (standalone step)
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{
 			llmResponseWithToolCall("reading", "read_file", json.RawMessage(`{"path":"/a"}`)),

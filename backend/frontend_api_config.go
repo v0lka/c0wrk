@@ -22,11 +22,9 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 	}
 
 	return ConfigResponse{
-		Loaded:             true,
-		LogLevel:           f.config.LogLevel,
-		ConfigMigrated:     f.configMigrated,
-		ConfigMigrationMsg: f.configMigrationMsg,
-		ConfigErrors:       nonNilStringSlice(f.configLoadErrors),
+		Loaded:       true,
+		LogLevel:     f.config.LogLevel,
+		ConfigErrors: nonNilStringSlice(f.configLoadErrors),
 		LLM: ConfigLLMResponse{
 			ActiveProvider: f.config.LLM.ActiveProvider,
 			Anthropic: ConfigProviderKeyModel{

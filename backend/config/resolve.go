@@ -12,8 +12,6 @@ type ResolvedConfig struct {
 	Config       *Config
 	ConfigPath   string
 	AgentDir     string
-	Migrated     bool
-	MigrationMsg string
 	LoadErrors   []string
 }
 
@@ -97,12 +95,7 @@ func ResolveAndLoad(log *slog.Logger) *ResolvedConfig {
 		resolved.LoadErrors = []string{errMsg}
 	} else {
 		resolved.Config = result.Config
-		resolved.Migrated = result.Migrated
-		resolved.MigrationMsg = result.MigrationMsg
 		resolved.LoadErrors = result.LoadErrors
-		if result.Migrated {
-			log.Info("config migrated", "message", result.MigrationMsg)
-		}
 		if len(result.LoadErrors) > 0 {
 			for _, e := range result.LoadErrors {
 				log.Warn("config warning", "error", e)

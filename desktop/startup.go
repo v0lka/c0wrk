@@ -63,8 +63,6 @@ func (a *App) Startup(ctx context.Context) {
 	resolved := config.ResolveAndLoad(log)
 	cfg := resolved.Config
 	configPath := resolved.ConfigPath
-	configMigrated := resolved.Migrated
-	configMigrationMsg := resolved.MigrationMsg
 	configLoadErrors := resolved.LoadErrors
 	agentDir := resolved.AgentDir
 
@@ -380,7 +378,7 @@ func (a *App) Startup(ctx context.Context) {
 			return a.ctx
 		},
 	})
-	a.SetConfigLoadState(configMigrated, configMigrationMsg, configLoadErrors)
+	a.SetConfigLoadState(configLoadErrors)
 
 	manager := application.Manager()
 

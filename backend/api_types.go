@@ -7,14 +7,12 @@ package backend
 
 // ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
 type ConfigResponse struct {
-	Loaded             bool              `json:"loaded"`
-	LogLevel           string            `json:"log_level"`
-	ConfigMigrated     bool              `json:"config_migrated"`
-	ConfigMigrationMsg string            `json:"config_migration_msg"`
-	ConfigErrors       []string          `json:"config_errors"`
-	LLM                ConfigLLMResponse `json:"llm"`
-	Memory             ConfigMemResponse `json:"memory"`
-	Search             ConfigSearchResp  `json:"search"`
+	Loaded       bool              `json:"loaded"`
+	LogLevel     string            `json:"log_level"`
+	ConfigErrors []string          `json:"config_errors"`
+	LLM          ConfigLLMResponse `json:"llm"`
+	Memory       ConfigMemResponse `json:"memory"`
+	Search       ConfigSearchResp  `json:"search"`
 }
 
 // ConfigLLMResponse holds sanitised LLM provider info.

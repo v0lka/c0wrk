@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 )
 
@@ -104,10 +103,6 @@ func NewSQLiteSessionStore(db *sql.DB) (*SQLiteSessionStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
-	if err := store.runMigrations(); err != nil {
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
 	return store, nil
 }
 
@@ -189,29 +184,6 @@ func (s *SQLiteSessionStore) createTables() error {
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
 	return err
-}
-
-// runMigrations applies incremental schema changes for existing databases.
-func (s *SQLiteSessionStore) runMigrations() error {
-	migrations := []string{
-		"ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''",
-		"ALTER TABLE sessions ADD COLUMN family TEXT DEFAULT ''",
-	}
-	for _, m := range migrations {
-		if _, err := s.db.ExecContext(context.Background(), m); err != nil {
-			// Ignore "duplicate column" errors — the column already exists.
-			if isDuplicateColumnError(err) {
-				continue
-			}
-			return fmt.Errorf("migration failed: %w", err)
-		}
-	}
-	return nil
-}
-
-// isDuplicateColumnError returns true if the error indicates a column already exists.
-func isDuplicateColumnError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "duplicate column")
 }
 
 // SaveSession saves or updates a session.

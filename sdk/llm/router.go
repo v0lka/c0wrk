@@ -211,7 +211,7 @@ func (r *Router) applyDefaultTemperature(req *ChatRequest) {
 		}
 	}
 
-	// Fallback: no registry or no sampling func — use 0.0 for backward compat
+	// Fallback: no registry or no sampling func — default to deterministic (0.0)
 	temp := 0.0
 	req.Temperature = &temp
 }

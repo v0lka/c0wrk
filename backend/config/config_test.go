@@ -241,13 +241,6 @@ llm:
 		t.Fatalf("LoadWithResult() failed: %v", err)
 	}
 
-	// Verify no migration happened
-	if result.Migrated {
-		t.Error("Expected Migrated to be false")
-	}
-	if result.MigrationMsg != "" {
-		t.Errorf("Expected MigrationMsg to be empty, got %q", result.MigrationMsg)
-	}
 	if len(result.LoadErrors) != 0 {
 		t.Errorf("Expected no load errors, got %v", result.LoadErrors)
 	}
@@ -603,7 +596,7 @@ headers:
 			},
 		},
 		{
-			name: "backward compat - no transport field defaults to empty",
+			name: "no transport field defaults to empty string",
 			yaml: `
 command: /usr/bin/mcp-server
 args:
@@ -943,8 +936,8 @@ func newDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// TestMCPServerConfig_BackwardCompat tests that configs without transport field still work.
-func TestMCPServerConfig_BackwardCompat(t *testing.T) {
+// TestMCPServerConfig_DefaultTransport tests that configs without transport field still work.
+func TestMCPServerConfig_DefaultTransport(t *testing.T) {
 	// This simulates loading an existing config file that doesn't have the transport field
 	content := `
 llm:

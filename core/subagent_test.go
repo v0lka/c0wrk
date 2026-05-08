@@ -57,7 +57,7 @@ func TestRunSubAgent_Successful(t *testing.T) {
 	task := TaskDefinition{Task: "Test task"}
 
 	// Run SubAgent
-	ch := RunSubAgent(context.Background(), "step_1", executor, mockCM, task, nil)
+	ch := agent.RunSubAgent(context.Background(), "step_1", executor, mockCM, task.Tools, task.Task, nil, nil)
 
 	// Wait for result with timeout
 	select {
@@ -94,7 +94,7 @@ func TestRunSubAgent_ContextCancellation(t *testing.T) {
 	task := TaskDefinition{Task: "Test task"}
 
 	// Run SubAgent with cancelled context
-	ch := RunSubAgent(ctx, "step_cancel", executor, mockCM, task, nil)
+	ch := agent.RunSubAgent(ctx, "step_cancel", executor, mockCM, task.Tools, task.Task, nil, nil)
 
 	// Wait for result with timeout
 	select {

@@ -554,7 +554,6 @@ type mockContextManager struct {
 
 func (m *mockContextManager) BuildPrompt() []llm.Message                        { return nil }
 func (m *mockContextManager) AddStep(_ agent.Step)                              {}
-func (m *mockContextManager) NeedsCompaction() bool                             { return false }
 func (m *mockContextManager) Compact(_ context.Context) *agent.CompactionResult { return nil }
 func (m *mockContextManager) SetStrategy(_ agent.CompactionStrategy)            {}
 func (m *mockContextManager) CheckFill() agent.FillCheck                        { return agent.FillCheck{} }
