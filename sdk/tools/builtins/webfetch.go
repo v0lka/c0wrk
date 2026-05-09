@@ -29,13 +29,8 @@ type WebFetchTool struct {
 	limits WebFetchLimits
 }
 
-// NewWebFetchTool creates a new WebFetchTool with default limits.
-func NewWebFetchTool() *WebFetchTool {
-	return NewWebFetchToolWithLimits(DefaultWebFetchLimits())
-}
-
-// NewWebFetchToolWithLimits creates a new WebFetchTool with specified limits.
-func NewWebFetchToolWithLimits(limits WebFetchLimits) *WebFetchTool {
+// NewWebFetchTool creates a new WebFetchTool with specified limits.
+func NewWebFetchTool(limits WebFetchLimits) *WebFetchTool {
 	schema := `{
 		"type": "object",
 		"properties": {

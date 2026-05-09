@@ -42,13 +42,8 @@ type WebSearchTool struct {
 	limits   Limits
 }
 
-// NewWebSearchTool creates a new WebSearchTool with the given SearchProvider and default limits.
-func NewWebSearchTool(provider SearchProvider) *WebSearchTool {
-	return NewWebSearchToolWithLimits(provider, DefaultLimits())
-}
-
-// NewWebSearchToolWithLimits creates a new WebSearchTool with the given SearchProvider and specified limits.
-func NewWebSearchToolWithLimits(provider SearchProvider, limits Limits) *WebSearchTool {
+// NewWebSearchTool creates a new WebSearchTool with the given SearchProvider and specified limits.
+func NewWebSearchTool(provider SearchProvider, limits Limits) *WebSearchTool {
 	schema := `{
 		"type": "object",
 		"properties": {

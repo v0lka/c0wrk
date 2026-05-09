@@ -312,11 +312,6 @@ type AgentProfile struct {
 	ProtectedTools []string `json:"protected_tools,omitempty"` // per-step ProtectedTools override (nil = use role default)
 }
 
-// DefaultAgentProfile returns the default executor profile.
-func DefaultAgentProfile() AgentProfile {
-	return AgentProfile{Role: "executor"}
-}
-
 // HandleResult — result of Orchestrator.Handle (Phase 2).
 // Provides rich output for CLI display including routing and plan info.
 type HandleResult struct {

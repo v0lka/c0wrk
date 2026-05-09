@@ -312,68 +312,6 @@ func TestBuildPlanExecutionSteps(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BuildChangeSummary
-// ---------------------------------------------------------------------------
-
-func TestBuildChangeSummary(t *testing.T) {
-	plan := &Plan{Steps: []PlanStep{
-		{ID: "s1", Description: "first step"},
-		{ID: "s2", Description: "second step"},
-		{ID: "s3", Description: "third step"},
-	}}
-
-	t.Run("includes completed steps in plan order", func(t *testing.T) {
-		completed := map[string]CompletedStep{
-			"s1": {StepID: "s1", Output: "output1"},
-			"s3": {StepID: "s3", Output: "output3"},
-		}
-		got := BuildChangeSummary(completed, plan)
-		if got == "" {
-			t.Fatal("expected non-empty summary")
-		}
-		// s1 should appear before s3
-		s1Idx := len(got) // fallback
-		s3Idx := 0
-		for i := range got {
-			if i+2 < len(got) && got[i:i+2] == "s1" {
-				s1Idx = i
-				break
-			}
-		}
-		for i := range got {
-			if i+2 < len(got) && got[i:i+2] == "s3" {
-				s3Idx = i
-			}
-		}
-		if s1Idx >= s3Idx {
-			t.Error("expected s1 to appear before s3 in summary")
-		}
-	})
-
-	t.Run("skips steps with empty output", func(t *testing.T) {
-		completed := map[string]CompletedStep{
-			"s1": {StepID: "s1", Output: ""},
-			"s2": {StepID: "s2", Output: "has output"},
-		}
-		got := BuildChangeSummary(completed, plan)
-		if got == "" {
-			t.Fatal("expected non-empty summary")
-		}
-		// Should contain s2 but not s1
-		if !contains(got, "second step") {
-			t.Error("expected summary to contain 'second step'")
-		}
-	})
-
-	t.Run("empty completed returns empty", func(t *testing.T) {
-		got := BuildChangeSummary(map[string]CompletedStep{}, plan)
-		if got != "" {
-			t.Errorf("expected empty summary, got %q", got)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // AggregateOutput
 // ---------------------------------------------------------------------------
 

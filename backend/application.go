@@ -3,7 +3,6 @@ package backend
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -152,15 +151,6 @@ func (app *Application) TitleGenerator() *session.TitleGenerator {
 	return app.titleGen
 }
 
-// RebuildFactory creates a new orchestrator factory closure from the given config.
-// Call this when config changes so that new sessions use the updated settings.
-func (app *Application) RebuildFactory(cfg *config.Config) {
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error) {
-		return app.builder.Build(ToBuilderConfig(cfg), emitter, logger, bbFactory, app.stepLimitFunc, dumpWriter)
-	}
-	app.manager.SetFactory(factory)
-}
-
 // EvaluateJudge performs an on-demand judge evaluation for a pending tool confirmation.
 // Returns the verdict, reasoning (prefixed with "SAFE: " when allowed), and any error.
 func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict JudgeVerdict, reasoning string, err error) {
@@ -201,50 +191,6 @@ func (app *Application) GetMCPStatus() []MCPServerStatus {
 // ListTools returns descriptors for all registered tools.
 func (app *Application) ListTools() []ToolDescriptor {
 	return app.builder.ToolRegistry().List()
-}
-
-// MCPToolResult wraps the result of calling an MCP tool.
-// This avoids exposing the MCP SDK types to the desktop layer.
-type MCPToolResult struct {
-	IsError bool
-	Content []any
-}
-
-// IsMCPServerConnected returns whether the named MCP server is connected.
-func (app *Application) IsMCPServerConnected(serverName string) bool {
-	gw := app.builder.MCPGateway()
-	if gw == nil {
-		return false
-	}
-	server := gw.GetServer(serverName)
-	return server != nil && server.IsConnected()
-}
-
-// CallMCPTool invokes a tool on the named MCP server and returns a wrapped result.
-func (app *Application) CallMCPTool(ctx context.Context, serverName, toolName string, args map[string]any) (*MCPToolResult, error) {
-	gw := app.builder.MCPGateway()
-	if gw == nil {
-		return nil, errors.New("MCP gateway not available")
-	}
-	server := gw.GetServer(serverName)
-	if server == nil || !server.IsConnected() {
-		return nil, fmt.Errorf("MCP server %q not connected", serverName)
-	}
-	result, err := server.CallTool(ctx, toolName, args)
-	if err != nil {
-		return nil, err
-	}
-	if result == nil {
-		return nil, nil
-	}
-	content := make([]any, len(result.Content))
-	for i, c := range result.Content {
-		content[i] = c
-	}
-	return &MCPToolResult{
-		IsError: result.IsError,
-		Content: content,
-	}, nil
 }
 
 // Shutdown stops all managed resources (manager, MCP gateway).

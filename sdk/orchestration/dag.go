@@ -126,20 +126,6 @@ func BuildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []agent.
 	return steps
 }
 
-// BuildChangeSummary creates a markdown summary of what was done at each step.
-// It iterates through plan steps in plan order so the summary is deterministic.
-func BuildChangeSummary(completedSteps map[string]CompletedStep, plan *Plan) string {
-	var b strings.Builder
-	for _, step := range plan.Steps {
-		cs, ok := completedSteps[step.ID]
-		if !ok || cs.Output == "" {
-			continue
-		}
-		fmt.Fprintf(&b, "### Step %q: %s\n%s\n\n", step.ID, step.Description, cs.Output)
-	}
-	return strings.TrimSpace(b.String())
-}
-
 // AggregateOutput combines outputs from terminal steps (steps that no other step
 // depends on). If no terminal outputs exist, all step outputs are collected instead.
 // preCompletedIDs, when non-nil, lists step IDs that were pre-completed from a

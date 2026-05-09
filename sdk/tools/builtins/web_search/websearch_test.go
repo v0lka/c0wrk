@@ -24,7 +24,7 @@ func (m *mockSearchProvider) Search(_ context.Context, _ string, _ int) ([]Searc
 func (m *mockSearchProvider) Name() string { return m.name }
 
 func TestWebSearchTool_Descriptor(t *testing.T) {
-	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"})
+	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"}, DefaultLimits())
 
 	if tool.Name() != "web_search" {
 		t.Errorf("Name() = %q, want %q", tool.Name(), "web_search")
@@ -70,7 +70,7 @@ func TestWebSearchTool_Descriptor(t *testing.T) {
 }
 
 func TestWebSearchTool_MissingQuery(t *testing.T) {
-	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"})
+	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"}, DefaultLimits())
 
 	// Test with empty query
 	input := json.RawMessage(`{"query": ""}`)
@@ -133,7 +133,7 @@ func TestWebSearchTool_FormatResults(t *testing.T) {
 }
 
 func TestWebSearchTool_InvalidJSON(t *testing.T) {
-	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"})
+	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"}, DefaultLimits())
 
 	input := json.RawMessage(`{invalid json}`)
 	result, err := tool.Execute(context.Background(), input)
@@ -150,7 +150,7 @@ func TestWebSearchTool_InvalidJSON(t *testing.T) {
 }
 
 func TestWebSearchTool_DefaultPolicy(t *testing.T) {
-	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"})
+	tool := NewWebSearchTool(&mockSearchProvider{name: "mock"}, DefaultLimits())
 	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
 		t.Errorf("expected DefaultPolicy() to return PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
 	}
@@ -158,7 +158,7 @@ func TestWebSearchTool_DefaultPolicy(t *testing.T) {
 
 func TestWebSearchTool_ProviderError(t *testing.T) {
 	provider := &mockSearchProvider{name: "mock", err: errors.New("provider failure")}
-	tool := NewWebSearchTool(provider)
+	tool := NewWebSearchTool(provider, DefaultLimits())
 	input := json.RawMessage(`{"query": "test"}`)
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {

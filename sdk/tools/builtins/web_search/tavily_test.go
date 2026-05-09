@@ -63,7 +63,7 @@ func TestTavilyProvider_Search(t *testing.T) {
 	// Create tool with mock server URL
 	provider := NewTavilyProvider("test-api-key")
 	provider.SetBaseURL(server.URL)
-	tool := NewWebSearchTool(provider)
+	tool := NewWebSearchTool(provider, DefaultLimits())
 
 	input := json.RawMessage(`{"query": "golang testing", "max_results": 5}`)
 	result, err := tool.Execute(context.Background(), input)
@@ -97,7 +97,7 @@ func TestTavilyProvider_HTTPError(t *testing.T) {
 
 	provider := NewTavilyProvider("test-api-key")
 	provider.SetBaseURL(server.URL)
-	tool := NewWebSearchTool(provider)
+	tool := NewWebSearchTool(provider, DefaultLimits())
 
 	input := json.RawMessage(`{"query": "test search"}`)
 	result, err := tool.Execute(context.Background(), input)
@@ -126,7 +126,7 @@ func TestTavilyProvider_EmptyResults(t *testing.T) {
 
 	provider := NewTavilyProvider("test-api-key")
 	provider.SetBaseURL(server.URL)
-	tool := NewWebSearchTool(provider)
+	tool := NewWebSearchTool(provider, DefaultLimits())
 
 	input := json.RawMessage(`{"query": "obscure nonexistent query"}`)
 	result, err := tool.Execute(context.Background(), input)
@@ -158,7 +158,7 @@ func TestTavilyProvider_DefaultMaxResults(t *testing.T) {
 
 	provider := NewTavilyProvider("test-api-key")
 	provider.SetBaseURL(server.URL)
-	tool := NewWebSearchTool(provider)
+	tool := NewWebSearchTool(provider, DefaultLimits())
 
 	// Execute without specifying max_results
 	input := json.RawMessage(`{"query": "test"}`)
@@ -216,7 +216,7 @@ func TestWebSearchTool_QueryFallback(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := NewTavilyProvider("test-api-key")
 			provider.SetBaseURL(server.URL)
-			tool := NewWebSearchTool(provider)
+			tool := NewWebSearchTool(provider, DefaultLimits())
 
 			result, err := tool.Execute(context.Background(), json.RawMessage(tc.input))
 			if err != nil {
@@ -249,7 +249,7 @@ func TestTavilyProvider_RealSearch(t *testing.T) {
 		t.Skip("Skipping integration test: TAVILY_API_KEY environment variable not set")
 	}
 
-	tool := NewWebSearchTool(NewTavilyProvider(apiKey))
+	tool := NewWebSearchTool(NewTavilyProvider(apiKey), DefaultLimits())
 
 	input := json.RawMessage(`{"query": "golang programming language", "max_results": 3}`)
 	result, err := tool.Execute(context.Background(), input)
@@ -277,7 +277,7 @@ func TestTavilyProvider_RealSearch(t *testing.T) {
 }
 
 func TestTavilyProvider_MissingAPIKey(t *testing.T) {
-	tool := NewWebSearchTool(NewTavilyProvider("")) // Empty API key
+	tool := NewWebSearchTool(NewTavilyProvider(""), DefaultLimits()) // Empty API key
 
 	input := json.RawMessage(`{"query": "test search"}`)
 	result, err := tool.Execute(context.Background(), input)

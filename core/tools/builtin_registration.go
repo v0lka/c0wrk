@@ -74,11 +74,11 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	registry.Register(agent.NewFinishTool())
 
 	// Web fetch
-	registry.Register(builtins.NewWebFetchToolWithLimits(cfg.WebFetchLimits))
+	registry.Register(builtins.NewWebFetchTool(cfg.WebFetchLimits))
 
 	// Web search (optional)
 	if provider := CreateSearchProvider(cfg.SearchProvider, cfg.SearchAPIKey, cfg.SearchTimeout); provider != nil {
-		registry.Register(websearch.NewWebSearchToolWithLimits(provider, cfg.WebSearchLimits))
+		registry.Register(websearch.NewWebSearchTool(provider, cfg.WebSearchLimits))
 	}
 
 	// Glob and ripgrep
@@ -137,7 +137,7 @@ func CreateSearchProvider(providerName, apiKey string, timeout time.Duration) we
 // based on the given search configuration.
 func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limits WebSearchLimits) {
 	if provider := CreateSearchProvider(providerName, apiKey, limits.Timeout); provider != nil {
-		registry.Register(websearch.NewWebSearchToolWithLimits(provider, limits))
+		registry.Register(websearch.NewWebSearchTool(provider, limits))
 	} else {
 		registry.Unregister("web_search")
 	}
