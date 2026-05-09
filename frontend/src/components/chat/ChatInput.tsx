@@ -198,21 +198,6 @@ export function ChatInput() {
           <Terminal className="size-3.5" />
         </Button>
         {mode === 'chat' && (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={handleOptimize}
-            disabled={!text.trim() || isOptimizing || isInputDisabled}
-            title="Optimize prompt"
-            aria-label="Optimize prompt"
-            className="text-muted-foreground hover:text-foreground"
-          >
-            {isOptimizing
-              ? <Loader2 className="size-3.5 animate-spin" />
-              : <Sparkles className="size-3.5" />}
-          </Button>
-        )}
-        {mode === 'chat' && (
           <>
             <div className="w-px h-4 bg-border mx-1" />
             <Button
@@ -261,15 +246,30 @@ export function ChatInput() {
             <Square className="h-3.5 w-3.5 fill-current" />
           </Button>
         ) : mode === 'chat' ? (
-          <Button
-            onClick={handleSend}
-            disabled={!text.trim() || isInputDisabled || isOptimizing}
-            className="shrink-0 h-8 w-8 rounded-md text-input bg-success hover:bg-success/90 active:bg-success/75 transition-colors"
-            title="Send message"
-            aria-label="Send message"
-          >
-            <Play className="h-3.5 w-3.5 fill-current" />
-          </Button>
+          <>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={handleOptimize}
+              disabled={!text.trim() || isOptimizing || isInputDisabled}
+              title="Optimize prompt"
+              aria-label="Optimize prompt"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              {isOptimizing
+                ? <Loader2 className="size-3.5 animate-spin" />
+                : <Sparkles className="size-3.5" />}
+            </Button>
+            <Button
+              onClick={handleSend}
+              disabled={!text.trim() || isInputDisabled || isOptimizing}
+              className="shrink-0 h-8 w-8 rounded-md text-input bg-success hover:bg-success/90 active:bg-success/75 transition-colors"
+              title="Send message"
+              aria-label="Send message"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" />
+            </Button>
+          </>
         ) : null}
       </div>
     </div>
