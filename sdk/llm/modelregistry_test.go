@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,7 +22,7 @@ func TestModelRegistry_OverridePriority(t *testing.T) {
 	registry := NewModelRegistry(overrides)
 
 	// Override should take priority over built-in
-	meta, ok := registry.Resolve("gpt-4o")
+	meta, ok := registry.Resolve(context.Background(), "gpt-4o")
 	if !ok {
 		t.Fatal("expected ok=true for override model")
 	}
@@ -73,7 +74,7 @@ func TestModelRegistry_BuiltInResolution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			meta, _ := registry.Resolve(tt.model)
+			meta, _ := registry.Resolve(context.Background(), tt.model)
 
 			if meta.ContextWindow != tt.expectedContextWindow {
 				t.Errorf("expected ContextWindow %d, got %d", tt.expectedContextWindow, meta.ContextWindow)
@@ -92,7 +93,7 @@ func TestModelRegistry_FallbackForUnknownModel(t *testing.T) {
 	registry := NewModelRegistry(nil)
 
 	// Unknown model should return fallback defaults
-	meta, ok := registry.Resolve("unknown-model-v123")
+	meta, ok := registry.Resolve(context.Background(), "unknown-model-v123")
 	if ok {
 		t.Fatal("expected ok=false for unknown model")
 	}
@@ -162,9 +163,9 @@ func TestModelRegistry_ThreadSafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numIterations; j++ {
-				_, _ = registry.Resolve("gpt-4o")
-				_, _ = registry.Resolve("claude-opus-4.6")
-				_, _ = registry.Resolve("unknown-model")
+				_, _ = registry.Resolve(context.Background(), "gpt-4o")
+				_, _ = registry.Resolve(context.Background(), "claude-opus-4.6")
+				_, _ = registry.Resolve(context.Background(), "unknown-model")
 			}
 		}()
 	}
@@ -197,7 +198,7 @@ func TestModelRegistry_OverrideUnknownModel(t *testing.T) {
 
 	registry := NewModelRegistry(overrides)
 
-	meta, _ := registry.Resolve("custom-model")
+	meta, _ := registry.Resolve(context.Background(), "custom-model")
 
 	if meta.ContextWindow != 50000 {
 		t.Errorf("expected ContextWindow 50000, got %d", meta.ContextWindow)
@@ -214,7 +215,7 @@ func TestModelRegistry_NilOverrides(t *testing.T) {
 	// Test that nil overrides doesn't cause panic
 	registry := NewModelRegistry(nil)
 
-	meta, _ := registry.Resolve("gpt-4o")
+	meta, _ := registry.Resolve(context.Background(), "gpt-4o")
 
 	if meta.ContextWindow != 128000 {
 		t.Errorf("expected ContextWindow 128000, got %d", meta.ContextWindow)
@@ -225,7 +226,7 @@ func TestModelRegistry_EmptyOverrides(t *testing.T) {
 	// Test that empty overrides map works correctly
 	registry := NewModelRegistry(map[string]ModelMetadata{})
 
-	meta, _ := registry.Resolve("gpt-4o")
+	meta, _ := registry.Resolve(context.Background(), "gpt-4o")
 
 	if meta.ContextWindow != 128000 {
 		t.Errorf("expected ContextWindow 128000, got %d", meta.ContextWindow)
@@ -252,7 +253,7 @@ func TestModelRegistry_RegisteredSource(t *testing.T) {
 	})
 
 	// Resolve should use the registered source
-	meta, ok := registry.Resolve(testModel)
+	meta, ok := registry.Resolve(context.Background(), testModel)
 	if !ok {
 		t.Fatal("expected ok=true for registered source model")
 	}
@@ -321,7 +322,7 @@ func TestResolveFamily_BuiltinModels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			meta, _ := registry.Resolve(tt.model)
+			meta, _ := registry.Resolve(context.Background(), tt.model)
 			if meta.Family != tt.expectedFamily {
 				t.Errorf("expected Family %q, got %q", tt.expectedFamily, meta.Family)
 			}
@@ -379,7 +380,7 @@ func TestResolveFamily_PatternMatching(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
 			// These are unknown models resolved via DetectFamily
-			meta, _ := registry.Resolve(tt.model)
+			meta, _ := registry.Resolve(context.Background(), tt.model)
 			if meta.Family != tt.expectedFamily {
 				t.Errorf("expected Family %q for model %q, got %q", tt.expectedFamily, tt.model, meta.Family)
 			}
@@ -428,7 +429,7 @@ func TestResolveFamily_SourceWithoutFamily(t *testing.T) {
 				return ModelMetadata{}, false
 			})
 
-			meta, _ := registry.Resolve(tt.model)
+			meta, _ := registry.Resolve(context.Background(), tt.model)
 			if meta.Family != tt.expectedFamily {
 				t.Errorf("expected Family %q, got %q", tt.expectedFamily, meta.Family)
 			}
@@ -485,7 +486,7 @@ func TestResolveFamily_UserOverride(t *testing.T) {
 				tt.model: overrideMeta,
 			})
 
-			meta, _ := registry.Resolve(tt.model)
+			meta, _ := registry.Resolve(context.Background(), tt.model)
 			if meta.Family != tt.expectedFamily {
 				t.Errorf("expected Family %q, got %q", tt.expectedFamily, meta.Family)
 			}
@@ -498,7 +499,7 @@ func TestResolveFamily_UserOverride(t *testing.T) {
 // isn't threaded through, and we want predictable fallback behavior.
 func TestResolveFamily_EmptyModelID(t *testing.T) {
 	reg := NewModelRegistry(nil)
-	meta, _ := reg.Resolve("")
+	meta, _ := reg.Resolve(context.Background(), "")
 	if meta.Family != "default" {
 		t.Errorf("expected Family 'default' for empty model ID, got %q", meta.Family)
 	}
@@ -534,7 +535,7 @@ func TestModelRegistry_SourcePriority(t *testing.T) {
 	})
 
 	// Override (tier 1) should take priority over source (tier 4)
-	meta, _ := registry.Resolve(testModel)
+	meta, _ := registry.Resolve(context.Background(), testModel)
 
 	if meta.ContextWindow != overrideMeta.ContextWindow {
 		t.Errorf("expected override ContextWindow %d, got %d", overrideMeta.ContextWindow, meta.ContextWindow)
@@ -559,7 +560,7 @@ func TestModelRegistry_SourceFallback(t *testing.T) {
 	})
 
 	// Resolve should use fallback defaults
-	meta, ok := registry.Resolve(testModel)
+	meta, ok := registry.Resolve(context.Background(), testModel)
 	if ok {
 		t.Fatal("expected ok=false when source returns false")
 	}
@@ -664,7 +665,7 @@ func TestModelRegistry_FetchFromHuggingFace(t *testing.T) {
 			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
 		}
 
-		meta, err := registry.fetchFromHuggingFace("test-model")
+		meta, err := registry.fetchFromHuggingFace(context.Background(), "test-model")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -691,7 +692,7 @@ func TestModelRegistry_FetchFromHuggingFace(t *testing.T) {
 			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
 		}
 
-		_, err := registry.fetchFromHuggingFace("test-model")
+		_, err := registry.fetchFromHuggingFace(context.Background(), "test-model")
 		if err == nil {
 			t.Error("expected error for 404 response")
 		}
@@ -710,7 +711,7 @@ func TestModelRegistry_FetchFromHuggingFace(t *testing.T) {
 			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
 		}
 
-		_, err := registry.fetchFromHuggingFace("test-model")
+		_, err := registry.fetchFromHuggingFace(context.Background(), "test-model")
 		if err == nil {
 			t.Error("expected error for invalid JSON")
 		}
@@ -729,7 +730,7 @@ func TestModelRegistry_FetchFromHuggingFace(t *testing.T) {
 			Transport: &rewriteTransport{base: http.DefaultTransport, serverURL: server.URL},
 		}
 
-		_, err := registry.fetchFromHuggingFace("test-model")
+		_, err := registry.fetchFromHuggingFace(context.Background(), "test-model")
 		if err == nil {
 			t.Error("expected error for zero max_position_embeddings")
 		}
@@ -766,13 +767,13 @@ func TestModelRegistry_CacheAfterFetchFromHuggingFace(t *testing.T) {
 	}
 
 	// First resolve should fetch from HuggingFace
-	meta, _ := registry.Resolve("hf-test-model")
+	meta, _ := registry.Resolve(context.Background(), "hf-test-model")
 	if meta.ContextWindow != 4096 {
 		t.Errorf("expected ContextWindow 4096, got %d", meta.ContextWindow)
 	}
 
 	// Second resolve should use cache (no additional HTTP call)
-	meta2, _ := registry.Resolve("hf-test-model")
+	meta2, _ := registry.Resolve(context.Background(), "hf-test-model")
 	if meta2.ContextWindow != 4096 {
 		t.Errorf("expected cached ContextWindow 4096, got %d", meta2.ContextWindow)
 	}
@@ -807,7 +808,7 @@ func TestModelRegistry_MultipleSources(t *testing.T) {
 	})
 
 	// Resolve should use the second source's metadata
-	meta, _ := registry.Resolve(testModel)
+	meta, _ := registry.Resolve(context.Background(), testModel)
 
 	if meta.ContextWindow != expectedMeta.ContextWindow {
 		t.Errorf("expected ContextWindow %d, got %d", expectedMeta.ContextWindow, meta.ContextWindow)

@@ -111,6 +111,15 @@ func (f *FrontendAPI) SetConfigLoadState(errors []string) {
 	f.configLoadErrors = errors
 }
 
+// ctx returns the application context, falling back to context.Background()
+// when the appCtx callback is not configured (e.g. in tests).
+func (f *FrontendAPI) ctx() context.Context {
+	if f.appCtx != nil {
+		return f.appCtx()
+	}
+	return context.Background()
+}
+
 // Cleanup releases resources owned by FrontendAPI.
 // Called from desktop.Shutdown.
 func (f *FrontendAPI) Cleanup() {

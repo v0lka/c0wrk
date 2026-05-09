@@ -17,10 +17,10 @@ const DefaultAgentDir = ".c0wrk"
 
 // Config is the top-level configuration structure.
 type Config struct {
-	LogLevel      string             `yaml:"log_level"`
-	LLM           LLMConfig          `yaml:"llm"`
-	Reasoning     ReasoningConfig    `yaml:"reasoning"`
-	MCP           MCPConfig          `yaml:"mcp"`
+	LogLevel  string          `yaml:"log_level"`
+	LLM       LLMConfig       `yaml:"llm"`
+	Reasoning ReasoningConfig `yaml:"reasoning"`
+	MCP       MCPConfig       `yaml:"mcp"`
 
 	Memory        MemoryConfig        `yaml:"memory"`
 	Router        RouterConfig        `yaml:"router"`

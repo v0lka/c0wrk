@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -172,7 +173,12 @@ func (o *Orchestrator) runPlanExecute(
 	// Create file change tracker for artifact tracking and rollback
 	var tracker *agent.FileChangeTracker
 	if workspaceRoot := tools.WorkspacePathFrom(ctx); workspaceRoot != "" {
-		tracker = agent.NewFileChangeTracker(workspaceRoot)
+		if tempDir := tools.TempDirFrom(ctx); tempDir != "" {
+			baselinesDir := filepath.Join(tempDir, "baselines")
+			tracker = agent.NewFileChangeTrackerWithDir(workspaceRoot, baselinesDir)
+		} else {
+			tracker = agent.NewFileChangeTracker(workspaceRoot)
+		}
 	}
 
 	// Retry loop
@@ -416,7 +422,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, retryContext, maxSteps)
 
 			// Resolve model metadata
-			modelMeta := o.resolveModelMeta()
+			modelMeta := o.resolveModelMeta(ctx)
 
 			// Build system prompt
 			var systemPrompt string
@@ -610,7 +616,7 @@ func (o *Orchestrator) executePlanWithSteps(
 					taskDef := o.buildStepTask(failedPlanStep, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, stepRetryContext, maxSteps)
 
 					// Resolve model metadata
-					modelMeta := o.resolveModelMeta()
+					modelMeta := o.resolveModelMeta(ctx)
 
 					// Build system prompt
 					var systemPrompt string
@@ -895,14 +901,14 @@ func (o *Orchestrator) buildStepTask(
 // callerForStep returns a step-local LLMCaller for the given ContextManager.
 // resolveModelMeta returns model metadata for the active model.
 // Uses cfg.Model to look up the registry; falls back to sensible defaults if unavailable.
-func (o *Orchestrator) resolveModelMeta() llm.ModelMetadata {
+func (o *Orchestrator) resolveModelMeta(ctx context.Context) llm.ModelMetadata {
 	if o.cfg.ModelRegistry != nil && o.cfg.Model != "" {
-		meta, _ := o.cfg.ModelRegistry.Resolve(o.cfg.Model)
+		meta, _ := o.cfg.ModelRegistry.Resolve(ctx, o.cfg.Model)
 		return meta
 	}
 	if o.cfg.ModelRegistry != nil {
 		// Fallback: empty model still goes through registry (returns defaults)
-		meta, _ := o.cfg.ModelRegistry.Resolve("")
+		meta, _ := o.cfg.ModelRegistry.Resolve(ctx, "")
 		return meta
 	}
 	return llm.ModelMetadata{}
@@ -1028,7 +1034,7 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	taskDef := o.buildStepTask(step, stepIndex, *plan, completedSteps, stepTools, bb, userMessage, "", maxSteps)
 
 	// Resolve model metadata
-	modelMeta := o.resolveModelMeta()
+	modelMeta := o.resolveModelMeta(ctx)
 
 	// 3. Build system prompt with role suffix from step's profile (if present)
 	var systemPrompt string
@@ -1085,7 +1091,12 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	// 6. Set up file change tracker if workspace path is available
 	var tracker *agent.FileChangeTracker
 	if workspaceRoot := tools.WorkspacePathFrom(ctx); workspaceRoot != "" {
-		tracker = agent.NewFileChangeTracker(workspaceRoot)
+		if tempDir := tools.TempDirFrom(ctx); tempDir != "" {
+			baselinesDir := filepath.Join(tempDir, "baselines")
+			tracker = agent.NewFileChangeTrackerWithDir(workspaceRoot, baselinesDir)
+		} else {
+			tracker = agent.NewFileChangeTracker(workspaceRoot)
+		}
 		ctx = agent.WithFileTracker(ctx, tracker)
 	}
 

@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,7 +59,7 @@ func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error)
 		info.IsExternal = true
 	}
 
-	if err := m.store.SaveProject(info); err != nil {
+	if err := m.store.SaveProject(context.Background(), info); err != nil {
 		return nil, fmt.Errorf("failed to persist project: %w", err)
 	}
 
@@ -71,7 +72,7 @@ func (m *Manager) DeleteProject(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	proj, err := m.store.LoadProject(id)
+	proj, err := m.store.LoadProject(context.Background(), id)
 	if err != nil {
 		return fmt.Errorf("failed to load project for deletion: %w", err)
 	}
@@ -80,7 +81,7 @@ func (m *Manager) DeleteProject(id string) error {
 	}
 
 	// Delete from store first (FK cascade handles sessions+messages)
-	if err := m.store.DeleteProject(id); err != nil {
+	if err := m.store.DeleteProject(context.Background(), id); err != nil {
 		return fmt.Errorf("failed to delete project from store: %w", err)
 	}
 
@@ -108,19 +109,19 @@ func (m *Manager) DeleteProject(id string) error {
 func (m *Manager) RenameProject(id, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.store.RenameProject(id, name)
+	return m.store.RenameProject(context.Background(), id, name)
 }
 
 // ListProjects returns all projects ordered by last activity.
 func (m *Manager) ListProjects() ([]ProjectInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.store.ListProjects()
+	return m.store.ListProjects(context.Background())
 }
 
 // GetProject returns a project by ID, or nil if not found.
 func (m *Manager) GetProject(id string) (*ProjectInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.store.LoadProject(id)
+	return m.store.LoadProject(context.Background(), id)
 }

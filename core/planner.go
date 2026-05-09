@@ -259,11 +259,11 @@ func (p *Planner) SetMaxExploreSteps(n int) {
 }
 
 // getFamily resolves the model family, defaulting to "default" if not configured.
-func (p *Planner) getFamily() string {
+func (p *Planner) getFamily(ctx context.Context) string {
 	if p.modelRegistry == nil {
 		return "default"
 	}
-	meta, _ := p.modelRegistry.Resolve("")
+	meta, _ := p.modelRegistry.Resolve(ctx, "")
 	if meta.Family == "" {
 		return "default"
 	}
@@ -345,7 +345,7 @@ func (p *Planner) planWithExploration(
 	// Resolve model metadata for context window management
 	var modelMeta llm.ModelMetadata
 	if p.modelRegistry != nil {
-		modelMeta, _ = p.modelRegistry.Resolve(p.model)
+		modelMeta, _ = p.modelRegistry.Resolve(ctx, p.model)
 	}
 	if modelMeta.ContextWindow == 0 {
 		// Sensible defaults if registry is not available or model unknown
@@ -504,7 +504,7 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 
 	result := prompt.NewBuilder().
 		Core(prompts.PlannerInformed).
-		Core(prompts.FamilyPrompt("planner", p.getFamily())).
+		Core(prompts.FamilyPrompt("planner", p.getFamily(ctx))).
 		Core(prompts.VerificationMandate).
 		CacheBreak().
 		ReplaceAll(substitutions).
@@ -613,7 +613,7 @@ func (p *Planner) buildPlanSystemPrompt(
 	// Use prompt builder with family-specific adapters
 	result := prompt.NewBuilder().
 		Core(prompts.PlannerBase).
-		Core(prompts.FamilyPrompt("planner", p.getFamily())).
+		Core(prompts.FamilyPrompt("planner", p.getFamily(ctx))).
 		Core(prompts.VerificationMandate).
 		CacheBreak().
 		ReplaceAll(substitutions).
@@ -688,7 +688,7 @@ func (p *Planner) buildReplanSystemPrompt(
 	// Use prompt builder with family-specific adapters
 	result := prompt.NewBuilder().
 		Core(prompts.PlannerReplan).
-		Core(prompts.FamilyPrompt("planner", p.getFamily())).
+		Core(prompts.FamilyPrompt("planner", p.getFamily(ctx))).
 		Core(prompts.VerificationMandate).
 		CacheBreak().
 		ReplaceAll(substitutions).
@@ -751,7 +751,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 	// Use prompt builder with family-specific adapters
 	result := prompt.NewBuilder().
 		Core(prompts.PlannerBase).
-		Core(prompts.FamilyPrompt("planner", p.getFamily())).
+		Core(prompts.FamilyPrompt("planner", p.getFamily(ctx))).
 		Core(prompts.VerificationMandate).
 		CacheBreak().
 		ReplaceAll(substitutions).

@@ -2,12 +2,17 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isMCPServerStatus, isArrayOf } from '@/types/guards'
 import type { MCPServerStatus, MCPServerConfig, ToolInfo } from '@/types/models'
 
 export async function getMCPStatus(): Promise<MCPServerStatus[]> {
   try {
     const app = getApp()
-    return await app.GetMCPStatus() as MCPServerStatus[]
+    const result = await app.GetMCPStatus()
+    if (!isArrayOf(result, isMCPServerStatus)) {
+      logger.warn('getMCPStatus: unexpected response shape', result)
+    }
+    return result as MCPServerStatus[]
   } catch (err) {
     logger.error('Failed to get MCP status:', err)
     throw err

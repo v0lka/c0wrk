@@ -21,6 +21,9 @@ func OpenDatabase(dbPath string, logger *slog.Logger) (*sql.DB, error) {
 	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
 		logger.Warn("failed to enable WAL mode", "error", err)
 	}
+	if _, err := db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000"); err != nil {
+		logger.Warn("failed to set busy_timeout", "error", err)
+	}
 	if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
 		logger.Warn("failed to enable foreign keys", "error", err)
 	}

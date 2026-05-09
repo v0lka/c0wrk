@@ -49,8 +49,9 @@ type OrchestratorBuilder struct {
 
 	// Async initialization: MCP gateway and LLM router are initialized in the
 	// background so that NewOrchestratorBuilder returns immediately.
-	initDone chan struct{}
-	initErr  error
+	initDone   chan struct{}
+	initErr    error
+	gatewayErr error // non-nil if MCP gateway startup failed
 }
 
 func (b *OrchestratorBuilder) log() *slog.Logger {
@@ -79,7 +80,9 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 
 	toolsCfg := configToBuiltinToolsConfig(cfg)
 	toolsCfg.AskUserFunc = askUserFunc
-	tools.RegisterBuiltinTools(b.registry, toolsCfg)
+	if err := tools.RegisterBuiltinTools(b.registry, toolsCfg); err != nil {
+		return nil, fmt.Errorf("registering built-in tools: %w", err)
+	}
 
 	// 2. Security policies (fast — synchronous)
 	b.applySecurityPolicies(cfg)
@@ -108,6 +111,7 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	}
 	b.mu.Lock()
 	b.gateway = gw
+	b.gatewayErr = err
 	b.mu.Unlock()
 
 	// LLM Router
@@ -119,7 +123,7 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 		b.mu.Lock()
 		b.llmRouter = router
 		b.modelRegistry = modelReg
-		b.baseReasoningEffort = resolveBaseEffort(cfg.LLM.Model, modelReg, cfg)
+		b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
 		b.roleOverrides = cfg.Reasoning.RoleOverrides
 		b.mu.Unlock()
 	}
@@ -140,6 +144,11 @@ func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
 
 // WaitReady blocks until async initialization completes or the context is cancelled.
 // Exported for use by the backend package.
+//
+// IMPORTANT: A nil return only guarantees the LLM router initialized successfully.
+// The MCP gateway may have failed independently — check MCPGatewayError() if MCP
+// tools are required. Gateway failures are intentionally non-fatal so the
+// orchestrator can still operate with built-in tools when MCP servers are unavailable.
 func (b *OrchestratorBuilder) WaitReady(ctx context.Context) error {
 	return b.waitReady(ctx)
 }
@@ -159,6 +168,17 @@ func (b *OrchestratorBuilder) MCPGateway() *mcp.Gateway {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.gateway
+}
+
+// MCPGatewayError returns the error from MCP gateway startup, if any.
+// Returns "" if the gateway started successfully or hasn't been initialized yet.
+func (b *OrchestratorBuilder) MCPGatewayError() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.gatewayErr != nil {
+		return b.gatewayErr.Error()
+	}
+	return ""
 }
 
 // Build creates a new per-session Orchestrator from the current config.
@@ -215,7 +235,7 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// Resolve base reasoning effort for step executors
-	baseEffort := resolveBaseEffort(cfg.LLM.Model, modelReg, cfg)
+	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
@@ -254,27 +274,26 @@ func (b *OrchestratorBuilder) Build(
 	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.ActiveProvider, logger)
 	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter, logger)
 
-	return NewOrchestrator(
-		coreRouter,
-		planner,
-		loggedLLM,
-		b.registry,              // ToolExecutor (shared)
-		b.registry.ToolRegistry, // SDK ToolRegistry (shared)
-		tokenCounter,
-		orchConfig,
-		contextFactory,
-		reflector,
-		logger,
-		emitter,
-		modelReg,
-		toolResultBudget,
-		circuitBreaker,
-		bbFactory,
-		trackingCaller,
-		b.vectorSearchFunc,
-		b.skillManager,
-		b.registry, // coreToolRegistry - for skill policy overrides
-	), nil
+	return NewOrchestrator(orchConfig, OrchestratorDeps{
+		Router:           coreRouter,
+		Planner:          planner,
+		LLM:              loggedLLM,
+		ToolExec:         b.registry,              // ToolExecutor (shared)
+		ToolRegistry:     b.registry.ToolRegistry, // SDK ToolRegistry (shared)
+		TokenCounter:     tokenCounter,
+		ContextFactory:   contextFactory,
+		Reflector:        reflector,
+		Logger:           logger,
+		Emitter:          emitter,
+		ModelRegistry:    modelReg,
+		ToolResultBudget: toolResultBudget,
+		CircuitBreaker:   circuitBreaker,
+		BBFactory:        bbFactory,
+		TrackingCaller:   trackingCaller,
+		VectorSearchFunc: b.vectorSearchFunc,
+		SkillManager:     b.skillManager,
+		CoreToolRegistry: b.registry, // for skill policy overrides
+	}), nil
 }
 
 // RebuildRouter creates a new LLM router from the given config and caches it.
@@ -292,7 +311,7 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.mu.Lock()
 	b.llmRouter = router
 	b.modelRegistry = modelReg
-	b.baseReasoningEffort = resolveBaseEffort(cfg.LLM.Model, modelReg, cfg)
+	b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
 	b.roleOverrides = cfg.Reasoning.RoleOverrides
 	b.mu.Unlock()
 	return nil
@@ -651,11 +670,11 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 // and the user-configured base effort. If the model doesn't support reasoning,
 // returns empty string (which disables reasoning). If the model supports reasoning
 // but no base effort is configured, defaults to ReasoningHigh.
-func resolveBaseEffort(model string, registry *llm.ModelRegistry, cfg *BuilderConfig) llm.ReasoningEffort {
+func resolveBaseEffort(ctx context.Context, model string, registry *llm.ModelRegistry, cfg *BuilderConfig) llm.ReasoningEffort {
 	if registry == nil {
 		return ""
 	}
-	meta, ok := registry.Resolve(model)
+	meta, ok := registry.Resolve(ctx, model)
 	if !ok || !meta.Capabilities.Reasoning {
 		return ""
 	}
@@ -693,7 +712,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	}
 
 	// Wire reasoning effort for all agents
-	baseEffort := resolveBaseEffort(cfg.LLM.Model, modelRegistry, cfg)
+	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.Model, modelRegistry, cfg)
 	coreRouter.SetBaseReasoningEffort(baseEffort)
 	coreRouter.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
 	reflector.SetBaseReasoningEffort(baseEffort)
@@ -730,7 +749,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer) ContextManagerFactory {
 	var summarizeCaller agent.LLMCaller = caller
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
-	compactionEffort := llm.ResolveAgentReasoningMode("compaction", resolveBaseEffort(cfg.LLM.Model, modelRegistry, cfg), cfg.Reasoning.RoleOverrides)
+	compactionEffort := llm.ResolveAgentReasoningMode("compaction", resolveBaseEffort(context.Background(), cfg.LLM.Model, modelRegistry, cfg), cfg.Reasoning.RoleOverrides)
 
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...orchestration.PruningOverride) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)

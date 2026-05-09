@@ -81,6 +81,23 @@ type webFetchInput struct {
 	EndLine   int    `json:"end_line"`
 }
 
+// Judge checks whether the target URL resolves to a private/reserved IP.
+// Private addresses require user confirmation to prevent SSRF.
+func (t *WebFetchTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
+	var params webFetchInput
+	if err := json.Unmarshal(input, &params); err != nil || params.URL == "" {
+		// Cannot determine URL; let Execute() handle validation.
+		return true, "web fetch"
+	}
+
+	addr, private := resolveHostIsPrivate(ctx, params.URL)
+	if private {
+		return false, "URL resolves to private/reserved address " + addr
+	}
+
+	return true, "web fetch to public address"
+}
+
 // Execute fetches the URL and returns markdown content.
 func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params webFetchInput

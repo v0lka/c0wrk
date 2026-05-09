@@ -257,8 +257,6 @@ export namespace backend {
 	export class ConfigResponse {
 	    loaded: boolean;
 	    log_level: string;
-	    config_migrated: boolean;
-	    config_migration_msg: string;
 	    config_errors: string[];
 	    llm: ConfigLLMResponse;
 	    memory: ConfigMemResponse;
@@ -272,8 +270,6 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.loaded = source["loaded"];
 	        this.log_level = source["log_level"];
-	        this.config_migrated = source["config_migrated"];
-	        this.config_migration_msg = source["config_migration_msg"];
 	        this.config_errors = source["config_errors"];
 	        this.llm = this.convertValues(source["llm"], ConfigLLMResponse);
 	        this.memory = this.convertValues(source["memory"], ConfigMemResponse);

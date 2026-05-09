@@ -26,7 +26,7 @@ func (f *FrontendAPI) SearchVectorStore(query string, topK int, filePattern stri
 	var results []vectorindex.SearchResult
 	var err error
 
-	ctx := f.appCtx()
+	ctx := f.ctx()
 
 	if query == "" {
 		results, err = vectorSvc.BrowseWithFilter(ctx, topK, filePattern)

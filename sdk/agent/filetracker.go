@@ -17,8 +17,9 @@ import (
 
 // fileBaseline stores the original content of a file before any modifications.
 type fileBaseline struct {
-	content []byte
-	existed bool // false if file didn't exist before session
+	content []byte // in-memory content (nil when disk-backed)
+	diskKey string // non-empty when baseline is stored on disk
+	existed bool   // false if file didn't exist before session
 }
 
 // trackedOp records a single file operation within a step.
@@ -39,6 +40,7 @@ type fileInfo struct {
 type FileChangeTracker struct {
 	mu            sync.RWMutex
 	workspaceRoot string
+	baselinesDir  string // if set, baselines are stored on disk instead of in memory
 	fileLocks     map[string]*sync.Mutex
 	baselines     map[string]*fileBaseline
 	ops           map[string][]trackedOp // keyed by stepID
@@ -53,6 +55,14 @@ func NewFileChangeTracker(workspaceRoot string) *FileChangeTracker {
 		baselines:     make(map[string]*fileBaseline),
 		ops:           make(map[string][]trackedOp),
 	}
+}
+
+// NewFileChangeTrackerWithDir creates a FileChangeTracker that stores baseline
+// file content on disk under baselinesDir instead of holding it in memory.
+func NewFileChangeTrackerWithDir(workspaceRoot, baselinesDir string) *FileChangeTracker {
+	t := NewFileChangeTracker(workspaceRoot)
+	t.baselinesDir = baselinesDir
+	return t
 }
 
 // SetLogger sets the logger for the file change tracker.
@@ -103,6 +113,7 @@ func (t *FileChangeTracker) ReleaseFileLock(absPath string) {
 func (t *FileChangeTracker) RecordBeforeWrite(ctx context.Context, absPath string) {
 	rel := t.relPath(absPath)
 
+	// Check-then-act with RLock promotion: common path (exists) avoids write lock.
 	t.mu.RLock()
 	_, exists := t.baselines[rel]
 	t.mu.RUnlock()
@@ -116,7 +127,11 @@ func (t *FileChangeTracker) RecordBeforeWrite(ctx context.Context, absPath strin
 		bl.existed = false
 	} else {
 		bl.existed = true
-		bl.content = data
+		if t.baselinesDir != "" {
+			bl.diskKey = t.writeBaselineToDisk(rel, data)
+		} else {
+			bl.content = data
+		}
 	}
 
 	t.mu.Lock()
@@ -125,6 +140,38 @@ func (t *FileChangeTracker) RecordBeforeWrite(ctx context.Context, absPath strin
 		t.baselines[rel] = bl
 	}
 	t.mu.Unlock()
+}
+
+// baselineContent returns the stored baseline content for a given baseline.
+func (t *FileChangeTracker) baselineContent(bl *fileBaseline) []byte {
+	if bl == nil || !bl.existed {
+		return nil
+	}
+	if bl.diskKey != "" {
+		data, err := os.ReadFile(bl.diskKey)
+		if err != nil {
+			t.log().Debug("failed to read baseline from disk", "path", bl.diskKey, "error", err)
+			return nil
+		}
+		return data
+	}
+	return bl.content
+}
+
+// writeBaselineToDisk writes baseline content to the baselines directory.
+// Returns the full path to the written file, or "" on failure.
+func (t *FileChangeTracker) writeBaselineToDisk(rel string, data []byte) string {
+	encoded := strings.ReplaceAll(rel, string(filepath.Separator), "__")
+	dest := filepath.Join(t.baselinesDir, encoded)
+	if err := os.MkdirAll(t.baselinesDir, 0o755); err != nil {
+		t.log().Debug("failed to create baselines dir", "error", err)
+		return ""
+	}
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
+		t.log().Debug("failed to write baseline to disk", "path", dest, "error", err)
+		return ""
+	}
+	return dest
 }
 
 // RecordAfterWrite records a write operation (CREATE or MODIFY) for the current step.
@@ -190,7 +237,7 @@ func (t *FileChangeTracker) GetStepChanges(stepID string) []FileChange {
 			if bl != nil {
 				current, err := os.ReadFile(absPath)
 				if err == nil {
-					fc.Diff = computeDiff(bl.content, current, op.path)
+					fc.Diff = computeDiff(t.baselineContent(bl), current, op.path)
 					fc.SizeBytes = int64(len(current))
 				}
 			}
@@ -263,7 +310,7 @@ func (t *FileChangeTracker) GetSessionChanges() []FileChange {
 				SizeBytes: 0,
 			})
 		case existed && currentExists:
-			diff := computeDiff(bl.content, currentContent, rel)
+			diff := computeDiff(t.baselineContent(bl), currentContent, rel)
 			if diff == "" {
 				// No effective change.
 				continue
@@ -303,7 +350,7 @@ func (t *FileChangeTracker) RollbackStep(stepID string) error {
 			}
 		case "MODIFY":
 			if bl != nil {
-				if err := os.WriteFile(absPath, bl.content, 0o644); err != nil {
+				if err := os.WriteFile(absPath, t.baselineContent(bl), 0o644); err != nil {
 					errs = append(errs, fmt.Sprintf("rollback MODIFY %s: %v", op.path, err))
 				}
 			}
@@ -314,7 +361,7 @@ func (t *FileChangeTracker) RollbackStep(stepID string) error {
 					errs = append(errs, fmt.Sprintf("rollback DELETE mkdir %s: %v", op.path, err))
 					continue
 				}
-				if err := os.WriteFile(absPath, bl.content, 0o644); err != nil {
+				if err := os.WriteFile(absPath, t.baselineContent(bl), 0o644); err != nil {
 					errs = append(errs, fmt.Sprintf("rollback DELETE %s: %v", op.path, err))
 				}
 			}
@@ -350,7 +397,7 @@ func (t *FileChangeTracker) RollbackAll() error {
 				errs = append(errs, fmt.Sprintf("rollback mkdir %s: %v", rel, err))
 				continue
 			}
-			if err := os.WriteFile(absPath, bl.content, 0o644); err != nil {
+			if err := os.WriteFile(absPath, t.baselineContent(bl), 0o644); err != nil {
 				errs = append(errs, fmt.Sprintf("rollback %s: %v", rel, err))
 			}
 		} else {

@@ -64,6 +64,14 @@ export function emit(eventName: string, data?: unknown): void {
  * Subscribe to a typed session-scoped event.
  * Auto-prefixes with `session:${sessionId}:${event}`.
  * Returns an unsubscribe function.
+ *
+ * For events with non-void payloads, the callback receives the raw data
+ * from the backend. Callers MUST validate with the matching `is*Data`
+ * guard from `@/types/events` before accessing properties.
+ * See useChatEvents.ts for the correct pattern.
+ *
+ * Null/undefined payloads are filtered at this boundary so handlers
+ * don't need to guard against missing data from backend schema drift.
  */
 export function onSessionEvent<K extends SessionEventKey>(
   sessionId: string,
@@ -72,6 +80,12 @@ export function onSessionEvent<K extends SessionEventKey>(
 ): () => void {
   const eventName = `session:${sessionId}:${event}`
   return subscribe(eventName, (data: unknown) => {
+    // Filter null/undefined payloads at the boundary to protect against
+    // backend schema drift or malformed emissions.
+    if (data === null || data === undefined) {
+      callback(undefined as SessionEventMap[K])
+      return
+    }
     callback(data as SessionEventMap[K])
   })
 }

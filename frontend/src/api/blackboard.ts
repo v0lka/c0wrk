@@ -2,12 +2,16 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isBlackboardState } from '@/types/guards'
 import type { BlackboardState } from '@/types/models'
 
 export async function getBlackboardState(sessionId: string): Promise<BlackboardState | null> {
   try {
     const app = getApp()
     const result = await app.GetBlackboardState(sessionId)
+    if (result != null && !isBlackboardState(result)) {
+      logger.warn('getBlackboardState: unexpected response shape', result)
+    }
     return result as BlackboardState | null
   } catch (err) {
     logger.error('Failed to get blackboard state:', err)

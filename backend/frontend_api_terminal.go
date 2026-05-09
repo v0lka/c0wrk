@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -65,7 +66,7 @@ func (f *FrontendAPI) GetTerminalHistory(sessionID string) ([]session.TerminalCo
 	if f.store == nil {
 		return []session.TerminalCommand{}, nil
 	}
-	commands, err := f.store.LoadTerminalCommands(sessionID, 100)
+	commands, err := f.store.LoadTerminalCommands(context.Background(), sessionID, 100)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load terminal history: %w", err)
 	}

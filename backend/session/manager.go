@@ -210,7 +210,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	}
 
 	// Load session metadata from the persistent store.
-	info, err := store.LoadSession(id)
+	info, err := store.LoadSession(context.Background(), id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load session from store: %w", err)
 	}
@@ -381,7 +381,7 @@ func (m *Manager) ListSessionsByProject(projectID string) ([]SessionInfo, error)
 		return result, nil
 	}
 
-	sessions, err := store.ListSessionsByProject(projectID)
+	sessions, err := store.ListSessionsByProject(context.Background(), projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -834,7 +834,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 	m.mu.RUnlock()
 	if sessionName == "Session "+id[:8] && titleGen != nil {
 		go func() {
-			title := titleGen.Generate(context.Background(), text)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			title := titleGen.Generate(ctx, text)
 			if title == "" {
 				return
 			}
@@ -845,7 +847,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 			m.log().Info("session auto-named", "session", id, "title", title)
 			// Persist rename to store
 			if store != nil {
-				if err := store.RenameSession(id, title); err != nil {
+				if err := store.RenameSession(context.Background(), id, title); err != nil {
 					m.log().Warn("failed to persist session title", "session", id, "error", err)
 				}
 			}
@@ -869,7 +871,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 		session.mu.Unlock()
 
 		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-			TaskID:       lastTaskID,
+			TaskID:        lastTaskID,
 			ExecutionMode: mode,
 		})
 
@@ -880,7 +882,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 			session.lastCompletedTaskID = "" // clear to avoid repeated failures
 			session.mu.Unlock()
 			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-				TaskID:       "",
+				TaskID:        "",
 				ExecutionMode: mode,
 			})
 		}
@@ -1227,7 +1229,7 @@ func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error)
 
 	// Fallback: query the database for the latest task.
 	if taskID == "" {
-		dbTaskID, dbErr := ts.GetLatestTaskID(sessionID)
+		dbTaskID, dbErr := ts.GetLatestTaskID(context.Background(), sessionID)
 		if dbErr != nil {
 			return nil, fmt.Errorf("failed to get latest task ID: %w", dbErr)
 		}

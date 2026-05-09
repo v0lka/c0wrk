@@ -56,11 +56,11 @@ func TestSaveAndLoadProject(t *testing.T) {
 		CreatedAt:     "2024-01-15T10:30:00Z",
 	}
 
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
-	loaded, err := store.LoadProject(proj.ID)
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("failed to load project: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSaveAndLoadProject(t *testing.T) {
 	}
 
 	// Load non-existent project
-	notFound, err := store.LoadProject("non-existent")
+	notFound, err := store.LoadProject(context.Background(), "non-existent")
 	if err != nil {
 		t.Fatalf("error loading non-existent project: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestSaveProjectUpsert(t *testing.T) {
 		WorkspacePath: "/tmp/original",
 		CreatedAt:     "2024-01-15T10:00:00Z",
 	}
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
@@ -112,11 +112,11 @@ func TestSaveProjectUpsert(t *testing.T) {
 	proj.Name = "Updated"
 	proj.WorkspacePath = "/tmp/updated"
 	proj.LastActiveAt = "2024-06-01T15:00:00Z"
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to upsert project: %v", err)
 	}
 
-	loaded, err := store.LoadProject(proj.ID)
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("failed to load project: %v", err)
 	}
@@ -141,12 +141,12 @@ func TestListProjects(t *testing.T) {
 		{ID: "mid", Name: "Mid", WorkspacePath: "/mid", CreatedAt: "2024-03-01T10:00:00Z", LastActiveAt: "2024-03-01T10:00:00Z"},
 	}
 	for _, p := range projects {
-		if err := store.SaveProject(p); err != nil {
+		if err := store.SaveProject(context.Background(), p); err != nil {
 			t.Fatalf("failed to save project: %v", err)
 		}
 	}
 
-	listed, err := store.ListProjects()
+	listed, err := store.ListProjects(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list projects: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestEmptyListProjects(t *testing.T) {
 	store, _, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	projects, err := store.ListProjects()
+	projects, err := store.ListProjects(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list empty projects: %v", err)
 	}
@@ -192,15 +192,15 @@ func TestDeleteProject(t *testing.T) {
 		WorkspacePath: "/tmp/delete",
 		CreatedAt:     time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
-	if err := store.DeleteProject(proj.ID); err != nil {
+	if err := store.DeleteProject(context.Background(), proj.ID); err != nil {
 		t.Fatalf("failed to delete project: %v", err)
 	}
 
-	loaded, err := store.LoadProject(proj.ID)
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("error loading deleted project: %v", err)
 	}
@@ -219,15 +219,15 @@ func TestRenameProject(t *testing.T) {
 		WorkspacePath: "/tmp/rename",
 		CreatedAt:     time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
-	if err := store.RenameProject(proj.ID, "Renamed"); err != nil {
+	if err := store.RenameProject(context.Background(), proj.ID, "Renamed"); err != nil {
 		t.Fatalf("failed to rename project: %v", err)
 	}
 
-	loaded, err := store.LoadProject(proj.ID)
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("failed to load project: %v", err)
 	}
@@ -246,11 +246,11 @@ func TestUpdateProjectActivity(t *testing.T) {
 		WorkspacePath: "/tmp/activity",
 		CreatedAt:     "2024-01-15T10:00:00Z",
 	}
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
-	before, err := store.LoadProject(proj.ID)
+	before, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("failed to load project: %v", err)
 	}
@@ -258,11 +258,11 @@ func TestUpdateProjectActivity(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	if err := store.UpdateProjectActivity(proj.ID); err != nil {
+	if err := store.UpdateProjectActivity(context.Background(), proj.ID); err != nil {
 		t.Fatalf("failed to update project activity: %v", err)
 	}
 
-	after, err := store.LoadProject(proj.ID)
+	after, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("failed to load project after update: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestCloseIsNoOp(t *testing.T) {
 		WorkspacePath: "/tmp/close",
 		CreatedAt:     time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
@@ -291,7 +291,7 @@ func TestCloseIsNoOp(t *testing.T) {
 	}
 
 	// DB should still be usable
-	loaded, err := store.LoadProject(proj.ID)
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("DB should still work after Close: %v", err)
 	}
@@ -312,11 +312,11 @@ func TestSaveProjectWithExternalFlag(t *testing.T) {
 		IsExternal:    true,
 		CreatedAt:     time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
-	loaded, err := store.LoadProject(proj.ID)
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("failed to load project: %v", err)
 	}
@@ -336,11 +336,11 @@ func TestSaveProjectLastActiveAtFallback(t *testing.T) {
 		CreatedAt:     "2024-01-15T10:00:00Z",
 		LastActiveAt:  "", // empty
 	}
-	if err := store.SaveProject(proj); err != nil {
+	if err := store.SaveProject(context.Background(), proj); err != nil {
 		t.Fatalf("failed to save project: %v", err)
 	}
 
-	loaded, err := store.LoadProject(proj.ID)
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("failed to load project: %v", err)
 	}

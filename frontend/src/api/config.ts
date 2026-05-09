@@ -2,6 +2,7 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isConfigResponse, isSecuritySettingsResponse } from '@/types/guards'
 import type { ConfigResponse, SecuritySettingsResponse, LLMSettingsRequest, SearchSettingsRequest } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
@@ -10,7 +11,11 @@ export const MASKED_API_KEY = '***configured***'
 export async function getConfig(): Promise<ConfigResponse> {
   try {
     const app = getApp()
-    return await app.GetConfig() as ConfigResponse
+    const result = await app.GetConfig()
+    if (!isConfigResponse(result)) {
+      logger.warn('getConfig: unexpected response shape', result)
+    }
+    return result as ConfigResponse
   } catch (err) {
     logger.error('Failed to get config:', err)
     throw err
@@ -20,7 +25,11 @@ export async function getConfig(): Promise<ConfigResponse> {
 export async function getSecuritySettings(): Promise<SecuritySettingsResponse> {
   try {
     const app = getApp()
-    return await app.GetSecuritySettings() as SecuritySettingsResponse
+    const result = await app.GetSecuritySettings()
+    if (!isSecuritySettingsResponse(result)) {
+      logger.warn('getSecuritySettings: unexpected response shape', result)
+    }
+    return result as SecuritySettingsResponse
   } catch (err) {
     logger.error('Failed to get security settings:', err)
     throw err

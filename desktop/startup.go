@@ -293,7 +293,7 @@ func (a *App) Startup(ctx context.Context) {
 
 			// Also pre-load sessions for the most recent project
 			if store != nil {
-				sessions, sErr := store.ListSessionsByProject(projects[0].ID)
+				sessions, sErr := store.ListSessionsByProject(context.Background(), projects[0].ID)
 				if sErr == nil {
 					wailsRuntime.EventsEmit(a.ctx, backend.EventSessionsLoaded, sessions)
 				} else {
@@ -386,7 +386,7 @@ func (a *App) Startup(ctx context.Context) {
 	// from the database by looking up the project's workspace path.
 	if projStore != nil {
 		manager.SetProjectResolver(func(projectID string) (string, error) {
-			proj, err := projStore.LoadProject(projectID)
+			proj, err := projStore.LoadProject(context.Background(), projectID)
 			if err != nil {
 				return "", fmt.Errorf("failed to load project: %w", err)
 			}
@@ -407,7 +407,78 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// --- Wire Wails event listeners ---
+	a.wireWailsEventListeners(log, uiEmitFunc)
 
+	// Signal frontend that all backend subsystems are ready.
+	// Pre-load projects so the frontend doesn't need a separate round-trip.
+	if projectMgr != nil {
+		projects, err := projectMgr.ListProjects()
+		if err == nil && len(projects) > 0 {
+			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady, projects)
+		} else {
+			if err != nil {
+				log.Warn("failed to pre-load projects for backend:ready", "error", err)
+			}
+			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
+		}
+	} else {
+		wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
+	}
+}
+
+// Shutdown is called when the Wails app is shutting down.
+func (a *App) Shutdown(ctx context.Context) {
+	// Drain all pending confirmation/ask-user/step-limit channels so that
+	// blocked goroutines can exit cleanly instead of leaking.
+	a.pendingConfirmations.Range(func(key, value any) bool {
+		if pd, ok := value.(*pendingConfirmData); ok {
+			select {
+			case pd.ch <- backend.ConfirmDenyAndStop:
+			default:
+			}
+		}
+		a.pendingConfirmations.Delete(key)
+		return true
+	})
+	a.pendingAskUser.Range(func(key, value any) bool {
+		if ch, ok := value.(chan backend.AskUserResponse); ok {
+			select {
+			case ch <- backend.AskUserResponse{}:
+			default:
+			}
+		}
+		a.pendingAskUser.Delete(key)
+		return true
+	})
+	a.pendingStepLimit.Range(func(key, value any) bool {
+		if ch, ok := value.(chan backend.StepLimitResponse); ok {
+			select {
+			case ch <- backend.StepLimitDeny:
+			default:
+			}
+		}
+		a.pendingStepLimit.Delete(key)
+		return true
+	})
+
+	if a.FrontendAPI != nil {
+		a.Cleanup()
+	}
+
+	if a.app != nil {
+		a.app.Shutdown()
+	}
+
+	if a.db != nil {
+		if err := a.db.Close(); err != nil {
+			a.log().Error("failed to close database", "error", err)
+		}
+	}
+}
+
+// wireWailsEventListeners subscribes to Wails frontend events for tool confirmations,
+// judge requests, ask-user responses, and step-limit responses.
+func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.Event)) {
 	// Listen for confirmation responses from frontend
 	wailsRuntime.EventsOn(a.ctx, backend.EventToolConfirmResponse, func(data ...any) {
 		if len(data) == 0 {
@@ -476,6 +547,10 @@ func (a *App) Startup(ctx context.Context) {
 		select {
 		case confirmData.ch <- resp:
 		default:
+			log.Warn("confirmation response dropped: channel full",
+				"confirm_id", requestID,
+				"tool", confirmData.toolName,
+				"decision", resp)
 		}
 
 		a.pendingConfirmations.Delete(requestID)
@@ -691,39 +766,6 @@ func (a *App) Startup(ctx context.Context) {
 		}
 		a.pendingStepLimit.Delete(requestID)
 	})
-
-	// Signal frontend that all backend subsystems are ready.
-	// Pre-load projects so the frontend doesn't need a separate round-trip.
-	if projectMgr != nil {
-		projects, err := projectMgr.ListProjects()
-		if err == nil && len(projects) > 0 {
-			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady, projects)
-		} else {
-			if err != nil {
-				log.Warn("failed to pre-load projects for backend:ready", "error", err)
-			}
-			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
-		}
-	} else {
-		wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
-	}
-}
-
-// Shutdown is called when the Wails app is shutting down.
-func (a *App) Shutdown(ctx context.Context) {
-	if a.FrontendAPI != nil {
-		a.Cleanup()
-	}
-
-	if a.app != nil {
-		a.app.Shutdown()
-	}
-
-	if a.db != nil {
-		if err := a.db.Close(); err != nil {
-			a.log().Error("failed to close database", "error", err)
-		}
-	}
 }
 
 // resolveModelPath checks the app bundle Resources/models/ first, then <agentDir>/models/.

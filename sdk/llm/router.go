@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 )
 
@@ -158,12 +158,12 @@ func retryBackoff(ctx context.Context, backoff time.Duration) bool {
 // within the model's context window minus output reserve. Returns nil when
 // validation passes or should be skipped (unknown model, zero context window,
 // nil registry).
-func (r *Router) validateContextWindow(model string, msgs []Message) error {
+func (r *Router) validateContextWindow(ctx context.Context, model string, msgs []Message) error {
 	if r.registry == nil || r.tokenCounter == nil {
 		return nil
 	}
 
-	meta, _ := r.registry.Resolve(model)
+	meta, _ := r.registry.Resolve(ctx, model)
 
 	// Skip validation when metadata is a fallback or context window is 0
 	if meta.ContextWindow == 0 {
@@ -194,14 +194,14 @@ func (r *Router) validateContextWindow(model string, msgs []Message) error {
 // applyDefaultTemperature sets a family-aware temperature default on the request
 // when no explicit temperature is provided. Skips models that don't support
 // the temperature parameter (e.g. reasoning models like o1, o3).
-func (r *Router) applyDefaultTemperature(req *ChatRequest) {
+func (r *Router) applyDefaultTemperature(ctx context.Context, req *ChatRequest) {
 	if req.Temperature != nil {
 		return // caller set explicit temperature — respect it
 	}
 
 	// Resolve model metadata for capability check and family
 	if r.registry != nil {
-		meta, _ := r.registry.Resolve(req.Model)
+		meta, _ := r.registry.Resolve(ctx, req.Model)
 		if !meta.Capabilities.Temperature {
 			return // model doesn't accept temperature (e.g. reasoning models)
 		}
@@ -224,10 +224,10 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 
 	// Apply family-aware temperature default when not explicitly set
-	r.applyDefaultTemperature(&req)
+	r.applyDefaultTemperature(ctx, &req)
 
 	// Pre-call context window validation
-	if err := r.validateContextWindow(req.Model, req.Messages); err != nil {
+	if err := r.validateContextWindow(ctx, req.Model, req.Messages); err != nil {
 		return nil, err
 	}
 
@@ -243,7 +243,7 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 			}
 			// Resolve family from model registry
 			if r.registry != nil && resp.Family == "" {
-				meta, _ := r.registry.Resolve(resp.Model)
+				meta, _ := r.registry.Resolve(ctx, resp.Model)
 				resp.Family = meta.Family
 			}
 			normalizeResponse(resp)
@@ -303,10 +303,10 @@ func (r *Router) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk,
 	}
 
 	// Apply family-aware temperature default when not explicitly set
-	r.applyDefaultTemperature(&req)
+	r.applyDefaultTemperature(ctx, &req)
 
 	// Pre-call context window validation
-	if err := r.validateContextWindow(req.Model, req.Messages); err != nil {
+	if err := r.validateContextWindow(ctx, req.Model, req.Messages); err != nil {
 		return nil, err
 	}
 

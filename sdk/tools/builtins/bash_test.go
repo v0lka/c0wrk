@@ -15,8 +15,27 @@ import (
 	"github.com/user/agent/sdk/tools"
 )
 
+func mustNewBashExecTool(t *testing.T, blacklist []string) *BashExecTool {
+	t.Helper()
+	tool, err := NewBashExecTool(blacklist)
+	if err != nil {
+		t.Fatalf("NewBashExecTool: %v", err)
+	}
+	return tool
+}
+
+func TestBashExecTool_InvalidBlacklistPattern(t *testing.T) {
+	_, err := NewBashExecTool([]string{"valid", "[invalid"})
+	if err == nil {
+		t.Fatal("expected error for invalid regex pattern, got nil")
+	}
+	if !strings.Contains(err.Error(), "[invalid") {
+		t.Errorf("expected error to mention the invalid pattern, got: %v", err)
+	}
+}
+
 func TestBashExecTool_Execute_Basic(t *testing.T) {
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 	ctx := context.Background()
 	input := []byte(`{"command": "echo hello"}`)
 
@@ -33,7 +52,7 @@ func TestBashExecTool_Execute_Basic(t *testing.T) {
 }
 
 func TestBashExecTool_EchoHello(t *testing.T) {
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "echo hello",
@@ -54,7 +73,7 @@ func TestBashExecTool_EchoHello(t *testing.T) {
 }
 
 func TestBashExecTool_NonZeroExitCode(t *testing.T) {
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "false",
@@ -71,7 +90,7 @@ func TestBashExecTool_NonZeroExitCode(t *testing.T) {
 }
 
 func TestBashExecTool_Timeout(t *testing.T) {
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "sleep 10",
@@ -93,14 +112,14 @@ func TestBashExecTool_Timeout(t *testing.T) {
 }
 
 func TestBashExecTool_DefaultPolicy(t *testing.T) {
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 	if tool.DefaultPolicy() != tools.PolicyUserConfirm {
 		t.Errorf("expected DefaultPolicy() to return PolicyUserConfirm, got %v", tool.DefaultPolicy())
 	}
 }
 
 func TestBashExecTool_Judge_BlacklistMatch(t *testing.T) {
-	tool := NewBashExecTool([]string{"rm -rf", "sudo"})
+	tool := mustNewBashExecTool(t, []string{"rm -rf", "sudo"})
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "rm -rf /",
@@ -119,7 +138,7 @@ func TestBashExecTool_Judge_BlacklistMatch(t *testing.T) {
 }
 
 func TestBashExecTool_Judge_NoBlacklistMatch(t *testing.T) {
-	tool := NewBashExecTool([]string{"rm -rf", "sudo"})
+	tool := mustNewBashExecTool(t, []string{"rm -rf", "sudo"})
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "echo hello",
@@ -135,7 +154,7 @@ func TestBashExecTool_Judge_NoBlacklistMatch(t *testing.T) {
 }
 
 func TestBashExecTool_Judge_EmptyBlacklist(t *testing.T) {
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "rm -rf /",
@@ -151,7 +170,7 @@ func TestBashExecTool_Judge_EmptyBlacklist(t *testing.T) {
 }
 
 func TestBashExecTool_Judge_InvalidJSON(t *testing.T) {
-	tool := NewBashExecTool([]string{"rm -rf"})
+	tool := mustNewBashExecTool(t, []string{"rm -rf"})
 
 	allow, reasoning := tool.Judge(context.Background(), json.RawMessage(`{invalid`))
 	if allow {
@@ -182,7 +201,7 @@ func findChange(changes []agent.FileChange, op string) *agent.FileChange {
 func TestBashExec_DetectsFileCreation(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx, tracker := bashCtxWithTracker(t, tmpDir)
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	newFile := filepath.Join(tmpDir, "created.txt")
 	input, _ := json.Marshal(map[string]string{
@@ -221,7 +240,7 @@ func TestBashExec_DetectsFileModification(t *testing.T) {
 	}
 
 	ctx, tracker := bashCtxWithTracker(t, tmpDir)
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": `echo "modified" > ` + existingFile,
@@ -259,7 +278,7 @@ func TestBashExec_DetectsFileDeletion(t *testing.T) {
 	}
 
 	ctx, tracker := bashCtxWithTracker(t, tmpDir)
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "rm " + victimFile,
@@ -288,7 +307,7 @@ func TestBashExec_DetectsFileDeletion(t *testing.T) {
 }
 
 func TestBashExec_NoTracker(t *testing.T) {
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "echo hello-world",
@@ -310,7 +329,7 @@ func TestBashExec_NoTracker(t *testing.T) {
 func TestBashExecTool_TimeoutKillsChildProcesses(t *testing.T) {
 	// This test verifies that timeout kills the entire process group,
 	// not just the parent bash process.
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command": "bash -c 'sleep 300 & sleep 300 & wait'",
@@ -344,7 +363,7 @@ func TestBashExecTool_WorkingDirectory(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	tool := NewBashExecTool(nil)
+	tool := mustNewBashExecTool(t, nil)
 
 	input, _ := json.Marshal(map[string]string{
 		"command":           "pwd",

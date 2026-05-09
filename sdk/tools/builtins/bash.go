@@ -27,17 +27,17 @@ type BashExecTool struct {
 }
 
 // NewBashExecTool creates a new BashExecTool with the given blacklist.
-func NewBashExecTool(blacklist []string) *BashExecTool {
+func NewBashExecTool(blacklist []string) (*BashExecTool, error) {
 	return NewBashExecToolWithTimeouts(blacklist, DefaultBashTimeouts())
 }
 
 // NewBashExecToolWithTimeouts creates a new BashExecTool with the given blacklist and timeouts.
-func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) *BashExecTool {
+func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) (*BashExecTool, error) {
 	compiled := make([]*regexp.Regexp, 0, len(blacklist))
 	for _, pattern := range blacklist {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			continue // Skip invalid patterns
+			return nil, fmt.Errorf("invalid bash blacklist pattern %q: %w", pattern, err)
 		}
 		compiled = append(compiled, re)
 	}
@@ -51,7 +51,7 @@ func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) *Bas
 		blacklist: blacklist,
 		compiled:  compiled,
 		timeouts:  timeouts,
-	}
+	}, nil
 }
 
 // bashInput represents the input parameters for bash command execution.

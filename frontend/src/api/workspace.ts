@@ -2,12 +2,17 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isFileEntry, isArrayOf } from '@/types/guards'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
 export async function listDirectory(path: string, recursive = false): Promise<FileEntry[]> {
   try {
     const app = getApp()
-    return await app.ListDirectory(path, recursive) as FileEntry[]
+    const result = await app.ListDirectory(path, recursive)
+    if (!isArrayOf(result, isFileEntry)) {
+      logger.warn('listDirectory: unexpected response shape', result)
+    }
+    return result as FileEntry[]
   } catch (err) {
     logger.error(recursive ? 'Failed to list directory recursively:' : 'Failed to list directory:', err)
     throw err

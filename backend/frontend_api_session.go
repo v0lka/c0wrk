@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -31,7 +32,7 @@ func (f *FrontendAPI) CreateSession() (*session.SessionInfo, error) {
 	// Persist to SQLite
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.SaveSession(*info); err != nil {
+		if err := f.store.SaveSession(context.Background(), *info); err != nil {
 			f.log().Error("failed to save session to store", "error", err)
 		}
 	}
@@ -53,7 +54,7 @@ func (f *FrontendAPI) DeleteSession(id string) error {
 	// Always delete from store (handles store-only sessions from previous runs)
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.DeleteSession(id); err != nil {
+		if err := f.store.DeleteSession(context.Background(), id); err != nil {
 			f.log().Error("failed to delete session from store", "error", err)
 		}
 	}
@@ -98,7 +99,7 @@ func (f *FrontendAPI) RenameSession(id, name string) error {
 	// Always rename in store (handles store-only sessions from previous runs)
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.RenameSession(id, name); err != nil {
+		if err := f.store.RenameSession(context.Background(), id, name); err != nil {
 			f.log().Error("failed to rename session in store", "error", err)
 		}
 	}
@@ -120,9 +121,9 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 	// Toggle archive in store
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		info, err := f.store.LoadSession(id)
+		info, err := f.store.LoadSession(context.Background(), id)
 		if err == nil && info != nil {
-			if err := f.store.ArchiveSession(id, !info.Archived); err != nil {
+			if err := f.store.ArchiveSession(context.Background(), id, !info.Archived); err != nil {
 				f.log().Error("failed to archive session in store", "error", err)
 			}
 		}
@@ -139,14 +140,14 @@ func (f *FrontendAPI) SendMessage(id, text, mode string) error {
 	// Update session activity timestamp
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.UpdateSessionActivity(id); err != nil {
+		if err := f.store.UpdateSessionActivity(context.Background(), id); err != nil {
 			f.log().Error("failed to update session activity", "error", err)
 		}
 	}
 	// Save user message to store
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.SaveMessage(session.ChatMessage{
+		if err := f.store.SaveMessage(context.Background(), session.ChatMessage{
 			SessionID: id,
 			Role:      "user",
 			Content:   text,
@@ -159,7 +160,7 @@ func (f *FrontendAPI) SendMessage(id, text, mode string) error {
 	// Check if this is the first message (session has default name)
 	// Title generation is handled by the backend session Manager.
 
-	if err := f.app.Manager().SendMessage(f.appCtx(), id, text, mode); err != nil {
+	if err := f.app.Manager().SendMessage(f.ctx(), id, text, mode); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil
@@ -179,13 +180,13 @@ func (f *FrontendAPI) ResumeTask(id string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
-	return f.app.Manager().ResumeTask(f.appCtx(), id)
+	return f.app.Manager().ResumeTask(f.ctx(), id)
 }
 
 // GetSessionHistory returns chat history for a session.
 func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	if f.store != nil {
-		return f.store.LoadMessages(id)
+		return f.store.LoadMessages(context.Background(), id)
 	}
 	return []session.ChatMessage{}, nil
 }

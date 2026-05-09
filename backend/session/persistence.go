@@ -47,28 +47,28 @@ type TerminalCommand struct {
 // SessionStore provides persistent storage for sessions and messages.
 type SessionStore interface {
 	// Session CRUD
-	SaveSession(info SessionInfo) error
-	LoadSession(id string) (*SessionInfo, error)
-	ListSessions() ([]SessionInfo, error)
-	ListSessionsByProject(projectID string) ([]SessionInfo, error)
-	DeleteSession(id string) error
-	ArchiveSession(id string, archived bool) error
-	RenameSession(id, name string) error
+	SaveSession(ctx context.Context, info SessionInfo) error
+	LoadSession(ctx context.Context, id string) (*SessionInfo, error)
+	ListSessions(ctx context.Context) ([]SessionInfo, error)
+	ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error)
+	DeleteSession(ctx context.Context, id string) error
+	ArchiveSession(ctx context.Context, id string, archived bool) error
+	RenameSession(ctx context.Context, id, name string) error
 
 	// Token tracking
-	UpdateSessionTokens(id string, inputTokens, outputTokens int, model, family string) error
+	UpdateSessionTokens(ctx context.Context, id string, inputTokens, outputTokens int, model, family string) error
 
 	// Activity tracking
-	UpdateSessionActivity(id string) error
+	UpdateSessionActivity(ctx context.Context, id string) error
 
 	// Message operations
-	SaveMessage(msg ChatMessage) error
-	LoadMessages(sessionID string) ([]ChatMessage, error)
-	DeleteMessages(sessionID string) error
+	SaveMessage(ctx context.Context, msg ChatMessage) error
+	LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error)
+	DeleteMessages(ctx context.Context, sessionID string) error
 
 	// Terminal command history
-	SaveTerminalCommand(sessionID, command string) error
-	LoadTerminalCommands(sessionID string, limit int) ([]TerminalCommand, error)
+	SaveTerminalCommand(ctx context.Context, sessionID, command string) error
+	LoadTerminalCommands(ctx context.Context, sessionID string, limit int) ([]TerminalCommand, error)
 
 	// Lifecycle
 	Close() error
@@ -187,13 +187,13 @@ func (s *SQLiteSessionStore) createTables() error {
 }
 
 // SaveSession saves or updates a session.
-func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
+func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) error {
 	// Use created_at as fallback for last_active_at if not set
 	lastActiveAt := info.LastActiveAt
 	if lastActiveAt == "" {
 		lastActiveAt = info.CreatedAt
 	}
-	_, err := s.db.ExecContext(context.Background(), `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -213,9 +213,9 @@ func (s *SQLiteSessionStore) SaveSession(info SessionInfo) error {
 }
 
 // LoadSession loads a session by ID.
-func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
+func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*SessionInfo, error) {
 	var info SessionInfo
-	err := s.db.QueryRowContext(context.Background(), `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions WHERE id = ?`,
 		id,
 	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family)
@@ -231,8 +231,8 @@ func (s *SQLiteSessionStore) LoadSession(id string) (*SessionInfo, error) {
 }
 
 // ListSessions returns all sessions ordered by last activity time (newest first).
-func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
-	rows, err := s.db.QueryContext(context.Background(), `
+func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, project_id, name, created_at,
 		       COALESCE(last_active_at, created_at),
 		       archived,
@@ -273,8 +273,8 @@ func (s *SQLiteSessionStore) ListSessions() ([]SessionInfo, error) {
 }
 
 // ListSessionsByProject returns all sessions for a given project, ordered by last activity (newest first).
-func (s *SQLiteSessionStore) ListSessionsByProject(projectID string) ([]SessionInfo, error) {
-	rows, err := s.db.QueryContext(context.Background(), `
+func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions
 		WHERE project_id = ?
 		ORDER BY COALESCE(last_active_at, created_at) DESC`, projectID)
@@ -306,8 +306,8 @@ func (s *SQLiteSessionStore) ListSessionsByProject(projectID string) ([]SessionI
 }
 
 // DeleteSession deletes a session and all its messages (cascade).
-func (s *SQLiteSessionStore) DeleteSession(id string) error {
-	_, err := s.db.ExecContext(context.Background(), `DELETE FROM sessions WHERE id = ?`, id)
+func (s *SQLiteSessionStore) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
@@ -315,8 +315,8 @@ func (s *SQLiteSessionStore) DeleteSession(id string) error {
 }
 
 // ArchiveSession sets the archived flag on a session.
-func (s *SQLiteSessionStore) ArchiveSession(id string, archived bool) error {
-	_, err := s.db.ExecContext(context.Background(), `UPDATE sessions SET archived = ? WHERE id = ?`, archived, id)
+func (s *SQLiteSessionStore) ArchiveSession(ctx context.Context, id string, archived bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET archived = ? WHERE id = ?`, archived, id)
 	if err != nil {
 		return fmt.Errorf("failed to archive session: %w", err)
 	}
@@ -324,8 +324,8 @@ func (s *SQLiteSessionStore) ArchiveSession(id string, archived bool) error {
 }
 
 // RenameSession updates a session's name.
-func (s *SQLiteSessionStore) RenameSession(id, name string) error {
-	_, err := s.db.ExecContext(context.Background(), `UPDATE sessions SET name = ? WHERE id = ?`, name, id)
+func (s *SQLiteSessionStore) RenameSession(ctx context.Context, id, name string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET name = ? WHERE id = ?`, name, id)
 	if err != nil {
 		return fmt.Errorf("failed to rename session: %w", err)
 	}
@@ -333,8 +333,8 @@ func (s *SQLiteSessionStore) RenameSession(id, name string) error {
 }
 
 // UpdateSessionTokens updates the accumulated token counts and model info for a session.
-func (s *SQLiteSessionStore) UpdateSessionTokens(id string, inputTokens, outputTokens int, model, family string) error {
-	_, err := s.db.ExecContext(context.Background(), `
+func (s *SQLiteSessionStore) UpdateSessionTokens(ctx context.Context, id string, inputTokens, outputTokens int, model, family string) error {
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET total_input_tokens = ?, total_output_tokens = ?, model = ?, family = ? WHERE id = ?`,
 		inputTokens, outputTokens, model, family, id,
 	)
@@ -345,9 +345,9 @@ func (s *SQLiteSessionStore) UpdateSessionTokens(id string, inputTokens, outputT
 }
 
 // UpdateSessionActivity updates the last_active_at timestamp for a session.
-func (s *SQLiteSessionStore) UpdateSessionActivity(id string) error {
+func (s *SQLiteSessionStore) UpdateSessionActivity(ctx context.Context, id string) error {
 	now := time.Now().Format(time.RFC3339)
-	_, err := s.db.ExecContext(context.Background(), `
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET last_active_at = ? WHERE id = ?`,
 		now, id,
 	)
@@ -358,8 +358,8 @@ func (s *SQLiteSessionStore) UpdateSessionActivity(id string) error {
 }
 
 // SaveMessage saves a chat message.
-func (s *SQLiteSessionStore) SaveMessage(msg ChatMessage) error {
-	_, err := s.db.ExecContext(context.Background(), `
+func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO session_messages (session_id, role, content, metadata, created_at)
 		VALUES (?, ?, ?, ?, ?)`,
 		msg.SessionID, msg.Role, msg.Content, string(msg.Metadata), msg.CreatedAt,
@@ -371,8 +371,8 @@ func (s *SQLiteSessionStore) SaveMessage(msg ChatMessage) error {
 }
 
 // LoadMessages loads all messages for a session ordered by creation time.
-func (s *SQLiteSessionStore) LoadMessages(sessionID string) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(context.Background(), `
+func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, role, content, metadata, created_at
 		FROM session_messages
 		WHERE session_id = ?
@@ -416,8 +416,8 @@ func (s *SQLiteSessionStore) LoadMessages(sessionID string) ([]ChatMessage, erro
 }
 
 // DeleteMessages deletes all messages for a session.
-func (s *SQLiteSessionStore) DeleteMessages(sessionID string) error {
-	_, err := s.db.ExecContext(context.Background(), `DELETE FROM session_messages WHERE session_id = ?`, sessionID)
+func (s *SQLiteSessionStore) DeleteMessages(ctx context.Context, sessionID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM session_messages WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to delete messages: %w", err)
 	}
@@ -425,9 +425,9 @@ func (s *SQLiteSessionStore) DeleteMessages(sessionID string) error {
 }
 
 // SaveTerminalCommand saves a terminal command to the history.
-func (s *SQLiteSessionStore) SaveTerminalCommand(sessionID, command string) error {
+func (s *SQLiteSessionStore) SaveTerminalCommand(ctx context.Context, sessionID, command string) error {
 	now := time.Now().Format(time.RFC3339)
-	_, err := s.db.ExecContext(context.Background(), `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO terminal_commands (session_id, command, created_at)
 		VALUES (?, ?, ?)`,
 		sessionID, command, now,
@@ -439,11 +439,11 @@ func (s *SQLiteSessionStore) SaveTerminalCommand(sessionID, command string) erro
 }
 
 // LoadTerminalCommands loads the most recent terminal commands for a session.
-func (s *SQLiteSessionStore) LoadTerminalCommands(sessionID string, limit int) ([]TerminalCommand, error) {
+func (s *SQLiteSessionStore) LoadTerminalCommands(ctx context.Context, sessionID string, limit int) ([]TerminalCommand, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(context.Background(), `
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, command, created_at
 		FROM terminal_commands
 		WHERE session_id = ?
@@ -521,22 +521,22 @@ type TaskStepRecord struct {
 
 // TaskStore provides persistent storage for orchestration tasks and step results.
 type TaskStore interface {
-	SaveTask(task TaskRecord) error
-	UpdateTaskPlan(taskID string, plan json.RawMessage) error
-	UpdateTaskRouting(taskID string, routing json.RawMessage) error
-	SaveTaskStep(taskID string, step TaskStepRecord) error
-	SaveStepFileChanges(taskID, stepID string, fileChangesJSON json.RawMessage) error
-	AddTaskReflection(taskID string, reflectionJSON json.RawMessage) error
-	CompleteTask(taskID, finalOutput string, attemptCount int) error
-	FailTask(taskID string) error
-	LoadTask(taskID string) (*TaskRecord, error)
-	LoadTaskSteps(taskID string) ([]TaskStepRecord, error)
-	LoadStepFileChanges(taskID string) (map[string]json.RawMessage, error)
-	SaveFacts(taskID string, factsJSON json.RawMessage) error
-	LoadFacts(taskID string) (json.RawMessage, error)
-	GetUnfinishedTask(sessionID string) (*TaskRecord, error)
-	GetLatestTaskID(sessionID string) (string, error)
-	ReactivateTask(taskID string) error
+	SaveTask(ctx context.Context, task TaskRecord) error
+	UpdateTaskPlan(ctx context.Context, taskID string, plan json.RawMessage) error
+	UpdateTaskRouting(ctx context.Context, taskID string, routing json.RawMessage) error
+	SaveTaskStep(ctx context.Context, taskID string, step TaskStepRecord) error
+	SaveStepFileChanges(ctx context.Context, taskID, stepID string, fileChangesJSON json.RawMessage) error
+	AddTaskReflection(ctx context.Context, taskID string, reflectionJSON json.RawMessage) error
+	CompleteTask(ctx context.Context, taskID, finalOutput string, attemptCount int) error
+	FailTask(ctx context.Context, taskID string) error
+	LoadTask(ctx context.Context, taskID string) (*TaskRecord, error)
+	LoadTaskSteps(ctx context.Context, taskID string) ([]TaskStepRecord, error)
+	LoadStepFileChanges(ctx context.Context, taskID string) (map[string]json.RawMessage, error)
+	SaveFacts(ctx context.Context, taskID string, factsJSON json.RawMessage) error
+	LoadFacts(ctx context.Context, taskID string) (json.RawMessage, error)
+	GetUnfinishedTask(ctx context.Context, sessionID string) (*TaskRecord, error)
+	GetLatestTaskID(ctx context.Context, sessionID string) (string, error)
+	ReactivateTask(ctx context.Context, taskID string) error
 }
 
 // compile-time check
@@ -547,8 +547,8 @@ var _ TaskStore = (*SQLiteSessionStore)(nil)
 // ---------------------------------------------------------------------------
 
 // SaveTask inserts a new task record.
-func (s *SQLiteSessionStore) SaveTask(task TaskRecord) error {
-	_, err := s.db.ExecContext(context.Background(), `
+func (s *SQLiteSessionStore) SaveTask(ctx context.Context, task TaskRecord) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tasks (id, session_id, original_request, routing_decision, plan, reflections, final_output, attempt_count, status, created_at, completed_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SessionID, task.OriginalRequest,
@@ -564,8 +564,8 @@ func (s *SQLiteSessionStore) SaveTask(task TaskRecord) error {
 }
 
 // UpdateTaskPlan updates the plan JSON for a task.
-func (s *SQLiteSessionStore) UpdateTaskPlan(taskID string, plan json.RawMessage) error {
-	_, err := s.db.ExecContext(context.Background(), `UPDATE tasks SET plan = ? WHERE id = ?`, string(plan), taskID)
+func (s *SQLiteSessionStore) UpdateTaskPlan(ctx context.Context, taskID string, plan json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET plan = ? WHERE id = ?`, string(plan), taskID)
 	if err != nil {
 		return fmt.Errorf("failed to update task plan: %w", err)
 	}
@@ -573,8 +573,8 @@ func (s *SQLiteSessionStore) UpdateTaskPlan(taskID string, plan json.RawMessage)
 }
 
 // UpdateTaskRouting updates the routing decision JSON for a task.
-func (s *SQLiteSessionStore) UpdateTaskRouting(taskID string, routing json.RawMessage) error {
-	_, err := s.db.ExecContext(context.Background(), `UPDATE tasks SET routing_decision = ? WHERE id = ?`, string(routing), taskID)
+func (s *SQLiteSessionStore) UpdateTaskRouting(ctx context.Context, taskID string, routing json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET routing_decision = ? WHERE id = ?`, string(routing), taskID)
 	if err != nil {
 		return fmt.Errorf("failed to update task routing: %w", err)
 	}
@@ -582,8 +582,8 @@ func (s *SQLiteSessionStore) UpdateTaskRouting(taskID string, routing json.RawMe
 }
 
 // SaveTaskStep inserts or replaces a task step record.
-func (s *SQLiteSessionStore) SaveTaskStep(taskID string, step TaskStepRecord) error {
-	_, err := s.db.ExecContext(context.Background(), `
+func (s *SQLiteSessionStore) SaveTaskStep(ctx context.Context, taskID string, step TaskStepRecord) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO task_steps (step_id, task_id, summary, full_output, error_text, steps, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		step.StepID, taskID, step.Summary, step.FullOutput, step.ErrorText,
@@ -596,10 +596,10 @@ func (s *SQLiteSessionStore) SaveTaskStep(taskID string, step TaskStepRecord) er
 }
 
 // AddTaskReflection appends a reflection JSON object to the task's reflections array.
-func (s *SQLiteSessionStore) AddTaskReflection(taskID string, reflectionJSON json.RawMessage) error {
+func (s *SQLiteSessionStore) AddTaskReflection(ctx context.Context, taskID string, reflectionJSON json.RawMessage) error {
 	// Read current reflections, append, write back.
 	var current string
-	err := s.db.QueryRowContext(context.Background(), `SELECT reflections FROM tasks WHERE id = ?`, taskID).Scan(&current)
+	err := s.db.QueryRowContext(ctx, `SELECT reflections FROM tasks WHERE id = ?`, taskID).Scan(&current)
 	if err != nil {
 		return fmt.Errorf("failed to read task reflections: %w", err)
 	}
@@ -617,7 +617,7 @@ func (s *SQLiteSessionStore) AddTaskReflection(taskID string, reflectionJSON jso
 		return fmt.Errorf("failed to marshal task reflections: %w", err)
 	}
 
-	_, err = s.db.ExecContext(context.Background(), `UPDATE tasks SET reflections = ? WHERE id = ?`, string(updated), taskID)
+	_, err = s.db.ExecContext(ctx, `UPDATE tasks SET reflections = ? WHERE id = ?`, string(updated), taskID)
 	if err != nil {
 		return fmt.Errorf("failed to update task reflections: %w", err)
 	}
@@ -625,9 +625,9 @@ func (s *SQLiteSessionStore) AddTaskReflection(taskID string, reflectionJSON jso
 }
 
 // CompleteTask marks a task as completed with final output.
-func (s *SQLiteSessionStore) CompleteTask(taskID, finalOutput string, attemptCount int) error {
+func (s *SQLiteSessionStore) CompleteTask(ctx context.Context, taskID, finalOutput string, attemptCount int) error {
 	now := time.Now()
-	_, err := s.db.ExecContext(context.Background(), `
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET status = 'completed', final_output = ?, attempt_count = ?, completed_at = ? WHERE id = ?`,
 		finalOutput, attemptCount, now, taskID,
 	)
@@ -638,9 +638,9 @@ func (s *SQLiteSessionStore) CompleteTask(taskID, finalOutput string, attemptCou
 }
 
 // FailTask marks a task as failed.
-func (s *SQLiteSessionStore) FailTask(taskID string) error {
+func (s *SQLiteSessionStore) FailTask(ctx context.Context, taskID string) error {
 	now := time.Now()
-	_, err := s.db.ExecContext(context.Background(), `
+	_, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET status = 'failed', completed_at = ? WHERE id = ?`,
 		now, taskID,
 	)
@@ -651,8 +651,8 @@ func (s *SQLiteSessionStore) FailTask(taskID string) error {
 }
 
 // ReactivateTask reactivates a completed task back to in_progress.
-func (s *SQLiteSessionStore) ReactivateTask(taskID string) error {
-	_, err := s.db.ExecContext(context.Background(),
+func (s *SQLiteSessionStore) ReactivateTask(ctx context.Context, taskID string) error {
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = 'in_progress', completed_at = NULL WHERE id = ?`,
 		taskID,
 	)
@@ -663,12 +663,12 @@ func (s *SQLiteSessionStore) ReactivateTask(taskID string) error {
 }
 
 // LoadTask loads a task by ID. Returns nil, nil if not found.
-func (s *SQLiteSessionStore) LoadTask(taskID string) (*TaskRecord, error) {
+func (s *SQLiteSessionStore) LoadTask(ctx context.Context, taskID string) (*TaskRecord, error) {
 	var task TaskRecord
 	var routingDec, plan, reflections string
 	var completedAt sql.NullTime
 
-	err := s.db.QueryRowContext(context.Background(), `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, session_id, original_request, routing_decision, plan, reflections, final_output, attempt_count, status, created_at, completed_at
 		FROM tasks WHERE id = ?`,
 		taskID,
@@ -696,8 +696,8 @@ func (s *SQLiteSessionStore) LoadTask(taskID string) (*TaskRecord, error) {
 }
 
 // LoadTaskSteps loads all step records for a task ordered by creation time.
-func (s *SQLiteSessionStore) LoadTaskSteps(taskID string) ([]TaskStepRecord, error) {
-	rows, err := s.db.QueryContext(context.Background(), `
+func (s *SQLiteSessionStore) LoadTaskSteps(ctx context.Context, taskID string) ([]TaskStepRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT step_id, task_id, summary, full_output, error_text, steps, created_at
 		FROM task_steps
 		WHERE task_id = ?
@@ -740,8 +740,8 @@ func (s *SQLiteSessionStore) LoadTaskSteps(taskID string) ([]TaskStepRecord, err
 }
 
 // SaveStepFileChanges inserts or replaces file changes JSON for a task step.
-func (s *SQLiteSessionStore) SaveStepFileChanges(taskID, stepID string, fileChangesJSON json.RawMessage) error {
-	_, err := s.db.ExecContext(context.Background(), `
+func (s *SQLiteSessionStore) SaveStepFileChanges(ctx context.Context, taskID, stepID string, fileChangesJSON json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO task_step_file_changes (task_id, step_id, file_changes, created_at)
 		VALUES (?, ?, ?, ?)`,
 		taskID, stepID, string(fileChangesJSON), time.Now(),
@@ -753,8 +753,8 @@ func (s *SQLiteSessionStore) SaveStepFileChanges(taskID, stepID string, fileChan
 }
 
 // LoadStepFileChanges loads all file change records for a task, returning a map of stepID -> JSON.
-func (s *SQLiteSessionStore) LoadStepFileChanges(taskID string) (map[string]json.RawMessage, error) {
-	rows, err := s.db.QueryContext(context.Background(), `
+func (s *SQLiteSessionStore) LoadStepFileChanges(ctx context.Context, taskID string) (map[string]json.RawMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT step_id, file_changes
 		FROM task_step_file_changes
 		WHERE task_id = ?
@@ -789,12 +789,12 @@ func (s *SQLiteSessionStore) LoadStepFileChanges(taskID string) (map[string]json
 }
 
 // GetUnfinishedTask returns the most recent unfinished (in-progress or failed) task for a session, or nil if none.
-func (s *SQLiteSessionStore) GetUnfinishedTask(sessionID string) (*TaskRecord, error) {
+func (s *SQLiteSessionStore) GetUnfinishedTask(ctx context.Context, sessionID string) (*TaskRecord, error) {
 	var task TaskRecord
 	var routingDec, plan, reflections string
 	var completedAt sql.NullTime
 
-	err := s.db.QueryRowContext(context.Background(), `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, session_id, original_request, routing_decision, plan, reflections, final_output, attempt_count, status, created_at, completed_at
 		FROM tasks
 		WHERE session_id = ? AND status IN ('in_progress', 'failed')
@@ -825,9 +825,9 @@ func (s *SQLiteSessionStore) GetUnfinishedTask(sessionID string) (*TaskRecord, e
 
 // GetLatestTaskID returns the ID of the most recent task for a session, regardless of status.
 // Returns "", nil if no tasks exist.
-func (s *SQLiteSessionStore) GetLatestTaskID(sessionID string) (string, error) {
+func (s *SQLiteSessionStore) GetLatestTaskID(ctx context.Context, sessionID string) (string, error) {
 	var taskID string
-	err := s.db.QueryRowContext(context.Background(), `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id FROM tasks WHERE session_id = ? ORDER BY created_at DESC LIMIT 1`,
 		sessionID,
 	).Scan(&taskID)
@@ -842,8 +842,8 @@ func (s *SQLiteSessionStore) GetLatestTaskID(sessionID string) (string, error) {
 }
 
 // SaveFacts inserts or replaces the facts JSON blob for a task.
-func (s *SQLiteSessionStore) SaveFacts(taskID string, factsJSON json.RawMessage) error {
-	_, err := s.db.ExecContext(context.Background(), `
+func (s *SQLiteSessionStore) SaveFacts(ctx context.Context, taskID string, factsJSON json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO task_facts (task_id, facts, updated_at)
 		VALUES (?, ?, ?)`,
 		taskID, string(factsJSON), time.Now(),
@@ -855,9 +855,9 @@ func (s *SQLiteSessionStore) SaveFacts(taskID string, factsJSON json.RawMessage)
 }
 
 // LoadFacts loads the facts JSON blob for a task. Returns nil if not found.
-func (s *SQLiteSessionStore) LoadFacts(taskID string) (json.RawMessage, error) {
+func (s *SQLiteSessionStore) LoadFacts(ctx context.Context, taskID string) (json.RawMessage, error) {
 	var factsStr string
-	err := s.db.QueryRowContext(context.Background(), `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT facts FROM task_facts WHERE task_id = ?`, taskID,
 	).Scan(&factsStr)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -2,6 +2,7 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isChatMessage, isTokenInfo, isArrayOf } from '@/types/guards'
 import type { ChatMessage, TokenInfo } from '@/types/models'
 
 export async function sendMessage(sessionId: string, text: string, mode: string): Promise<void> {
@@ -27,7 +28,11 @@ export async function cancelTask(sessionId: string): Promise<void> {
 export async function getSessionHistory(sessionId: string): Promise<ChatMessage[]> {
   try {
     const app = getApp()
-    return await app.GetSessionHistory(sessionId) as ChatMessage[]
+    const result = await app.GetSessionHistory(sessionId)
+    if (!isArrayOf(result, isChatMessage)) {
+      logger.warn('getSessionHistory: unexpected response shape', result)
+    }
+    return result as ChatMessage[]
   } catch (err) {
     logger.error('Failed to get session history:', err)
     throw err
@@ -37,7 +42,11 @@ export async function getSessionHistory(sessionId: string): Promise<ChatMessage[
 export async function getSessionTokens(sessionId: string): Promise<TokenInfo> {
   try {
     const app = getApp()
-    return await app.GetSessionTokens(sessionId) as TokenInfo
+    const result = await app.GetSessionTokens(sessionId)
+    if (!isTokenInfo(result)) {
+      logger.warn('getSessionTokens: unexpected response shape', result)
+    }
+    return result as TokenInfo
   } catch (err) {
     logger.error('Failed to get session tokens:', err)
     throw err

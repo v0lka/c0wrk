@@ -49,9 +49,10 @@ type SearchFilesInput struct {
 	Pattern string `json:"pattern"`
 }
 
-// Judge always allows search_files (read-only operation).
+// Judge checks whether the search targets a path within the workspace.
+// Paths outside workspace require user confirmation.
 func (t *SearchFilesTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return true, "read-only file operation"
+	return judgeReadInWorkspace(ctx, input)
 }
 
 // Execute searches for files matching a glob pattern.

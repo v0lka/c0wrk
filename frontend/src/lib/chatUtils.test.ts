@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
-import { roleToType, chatMessageToUI } from './chatUtils'
+import { describe, it, expect, vi } from 'vitest'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
+import type { ChatMessageUI } from '@/types/messages'
 
 /**
  * Helper to create ChatMessage-like objects.
@@ -331,7 +332,7 @@ describe('chatMessageToUI end-to-end', () => {
 
   it('metadata undefined → metadata field is undefined', () => {
     const msg = makeMsg({ role: 'user', content: 'hi' })
-    ;(msg as unknown as Record<string, unknown>).metadata = undefined
+      ; (msg as unknown as Record<string, unknown>).metadata = undefined
     const result = chatMessageToUI(msg)
     expect(result.metadata).toBeUndefined()
   })
@@ -367,5 +368,112 @@ describe('chatMessageToUI end-to-end', () => {
   it('sessionId is mapped from session_id', () => {
     const result = chatMessageToUI(makeMsg({ session_id: 'abc-123' }))
     expect(result.sessionId).toBe('abc-123')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 5. rebuildPlanFromHistory
+// ---------------------------------------------------------------------------
+describe('rebuildPlanFromHistory', () => {
+  function makeUI(overrides: Partial<ChatMessageUI>): ChatMessageUI {
+    return {
+      id: 'msg-1',
+      sessionId: 'sess-1',
+      type: 'user',
+      content: '',
+      timestamp: Date.now(),
+      ...overrides,
+    }
+  }
+
+  it('calls clearPlan and setPlan with reconstructed plan group', () => {
+    const clearPlan = vi.fn()
+    const setPlan = vi.fn()
+
+    const messages: ChatMessageUI[] = [
+      makeUI({ type: 'user', content: 'Build something' }),
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: {
+          steps: [
+            { id: 'step-0', description: 'Setup project', summary: 'Setup' },
+            { id: 'step-1', description: 'Implement feature', summary: 'Implement' },
+          ],
+        },
+      }),
+      makeUI({
+        type: 'plan_step_start',
+        metadata: { step_id: 'step-0' },
+      }),
+      makeUI({
+        type: 'plan_step_complete',
+        metadata: { step_id: 'step-0', success: true, duration: 1200 },
+      }),
+    ]
+
+    rebuildPlanFromHistory(messages, { clearPlan, setPlan })
+
+    expect(clearPlan).toHaveBeenCalledOnce()
+    expect(setPlan).toHaveBeenCalledOnce()
+
+    const group = setPlan.mock.calls[0]![0]
+    expect(group.items).toHaveLength(2)
+    expect(group.items[0].id).toBe('step-0')
+    expect(group.items[0].status).toBe('completed')
+    expect(group.items[0].duration).toBe(1200)
+    expect(group.items[1].id).toBe('step-1')
+    expect(group.items[1].status).toBe('pending')
+    expect(group.completedCount).toBe(1)
+    expect(group.totalCount).toBe(2)
+  })
+
+  it('calls clearPlan but not setPlan when no plan message exists', () => {
+    const clearPlan = vi.fn()
+    const setPlan = vi.fn()
+
+    const messages: ChatMessageUI[] = [
+      makeUI({ type: 'user', content: 'Hello' }),
+      makeUI({ type: 'assistant', content: 'Hi there' }),
+    ]
+
+    rebuildPlanFromHistory(messages, { clearPlan, setPlan })
+
+    expect(clearPlan).toHaveBeenCalledOnce()
+    expect(setPlan).not.toHaveBeenCalled()
+  })
+
+  it('handles step_todo_update messages', () => {
+    const clearPlan = vi.fn()
+    const setPlan = vi.fn()
+
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: {
+          steps: [{ id: 'step-0', description: 'Do work', summary: 'Work' }],
+        },
+      }),
+      makeUI({
+        type: 'step_todo_update',
+        metadata: {
+          step_id: 'step-0',
+          items: [
+            { text: 'Task A', checked: true },
+            { text: 'Task B', checked: false },
+          ],
+        },
+      }),
+    ]
+
+    rebuildPlanFromHistory(messages, { clearPlan, setPlan })
+
+    const group = setPlan.mock.calls[0]![0]
+    expect(group.items[0].todoItems).toHaveLength(2)
+    expect(group.items[0].todoItems[0].checked).toBe(true)
+    expect(group.items[0].todoItems[1].checked).toBe(false)
   })
 })

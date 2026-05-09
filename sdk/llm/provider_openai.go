@@ -27,6 +27,11 @@ type OpenAIProvider struct {
 // NewOpenAIProvider creates a new OpenAI provider.
 // If BaseURL is empty, uses default OpenAI endpoint.
 // If BaseURL is set, uses custom endpoint (DeepSeek, Grok, OpenRouter, Ollama, LM-Studio).
+//
+// Note: APIKey is intentionally not validated here. Local models (LM Studio, Ollama)
+// using OpenAI-compatible endpoints do not require authentication. Unlike
+// NewAnthropicProvider which validates because Anthropic's API always requires a key,
+// this constructor must accept empty keys to support local inference backends.
 func NewOpenAIProvider(cfg OpenAIProviderConfig) (*OpenAIProvider, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(cfg.APIKey),

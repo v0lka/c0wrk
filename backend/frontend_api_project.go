@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -116,7 +117,7 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	}
 
 	// Update project activity timestamp
-	_ = f.projStore.UpdateProjectActivity(id) // Best-effort; error is non-critical.
+	_ = f.projStore.UpdateProjectActivity(context.Background(), id) // Best-effort; error is non-critical.
 
 	// Recreate file watcher for the new project workspace
 	if f.watcher != nil {

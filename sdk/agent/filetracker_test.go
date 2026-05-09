@@ -457,3 +457,50 @@ func TestFileChangeTracker_RollbackDeletedFile(t *testing.T) {
 		t.Errorf("expected restored content, got %q", got)
 	}
 }
+
+func TestFileChangeTracker_DiskBacked(t *testing.T) {
+	workspace := t.TempDir()
+	baselinesDir := t.TempDir()
+
+	// Create a file to modify.
+	original := filepath.Join(workspace, "hello.txt")
+	writeFile(t, original, "original content")
+
+	tracker := NewFileChangeTrackerWithDir(workspace, baselinesDir)
+	ctx := trackerCtx("step-disk")
+
+	// Record baseline and modify.
+	tracker.RecordBeforeWrite(ctx, original)
+	writeFile(t, original, "modified content")
+	tracker.RecordAfterWrite(ctx, original)
+
+	// Verify baseline was written to disk.
+	entries, err := os.ReadDir(baselinesDir)
+	if err != nil {
+		t.Fatalf("failed to read baselines dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 baseline file, got %d", len(entries))
+	}
+
+	// Verify diff works from disk-backed baseline.
+	changes := tracker.GetStepChanges("step-disk")
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if changes[0].Operation != "MODIFY" {
+		t.Errorf("expected MODIFY, got %s", changes[0].Operation)
+	}
+	if changes[0].Diff == "" {
+		t.Error("expected non-empty diff")
+	}
+
+	// Verify rollback restores from disk-backed baseline.
+	if err := tracker.RollbackStep("step-disk"); err != nil {
+		t.Fatalf("rollback failed: %v", err)
+	}
+	got := readFileContent(t, original)
+	if got != "original content" {
+		t.Errorf("expected 'original content' after rollback, got %q", got)
+	}
+}

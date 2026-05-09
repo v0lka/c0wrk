@@ -78,29 +78,16 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{
-			MaxSteps: 10,
-		},
-		testContextFactory,
-		nil, // reflector - nil for tests
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory - nil for tests
-		nil, // trackingCaller - nil for tests
-		nil, // vectorSearchFunc - nil for tests
-		nil, // skillManager - nil for tests
-		nil, // coreToolRegistry - nil for tests
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 
 	result, err := orchestrator.HandleMessage(context.Background(), "do something", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
@@ -198,29 +185,16 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{
-			MaxSteps: 10,
-		},
-		testContextFactory,
-		nil, // reflector - nil for tests
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory - nil for tests
-		nil, // trackingCaller - nil for tests
-		nil, // vectorSearchFunc - nil for tests
-		nil, // skillManager - nil for tests
-		nil, // coreToolRegistry - nil for tests
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 
 	result, err := orchestrator.HandleMessage(context.Background(), "Implement and test a new feature", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
@@ -277,27 +251,16 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewPlanner(mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory - nil for tests
-		nil, // trackingCaller - nil for tests
-		nil, // vectorSearchFunc - nil for tests
-		nil, // skillManager - nil for tests
-		nil, // coreToolRegistry - nil for tests
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         NewRouter(mockLLM, 5),
+		Planner:        NewPlanner(mockLLM),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 
 	result, err := orchestrator.HandleMessage(context.Background(), "test", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
@@ -382,27 +345,16 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewPlanner(mockLLM),
-		mockLLM,
-		reg,
-		reg,
-		counter,
-		OrchestratorConfig{MaxSteps: 10, MaxRetries: 0}, // No retries for this test
-		testContextFactory,
-		nil, // No reflector
-		nil, // logger - nil for tests
-		nil, // emitter - nil for tests
-		nil, // modelRegistry - nil for tests
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory - nil for tests
-		nil, // trackingCaller - nil for tests
-		nil, // vectorSearchFunc - nil for tests
-		nil, // skillManager - nil for tests
-		nil, // coreToolRegistry - nil for tests
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10, MaxRetries: 0}, OrchestratorDeps{
+		Router:         NewRouter(mockLLM, 5),
+		Planner:        NewPlanner(mockLLM),
+		LLM:            mockLLM,
+		ToolExec:       reg,
+		ToolRegistry:   reg,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 
 	_, err := orchestrator.HandleMessage(context.Background(), "Run two steps", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
@@ -464,29 +416,17 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewPlanner(mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{
-			MaxSteps: 10,
-		},
-		testContextFactory,
-		nil,    // reflector - nil for this test
-		nil,    // logger - nil for tests
-		mockEm, // emitter - use mock to track events
-		nil,    // modelRegistry - nil for tests
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory - nil for tests
-		nil, // trackingCaller - nil for tests
-		nil, // vectorSearchFunc - nil for tests
-		nil, // skillManager - nil for tests
-		nil, // coreToolRegistry - nil for tests
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         NewRouter(mockLLM, 5),
+		Planner:        NewPlanner(mockLLM),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+		Emitter:        mockEm,
+	})
 
 	result, err := orchestrator.HandleMessage(context.Background(), "Execute a multi-step task", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
@@ -619,27 +559,16 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewPlanner(mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         NewRouter(mockLLM, 5),
+		Planner:        NewPlanner(mockLLM),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	result, err := orchestrator.HandleMessage(context.Background(), "Run the tests", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
@@ -934,27 +863,16 @@ func TestHandleMessage_Continuation(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	// Set up mock task persistence with a stored task
 	mockStore := &mockTaskStore{
 		taskState: &TaskState{
@@ -1040,27 +958,16 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	// Set up mock task persistence with a stored task
 	mockStore := &mockTaskStore{
 		taskState: &TaskState{
@@ -1112,27 +1019,16 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(
-		NewRouter(&mockLLMCaller{}, 5),
-		NewPlanner(&mockLLMCaller{}),
-		&mockLLMCaller{},
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         NewRouter(&mockLLMCaller{}, 5),
+		Planner:        NewPlanner(&mockLLMCaller{}),
+		LLM:            &mockLLMCaller{},
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	// Note: taskStore is nil by default
 
 	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
@@ -1166,27 +1062,16 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	// Set up mock task persistence that returns nil (task not found)
 	mockStore := &mockTaskStore{
 		taskState: nil, // task not found
@@ -1251,27 +1136,16 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	result, err := orchestrator.HandleMessage(context.Background(), "Build a CLI tool", "session-test", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
@@ -1354,27 +1228,16 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	// Set up mock task persistence with a stored task
 	mockStore := &mockTaskStore{
 		taskState: &TaskState{
@@ -1478,27 +1341,16 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	// Create mock store that tracks ReactivateTask calls
 	mockStore := &mockTaskStoreWithReactivate{
 		taskState: &TaskState{
@@ -1598,27 +1450,16 @@ func TestHandleMessage_Clarification(t *testing.T) {
 	router := NewRouter(mockLLM, 5)
 	planner := NewPlanner(mockLLM)
 
-	orchestrator := NewOrchestrator(
-		router,
-		planner,
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc
-		nil, // skillManager
-		nil, // coreToolRegistry
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 	result, err := orchestrator.HandleMessage(context.Background(), "unclear request", "session-test", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
@@ -1813,27 +1654,16 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(
-		NewRouter(mockLLM, 5),
-		NewPlanner(mockLLM),
-		mockLLM,
-		registry,
-		registry,
-		counter,
-		OrchestratorConfig{MaxSteps: 10},
-		testContextFactory,
-		nil, // reflector
-		nil, // logger
-		nil, // emitter
-		nil, // modelRegistry
-		ToolResultBudget{},
-		defaultCircuitBreakerConfig,
-		nil, // bbFactory
-		nil, // trackingCaller
-		nil, // vectorSearchFunc - nil means no RAG hints
-		nil, // skillManager - nil for tests
-		nil, // coreToolRegistry - nil for tests
-	)
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         NewRouter(mockLLM, 5),
+		Planner:        NewPlanner(mockLLM),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
 
 	result, err := orchestrator.HandleMessage(context.Background(), "test query", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {

@@ -500,17 +500,49 @@ func TestReadFileTool_DefaultPolicy(t *testing.T) {
 func TestReadFileTool_Judge_ReadOnlyAction(t *testing.T) {
 	tool := NewReadFileTool()
 
-	input, _ := json.Marshal(map[string]string{
-		"path": "/some/path.txt",
+	t.Run("outside workspace requires confirmation", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]string{
+			"path": "/some/path.txt",
+		})
+
+		allow, reasoning := tool.Judge(context.Background(), input)
+		if allow {
+			t.Error("expected Judge to return allow=false for path outside workspace")
+		}
+		if reasoning == "" {
+			t.Error("expected non-empty reasoning for path outside workspace")
+		}
 	})
 
-	allow, reasoning := tool.Judge(context.Background(), input)
-	if !allow {
-		t.Error("expected Judge to return allow=true for read-only action")
-	}
-	if !strings.Contains(reasoning, "read-only") {
-		t.Errorf("expected reasoning to mention 'read-only', got: %s", reasoning)
-	}
+	t.Run("inside workspace auto-allows", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
+
+		testFile := filepath.Join(tmpDir, "test.txt")
+		input, _ := json.Marshal(map[string]string{
+			"path": testFile,
+		})
+
+		allow, reasoning := tool.Judge(ctx, input)
+		if !allow {
+			t.Errorf("expected Judge to return allow=true for path inside workspace, got reasoning: %s", reasoning)
+		}
+	})
+
+	t.Run("inside temp dir auto-allows", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := tools.WithTempDir(context.Background(), tmpDir)
+
+		testFile := filepath.Join(tmpDir, "output.txt")
+		input, _ := json.Marshal(map[string]string{
+			"path": testFile,
+		})
+
+		allow, reasoning := tool.Judge(ctx, input)
+		if !allow {
+			t.Errorf("expected Judge to return allow=true for path inside temp dir, got reasoning: %s", reasoning)
+		}
+	})
 }
 
 func TestWriteFileTool_Judge_WriteActionInsideWorkspace(t *testing.T) {

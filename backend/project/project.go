@@ -2,6 +2,8 @@
 // for the desktop UI layer.
 package project
 
+import "context"
+
 // ProjectInfo is the public-facing project metadata.
 type ProjectInfo struct {
 	ID            string `json:"id"`
@@ -14,11 +16,11 @@ type ProjectInfo struct {
 
 // ProjectStore provides persistent storage for projects.
 type ProjectStore interface {
-	SaveProject(info ProjectInfo) error
-	LoadProject(id string) (*ProjectInfo, error)
-	ListProjects() ([]ProjectInfo, error)
-	DeleteProject(id string) error
-	RenameProject(id, name string) error
-	UpdateProjectActivity(id string) error
+	SaveProject(ctx context.Context, info ProjectInfo) error
+	LoadProject(ctx context.Context, id string) (*ProjectInfo, error)
+	ListProjects(ctx context.Context) ([]ProjectInfo, error)
+	DeleteProject(ctx context.Context, id string) error
+	RenameProject(ctx context.Context, id, name string) error
+	UpdateProjectActivity(ctx context.Context, id string) error
 	Close() error
 }

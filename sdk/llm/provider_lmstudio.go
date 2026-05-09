@@ -40,6 +40,9 @@ type LMStudioModel struct {
 
 // NewLMStudioProvider creates a new LM Studio provider.
 // If BaseURL is empty, defaults to http://localhost:1234.
+//
+// Note: APIKey is intentionally not validated — LM Studio runs locally and
+// authentication is not required by default.
 func NewLMStudioProvider(cfg LMStudioProviderConfig) (*LMStudioProvider, error) {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {

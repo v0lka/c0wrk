@@ -154,7 +154,13 @@ export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData { return isObj(d) && has(d, 'step_id', 'success') }
 export function isAssistantChunkData(d: unknown): d is AssistantChunkData { return isObj(d) && (has(d, 'content') || has(d, 'accumulated_content')) }
 export function isErrorData(d: unknown): d is ErrorData { return isObj(d) && has(d, 'error') }
-export function isTaskCompleteData(d: unknown): d is TaskCompleteData { return isObj(d) && (has(d, 'output') || has(d, 'attempt_count') || has(d, 'routing_decision')) }
+export function isTaskCompleteData(d: unknown): d is TaskCompleteData {
+  if (!isObj(d)) return false
+  const hasOutput = 'output' in d && (d.output === undefined || typeof d.output === 'string')
+  const hasAttempt = 'attempt_count' in d && typeof d.attempt_count === 'number'
+  const hasRouting = 'routing_decision' in d && isObj(d.routing_decision)
+  return hasOutput || hasAttempt || hasRouting
+}
 export function isRetryData(d: unknown): d is RetryData { return isObj(d) && has(d, 'attempt', 'max_attempts') }
 export function isStepRetryData(d: unknown): d is StepRetryData { return isObj(d) && has(d, 'step_id', 'attempt', 'max_attempts') }
 export function isServiceData(d: unknown): d is ServiceData { return isObj(d) && has(d, 'content') }

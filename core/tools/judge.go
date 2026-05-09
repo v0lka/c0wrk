@@ -37,6 +37,7 @@ type judgeResult struct {
 }
 
 // ToolJudge evaluates whether a mutating tool call is safe to auto-approve.
+// It maintains an LRU-style cache keyed by tool+input to avoid redundant LLM calls.
 type ToolJudge struct {
 	provider     llm.Provider
 	model        string
@@ -139,7 +140,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		MaxTokens:       100, // Need more tokens for verdict + reason
+		MaxTokens:       100,              // Need more tokens for verdict + reason
 		ReasoningEffort: llm.ReasoningOff, // Judge is a simple classification task — no extended thinking needed
 	}
 
@@ -180,6 +181,9 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	// Aggressive full-clear when cache is full. Acceptable because judge results
 	// are cheap to recompute and the cache is a best-effort optimization.
 	if len(j.cache) >= j.maxCacheSize {
+		if log != nil {
+			log.Info("judge: cache full, clearing all entries", "size", len(j.cache), "max", j.maxCacheSize)
+		}
 		j.cache = make(map[string]judgeResult)
 	}
 	j.cache[key] = judgeResult{verdict: verdict, reasoning: reasoning}

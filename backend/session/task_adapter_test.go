@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -143,7 +144,7 @@ func TestTaskStoreAdapter_GetUnfinishedTaskID(t *testing.T) {
 	adapter := NewTaskStoreAdapter(store)
 
 	// Create a completed task
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "done-task", SessionID: sessionID, OriginalRequest: "old",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: time.Now(),
@@ -152,7 +153,7 @@ func TestTaskStoreAdapter_GetUnfinishedTaskID(t *testing.T) {
 	}
 
 	// Create an in-progress task
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "active-task", SessionID: sessionID, OriginalRequest: "current",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress",
@@ -177,7 +178,7 @@ func TestTaskStoreAdapter_GetUnfinishedTaskID_None(t *testing.T) {
 	adapter := NewTaskStoreAdapter(store)
 
 	// Only a completed task
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "done-task", SessionID: sessionID, OriginalRequest: "old",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: time.Now(),

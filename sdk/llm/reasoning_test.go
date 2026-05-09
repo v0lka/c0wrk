@@ -193,11 +193,11 @@ func TestAgentReasoningMode(t *testing.T) {
 
 func TestResolveAgentReasoningMode(t *testing.T) {
 	tests := []struct {
-		name     string
-		role     string
-		base     ReasoningEffort
+		name      string
+		role      string
+		base      ReasoningEffort
 		overrides map[string]string
-		expected ReasoningEffort
+		expected  ReasoningEffort
 	}{
 		// No overrides: falls back to AgentReasoningMode
 		{"no overrides primary", "coder", ReasoningHigh, nil, ReasoningHigh},

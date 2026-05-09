@@ -43,9 +43,10 @@ type ListDirectoryInput struct {
 	Path string `json:"path"`
 }
 
-// Judge always allows list_directory (read-only operation).
+// Judge checks whether the list targets a path within the workspace.
+// Directories outside workspace require user confirmation.
 func (t *ListDirectoryTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return true, "read-only file operation"
+	return judgeReadInWorkspace(ctx, input)
 }
 
 // Execute lists the contents of a directory.

@@ -220,14 +220,15 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 	wrapUpNudgeAttempted := false
 	reactiveCompactAttempted := false
 	unlimitedSteps := false
+	effectiveMaxSteps := e.maxSteps // local copy to avoid mutating struct field
 
-	for stepNum := 1; unlimitedSteps || stepNum <= e.maxSteps+1; stepNum++ {
-		// At the boundary: when we've just exceeded maxSteps
-		if !unlimitedSteps && stepNum > e.maxSteps {
+	for stepNum := 1; unlimitedSteps || stepNum <= effectiveMaxSteps+1; stepNum++ {
+		// At the boundary: when we've just exceeded effectiveMaxSteps
+		if !unlimitedSteps && stepNum > effectiveMaxSteps {
 			if e.stepLimitFunc == nil {
 				break // no callback configured: exit silently at step limit
 			}
-			resp, err := e.stepLimitFunc(ctx, stepNum, e.maxSteps)
+			resp, err := e.stepLimitFunc(ctx, stepNum, effectiveMaxSteps)
 			if err != nil {
 				// Treat callback errors as deny - exit cleanly without propagating the error
 				return &ExecutorResult{ //nolint:nilerr // intentional: callback error means stop, not fatal
@@ -238,7 +239,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 			switch resp {
 			case StepLimitAllowOnce:
-				e.maxSteps++ // allow exactly one more
+				effectiveMaxSteps++ // allow exactly one more
 				// Inject nudge for LLM
 				nudgeStep := Step{
 					UserNudge: "[System] The user granted you exactly ONE additional tool call iteration. " +
@@ -746,9 +747,9 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		// Wrap-up nudge: warn LLM when approaching budget limit
 		// Only applies when the budget is large enough for the nudge to be meaningful.
-		if e.maxSteps > 3 && stepNum >= e.maxSteps-3 && !wrapUpNudgeAttempted {
+		if effectiveMaxSteps > 3 && stepNum >= effectiveMaxSteps-3 && !wrapUpNudgeAttempted {
 			wrapUpNudgeAttempted = true
-			wrapUpMsg := fmt.Sprintf(executorWrapUpNudge, e.maxSteps-stepNum)
+			wrapUpMsg := fmt.Sprintf(executorWrapUpNudge, effectiveMaxSteps-stepNum)
 			wrapUpStep := Step{
 				Thought:     "",
 				Observation: wrapUpMsg,
@@ -756,7 +757,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 			allSteps = append(allSteps, wrapUpStep)
 			cw.AddStep(wrapUpStep)
-			e.emitter.ExecutorDiagnostic(stepNum, "executor_wrapup_nudge", map[string]any{"remaining": e.maxSteps - stepNum})
+			e.emitter.ExecutorDiagnostic(stepNum, "executor_wrapup_nudge", map[string]any{"remaining": effectiveMaxSteps - stepNum})
 		}
 
 		// Check for compaction using threshold-based logic

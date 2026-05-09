@@ -20,7 +20,7 @@ func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, er
 		return nil, errors.New("prompt is empty")
 	}
 
-	ctx, cancel := context.WithTimeout(f.appCtx(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(f.ctx(), 2*time.Minute)
 	defer cancel()
 
 	result, err := f.app.Builder().OptimizePrompt(ctx, trimmed)

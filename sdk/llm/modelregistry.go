@@ -74,7 +74,7 @@ func NewModelRegistry(overrides map[string]ModelMetadata) *ModelRegistry {
 //
 // The second return value indicates whether the model was found in a known source.
 // When ok is false, the returned metadata contains usable fallback defaults.
-func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
+func (r *ModelRegistry) Resolve(ctx context.Context, model string) (ModelMetadata, bool) {
 	// Priority 1: Check overrides (no lock needed for read-only map after construction)
 	if meta, ok := r.overrides[model]; ok {
 		meta.Family = resolveFamily(model, meta)
@@ -97,7 +97,7 @@ func (r *ModelRegistry) Resolve(model string) (ModelMetadata, bool) {
 	r.mu.RUnlock()
 
 	// Priority 3: Fetch from HuggingFace
-	meta, err := r.fetchFromHuggingFace(model)
+	meta, err := r.fetchFromHuggingFace(ctx, model)
 	if err == nil {
 		meta.Family = resolveFamily(model, meta)
 		r.mu.Lock()
@@ -163,10 +163,10 @@ func (r *ModelRegistry) RegisterSource(src ModelMetadataSource) {
 // fetchFromHuggingFace queries HuggingFace API for model config.
 // HTTP GET to https://huggingface.co/{model}/resolve/main/config.json
 // with redirect following. Parses JSON for max_position_embeddings.
-func (r *ModelRegistry) fetchFromHuggingFace(model string) (ModelMetadata, error) {
+func (r *ModelRegistry) fetchFromHuggingFace(ctx context.Context, model string) (ModelMetadata, error) {
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/config.json", model)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return ModelMetadata{}, fmt.Errorf("failed to create request: %w", err)
 	}

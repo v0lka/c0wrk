@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
@@ -157,7 +158,7 @@ func (p *EventPersister) Persist(evt Event) {
 		content = string(metadata)
 	}
 
-	if err := p.store.SaveMessage(ChatMessage{
+	if err := p.store.SaveMessage(context.Background(), ChatMessage{
 		SessionID: evt.SessionID,
 		Role:      role,
 		Content:   content,

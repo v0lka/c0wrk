@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/user/agent/core/prompts"
@@ -13,11 +12,6 @@ import (
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/prompt"
 	"github.com/user/agent/sdk/tools"
-)
-
-var (
-	codeBlockPattern = regexp.MustCompile("(?s)```(?:json)?\\s*\\n?(\\{.*?\\})\\s*\\n?```")
-	jsonPattern      = regexp.MustCompile(`(?s)(\{.*\})`)
 )
 
 // Router classifies user requests by complexity and determines execution strategy.
@@ -133,20 +127,42 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 }
 
 // extractJSON extracts JSON from the response content, handling markdown code blocks.
+// Uses json.Valid to find the longest valid JSON object starting from each '{'.
 func extractJSON(content string) string {
 	content = strings.TrimSpace(content)
 
-	// Try to extract from markdown code block
-	// Pattern: ```json\n{...}\n``` or ```\n{...}\n```
-	matches := codeBlockPattern.FindStringSubmatch(content)
-	if len(matches) > 1 {
-		return strings.TrimSpace(matches[1])
+	// Try to extract from markdown code block first.
+	// Look for ```json ... ``` or ``` ... ``` blocks.
+	if idx := strings.Index(content, "```"); idx >= 0 {
+		after := content[idx+3:]
+		// Skip optional language tag (e.g., "json")
+		if nl := strings.IndexByte(after, '\n'); nl >= 0 {
+			after = after[nl+1:]
+		}
+		if end := strings.Index(after, "```"); end >= 0 {
+			block := strings.TrimSpace(after[:end])
+			if json.Valid([]byte(block)) {
+				return block
+			}
+		}
 	}
 
-	// If no code block, try to find raw JSON object
-	matches = jsonPattern.FindStringSubmatch(content)
-	if len(matches) > 1 {
-		return strings.TrimSpace(matches[1])
+	// Find the longest valid JSON object by scanning for '{' and testing
+	// progressively larger substrings until json.Valid succeeds.
+	for i := 0; i < len(content); i++ {
+		if content[i] != '{' {
+			continue
+		}
+		// Scan from the end backwards to find the longest valid JSON.
+		for j := len(content); j > i; j-- {
+			if content[j-1] != '}' {
+				continue
+			}
+			candidate := content[i:j]
+			if json.Valid([]byte(candidate)) {
+				return candidate
+			}
+		}
 	}
 
 	// Return as-is if nothing found

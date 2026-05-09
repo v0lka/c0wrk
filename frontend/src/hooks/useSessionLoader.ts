@@ -5,7 +5,7 @@ import { subscribe } from '@/api/runtime'
 import { listSessions } from '@/api/sessions'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
-import type { SessionInfo } from '@/types/models'
+import { isSessionInfo, isArrayOf } from '@/types/guards'
 
 export function useSessionLoader(): void {
   const activeProjectId = useProjectStore(s => s.activeProjectId)
@@ -21,12 +21,11 @@ export function useSessionLoader(): void {
     cleanups.push(
       subscribe('sessions:loaded', (data: unknown) => {
         if (cancelled) return
-        if (Array.isArray(data)) {
-          store().setSessions(data as SessionInfo[])
-          // Auto-select first if none active
-          if (!store().activeSessionId && data.length > 0) {
-            store().setActiveSessionId((data[0] as SessionInfo).id)
-          }
+        if (!Array.isArray(data) || !isArrayOf(data, isSessionInfo)) return
+        store().setSessions(data)
+        // Auto-select first if none active
+        if (!store().activeSessionId && data.length > 0) {
+          store().setActiveSessionId(data[0]!.id)
         }
       }),
     )

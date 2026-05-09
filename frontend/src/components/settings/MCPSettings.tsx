@@ -57,6 +57,15 @@ export function MCPSettings() {
   const openAdd = () => { setEditingName(null); setEditServer(undefined); setFormOpen(true) }
   const openEdit = (s: MCPServerStatus) => { setEditingName(s.name); setEditServer({ name: s.name, transport: s.transport }); setFormOpen(true) }
 
+  const handleToggleExpand = useCallback((name: string) => {
+    setExpanded((prev) => {
+      const n = new Set(prev)
+      if (n.has(name)) n.delete(name)
+      else n.add(name)
+      return n
+    })
+  }, [])
+
   if (isLoading) return <div className="flex items-center justify-center py-8"><span className="text-sm text-muted-foreground">Loading MCP settings...</span></div>
 
   return (
@@ -73,7 +82,7 @@ export function MCPSettings() {
 
       {servers.length === 0
         ? <div className="text-sm text-muted-foreground py-4 text-center">No MCP servers configured.</div>
-        : <div className="space-y-2">{servers.map((s) => <MCPServerCard key={s.name} server={s} tools={tools.filter((t) => t.source === s.name)} expanded={expanded.has(s.name)} onToggleExpand={() => setExpanded((prev) => { const n = new Set(prev); if (n.has(s.name)) { n.delete(s.name) } else { n.add(s.name) } return n })} onEdit={() => openEdit(s)} onDelete={() => setDeleteConfirm(s.name)} />)}</div>
+        : <div className="space-y-2">{servers.map((s) => <MCPServerCard key={s.name} server={s} tools={tools.filter((t) => t.source === s.name)} expanded={expanded.has(s.name)} onToggleExpand={() => handleToggleExpand(s.name)} onEdit={() => openEdit(s)} onDelete={() => setDeleteConfirm(s.name)} />)}</div>
       }
 
       {formOpen && <MCPServerForm open={formOpen} onOpenChange={setFormOpen} editingName={editingName} serverConfigs={configs} editServer={editServer} isSaving={isSaving} onSave={handleSave} />}

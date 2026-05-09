@@ -58,9 +58,10 @@ type SearchContentInput struct {
 	Regex string `json:"regex"`
 }
 
-// Judge always allows search_content (read-only operation).
+// Judge checks whether the search targets a path within the workspace.
+// Paths outside workspace require user confirmation.
 func (t *SearchContentTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return true, "read-only file operation"
+	return judgeReadInWorkspace(ctx, input)
 }
 
 // Execute searches file contents for regex matches.

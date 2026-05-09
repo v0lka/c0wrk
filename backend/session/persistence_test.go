@@ -97,12 +97,12 @@ func TestSaveAndLoadSession(t *testing.T) {
 	}
 
 	// Save session
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
 	// Load session
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSaveAndLoadSession(t *testing.T) {
 	}
 
 	// Load non-existent session
-	notFound, err := store.LoadSession("non-existent")
+	notFound, err := store.LoadSession(context.Background(), "non-existent")
 	if err != nil {
 		t.Fatalf("error loading non-existent session: %v", err)
 	}
@@ -163,13 +163,13 @@ func TestListSessions(t *testing.T) {
 	}
 
 	for _, s := range sessions {
-		if err := store.SaveSession(s); err != nil {
+		if err := store.SaveSession(context.Background(), s); err != nil {
 			t.Fatalf("failed to save session: %v", err)
 		}
 	}
 
 	// List sessions - should be ordered by created_at DESC (newest first)
-	listed, err := store.ListSessions()
+	listed, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestDeleteSession(t *testing.T) {
 		Name:      "Delete Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
@@ -217,15 +217,15 @@ func TestDeleteSession(t *testing.T) {
 		Content:   "Hi there",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveMessage(msg1); err != nil {
+	if err := store.SaveMessage(context.Background(), msg1); err != nil {
 		t.Fatalf("failed to save message 1: %v", err)
 	}
-	if err := store.SaveMessage(msg2); err != nil {
+	if err := store.SaveMessage(context.Background(), msg2); err != nil {
 		t.Fatalf("failed to save message 2: %v", err)
 	}
 
 	// Verify messages exist
-	messages, err := store.LoadMessages(session.ID)
+	messages, err := store.LoadMessages(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load messages: %v", err)
 	}
@@ -234,12 +234,12 @@ func TestDeleteSession(t *testing.T) {
 	}
 
 	// Delete session (should cascade delete messages)
-	if err := store.DeleteSession(session.ID); err != nil {
+	if err := store.DeleteSession(context.Background(), session.ID); err != nil {
 		t.Fatalf("failed to delete session: %v", err)
 	}
 
 	// Verify session is gone
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("error loading deleted session: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestDeleteSession(t *testing.T) {
 	}
 
 	// Verify messages are also deleted (cascade)
-	messages, err = store.LoadMessages(session.ID)
+	messages, err = store.LoadMessages(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("error loading messages after delete: %v", err)
 	}
@@ -268,17 +268,17 @@ func TestArchiveSession(t *testing.T) {
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Archived:  false,
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
 	// Archive the session
-	if err := store.ArchiveSession(session.ID, true); err != nil {
+	if err := store.ArchiveSession(context.Background(), session.ID, true); err != nil {
 		t.Fatalf("failed to archive session: %v", err)
 	}
 
 	// Verify archived
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -290,12 +290,12 @@ func TestArchiveSession(t *testing.T) {
 	}
 
 	// Unarchive the session
-	if err := store.ArchiveSession(session.ID, false); err != nil {
+	if err := store.ArchiveSession(context.Background(), session.ID, false); err != nil {
 		t.Fatalf("failed to unarchive session: %v", err)
 	}
 
 	// Verify unarchived
-	loaded, err = store.LoadSession(session.ID)
+	loaded, err = store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -317,18 +317,18 @@ func TestRenameSession(t *testing.T) {
 		Name:      "Original Name",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
 	// Rename the session
 	newName := "Renamed Session"
-	if err := store.RenameSession(session.ID, newName); err != nil {
+	if err := store.RenameSession(context.Background(), session.ID, newName); err != nil {
 		t.Fatalf("failed to rename session: %v", err)
 	}
 
 	// Verify renamed
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestSaveAndLoadMessages(t *testing.T) {
 		Name:      "Message Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
@@ -381,13 +381,13 @@ func TestSaveAndLoadMessages(t *testing.T) {
 	}
 
 	for _, msg := range messages {
-		if err := store.SaveMessage(msg); err != nil {
+		if err := store.SaveMessage(context.Background(), msg); err != nil {
 			t.Fatalf("failed to save message: %v", err)
 		}
 	}
 
 	// Load messages
-	loaded, err := store.LoadMessages(session.ID)
+	loaded, err := store.LoadMessages(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load messages: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestDeleteMessages(t *testing.T) {
 		Name:      "Delete Messages Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
@@ -455,13 +455,13 @@ func TestDeleteMessages(t *testing.T) {
 			Content:   "Message",
 			CreatedAt: time.Now().Format(time.RFC3339),
 		}
-		if err := store.SaveMessage(msg); err != nil {
+		if err := store.SaveMessage(context.Background(), msg); err != nil {
 			t.Fatalf("failed to save message: %v", err)
 		}
 	}
 
 	// Verify messages exist
-	messages, err := store.LoadMessages(session.ID)
+	messages, err := store.LoadMessages(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load messages: %v", err)
 	}
@@ -470,12 +470,12 @@ func TestDeleteMessages(t *testing.T) {
 	}
 
 	// Delete messages
-	if err := store.DeleteMessages(session.ID); err != nil {
+	if err := store.DeleteMessages(context.Background(), session.ID); err != nil {
 		t.Fatalf("failed to delete messages: %v", err)
 	}
 
 	// Verify messages are deleted but session remains
-	messages, err = store.LoadMessages(session.ID)
+	messages, err = store.LoadMessages(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("error loading messages after delete: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestDeleteMessages(t *testing.T) {
 	}
 
 	// Verify session still exists
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("session should still exist: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestSessionStoreClose(t *testing.T) {
 		Name:      "Close Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
@@ -520,7 +520,7 @@ func TestSessionStoreClose(t *testing.T) {
 	}
 
 	// DB should still be usable (Close is a no-op)
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load after close: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestEmptyListSessions(t *testing.T) {
 	defer cleanup()
 
 	// List sessions when none exist
-	sessions, err := store.ListSessions()
+	sessions, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list empty sessions: %v", err)
 	}
@@ -559,12 +559,12 @@ func TestEmptyLoadMessages(t *testing.T) {
 		Name:      "Empty Messages Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
 	// Load messages when none exist
-	messages, err := store.LoadMessages(session.ID)
+	messages, err := store.LoadMessages(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load empty messages: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestSaveSessionUpdate(t *testing.T) {
 		CreatedAt: "2024-01-15T10:00:00Z",
 		Archived:  false,
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save initial session: %v", err)
 	}
 
@@ -600,12 +600,12 @@ func TestSaveSessionUpdate(t *testing.T) {
 		CreatedAt: session.CreatedAt,
 		Archived:  true,
 	}
-	if err := store.SaveSession(updated); err != nil {
+	if err := store.SaveSession(context.Background(), updated); err != nil {
 		t.Fatalf("failed to update session: %v", err)
 	}
 
 	// Verify update
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load updated session: %v", err)
 	}
@@ -638,10 +638,10 @@ func TestMultipleSessionsMessagesIsolation(t *testing.T) {
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 
-	if err := store.SaveSession(session1); err != nil {
+	if err := store.SaveSession(context.Background(), session1); err != nil {
 		t.Fatalf("failed to save session 1: %v", err)
 	}
-	if err := store.SaveSession(session2); err != nil {
+	if err := store.SaveSession(context.Background(), session2); err != nil {
 		t.Fatalf("failed to save session 2: %v", err)
 	}
 
@@ -659,15 +659,15 @@ func TestMultipleSessionsMessagesIsolation(t *testing.T) {
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 
-	if err := store.SaveMessage(msg1); err != nil {
+	if err := store.SaveMessage(context.Background(), msg1); err != nil {
 		t.Fatalf("failed to save message 1: %v", err)
 	}
-	if err := store.SaveMessage(msg2); err != nil {
+	if err := store.SaveMessage(context.Background(), msg2); err != nil {
 		t.Fatalf("failed to save message 2: %v", err)
 	}
 
 	// Verify message isolation
-	messages1, err := store.LoadMessages(session1.ID)
+	messages1, err := store.LoadMessages(context.Background(), session1.ID)
 	if err != nil {
 		t.Fatalf("failed to load messages for session 1: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestMultipleSessionsMessagesIsolation(t *testing.T) {
 		t.Errorf("session 1 message content: got %q, want %q", messages1[0].Content, "Session 1 message")
 	}
 
-	messages2, err := store.LoadMessages(session2.ID)
+	messages2, err := store.LoadMessages(context.Background(), session2.ID)
 	if err != nil {
 		t.Fatalf("failed to load messages for session 2: %v", err)
 	}
@@ -690,12 +690,12 @@ func TestMultipleSessionsMessagesIsolation(t *testing.T) {
 	}
 
 	// Delete messages for session 1 only
-	if err := store.DeleteMessages(session1.ID); err != nil {
+	if err := store.DeleteMessages(context.Background(), session1.ID); err != nil {
 		t.Fatalf("failed to delete messages for session 1: %v", err)
 	}
 
 	// Verify session 2 messages still exist
-	messages2, err = store.LoadMessages(session2.ID)
+	messages2, err = store.LoadMessages(context.Background(), session2.ID)
 	if err != nil {
 		t.Fatalf("failed to load messages for session 2 after delete: %v", err)
 	}
@@ -717,11 +717,11 @@ func TestSaveAndLoadSessionTokens(t *testing.T) {
 		TotalOutputTokens: 3000,
 	}
 
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -747,17 +747,17 @@ func TestUpdateSessionTokens(t *testing.T) {
 		Name:      "Update Tokens Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
 	// Update tokens with model info
-	if err := store.UpdateSessionTokens(session.ID, 10000, 7500, "claude-3-opus", "anthropic"); err != nil {
+	if err := store.UpdateSessionTokens(context.Background(), session.ID, 10000, 7500, "claude-3-opus", "anthropic"); err != nil {
 		t.Fatalf("failed to update session tokens: %v", err)
 	}
 
 	// Verify tokens and model info were updated
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -778,11 +778,11 @@ func TestUpdateSessionTokens(t *testing.T) {
 	}
 
 	// Update again (overwrite)
-	if err := store.UpdateSessionTokens(session.ID, 20000, 15000, "gpt-4o", "openai"); err != nil {
+	if err := store.UpdateSessionTokens(context.Background(), session.ID, 20000, 15000, "gpt-4o", "openai"); err != nil {
 		t.Fatalf("failed to update session tokens again: %v", err)
 	}
 
-	loaded, err = store.LoadSession(session.ID)
+	loaded, err = store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session after second update: %v", err)
 	}
@@ -824,12 +824,12 @@ func TestListSessionsWithTokens(t *testing.T) {
 	}
 
 	for _, s := range sessions {
-		if err := store.SaveSession(s); err != nil {
+		if err := store.SaveSession(context.Background(), s); err != nil {
 			t.Fatalf("failed to save session: %v", err)
 		}
 	}
 
-	listed, err := store.ListSessions()
+	listed, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
@@ -857,12 +857,12 @@ func TestUpdateSessionActivity(t *testing.T) {
 		Name:      "Activity Test",
 		CreatedAt: "2024-01-15T10:00:00Z",
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
 	// Load before update
-	before, err := store.LoadSession(session.ID)
+	before, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -872,12 +872,12 @@ func TestUpdateSessionActivity(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Update activity
-	if err := store.UpdateSessionActivity(session.ID); err != nil {
+	if err := store.UpdateSessionActivity(context.Background(), session.ID); err != nil {
 		t.Fatalf("failed to update session activity: %v", err)
 	}
 
 	// Load after update
-	after, err := store.LoadSession(session.ID)
+	after, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session after update: %v", err)
 	}
@@ -898,11 +898,11 @@ func TestSaveSessionWithLastActiveAt(t *testing.T) {
 		CreatedAt:    "2024-01-15T10:00:00Z",
 		LastActiveAt: "2024-06-01T15:30:00Z",
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -923,11 +923,11 @@ func TestSaveSessionLastActiveAtFallback(t *testing.T) {
 		CreatedAt:    "2024-01-15T10:00:00Z",
 		LastActiveAt: "", // empty
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -956,11 +956,11 @@ func TestNewSQLiteSessionStore_InMemory(t *testing.T) {
 		Name:      "Memory Test",
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save: %v", err)
 	}
 
-	loaded, err := store.LoadSession("mem-test")
+	loaded, err := store.LoadSession(context.Background(), "mem-test")
 	if err != nil {
 		t.Fatalf("failed to load: %v", err)
 	}
@@ -1000,12 +1000,12 @@ func TestListSessionsOrderedByActivity(t *testing.T) {
 	}
 
 	for _, s := range sessions {
-		if err := store.SaveSession(s); err != nil {
+		if err := store.SaveSession(context.Background(), s); err != nil {
 			t.Fatalf("failed to save session: %v", err)
 		}
 	}
 
-	listed, err := store.ListSessions()
+	listed, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
@@ -1045,13 +1045,13 @@ func TestListSessionsByProject(t *testing.T) {
 		{ID: "s3", ProjectID: "project-b", Name: "B1", CreatedAt: "2024-01-15T12:00:00Z"},
 	}
 	for _, s := range sessions {
-		if err := store.SaveSession(s); err != nil {
+		if err := store.SaveSession(context.Background(), s); err != nil {
 			t.Fatalf("failed to save session: %v", err)
 		}
 	}
 
 	// List project-a sessions
-	projectASessions, err := store.ListSessionsByProject("project-a")
+	projectASessions, err := store.ListSessionsByProject(context.Background(), "project-a")
 	if err != nil {
 		t.Fatalf("failed to list sessions by project: %v", err)
 	}
@@ -1067,7 +1067,7 @@ func TestListSessionsByProject(t *testing.T) {
 	}
 
 	// List project-b sessions
-	projectBSessions, err := store.ListSessionsByProject("project-b")
+	projectBSessions, err := store.ListSessionsByProject(context.Background(), "project-b")
 	if err != nil {
 		t.Fatalf("failed to list sessions by project: %v", err)
 	}
@@ -1079,7 +1079,7 @@ func TestListSessionsByProject(t *testing.T) {
 	}
 
 	// List nonexistent project
-	emptySessions, err := store.ListSessionsByProject("nonexistent")
+	emptySessions, err := store.ListSessionsByProject(context.Background(), "nonexistent")
 	if err != nil {
 		t.Fatalf("failed to list sessions for nonexistent project: %v", err)
 	}
@@ -1101,7 +1101,7 @@ func setupTestStoreWithSession(t *testing.T) (store *SQLiteSessionStore, session
 	store, cleanup = setupTestStore(t)
 
 	sessionID = "task-test-session"
-	if err := store.SaveSession(SessionInfo{
+	if err := store.SaveSession(context.Background(), SessionInfo{
 		ID:        sessionID,
 		ProjectID: testProjectID,
 		Name:      "Task Test Session",
@@ -1130,11 +1130,11 @@ func TestSaveTask(t *testing.T) {
 		CreatedAt:       now,
 	}
 
-	if err := store.SaveTask(task); err != nil {
+	if err := store.SaveTask(context.Background(), task); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	loaded, err := store.LoadTask("task-1")
+	loaded, err := store.LoadTask(context.Background(), "task-1")
 	if err != nil {
 		t.Fatalf("LoadTask failed: %v", err)
 	}
@@ -1167,7 +1167,7 @@ func TestUpdateTaskPlan(t *testing.T) {
 	defer cleanup()
 
 	// Save initial task
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID:              "task-plan",
 		SessionID:       sessionID,
 		OriginalRequest: "test",
@@ -1181,11 +1181,11 @@ func TestUpdateTaskPlan(t *testing.T) {
 	}
 
 	newPlan := json.RawMessage(`{"steps":[{"id":"step_1","description":"write code"}]}`)
-	if err := store.UpdateTaskPlan("task-plan", newPlan); err != nil {
+	if err := store.UpdateTaskPlan(context.Background(), "task-plan", newPlan); err != nil {
 		t.Fatalf("UpdateTaskPlan failed: %v", err)
 	}
 
-	loaded, err := store.LoadTask("task-plan")
+	loaded, err := store.LoadTask(context.Background(), "task-plan")
 	if err != nil {
 		t.Fatalf("LoadTask failed: %v", err)
 	}
@@ -1198,7 +1198,7 @@ func TestUpdateTaskRouting(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-routing", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1207,11 +1207,11 @@ func TestUpdateTaskRouting(t *testing.T) {
 	}
 
 	newRouting := json.RawMessage(`{"domain":"research","complexity":3}`)
-	if err := store.UpdateTaskRouting("task-routing", newRouting); err != nil {
+	if err := store.UpdateTaskRouting(context.Background(), "task-routing", newRouting); err != nil {
 		t.Fatalf("UpdateTaskRouting failed: %v", err)
 	}
 
-	loaded, err := store.LoadTask("task-routing")
+	loaded, err := store.LoadTask(context.Background(), "task-routing")
 	if err != nil {
 		t.Fatalf("LoadTask failed: %v", err)
 	}
@@ -1224,7 +1224,7 @@ func TestSaveTaskStep(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-step", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1243,11 +1243,11 @@ func TestSaveTaskStep(t *testing.T) {
 		CreatedAt:  now,
 	}
 
-	if err := store.SaveTaskStep("task-step", step); err != nil {
+	if err := store.SaveTaskStep(context.Background(), "task-step", step); err != nil {
 		t.Fatalf("SaveTaskStep failed: %v", err)
 	}
 
-	steps, err := store.LoadTaskSteps("task-step")
+	steps, err := store.LoadTaskSteps(context.Background(), "task-step")
 	if err != nil {
 		t.Fatalf("LoadTaskSteps failed: %v", err)
 	}
@@ -1272,7 +1272,7 @@ func TestSaveTaskStep_Multiple(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-multi-step", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1290,12 +1290,12 @@ func TestSaveTaskStep_Multiple(t *testing.T) {
 			Steps:      json.RawMessage(`[]`),
 			CreatedAt:  base.Add(time.Duration(i) * time.Second),
 		}
-		if err := store.SaveTaskStep("task-multi-step", step); err != nil {
+		if err := store.SaveTaskStep(context.Background(), "task-multi-step", step); err != nil {
 			t.Fatalf("SaveTaskStep %d failed: %v", i, err)
 		}
 	}
 
-	steps, err := store.LoadTaskSteps("task-multi-step")
+	steps, err := store.LoadTaskSteps(context.Background(), "task-multi-step")
 	if err != nil {
 		t.Fatalf("LoadTaskSteps failed: %v", err)
 	}
@@ -1315,7 +1315,7 @@ func TestAddTaskReflection(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-reflect", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1325,17 +1325,17 @@ func TestAddTaskReflection(t *testing.T) {
 
 	// Add first reflection
 	r1 := json.RawMessage(`{"summary":"first"}`)
-	if err := store.AddTaskReflection("task-reflect", r1); err != nil {
+	if err := store.AddTaskReflection(context.Background(), "task-reflect", r1); err != nil {
 		t.Fatalf("AddTaskReflection 1 failed: %v", err)
 	}
 
 	// Add second reflection
 	r2 := json.RawMessage(`{"summary":"second"}`)
-	if err := store.AddTaskReflection("task-reflect", r2); err != nil {
+	if err := store.AddTaskReflection(context.Background(), "task-reflect", r2); err != nil {
 		t.Fatalf("AddTaskReflection 2 failed: %v", err)
 	}
 
-	loaded, err := store.LoadTask("task-reflect")
+	loaded, err := store.LoadTask(context.Background(), "task-reflect")
 	if err != nil {
 		t.Fatalf("LoadTask failed: %v", err)
 	}
@@ -1359,7 +1359,7 @@ func TestCompleteTask(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-complete", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1367,11 +1367,11 @@ func TestCompleteTask(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	if err := store.CompleteTask("task-complete", "task done", 2); err != nil {
+	if err := store.CompleteTask(context.Background(), "task-complete", "task done", 2); err != nil {
 		t.Fatalf("CompleteTask failed: %v", err)
 	}
 
-	loaded, err := store.LoadTask("task-complete")
+	loaded, err := store.LoadTask(context.Background(), "task-complete")
 	if err != nil {
 		t.Fatalf("LoadTask failed: %v", err)
 	}
@@ -1393,7 +1393,7 @@ func TestFailTask(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-fail", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1401,11 +1401,11 @@ func TestFailTask(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	if err := store.FailTask("task-fail"); err != nil {
+	if err := store.FailTask(context.Background(), "task-fail"); err != nil {
 		t.Fatalf("FailTask failed: %v", err)
 	}
 
-	loaded, err := store.LoadTask("task-fail")
+	loaded, err := store.LoadTask(context.Background(), "task-fail")
 	if err != nil {
 		t.Fatalf("LoadTask failed: %v", err)
 	}
@@ -1424,7 +1424,7 @@ func TestGetUnfinishedTask(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// Create a completed task
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-done", SessionID: sessionID, OriginalRequest: "old",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: base,
@@ -1433,7 +1433,7 @@ func TestGetUnfinishedTask(t *testing.T) {
 	}
 
 	// Create an in_progress task
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-active", SessionID: sessionID, OriginalRequest: "current",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: base.Add(time.Second),
@@ -1441,7 +1441,7 @@ func TestGetUnfinishedTask(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	unfinished, err := store.GetUnfinishedTask(sessionID)
+	unfinished, err := store.GetUnfinishedTask(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("GetUnfinishedTask failed: %v", err)
 	}
@@ -1458,7 +1458,7 @@ func TestGetUnfinishedTask_None(t *testing.T) {
 	defer cleanup()
 
 	// Create only completed tasks
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-done-1", SessionID: sessionID, OriginalRequest: "done",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: time.Now(),
@@ -1466,7 +1466,7 @@ func TestGetUnfinishedTask_None(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	unfinished, err := store.GetUnfinishedTask(sessionID)
+	unfinished, err := store.GetUnfinishedTask(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("GetUnfinishedTask failed: %v", err)
 	}
@@ -1480,7 +1480,7 @@ func TestTaskCascadeDelete(t *testing.T) {
 	defer cleanup()
 
 	// Create task with steps
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-cascade", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1488,7 +1488,7 @@ func TestTaskCascadeDelete(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	if err := store.SaveTaskStep("task-cascade", TaskStepRecord{
+	if err := store.SaveTaskStep(context.Background(), "task-cascade", TaskStepRecord{
 		StepID: "step_1", TaskID: "task-cascade", Summary: "s",
 		Steps: json.RawMessage(`[]`), CreatedAt: time.Now(),
 	}); err != nil {
@@ -1496,12 +1496,12 @@ func TestTaskCascadeDelete(t *testing.T) {
 	}
 
 	// Delete session — should cascade to tasks and steps
-	if err := store.DeleteSession(sessionID); err != nil {
+	if err := store.DeleteSession(context.Background(), sessionID); err != nil {
 		t.Fatalf("DeleteSession failed: %v", err)
 	}
 
 	// Verify task is gone
-	loaded, err := store.LoadTask("task-cascade")
+	loaded, err := store.LoadTask(context.Background(), "task-cascade")
 	if err != nil {
 		t.Fatalf("LoadTask after cascade: %v", err)
 	}
@@ -1510,7 +1510,7 @@ func TestTaskCascadeDelete(t *testing.T) {
 	}
 
 	// Verify steps are gone
-	steps, err := store.LoadTaskSteps("task-cascade")
+	steps, err := store.LoadTaskSteps(context.Background(), "task-cascade")
 	if err != nil {
 		t.Fatalf("LoadTaskSteps after cascade: %v", err)
 	}
@@ -1523,7 +1523,7 @@ func TestLoadTask_NotFound(t *testing.T) {
 	store, _, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	loaded, err := store.LoadTask("nonexistent")
+	loaded, err := store.LoadTask(context.Background(), "nonexistent")
 	if err != nil {
 		t.Fatalf("LoadTask error: %v", err)
 	}
@@ -1536,7 +1536,7 @@ func TestLoadTaskSteps_Empty(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-empty-steps", SessionID: sessionID, OriginalRequest: "test",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
@@ -1544,7 +1544,7 @@ func TestLoadTaskSteps_Empty(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	steps, err := store.LoadTaskSteps("task-empty-steps")
+	steps, err := store.LoadTaskSteps(context.Background(), "task-empty-steps")
 	if err != nil {
 		t.Fatalf("LoadTaskSteps error: %v", err)
 	}
@@ -1565,7 +1565,7 @@ func TestReactivateTask(t *testing.T) {
 	// Create a completed task
 	now := time.Now().Truncate(time.Second)
 	completedAt := now.Add(5 * time.Minute)
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID:              "task-reactivate",
 		SessionID:       sessionID,
 		OriginalRequest: "test task",
@@ -1580,7 +1580,7 @@ func TestReactivateTask(t *testing.T) {
 	}
 
 	// Verify task is completed
-	loaded, err := store.LoadTask("task-reactivate")
+	loaded, err := store.LoadTask(context.Background(), "task-reactivate")
 	if err != nil {
 		t.Fatalf("LoadTask failed: %v", err)
 	}
@@ -1592,12 +1592,12 @@ func TestReactivateTask(t *testing.T) {
 	}
 
 	// Reactivate the task
-	if err := store.ReactivateTask("task-reactivate"); err != nil {
+	if err := store.ReactivateTask(context.Background(), "task-reactivate"); err != nil {
 		t.Fatalf("ReactivateTask failed: %v", err)
 	}
 
 	// Verify task is now in_progress and completed_at is cleared
-	reactivated, err := store.LoadTask("task-reactivate")
+	reactivated, err := store.LoadTask(context.Background(), "task-reactivate")
 	if err != nil {
 		t.Fatalf("LoadTask after reactivation failed: %v", err)
 	}
@@ -1623,11 +1623,11 @@ func TestSaveAndLoadSessionModelFamily(t *testing.T) {
 		Family:    "anthropic",
 	}
 
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -1654,11 +1654,11 @@ func TestModelFamilyDefaultsEmpty(t *testing.T) {
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
-	loaded, err := store.LoadSession(session.ID)
+	loaded, err := store.LoadSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)
 	}
@@ -1686,12 +1686,12 @@ func TestListSessionsIncludesModelFamily(t *testing.T) {
 		Model:     "gpt-4o",
 		Family:    "openai",
 	}
-	if err := store.SaveSession(session); err != nil {
+	if err := store.SaveSession(context.Background(), session); err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
 
 	// Test ListSessions
-	listed, err := store.ListSessions()
+	listed, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
@@ -1706,7 +1706,7 @@ func TestListSessionsIncludesModelFamily(t *testing.T) {
 	}
 
 	// Test ListSessionsByProject
-	byProject, err := store.ListSessionsByProject(testProjectID)
+	byProject, err := store.ListSessionsByProject(context.Background(), testProjectID)
 	if err != nil {
 		t.Fatalf("failed to list sessions by project: %v", err)
 	}
@@ -1728,14 +1728,14 @@ func TestGetLatestTaskID(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// Create tasks with known ordering.
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-old", SessionID: sessionID, OriginalRequest: "old task",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "completed", CreatedAt: base,
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
-	if err := store.SaveTask(TaskRecord{
+	if err := store.SaveTask(context.Background(), TaskRecord{
 		ID: "task-new", SessionID: sessionID, OriginalRequest: "new task",
 		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
 		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: base.Add(time.Second),
@@ -1743,7 +1743,7 @@ func TestGetLatestTaskID(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	got, err := store.GetLatestTaskID(sessionID)
+	got, err := store.GetLatestTaskID(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("GetLatestTaskID failed: %v", err)
 	}
@@ -1756,7 +1756,7 @@ func TestGetLatestTaskID_NoTasks(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
 
-	got, err := store.GetLatestTaskID(sessionID)
+	got, err := store.GetLatestTaskID(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("GetLatestTaskID failed: %v", err)
 	}

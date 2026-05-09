@@ -2,12 +2,17 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isProjectInfo, isArrayOf } from '@/types/guards'
 import type { ProjectInfo } from '@/types/models'
 
 export async function createProject(name: string, externalPath?: string): Promise<ProjectInfo> {
   try {
     const app = getApp()
-    return await app.CreateProject(name, externalPath ?? '') as ProjectInfo
+    const result = await app.CreateProject(name, externalPath ?? '')
+    if (!isProjectInfo(result)) {
+      logger.warn('createProject: unexpected response shape', result)
+    }
+    return result as ProjectInfo
   } catch (err) {
     logger.error('Failed to create project:', err)
     throw err
@@ -37,7 +42,11 @@ export async function renameProject(id: string, name: string): Promise<void> {
 export async function listProjects(): Promise<ProjectInfo[]> {
   try {
     const app = getApp()
-    return await app.ListProjects() as ProjectInfo[]
+    const result = await app.ListProjects()
+    if (!isArrayOf(result, isProjectInfo)) {
+      logger.warn('listProjects: unexpected response shape', result)
+    }
+    return result as ProjectInfo[]
   } catch (err) {
     logger.error('Failed to list projects:', err)
     throw err

@@ -51,8 +51,9 @@ type Manager struct {
 
 // Session represents a single PTY-backed shell session.
 type Session struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
+	cmd    *exec.Cmd
+	ptmx   *os.File
+	cancel context.CancelFunc
 }
 
 // NewManager creates a new terminal manager.
@@ -82,7 +83,8 @@ func (m *Manager) Start(sessionID, workDir string) error {
 		shell = "/bin/bash"
 	}
 
-	cmd := exec.CommandContext(context.Background(), shell, "-l")
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, shell, "-l")
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -95,6 +97,7 @@ func (m *Manager) Start(sessionID, workDir string) error {
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to start pty: %w", err)
 	}
 
@@ -102,10 +105,10 @@ func (m *Manager) Start(sessionID, workDir string) error {
 	// before emitting a prompt.
 	_ = pty.Setsize(ptmx, &pty.Winsize{Cols: 80, Rows: 24})
 
-	m.sessions[sessionID] = &Session{cmd: cmd, ptmx: ptmx}
+	m.sessions[sessionID] = &Session{cmd: cmd, ptmx: ptmx, cancel: cancel}
 
 	// Start goroutine to read output and emit events.
-	go m.readLoop(sessionID, ptmx)
+	go m.readLoop(ctx, sessionID, ptmx)
 
 	m.logger.Info("terminal started", "session_id", sessionID, "shell", shell, "workDir", workDir)
 	return nil
@@ -154,6 +157,9 @@ func (m *Manager) Stop(sessionID string) error {
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
 
+	// Cancel the context first to signal readLoop and kill the process.
+	sess.cancel()
+
 	if err := sess.ptmx.Close(); err != nil {
 		m.logger.Warn("failed to close pty", "session_id", sessionID, "error", err)
 	}
@@ -193,9 +199,16 @@ func (m *Manager) IsActive(sessionID string) bool {
 }
 
 // readLoop continuously reads from the PTY and emits output events.
-func (m *Manager) readLoop(sessionID string, ptmx *os.File) {
+// It exits when the PTY is closed or the context is cancelled.
+func (m *Manager) readLoop(ctx context.Context, sessionID string, ptmx *os.File) {
 	buf := make([]byte, 4096)
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		n, err := ptmx.Read(buf)
 		if n > 0 {
 			data := make([]byte, n)

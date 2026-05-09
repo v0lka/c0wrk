@@ -39,7 +39,7 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 		return nil, errors.New("path outside project workspace")
 	}
 
-	cmd := exec.CommandContext(context.Background(), "git", "status", "--porcelain", "-uall")
+	cmd := exec.CommandContext(f.ctx(), "git", "status", "--porcelain", "-uall")
 	cmd.Dir = absRoot
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -159,7 +159,7 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 
 // isGitTracked reports whether relPath is tracked by git in dir.
 func (f *FrontendAPI) isGitTracked(dir, relPath string) bool {
-	cmd := exec.CommandContext(context.Background(), "git", "ls-files", "--error-unmatch", relPath)
+	cmd := exec.CommandContext(f.ctx(), "git", "ls-files", "--error-unmatch", relPath)
 	cmd.Dir = dir
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -174,7 +174,7 @@ func (f *FrontendAPI) runGitDiff(dir string, cached bool, relPath string) (strin
 	}
 	args = append(args, "--", relPath)
 
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd := exec.CommandContext(f.ctx(), "git", args...)
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -191,7 +191,7 @@ func (f *FrontendAPI) runGitDiff(dir string, cached bool, relPath string) (strin
 // git diff --no-index exits with code 1 when differences exist, so we treat
 // that as success.
 func (f *FrontendAPI) runGitDiffNoIndex(dir, relPath string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", "diff", "--no-index", "/dev/null", relPath)
+	cmd := exec.CommandContext(f.ctx(), "git", "diff", "--no-index", "/dev/null", relPath)
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -316,7 +316,7 @@ func (f *FrontendAPI) listDirectoryFlat(absDir string) ([]FileNode, error) {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
-	ignoredPaths := gitIgnoredPaths(absDir, f.log())
+	ignoredPaths := gitIgnoredPaths(f.ctx(), absDir, f.log())
 
 	var dirs, files []FileNode
 	for _, entry := range entries {
@@ -360,7 +360,7 @@ func (f *FrontendAPI) listDirectoryFlat(absDir string) ([]FileNode, error) {
 // GitIgnored=true so the frontend can render them with a subdued color.
 func (f *FrontendAPI) listDirectoryWalk(absDir string) ([]FileNode, error) {
 	// Build the set of gitignored paths for marking.
-	ignoredPaths := gitIgnoredPaths(absDir, f.log())
+	ignoredPaths := gitIgnoredPaths(f.ctx(), absDir, f.log())
 
 	var nodes []FileNode
 	err := filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
@@ -420,7 +420,7 @@ func (f *FrontendAPI) listDirectoryWalk(absDir string) ([]FileNode, error) {
 // in the given directory. It uses "git ls-files" to collect ignored untracked
 // files and directories. If the directory is not a git repository or git is
 // not available, it returns nil (no filtering).
-func gitIgnoredPaths(dir string, logger *slog.Logger) map[string]bool {
+func gitIgnoredPaths(ctx context.Context, dir string, logger *slog.Logger) map[string]bool {
 	// Quick check: if there's no .git dir, not a git repo — skip.
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		// Could be a subdirectory of a repo; try running git anyway.
@@ -436,7 +436,7 @@ func gitIgnoredPaths(dir string, logger *slog.Logger) map[string]bool {
 	// --exclude-standard: use .gitignore, .git/info/exclude, global gitignore
 	// --directory: show ignored directories as a single entry (don't recurse)
 	// -z: null-separated output
-	cmd := exec.CommandContext(context.Background(), "git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -488,7 +488,7 @@ func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 	if f.store == nil || sessionID == "" {
 		return result
 	}
-	info, err := f.store.LoadSession(sessionID)
+	info, err := f.store.LoadSession(f.ctx(), sessionID)
 	if err != nil || info == nil {
 		return result
 	}

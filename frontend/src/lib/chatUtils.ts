@@ -6,7 +6,6 @@ import {
   handleToolCall, handleToolResult, handleActionMessage,
   type ToolLike, type PlanStep,
 } from './chatGroupingHandlers'
-import { usePlanStore } from '@/stores/planStore'
 
 export { collapseThoughts } from './chatUtilsHelpers'
 
@@ -114,9 +113,14 @@ export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] 
   return actions.length > 0 ? actions : EMPTY_PENDING
 }
 
+/** Actions interface for plan store dependency injection. */
+export interface PlanStoreActions {
+  clearPlan: () => void
+  setPlan: (plan: PlanGroup) => void
+}
+
 /** Rebuild planStore from persisted history messages (called after history load). */
-export function rebuildPlanFromHistory(messages: ChatMessageUI[]): void {
-  const store = usePlanStore.getState()
+export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanStoreActions): void {
   store.clearPlan()
 
   // Find the last plan message to build the PlanGroup

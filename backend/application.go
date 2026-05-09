@@ -110,7 +110,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	manager := session.NewManager(factory, emitFunc, cfg.LogDir, cfg.ProjectsDir)
 	if cfg.SessionStore != nil {
 		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string) {
-			if err := cfg.SessionStore.UpdateSessionTokens(sessionID, inputTokens, outputTokens, model, family); err != nil {
+			if err := cfg.SessionStore.UpdateSessionTokens(context.Background(), sessionID, inputTokens, outputTokens, model, family); err != nil {
 				app.log().Warn("failed to persist session tokens", "session", sessionID, "error", err)
 			}
 		})
@@ -183,9 +183,16 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 }
 
 // GetMCPStatus returns the status of all MCP servers.
+// If the gateway failed to start, returns a synthetic entry surfacing the error.
 func (app *Application) GetMCPStatus() []MCPServerStatus {
 	gw := app.builder.MCPGateway()
 	if gw == nil {
+		if errMsg := app.builder.MCPGatewayError(); errMsg != "" {
+			return []MCPServerStatus{{
+				Name:  "_gateway",
+				Error: errMsg,
+			}}
+		}
 		return []MCPServerStatus{}
 	}
 	return gw.Status()

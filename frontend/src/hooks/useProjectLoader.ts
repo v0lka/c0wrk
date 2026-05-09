@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { subscribe } from '@/api/runtime'
 import { listProjects, switchProject } from '@/api/projects'
 import { useProjectStore } from '@/stores/projectStore'
-import type { ProjectInfo } from '@/types/models'
+import { isProjectInfo, isProjectRenamed } from '@/types/guards'
 
 export function useProjectLoader(): void {
   useEffect(() => {
@@ -22,7 +22,7 @@ export function useProjectLoader(): void {
             const firstId = projects[0]!.id
             switchProject(firstId)
               .then(() => { if (!cancelled) store().setActiveProjectId(firstId) })
-              .catch(() => {})
+              .catch(() => { })
           }
         })
         .catch(() => { /* will retry on backend:ready */ })
@@ -35,32 +35,32 @@ export function useProjectLoader(): void {
     cleanups.push(
       subscribe('project:created', (data: unknown) => {
         if (cancelled) return
-        const project = data as ProjectInfo | undefined
-        if (project?.id) store().addProject(project)
+        if (!isProjectInfo(data)) return
+        store().addProject(data)
       }),
     )
 
     cleanups.push(
       subscribe('project:deleted', (data: unknown) => {
         if (cancelled) return
-        const id = data as string | undefined
-        if (id) store().removeProject(id)
+        if (typeof data !== 'string') return
+        store().removeProject(data)
       }),
     )
 
     cleanups.push(
       subscribe('project:renamed', (data: unknown) => {
         if (cancelled) return
-        const d = data as { id?: string; name?: string } | undefined
-        if (d?.id && d.name) store().updateProject(d.id, { name: d.name })
+        if (!isProjectRenamed(data)) return
+        store().updateProject(data.id, { name: data.name })
       }),
     )
 
     cleanups.push(
       subscribe('project:switched', (data: unknown) => {
         if (cancelled) return
-        const p = data as ProjectInfo | undefined
-        if (p?.id) store().setActiveProjectId(p.id)
+        if (!isProjectInfo(data)) return
+        store().setActiveProjectId(data.id)
       }),
     )
 

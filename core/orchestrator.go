@@ -89,29 +89,33 @@ type Orchestrator struct {
 	skillManager        *skills.SkillManager // for skill discovery and activation
 }
 
+// OrchestratorDeps holds the runtime dependencies for the Orchestrator.
+// Grouping them into a single struct improves readability when the constructor
+// is called (one struct literal instead of 19 positional arguments).
+type OrchestratorDeps struct {
+	Router           *Router
+	Planner          *Planner
+	LLM              LLMCaller
+	ToolExec         ToolExecutor
+	ToolRegistry     *sdktools.ToolRegistry
+	TokenCounter     llm.TokenCounter
+	ContextFactory   ContextManagerFactory
+	Reflector        *Reflector         // optional, nil-safe
+	Logger           *slog.Logger       // optional, nil-safe
+	Emitter          Emitter            // optional, uses noopEmitter if nil
+	ModelRegistry    *llm.ModelRegistry // optional, nil-safe
+	ToolResultBudget ToolResultBudget
+	CircuitBreaker   CircuitBreakerConfig
+	BBFactory        BlackboardFactory      // optional, nil = default MapBlackboard
+	TrackingCaller   *llm.TrackingCaller    // optional, for per-step context tracker wiring
+	VectorSearchFunc tools.VectorSearchFunc // optional, for auto-RAG hint generation
+	SkillManager     *skills.SkillManager   // optional, for skill discovery and activation
+	CoreToolRegistry *tools.ToolRegistry    // core tool registry for skill policy overrides
+}
+
 // NewOrchestrator creates a new Orchestrator with all components.
 // reflector, logger, and emitter are optional (nil-safe).
-func NewOrchestrator(
-	router *Router,
-	planner *Planner,
-	llmCaller LLMCaller,
-	toolExec ToolExecutor,
-	toolReg *sdktools.ToolRegistry,
-	counter llm.TokenCounter,
-	cfg OrchestratorConfig,
-	contextFactory ContextManagerFactory,
-	reflector *Reflector, // optional, nil-safe
-	logger *slog.Logger, // optional, nil-safe
-	emitter Emitter, // optional, uses noopEmitter if nil
-	modelRegistry *llm.ModelRegistry, // optional, nil-safe
-	toolResultBudget ToolResultBudget,
-	circuitBreaker CircuitBreakerConfig,
-	bbFactory BlackboardFactory, // optional, nil = default MapBlackboard
-	trackingCaller *llm.TrackingCaller, // optional, for per-step context tracker wiring
-	vectorSearchFunc tools.VectorSearchFunc, // optional, for auto-RAG hint generation
-	skillManager *skills.SkillManager, // optional, for skill discovery and activation
-	coreToolReg *tools.ToolRegistry, // core tool registry for skill policy overrides
-) *Orchestrator {
+func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrator {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
 	}
@@ -124,21 +128,22 @@ func NewOrchestrator(
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = 2 // default: 3 total attempts
 	}
+	emitter := deps.Emitter
 	if emitter == nil {
 		emitter = &noopEmitter{}
 	}
 
 	// Build SDK orchestration config
 	sdkCfg := orchestration.Config{
-		Planner:       planner,
-		LLM:           llmCaller,
-		Tools:         toolExec,
-		ToolRegistry:  toolReg,
-		TokenCounter:  counter,
+		Planner:       deps.Planner,
+		LLM:           deps.LLM,
+		Tools:         deps.ToolExec,
+		ToolRegistry:  deps.ToolRegistry,
+		TokenCounter:  deps.TokenCounter,
 		Model:         cfg.Model,
-		ModelRegistry: modelRegistry,
+		ModelRegistry: deps.ModelRegistry,
 		ContextFactory: func(sys string, meta llm.ModelMetadata, compact string, pruningOverrides ...orchestration.PruningOverride) agent.ContextManager {
-			return contextFactory(sys, meta, compact, pruningOverrides...)
+			return deps.ContextFactory(sys, meta, compact, pruningOverrides...)
 		},
 		ContextSetup: func(cm agent.ContextManager, taskDesc string) {
 			if ccm, ok := cm.(interface{ SetTask(string) }); ok {
@@ -146,36 +151,36 @@ func NewOrchestrator(
 			}
 		},
 		CallerForStep: func(cm agent.ContextManager) agent.LLMCaller {
-			if trackingCaller == nil {
-				return llmCaller
+			if deps.TrackingCaller == nil {
+				return deps.LLM
 			}
 			if ctm, ok := cm.(interface {
 				ContextTracker() *llm.ContextTokenTracker
 			}); ok {
-				return trackingCaller.WithContextTracker(ctm.ContextTracker())
+				return deps.TrackingCaller.WithContextTracker(ctm.ContextTracker())
 			}
-			return trackingCaller
+			return deps.TrackingCaller
 		},
-		Events:                    &emitterEventsAdapter{Emitter: emitter, logger: logger},
+		Events:                    &emitterEventsAdapter{Emitter: emitter, logger: deps.Logger},
 		SystemPrompt:              buildSystemPrompt,
 		MaxRetries:                cfg.MaxRetries,
 		MaxSteps:                  cfg.MaxSteps,
 		MaxDependencyContextChars: cfg.MaxDependencyContextChars,
-		ToolResultBudget:          toolResultBudget,
-		CircuitBreaker:            circuitBreaker,
+		ToolResultBudget:          deps.ToolResultBudget,
+		CircuitBreaker:            deps.CircuitBreaker,
 		ReasoningEffort:           cfg.ReasoningEffort,
 		RoleOverrides:             cfg.RoleOverrides,
-		StepConfigurator:          coreStepConfigurator(cfg, modelRegistry, logger),
+		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger),
 		StepLimitFunc:             cfg.StepLimitFunc,
 	}
 
 	// Configure state factory to use core's blackboard factory.
 	// If the factory produces a PersistentBlackboard, wire the emitter so
 	// persistence warnings are surfaced to the user instead of being silently logged.
-	if bbFactory != nil {
+	if deps.BBFactory != nil {
 		capturedEmitter := emitter // capture for closure
 		sdkCfg.StateFactory = func(taskID string) orchestration.Blackboard {
-			bb := bbFactory(taskID)
+			bb := deps.BBFactory(taskID)
 			if pbb, ok := bb.(PersistableBlackboard); ok {
 				pbb.SetEmitter(capturedEmitter)
 			}
@@ -184,28 +189,28 @@ func NewOrchestrator(
 	}
 
 	// Wire optional strategies
-	if reflector != nil {
-		sdkCfg.Reflection = reflector
+	if deps.Reflector != nil {
+		sdkCfg.Reflection = deps.Reflector
 	}
 
 	engine := orchestration.New(sdkCfg)
 
 	return &Orchestrator{
 		engine:           engine,
-		planner:          planner,
-		router:           router,
-		llm:              llmCaller,
-		toolRegistry:     toolReg,
+		planner:          deps.Planner,
+		router:           deps.Router,
+		llm:              deps.LLM,
+		toolRegistry:     deps.ToolRegistry,
 		config:           cfg,
-		contextFactory:   contextFactory,
-		logger:           logger,
+		contextFactory:   deps.ContextFactory,
+		logger:           deps.Logger,
 		emitter:          emitter,
-		modelRegistry:    modelRegistry,
-		bbFactory:        bbFactory,
-		trackingCaller:   trackingCaller,
-		vectorSearchFunc: vectorSearchFunc,
-		skillManager:     skillManager,
-		coreToolRegistry: coreToolReg,
+		modelRegistry:    deps.ModelRegistry,
+		bbFactory:        deps.BBFactory,
+		trackingCaller:   deps.TrackingCaller,
+		vectorSearchFunc: deps.VectorSearchFunc,
+		skillManager:     deps.SkillManager,
+		coreToolRegistry: deps.CoreToolRegistry,
 	}
 }
 
@@ -245,7 +250,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 	}
 
 	// Emit initial context_fill
-	o.emitInitialContextFill()
+	o.emitInitialContextFill(ctx)
 
 	// Emit routing decision so the frontend can display the resumed context.
 	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
@@ -386,11 +391,11 @@ func (o *Orchestrator) shouldUseSyntheticPlan(mode string) bool {
 }
 
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.
-func (o *Orchestrator) emitInitialContextFill() {
+func (o *Orchestrator) emitInitialContextFill(ctx context.Context) {
 	var effectiveMax int
 	if o.modelRegistry != nil {
 		model := o.config.Model
-		meta, _ := o.modelRegistry.Resolve(model)
+		meta, _ := o.modelRegistry.Resolve(ctx, model)
 		if meta.ContextWindow > 0 {
 			safetyMargin := meta.ContextWindow * 5 / 100
 			effectiveMax = meta.ContextWindow - meta.OutputLimit - safetyMargin
@@ -425,7 +430,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	// 1. Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
-	o.emitInitialContextFill()
+	o.emitInitialContextFill(ctx)
 
 	var bb Blackboard
 

@@ -134,8 +134,8 @@ export function SendMessage(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3);
 }
 
-export function SetConfigLoadState(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['SetConfigLoadState'](arg1, arg2, arg3);
+export function SetConfigLoadState(arg1) {
+  return window['go']['desktop']['App']['SetConfigLoadState'](arg1);
 }
 
 export function SetLogLevel(arg1) {

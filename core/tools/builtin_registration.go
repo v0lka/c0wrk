@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/user/agent/sdk/agent"
@@ -50,9 +51,13 @@ type BuiltinToolsConfig struct {
 }
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
-func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
+func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error {
 	// Bash
-	registry.Register(builtins.NewBashExecToolWithTimeouts(cfg.BashBlacklist, cfg.BashTimeouts))
+	bashTool, err := builtins.NewBashExecToolWithTimeouts(cfg.BashBlacklist, cfg.BashTimeouts)
+	if err != nil {
+		return fmt.Errorf("bash tool: %w", err)
+	}
+	registry.Register(bashTool)
 
 	// File operations
 	registry.Register(builtins.NewReadFileToolWithLimits(cfg.FileLimits))
@@ -100,6 +105,8 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) {
 	if cfg.AskUserFunc != nil {
 		registry.Register(builtins.NewAskUserTool(cfg.AskUserFunc))
 	}
+
+	return nil
 }
 
 // CreateSearchProvider creates a search provider based on the configured provider name.

@@ -824,36 +824,46 @@ type mockTaskStoreForResumable struct {
 	unfinished *TaskRecord // returned by GetUnfinishedTask
 }
 
-func (m *mockTaskStoreForResumable) SaveTask(_ TaskRecord) error                      { return nil }
-func (m *mockTaskStoreForResumable) UpdateTaskPlan(_ string, _ json.RawMessage) error { return nil }
-func (m *mockTaskStoreForResumable) UpdateTaskRouting(_ string, _ json.RawMessage) error {
+func (m *mockTaskStoreForResumable) SaveTask(_ context.Context, _ TaskRecord) error { return nil }
+func (m *mockTaskStoreForResumable) UpdateTaskPlan(_ context.Context, _ string, _ json.RawMessage) error {
 	return nil
 }
-func (m *mockTaskStoreForResumable) SaveTaskStep(_ string, _ TaskStepRecord) error { return nil }
-func (m *mockTaskStoreForResumable) SaveStepFileChanges(_, _ string, _ json.RawMessage) error {
+func (m *mockTaskStoreForResumable) UpdateTaskRouting(_ context.Context, _ string, _ json.RawMessage) error {
 	return nil
 }
-func (m *mockTaskStoreForResumable) AddTaskReflection(_ string, _ json.RawMessage) error {
+func (m *mockTaskStoreForResumable) SaveTaskStep(_ context.Context, _ string, _ TaskStepRecord) error {
 	return nil
 }
-func (m *mockTaskStoreForResumable) CompleteTask(_, _ string, _ int) error {
+func (m *mockTaskStoreForResumable) SaveStepFileChanges(_ context.Context, _, _ string, _ json.RawMessage) error {
 	return nil
 }
-func (m *mockTaskStoreForResumable) FailTask(_ string) error                { return nil }
-func (m *mockTaskStoreForResumable) LoadTask(_ string) (*TaskRecord, error) { return nil, nil }
-func (m *mockTaskStoreForResumable) LoadTaskSteps(_ string) ([]TaskStepRecord, error) {
+func (m *mockTaskStoreForResumable) AddTaskReflection(_ context.Context, _ string, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) CompleteTask(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) FailTask(_ context.Context, _ string) error { return nil }
+func (m *mockTaskStoreForResumable) LoadTask(_ context.Context, _ string) (*TaskRecord, error) {
 	return nil, nil
 }
-func (m *mockTaskStoreForResumable) LoadStepFileChanges(_ string) (map[string]json.RawMessage, error) {
+func (m *mockTaskStoreForResumable) LoadTaskSteps(_ context.Context, _ string) ([]TaskStepRecord, error) {
 	return nil, nil
 }
-func (m *mockTaskStoreForResumable) SaveFacts(_ string, _ json.RawMessage) error { return nil }
-func (m *mockTaskStoreForResumable) LoadFacts(_ string) (json.RawMessage, error) { return nil, nil }
-func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ string) (*TaskRecord, error) {
+func (m *mockTaskStoreForResumable) LoadStepFileChanges(_ context.Context, _ string) (map[string]json.RawMessage, error) {
+	return nil, nil
+}
+func (m *mockTaskStoreForResumable) SaveFacts(_ context.Context, _ string, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) LoadFacts(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
+}
+func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
 	return m.unfinished, nil
 }
-func (m *mockTaskStoreForResumable) ReactivateTask(_ string) error { return nil }
-func (m *mockTaskStoreForResumable) GetLatestTaskID(_ string) (string, error) {
+func (m *mockTaskStoreForResumable) ReactivateTask(_ context.Context, _ string) error { return nil }
+func (m *mockTaskStoreForResumable) GetLatestTaskID(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
 
@@ -1132,7 +1142,7 @@ func newMockSessionStore() *mockSessionStoreForRestore {
 	return &mockSessionStoreForRestore{sessions: make(map[string]*SessionInfo)}
 }
 
-func (m *mockSessionStoreForRestore) SaveSession(info SessionInfo) error {
+func (m *mockSessionStoreForRestore) SaveSession(_ context.Context, info SessionInfo) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := info
@@ -1140,7 +1150,7 @@ func (m *mockSessionStoreForRestore) SaveSession(info SessionInfo) error {
 	return nil
 }
 
-func (m *mockSessionStoreForRestore) LoadSession(id string) (*SessionInfo, error) {
+func (m *mockSessionStoreForRestore) LoadSession(_ context.Context, id string) (*SessionInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	info, ok := m.sessions[id]
@@ -1151,26 +1161,32 @@ func (m *mockSessionStoreForRestore) LoadSession(id string) (*SessionInfo, error
 	return &cp, nil
 }
 
-func (m *mockSessionStoreForRestore) ListSessions() ([]SessionInfo, error) {
+func (m *mockSessionStoreForRestore) ListSessions(_ context.Context) ([]SessionInfo, error) {
 	return []SessionInfo{}, nil
 }
-func (m *mockSessionStoreForRestore) ListSessionsByProject(_ string) ([]SessionInfo, error) {
+func (m *mockSessionStoreForRestore) ListSessionsByProject(_ context.Context, _ string) ([]SessionInfo, error) {
 	return []SessionInfo{}, nil
 }
-func (m *mockSessionStoreForRestore) DeleteSession(_ string) error          { return nil }
-func (m *mockSessionStoreForRestore) ArchiveSession(_ string, _ bool) error { return nil }
-func (m *mockSessionStoreForRestore) RenameSession(_, _ string) error       { return nil }
-func (m *mockSessionStoreForRestore) UpdateSessionTokens(_ string, _, _ int, _, _ string) error {
+func (m *mockSessionStoreForRestore) DeleteSession(_ context.Context, _ string) error { return nil }
+func (m *mockSessionStoreForRestore) ArchiveSession(_ context.Context, _ string, _ bool) error {
 	return nil
 }
-func (m *mockSessionStoreForRestore) UpdateSessionActivity(_ string) error { return nil }
-func (m *mockSessionStoreForRestore) SaveMessage(_ ChatMessage) error      { return nil }
-func (m *mockSessionStoreForRestore) LoadMessages(_ string) ([]ChatMessage, error) {
+func (m *mockSessionStoreForRestore) RenameSession(_ context.Context, _, _ string) error { return nil }
+func (m *mockSessionStoreForRestore) UpdateSessionTokens(_ context.Context, _ string, _, _ int, _, _ string) error {
+	return nil
+}
+func (m *mockSessionStoreForRestore) UpdateSessionActivity(_ context.Context, _ string) error {
+	return nil
+}
+func (m *mockSessionStoreForRestore) SaveMessage(_ context.Context, _ ChatMessage) error { return nil }
+func (m *mockSessionStoreForRestore) LoadMessages(_ context.Context, _ string) ([]ChatMessage, error) {
 	return []ChatMessage{}, nil
 }
-func (m *mockSessionStoreForRestore) DeleteMessages(_ string) error         { return nil }
-func (m *mockSessionStoreForRestore) SaveTerminalCommand(_, _ string) error { return nil }
-func (m *mockSessionStoreForRestore) LoadTerminalCommands(_ string, _ int) ([]TerminalCommand, error) {
+func (m *mockSessionStoreForRestore) DeleteMessages(_ context.Context, _ string) error { return nil }
+func (m *mockSessionStoreForRestore) SaveTerminalCommand(_ context.Context, _, _ string) error {
+	return nil
+}
+func (m *mockSessionStoreForRestore) LoadTerminalCommands(_ context.Context, _ string, _ int) ([]TerminalCommand, error) {
 	return []TerminalCommand{}, nil
 }
 func (m *mockSessionStoreForRestore) Close() error { return nil }
@@ -1212,7 +1228,7 @@ func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreFo
 func seedSession(t *testing.T, store *mockSessionStoreForRestore, id, projectID, name string, archived bool) {
 	t.Helper()
 	now := time.Now().Format(time.RFC3339)
-	if err := store.SaveSession(SessionInfo{
+	if err := store.SaveSession(context.Background(), SessionInfo{
 		ID:                id,
 		ProjectID:         projectID,
 		Name:              name,
@@ -1270,7 +1286,7 @@ func TestRestoreSession_Metadata(t *testing.T) {
 	mgr, _, store := restoreTestManager(t)
 
 	createdAt := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	if err := store.SaveSession(SessionInfo{
+	if err := store.SaveSession(context.Background(), SessionInfo{
 		ID:                "meta-sess",
 		ProjectID:         testProjectID,
 		Name:              "Metadata Check",

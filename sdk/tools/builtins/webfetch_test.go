@@ -669,3 +669,44 @@ func TestWebFetchTool_ReadabilityFallback(t *testing.T) {
 		t.Errorf("expected markdown to contain 'simple page', got: %s", result.Content)
 	}
 }
+
+func TestWebFetchTool_Judge_PrivateIP(t *testing.T) {
+	tool := NewWebFetchTool()
+
+	t.Run("loopback is blocked", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]string{"url": "http://127.0.0.1/secret"})
+		allow, reasoning := tool.Judge(context.Background(), input)
+		if allow {
+			t.Error("expected Judge to deny request to loopback address")
+		}
+		if !strings.Contains(reasoning, "private") {
+			t.Errorf("expected reasoning to mention private, got: %s", reasoning)
+		}
+	})
+
+	t.Run("private RFC1918 is blocked", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]string{"url": "http://192.168.1.1/admin"})
+		allow, reasoning := tool.Judge(context.Background(), input)
+		if allow {
+			t.Error("expected Judge to deny request to private address")
+		}
+		if reasoning == "" {
+			t.Error("expected non-empty reasoning")
+		}
+	})
+
+	t.Run("public address is allowed", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]string{"url": "https://example.com"})
+		allow, _ := tool.Judge(context.Background(), input)
+		if !allow {
+			t.Error("expected Judge to allow request to public address")
+		}
+	})
+
+	t.Run("invalid input falls through", func(t *testing.T) {
+		allow, _ := tool.Judge(context.Background(), json.RawMessage(`{invalid`))
+		if !allow {
+			t.Error("expected Judge to allow on invalid input (let Execute handle validation)")
+		}
+	})
+}

@@ -61,9 +61,10 @@ type ReadFileInput struct {
 	EndLine   int    `json:"end_line"`
 }
 
-// Judge always allows read_file (read-only operation).
+// Judge checks whether the read targets a path within the workspace.
+// Files outside workspace require user confirmation.
 func (t *ReadFileTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return true, "read-only file operation"
+	return judgeReadInWorkspace(ctx, input)
 }
 
 // Execute reads and returns the content of a file with pagination support.

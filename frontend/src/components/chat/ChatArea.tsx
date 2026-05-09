@@ -58,7 +58,7 @@ export function ChatArea() {
       if (history.length > 0) {
         const uiMessages = history.map((msg) => chatMessageToUI(msg))
         useChatStore.getState().setMessages(activeSessionId, uiMessages)
-        rebuildPlanFromHistory(uiMessages)
+        rebuildPlanFromHistory(uiMessages, usePlanStore.getState())
       }
     }).catch((err) => {
       logger.error('Failed to load session history:', err)
@@ -75,19 +75,20 @@ export function ChatArea() {
 
   const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
 
-  // Find last user message for pinning
-  let lastUserItem: Extract<typeof displayItems[number], { kind: 'user' }> | null = null
-  for (let i = displayItems.length - 1; i >= 0; i--) {
-    if (displayItems[i]!.kind === 'user') {
-      lastUserItem = displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
-      break
+  // Find last user message for pinning and filter it from the main list (memoized)
+  const { lastUserItem, filteredItems } = useMemo(() => {
+    let last: Extract<typeof displayItems[number], { kind: 'user' }> | null = null
+    for (let i = displayItems.length - 1; i >= 0; i--) {
+      if (displayItems[i]!.kind === 'user') {
+        last = displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
+        break
+      }
     }
-  }
-
-  // Filter out pinned message from main list
-  const filteredItems = lastUserItem
-    ? displayItems.filter(item => !(item.kind === 'user' && 'message' in item && item.message.id === lastUserItem!.message.id))
-    : displayItems
+    const filtered = last
+      ? displayItems.filter(item => !(item.kind === 'user' && 'message' in item && item.message.id === last!.message.id))
+      : displayItems
+    return { lastUserItem: last, filteredItems: filtered }
+  }, [displayItems])
 
   if (!activeSessionId) {
     return (

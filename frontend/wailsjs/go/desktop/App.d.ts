@@ -72,7 +72,7 @@ export function SearchVectorStore(arg1:string,arg2:number,arg3:string):Promise<A
 
 export function SendMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function SetConfigLoadState(arg1:boolean,arg2:string,arg3:Array<string>):Promise<void>;
+export function SetConfigLoadState(arg1:Array<string>):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 

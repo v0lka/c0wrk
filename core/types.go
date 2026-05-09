@@ -77,11 +77,23 @@ type CompletedStep = orchestration.CompletedStep
 type PlanStepEvent = orchestration.PlanStepEvent
 
 // Re-export blackboard types from sdk/orchestration.
+
+// StepResult holds the output of a single executed step.
 type StepResult = orchestration.StepResult
+
+// BlackboardEntry is a key-value entry on the blackboard.
 type BlackboardEntry = orchestration.BlackboardEntry
+
+// Blackboard is the shared state store for the Plan&Execute loop.
 type Blackboard = orchestration.Blackboard
+
+// MapBlackboard is the default in-memory Blackboard implementation.
 type MapBlackboard = orchestration.MapBlackboard
+
+// MapBlackboardOption configures a MapBlackboard.
 type MapBlackboardOption = orchestration.MapBlackboardOption
+
+// Fact represents a derived insight stored on the blackboard.
 type Fact = orchestration.Fact
 
 var (

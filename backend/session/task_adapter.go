@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ var (
 
 // PersistNewTask creates a new task record with status "in_progress".
 func (a *TaskStoreAdapter) PersistNewTask(taskID, sessionID, originalRequest string) error {
-	return a.store.SaveTask(TaskRecord{
+	return a.store.SaveTask(context.Background(), TaskRecord{
 		ID:              taskID,
 		SessionID:       sessionID,
 		OriginalRequest: originalRequest,
@@ -48,7 +49,7 @@ func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *core.Plan) error {
 	if err != nil {
 		return fmt.Errorf("marshal plan: %w", err)
 	}
-	return a.store.UpdateTaskPlan(taskID, data)
+	return a.store.UpdateTaskPlan(context.Background(), taskID, data)
 }
 
 // PersistRouting JSON-marshals the routing decision and updates the task record.
@@ -57,7 +58,7 @@ func (a *TaskStoreAdapter) PersistRouting(taskID string, routing *core.RoutingDe
 	if err != nil {
 		return fmt.Errorf("marshal routing: %w", err)
 	}
-	return a.store.UpdateTaskRouting(taskID, data)
+	return a.store.UpdateTaskRouting(context.Background(), taskID, data)
 }
 
 // PersistStepResult creates a TaskStepRecord with JSON-marshaled steps.
@@ -66,7 +67,7 @@ func (a *TaskStoreAdapter) PersistStepResult(taskID, stepID, summary, fullOutput
 	if err != nil {
 		return fmt.Errorf("marshal steps: %w", err)
 	}
-	return a.store.SaveTaskStep(taskID, TaskStepRecord{
+	return a.store.SaveTaskStep(context.Background(), taskID, TaskStepRecord{
 		StepID:     stepID,
 		TaskID:     taskID,
 		Summary:    summary,
@@ -83,22 +84,22 @@ func (a *TaskStoreAdapter) PersistReflection(taskID string, r core.Reflection) e
 	if err != nil {
 		return fmt.Errorf("marshal reflection: %w", err)
 	}
-	return a.store.AddTaskReflection(taskID, data)
+	return a.store.AddTaskReflection(context.Background(), taskID, data)
 }
 
 // PersistCompletion marks the task as completed.
 func (a *TaskStoreAdapter) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
-	return a.store.CompleteTask(taskID, finalOutput, attemptCount)
+	return a.store.CompleteTask(context.Background(), taskID, finalOutput, attemptCount)
 }
 
 // PersistFailure marks the task as failed.
 func (a *TaskStoreAdapter) PersistFailure(taskID string) error {
-	return a.store.FailTask(taskID)
+	return a.store.FailTask(context.Background(), taskID)
 }
 
 // ReactivateTask reactivates a completed task back to in_progress.
 func (a *TaskStoreAdapter) ReactivateTask(taskID string) error {
-	return a.store.ReactivateTask(taskID)
+	return a.store.ReactivateTask(context.Background(), taskID)
 }
 
 // PersistStepFileChanges JSON-marshals file changes and stores them for a step.
@@ -107,7 +108,7 @@ func (a *TaskStoreAdapter) PersistStepFileChanges(taskID, stepID string, changes
 	if err != nil {
 		return fmt.Errorf("marshal file changes: %w", err)
 	}
-	return a.store.SaveStepFileChanges(taskID, stepID, data)
+	return a.store.SaveStepFileChanges(context.Background(), taskID, stepID, data)
 }
 
 // PersistFacts JSON-marshals facts and stores them for a task.
@@ -116,14 +117,14 @@ func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []core.Fact) error 
 	if err != nil {
 		return fmt.Errorf("marshal facts: %w", err)
 	}
-	return a.store.SaveFacts(taskID, data)
+	return a.store.SaveFacts(context.Background(), taskID, data)
 }
 
 // LoadTaskState loads a task and its steps from the store, deserializes JSON back
 // to core types, and returns a populated *core.TaskState.
 // Returns nil, nil if the task is not found.
 func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error) {
-	rec, err := a.store.LoadTask(taskID)
+	rec, err := a.store.LoadTask(context.Background(), taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load task: %w", err)
 	}
@@ -165,7 +166,7 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	}
 
 	// Load step records
-	stepRecords, err := a.store.LoadTaskSteps(taskID)
+	stepRecords, err := a.store.LoadTaskSteps(context.Background(), taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load task steps: %w", err)
 	}
@@ -195,7 +196,7 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	}
 
 	// Load file changes
-	fileChangesMap, err := a.store.LoadStepFileChanges(taskID)
+	fileChangesMap, err := a.store.LoadStepFileChanges(context.Background(), taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load step file changes: %w", err)
 	}
@@ -211,7 +212,7 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	}
 
 	// Load facts
-	factsJSON, err := a.store.LoadFacts(taskID)
+	factsJSON, err := a.store.LoadFacts(context.Background(), taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load facts: %w", err)
 	}
@@ -227,7 +228,7 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 // GetUnfinishedTaskID returns the ID of the most recent in-progress task for the
 // given session, or "" if none exists.
 func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error) {
-	rec, err := a.store.GetUnfinishedTask(sessionID)
+	rec, err := a.store.GetUnfinishedTask(context.Background(), sessionID)
 	if err != nil {
 		return "", err
 	}

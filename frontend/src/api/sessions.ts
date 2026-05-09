@@ -2,12 +2,17 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isSessionInfo, isArrayOf } from '@/types/guards'
 import type { SessionInfo } from '@/types/models'
 
 export async function createSession(): Promise<SessionInfo> {
   try {
     const app = getApp()
-    return await app.CreateSession() as SessionInfo
+    const result = await app.CreateSession()
+    if (!isSessionInfo(result)) {
+      logger.warn('createSession: unexpected response shape', result)
+    }
+    return result as SessionInfo
   } catch (err) {
     logger.error('Failed to create session:', err)
     throw err
@@ -27,7 +32,11 @@ export async function deleteSession(id: string): Promise<void> {
 export async function listSessions(): Promise<SessionInfo[]> {
   try {
     const app = getApp()
-    return await app.ListSessions() as SessionInfo[]
+    const result = await app.ListSessions()
+    if (!isArrayOf(result, isSessionInfo)) {
+      logger.warn('listSessions: unexpected response shape', result)
+    }
+    return result as SessionInfo[]
   } catch (err) {
     logger.error('Failed to list sessions:', err)
     throw err

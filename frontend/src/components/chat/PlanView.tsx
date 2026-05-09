@@ -24,7 +24,7 @@ function TodoChecklist({ items }: { items: PlanItem['todoItems'] }) {
   return (
     <ul className="space-y-0.5 ml-5.5">
       {items.map((todo, i) => (
-        <li key={i} className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
+        <li key={`${todo.text}-${i}`} className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
           {todo.checked ? (
             <CheckSquare className="h-3 w-3 text-success shrink-0" />
           ) : (

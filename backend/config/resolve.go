@@ -9,10 +9,10 @@ import (
 
 // ResolvedConfig contains the result of config path resolution and loading.
 type ResolvedConfig struct {
-	Config       *Config
-	ConfigPath   string
-	AgentDir     string
-	LoadErrors   []string
+	Config     *Config
+	ConfigPath string
+	AgentDir   string
+	LoadErrors []string
 }
 
 // CreateDefault builds a Config with all defaults applied and saves it to path.

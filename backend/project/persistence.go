@@ -40,12 +40,12 @@ func (s *SQLiteProjectStore) createTables() error {
 }
 
 // SaveProject inserts or updates a project (upsert).
-func (s *SQLiteProjectStore) SaveProject(info ProjectInfo) error {
+func (s *SQLiteProjectStore) SaveProject(ctx context.Context, info ProjectInfo) error {
 	lastActiveAt := info.LastActiveAt
 	if lastActiveAt == "" {
 		lastActiveAt = info.CreatedAt
 	}
-	_, err := s.db.ExecContext(context.Background(), `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO projects (id, name, workspace_path, is_external, created_at, last_active_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -62,9 +62,9 @@ func (s *SQLiteProjectStore) SaveProject(info ProjectInfo) error {
 }
 
 // LoadProject loads a project by ID. Returns nil if not found.
-func (s *SQLiteProjectStore) LoadProject(id string) (*ProjectInfo, error) {
+func (s *SQLiteProjectStore) LoadProject(ctx context.Context, id string) (*ProjectInfo, error) {
 	var info ProjectInfo
-	err := s.db.QueryRowContext(context.Background(), `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, name, workspace_path, is_external, created_at, COALESCE(last_active_at, created_at)
 		FROM projects WHERE id = ?`,
 		id,
@@ -80,8 +80,8 @@ func (s *SQLiteProjectStore) LoadProject(id string) (*ProjectInfo, error) {
 }
 
 // ListProjects returns all projects ordered by last activity (newest first).
-func (s *SQLiteProjectStore) ListProjects() ([]ProjectInfo, error) {
-	rows, err := s.db.QueryContext(context.Background(), `
+func (s *SQLiteProjectStore) ListProjects(ctx context.Context) ([]ProjectInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, workspace_path, is_external, created_at, COALESCE(last_active_at, created_at)
 		FROM projects
 		ORDER BY COALESCE(last_active_at, created_at) DESC`)
@@ -110,8 +110,8 @@ func (s *SQLiteProjectStore) ListProjects() ([]ProjectInfo, error) {
 }
 
 // DeleteProject deletes a project by ID. FK cascade handles sessions.
-func (s *SQLiteProjectStore) DeleteProject(id string) error {
-	_, err := s.db.ExecContext(context.Background(), `DELETE FROM projects WHERE id = ?`, id)
+func (s *SQLiteProjectStore) DeleteProject(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete project: %w", err)
 	}
@@ -119,8 +119,8 @@ func (s *SQLiteProjectStore) DeleteProject(id string) error {
 }
 
 // RenameProject updates a project's name.
-func (s *SQLiteProjectStore) RenameProject(id, name string) error {
-	_, err := s.db.ExecContext(context.Background(), `UPDATE projects SET name = ? WHERE id = ?`, name, id)
+func (s *SQLiteProjectStore) RenameProject(ctx context.Context, id, name string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE projects SET name = ? WHERE id = ?`, name, id)
 	if err != nil {
 		return fmt.Errorf("failed to rename project: %w", err)
 	}
@@ -128,9 +128,9 @@ func (s *SQLiteProjectStore) RenameProject(id, name string) error {
 }
 
 // UpdateProjectActivity updates the last_active_at timestamp to now.
-func (s *SQLiteProjectStore) UpdateProjectActivity(id string) error {
+func (s *SQLiteProjectStore) UpdateProjectActivity(ctx context.Context, id string) error {
 	now := time.Now().Format(time.RFC3339)
-	_, err := s.db.ExecContext(context.Background(), `UPDATE projects SET last_active_at = ? WHERE id = ?`, now, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE projects SET last_active_at = ? WHERE id = ?`, now, id)
 	if err != nil {
 		return fmt.Errorf("failed to update project activity: %w", err)
 	}
