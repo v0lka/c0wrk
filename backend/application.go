@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/core"
+	"github.com/user/agent/core/skills"
 	"github.com/user/agent/core/tools"
 )
 
@@ -93,6 +95,17 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 3a. Vector search (optional — registered after builder creation)
 	if cfg.VectorSearchFunc != nil {
 		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc)
+	}
+
+	// 3b. Skill manager (optional — nil-safe when no dirs configured).
+	if len(cfg.Config.Skills.Dirs) > 0 {
+		skillDirs := resolveSkillDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars)
+		sm := skills.NewSkillManager(skillDirs, cfg.Logger)
+		if err := sm.Scan(); err != nil {
+			app.log().Warn("skill scan failed", "error", err)
+		} else {
+			builder.SetSkillManager(sm)
+		}
 	}
 
 	// 4. Set confirmation function on the shared registry.
@@ -216,3 +229,17 @@ var ErrJudgeNotAvailable = errJudgeNotAvailable("judge is not available; check L
 type errJudgeNotAvailable string
 
 func (e errJudgeNotAvailable) Error() string { return string(e) }
+
+// resolveSkillDirs converts a list of configured skill directories into absolute
+// paths. Relative paths are resolved against agentDir. Env vars are expanded.
+func resolveSkillDirs(dirs []string, agentDir string, expandEnv func(string) string) []string {
+	resolved := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		d = expandEnv(d)
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(agentDir, d)
+		}
+		resolved = append(resolved, d)
+	}
+	return resolved
+}

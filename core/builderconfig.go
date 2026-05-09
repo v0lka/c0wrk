@@ -9,6 +9,7 @@ type BuilderConfig struct {
 	Router        BuilderRouterConfig
 	Executor      BuilderExecutorConfig
 	Security      BuilderSecurityConfig
+	Skills        BuilderSkillsConfig
 	Search        BuilderSearchConfig
 	MCP           BuilderMCPConfig
 	Orchestration BuilderOrchestrationConfig
@@ -179,6 +180,11 @@ type BuilderSecurityConfig struct {
 type BuilderToolPolicy struct {
 	Policy    string
 	Blacklist []string
+}
+
+// BuilderSkillsConfig holds Agent Skills discovery directories.
+type BuilderSkillsConfig struct {
+	Dirs []string // absolute paths to skill directories in priority order
 }
 
 // ---------------------------------------------------------------------------

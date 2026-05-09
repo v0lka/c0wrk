@@ -103,6 +103,18 @@ mcp:
   #     headers: {}                # HTTP headers (http transport)
 
 # ---------------------------------------------------------------------------
+# Agent Skills Discovery
+# ---------------------------------------------------------------------------
+# Directories to scan for Agent Skills (agentskills.io spec).
+# Each subdirectory with a valid SKILL.md file becomes a skill.
+# Paths may be absolute or relative to the agent directory (~/.c0wrk).
+# Directories are scanned in priority order (highest first).
+skills:
+  dirs: []
+  #   - "skills"                    # relative to ~/.c0wrk
+  #   - "/absolute/path/to/skills"  # absolute paths also supported
+
+# ---------------------------------------------------------------------------
 # Memory / Persistence
 # ---------------------------------------------------------------------------
 memory:

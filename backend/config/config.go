@@ -26,6 +26,7 @@ type Config struct {
 	Router        RouterConfig        `yaml:"router"`
 	Executor      ExecutorConfig      `yaml:"executor"`
 	Security      SecurityConfig      `yaml:"security"`
+	Skills        SkillsConfig        `yaml:"skills"`
 	Search        SearchConfig        `yaml:"search"`
 	ToolLimits    ToolLimitsConfig    `yaml:"toolLimits"`
 	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
@@ -279,6 +280,13 @@ type OrchestrationConfig struct {
 	// Default is 2 (complexity 1-2 = synthetic, 3+ = full planning).
 	// Set to 0 to disable synthetic plans (always use full planning).
 	SyntheticPlanThreshold int `yaml:"synthetic_plan_threshold"`
+}
+
+// SkillsConfig holds Agent Skills discovery configuration.
+type SkillsConfig struct {
+	// Dirs lists skill discovery directories in priority order (highest first).
+	// Paths may be absolute or relative to the agent directory (~/.c0wrk).
+	Dirs []string `yaml:"dirs"`
 }
 
 // ValidProviders is the canonical set of supported LLM provider names.

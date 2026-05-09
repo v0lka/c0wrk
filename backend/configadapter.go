@@ -121,6 +121,9 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			ToolPolicies:  toolPolicies,
 			DefaultPolicy: cfg.Security.DefaultPolicy,
 		},
+		Skills: core.BuilderSkillsConfig{
+			Dirs: cfg.Skills.Dirs,
+		},
 		Search: core.BuilderSearchConfig{
 			Provider: cfg.Search.Provider,
 			APIKey:   cfg.Search.APIKey,
