@@ -12,6 +12,9 @@ CURRENT-REFLECTION
 
 PREVIOUS-SESSION-REFLECTIONS
 
+Available skills:
+AVAILABLE-SKILLS
+
 WORKSPACE-PATH
 
 Create an updated plan following these rules:

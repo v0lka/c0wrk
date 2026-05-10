@@ -3,11 +3,26 @@ package config
 // defaultProtectedTools is the default list of tools whose output is always preserved during pruning.
 var defaultProtectedTools = []string{"store_fact", "search_facts"}
 
+// defaultSkillDirs is the default list of skill discovery directories used when
+// the `skills.dirs` config key is omitted. The current project's
+// `.agents/skills` directory is always scanned automatically (see core/builder.go)
+// and does NOT need to be listed here.
+var defaultSkillDirs = []string{
+	"~/.agents/skills",
+	"~/.c0wrk/.agents/skills",
+}
+
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
 	// Log level defaults
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "DEBUG"
+	}
+
+	// Skills discovery defaults (nil => apply defaults; empty slice => user
+	// explicitly opted out of base dirs, keep it empty).
+	if cfg.Skills.Dirs == nil {
+		cfg.Skills.Dirs = append([]string(nil), defaultSkillDirs...)
 	}
 
 	// Executor defaults

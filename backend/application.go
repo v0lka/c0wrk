@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/user/agent/backend/config"
 	"github.com/user/agent/backend/session"
 	"github.com/user/agent/core"
-	"github.com/user/agent/core/skills"
 	"github.com/user/agent/core/tools"
 )
 
@@ -97,15 +98,13 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc)
 	}
 
-	// 3b. Skill manager (optional — nil-safe when no dirs configured).
+	// 3b. Skill discovery directories. The builder creates a per-session
+	// SkillManager on each Build() and always prepends the current project's
+	// `.agents/skills` directory (see core/builder.go). Here we only resolve
+	// and register the shared base dirs from config.
 	if len(cfg.Config.Skills.Dirs) > 0 {
 		skillDirs := resolveSkillDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars)
-		sm := skills.NewSkillManager(skillDirs, cfg.Logger)
-		if err := sm.Scan(); err != nil {
-			app.log().Warn("skill scan failed", "error", err)
-		} else {
-			builder.SetSkillManager(sm)
-		}
+		builder.SetSkillDirs(skillDirs)
 	}
 
 	// 4. Set confirmation function on the shared registry.
@@ -115,7 +114,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error) {
-		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, bbFactory, app.stepLimitFunc, dumpWriter)
+		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.stepLimitFunc, dumpWriter)
 	}
 
 	// 6. Session manager.
@@ -231,15 +230,41 @@ type errJudgeNotAvailable string
 func (e errJudgeNotAvailable) Error() string { return string(e) }
 
 // resolveSkillDirs converts a list of configured skill directories into absolute
-// paths. Relative paths are resolved against agentDir. Env vars are expanded.
+// paths. Leading `~` and `${ENV_VAR}` are expanded; remaining relative paths
+// are resolved against agentDir. Entries that expand to an empty string after
+// substitution are dropped.
 func resolveSkillDirs(dirs []string, agentDir string, expandEnv func(string) string) []string {
+	home, _ := os.UserHomeDir()
 	resolved := make([]string, 0, len(dirs))
 	for _, d := range dirs {
 		d = expandEnv(d)
+		d = expandTilde(d, home)
+		if d == "" {
+			continue
+		}
 		if !filepath.IsAbs(d) {
 			d = filepath.Join(agentDir, d)
 		}
 		resolved = append(resolved, d)
 	}
 	return resolved
+}
+
+// expandTilde replaces a leading `~` or `~/` in p with the user's home
+// directory. Paths that do not start with `~` are returned unchanged.
+// When home is empty, a leading `~` is left intact so the caller can decide
+// how to handle the failure (e.g. treat it as a relative path).
+func expandTilde(p, home string) string {
+	if home == "" || p == "" {
+		return p
+	}
+	switch {
+	case p == "~":
+		return home
+	case strings.HasPrefix(p, "~"+string(filepath.Separator)):
+		return filepath.Join(home, p[2:])
+	case strings.HasPrefix(p, "~/"): // also handle forward-slash form on Windows
+		return filepath.Join(home, p[2:])
+	}
+	return p
 }

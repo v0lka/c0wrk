@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,6 +88,18 @@ type Orchestrator struct {
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
 	vectorSearchFunc    tools.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
+
+	// currentRequestCtx captures the ctx produced at the top of HandleMessage
+	// (after WithActiveSkills). coreStepConfigurator's step-local skill narrowing
+	// and plannerSDKAdapter's Replan callback both read from this pointer to
+	// access the router-matched skill pool. One active request per *Orchestrator
+	// is the same concurrency assumption as conversationHistory above.
+	currentRequestCtx atomic.Pointer[context.Context]
+
+	// currentRequestSkills holds the router-matched skill descriptors for the
+	// active request. Read by plannerSDKAdapter.Replan to thread skills into
+	// the planner call back from the SDK engine.
+	currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor]
 }
 
 // OrchestratorDeps holds the runtime dependencies for the Orchestrator.
@@ -133,9 +146,47 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		emitter = &noopEmitter{}
 	}
 
+	// Pre-construct the Orchestrator so the step configurator and planner adapter
+	// can close over its currentRequestCtx / currentRequestSkills pointers.
+	o := &Orchestrator{
+		planner:          deps.Planner,
+		router:           deps.Router,
+		llm:              deps.LLM,
+		toolRegistry:     deps.ToolRegistry,
+		config:           cfg,
+		contextFactory:   deps.ContextFactory,
+		logger:           deps.Logger,
+		emitter:          emitter,
+		modelRegistry:    deps.ModelRegistry,
+		bbFactory:        deps.BBFactory,
+		trackingCaller:   deps.TrackingCaller,
+		vectorSearchFunc: deps.VectorSearchFunc,
+		skillManager:     deps.SkillManager,
+		coreToolRegistry: deps.CoreToolRegistry,
+	}
+
+	// plannerAdapter adapts core.*Planner (which now takes an additional
+	// availableSkills parameter) to sdk/orchestration.Planner. For Replan it
+	// reads the router-matched skill pool captured at the top of HandleMessage.
+	plannerAdapter := &plannerSDKAdapter{planner: deps.Planner, skillsFor: func() []skills.SkillDescriptor {
+		if ptr := o.currentRequestSkills.Load(); ptr != nil {
+			return *ptr
+		}
+		return nil
+	}}
+
+	// taskCtxProvider returns the ctx captured at the top of HandleMessage so
+	// the step configurator can derive a step-local WithActiveSkills ctx.
+	taskCtxProvider := func() context.Context {
+		if ptr := o.currentRequestCtx.Load(); ptr != nil {
+			return *ptr
+		}
+		return context.Background()
+	}
+
 	// Build SDK orchestration config
 	sdkCfg := orchestration.Config{
-		Planner:       deps.Planner,
+		Planner:       plannerAdapter,
 		LLM:           deps.LLM,
 		Tools:         deps.ToolExec,
 		ToolRegistry:  deps.ToolRegistry,
@@ -170,7 +221,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		CircuitBreaker:            deps.CircuitBreaker,
 		ReasoningEffort:           cfg.ReasoningEffort,
 		RoleOverrides:             cfg.RoleOverrides,
-		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger),
+		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger, buildSystemPrompt, taskCtxProvider, deps.SkillManager),
 		StepLimitFunc:             cfg.StepLimitFunc,
 	}
 
@@ -193,25 +244,29 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		sdkCfg.Reflection = deps.Reflector
 	}
 
-	engine := orchestration.New(sdkCfg)
+	o.engine = orchestration.New(sdkCfg)
+	return o
+}
 
-	return &Orchestrator{
-		engine:           engine,
-		planner:          deps.Planner,
-		router:           deps.Router,
-		llm:              deps.LLM,
-		toolRegistry:     deps.ToolRegistry,
-		config:           cfg,
-		contextFactory:   deps.ContextFactory,
-		logger:           deps.Logger,
-		emitter:          emitter,
-		modelRegistry:    deps.ModelRegistry,
-		bbFactory:        deps.BBFactory,
-		trackingCaller:   deps.TrackingCaller,
-		vectorSearchFunc: deps.VectorSearchFunc,
-		skillManager:     deps.SkillManager,
-		coreToolRegistry: deps.CoreToolRegistry,
-	}
+// plannerSDKAdapter adapts the core *Planner (whose public methods now take
+// an additional availableSkills parameter) to the stable sdk/orchestration.Planner
+// interface. skillsFor returns the router-matched skill pool for the current
+// request (read from Orchestrator state captured in HandleMessage).
+type plannerSDKAdapter struct {
+	planner   *Planner
+	skillsFor func() []skills.SkillDescriptor
+}
+
+func (a *plannerSDKAdapter) Plan(ctx context.Context, task string, availableTools []sdktools.ToolDescriptor, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
+	return a.planner.Plan(ctx, task, availableTools, reflections, a.skillsFor())
+}
+
+func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan, completed []orchestration.CompletedStep, failedStep orchestration.CompletedStep, reflection *orchestration.Reflection, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
+	return a.planner.Replan(ctx, plan, completed, failedStep, reflection, reflections, a.skillsFor())
+}
+
+func (a *plannerSDKAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []sdktools.ToolDescriptor) (*orchestration.Plan, error) {
+	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, a.skillsFor())
 }
 
 // logInfo logs an INFO level message if logger is not nil.
@@ -502,6 +557,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
 
 	// 4b. Activate matched skills
+	var activeSkillDescriptors []skills.SkillDescriptor
 	if len(routing.MatchedSkills) > 0 && o.skillManager != nil {
 		var activeSkills []*skills.Skill
 		var activatedNames []string
@@ -509,6 +565,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 			if s, ok := o.skillManager.Get(name); ok {
 				activeSkills = append(activeSkills, s)
 				activatedNames = append(activatedNames, name)
+				activeSkillDescriptors = append(activeSkillDescriptors, s.Descriptor())
 			} else {
 				o.logDebug("orchestrator: matched skill not found", "name", name)
 			}
@@ -518,13 +575,28 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 			o.emitter.SkillsActivated(activatedNames)
 			o.logInfo("skills_activated", "skills", activatedNames)
 
-			// Apply skill-derived tool policy overrides
+			// Apply skill-derived tool policy overrides.
+			// NOTE: skill rendering narrows per step (see coreStepConfigurator),
+			// but skill *policy* stays task-wide here — the tool registry is
+			// shared across the task and tools are keyed by name, not by step,
+			// so per-step policy is not meaningful. Deliberate asymmetry.
 			skillOverrides := o.buildSkillPolicyOverrides(activeSkills)
 			if len(skillOverrides) > 0 && o.coreToolRegistry != nil {
 				o.coreToolRegistry.SetSkillPolicyOverrides(skillOverrides)
 			}
 		}
 	}
+
+	// Capture the ctx and the router-matched skill pool for the step configurator
+	// and the planner SDK adapter to read during this request. Cleared on return.
+	ctxCopy := ctx
+	o.currentRequestCtx.Store(&ctxCopy)
+	skillsCopy := activeSkillDescriptors
+	o.currentRequestSkills.Store(&skillsCopy)
+	defer func() {
+		o.currentRequestCtx.Store(nil)
+		o.currentRequestSkills.Store(nil)
+	}()
 
 	// 5. Handle clarification
 	if routing.NeedsClarification {
@@ -560,7 +632,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 			o.logDebug("orchestrator: generating full plan", "mode", opts.ExecutionMode)
 			o.emitter.ServiceWithMeta("Planning approach...", map[string]any{"phase": "orchestration"})
 			var planErr error
-			plan, planErr = o.planner.Plan(ctx, message, availableTools, nil)
+			plan, planErr = o.planner.Plan(ctx, message, availableTools, nil, activeSkillDescriptors)
 			if planErr != nil {
 				o.logDebug("orchestrator: planning failed", "error", planErr)
 				return nil, fmt.Errorf("planning failed: %w", planErr)
@@ -641,7 +713,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 			// Call planner's PlanContinuation for complex tasks
 			o.logDebug("orchestrator: calling PlanContinuation")
-			continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools)
+			continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkillDescriptors)
 			if planErr != nil {
 				o.logDebug("orchestrator: PlanContinuation failed", "error", planErr)
 				return nil, fmt.Errorf("continuation planning failed: %w", planErr)

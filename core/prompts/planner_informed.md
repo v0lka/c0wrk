@@ -34,6 +34,10 @@ MODE-EXTRA-SECTIONS
 The step executors will have access to these tools:
 AVAILABLE-TOOLS
 
+### Available Skills
+
+AVAILABLE-SKILLS
+
 WORKSPACE-PATH
 
 ## Plan Quality Rules

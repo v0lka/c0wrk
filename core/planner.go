@@ -9,10 +9,10 @@ import (
 	"strings"
 
 	"github.com/user/agent/core/prompts"
+	"github.com/user/agent/core/skills"
 	coretools "github.com/user/agent/core/tools"
 	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/orchestration"
 	"github.com/user/agent/sdk/prompt"
 	tools "github.com/user/agent/sdk/tools"
 )
@@ -77,7 +77,11 @@ Profiles:
 - "researcher": information gathering, analysis (primary: search_graph, trace_path, get_code_snippet, semantic_search; secondary: ripgrep, glob, read_file, list_directory; web: web_search, web_fetch)
 - "coder": implementation, file operations (primary: search_graph, semantic_search, read_file, write_file, edit_file; secondary: ripgrep, glob, list_directory; bash_exec for build/run/test)
 - "tester": test execution, verification (primary: bash_exec for test runs; discovery: search_graph, semantic_search, ripgrep, glob, read_file)
-- "executor": general purpose (default, all tools)`
+- "executor": general purpose (default, all tools)
+
+## Per-step skills (optional)
+
+The available skills for this turn are listed in the AVAILABLE-SKILLS section below. Each step's ` + "`profile.skills`" + ` may specify a subset of those skill names whose instructions apply to that step. Only include a skill when it is directly relevant — unrelated skills add noise. Omit ` + "`profile.skills`" + ` (or leave it empty) to reuse the full task-scope pool for that step. Never invent skills that are not listed under AVAILABLE-SKILLS; unknown names are dropped.`
 
 	planModeExtraSections = `
 ## Step Description Format
@@ -122,7 +126,7 @@ Step executors follow the tool priority order from the system prompt. When writi
 
 	planModeTail = "REFLECTIONS\n"
 
-	planModeJSONExample = `{"steps": [{"id": "step_1", "summary": "Implement auth middleware", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "domain": "code", "keep_last_n": 5, "protected_tools": ["store_fact", "search_facts"]}}]}`
+	planModeJSONExample = `{"steps": [{"id": "step_1", "summary": "Implement auth middleware", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "skills": ["go-testing"], "domain": "code", "keep_last_n": 5, "protected_tools": ["store_fact", "search_facts"]}}]}`
 )
 
 // Continuation mode template content.
@@ -156,11 +160,13 @@ TERMINAL-STEPS
 
 	continuationModeExtraSections = ""
 	continuationModeTail          = ""
-	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "domain": "code"}}]}`
+	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "skills": ["go-testing"], "domain": "code"}}]}`
 )
 
-// compile-time check: Planner implements orchestration.Planner.
-var _ orchestration.Planner = (*Planner)(nil)
+// compile-time check: Planner's public method surface is adapted to
+// orchestration.Planner by plannerSDKAdapter (see orchestrator.go). The core
+// planner's methods intentionally diverge from the SDK interface to thread
+// availableSkills alongside availableTools.
 
 // defaultMaxExploreSteps is the default step budget for the planner's exploration loop.
 const defaultMaxExploreSteps = 7
@@ -273,11 +279,14 @@ func (p *Planner) getFamily(ctx context.Context) string {
 // Plan generates a DAG execution plan for the given task.
 // If domain is "general" or no planner tools are available, uses a direct one-shot LLM call.
 // Otherwise, runs a bounded ReAct exploration loop before producing the plan.
+// availableSkills is the router-matched skill pool for this turn; the planner may assign
+// a subset per step via profile.skills. Empty = full pool reused at executor time.
 func (p *Planner) Plan(
 	ctx context.Context,
 	task string,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
+	availableSkills []skills.SkillDescriptor,
 ) (*Plan, error) {
 	domain := DomainFromContext(ctx)
 	plannerTools := p.getPlannerTools()
@@ -285,11 +294,11 @@ func (p *Planner) Plan(
 	complexity := ComplexityFromContext(ctx)
 	if (domain == "general" && complexity < 4) || len(plannerTools) == 0 {
 		p.log().Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools))
-		return p.planDirect(ctx, task, availableTools, reflections)
+		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
 	}
 
 	p.log().Debug("planner: using informed exploration planning", "domain", domain, "planner_tools", len(plannerTools))
-	return p.planWithExploration(ctx, task, availableTools, reflections, plannerTools)
+	return p.planWithExploration(ctx, task, availableTools, reflections, plannerTools, availableSkills)
 }
 
 // planDirect performs a one-shot LLM plan generation (original behavior).
@@ -299,8 +308,9 @@ func (p *Planner) planDirect(
 	task string,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
+	availableSkills []skills.SkillDescriptor,
 ) (*Plan, error) {
-	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, reflections)
+	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, reflections, availableSkills)
 
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
@@ -315,7 +325,7 @@ func (p *Planner) planDirect(
 		return nil, fmt.Errorf("planner LLM call failed: %w", err)
 	}
 
-	plan, err := p.parsePlanResponse(resp.Message.Content)
+	plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse plan response: %w", err)
 	}
@@ -338,9 +348,10 @@ func (p *Planner) planWithExploration(
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
 	plannerTools []tools.ToolDescriptor,
+	availableSkills []skills.SkillDescriptor,
 ) (*Plan, error) {
 	// Build the informed planner system prompt
-	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, availableTools, reflections)
+	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, availableTools, reflections, availableSkills)
 
 	// Resolve model metadata for context window management
 	var modelMeta llm.ModelMetadata
@@ -358,7 +369,7 @@ func (p *Planner) planWithExploration(
 	if p.contextFactory == nil {
 		// Fall back to direct planning if no context factory is available
 		p.log().Warn("planner: contextFactory is nil, falling back to direct planning")
-		return p.planDirect(ctx, task, availableTools, reflections)
+		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
 	}
 	cm := p.contextFactory(systemPrompt, modelMeta, "sliding")
 
@@ -416,7 +427,7 @@ func (p *Planner) planWithExploration(
 		}
 		// Degrade gracefully for other executor failures
 		p.log().Warn("planner: exploration executor failed, falling back to direct planning", "error", err)
-		return p.planDirect(ctx, task, availableTools, reflections)
+		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
 	}
 
 	// Parse the plan from the executor's output
@@ -424,14 +435,14 @@ func (p *Planner) planWithExploration(
 	if result.Output == "" {
 		// Exploration exhausted budget without producing a plan — fall back to direct
 		p.log().Warn("planner: exploration produced no output, falling back to direct planning")
-		return p.planDirect(ctx, task, availableTools, reflections)
+		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
 	}
 
-	plan, err := p.parsePlanResponse(result.Output)
+	plan, err := p.parsePlanResponse(result.Output, availableSkills)
 	if err != nil {
 		// If parsing fails, the LLM might have returned free text — fall back
 		p.log().Warn("planner: failed to parse exploration plan output, falling back to direct", "error", err)
-		return p.planDirect(ctx, task, availableTools, reflections)
+		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
 	}
 
 	plan.ExplorationContext = summarizeExplorationSteps(result.Steps)
@@ -483,6 +494,7 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 	ctx context.Context,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
+	availableSkills []skills.SkillDescriptor,
 ) string {
 	// Build available tools string (grouped by priority tier)
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
@@ -498,6 +510,7 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 		"MODE-TAIL":           resolvedTail,
 		"MODE-JSON-EXAMPLE":   planModeJSONExample,
 		"AVAILABLE-TOOLS":     availableToolsStr,
+		"AVAILABLE-SKILLS":    formatSkillList(availableSkills),
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
 		"MAX-STEPS":           "10",
 	}
@@ -519,6 +532,7 @@ func (p *Planner) Replan(
 	failedStep CompletedStep,
 	reflection *Reflection,
 	sessionReflections []Reflection,
+	availableSkills []skills.SkillDescriptor,
 ) (*Plan, error) {
 	p.emitService("Refining plan...", map[string]any{"phase": "planning"})
 	systemPrompt := p.buildReplanSystemPrompt(ctx, replanContext{
@@ -527,6 +541,7 @@ func (p *Planner) Replan(
 		failedStep:         failedStep,
 		reflection:         reflection,
 		sessionReflections: sessionReflections,
+		availableSkills:    availableSkills,
 	})
 
 	messages := systemMessagesFromPrompt(systemPrompt)
@@ -542,7 +557,7 @@ func (p *Planner) Replan(
 		return nil, fmt.Errorf("planner replan LLM call failed: %w", err)
 	}
 
-	plan, err := p.parsePlanResponse(resp.Message.Content)
+	plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse replan response: %w", err)
 	}
@@ -559,8 +574,9 @@ func (p *Planner) PlanContinuation(
 	completedSteps []CompletedStep,
 	newMessage string,
 	availableTools []tools.ToolDescriptor,
+	availableSkills []skills.SkillDescriptor,
 ) (*Plan, error) {
-	systemPrompt := p.buildContinuationSystemPrompt(ctx, originalRequest, existingPlan, completedSteps, availableTools)
+	systemPrompt := p.buildContinuationSystemPrompt(ctx, originalRequest, existingPlan, completedSteps, availableTools, availableSkills)
 
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: newMessage})
@@ -575,7 +591,7 @@ func (p *Planner) PlanContinuation(
 		return nil, fmt.Errorf("planner continuation LLM call failed: %w", err)
 	}
 
-	plan, err := p.parsePlanResponse(resp.Message.Content)
+	plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse continuation plan: %w", err)
 	}
@@ -588,6 +604,7 @@ func (p *Planner) buildPlanSystemPrompt(
 	ctx context.Context,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
+	availableSkills []skills.SkillDescriptor,
 ) string {
 	// Build available tools string (grouped by priority tier)
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
@@ -606,6 +623,7 @@ func (p *Planner) buildPlanSystemPrompt(
 		"MODE-TAIL":           resolvedTail,
 		"MODE-JSON-EXAMPLE":   planModeJSONExample,
 		"AVAILABLE-TOOLS":     availableToolsStr,
+		"AVAILABLE-SKILLS":    formatSkillList(availableSkills),
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
 		"MAX-STEPS":           "10",
 	}
@@ -629,6 +647,7 @@ type replanContext struct {
 	failedStep         CompletedStep
 	reflection         *Reflection
 	sessionReflections []Reflection
+	availableSkills    []skills.SkillDescriptor
 }
 
 // buildReplanSystemPrompt constructs the system prompt for replanning after failure.
@@ -682,6 +701,7 @@ func (p *Planner) buildReplanSystemPrompt(
 		"FAILED-STEP":                  failedStepStr,
 		"PREVIOUS-SESSION-REFLECTIONS": formatSessionReflections(rc.sessionReflections),
 		"CURRENT-REFLECTION":           reflectionStr,
+		"AVAILABLE-SKILLS":             formatSkillList(rc.availableSkills),
 		"WORKSPACE-PATH":               formatWorkspacePath(ctx),
 	}
 
@@ -704,6 +724,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 	existingPlan *Plan,
 	completedSteps []CompletedStep,
 	availableTools []tools.ToolDescriptor,
+	availableSkills []skills.SkillDescriptor,
 ) string {
 	// Build completed plan summary (step IDs + descriptions + summaries)
 	var planSummaryBuilder strings.Builder
@@ -745,6 +766,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 		"COMPLETED-PLAN-SUMMARY": completedPlanSummary,
 		"TERMINAL-STEPS":         terminalStepsStr,
 		"AVAILABLE-TOOLS":        availableToolsStr,
+		"AVAILABLE-SKILLS":       formatSkillList(availableSkills),
 		"WORKSPACE-PATH":         formatWorkspacePath(ctx),
 	}
 
@@ -822,7 +844,9 @@ func formatWorkspacePath(ctx context.Context) string {
 }
 
 // parsePlanResponse extracts a Plan from the LLM response content.
-func (p *Planner) parsePlanResponse(content string) (*Plan, error) {
+// availableSkills is the router-matched pool used to validate per-step profile.skills;
+// unknown skill names are dropped (with a debug log). Pass nil to skip validation.
+func (p *Planner) parsePlanResponse(content string, availableSkills []skills.SkillDescriptor) (*Plan, error) {
 	// Try to find JSON in the response
 	content = strings.TrimSpace(content)
 
@@ -854,6 +878,53 @@ func (p *Planner) parsePlanResponse(content string) (*Plan, error) {
 	var plan Plan
 	if err := json.Unmarshal([]byte(jsonContent), &plan); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal plan JSON: %w", err)
+	}
+
+	// Normalize per-step Profile: after json.Unmarshal, `Profile any` becomes
+	// a map[string]any. Re-marshal into *AgentProfile so coreStepConfigurator's
+	// type-assert at resolveAgentProfile succeeds. Validate profile.Skills against
+	// the router-matched pool and drop any name the router did not surface.
+	var skillAllowed map[string]bool
+	if len(availableSkills) > 0 {
+		skillAllowed = make(map[string]bool, len(availableSkills))
+		for _, s := range availableSkills {
+			skillAllowed[s.Name] = true
+		}
+	}
+	for i := range plan.Steps {
+		step := &plan.Steps[i]
+		if step.Profile == nil {
+			continue
+		}
+		profileMap, isMap := step.Profile.(map[string]any)
+		if !isMap {
+			// Already a concrete type (e.g. set by CreateSyntheticPlan)
+			continue
+		}
+		raw, err := json.Marshal(profileMap)
+		if err != nil {
+			p.log().Debug("planner: re-marshal profile failed", "step", step.ID, "error", err)
+			step.Profile = nil
+			continue
+		}
+		var profile AgentProfile
+		if err := json.Unmarshal(raw, &profile); err != nil {
+			p.log().Debug("planner: decode profile failed", "step", step.ID, "error", err)
+			step.Profile = nil
+			continue
+		}
+		if len(profile.Skills) > 0 && skillAllowed != nil {
+			kept := profile.Skills[:0]
+			for _, name := range profile.Skills {
+				if skillAllowed[name] {
+					kept = append(kept, name)
+				} else {
+					p.log().Debug("planner: dropping unknown skill from step profile", "step", step.ID, "skill", name)
+				}
+			}
+			profile.Skills = kept
+		}
+		step.Profile = &profile
 	}
 	p.log().Debug("planner: parsePlanResponse parsed", "steps", len(plan.Steps), "firstStepSummary", func() string {
 		if len(plan.Steps) > 0 {

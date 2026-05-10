@@ -110,9 +110,11 @@ mcp:
 # Paths may be absolute or relative to the agent directory (~/.c0wrk).
 # Directories are scanned in priority order (highest first).
 skills:
-  dirs: []
-  #   - "skills"                    # relative to ~/.c0wrk
-  #   - "/absolute/path/to/skills"  # absolute paths also supported
+  dirs:
+    - "~/.agents/skills" # user-wide skills directory
+    - "~/.c0wrk/.agents/skills" # c0wrk-specific skills directory
+  # Note: in addition to the directories above, the current project's
+  # `.agents/skills` directory is always scanned automatically (highest priority).
 
 # ---------------------------------------------------------------------------
 # Memory / Persistence

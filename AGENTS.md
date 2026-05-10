@@ -1,6 +1,16 @@
 # AGENTS.md
 
-Guidance for coding agents working on **c0wrk** — a desktop AI coding-agent built with Wails v2 (Go backend + React 19 / Vite 6 / TS frontend). Full specifications are available in `.qoder/specs`
+Guidance for coding agents working on **c0wrk** — a desktop AI coding-agent built with Wails v2 (Go backend + React 19 / Vite 6 / TS frontend).
+
+## Specifications
+
+Detailed system specs live in `specs/`. Before making structural changes, read the relevant spec:
+
+- Start with `specs/INDEX.md` to find the right document for your task.
+- `specs/META.md` defines spec formats and update rules — read before creating/updating specs.
+- `specs/contracts/` define cross-boundary interface rules.
+- `specs/domains/` explain subsystem behavior and invariants.
+- `specs/decisions/` explain why things are designed the way they are.
 
 ## Project shape
 

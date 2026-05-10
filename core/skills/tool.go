@@ -15,7 +15,8 @@ const toolReadSkillResourceDesc = `Reads a resource file from an activated skill
 
 // SkillPathResolver resolves a skill name to its directory path.
 // Returns ("", false) if the skill is not found or not active.
-type SkillPathResolver func(skillName string) (dirPath string, ok bool)
+// The context carries the per-session activation state (see ActiveSkills in core).
+type SkillPathResolver func(ctx context.Context, skillName string) (dirPath string, ok bool)
 
 // ReadSkillResourceTool reads files from activated skill directories.
 type ReadSkillResourceTool struct {
@@ -70,7 +71,7 @@ func (t *ReadSkillResourceTool) Execute(ctx context.Context, input json.RawMessa
 	}
 
 	// Resolve the skill's directory path via the manager
-	skillDir, ok := t.resolvePath(parsed.Skill)
+	skillDir, ok := t.resolvePath(ctx, parsed.Skill)
 	if !ok {
 		return sdktools.ErrorResult("skill %q not found or not active", parsed.Skill), nil
 	}

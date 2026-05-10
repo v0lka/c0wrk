@@ -306,6 +306,7 @@ type AgentProfile struct {
 	Role           string   `json:"role"`                      // "researcher", "coder", "tester", "executor" (default)
 	SystemPrompt   string   `json:"system_prompt,omitempty"`   // role-specific prompt override (optional)
 	AllowedTools   []string `json:"allowed_tools,omitempty"`   // subset of available tools (empty = all)
+	Skills         []string `json:"skills,omitempty"`          // subset of router-matched skills (empty = use full task-scope pool)
 	MaxSteps       int      `json:"max_steps,omitempty"`       // budget per agent (0 = use default)
 	Domain         string   `json:"domain,omitempty"`          // "code" | "research" | "general" - affects compaction strategy
 	KeepLastN      int      `json:"keep_last_n,omitempty"`     // per-step KeepLastN override (0 = use role default)

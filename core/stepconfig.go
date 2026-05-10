@@ -1,8 +1,10 @@
 package core
 
 import (
+	"context"
 	"log/slog"
 
+	"github.com/user/agent/core/skills"
 	"github.com/user/agent/sdk/llm"
 	"github.com/user/agent/sdk/orchestration"
 	tools "github.com/user/agent/sdk/tools"
@@ -40,17 +42,45 @@ var rolePruningDefaults = map[string]struct {
 	},
 }
 
+// criticalAlwaysAllowedTools are tools that MUST be present whenever AllowedTools
+// is non-empty. Without `finish` the executor cannot terminate; store_fact /
+// search_facts are required for long-horizon tasks to persist findings across
+// step boundaries. The set is unioned into the filtered list regardless of
+// what the planner emitted.
+var criticalAlwaysAllowedTools = []string{"finish", "store_fact", "search_facts"}
+
+// SystemPromptBuilder is the callback signature shared between the SDK (for
+// default per-step prompts) and coreStepConfigurator (to synthesize a
+// step-local prompt when profile.Skills narrows the active skill pool).
+type SystemPromptBuilder func(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string
+
 // coreStepConfigurator resolves AgentProfile from PlanStep.Profile.
 // Applies tool filtering based on AgentProfile.AllowedTools or role-based ToolProfiles.
-func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegistry, logger *slog.Logger) orchestration.StepConfigurator {
+//
+// When profile.Skills is non-empty and the router-matched pool in taskCtxProvider()
+// exposes matching skills, the configurator synthesizes a step-local system prompt
+// by narrowing the active skills in ctx before calling sysPromptBuilder. Empty
+// profile.Skills leaves StepConfig.SystemPrompt untouched, so the SDK falls back
+// to its own cfg.SystemPrompt(ctx, ...) — preserving Normal-mode semantics where
+// the full router-matched pool is rendered.
+func coreStepConfigurator(
+	cfg OrchestratorConfig,
+	modelRegistry *llm.ModelRegistry,
+	logger *slog.Logger,
+	sysPromptBuilder SystemPromptBuilder,
+	taskCtxProvider func() context.Context,
+	skillMgr *skills.SkillManager,
+) orchestration.StepConfigurator {
 	return func(step orchestration.PlanStep, defaults orchestration.StepDefaults) orchestration.StepConfig {
 		profile := resolveAgentProfile(step, cfg.MaxSteps)
 
 		// Determine allowed tools: explicit profile setting > role-based profile > all tools
 		var allowed []tools.ToolDescriptor
 		if len(profile.AllowedTools) > 0 {
-			// Profile has explicit AllowedTools - use them
-			allowed = tools.FilterToolsByProfile(defaults.AllTools, profile.AllowedTools)
+			// Profile has explicit AllowedTools — use them, unioned with critical
+			// tools so the executor can always terminate (finish) and manage facts.
+			unioned := unionToolNames(profile.AllowedTools, criticalAlwaysAllowedTools)
+			allowed = tools.FilterToolsByProfile(defaults.AllTools, unioned)
 		} else if toolProfile, ok := ToolProfiles[profile.Role]; ok {
 			// Apply role-based tool profile (e.g., "router", "planner", "reflector")
 			allowed = tools.FilterToolsByProfile(defaults.AllTools, toolProfile)
@@ -107,10 +137,35 @@ func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegist
 			}
 		}
 
+		// Resolve the step-local system prompt.
+		//
+		// Priority:
+		//   1. profile.SystemPrompt (explicit override from planner/test)
+		//   2. Step-local narrowed skills (if profile.Skills is non-empty)
+		//   3. Leave empty → SDK falls back to cfg.SystemPrompt(ctx, ...),
+		//      which reads the full task-scope ActiveSkills from request ctx.
+		//
+		// Option 3b preserves the Normal-mode invariant: CreateSyntheticPlan emits
+		// AgentProfile{} (empty Skills) so this branch is a no-op and the full
+		// router-matched pool reaches the single synthetic step via fallback (2).
+		stepSystemPrompt := profile.SystemPrompt
+		if stepSystemPrompt == "" && len(profile.Skills) > 0 && sysPromptBuilder != nil && taskCtxProvider != nil && skillMgr != nil {
+			taskCtx := taskCtxProvider()
+			narrowed := narrowActiveSkills(taskCtx, profile.Skills, skillMgr, logger, step.ID)
+			if narrowed != nil && len(narrowed.Skills) > 0 {
+				stepCtx := WithActiveSkills(taskCtx, narrowed)
+				var modelMeta llm.ModelMetadata
+				if modelRegistry != nil {
+					modelMeta, _ = modelRegistry.Resolve(stepCtx, cfg.Model)
+				}
+				stepSystemPrompt = sysPromptBuilder(stepCtx, step.Description, modelMeta)
+			}
+		}
+
 		return orchestration.StepConfig{
 			MaxSteps:           profile.MaxSteps,
 			AllowedTools:       allowed,
-			SystemPrompt:       profile.SystemPrompt,
+			SystemPrompt:       stepSystemPrompt,
 			SystemPromptSuffix: suffix,
 			CompactionStrategy: applyCompactionStrategy(profile.Domain, 3),
 			KeepLastN:          keepLastN,
@@ -118,6 +173,67 @@ func coreStepConfigurator(cfg OrchestratorConfig, modelRegistry *llm.ModelRegist
 			AgentRole:          profile.Role,
 		}
 	}
+}
+
+// narrowActiveSkills returns an *ActiveSkills containing only the skills listed
+// in allowedNames, preserving order. Unknown names are logged at debug level and
+// dropped. Skills are resolved first from the task-scope ActiveSkills in taskCtx
+// (so a router-matched *Skill is reused) and fall back to the SkillManager by
+// name when not present in ctx. Returns nil if the intersection is empty so the
+// caller can fall through to the task-scope pool.
+func narrowActiveSkills(taskCtx context.Context, allowedNames []string, skillMgr *skills.SkillManager, logger *slog.Logger, stepID string) *ActiveSkills {
+	if len(allowedNames) == 0 {
+		return nil
+	}
+	taskPool := ActiveSkillsFromContext(taskCtx)
+	byName := map[string]*skills.Skill{}
+	if taskPool != nil {
+		for _, s := range taskPool.Skills {
+			byName[s.Metadata.Name] = s
+		}
+	}
+
+	kept := make([]*skills.Skill, 0, len(allowedNames))
+	for _, name := range allowedNames {
+		if s, ok := byName[name]; ok {
+			kept = append(kept, s)
+			continue
+		}
+		if skillMgr != nil {
+			if s, ok := skillMgr.Get(name); ok {
+				kept = append(kept, s)
+				continue
+			}
+		}
+		if logger != nil {
+			logger.Debug("orchestrator: step profile references unknown skill", "step", stepID, "skill", name)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return &ActiveSkills{Skills: kept}
+}
+
+// unionToolNames returns the union of two name slices, preserving the order of
+// the primary slice and appending any additional names from extra that are not
+// already present. Used by Task 3 (always-include critical tools).
+func unionToolNames(primary, extra []string) []string {
+	seen := make(map[string]bool, len(primary)+len(extra))
+	out := make([]string, 0, len(primary)+len(extra))
+	for _, n := range primary {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	for _, n := range extra {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // resolveAgentProfile returns the effective AgentProfile for a plan step.

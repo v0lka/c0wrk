@@ -36,6 +36,9 @@ MODE-EXTRA-SECTIONS
 Available tools:
 AVAILABLE-TOOLS
 
+Available skills:
+AVAILABLE-SKILLS
+
 WORKSPACE-PATH
 MODE-TAIL
 Respond ONLY with a JSON object:

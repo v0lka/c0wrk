@@ -668,7 +668,7 @@ func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := OrchestratorConfig{MaxSteps: 30}
-			configurator := coreStepConfigurator(cfg, nil, nil) // nil modelRegistry and logger defaults to the default family
+			configurator := coreStepConfigurator(cfg, nil, nil, nil, nil, nil) // nil deps: default family; no per-step skill/tool narrowing
 
 			step := orchestration.PlanStep{
 				ID:          "test_step",
@@ -743,7 +743,7 @@ func TestCoreStepConfigurator_RoleSuffixes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := OrchestratorConfig{MaxSteps: 30}
-			configurator := coreStepConfigurator(cfg, tt.registry, nil)
+			configurator := coreStepConfigurator(cfg, tt.registry, nil, nil, nil, nil)
 
 			profile := AgentProfile{Role: tt.role}
 			step := orchestration.PlanStep{
@@ -1913,4 +1913,239 @@ func TestOrchestrator_AgentsMD_NilVectorSearchFunc(t *testing.T) {
 	if len(hints.Files) != 1 || hints.Files[0].FilePath != "AGENTS.md" {
 		t.Errorf("expected single AGENTS.md hint, got %v", hints.Files)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-step skills & tools — Normal-mode invariant and narrowing tests (Task 6)
+// ---------------------------------------------------------------------------
+
+// newSkillFixture builds an in-memory *skills.Skill for tests. The skill is not
+// loaded from disk; we only need Metadata.Name and Body to be non-empty so that
+// formatActiveSkills renders it into the system prompt.
+func newSkillFixture(name, body string) *skills.Skill {
+	return &skills.Skill{
+		Metadata: skills.SkillMetadata{Name: name, Description: name + " description"},
+		Body:     body,
+	}
+}
+
+// mockAllTools returns a stable tool descriptor set that covers the critical
+// tools plus a few workload-specific ones, used to exercise the Option 3a
+// always-include-critical-tools behavior.
+func mockAllTools() []tools.ToolDescriptor {
+	return []tools.ToolDescriptor{
+		{Name: "finish"},
+		{Name: "store_fact"},
+		{Name: "search_facts"},
+		{Name: "read_file"},
+		{Name: "write_file"},
+		{Name: "bash_exec"},
+		{Name: "ripgrep"},
+	}
+}
+
+// TestCoreStepConfigurator_NormalMode_KeepsFullToolPool verifies the hard
+// invariant: when resolveAgentProfile returns the default executor profile
+// (empty AllowedTools) — as it does for CreateSyntheticPlan — StepConfig leaves
+// AllowedTools nil so the SDK falls through to defaults.AllTools (= full pool).
+func TestCoreStepConfigurator_NormalMode_KeepsFullToolPool(t *testing.T) {
+	cfg := OrchestratorConfig{MaxSteps: 10}
+	configurator := coreStepConfigurator(cfg, nil, nil, nil, nil, nil)
+
+	// Simulate CreateSyntheticPlan: AgentProfile emitted as value type, so the
+	// *AgentProfile type assertion in resolveAgentProfile fails and the default
+	// executor profile (empty AllowedTools, empty Skills) is used.
+	syntheticPlan := (&Planner{}).CreateSyntheticPlan("run task", "general")
+	step := orchestration.PlanStep{
+		ID:          syntheticPlan.Steps[0].ID,
+		Description: syntheticPlan.Steps[0].Description,
+		Profile:     syntheticPlan.Steps[0].Profile,
+	}
+
+	defaults := orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()}
+	stepCfg := configurator(step, defaults)
+
+	if stepCfg.AllowedTools != nil {
+		t.Fatalf("normal mode must not filter tools (SDK fall-through expected), got AllowedTools=%v", stepCfg.AllowedTools)
+	}
+}
+
+// TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills verifies that
+// normal-mode synthetic plans emit no step-local SystemPrompt so the SDK falls
+// back to cfg.SystemPrompt(ctx, ...) which renders the full task-scope
+// ActiveSkills pool.
+func TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills(t *testing.T) {
+	cfg := OrchestratorConfig{MaxSteps: 10}
+
+	// Wire a task context with two router-matched skills. These are task-wide.
+	taskPool := &ActiveSkills{Skills: []*skills.Skill{
+		newSkillFixture("alpha", "alpha body"),
+		newSkillFixture("beta", "beta body"),
+	}}
+	taskCtx := WithActiveSkills(context.Background(), taskPool)
+	taskCtxProvider := func() context.Context { return taskCtx }
+
+	builder := func(ctx context.Context, userMessage string, _ llm.ModelMetadata) string {
+		return formatActiveSkills(ctx, "preamble", 0)
+	}
+
+	configurator := coreStepConfigurator(cfg, nil, nil, builder, taskCtxProvider, nil)
+
+	syntheticPlan := (&Planner{}).CreateSyntheticPlan("run task", "general")
+	step := orchestration.PlanStep{
+		ID:          syntheticPlan.Steps[0].ID,
+		Description: syntheticPlan.Steps[0].Description,
+		Profile:     syntheticPlan.Steps[0].Profile,
+	}
+
+	stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
+
+	// Empty profile.Skills must not trigger step-local prompt synthesis; the
+	// SDK will then call cfg.SystemPrompt(taskCtx, ...) itself at run time.
+	if stepCfg.SystemPrompt != "" {
+		t.Fatalf("expected empty StepConfig.SystemPrompt for normal-mode step (SDK fall-through), got %q", stepCfg.SystemPrompt)
+	}
+}
+
+// TestCoreStepConfigurator_StepSkillNarrowing verifies Task 4 behavior: when
+// profile.Skills is non-empty, the configurator synthesizes a step-local
+// SystemPrompt that contains only the named skills.
+func TestCoreStepConfigurator_StepSkillNarrowing(t *testing.T) {
+	cfg := OrchestratorConfig{MaxSteps: 10}
+
+	taskPool := &ActiveSkills{Skills: []*skills.Skill{
+		newSkillFixture("alpha", "alpha body"),
+		newSkillFixture("beta", "beta body"),
+		newSkillFixture("gamma", "gamma body"),
+	}}
+	taskCtx := WithActiveSkills(context.Background(), taskPool)
+
+	builder := func(ctx context.Context, _ string, _ llm.ModelMetadata) string {
+		return formatActiveSkills(ctx, "preamble", 0)
+	}
+
+	configurator := coreStepConfigurator(
+		cfg,
+		nil,
+		nil,
+		builder,
+		func() context.Context { return taskCtx },
+		nil,
+	)
+
+	step := orchestration.PlanStep{
+		ID:          "step_1",
+		Description: "narrow to alpha only",
+		Profile:     &AgentProfile{Role: "executor", Skills: []string{"alpha"}},
+	}
+
+	stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
+
+	if stepCfg.SystemPrompt == "" {
+		t.Fatal("expected non-empty step-local SystemPrompt when profile.Skills is set")
+	}
+	if !strings.Contains(stepCfg.SystemPrompt, "Skill: alpha") {
+		t.Errorf("expected prompt to include Skill: alpha, got %q", stepCfg.SystemPrompt)
+	}
+	if strings.Contains(stepCfg.SystemPrompt, "Skill: beta") {
+		t.Errorf("expected prompt NOT to include Skill: beta (narrowed out), got %q", stepCfg.SystemPrompt)
+	}
+	if strings.Contains(stepCfg.SystemPrompt, "Skill: gamma") {
+		t.Errorf("expected prompt NOT to include Skill: gamma (narrowed out), got %q", stepCfg.SystemPrompt)
+	}
+}
+
+// TestCoreStepConfigurator_StepToolNarrowing_UnionsCriticalTools verifies Task 3:
+// when AllowedTools is non-empty, the configurator unions it with
+// criticalAlwaysAllowedTools so the executor can always finish and persist facts.
+func TestCoreStepConfigurator_StepToolNarrowing_UnionsCriticalTools(t *testing.T) {
+	cfg := OrchestratorConfig{MaxSteps: 10}
+	configurator := coreStepConfigurator(cfg, nil, nil, nil, nil, nil)
+
+	// Planner emits a narrowed AllowedTools without the critical tools.
+	step := orchestration.PlanStep{
+		ID:          "step_1",
+		Description: "narrow tools to read_file only",
+		Profile:     &AgentProfile{Role: "researcher", AllowedTools: []string{"read_file"}},
+	}
+
+	stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
+
+	got := map[string]bool{}
+	for _, td := range stepCfg.AllowedTools {
+		got[td.Name] = true
+	}
+
+	for _, name := range []string{"read_file", "finish", "store_fact", "search_facts"} {
+		if !got[name] {
+			t.Errorf("expected tool %q in AllowedTools, got %v", name, got)
+		}
+	}
+	if got["write_file"] || got["bash_exec"] {
+		t.Errorf("expected write_file/bash_exec NOT to be in AllowedTools, got %v", got)
+	}
+}
+
+// TestCoreStepConfigurator_UnknownSkillDropped verifies that narrowActiveSkills
+// drops skill names that are not present in either the task-scope pool or the
+// SkillManager, and returns no prompt when the intersection is empty.
+func TestCoreStepConfigurator_UnknownSkillDropped(t *testing.T) {
+	cfg := OrchestratorConfig{MaxSteps: 10}
+
+	taskPool := &ActiveSkills{Skills: []*skills.Skill{
+		newSkillFixture("alpha", "alpha body"),
+	}}
+	taskCtx := WithActiveSkills(context.Background(), taskPool)
+
+	builderCalls := 0
+	builder := func(ctx context.Context, _ string, _ llm.ModelMetadata) string {
+		builderCalls++
+		return formatActiveSkills(ctx, "preamble", 0)
+	}
+
+	configurator := coreStepConfigurator(
+		cfg,
+		nil,
+		nil,
+		builder,
+		func() context.Context { return taskCtx },
+		nil, // no SkillManager, so unknown names cannot be resolved
+	)
+
+	t.Run("partial_intersection_renders_kept_only", func(t *testing.T) {
+		builderCalls = 0
+		step := orchestration.PlanStep{
+			ID:          "step_1",
+			Description: "alpha plus unknown",
+			Profile:     &AgentProfile{Role: "executor", Skills: []string{"alpha", "does_not_exist"}},
+		}
+		stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
+
+		if builderCalls != 1 {
+			t.Fatalf("expected sysPromptBuilder to be called exactly once, got %d", builderCalls)
+		}
+		if !strings.Contains(stepCfg.SystemPrompt, "Skill: alpha") {
+			t.Errorf("expected Skill: alpha in prompt, got %q", stepCfg.SystemPrompt)
+		}
+		if strings.Contains(stepCfg.SystemPrompt, "does_not_exist") {
+			t.Errorf("unknown skill leaked into prompt: %q", stepCfg.SystemPrompt)
+		}
+	})
+
+	t.Run("empty_intersection_falls_through", func(t *testing.T) {
+		builderCalls = 0
+		step := orchestration.PlanStep{
+			ID:          "step_2",
+			Description: "all unknown",
+			Profile:     &AgentProfile{Role: "executor", Skills: []string{"does_not_exist"}},
+		}
+		stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
+
+		if builderCalls != 0 {
+			t.Errorf("expected sysPromptBuilder NOT to be called when intersection is empty, got %d calls", builderCalls)
+		}
+		if stepCfg.SystemPrompt != "" {
+			t.Errorf("expected empty SystemPrompt when intersection is empty (SDK fall-through), got %q", stepCfg.SystemPrompt)
+		}
+	})
 }

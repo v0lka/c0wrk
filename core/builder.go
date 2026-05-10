@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -41,7 +42,7 @@ type OrchestratorBuilder struct {
 	modelRegistry    *llm.ModelRegistry
 	logger           *slog.Logger
 	vectorSearchFunc tools.VectorSearchFunc
-	skillManager     *skills.SkillManager
+	baseSkillDirs    []string // resolved skill directories shared across sessions (highest priority first)
 
 	// Cached reasoning config from config; updated by runAsyncInit/RebuildRouter.
 	baseReasoningEffort llm.ReasoningEffort
@@ -83,6 +84,13 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 	if err := tools.RegisterBuiltinTools(b.registry, toolsCfg); err != nil {
 		return nil, fmt.Errorf("registering built-in tools: %w", err)
 	}
+
+	// 1a. read_skill_resource tool is registered once with a context-aware
+	// resolver that looks up skills activated on the current request (see
+	// ActiveSkills in systemprompt.go). Per-session SkillManager instances are
+	// created lazily in Build so each session can include its project-local
+	// `.agents/skills` directory without racing with other sessions.
+	b.registry.Register(skills.NewReadSkillResourceTool(activeSkillPathResolver))
 
 	// 2. Security policies (fast — synchronous)
 	b.applySecurityPolicies(cfg)
@@ -184,10 +192,15 @@ func (b *OrchestratorBuilder) MCPGatewayError() string {
 // Build creates a new per-session Orchestrator from the current config.
 // Each session gets a fresh LLM router, core agents, and context factory.
 // The shared tool registry and MCP gateway are reused across sessions.
+//
+// workspacePath, when non-empty, prepends `<workspacePath>/.agents/skills` to
+// the skill discovery dirs for this session (highest priority) so that
+// project-local skills override user-wide ones.
 func (b *OrchestratorBuilder) Build(
 	cfg *BuilderConfig,
 	emitter Emitter,
 	logger *slog.Logger,
+	workspacePath string,
 	bbFactory BlackboardFactory,
 	stepLimitFunc StepLimitFunc,
 	dumpWriter io.Writer,
@@ -274,6 +287,11 @@ func (b *OrchestratorBuilder) Build(
 	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.ActiveProvider, logger)
 	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter, logger)
 
+	// Per-session SkillManager: project-local `.agents/skills` is always prepended
+	// (highest priority) to the shared base dirs. This must be built per-session
+	// because the workspace path differs between concurrent sessions.
+	sessionSkillMgr := b.buildSessionSkillManager(workspacePath, logger)
+
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:           coreRouter,
 		Planner:          planner,
@@ -291,7 +309,7 @@ func (b *OrchestratorBuilder) Build(
 		BBFactory:        bbFactory,
 		TrackingCaller:   trackingCaller,
 		VectorSearchFunc: b.vectorSearchFunc,
-		SkillManager:     b.skillManager,
+		SkillManager:     sessionSkillMgr,
 		CoreToolRegistry: b.registry, // for skill policy overrides
 	}), nil
 }
@@ -480,25 +498,63 @@ func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
 	}
 }
 
-// SetSkillManager sets the skill manager for skill discovery and activation.
-// This must be called before Build() to enable skill routing.
-// It also registers the read_skill_resource tool in the shared tool registry.
-func (b *OrchestratorBuilder) SetSkillManager(sm *skills.SkillManager) {
-	b.skillManager = sm
-
-	// Register the read_skill_resource tool with a resolver backed by the skill manager
-	if sm != nil && b.registry != nil {
-		resolver := func(skillName string) (string, bool) {
-			return sm.SkillPath(skillName)
-		}
-		b.registry.Register(skills.NewReadSkillResourceTool(resolver))
-		b.log().Info("registered read_skill_resource tool")
-	}
+// SetSkillDirs sets the base (shared) skill discovery directories, applied to
+// every session. Paths must already be absolute and expanded; the backend
+// layer owns path resolution (home/~, env vars, relative-to-agent-dir).
+//
+// The project-local `<workspacePath>/.agents/skills` directory is always
+// prepended automatically in Build() — do NOT include it here.
+func (b *OrchestratorBuilder) SetSkillDirs(dirs []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.baseSkillDirs = append([]string(nil), dirs...)
 }
 
-// SkillManager returns the current skill manager, or nil if not set.
-func (b *OrchestratorBuilder) SkillManager() *skills.SkillManager {
-	return b.skillManager
+// buildSessionSkillManager constructs a per-session SkillManager that always
+// scans the current project's `.agents/skills` (when workspacePath is set) in
+// addition to the shared base dirs. Scan errors are logged and do not abort
+// session start-up.
+func (b *OrchestratorBuilder) buildSessionSkillManager(workspacePath string, logger *slog.Logger) *skills.SkillManager {
+	b.mu.RLock()
+	baseDirs := append([]string(nil), b.baseSkillDirs...)
+	b.mu.RUnlock()
+
+	dirs := make([]string, 0, len(baseDirs)+1)
+	if workspacePath != "" {
+		dirs = append(dirs, filepath.Join(workspacePath, ".agents", "skills"))
+	}
+	dirs = append(dirs, baseDirs...)
+
+	if len(dirs) == 0 {
+		return nil
+	}
+
+	sm := skills.NewSkillManager(dirs, logger)
+	if err := sm.Scan(); err != nil {
+		if logger != nil {
+			logger.Warn("session skill scan failed", "error", err, "dirs", dirs)
+		} else {
+			b.log().Warn("session skill scan failed", "error", err, "dirs", dirs)
+		}
+	}
+	return sm
+}
+
+// activeSkillPathResolver resolves a skill name to its directory by consulting
+// the ActiveSkills set in the request context. This is the resolver used by the
+// read_skill_resource tool: only skills that were activated by the router on
+// the current request are addressable, matching the tool's documented contract.
+func activeSkillPathResolver(ctx context.Context, skillName string) (string, bool) {
+	as := ActiveSkillsFromContext(ctx)
+	if as == nil {
+		return "", false
+	}
+	for _, s := range as.Skills {
+		if s != nil && s.Metadata.Name == skillName {
+			return s.DirPath, true
+		}
+	}
+	return "", false
 }
 
 // ---------------------------------------------------------------------------

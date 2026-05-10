@@ -1,0 +1,159 @@
+# Orchestration
+
+## Purpose
+
+The orchestration domain coordinates the full lifecycle of a user request: classifying it, generating an execution plan, running the plan's steps, and reflecting on failures to retry or replan. It is the central nervous system of c0wrk.
+
+## Key Files
+
+- `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume)
+- `core/router.go` — request classification (Route)
+- `core/planner.go` — DAG plan generation (Plan, Replan, PlanContinuation)
+- `core/reflector.go` — failure analysis (Reflect)
+- `core/stepconfig.go` — per-step configuration resolution
+- `core/systemprompt.go` — system prompt construction with skill context
+- `sdk/orchestration/orchestrator.go` — SDK Plan&Execute engine (Execute, Resume)
+- `sdk/orchestration/dag.go` — DAG data structure
+- `sdk/agent/executor.go` — ReAct loop (per-step execution)
+
+## Core Types
+
+```go
+// Top-level orchestrator (core layer)
+type Orchestrator struct {
+    engine           *orchestration.Orchestrator  // SDK P&E engine
+    planner          *Planner
+    router           *Router
+    llm              LLMCaller
+    config           OrchestratorConfig
+    contextFactory   ContextManagerFactory
+    emitter          Emitter
+    bbFactory        BlackboardFactory
+    skillManager     *skills.SkillManager
+}
+
+// Configuration
+type OrchestratorConfig struct {
+    MaxSteps                  int    // default: 30
+    KeepFirst                 int    // default: 3
+    KeepLast                  int    // default: 10
+    MaxRetries                int    // default: 2 (3 total attempts)
+    MaxHistoryMessages        int    // default: 20
+    MaxDependencyContextChars int    // default: 8000
+    Model                     string
+    ReasoningEffort           llm.ReasoningEffort
+    RoleOverrides             map[string]string
+    StepLimitFunc             agent.StepLimitFunc
+    SyntheticPlanThreshold    int    // default: 2
+}
+
+// Routing result
+type RoutingDecision struct {
+    Domain             string   // "code" | "research" | "general" | "mixed"
+    Complexity         int      // 1-5
+    NeedsClarification bool
+    MatchedSkills      []string
+}
+
+// Handle result
+type HandleResult struct {
+    Output          string
+    RoutingDecision *RoutingDecision
+    Plan            *Plan
+    Blackboard      Blackboard
+    AttemptCount    int
+    Reflections     []Reflection
+}
+```
+
+## Flow
+
+```
+HandleMessage(ctx, message, sessionID, opts)
+│
+├─ 0. Set PlanModeKey in context
+├─ 0a. Inject vector search hints (non-blocking, 2s timeout)
+├─ 0b. Emit initial context_fill (0%)
+│
+├─ 1. Blackboard lifecycle:
+│     ├─ opts.TaskID == "": create new BB via bbFactory
+│     └─ opts.TaskID != "": restore BB from persistence
+│
+├─ 2. Load available tools from registry
+│
+├─ 3. ROUTE: router.Route(ctx, message, tools, history, skills)
+│     → RoutingDecision
+│     → Emit Routing event
+│
+├─ 4. Activate matched skills:
+│     → Set ActiveSkills in context
+│     → Apply skill policy overrides to tool registry
+│     → Emit SkillsActivated event
+│
+├─ 5. NeedsClarification? → return early with clarification message
+│
+├─ 6. Branch:
+│     ├─ First message (TaskID == ""):
+│     │     ├─ Normal mode → synthetic single-step plan
+│     │     └─ Advanced mode → Planner.Plan() → full DAG
+│     │     → Set plan on BB → engine.Resume(ctx, bb)
+│     │
+│     └─ Continuation (TaskID != ""):
+│           ├─ Normal mode → synthetic continuation step
+│           └─ Advanced mode → Planner.PlanContinuation()
+│           → Merge into existing plan → engine.Resume(ctx, bb)
+│
+├─ 7. SDK engine executes (Plan&Execute loop with retry/replan)
+│
+├─ 8. Persist task completion on BB
+│
+└─ 9. Return HandleResult
+```
+
+## Execution Modes
+
+| Mode     | Condition                          | Behavior                                      |
+| -------- | ---------------------------------- | --------------------------------------------- |
+| Normal   | `opts.ExecutionMode == "normal"`   | Synthetic 1-step plan, no Planner LLM call    |
+| Advanced | `opts.ExecutionMode == "advanced"` | Full DAG plan via Planner, parallel execution |
+
+The mode is selected by the user in the frontend (execution mode toggle).
+
+## Invariants
+
+- Every user message passes through Route (even in normal mode)
+- Routing always produces a valid domain from {"code", "research", "general", "mixed"}
+- Complexity is always in range [1, 5]
+- MaxRetries bounds total attempts at MaxRetries + 1
+- Blackboard is created once per first message and restored for continuations
+- Vector search hints are non-blocking (2s timeout, failure is acceptable)
+- Skills are activated task-wide but rendered per-step by StepConfigurator
+- currentRequestCtx and currentRequestSkills are cleared at end of HandleMessage
+
+## Configuration
+
+From `config.yaml` (via BuilderConfig → OrchestratorConfig):
+
+| Parameter                               | Default | Description                       |
+| --------------------------------------- | ------- | --------------------------------- |
+| `executor.max_steps`                    | 30      | Max ReAct iterations per step     |
+| `executor.max_retries`                  | 2       | Max retry attempts (3 total)      |
+| `executor.max_history_messages`         | 20      | Conversation history window       |
+| `executor.max_dependency_context_chars` | 8000    | Max chars from dependency outputs |
+| `reasoning.effort`                      | (none)  | Base reasoning effort             |
+| `reasoning.role_overrides`              | {}      | Per-role effort overrides         |
+
+## Extension Points
+
+- Custom `ContextManagerFactory` for alternative memory strategies
+- Custom `BlackboardFactory` for alternative persistence
+- Custom `StepLimitFunc` for step limit handling
+- System prompt customization via `buildSystemPrompt` function
+
+## Related Specs
+
+- [router.md](router.md) — request classification
+- [planner.md](planner.md) — plan generation
+- [executor.md](executor.md) — step execution
+- [../memory/README.md](../memory/README.md) — context management
+- [../../contracts/core-sdk.md](../../contracts/core-sdk.md) — SDK interface wiring
