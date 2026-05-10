@@ -117,7 +117,6 @@ export namespace backend {
 	    reflections: BlackboardReflectionResponse[];
 	    facts: BlackboardFactResponse[];
 	    final_output?: string;
-	    file_changes: Record<string, number>;
 	
 	    static createFrom(source: any = {}) {
 	        return new BlackboardStateResponse(source);
@@ -134,7 +133,6 @@ export namespace backend {
 	        this.reflections = this.convertValues(source["reflections"], BlackboardReflectionResponse);
 	        this.facts = this.convertValues(source["facts"], BlackboardFactResponse);
 	        this.final_output = source["final_output"];
-	        this.file_changes = source["file_changes"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -22,7 +22,6 @@ require (
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
 	github.com/go-git/go-git/v6 v6.0.0-alpha.2
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/sergi/go-diff v1.4.0
 	github.com/sugarme/tokenizer v0.3.0
 	github.com/yalue/onnxruntime_go v1.27.0
 )
@@ -47,6 +46,7 @@ require (
 )
 
 require (
+	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

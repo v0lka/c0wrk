@@ -4,11 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 
-	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -79,19 +76,6 @@ func (t *DeleteDirectoryTool) Execute(ctx context.Context, input json.RawMessage
 	}
 	if !info.IsDir() {
 		return tools.ToolResult{Content: "path is not a directory", IsError: true}, nil
-	}
-
-	tracker := agent.FileTrackerFromContext(ctx)
-	if tracker != nil {
-		_ = filepath.WalkDir(params.Path, func(p string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil || d.IsDir() {
-				return walkErr
-			}
-			tracker.AcquireFileLock(p)
-			tracker.RecordDelete(ctx, p)
-			tracker.ReleaseFileLock(p)
-			return nil
-		})
 	}
 
 	if params.Recursive {

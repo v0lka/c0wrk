@@ -198,7 +198,6 @@ export interface BlackboardState {
   reflections: BlackboardReflection[]
   facts: BlackboardFact[]
   final_output?: string
-  file_changes: Record<string, number>
 }
 
 export interface BlackboardPlan {

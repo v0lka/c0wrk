@@ -35,12 +35,11 @@ type CompletedStep struct {
 
 // StepResult holds both a summary and the full output of a completed step.
 type StepResult struct {
-	StepID      string
-	Summary     string
-	FullOutput  string
-	Error       error
-	Steps       []agent.Step
-	FileChanges []FileChange // file changes made by this step
+	StepID     string
+	Summary    string
+	FullOutput string
+	Error      error
+	Steps      []agent.Step
 }
 
 // BlackboardEntry represents a search result from the blackboard.
@@ -86,6 +85,3 @@ type Fact struct {
 	Content  string   `json:"content"`  // the fact text
 	Author   string   `json:"author"`   // step ID that wrote it
 }
-
-// FileChange is an alias for the canonical type in the agent package.
-type FileChange = agent.FileChange

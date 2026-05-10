@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -72,13 +71,6 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (too
 
 	params.Path = resolvePath(ctx, params.Path)
 
-	tracker := agent.FileTrackerFromContext(ctx)
-	if tracker != nil {
-		tracker.AcquireFileLock(params.Path)
-		defer tracker.ReleaseFileLock(params.Path)
-		tracker.RecordBeforeWrite(ctx, params.Path)
-	}
-
 	dir := filepath.Dir(params.Path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to create directories: %v", err), IsError: true}, nil
@@ -86,10 +78,6 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (too
 
 	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
-	}
-
-	if tracker != nil {
-		tracker.RecordAfterWrite(ctx, params.Path)
 	}
 
 	return tools.ToolResult{Content: fmt.Sprintf("successfully wrote %d bytes to %s", len(params.Content), params.Path), IsError: false}, nil

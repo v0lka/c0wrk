@@ -1,7 +1,6 @@
 package orchestration
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,10 +20,9 @@ type MapBlackboard struct {
 	stepResults      map[string]StepResult
 	reflections      []Reflection
 	finalResult      string
-	maxSummaryTokens int                     // token-based limit for summaries (0 = use char-based default)
-	maxSummaryLen    int                     // char-based limit for summaries (0 = use default 500)
-	fileChanges      map[string][]FileChange // keyed by stepID
-	facts            []Fact                  // keyword-tagged facts for inter-step communication
+	maxSummaryTokens int  // token-based limit for summaries (0 = use char-based default)
+	maxSummaryLen    int  // char-based limit for summaries (0 = use default 500)
+	facts            []Fact // keyword-tagged facts for inter-step communication
 }
 
 // MapBlackboardOption configures a MapBlackboard.
@@ -51,7 +49,6 @@ func WithMaxSummaryLen(n int) MapBlackboardOption {
 func NewMapBlackboard(opts ...MapBlackboardOption) *MapBlackboard {
 	b := &MapBlackboard{
 		stepResults: make(map[string]StepResult),
-		fileChanges: make(map[string][]FileChange),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -230,109 +227,6 @@ func (b *MapBlackboard) MaxSummaryLen() int {
 	return b.maxSummaryLen
 }
 
-// ---------------------------------------------------------------------------
-// File change tracking
-// ---------------------------------------------------------------------------
-
-// SetStepFileChanges stores a defensive copy of file changes for a step.
-// If a StepResult already exists for the step, its FileChanges field is also updated.
-func (b *MapBlackboard) SetStepFileChanges(stepID string, changes []FileChange) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	c := make([]FileChange, len(changes))
-	copy(c, changes)
-	b.fileChanges[stepID] = c
-	// Also update the StepResult if it exists.
-	if sr, ok := b.stepResults[stepID]; ok {
-		sr.FileChanges = c
-		b.stepResults[stepID] = sr
-	}
-}
-
-// GetStepFileChanges returns a defensive copy of file changes for a step.
-func (b *MapBlackboard) GetStepFileChanges(stepID string) []FileChange {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	changes := b.fileChanges[stepID]
-	if changes == nil {
-		return nil
-	}
-	out := make([]FileChange, len(changes))
-	copy(out, changes)
-	return out
-}
-
-// GetAllFileChanges returns a defensive copy of all file changes keyed by step ID.
-func (b *MapBlackboard) GetAllFileChanges() map[string][]FileChange {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	result := make(map[string][]FileChange, len(b.fileChanges))
-	for stepID, changes := range b.fileChanges {
-		c := make([]FileChange, len(changes))
-		copy(c, changes)
-		result[stepID] = c
-	}
-	return result
-}
-
-// GetSessionFileChanges returns aggregated file changes across all steps.
-// For each unique path, it determines the final state by processing steps
-// in sorted order. If a file was created and then deleted, it is omitted.
-// The result is sorted by path for deterministic output.
-func (b *MapBlackboard) GetSessionFileChanges() []FileChange {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	type pathState struct {
-		firstOp  string
-		lastOp   string
-		lastDiff string
-		lastSize int64
-	}
-
-	paths := make(map[string]*pathState)
-
-	// Process steps in deterministic order.
-	stepIDs := make([]string, 0, len(b.fileChanges))
-	for id := range b.fileChanges {
-		stepIDs = append(stepIDs, id)
-	}
-	sort.Strings(stepIDs)
-
-	for _, stepID := range stepIDs {
-		for _, fc := range b.fileChanges[stepID] {
-			state, exists := paths[fc.Path]
-			if !exists {
-				state = &pathState{firstOp: fc.Operation}
-				paths[fc.Path] = state
-			}
-			state.lastOp = fc.Operation
-			state.lastDiff = fc.Diff
-			state.lastSize = fc.SizeBytes
-		}
-	}
-
-	var result []FileChange
-	for path, state := range paths {
-		// Created then deleted → net zero change, omit.
-		if state.firstOp == "CREATE" && state.lastOp == "DELETE" {
-			continue
-		}
-		result = append(result, FileChange{
-			Path:      path,
-			Operation: state.lastOp,
-			Diff:      state.lastDiff,
-			SizeBytes: state.lastSize,
-		})
-	}
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Path < result[j].Path
-	})
-
-	return result
-}
-
 // SetStepResultRaw stores a pre-built StepResult without regenerating the summary.
 // Used by persistence restoration to hydrate the blackboard with stored data.
 func (b *MapBlackboard) SetStepResultRaw(stepID string, sr StepResult) {
@@ -457,19 +351,6 @@ func (b *MapBlackboard) Search(query string) []BlackboardEntry {
 		}
 	}
 
-	// Search file changes
-	for stepID, changes := range b.fileChanges {
-		for _, fc := range changes {
-			if strings.Contains(strings.ToLower(fc.Path), q) {
-				entries = append(entries, BlackboardEntry{
-					Type:    "file_change",
-					Key:     stepID + "/" + fc.Path,
-					Summary: fmt.Sprintf("%s: %s", fc.Operation, fc.Path),
-				})
-			}
-		}
-	}
-
 	// Search reflections
 	for i, r := range b.reflections {
 		if strings.Contains(strings.ToLower(r.Summary), q) {
@@ -548,16 +429,12 @@ func copyPlan(p *Plan) *Plan {
 	return out
 }
 
-// copyStepResult returns a copy of a StepResult with copied Steps and FileChanges slices.
+// copyStepResult returns a copy of a StepResult with copied Steps slice.
 func copyStepResult(r StepResult) StepResult {
 	out := r
 	if r.Steps != nil {
 		out.Steps = make([]agent.Step, len(r.Steps))
 		copy(out.Steps, r.Steps)
-	}
-	if r.FileChanges != nil {
-		out.FileChanges = make([]FileChange, len(r.FileChanges))
-		copy(out.FileChanges, r.FileChanges)
 	}
 	return out
 }

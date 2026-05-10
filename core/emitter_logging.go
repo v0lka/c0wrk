@@ -179,11 +179,6 @@ func (l *loggingEmitter) ReplanFailed(err error) {
 	l.inner.ReplanFailed(err)
 }
 
-func (l *loggingEmitter) FileRollbackError(stepID string, err error) {
-	l.logger.Warn("file rollback error", "stepID", stepID, "error", err)
-	l.inner.FileRollbackError(stepID, err)
-}
-
 func (l *loggingEmitter) SkillsActivated(skillNames []string) {
 	l.logger.Info("skills activated", "skills", skillNames)
 	l.inner.SkillsActivated(skillNames)

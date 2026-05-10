@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -80,13 +79,6 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	params.Path = resolvePath(ctx, params.Path)
 
-	tracker := agent.FileTrackerFromContext(ctx)
-	if tracker != nil {
-		tracker.AcquireFileLock(params.Path)
-		defer tracker.ReleaseFileLock(params.Path)
-		tracker.RecordBeforeWrite(ctx, params.Path)
-	}
-
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil
@@ -107,10 +99,6 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	if err := os.WriteFile(params.Path, []byte(newContent), 0o644); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
-	}
-
-	if tracker != nil {
-		tracker.RecordAfterWrite(ctx, params.Path)
 	}
 
 	return tools.ToolResult{Content: "successfully edited file", IsError: false}, nil

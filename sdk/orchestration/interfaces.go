@@ -33,7 +33,6 @@ type Events interface {
 	OnService(content string)
 	OnServiceMeta(content string, meta map[string]any)
 	OnReplanFailed(err error)
-	OnFileRollbackError(stepID string, err error)
 	OnStepTodoUpdate(stepID string, items []agent.TodoItem)
 }
 
@@ -84,12 +83,6 @@ type Blackboard interface {
 	AddReflection(r Reflection)
 	SetFinalResult(result string)
 	Search(query string) []BlackboardEntry
-
-	// File change tracking
-	SetStepFileChanges(stepID string, changes []FileChange)
-	GetStepFileChanges(stepID string) []FileChange
-	GetAllFileChanges() map[string][]FileChange // stepID -> changes
-	GetSessionFileChanges() []FileChange        // aggregated: one entry per unique path
 
 	// Fact memory for inter-step communication
 	StoreFact(fact Fact)

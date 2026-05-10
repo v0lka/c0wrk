@@ -220,7 +220,6 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 		StepResults:     make(map[string]BlackboardStepResponse, len(state.StepResults)),
 		Reflections:     make([]BlackboardReflectionResponse, 0, len(state.Reflections)),
 		Facts:           make([]BlackboardFactResponse, 0, len(state.Facts)),
-		FileChanges:     make(map[string]int, len(state.FileChanges)),
 	}
 
 	// Plan
@@ -272,11 +271,6 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 			Content:  fact.Content,
 			Author:   fact.Author,
 		})
-	}
-
-	// File changes (count per step)
-	for stepID, changes := range state.FileChanges {
-		resp.FileChanges[stepID] = len(changes)
 	}
 
 	return resp

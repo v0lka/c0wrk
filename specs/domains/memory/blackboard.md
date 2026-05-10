@@ -2,7 +2,7 @@
 
 ## Role
 
-Provides shared state for the Plan&Execute loop: stores the plan, step results, reflections, facts, and file changes. Enables inter-step communication and task persistence.
+Provides shared state for the Plan&Execute loop: stores the plan, step results, reflections, and facts. Enables inter-step communication and task persistence.
 
 ## Key Files
 
@@ -35,12 +35,6 @@ type Blackboard interface {
     // Final Result
     GetFinalResult() string
     SetFinalResult(result string)
-
-    // File Changes
-    SetStepFileChanges(stepID string, changes []FileChange)
-    GetStepFileChanges(stepID string) []FileChange
-    GetAllFileChanges() map[string][]FileChange
-    GetSessionFileChanges() []FileChange  // unique paths across all steps
 
     // Fact Memory (inter-step communication)
     StoreFact(fact Fact)
@@ -101,7 +95,6 @@ Step results enable:
 
 1. Dependency context injection (downstream steps read upstream outputs)
 2. Replan (Planner sees what already succeeded)
-3. File rollback (steps track which files were modified)
 
 ## Error Handling
 

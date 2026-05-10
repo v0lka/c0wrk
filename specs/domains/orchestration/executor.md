@@ -10,7 +10,6 @@ Executes individual plan steps via the ReAct loop (Thought → Action → Observ
 - `sdk/orchestration/orchestrator.go` — SDK Orchestrator (drives DAG execution, parallel steps)
 - `core/stepconfig.go` — coreStepConfigurator (resolves per-step config)
 - `sdk/agent/events.go` — AgentEvents interface (lifecycle hooks)
-- `sdk/agent/filetracker.go` — file change tracking
 
 ## Behavior
 
@@ -136,20 +135,9 @@ Large tool results are truncated to stay within context:
 - Floor: 256 tokens minimum
 - Truncation notice appended when result exceeds budget
 
-### File Change Tracking
-
-The executor tracks filesystem modifications:
-
-- Each tool execution may report file changes
-- Changes are stored per-step on the Blackboard
-- On step failure + retry: files can be rolled back
-- Aggregated across session for final reporting
-
 ## Error Handling
 
 - Step failure (executor returns error): result stored with Error field set
-- Rollback on retry: attempt to revert file changes from failed step
-- Rollback failure: emit FileRollbackError event (non-fatal)
 - Context cancelled: propagates immediately, no retry
 - Step limit reached without finish: treated as incomplete (not failure)
 

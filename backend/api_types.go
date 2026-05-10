@@ -147,7 +147,6 @@ type BlackboardStateResponse struct {
 	Reflections     []BlackboardReflectionResponse    `json:"reflections"`
 	Facts           []BlackboardFactResponse          `json:"facts"`
 	FinalOutput     string                            `json:"final_output,omitempty"`
-	FileChanges     map[string]int                    `json:"file_changes"` // stepID -> change count
 }
 
 // BlackboardPlanResponse is a simplified plan for the blackboard viewer.

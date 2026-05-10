@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -170,17 +169,6 @@ func (o *Orchestrator) runPlanExecute(
 	var lastOutput string
 	var stepRetryContext string
 
-	// Create file change tracker for artifact tracking and rollback
-	var tracker *agent.FileChangeTracker
-	if workspaceRoot := tools.WorkspacePathFrom(ctx); workspaceRoot != "" {
-		if tempDir := tools.TempDirFrom(ctx); tempDir != "" {
-			baselinesDir := filepath.Join(tempDir, "baselines")
-			tracker = agent.NewFileChangeTrackerWithDir(workspaceRoot, baselinesDir)
-		} else {
-			tracker = agent.NewFileChangeTracker(workspaceRoot)
-		}
-	}
-
 	// Retry loop
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
 		// Check for context cancellation (e.g., user pressed Stop) before retrying.
@@ -199,7 +187,7 @@ func (o *Orchestrator) runPlanExecute(
 
 		// Execute the current plan
 		o.events.OnServiceMeta("executing plan", map[string]any{"steps": len(currentPlan.Steps), "preCompleted": len(preCompleted)})
-		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, availableTools, preCompleted, tracker, userMessage, stepRetryContext, bb, sessionReflections)
+		finalOutput, completedSteps, updatedReflections, execErr := o.executePlanWithSteps(ctx, currentPlan, availableTools, preCompleted, userMessage, stepRetryContext, bb, sessionReflections)
 		o.events.OnServiceMeta("plan execution finished", map[string]any{"completedSteps": len(completedSteps), "hasError": execErr != nil})
 		sessionReflections = updatedReflections
 		lastOutput = finalOutput
@@ -334,12 +322,6 @@ func (o *Orchestrator) runPlanExecute(
 		}
 	}
 
-	// Max retries exhausted — rollback all file changes
-	if tracker != nil {
-		if rbErr := tracker.RollbackAll(); rbErr != nil {
-			o.events.OnFileRollbackError("", rbErr)
-		}
-	}
 	bb.SetFinalResult(lastOutput)
 	result := &ExecutionResult{
 		Output:       lastOutput,
@@ -358,7 +340,6 @@ func (o *Orchestrator) executePlanWithSteps(
 	plan *Plan,
 	availableTools []tools.ToolDescriptor,
 	preCompleted map[string]CompletedStep,
-	tracker *agent.FileChangeTracker,
 	userMessage, retryContext string,
 	bb Blackboard,
 	sessionReflections []Reflection,
@@ -490,11 +471,6 @@ func (o *Orchestrator) executePlanWithSteps(
 		// Inject FactStore into context so tools can access fact memory
 		ctx = agent.WithFactStore(ctx, NewFactStore(bb))
 
-		// Inject file change tracker into context so tools can record file operations
-		if tracker != nil {
-			ctx = agent.WithFileTracker(ctx, tracker)
-		}
-
 		o.events.OnServiceMeta("dispatching parallel execution", map[string]any{"taskCount": len(tasks)})
 		results := agent.RunSubAgentsParallel(ctx, tasks)
 		var failedSteps []string
@@ -515,14 +491,6 @@ func (o *Orchestrator) executePlanWithSteps(
 			completedSteps[r.StepID] = cs
 			completedList = append(completedList, cs)
 			bb.SetStepResult(r.StepID, r.Output, r.Error, r.Steps)
-
-			// Collect file changes from tracker
-			if tracker != nil {
-				fileChanges := tracker.GetStepChanges(r.StepID)
-				if len(fileChanges) > 0 {
-					bb.SetStepFileChanges(r.StepID, fileChanges)
-				}
-			}
 
 			if r.Error != nil {
 				o.log().Info("plan step failed",
@@ -591,13 +559,6 @@ func (o *Orchestrator) executePlanWithSteps(
 							} else if reflection.RootCause != "" {
 								stepRetryContext = fmt.Sprintf("Previous attempt failed. Root cause: %s\n", reflection.RootCause)
 							}
-						}
-					}
-
-					// Rollback file changes from the failed step before retrying
-					if tracker != nil {
-						if rbErr := tracker.RollbackStep(failedStepID); rbErr != nil {
-							o.events.OnFileRollbackError(failedStepID, rbErr)
 						}
 					}
 
@@ -708,14 +669,6 @@ func (o *Orchestrator) executePlanWithSteps(
 							}
 							bb.SetStepResult(rr.StepID, rr.Output, nil, rr.Steps)
 
-							// Collect file changes from retry
-							if tracker != nil {
-								retryChanges := tracker.GetStepChanges(rr.StepID)
-								if len(retryChanges) > 0 {
-									bb.SetStepFileChanges(rr.StepID, retryChanges)
-								}
-							}
-
 							break stepRetryLoop // success, continue to next ready steps
 						}
 						// Step still failed, update the completedSteps with new error
@@ -733,14 +686,6 @@ func (o *Orchestrator) executePlanWithSteps(
 							}
 						}
 						bb.SetStepResult(rr.StepID, rr.Output, rr.Error, rr.Steps)
-
-						// Collect file changes from failed retry
-						if tracker != nil {
-							retryChanges := tracker.GetStepChanges(rr.StepID)
-							if len(retryChanges) > 0 {
-								bb.SetStepFileChanges(rr.StepID, retryChanges)
-							}
-						}
 
 						// Continue to next retry attempt
 					}
@@ -1088,19 +1033,7 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	// Inject FactStore into context so tools can access fact memory
 	ctx = agent.WithFactStore(ctx, NewFactStore(bb))
 
-	// 6. Set up file change tracker if workspace path is available
-	var tracker *agent.FileChangeTracker
-	if workspaceRoot := tools.WorkspacePathFrom(ctx); workspaceRoot != "" {
-		if tempDir := tools.TempDirFrom(ctx); tempDir != "" {
-			baselinesDir := filepath.Join(tempDir, "baselines")
-			tracker = agent.NewFileChangeTrackerWithDir(workspaceRoot, baselinesDir)
-		} else {
-			tracker = agent.NewFileChangeTracker(workspaceRoot)
-		}
-		ctx = agent.WithFileTracker(ctx, tracker)
-	}
-
-	// 7. Build and execute the task
+	// 6. Build and execute the task
 	o.log().Debug("orchestrator: OnStepStarted (subagent)", "stepID", step.ID, "summary", step.Summary, "description", step.Description)
 	o.events.OnStepStarted(step.ID, step.Description, step.Summary)
 	stepStartTime := time.Now()
@@ -1137,20 +1070,11 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	// 9. Store results in Blackboard
 	bb.SetStepResult(r.StepID, r.Output, r.Error, r.Steps)
 
-	// Collect file changes from tracker
-	if tracker != nil {
-		fileChanges := tracker.GetStepChanges(r.StepID)
-		if len(fileChanges) > 0 {
-			bb.SetStepFileChanges(r.StepID, fileChanges)
-		}
-	}
-
 	// 10. Return StepResult
 	return &StepResult{
-		StepID:      r.StepID,
-		FullOutput:  r.Output,
-		Error:       r.Error,
-		Steps:       r.Steps,
-		FileChanges: bb.GetStepFileChanges(r.StepID),
+		StepID:     r.StepID,
+		FullOutput: r.Output,
+		Error:      r.Error,
+		Steps:      r.Steps,
 	}, nil
 }

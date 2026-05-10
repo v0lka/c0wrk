@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -107,13 +106,6 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		timeout = t.timeouts.MaxTimeout
 	}
 
-	// Pre-bash snapshot (if tracker available)
-	tracker := agent.FileTrackerFromContext(ctx)
-	var snapshot *agent.WorkspaceSnapshot
-	if tracker != nil {
-		snapshot = tracker.TakeSnapshot()
-	}
-
 	// Create context with timeout
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -147,11 +139,6 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	// Execute and capture combined output
 	output, err := cmd.CombinedOutput()
-
-	// Post-bash change detection
-	if tracker != nil && snapshot != nil {
-		tracker.DetectChangesFrom(ctx, snapshot)
-	}
 
 	if err != nil {
 		result := string(output) + "\n" + err.Error()

@@ -60,7 +60,6 @@ func (s *spyEmitter) StepRetry(id string, a, m int)              { s.record("Ste
 func (s *spyEmitter) Service(c string)                           { s.record("Service", c) }
 func (s *spyEmitter) ServiceWithMeta(c string, m map[string]any) { s.record("ServiceWithMeta", c, m) }
 func (s *spyEmitter) ReplanFailed(e error)                       { s.record("ReplanFailed", e) }
-func (s *spyEmitter) FileRollbackError(id string, e error)       { s.record("FileRollbackError", id, e) }
 func (s *spyEmitter) SkillsActivated(skills []string)            { s.record("SkillsActivated", skills) }
 func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	s.record("EmitSessionTokens", totalIn, totalOut, model, family)
@@ -124,7 +123,6 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"Service", func(e Emitter) { e.Service("msg") }, "Service"},
 		{"ServiceWithMeta", func(e Emitter) { e.ServiceWithMeta("msg", meta) }, "ServiceWithMeta"},
 		{"ReplanFailed", func(e Emitter) { e.ReplanFailed(nil) }, "ReplanFailed"},
-		{"FileRollbackError", func(e Emitter) { e.FileRollbackError("s1", nil) }, "FileRollbackError"},
 		{"SkillsActivated", func(e Emitter) { e.SkillsActivated([]string{"pdf"}) }, "SkillsActivated"},
 	}
 

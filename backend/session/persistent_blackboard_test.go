@@ -48,11 +48,6 @@ type failureCall struct {
 	taskID string
 }
 
-type stepFileChangesCall struct {
-	taskID, stepID string
-	changes        []core.FileChange
-}
-
 type mockTaskPersistence struct {
 	mu sync.Mutex
 
@@ -61,9 +56,8 @@ type mockTaskPersistence struct {
 	routingCalls         []routingCall
 	stepResultCalls      []stepResultCall
 	reflectionCalls      []reflectionCall
-	completionCalls      []completionCall
-	failureCalls         []failureCall
-	stepFileChangesCalls []stepFileChangesCall
+	completionCalls     []completionCall
+	failureCalls        []failureCall
 
 	// Control error behavior
 	persistError error
@@ -119,13 +113,6 @@ func (m *mockTaskPersistence) PersistFailure(taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failureCalls = append(m.failureCalls, failureCall{taskID})
-	return m.persistError
-}
-
-func (m *mockTaskPersistence) PersistStepFileChanges(taskID, stepID string, changes []core.FileChange) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.stepFileChangesCalls = append(m.stepFileChangesCalls, stepFileChangesCall{taskID, stepID, changes})
 	return m.persistError
 }
 
@@ -485,113 +472,6 @@ func TestRestoreBlackboard_Error(t *testing.T) {
 	}
 }
 
-func TestPersistentBlackboard_SetStepFileChanges(t *testing.T) {
-	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
-
-	changes := []core.FileChange{
-		{Path: "main.go", Operation: "MODIFY", Diff: "--- a/main.go\n+++ b/main.go", SizeBytes: 1024},
-		{Path: "new.go", Operation: "CREATE", SizeBytes: 256},
-	}
-	pb.SetStepFileChanges("step_1", changes)
-
-	// Verify delegation to MapBlackboard
-	got := pb.GetStepFileChanges("step_1")
-	if len(got) != 2 {
-		t.Fatalf("expected 2 file changes, got %d", len(got))
-	}
-	if got[0].Path != "main.go" || got[0].Operation != "MODIFY" {
-		t.Errorf("first file change mismatch: %+v", got[0])
-	}
-	if got[1].Path != "new.go" || got[1].Operation != "CREATE" {
-		t.Errorf("second file change mismatch: %+v", got[1])
-	}
-
-	// Verify persistence call
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.stepFileChangesCalls) != 1 {
-		t.Fatalf("expected 1 PersistStepFileChanges call, got %d", len(mock.stepFileChangesCalls))
-	}
-	c := mock.stepFileChangesCalls[0]
-	if c.taskID != "t1" || c.stepID != "step_1" {
-		t.Errorf("PersistStepFileChanges args: got taskID=%q stepID=%q", c.taskID, c.stepID)
-	}
-	if len(c.changes) != 2 {
-		t.Errorf("PersistStepFileChanges changes: got %d", len(c.changes))
-	}
-}
-
-func TestPersistentBlackboard_SetStepFileChanges_PersistError(t *testing.T) {
-	mock := &mockTaskPersistence{persistError: errors.New("storage down")}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
-
-	changes := []core.FileChange{
-		{Path: "main.go", Operation: "MODIFY"},
-	}
-	// Should not panic even though persistence fails
-	pb.SetStepFileChanges("step_1", changes)
-
-	// In-memory state should still work
-	got := pb.GetStepFileChanges("step_1")
-	if len(got) != 1 {
-		t.Fatalf("expected 1 file change in memory, got %d", len(got))
-	}
-	if got[0].Path != "main.go" {
-		t.Errorf("file change path mismatch: got %q", got[0].Path)
-	}
-}
-
-func TestRestoreBlackboard_WithFileChanges(t *testing.T) {
-	mock := &mockTaskPersistence{
-		loadState: &core.TaskState{
-			TaskID:          "t1",
-			SessionID:       "s1",
-			OriginalRequest: "implement feature",
-			Plan:            &core.Plan{Steps: []core.PlanStep{{ID: "step_1", Description: "write code"}}},
-			StepResults: map[string]core.StepResult{
-				"step_1": {StepID: "step_1", Summary: "wrote code", FullOutput: "full output"},
-			},
-			FileChanges: map[string][]core.FileChange{
-				"step_1": {
-					{Path: "main.go", Operation: "MODIFY", Diff: "some diff", SizeBytes: 512},
-					{Path: "helper.go", Operation: "CREATE", SizeBytes: 128},
-				},
-			},
-			Status: "in_progress",
-		},
-	}
-
-	pb, err := RestoreBlackboard("t1", "s1", mock, testLogger())
-	if err != nil {
-		t.Fatalf("RestoreBlackboard failed: %v", err)
-	}
-	if pb == nil {
-		t.Fatal("expected non-nil blackboard")
-	}
-
-	// Verify file changes were restored
-	changes := pb.GetStepFileChanges("step_1")
-	if len(changes) != 2 {
-		t.Fatalf("expected 2 file changes, got %d", len(changes))
-	}
-	if changes[0].Path != "main.go" || changes[0].Operation != "MODIFY" {
-		t.Errorf("first file change mismatch: %+v", changes[0])
-	}
-	if changes[1].Path != "helper.go" || changes[1].Operation != "CREATE" {
-		t.Errorf("second file change mismatch: %+v", changes[1])
-	}
-
-	// Verify aggregated file changes work
-	all := pb.GetAllFileChanges()
-	if len(all) != 1 {
-		t.Errorf("expected 1 step in all file changes, got %d", len(all))
-	}
-	if len(all["step_1"]) != 2 {
-		t.Errorf("expected 2 changes for step_1, got %d", len(all["step_1"]))
-	}
-}
-
 func TestPersistentBlackboard_NotifyChanged(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
@@ -608,7 +488,6 @@ func TestPersistentBlackboard_NotifyChanged(t *testing.T) {
 	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1", Description: "d"}}})
 	pb.SetStepResult("step_1", "output", nil, nil)
 	pb.AddReflection(core.Reflection{Summary: "r1"})
-	pb.SetStepFileChanges("step_1", []core.FileChange{{Path: "f.go", Operation: "CREATE"}})
 	pb.StoreFact(core.Fact{Keywords: []string{"k"}, Content: "c"})
 	pb.CompleteTask(1)
 
@@ -619,7 +498,7 @@ func TestPersistentBlackboard_NotifyChanged(t *testing.T) {
 	got := append([]string{}, changes...)
 	mu.Unlock()
 
-	expected := []string{"plan", "step_result", "reflection", "file_changes", "fact", "completed"}
+	expected := []string{"plan", "step_result", "reflection", "fact", "completed"}
 	if len(got) != len(expected) {
 		t.Fatalf("expected %d change notifications, got %d: %v", len(expected), len(got), got)
 	}

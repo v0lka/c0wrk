@@ -181,15 +181,6 @@ func (pb *PersistentBlackboard) AddReflection(r core.Reflection) {
 	pb.notifyChanged("reflection")
 }
 
-// SetStepFileChanges stores file changes for a step and persists them.
-func (pb *PersistentBlackboard) SetStepFileChanges(stepID string, changes []core.FileChange) {
-	pb.MapBlackboard.SetStepFileChanges(stepID, changes)
-	pb.persistSafe("step file changes ("+stepID+")", func() error {
-		return pb.store.PersistStepFileChanges(pb.taskID, stepID, changes)
-	})
-	pb.notifyChanged("file_changes")
-}
-
 // StoreFact appends a fact and persists the full facts list.
 func (pb *PersistentBlackboard) StoreFact(fact core.Fact) {
 	pb.MapBlackboard.StoreFact(fact)
@@ -275,9 +266,6 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 	}
 	for _, r := range state.Reflections {
 		mb.AddReflection(r)
-	}
-	for stepID, changes := range state.FileChanges {
-		mb.SetStepFileChanges(stepID, changes)
 	}
 	if len(state.Facts) > 0 {
 		mb.SetFacts(state.Facts)

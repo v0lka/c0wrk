@@ -18,7 +18,6 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `StepLimitFunc`        | sdk/agent | core/orchestrator config         | Step limit callback        |
 | `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration     |
 | `ExecutorResult`       | sdk/agent | core/types (alias)               | Executor output            |
-| `FileChange`           | sdk/agent | core/types (alias)               | File modification record   |
 | `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds |
 | `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation     |
 | `TodoItem`             | sdk/agent | core/types (adapter)             | Step todo item             |

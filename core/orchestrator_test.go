@@ -801,9 +801,6 @@ func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCou
 	return nil
 }
 func (m *mockTaskStore) PersistFailure(taskID string) error { return nil }
-func (m *mockTaskStore) PersistStepFileChanges(taskID, stepID string, changes []FileChange) error {
-	return nil
-}
 func (m *mockTaskStore) PersistFacts(taskID string, facts []Fact) error { return nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
@@ -1409,9 +1406,6 @@ func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput stri
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error { return nil }
-func (m *mockTaskStoreWithReactivate) PersistStepFileChanges(taskID, stepID string, changes []FileChange) error {
-	return nil
-}
 func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []Fact) error { return nil }
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {

@@ -32,9 +32,6 @@ type StepOutputStore = agent.StepOutputStore
 // StepOutputEntry describes a completed step's output for listing.
 type StepOutputEntry = agent.StepOutputEntry
 
-// FileChange represents a filesystem modification made by an agent step.
-type FileChange = agent.FileChange
-
 // ToolResultBudget — tool result truncation config.
 type ToolResultBudget = agent.ToolResultBudget
 
@@ -140,8 +137,6 @@ type Emitter interface {
 	ServiceWithMeta(content string, meta map[string]any)
 	// ReplanFailed reports a failed replan attempt.
 	ReplanFailed(err error)
-	// FileRollbackError reports a file rollback failure for a plan step.
-	FileRollbackError(stepID string, err error)
 	// SkillsActivated reports the skills matched and activated for the current task.
 	SkillsActivated(skillNames []string)
 	// StepTodoUpdate emits a to-do list update for a plan step.
@@ -185,7 +180,6 @@ func (n *noopEmitter) StepRetry(_ string, _, _ int)                             
 func (n *noopEmitter) Service(_ string)                                             {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)                   {}
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
-func (n *noopEmitter) FileRollbackError(_ string, _ error)                          {}
 func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
 func (n *noopEmitter) StepTodoUpdate(_ string, _ []TodoItem)                        {}
 
@@ -234,10 +228,6 @@ func (a *emitterEventsAdapter) OnServiceMeta(content string, meta map[string]any
 func (a *emitterEventsAdapter) OnReplanFailed(err error) {
 	a.log().Debug("event adapter: replan failed", "error", err)
 	a.ReplanFailed(err)
-}
-func (a *emitterEventsAdapter) OnFileRollbackError(stepID string, err error) {
-	a.log().Debug("event adapter: file rollback error", "stepID", stepID, "error", err)
-	a.FileRollbackError(stepID, err)
 }
 func (a *emitterEventsAdapter) OnStepTodoUpdate(stepID string, items []agent.TodoItem) {
 	coreItems := make([]TodoItem, len(items))

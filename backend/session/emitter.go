@@ -654,11 +654,6 @@ func (e *EventEmitter) ReplanFailed(err error) {
 	e.log().Debug("emitter: replan failed", "sessionID", e.sessionID, "error", err)
 }
 
-// FileRollbackError logs a file rollback failure for a plan step.
-func (e *EventEmitter) FileRollbackError(stepID string, err error) {
-	e.log().Warn("emitter: file rollback error", "sessionID", e.sessionID, "stepID", stepID, "error", err)
-}
-
 // SkillsActivated emits a skills_activated event listing the skills matched for the current task.
 func (e *EventEmitter) SkillsActivated(skillNames []string) {
 	e.mu.Lock()

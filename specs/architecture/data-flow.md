@@ -164,8 +164,7 @@ Orchestrator.HandleMessage()
   ├─ Each step executor:
   │   ├─ Reads dependency outputs: bb.GetStepResult(depID)
   │   ├─ Writes own result: bb.SetStepResult(stepID, output, err, steps)
-  │   ├─ Stores facts: bb.StoreFact(fact)
-  │   └─ Tracks files: bb.SetStepFileChanges(stepID, changes)
+  │   └─ Stores facts: bb.StoreFact(fact)
   │
   ├─ Reflector reads: bb.GetAllStepResults(), bb.GetReflections()
   │

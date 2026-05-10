@@ -248,7 +248,6 @@ func (m *mockEmitter) Service(_ string)                             {}
 func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
 
 func (m *mockEmitter) ReplanFailed(_ error)                                 {}
-func (m *mockEmitter) FileRollbackError(_ string, _ error)                  {}
 func (m *mockEmitter) SkillsActivated(_ []string)                           {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) Finishing(_ int, _ string)                            {}
@@ -320,9 +319,6 @@ func testBlackboardRestoreFunc() BlackboardRestoreFunc {
 		}
 		for _, r := range state.Reflections {
 			mb.AddReflection(r)
-		}
-		for stepID, changes := range state.FileChanges {
-			mb.SetStepFileChanges(stepID, changes)
 		}
 		if len(state.Facts) > 0 {
 			mb.SetFacts(state.Facts)

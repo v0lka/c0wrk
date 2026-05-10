@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +65,6 @@ func (r *recordingEvents) OnReflected(reflection *Reflection, attempt, maxAttemp
 func (r *recordingEvents) OnRetry(attempt, maxAttempts int)                    { r.retried++ }
 func (r *recordingEvents) OnStepRetry(stepID string, attempt, maxAttempts int) { r.stepRetried++ }
 func (r *recordingEvents) OnReplanFailed(_ error)                              {}
-func (r *recordingEvents) OnFileRollbackError(_ string, _ error)               {}
 
 // ---------------------------------------------------------------------------
 // New() defaults
@@ -326,189 +324,6 @@ func TestPerStepRetry_EventEmitted(t *testing.T) {
 
 // TestPerStepRetry_MaxRetriesBoundary verifies the boundary conditions
 // for per-step retry counting.
-// ---------------------------------------------------------------------------
-// FileChangeTracker wiring tests
-// ---------------------------------------------------------------------------
-
-// TestOrchestrator_TrackerCreatedWhenWorkspaceInContext verifies that the
-// file change tracker is created when a workspace path is present in ctx.
-func TestOrchestrator_TrackerCreatedWhenWorkspaceInContext(t *testing.T) {
-	tmpDir := t.TempDir()
-	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
-
-	// We create a minimal orchestrator that will fail during execution,
-	// but we can verify the tracker was created by checking that the
-	// context carries a file tracker when it reaches executePlanWithSteps.
-	// Since we can't easily intercept the internal flow, we verify the
-	// constructor-level logic directly:
-	workspaceRoot := tools.WorkspacePathFrom(ctx)
-	if workspaceRoot == "" {
-		t.Fatal("expected workspace path in context")
-	}
-	tracker := agent.NewFileChangeTracker(workspaceRoot)
-	if tracker == nil {
-		t.Fatal("expected non-nil tracker")
-	}
-}
-
-// TestOrchestrator_NoTrackerWithoutWorkspace verifies that no tracker is
-// created when workspace path is absent from ctx.
-func TestOrchestrator_NoTrackerWithoutWorkspace(t *testing.T) {
-	ctx := context.Background()
-	workspaceRoot := tools.WorkspacePathFrom(ctx)
-	if workspaceRoot != "" {
-		t.Fatal("expected empty workspace path")
-	}
-	// Mirrors the orchestrator logic: tracker should remain nil
-	var tracker *agent.FileChangeTracker
-	if workspaceRoot != "" {
-		tracker = agent.NewFileChangeTracker(workspaceRoot)
-	}
-	if tracker != nil {
-		t.Fatal("expected nil tracker when no workspace in context")
-	}
-}
-
-// TestOrchestrator_FileChanges_Collected verifies that file changes from the
-// tracker are stored in the blackboard after step execution completes.
-func TestOrchestrator_FileChanges_Collected(t *testing.T) {
-	bb := NewMapBlackboard()
-	tracker := agent.NewFileChangeTracker(t.TempDir())
-
-	// Simulate what the orchestrator does after step completion:
-	// 1. A tool records a file change during execution
-	stepID := "step_1"
-	ctx := agent.WithStepID(context.Background(), stepID)
-	ctx = agent.WithFileTracker(ctx, tracker)
-
-	// Verify tracker is in context
-	gotTracker := agent.FileTrackerFromContext(ctx)
-	if gotTracker == nil {
-		t.Fatal("expected tracker in context")
-	}
-	if gotTracker != tracker {
-		t.Fatal("expected same tracker instance")
-	}
-
-	// Verify step ID is in context
-	gotStepID := agent.StepIDFromContext(ctx)
-	if gotStepID != stepID {
-		t.Fatalf("expected step ID %q, got %q", stepID, gotStepID)
-	}
-
-	// Simulate a tool recording a file write
-	tmpFile := t.TempDir() + "/test.txt"
-	if err := writeTestFile(tmpFile, "hello"); err != nil {
-		t.Fatal(err)
-	}
-	fileTracker := agent.NewFileChangeTracker(t.TempDir())
-	// Use the original tracker to simulate step changes
-	// The actual flow: tools call tracker.RecordBeforeWrite/RecordAfterWrite
-	// For this test, we verify the collection logic directly
-	_ = fileTracker
-
-	// Simulate collecting file changes (mirrors orchestrator code)
-	fileChanges := tracker.GetStepChanges(stepID)
-	if len(fileChanges) > 0 {
-		bb.SetStepFileChanges(stepID, fileChanges)
-	}
-
-	// With no actual file ops recorded, changes should be empty
-	result := bb.GetStepFileChanges(stepID)
-	if len(result) != 0 {
-		t.Errorf("expected no file changes, got %d", len(result))
-	}
-}
-
-// TestOrchestrator_StepFailure_Rollback verifies that when a step fails,
-// its file changes are rolled back before retry.
-func TestOrchestrator_StepFailure_Rollback(t *testing.T) {
-	tmpDir := t.TempDir()
-	tracker := agent.NewFileChangeTracker(tmpDir)
-	stepID := "step_1"
-
-	// Create a context with step ID
-	ctx := agent.WithStepID(context.Background(), stepID)
-
-	// Simulate a tool creating a file during step execution
-	testFile := tmpDir + "/created.txt"
-	tracker.RecordBeforeWrite(ctx, testFile)
-	if err := writeTestFile(testFile, "new content"); err != nil {
-		t.Fatal(err)
-	}
-	tracker.RecordAfterWrite(ctx, testFile)
-
-	// Verify file changes are tracked
-	changes := tracker.GetStepChanges(stepID)
-	if len(changes) != 1 {
-		t.Fatalf("expected 1 file change, got %d", len(changes))
-	}
-	if changes[0].Operation != "CREATE" {
-		t.Errorf("expected CREATE operation, got %s", changes[0].Operation)
-	}
-
-	// Simulate the orchestrator's rollback on step failure
-	if err := tracker.RollbackStep(stepID); err != nil {
-		t.Fatalf("rollback failed: %v", err)
-	}
-
-	// Verify the created file was removed
-	if _, err := readTestFile(testFile); err == nil {
-		t.Error("expected file to be removed after rollback")
-	}
-
-	// Verify step changes are cleared
-	changesAfter := tracker.GetStepChanges(stepID)
-	if len(changesAfter) != 0 {
-		t.Errorf("expected 0 changes after rollback, got %d", len(changesAfter))
-	}
-}
-
-// TestOrchestrator_SessionRollback verifies that RollbackAll restores all
-// files to their baseline state.
-func TestOrchestrator_SessionRollback(t *testing.T) {
-	tmpDir := t.TempDir()
-	tracker := agent.NewFileChangeTracker(tmpDir)
-
-	// Step 1 creates a file
-	ctx1 := agent.WithStepID(context.Background(), "step_1")
-	newFile := tmpDir + "/new.txt"
-	tracker.RecordBeforeWrite(ctx1, newFile)
-	if err := writeTestFile(newFile, "step1 content"); err != nil {
-		t.Fatal(err)
-	}
-	tracker.RecordAfterWrite(ctx1, newFile)
-
-	// Step 2 creates another file
-	ctx2 := agent.WithStepID(context.Background(), "step_2")
-	newFile2 := tmpDir + "/new2.txt"
-	tracker.RecordBeforeWrite(ctx2, newFile2)
-	if err := writeTestFile(newFile2, "step2 content"); err != nil {
-		t.Fatal(err)
-	}
-	tracker.RecordAfterWrite(ctx2, newFile2)
-
-	// Simulate session-level rollback (all retries exhausted)
-	if err := tracker.RollbackAll(); err != nil {
-		t.Fatalf("RollbackAll failed: %v", err)
-	}
-
-	// Both files should be removed
-	if _, err := readTestFile(newFile); err == nil {
-		t.Error("expected new.txt to be removed after session rollback")
-	}
-	if _, err := readTestFile(newFile2); err == nil {
-		t.Error("expected new2.txt to be removed after session rollback")
-	}
-}
-
-func writeTestFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0o644)
-}
-
-func readTestFile(path string) ([]byte, error) {
-	return os.ReadFile(path)
-}
 
 func TestPerStepRetry_MaxRetriesBoundary(t *testing.T) {
 	tests := []struct {

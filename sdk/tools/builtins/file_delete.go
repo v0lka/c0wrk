@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/user/agent/sdk/agent"
 	"github.com/user/agent/sdk/tools"
 )
 
@@ -72,13 +71,6 @@ func (t *DeleteFileTool) Execute(ctx context.Context, input json.RawMessage) (to
 	}
 	if info.IsDir() {
 		return tools.ToolResult{Content: "path is a directory, use delete_directory instead", IsError: true}, nil
-	}
-
-	tracker := agent.FileTrackerFromContext(ctx)
-	if tracker != nil {
-		tracker.AcquireFileLock(params.Path)
-		defer tracker.ReleaseFileLock(params.Path)
-		tracker.RecordDelete(ctx, params.Path)
 	}
 
 	if err := os.Remove(params.Path); err != nil {
