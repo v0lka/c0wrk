@@ -45,10 +45,7 @@ Import rule: each arrow is one-way. `backend` NEVER imports `sdk`. `core` is the
 
 ## Spec Workflow and Format Reference
 
-See:
-
-- [WORKFLOW.md](WORKFLOW.md) for reference guide on effective use of the c0wrk project specification system.
-- [META.md](META.md) for document templates, naming rules, and update protocol.
+See [META.md](META.md) for document templates, naming rules, and update protocol.
 
 ## Directory Listing
 

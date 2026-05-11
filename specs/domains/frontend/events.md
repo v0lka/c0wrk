@@ -7,12 +7,14 @@ Manages real-time event subscription, validation, and store updates. Events flow
 ## Key Files
 
 - `frontend/src/hooks/useSessionEvents.ts` — master event subscription hook
-- `frontend/src/hooks/useChatEvents.ts` — streaming, thoughts, errors
-- `frontend/src/hooks/usePlanEvents.ts` — plan generation, step lifecycle
-- `frontend/src/hooks/useToolEvents.ts` — tool call/result correlation
-- `frontend/src/hooks/useActionEvents.ts` — confirmations, ask_user, step limits
-- `frontend/src/hooks/useContextEvents.ts` — context fill, compaction
-- `frontend/src/hooks/useLifecycleEvents.ts` — task complete/cancel/fail, retry
+- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors
+- `frontend/src/hooks/events/usePlanEvents.ts` — plan generation, step lifecycle
+- `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation
+- `frontend/src/hooks/events/useActionEvents.ts` — confirmations, ask_user, step limits
+- `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction
+- `frontend/src/hooks/events/useLifecycleEvents.ts` — task complete/cancel/fail, retry
+- `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
+- `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
 - `frontend/src/types/events.ts` — event payload type definitions
 - `frontend/src/types/guards.ts` — type guard functions
 

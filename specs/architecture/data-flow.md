@@ -21,7 +21,7 @@ RPC: window.go.desktop.App.SendMessage(sessionId, text, mode)
 backend/frontend_api_session.go: FrontendAPI.SendMessage()
          │
          ▼
-backend/session/manager.go: SessionManager.HandleMessage()
+backend/session/manager.go: Manager.SendMessage()
   ├─ Creates/reuses Orchestrator for session
   ├─ Wraps emitter (EventPersister + WailsEmitter)
   └─ Calls orchestrator.HandleMessage()

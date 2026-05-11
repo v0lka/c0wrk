@@ -21,15 +21,26 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 ```go
 // Top-level orchestrator (core layer)
 type Orchestrator struct {
-    engine           *orchestration.Orchestrator  // SDK P&E engine
-    planner          *Planner
-    router           *Router
-    llm              LLMCaller
-    config           OrchestratorConfig
-    contextFactory   ContextManagerFactory
-    emitter          Emitter
-    bbFactory        BlackboardFactory
-    skillManager     *skills.SkillManager
+    engine               *orchestration.Orchestrator  // SDK P&E engine
+    planner              *Planner
+    router               *Router
+    llm                  LLMCaller
+    toolRegistry         *sdktools.ToolRegistry       // SDK registry (basic store)
+    coreToolRegistry     *tools.ToolRegistry          // core registry (policy/judge/hooks)
+    config               OrchestratorConfig
+    contextFactory       ContextManagerFactory
+    logger               *slog.Logger
+    emitter              Emitter
+    modelRegistry        *llm.ModelRegistry
+    bbFactory            BlackboardFactory
+    conversationHistory  []llm.Message                // retained history for routing context
+    taskStore            TaskPersistence              // optional, for ContinueTask BB restoration
+    bbRestoreFunc        BlackboardRestoreFunc        // optional, restores BB from store
+    trackingCaller       *llm.TrackingCaller          // per-step context tracker wiring
+    vectorSearchFunc     tools.VectorSearchFunc       // for vector search hints
+    skillManager         *skills.SkillManager         // skill discovery and activation
+    currentRequestCtx    atomic.Pointer[context.Context]        // scoped to active HandleMessage
+    currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor] // router-matched skills
 }
 
 // Configuration
