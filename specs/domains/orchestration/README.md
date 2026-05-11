@@ -55,7 +55,6 @@ type OrchestratorConfig struct {
     ReasoningEffort           llm.ReasoningEffort
     RoleOverrides             map[string]string
     StepLimitFunc             agent.StepLimitFunc
-    SyntheticPlanThreshold    int    // default: 2
 }
 
 // Routing result
@@ -127,8 +126,6 @@ HandleMessage(ctx, message, sessionID, opts)
 | -------- | -------------------------------------- | --------------------------------------------- |
 | Normal   | `opts.ExecutionMode == "normal"`       | Synthetic 1-step plan, no Planner LLM call    |
 | Advanced | any other value (including "advanced") | Full DAG plan via Planner, parallel execution |
-
-The mode is selected by the user in the frontend (execution mode toggle). The `SyntheticPlanThreshold` field in `OrchestratorConfig` is reserved for future use but not currently consumed by `shouldUseSyntheticPlan()`.
 
 ## Invariants
 

@@ -262,7 +262,6 @@ func (b *OrchestratorBuilder) Build(
 		ReasoningEffort:           baseEffort,
 		RoleOverrides:             cfg.Reasoning.RoleOverrides,
 		StepLimitFunc:             stepLimitFunc,
-		SyntheticPlanThreshold:    cfg.Orchestration.SyntheticPlanThreshold,
 	}
 
 	// Token counter, budgets, circuit breaker

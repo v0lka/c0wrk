@@ -274,12 +274,6 @@ type OrchestrationConfig struct {
 	MaxHistoryMessages        int `yaml:"maxHistoryMessages"`        // default: 20
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
 	MaxPlannerExploreSteps    int `yaml:"maxPlannerExploreSteps"`    // default: 7
-
-	// SyntheticPlanThreshold is the complexity threshold below which synthetic
-	// 1-step plans are used instead of calling the Planner LLM.
-	// Default is 2 (complexity 1-2 = synthetic, 3+ = full planning).
-	// Set to 0 to disable synthetic plans (always use full planning).
-	SyntheticPlanThreshold int `yaml:"synthetic_plan_threshold"`
 }
 
 // SkillsConfig holds Agent Skills discovery configuration.

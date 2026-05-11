@@ -48,12 +48,6 @@ type OrchestratorConfig struct {
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
 	StepLimitFunc agent.StepLimitFunc
-
-	// SyntheticPlanThreshold is the complexity threshold below which synthetic
-	// 1-step plans are used instead of calling the Planner LLM.
-	// Default is 2 (complexity 1-2 = synthetic, 3+ = full planning).
-	// Set to 0 to disable synthetic plans (always use full planning).
-	SyntheticPlanThreshold int
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
