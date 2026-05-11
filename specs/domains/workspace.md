@@ -7,8 +7,7 @@ Manages the project workspace: file tree loading, filesystem watching for change
 ## Key Files
 
 - `backend/workspace/watcher.go` — filesystem watcher (fsnotify)
-- `backend/workspace/filetree.go` — file tree loading (lazy, depth-limited)
-- `backend/frontend_api_workspace.go` — FrontendAPI workspace methods
+- `backend/frontend_api_workspace.go` — FrontendAPI workspace methods + file tree loading
 - `backend/vectorindex/index.go` — vector index management
 - `sdk/embedding/` — embedding model interface
 
@@ -37,7 +36,7 @@ backend/workspace.StartWatcher(projectPath)
 - `GetGitStatus()` returns per-file status (modified, added, deleted, untracked)
 - `GetFileDiff(path)` returns unified diff for modified files
 - Status integrated into file tree nodes (icon indicators in UI)
-- Uses go-git library (pure Go, no git CLI dependency)
+- Uses git CLI (`exec.CommandContext("git", ...)`) for status, diff, and file tracking
 
 ### Vector Index
 
@@ -59,13 +58,13 @@ Project switched / app started
 
 ### File Operations (Workspace API)
 
-| Method                     | Description                                         |
-| -------------------------- | --------------------------------------------------- |
-| `GetFileTree(path, depth)` | Lazy directory tree with git status                 |
-| `ReadFile(path)`           | Read file content (binary detection via null bytes) |
-| `GetFileDiff(path)`        | Unified git diff for file                           |
-| `GetGitStatus()`           | Workspace-level git status summary                  |
-| `SearchFiles(query)`       | Filename search within workspace                    |
+| Method                              | Description                                         |
+| ----------------------------------- | --------------------------------------------------- |
+| `ListDirectory(dirPath, recursive)` | Lazy directory tree with git status                 |
+| `ReadFile(path)`                    | Read file content (binary detection via null bytes) |
+| `GetFileDiff(path)`                 | Unified git diff for file                           |
+| `GetGitStatus()`                    | Workspace-level git status summary                  |
+| `SearchFiles(query)`                | Filename search within workspace                    |
 
 ## Invariants
 

@@ -8,7 +8,7 @@ Provides shared state for the Plan&Execute loop: stores the plan, step results, 
 
 - `sdk/orchestration/blackboard.go` — MapBlackboard (in-memory implementation)
 - `sdk/orchestration/interfaces.go` — Blackboard interface definition
-- `core/persistent_blackboard.go` — PersistentBlackboard (SQLite-backed)
+- `backend/session/persistent_blackboard.go` — PersistentBlackboard (SQLite-backed)
 
 ## Behavior
 

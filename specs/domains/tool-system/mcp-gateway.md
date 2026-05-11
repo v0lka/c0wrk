@@ -6,10 +6,9 @@ Manages connections to external MCP (Model Context Protocol) servers, discovers 
 
 ## Key Files
 
-- `core/tools/mcp/gateway.go` — Gateway struct (Start, Stop, RegisterTools, Status)
+- `core/tools/mcp/gateway.go` — Gateway struct (Start, Stop, RegisterTools, Status) + config types
 - `core/tools/mcp/server.go` — Server struct (Connect, DiscoverTools, CallTool, Close)
 - `core/tools/mcp/mcptool.go` — MCPTool (wraps MCP tool as sdk Tool interface)
-- `core/tools/mcp/types.go` — ServerConfig, GatewayConfig, transport types
 
 ## Behavior
 

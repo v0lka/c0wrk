@@ -71,7 +71,7 @@ Events stream from backend to frontend in real-time during task execution:
 core/Orchestrator (via Emitter interface)
          │
          ▼
-backend/session/emitter.go: WailsEmitter
+backend/session/emitter.go: EventEmitter
   ├─ Formats event data as typed struct
   ├─ Persists to SQLite (EventPersister)
   └─ Calls runtime.EventsEmit(ctx, eventName, payload)

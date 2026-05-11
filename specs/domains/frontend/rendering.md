@@ -6,7 +6,7 @@ Transforms flat message arrays into a structured display tree, rendering each it
 
 ## Key Files
 
-- `frontend/src/lib/groupMessages.ts` — groupMessages() transform
+- `frontend/src/lib/chatUtils.ts` — groupMessages() transform
 - `frontend/src/components/chat/ChatMessageList.tsx` — message list container
 - `frontend/src/components/chat/ChatMessageRenderer.tsx` — item type dispatch
 - `frontend/src/components/chat/PendingActionsBar.tsx` — action bar (confirm/ask/limit)
@@ -23,13 +23,13 @@ Backend persists: ChatMessage[] (flat, role-based)
 Frontend converts: ChatMessageUI[] (semantic type, metadata)
          │
          ▼
-groupMessages(): DisplayItem[] (tree structure, 16 kinds)
+groupMessages(): DisplayItem[] (tree structure, 17 kinds)
          │
          ▼
 ChatMessageRenderer: renders each DisplayItem by type
 ```
 
-### Display Item Types (16 kinds)
+### Display Item Types (17 kinds)
 
 | Type                 | Description               | Visual Treatment                |
 | -------------------- | ------------------------- | ------------------------------- |
@@ -48,6 +48,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `reflection`         | Reflector analysis        | Warning accent, collapsible     |
 | `step_finish`        | Step completion marker    | Success/fail indicator          |
 | `memory_read`        | Fact retrieval indicator  | Info accent                     |
+| `action_placeholder` | Pending action indicator  | Placeholder with label          |
 | `context_compaction` | Compaction notice         | Info badge                      |
 
 ### Grouping Logic

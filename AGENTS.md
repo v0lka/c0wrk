@@ -116,7 +116,7 @@ Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), 
 
 - Backend persists `ChatMessage` (id, session_id, role, content, metadata JSON, created_at).
 - Frontend converts to `ChatMessageUI` (semantic string ID, sessionId, MessageType, content, metadata, timestamp).
-- `groupMessages()` transforms flat `ChatMessageUI[]` into a `DisplayItem[]` tree (16 kinds: user, assistant, thought, thought_group, tool, tool_confirm, ask_user, step_limit, resume_action, error, service, plan_step, reflection, step_finish, memory_read, context_compaction, action_placeholder).
+- `groupMessages()` transforms flat `ChatMessageUI[]` into a `DisplayItem[]` tree (17 kinds: user, assistant, thought, thought_group, tool, tool_confirm, ask_user, step_limit, resume_action, error, service, plan_step, reflection, step_finish, memory_read, context_compaction, action_placeholder).
 - Grouping handles: plan step nesting, tool call/result correlation (via tool_call_id or composite key), thought collapsing, pending action extraction, special tool handling (subagent skipped, finish/memory compact).
 
 ### Key components

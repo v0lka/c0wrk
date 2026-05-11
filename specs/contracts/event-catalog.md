@@ -84,7 +84,29 @@ Pattern: `session:${sessionId}:${eventType}`
 | `subagent_complete` | `{step_id, success}`        | useSubagentEvents  | Subagent finished       |
 | `skills_activated`  | `{skills: string[]}`        | useChatEvents      | Skills matched for task |
 | `step_todo_update`  | `{step_id, items[]}`        | usePlanEvents      | Step checklist update   |
-| `session_renamed`   | `{name}`                    | useLifecycleEvents | Auto-generated title    |
+| `session_renamed`   | `{id, old_name, new_name}`  | useLifecycleEvents | Auto-generated title    |
+
+### Executor Internals
+
+| Event Type      | Payload                | Handler Hook       | Description              |
+| --------------- | ---------------------- | ------------------ | ------------------------ |
+| `step_start`    | `{step_num}`           | useLifecycleEvents | ReAct loop step started  |
+| `step_complete` | `{step_num, duration}` | useLifecycleEvents | ReAct loop step finished |
+| `finishing`     | `{step_num, summary}`  | useLifecycleEvents | Agent called finish tool |
+
+### Task Resumption & Terminal
+
+| Event Type        | Payload                   | Handler Hook    | Description                  |
+| ----------------- | ------------------------- | --------------- | ---------------------------- |
+| `task_resumed`    | `{session_id, text}`      | useActionEvents | Failed task resumed          |
+| `terminal_output` | `{data}` (base64-encoded) | Terminal.tsx    | PTY output for terminal mode |
+
+### Blackboard & Judge
+
+| Event Type            | Payload                           | Handler Hook         | Description                 |
+| --------------------- | --------------------------------- | -------------------- | --------------------------- |
+| `blackboard_updated`  | `{change_type}`                   | useBlackboardEvents  | Blackboard state changed    |
+| `tool_judge_response` | `{confirm_id, reasoning, error?}` | ToolConfirmation.tsx | LLM judge evaluation result |
 
 ## Frontend-to-Backend Events
 

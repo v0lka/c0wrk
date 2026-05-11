@@ -45,9 +45,12 @@ type ModelMetadata struct {
 // Reasoning effort levels
 type ReasoningEffort string
 const (
-    ReasoningLow    ReasoningEffort = "low"
-    ReasoningMedium ReasoningEffort = "medium"
-    ReasoningHigh   ReasoningEffort = "high"
+    ReasoningOff     ReasoningEffort = "off"
+    ReasoningMinimal ReasoningEffort = "minimal"
+    ReasoningLow     ReasoningEffort = "low"
+    ReasoningMedium  ReasoningEffort = "medium"
+    ReasoningHigh    ReasoningEffort = "high"
+    ReasoningMaximum ReasoningEffort = "maximum"
 )
 ```
 

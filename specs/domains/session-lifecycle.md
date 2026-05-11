@@ -7,7 +7,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 ## Key Files
 
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing)
-- `backend/session/store.go` — SessionStore (SQLite persistence)
+- `backend/session/persistence.go` — SessionStore (SQLite persistence)
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume
 
