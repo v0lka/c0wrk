@@ -142,14 +142,16 @@ HandleMessage(ctx, message, sessionID, opts)
 
 From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 
-| Parameter                               | Default | Description                       |
-| --------------------------------------- | ------- | --------------------------------- |
-| `executor.max_steps`                    | 30      | Max ReAct iterations per step     |
-| `executor.max_retries`                  | 2       | Max retry attempts (3 total)      |
-| `executor.max_history_messages`         | 20      | Conversation history window       |
-| `executor.max_dependency_context_chars` | 8000    | Max chars from dependency outputs |
-| `reasoning.effort`                      | (none)  | Base reasoning effort             |
-| `reasoning.role_overrides`              | {}      | Per-role effort overrides         |
+| Parameter                                 | Default | Description                       |
+| ----------------------------------------- | ------- | --------------------------------- |
+| `executor.max_react_steps`                | 50      | Max ReAct iterations per step     |
+| `executor.max_retries`                    | 2       | Max retry attempts (3 total)      |
+| `orchestration.maxHistoryMessages`        | 20      | Conversation history window       |
+| `orchestration.maxDependencyContextChars` | 8000    | Max chars from dependency outputs |
+| `reasoning.base_effort`                   | "high"  | Base reasoning effort             |
+| `reasoning.role_overrides`                | {}      | Per-role effort overrides         |
+
+Note: yaml key casing is mixed across config sections — `executor.*` and `reasoning.*` keys use `snake_case`, while `orchestration.*` and `toolLimits.*` keys use `camelCase`. This matches the struct tags in `backend/config/config.go`.
 
 ## Extension Points
 

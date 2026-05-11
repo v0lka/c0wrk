@@ -481,8 +481,8 @@ func (e *EventEmitter) AssistantChunk(content string) {
 		SessionID: e.sessionID,
 		Type:      "assistant_chunk",
 		Data: map[string]any{
-			"content":     content,
-			"accumulated": e.streamAccumulated.String(),
+			"content":            content,
+			"accumulated_content": e.streamAccumulated.String(),
 		},
 	})
 }

@@ -157,8 +157,8 @@ llm:
 	if cfg.Executor.Compaction.Summarization.BlockSize != 7 {
 		t.Errorf("Expected default block_size 7, got %d", cfg.Executor.Compaction.Summarization.BlockSize)
 	}
-	if cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps != 40 {
-		t.Errorf("Expected default enabled_above_steps 40, got %d", cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps)
+	if cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps != 25 {
+		t.Errorf("Expected default enabled_above_steps 25, got %d", cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps)
 	}
 
 	// Check Router defaults

@@ -1931,6 +1931,9 @@ func mockAllTools() []tools.ToolDescriptor {
 		{Name: "finish"},
 		{Name: "store_fact"},
 		{Name: "search_facts"},
+		{Name: "ask_user"},
+		{Name: "set_step_status"},
+		{Name: "read_step_output"},
 		{Name: "read_file"},
 		{Name: "write_file"},
 		{Name: "bash_exec"},
@@ -2070,7 +2073,7 @@ func TestCoreStepConfigurator_StepToolNarrowing_UnionsCriticalTools(t *testing.T
 		got[td.Name] = true
 	}
 
-	for _, name := range []string{"read_file", "finish", "store_fact", "search_facts"} {
+	for _, name := range []string{"read_file", "finish", "store_fact", "search_facts", "ask_user", "set_step_status", "read_step_output"} {
 		if !got[name] {
 			t.Errorf("expected tool %q in AllowedTools, got %v", name, got)
 		}

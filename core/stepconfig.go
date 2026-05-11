@@ -45,9 +45,11 @@ var rolePruningDefaults = map[string]struct {
 // criticalAlwaysAllowedTools are tools that MUST be present whenever AllowedTools
 // is non-empty. Without `finish` the executor cannot terminate; store_fact /
 // search_facts are required for long-horizon tasks to persist findings across
-// step boundaries. The set is unioned into the filtered list regardless of
-// what the planner emitted.
-var criticalAlwaysAllowedTools = []string{"finish", "store_fact", "search_facts"}
+// step boundaries; ask_user / set_step_status / read_step_output are core
+// agent-infrastructure tools that the executor needs to function regardless of
+// the planner's step profile. The set is unioned into the filtered list
+// regardless of what the planner emitted.
+var criticalAlwaysAllowedTools = []string{"finish", "store_fact", "search_facts", "ask_user", "set_step_status", "read_step_output"}
 
 // SystemPromptBuilder is the callback signature shared between the SDK (for
 // default per-step prompts) and coreStepConfigurator (to synthesize a

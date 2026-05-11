@@ -84,6 +84,7 @@ Wraps `MapBlackboard` with SQLite persistence:
 
 ```go
 type StepResult struct {
+    StepID     string       // ID of the step this result belongs to
     FullOutput string       // finish tool output
     Summary    string       // auto-generated summary (first N chars or LLM-generated)
     Error      error        // nil on success

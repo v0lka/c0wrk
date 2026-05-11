@@ -125,6 +125,11 @@ These tools are always available regardless of step's AllowedTools filter:
 - `finish` — end step execution
 - `store_fact` — save findings to blackboard
 - `search_facts` — retrieve stored facts
+- `ask_user` — prompt user for information
+- `set_step_status` — update step status/checklist
+- `read_step_output` — read a specific step's output
+
+The set is enforced in `core/stepconfig.go` `criticalAlwaysAllowedTools` and unioned into the filtered list whenever `AllowedTools` is non-empty.
 
 ### Tool Result Budget
 

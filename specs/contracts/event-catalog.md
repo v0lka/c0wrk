@@ -41,11 +41,11 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 
 ### Streaming & Content
 
-| Event Type        | Payload                                  | Handler Hook  | Description                                                                                                    |
-| ----------------- | ---------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
-| `thought`         | `{step_num, content, reasoning}`         | useChatEvents | LLM reasoning/thinking                                                                                         |
-| `assistant_chunk` | `{content, accumulated}`                 | useChatEvents | Streaming LLM text (Go emits `accumulated`; TS type currently declares `accumulated_content` — see issue #ED1) |
-| `assistant_done`  | `{content, input_tokens, output_tokens}` | useChatEvents | LLM response complete (always preceded by a `session_tokens` emission)                                         |
+| Event Type        | Payload                                  | Handler Hook  | Description                                                                             |
+| ----------------- | ---------------------------------------- | ------------- | --------------------------------------------------------------------------------------- |
+| `thought`         | `{step_num, content, reasoning}`         | useChatEvents | LLM reasoning/thinking                                                                  |
+| `assistant_chunk` | `{content, accumulated_content}`         | useChatEvents | Streaming LLM text (Go emits both delta `content` and cumulative `accumulated_content`) |
+| `assistant_done`  | `{content, input_tokens, output_tokens}` | useChatEvents | LLM response complete (always preceded by a `session_tokens` emission)                  |
 
 ### Tool Execution
 

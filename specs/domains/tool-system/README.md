@@ -104,16 +104,30 @@ From `config.yaml`:
 security:
   default_policy: "user_confirm"
   tool_policies:
-    bash_exec: "user_confirm"
-    write_file: "always_allow"
+    bash_exec: { policy: "user_confirm" }
+    write_file: { policy: "always_allow" }
 
-tools:
-  file_limits: { max_read_size: 1048576 }
-  ripgrep_limits: { max_matches: 100 }
-  glob_limits: { max_results: 1000 }
-  web_fetch_limits: { max_size: 524288 }
-  bash_timeouts: { default: 30s, max: 300s }
+toolLimits:
+  readDefaultLines: 2000 # max lines per read call
+  readMaxLineLength: 2000 # max characters per line
+  readMaxBytes: 51200 # total output cap (50 KB)
+  ripgrepMaxResults: 200 # max matches for ripgrep
+  ripgrepMaxLineLength: 2000 # max chars per ripgrep line
+  globMaxResults: 200 # max glob results
+  fileSearchMaxMatches: 100 # max matches for file content search
+  webSearchMaxResults: 5 # max web search results
+  webFetchMaxBodySize: 102400 # max response body size (100 KB)
+
+timeouts:
+  bashMaxTimeout: 120 # seconds
+  bashWaitDelay: 5 # seconds
+  ripgrepTimeout: 60 # seconds
+  webFetchTimeout: 30 # seconds
+  webSearchTimeout: 30 # seconds
+  persistenceTimeout: 5 # seconds
 ```
+
+Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys use `camelCase`. Both conventions match the yaml struct tags in `backend/config/config.go`.
 
 ## Extension Points
 

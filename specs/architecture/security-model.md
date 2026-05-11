@@ -107,12 +107,25 @@ In `config.yaml`:
 security:
   default_policy: "user_confirm" # default for tools without explicit override
   tool_policies:
-    bash_exec: "user_confirm"
-    write_file: "always_allow"
-    delete_file: "user_confirm"
-  bash_blacklist:
-    - "rm\\s+-rf\\s+/"
-    - "chmod\\s+777"
+    bash_exec:
+      policy: "user_confirm"
+      blacklist:
+        - "rm\\s+-rf\\s+/"
+        - "sudo\\s+"
+    write_file:
+      policy: "user_confirm"
+    edit_file:
+      policy: "user_confirm"
+    create_directory:
+      policy: "user_confirm"
+    delete_directory:
+      policy: "user_confirm"
+    delete_file:
+      policy: "user_confirm"
+    web_search:
+      policy: "always_allow"
+    web_fetch:
+      policy: "always_allow"
 ```
 
 ## Anti-Patterns

@@ -7,10 +7,12 @@ Transforms flat message arrays into a structured display tree, rendering each it
 ## Key Files
 
 - `frontend/src/lib/chatUtils.ts` — groupMessages() transform
-- `frontend/src/components/chat/ChatMessageList.tsx` — message list container
+- `frontend/src/components/chat/ChatArea.tsx` — chat container (hosts pinned last user message + message list + new-activity banner)
 - `frontend/src/components/chat/ChatMessageRenderer.tsx` — item type dispatch
 - `frontend/src/components/chat/PendingActionsBar.tsx` — action bar (confirm/ask/limit)
-- `frontend/src/components/chat/PinnedMessage.tsx` — sticky last user message
+- `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
+- `frontend/src/components/chat/ChatScrollManager.tsx` — scroll lock / auto-scroll coordination
+- `frontend/src/components/chat/ChatNewActivityBanner.tsx` — “new activity” pill
 
 ## Behavior
 
@@ -70,11 +72,11 @@ Key transformations in `groupMessages()`:
 
 ### Pinned Last User Message
 
-The most recent user message is rendered as a sticky element at the top of the chat area:
+The most recent user message is rendered as a sticky element at the top of the chat area. It is NOT a separate component — `ChatArea.tsx` finds the last user item, filters it out of the main list, and renders `UserMessage` with `isPinned` inside a sticky wrapper (`sticky top-0 z-10`):
 
-- Collapsible (click to expand full text)
+- Collapsible when content exceeds `containerHeight / 7` (maxPinnedHeight) — click to expand full text
 - Provides context for what the agent is working on
-- Does not scroll with message list
+- Does not scroll with message list (sticky positioning, not a separate render tree)
 
 ## Invariants
 

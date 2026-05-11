@@ -9,10 +9,16 @@ Abstracts multiple LLM providers behind a unified interface, with model routing,
 - `sdk/llm/provider.go` — Provider interface
 - `sdk/llm/router.go` — Router (active provider selection, retries)
 - `sdk/llm/modelregistry.go` — ModelRegistry (model metadata)
+- `sdk/llm/family.go` — model family classification
 - `sdk/llm/reasoning.go` — ReasoningEffort resolution
 - `sdk/llm/tokencount.go` — token counting
 - `sdk/llm/usage.go` — TrackingCaller (usage tracking wrapper)
-- `sdk/llm/provider_openai.go` — OpenAI provider
+- `sdk/llm/errors.go` — typed provider errors (rate limit, context exceeded, etc.)
+- `sdk/llm/message.go` — ChatMessage / ChatRequest / ChatResponse types
+- `sdk/llm/schema_sanitize.go` — JSON Schema sanitization for function calling
+- `sdk/llm/provider_helpers.go` — shared provider helpers (retry, streaming)
+- `sdk/llm/provider_openai.go` — OpenAI provider (ChatGPT / OpenAI-compatible Chat Completions transport)
+- `sdk/llm/provider_openai_responses.go` — OpenAI Responses API transport (for reasoning-capable models)
 - `sdk/llm/provider_anthropic.go` — Anthropic provider
 - `sdk/llm/provider_gemini.go` — Google Gemini provider
 - `sdk/llm/provider_lmstudio.go` — LM Studio provider
@@ -72,12 +78,13 @@ llm.Router.Call(ctx, ChatRequest)
 
 ## Provider Implementations
 
-| Provider  | Models          | Special Features                                  |
-| --------- | --------------- | ------------------------------------------------- |
-| OpenAI    | GPT-4o, o1, o3  | Structured output, function calling               |
-| Anthropic | Claude 3.x, 3.5 | Prompt caching (CacheBreak + ephemeral), thinking |
-| Gemini    | Gemini 1.5/2.0  | Safety settings, large context                    |
-| LM Studio | Any local model | OpenAI-compatible API                             |
+| Provider (`llm.active_provider`) | Transport file(s)                                 | Special Features                                  |
+| -------------------------------- | ------------------------------------------------- | ------------------------------------------------- |
+| `anthropic`                      | provider_anthropic.go                             | Prompt caching (CacheBreak + ephemeral), thinking |
+| `gemini`                         | provider_gemini.go                                | Safety settings, large context                    |
+| `lmstudio`                       | provider_lmstudio.go                              | Any local model, OpenAI-compatible API            |
+| `openai_compatible`              | provider_openai.go + provider_openai_responses.go | Generic OpenAI-compatible API endpoint            |
+| `chatgpt`                        | provider_openai.go                                | Simplified OpenAI mode (Chat Completions only)    |
 
 ## Reasoning Effort
 
@@ -85,7 +92,7 @@ Controls extended thinking (reasoning tokens) for supported models:
 
 ```go
 // Base effort from config
-config.Reasoning.Effort = "medium"
+config.Reasoning.BaseEffort = "high"
 
 // Per-role overrides
 config.Reasoning.RoleOverrides = {
@@ -121,31 +128,43 @@ Wraps LLMCaller to track token usage:
 
 ## Configuration
 
-From `config.yaml`:
+From `config.yaml` (yaml keys use `snake_case` throughout this section):
 
 ```yaml
 llm:
-  provider: "anthropic" # active provider
-  model: "claude-sonnet-4-20250514"
-
-  openai:
-    api_key: "${OPENAI_API_KEY}"
+  # One of: "anthropic" | "gemini" | "lmstudio" | "openai_compatible" | "chatgpt"
+  active_provider: "anthropic"
 
   anthropic:
     api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-sonnet-4-20250514"
 
   gemini:
     api_key: "${GEMINI_API_KEY}"
+    model: ""
 
   lmstudio:
-    base_url: "http://localhost:1234/v1"
+    api_key: ""
+    base_url: "http://localhost:1234" # default; no "/v1" suffix
+    model: ""
+
+  openai_compatible:
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "" # user-supplied endpoint
+    model: ""
+
+  chatgpt:
+    api_key: "${OPENAI_API_KEY}"
+    model: ""
 
 reasoning:
-  effort: "medium"
+  base_effort: "high" # default when model supports reasoning
   role_overrides:
     researcher: "high"
     router: "low"
 ```
+
+Active-provider validation: any value not in `ValidProviders` (`backend/config/config.go`) is rejected at load time. There is no top-level `llm.model` — the model is always nested under the selected provider.
 
 ## Invariants
 

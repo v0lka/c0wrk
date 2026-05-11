@@ -45,9 +45,9 @@ Executor calls LLM
   → response tokens counted → update ContextWindow
   → check fill percentage:
       ├─ < predictive threshold (85%): continue normally
-      ├─ > predictive threshold: trigger tool output pruning
-      ├─ > warning threshold (92%): trigger compaction strategy
-      └─ > emergency threshold (98%): aggressive compaction
+      ├─ >= predictive threshold (85%): trigger tool output pruning
+      ├─ >= warning threshold (92%): trigger compaction strategy
+      └─ >= emergency threshold (98%): aggressive compaction
 ```
 
 ## Domain → Strategy Mapping
@@ -68,15 +68,15 @@ Executor calls LLM
 
 ## Configuration
 
-From `config.yaml`:
+From `config.yaml` (values are percentages, not fractions):
 
-| Parameter                         | Default | Description                        |
-| --------------------------------- | ------- | ---------------------------------- |
-| `compaction.predictive_threshold` | 0.85    | Tool output pruning trigger        |
-| `compaction.warning_threshold`    | 0.92    | Strategy compaction trigger        |
-| `compaction.emergency_threshold`  | 0.98    | Aggressive compaction trigger      |
-| `compaction.keep_first`           | 3       | Messages to always retain at start |
-| `compaction.keep_last`            | 10      | Messages to always retain at end   |
+| Parameter                                           | Default | Description                        |
+| --------------------------------------------------- | ------- | ---------------------------------- |
+| `executor.compaction.thresholds.predictive_percent` | 85      | Tool output pruning trigger (%)    |
+| `executor.compaction.thresholds.warning_percent`    | 92      | Strategy compaction trigger (%)    |
+| `executor.compaction.thresholds.emergency_percent`  | 98      | Aggressive compaction trigger (%)  |
+| `executor.compaction.sliding_window.keep_first`     | 3       | Messages to always retain at start |
+| `executor.compaction.sliding_window.keep_last`      | 10      | Messages to always retain at end   |
 
 ## Related Specs
 

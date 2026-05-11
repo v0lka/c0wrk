@@ -66,12 +66,17 @@ User clicks "Cancel"
 
 ### Session Persistence
 
-Persisted in SQLite (`~/.c0wrk/database.db`):
+Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/session/persistence.go` and `backend/project/persistence.go`:
 
-- `sessions` table: id, project_id, name, created_at, last_active_at
-- `messages` table: id, session_id, role, content, metadata (JSON), created_at
-- `tasks` table: id, session_id, status, blackboard (JSON), routing, created_at
-- `events` table: id, session_id, type, data (JSON), created_at
+- `projects` — project roster (in `backend/project/persistence.go`)
+- `sessions` — id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family
+- `session_messages` — id, session_id, role, content, metadata (JSON), created_at
+- `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
+- `task_steps` — step_id, task_id, summary, full_output, error_text, steps (JSON), created_at (PRIMARY KEY (task_id, step_id))
+- `task_facts` — task_id, facts (JSON), updated_at
+- `terminal_commands` — id, session_id, command, created_at
+
+Blackboard state is reconstructed from `tasks` + `task_steps` + `task_facts` on resume (no dedicated `blackboard` column). Events are streamed via the Wails runtime and are NOT persisted to a standalone table — any event state that must survive restart is folded into `session_messages` or `tasks`/`task_steps` via `backend/session/event_persister.go`.
 
 ### Conversation History
 
@@ -101,10 +106,10 @@ After first successful task completion:
 
 ## Configuration
 
-| Parameter                       | Default                | Description                 |
-| ------------------------------- | ---------------------- | --------------------------- |
-| `executor.max_history_messages` | 20                     | Conversation history window |
-| Database path                   | `~/.c0wrk/database.db` | SQLite file location        |
+| Parameter                          | Default                | Description                 |
+| ---------------------------------- | ---------------------- | --------------------------- |
+| `orchestration.maxHistoryMessages` | 20                     | Conversation history window |
+| Database path                      | `~/.c0wrk/database.db` | SQLite file location        |
 
 ## Related Specs
 

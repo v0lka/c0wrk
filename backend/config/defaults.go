@@ -50,7 +50,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.Compaction.Summarization.KeepLast = 5
 	}
 	if cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps == 0 {
-		cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps = 40
+		cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps = 25
 	}
 	if cfg.Executor.Compaction.Hierarchical.DistantRatio == 0 {
 		cfg.Executor.Compaction.Hierarchical.DistantRatio = 0.4
@@ -84,7 +84,7 @@ func ApplyDefaults(cfg *Config) {
 
 	// Tool result budget defaults
 	if cfg.Executor.ToolResultBudget.HardCapTokens == 0 {
-		cfg.Executor.ToolResultBudget.HardCapTokens = 8192
+		cfg.Executor.ToolResultBudget.HardCapTokens = 4096
 	}
 	if cfg.Executor.ToolResultBudget.MaxFillFraction == 0 {
 		cfg.Executor.ToolResultBudget.MaxFillFraction = 0.3
@@ -241,7 +241,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.ToolLimits.WebSearchMaxResults = 5
 	}
 	if cfg.ToolLimits.WebFetchMaxBodySize == 0 {
-		cfg.ToolLimits.WebFetchMaxBodySize = 102400 // 100KB
+		cfg.ToolLimits.WebFetchMaxBodySize = 2097152 // 2MB
 	}
 
 	// Timeouts defaults

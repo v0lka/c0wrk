@@ -66,13 +66,13 @@ File write/edit tools implement the `ToolJudger` interface (`sdk/tools/builtins/
 
 | Config                       | Affects                   | Default             |
 | ---------------------------- | ------------------------- | ------------------- |
-| `FileLimits.MaxReadSize`     | read_file, search_content | 1MB                 |
-| `RipgrepLimits.MaxMatches`   | ripgrep                   | 100                 |
-| `GlobLimits.MaxResults`      | glob                      | 1000                |
-| `WebFetchLimits.MaxSize`     | web_fetch                 | 512KB               |
-| `WebSearchLimits.MaxResults` | web_search                | 10                  |
-| `BashTimeouts.Default`       | bash_exec                 | 30s                 |
-| `BashTimeouts.Max`           | bash_exec                 | 300s                |
+| `FileLimits.MaxReadSize`     | read_file, search_content | 50KB                |
+| `RipgrepLimits.MaxMatches`   | ripgrep                   | 200                 |
+| `GlobLimits.MaxResults`      | glob                      | 200                 |
+| `WebFetchLimits.MaxSize`     | web_fetch                 | 2MB                 |
+| `WebSearchLimits.MaxResults` | web_search                | 5                   |
+| `BashTimeouts.Default`       | bash_exec                 | 120s                |
+| `BashTimeouts.Max`           | bash_exec                 | 120s                |
 | `BashBlacklist`              | bash_exec                 | [] (regex patterns) |
 
 ## Adding a New Built-in Tool — Checklist
