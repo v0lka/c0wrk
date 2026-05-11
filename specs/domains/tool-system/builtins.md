@@ -7,6 +7,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 ## Key Files
 
 - `sdk/tools/builtins/*.go` — tool implementations
+- `sdk/tools/builtins/ripgrep.go` — wraps the `rg` CLI (`--json` event stream)
 - `sdk/tools/builtins/web_search/` — web search provider abstraction
 - `core/tools/builtin_registration.go` — registration function + config types
 
@@ -25,7 +26,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 | `delete_directory`    | File      | user_confirm   | Remove directory recursively                       |
 | `delete_file`         | File      | user_confirm   | Remove single file                                 |
 | `glob`                | Search    | always_allow   | Glob pattern file matching                         |
-| `ripgrep`             | Search    | always_allow   | Fast regex content search                          |
+| `ripgrep`             | Search    | always_allow   | Fast regex content search (shells out to `rg`)     |
 | `semantic_search`     | Search    | always_allow   | Vector similarity search (optional)                |
 | `web_fetch`           | Web       | always_allow   | Fetch URL content                                  |
 | `web_search`          | Web       | always_allow   | Search the web (optional, needs API key)           |
@@ -92,6 +93,8 @@ File write/edit tools implement the `ToolJudger` interface (`sdk/tools/builtins/
 - Tools with `PolicyUserConfirm` default ALWAYS require confirmation unless overridden by config
 - Limits are applied at tool creation time (immutable after registration)
 - Optional tools (semantic_search, web_search, ask_user) are only registered if their dependency func/key is provided
+- `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a hard runtime dependency verified at startup by `desktop.verifyExternalDependencies`
+- `ripgrep` parses the `rg --json` event stream (match/context/end events); exit code 1 means "no matches" and is not an error, exit codes ≥ 2 surface as `IsError` with stderr content
 
 ## Related Specs
 

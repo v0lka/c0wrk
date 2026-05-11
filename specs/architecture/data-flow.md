@@ -34,7 +34,7 @@ core/orchestrator.go: Orchestrator.HandleMessage(ctx, msg, opts)
   │      → Emitter.Routing(mode, domain, complexity)
   │
   ├─ 2. PLAN:
-  │      ├─ Normal mode (complexity < SyntheticPlanThreshold):
+  │      ├─ Normal mode (mode == "normal"):
   │      │    → Synthetic 1-step plan (no LLM call)
   │      ├─ Advanced mode:
   │      │    → Planner.Plan(ctx, task, tools, reflections)

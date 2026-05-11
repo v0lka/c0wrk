@@ -141,11 +141,13 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	}
 
 	// --- Vector index wiring ---
+	// Git is a hard dependency (verified at startup), so any branch
+	// detection failure is a real error — not an excuse to silently fall
+	// back to DefaultBranch and potentially mis-partition the index.
 	if f.vectorManager != nil {
-		branch, branchErr := vectorindex.CurrentBranch(p.WorkspacePath)
+		branch, branchErr := vectorindex.CurrentBranch(f.ctx(), p.WorkspacePath)
 		if branchErr != nil {
-			f.log().Warn("failed to detect git branch", "error", branchErr)
-			branch = vectorindex.DefaultBranch
+			return fmt.Errorf("detecting git branch for project %s: %w", p.ID, branchErr)
 		}
 		capturedBranch := branch
 
@@ -161,7 +163,7 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 				})
 			},
 		}); switchErr != nil {
-			f.log().Warn("vector index project switch failed", "error", switchErr)
+			return fmt.Errorf("switching vector index project: %w", switchErr)
 		}
 	}
 

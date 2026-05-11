@@ -105,13 +105,13 @@ HandleMessage(ctx, message, sessionID, opts)
 │
 ├─ 6. Branch:
 │     ├─ First message (TaskID == ""):
-│     │     ├─ Normal mode → synthetic single-step plan
-│     │     └─ Advanced mode → Planner.Plan() → full DAG
+│     │     ├─ opts.ExecutionMode == "normal" → synthetic single-step plan
+│     │     └─ otherwise → Planner.Plan() → full DAG
 │     │     → Set plan on BB → engine.Resume(ctx, bb)
 │     │
 │     └─ Continuation (TaskID != ""):
-│           ├─ Normal mode → synthetic continuation step
-│           └─ Advanced mode → Planner.PlanContinuation()
+│           ├─ opts.ExecutionMode == "normal" → synthetic continuation step
+│           └─ otherwise → Planner.PlanContinuation()
 │           → Merge into existing plan → engine.Resume(ctx, bb)
 │
 ├─ 7. SDK engine executes (Plan&Execute loop with retry/replan)
@@ -123,12 +123,12 @@ HandleMessage(ctx, message, sessionID, opts)
 
 ## Execution Modes
 
-| Mode     | Condition                          | Behavior                                      |
-| -------- | ---------------------------------- | --------------------------------------------- |
-| Normal   | `opts.ExecutionMode == "normal"`   | Synthetic 1-step plan, no Planner LLM call    |
-| Advanced | `opts.ExecutionMode == "advanced"` | Full DAG plan via Planner, parallel execution |
+| Mode     | Condition                              | Behavior                                      |
+| -------- | -------------------------------------- | --------------------------------------------- |
+| Normal   | `opts.ExecutionMode == "normal"`       | Synthetic 1-step plan, no Planner LLM call    |
+| Advanced | any other value (including "advanced") | Full DAG plan via Planner, parallel execution |
 
-The mode is selected by the user in the frontend (execution mode toggle).
+The mode is selected by the user in the frontend (execution mode toggle). The `SyntheticPlanThreshold` field in `OrchestratorConfig` is reserved for future use but not currently consumed by `shouldUseSyntheticPlan()`.
 
 ## Invariants
 

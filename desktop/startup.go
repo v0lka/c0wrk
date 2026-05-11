@@ -59,6 +59,14 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	a.logger = log
 
+	// Fail fast if any required external CLI tool (git, rg) is missing.
+	// c0wrk hard-depends on these for workspace features; silent fallbacks
+	// have been removed. The helper blocks on a modal and quits the app
+	// when dependencies are missing.
+	if !verifyExternalDependencies(ctx) {
+		return
+	}
+
 	// Determine config path and load configuration via backend.
 	resolved := config.ResolveAndLoad(log)
 	cfg := resolved.Config

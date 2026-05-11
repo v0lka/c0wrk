@@ -49,13 +49,13 @@ Hard cap: MAX-STEPS (configured, typically 10).
 
 ```go
 type PlanStep struct {
-    ID             string       // unique within plan (e.g., "step_1")
-    Summary        string       // 5-7 word UI label
-    Description    string       // detailed What/How/Where/Acceptance Criteria
-    DependsOn      []string     // step IDs this depends on
-    Parallelizable bool         // can run in parallel with siblings
-    EstimatedTools []string     // hint (non-binding)
-    Profile        AgentProfile // role, tools, domain, skills
+    ID             string   // unique within plan (e.g., "step_1")
+    Summary        string   // 5-7 word UI label
+    Description    string   // detailed What/How/Where/Acceptance Criteria
+    DependsOn      []string // step IDs this depends on
+    Parallelizable bool     // can run in parallel with siblings
+    EstimatedTools []string // hint (non-binding)
+    Profile        any      // opaque; consumers type-assert to AgentProfile (core) or equivalent
 }
 ```
 

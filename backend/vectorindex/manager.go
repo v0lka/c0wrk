@@ -2,6 +2,7 @@ package vectorindex
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -124,11 +125,13 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 		return err
 	}
 
-	// Detect branch.
-	branch, err := CurrentBranch(workspacePath)
+	// Detect branch. CurrentBranch returns DefaultBranch for non-git
+	// directories; any other error (git misbehaving, disk corruption,
+	// etc.) is a hard failure — git is a declared prerequisite, so we
+	// refuse to silently paper over real problems.
+	branch, err := CurrentBranch(context.Background(), workspacePath)
 	if err != nil {
-		m.logger.Warn("failed to detect git branch for vector index", "error", err)
-		branch = DefaultBranch
+		return fmt.Errorf("detecting branch for vector index: %w", err)
 	}
 
 	// Create chunker adapter: bridges core.ChunkFile to vectorindex.ChunkFunc.
@@ -164,7 +167,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 
 	// Switch to branch collection.
 	if switchErr := m.service.SwitchBranch(context.Background(), branch); switchErr != nil {
-		m.logger.Warn("vector index branch switch failed", "error", switchErr)
+		return fmt.Errorf("switching vector index branch: %w", switchErr)
 	}
 
 	// Start background indexing.
@@ -205,14 +208,13 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 		m.logger,
 	)
 	if monErr != nil {
-		m.logger.Warn("failed to create git monitor", "error", monErr)
-	} else {
-		m.mu.Lock()
-		m.gitMonitor = gitMon
-		m.mu.Unlock()
-		if startErr := gitMon.Start(); startErr != nil {
-			m.logger.Warn("failed to start git monitor", "error", startErr)
-		}
+		return fmt.Errorf("creating git monitor: %w", monErr)
+	}
+	m.mu.Lock()
+	m.gitMonitor = gitMon
+	m.mu.Unlock()
+	if startErr := gitMon.Start(); startErr != nil {
+		return fmt.Errorf("starting git monitor: %w", startErr)
 	}
 
 	return nil

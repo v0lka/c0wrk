@@ -99,3 +99,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [001-single-module.md](decisions/001-single-module.md) - Single Go module design
 - [002-sdk-isolation.md](decisions/002-sdk-isolation.md) - SDK imports confined to core
 - [003-cgo-free-sqlite.md](decisions/003-cgo-free-sqlite.md) - CGO-free SQLite choice
+- [004-external-binary-dependencies.md](decisions/004-external-binary-dependencies.md) - git and rg as hard runtime dependencies

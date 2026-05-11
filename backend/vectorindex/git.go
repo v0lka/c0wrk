@@ -1,15 +1,19 @@
 package vectorindex
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	git "github.com/go-git/go-git/v6"
 )
 
 const (
@@ -33,32 +37,48 @@ type GitMonitor struct {
 	logger        *slog.Logger
 }
 
-// CurrentBranch returns the current git branch name using go-git.
-// For non-git directories, it returns DefaultBranch.
-func CurrentBranch(repoPath string) (string, error) {
-	// Check if .git directory exists.
+// CurrentBranch returns the current git branch name using the system `git` CLI.
+// For non-git directories, it returns DefaultBranch. Any unexpected git error
+// is propagated to the caller (no silent fallback).
+func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
+	// Fast-path: explicitly non-git directory.
 	gitDir := filepath.Join(repoPath, ".git")
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 		return DefaultBranch, nil
 	}
 
-	repo, err := git.PlainOpen(repoPath)
+	// Normal branch HEAD — this is the common case.
+	if out, err := runGit(ctx, repoPath, "symbolic-ref", "--short", "HEAD"); err == nil {
+		return strings.TrimSpace(out), nil
+	}
+
+	// Detached HEAD: fall back to a short commit hash as branch identifier.
+	out, err := runGit(ctx, repoPath, "rev-parse", "--short=12", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("opening git repo at %s: %w", repoPath, err)
+		return "", fmt.Errorf("detecting branch via git: %w", err)
 	}
+	return strings.TrimSpace(out), nil
+}
 
-	headRef, err := repo.Head()
-	if err != nil {
-		return "", fmt.Errorf("getting HEAD reference: %w", err)
+// runGit runs `git -C repoPath <args...>` and returns trimmed stdout on
+// success. On failure, the returned error includes stderr for diagnosability.
+func runGit(ctx context.Context, repoPath string, args ...string) (string, error) {
+	full := make([]string, 0, len(args)+2)
+	full = append(full, "-C", repoPath)
+	full = append(full, args...)
+
+	cmd := exec.CommandContext(ctx, "git", full...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", fmt.Errorf("git %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		}
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-
-	branch := headRef.Name().Short()
-	if branch == "" {
-		// Detached HEAD — use the hash prefix as identifier.
-		branch = headRef.Hash().String()[:12]
-	}
-
-	return branch, nil
+	return stdout.String(), nil
 }
 
 // NewGitMonitor creates a monitor that watches .git/HEAD for branch changes.
@@ -73,7 +93,7 @@ func NewGitMonitor(repoPath string, onChange func(newBranch string), logger *slo
 		return nil, fmt.Errorf("creating fsnotify watcher: %w", err)
 	}
 
-	branch, branchErr := CurrentBranch(repoPath)
+	branch, branchErr := CurrentBranch(context.Background(), repoPath)
 	if branchErr != nil {
 		_ = fsw.Close()
 		return nil, fmt.Errorf("detecting initial branch: %w", branchErr)
@@ -143,7 +163,7 @@ func (m *GitMonitor) eventLoop() {
 
 // checkBranch reads the current branch and calls onChange if it changed.
 func (m *GitMonitor) checkBranch() {
-	branch, err := CurrentBranch(m.repoPath)
+	branch, err := CurrentBranch(context.Background(), m.repoPath)
 	if err != nil {
 		m.logger.Warn("failed to detect branch", "error", err)
 		return

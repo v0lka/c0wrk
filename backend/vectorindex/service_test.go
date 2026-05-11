@@ -380,7 +380,7 @@ func TestResultToSearchResult(t *testing.T) {
 
 func TestCurrentBranch_NonGitDir(t *testing.T) {
 	dir := t.TempDir()
-	branch, err := CurrentBranch(dir)
+	branch, err := CurrentBranch(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestCurrentBranch_GitRepo(t *testing.T) {
 		t.Fatalf("git commit failed: %v\n%s", err, out)
 	}
 
-	branch, err := CurrentBranch(dir)
+	branch, err := CurrentBranch(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

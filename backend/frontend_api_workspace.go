@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +15,27 @@ import (
 
 	"github.com/epilande/go-devicons"
 )
+
+// errNotGitRepo reports whether a git command failure is due to the target
+// directory not being a git repository (as opposed to a real operational
+// error). Git is a declared prerequisite, so "command not found" is no
+// longer a legitimate concern — only repo presence.
+func errNotGitRepo(err error, stderr string) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "not a git repository")
+}
+
+// isGitRepo reports whether dir is inside a git work tree.
+func isGitRepo(ctx context.Context, dir string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
+}
 
 // GetGitStatus returns a map of absolute file paths to their git status for the active project.
 func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
@@ -41,13 +61,17 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 
 	cmd := exec.CommandContext(f.ctx(), "git", "status", "--porcelain", "-uall")
 	cmd.Dir = absRoot
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = nil
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		// Not a git repo or git not available — silently return empty status.
-		return map[string]GitStatusEntry{}, nil //nolint:nilerr // absence of git is not a failure; return empty map so Wails serializes as {} not null
+		if errNotGitRepo(err, stderr.String()) {
+			// Workspace is not a git repository — a legitimate state.
+			// Return an empty map (not nil) so Wails serializes it as {}.
+			return map[string]GitStatusEntry{}, nil
+		}
+		return nil, fmt.Errorf("git status failed: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 
 	result := make(map[string]GitStatusEntry)
@@ -113,11 +137,13 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	return string(content), nil
 }
 
-// GetFileDiff returns the unified diff of uncommitted changes for a single file
-// within the active project workspace. It concatenates staged and unstaged
-// diffs. For untracked (new) files where both diffs are empty, it produces
-// a diff showing the entire file as added. An empty string is returned when
-// there are no changes or when git is not available.
+// GetFileDiff returns the unified diff of uncommitted changes for a single
+// file within the active project workspace. For tracked files, it concatenates
+// staged and unstaged diffs. For untracked (new) files and for files in
+// non-git workspaces, it produces a full-file diff via `git diff --no-index`.
+//
+// Git is a declared prerequisite, so any failure of git itself (other than
+// the legitimate "not a git repository" case) is propagated as an error.
 func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 	absPath, absRoot, err := f.resolveWorkspacePath(filePath)
 	if err != nil {
@@ -130,28 +156,39 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 		return "", fmt.Errorf("failed to compute relative path: %w", err)
 	}
 
+	// Non-git workspaces short-circuit directly to --no-index, which
+	// produces a full-file diff showing every line as added.
+	if !isGitRepo(f.ctx(), absRoot) {
+		diff, noIndexErr := f.runGitDiffNoIndex(absRoot, relPath)
+		if noIndexErr != nil {
+			return "", fmt.Errorf("git diff --no-index: %w", noIndexErr)
+		}
+		return diff, nil
+	}
+
 	var result strings.Builder
 
-	// Staged changes first
+	// Staged changes first.
 	staged, err := f.runGitDiff(absRoot, true, relPath)
-	if err == nil {
-		result.WriteString(staged)
+	if err != nil {
+		return "", fmt.Errorf("git diff --cached: %w", err)
 	}
+	result.WriteString(staged)
 
-	// Unstaged changes
+	// Unstaged changes.
 	unstaged, err := f.runGitDiff(absRoot, false, relPath)
-	if err == nil {
-		result.WriteString(unstaged)
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w", err)
 	}
+	result.WriteString(unstaged)
 
-	// If no diff was produced, check if the file is untracked.
-	// Only for untracked files (or non-git directories) do we generate
-	// a full-file diff; tracked files with no changes should return empty.
+	// Untracked files in a git repo: show the full file as added.
 	if result.Len() == 0 && !f.isGitTracked(absRoot, relPath) {
 		untrackedDiff, untrackedErr := f.runGitDiffNoIndex(absRoot, relPath)
-		if untrackedErr == nil {
-			result.WriteString(untrackedDiff)
+		if untrackedErr != nil {
+			return "", fmt.Errorf("git diff --no-index: %w", untrackedErr)
 		}
+		result.WriteString(untrackedDiff)
 	}
 
 	return result.String(), nil
@@ -176,12 +213,12 @@ func (f *FrontendAPI) runGitDiff(dir string, cached bool, relPath string) (strin
 
 	cmd := exec.CommandContext(f.ctx(), "git", args...)
 	cmd.Dir = dir
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = nil
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }
@@ -317,7 +354,10 @@ func (f *FrontendAPI) listDirectoryFlat(absDir string) ([]FileNode, error) {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
-	ignoredPaths := gitIgnoredPaths(f.ctx(), absDir, f.log())
+	ignoredPaths, err := gitIgnoredPaths(f.ctx(), absDir)
+	if err != nil {
+		return nil, err
+	}
 
 	var dirs, files []FileNode
 	for _, entry := range entries {
@@ -361,10 +401,13 @@ func (f *FrontendAPI) listDirectoryFlat(absDir string) ([]FileNode, error) {
 // GitIgnored=true so the frontend can render them with a subdued color.
 func (f *FrontendAPI) listDirectoryWalk(absDir string) ([]FileNode, error) {
 	// Build the set of gitignored paths for marking.
-	ignoredPaths := gitIgnoredPaths(f.ctx(), absDir, f.log())
+	ignoredPaths, err := gitIgnoredPaths(f.ctx(), absDir)
+	if err != nil {
+		return nil, err
+	}
 
 	var nodes []FileNode
-	err := filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			f.log().Warn("skipping unreadable path", "path", path, "error", walkErr)
 			return nil
@@ -395,8 +438,8 @@ func (f *FrontendAPI) listDirectoryWalk(absDir string) ([]FileNode, error) {
 		nodes = append(nodes, node)
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to walk directory: %w", err)
+	if walkErr != nil {
+		return nil, fmt.Errorf("failed to walk directory: %w", walkErr)
 	}
 
 	// Sort: directories before files, alphabetically within each group,
@@ -418,19 +461,11 @@ func (f *FrontendAPI) listDirectoryWalk(absDir string) ([]FileNode, error) {
 }
 
 // gitIgnoredPaths returns a set of absolute paths that are ignored by git
-// in the given directory. It uses "git ls-files" to collect ignored untracked
-// files and directories. If the directory is not a git repository or git is
-// not available, it returns nil (no filtering).
-func gitIgnoredPaths(ctx context.Context, dir string, logger *slog.Logger) map[string]bool {
-	// Quick check: if there's no .git dir, not a git repo — skip.
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		// Could be a subdirectory of a repo; try running git anyway.
-		// But first check if git is available at all.
-		if _, lookErr := exec.LookPath("git"); lookErr != nil {
-			return nil
-		}
-	}
-
+// in the given directory. Git is a declared prerequisite, so the only
+// tolerated failure mode is "not a git repository" — in which case the
+// function returns (nil, nil) to signal "no filtering". Any other git
+// failure is propagated as an error.
+func gitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 	// Use git ls-files to get ignored files and directories.
 	// --others: untracked files
 	// --ignored: only show ignored ones
@@ -439,18 +474,20 @@ func gitIgnoredPaths(ctx context.Context, dir string, logger *slog.Logger) map[s
 	// -z: null-separated output
 	cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	cmd.Dir = dir
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = nil // discard stderr
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		logger.Debug("git ls-files failed, skipping gitignore filtering", "dir", dir, "error", err)
-		return nil
+		if errNotGitRepo(err, stderr.String()) {
+			return nil, nil //nolint:nilnil // non-git workspace: no filtering, not an error
+		}
+		return nil, fmt.Errorf("git ls-files failed: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 
 	output := stdout.Bytes()
 	if len(output) == 0 {
-		return nil
+		return nil, nil //nolint:nilnil // no ignored paths is not an error
 	}
 
 	// Parse null-separated paths (relative to dir).
@@ -464,7 +501,7 @@ func gitIgnoredPaths(ctx context.Context, dir string, logger *slog.Logger) map[s
 		rel = strings.TrimSuffix(rel, "/")
 		result[filepath.Join(dir, rel)] = true
 	}
-	return result
+	return result, nil
 }
 
 // WatchDirectory adds a directory to the file watcher.
