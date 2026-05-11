@@ -282,10 +282,18 @@ body {
   font-size: 0.75rem;
 }
 
-/* Placeholder — compact variant: 2px smaller, 50% opacity */
-.placeholder-sm::placeholder {
-  font-size: 0.75rem;
-  opacity: 0.25;
+/* Shared input field styling — text, placeholder, background */
+.c0-input {
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-input) 30%, transparent);
+}
+
+.c0-input::placeholder {
+  color: color-mix(in srgb, var(--color-foreground) 50%, transparent);
+}
+
+.c0-input-transparent {
+  background: transparent;
 }
 
 /* ==========================================================================

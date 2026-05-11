@@ -103,7 +103,7 @@ export function VectorStorePanel() {
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="Keywords..."
-                        className="h-7 text-xs placeholder-sm"
+                        className="h-7 text-xs"
                     />
                     <Input
                         type="number"
@@ -120,7 +120,7 @@ export function VectorStorePanel() {
                         onChange={(e) => setFilePattern(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="File pattern (e.g. *.go, src/**)"
-                        className="h-7 text-xs placeholder-sm"
+                        className="h-7 text-xs"
                     />
                     <Button
                         variant="default"

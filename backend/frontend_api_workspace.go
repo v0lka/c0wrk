@@ -213,9 +213,10 @@ func (f *FrontendAPI) runGitDiffNoIndex(dir, relPath string) (string, error) {
 }
 
 // resolveFileIcon returns the Nerd Font icon and hex color for a file or directory.
+// The color is snapped to the nearest theme palette color.
 func resolveFileIcon(info os.FileInfo) (icon, color string) {
 	style := devicons.IconForInfo(info)
-	return style.Icon, style.Color
+	return style.Icon, snapToTheme(style.Color)
 }
 
 // isHidden reports whether a file or directory should be considered hidden.
@@ -269,7 +270,7 @@ func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
 		return FileIconResponse{}, err
 	}
 	style := devicons.IconForPath(absPath)
-	return FileIconResponse{Icon: style.Icon, IconColor: style.Color}, nil
+	return FileIconResponse{Icon: style.Icon, IconColor: snapToTheme(style.Color)}, nil
 }
 
 // ListDirectory returns the children of a directory. When recursive is false,

@@ -30,7 +30,7 @@ export function ModelSelector({
             value={model}
             onChange={(e) => onModelChange(e.target.value)}
             disabled={disabled}
-            className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none"
+            className="c0-input h-9 px-3 rounded-md border border-input text-sm focus:outline-none"
           >
             <option value="">Select a model...</option>
             {models.map((m) => (

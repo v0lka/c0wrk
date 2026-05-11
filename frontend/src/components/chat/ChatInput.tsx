@@ -157,7 +157,7 @@ export function ChatInput() {
             placeholder={placeholder}
             disabled={isInputDisabled}
             className={cn(
-              'w-full h-full resize-none bg-transparent text-sm placeholder:text-muted-foreground focus-visible:outline-none custom-scrollbar pr-8',
+              'c0-input c0-input-transparent w-full h-full resize-none text-sm focus-visible:outline-none custom-scrollbar pr-8',
               isInputDisabled && 'opacity-50 cursor-not-allowed',
             )}
           />

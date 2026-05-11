@@ -206,7 +206,7 @@ export function FileTreePanel() {
           value={filterText}
           onChange={(e) => handleFilterChange(e.target.value)}
           placeholder={"Filter files... (" + filterMode + ")"}
-          className="h-7 text-xs placeholder-sm"
+          className="h-7 text-xs"
         />
         <Button
           variant={filterMode === 'regex' ? 'default' : 'ghost'}

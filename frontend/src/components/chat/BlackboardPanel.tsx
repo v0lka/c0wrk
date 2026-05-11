@@ -80,7 +80,7 @@ function SearchBar({ value, onChange }: { value: string; onChange: (v: string) =
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 placeholder="Search blackboard..."
-                className="w-full pl-7 pr-2 py-1 text-xs bg-muted border border-border rounded text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                className="c0-input w-full pl-7 pr-2 py-1 text-xs border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
             />
         </div>
     )

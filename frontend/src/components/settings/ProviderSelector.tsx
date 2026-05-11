@@ -21,7 +21,7 @@ export function ProviderSelector({ activeProvider, onProviderChange }: ProviderS
         <select
           value={activeProvider}
           onChange={(e) => onProviderChange(e.target.value)}
-          className="h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none min-w-[180px]"
+          className="c0-input h-9 px-3 rounded-md border border-input text-sm focus:outline-none min-w-[180px]"
         >
           {PROVIDER_KEYS.map((key) => (
             <option key={key} value={key}>
