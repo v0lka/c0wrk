@@ -98,7 +98,10 @@ HandleMessage(ctx, message, sessionID, opts)
 │
 ├─ 2. Load available tools from registry
 │
-├─ 3. ROUTE: router.Route(ctx, message, tools, history, skills)
+├─ 3. ROUTE: router.Route(ctx, routingMessage, tools, history, skills)
+│     → When opts.UserSkills is non-empty, routingMessage is augmented with
+│       skill descriptions via buildSkillAugmentedRoutingMessage so the router
+│       can classify domain/complexity based on the actual task semantics
 │     → RoutingDecision
 │     → Emit Routing event
 │
@@ -109,6 +112,8 @@ HandleMessage(ctx, message, sessionID, opts)
 │     → Emit SkillsActivated event
 │
 ├─ 5. NeedsClarification? → return early with clarification message
+│     (suppressed when opts.UserSkills is non-empty — explicit /skill invocation
+│      means user intent is clear regardless of how the stripped message reads)
 │
 ├─ 6. Branch:
 │     ├─ First message (TaskID == ""):
@@ -144,6 +149,7 @@ HandleMessage(ctx, message, sessionID, opts)
 - Blackboard is created once per first message and restored for continuations
 - Vector search hints are non-blocking (2s timeout, failure is acceptable)
 - Skills are activated task-wide but rendered per-step by StepConfigurator
+- NeedsClarification is suppressed when UserSkills is non-empty (explicit `/skill` invocation implies clear intent)
 - currentRequestCtx and currentRequestSkills are cleared at end of HandleMessage
 
 ## Configuration

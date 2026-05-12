@@ -210,6 +210,72 @@ func TestSkillManagerScan(t *testing.T) {
 	}
 }
 
+func TestSkillManagerSymlink(t *testing.T) {
+	t.Parallel()
+
+	// Create a real skill directory outside the scan root.
+	tmpDir := t.TempDir()
+	realSkillDir := filepath.Join(tmpDir, "real-skills", "my-skill")
+	if err := os.MkdirAll(realSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillMD(t, filepath.Join(realSkillDir, "SKILL.md"),
+		"my-skill", "Symlinked skill.", "Body via symlink.")
+
+	// Create a scan root with a symlink pointing to the real skill dir.
+	scanDir := filepath.Join(tmpDir, "scan")
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realSkillDir, filepath.Join(scanDir, "my-skill")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	mgr := NewSkillManager([]string{scanDir}, nil)
+	if err := mgr.Scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	skill, ok := mgr.Get("my-skill")
+	if !ok {
+		t.Fatal("expected symlinked skill to be discovered")
+	}
+	if skill.Metadata.Description != "Symlinked skill." {
+		t.Errorf("unexpected description: %q", skill.Metadata.Description)
+	}
+	if skill.DirPath != filepath.Join(scanDir, "my-skill") {
+		t.Errorf("DirPath = %q, want symlink path %q", skill.DirPath, filepath.Join(scanDir, "my-skill"))
+	}
+}
+
+func TestSkillManagerSymlinkToFile(t *testing.T) {
+	t.Parallel()
+
+	// Symlinks to files should be ignored (not treated as skill dirs).
+	tmpDir := t.TempDir()
+	scanDir := filepath.Join(tmpDir, "scan")
+	if err := os.MkdirAll(scanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a regular file and symlink to it in the scan dir.
+	regularFile := filepath.Join(tmpDir, "some-file.txt")
+	if err := os.WriteFile(regularFile, []byte("not a skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(regularFile, filepath.Join(scanDir, "not-a-dir")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	mgr := NewSkillManager([]string{scanDir}, nil)
+	if err := mgr.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	if len(mgr.List()) != 0 {
+		t.Error("expected no skills from symlink to file")
+	}
+}
+
 func TestSkillManagerNonexistentDir(t *testing.T) {
 	t.Parallel()
 

@@ -1,9 +1,9 @@
 // Autocomplete popup shown above the chat input for skill and file references.
 // Rendered via portal to escape overflow-hidden containers.
 
-import { useRef, useEffect, useLayoutEffect, useState } from 'react'
+import { Fragment, useRef, useEffect, useLayoutEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Zap, FileText } from 'lucide-react'
+import { Zap, FileText, Folder } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AutocompleteItem } from '@/hooks/useAutocomplete'
 
@@ -44,34 +44,41 @@ export function AutocompletePopup({ items, selectedIndex, onSelect, anchorRef }:
             className="z-50 max-h-[240px] overflow-y-auto rounded-md border border-border bg-popover shadow-lg custom-scrollbar"
             role="listbox"
         >
-            {items.map((item, i) => (
-                <div
-                    key={`${item.type}-${item.value}`}
-                    ref={i === selectedIndex ? selectedRef : undefined}
-                    role="option"
-                    aria-selected={i === selectedIndex}
-                    className={cn(
-                        'flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm',
-                        i === selectedIndex ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50',
-                    )}
-                    onMouseDown={(e) => {
-                        e.preventDefault() // Prevent textarea blur
-                        onSelect(i)
-                    }}
-                >
-                    {item.type === 'skill' ? (
-                        <Zap className="size-3.5 shrink-0 text-warning" />
-                    ) : (
-                        <FileText className="size-3.5 shrink-0 text-info" />
-                    )}
-                    <span className="shrink-0 font-mono text-xs">{item.label}</span>
-                    {item.description && (
-                        <span className="truncate text-xs text-muted-foreground">
-                            {item.description}
-                        </span>
-                    )}
-                </div>
-            ))}
+            {items.map((item, i) => {
+                const showSeparator = i > 0 && items[i - 1]?.pinned && !item.pinned
+                return (
+                    <Fragment key={`${item.type}-${item.value}`}>
+                        {showSeparator && <div className="border-t border-border my-1" />}
+                        <div
+                            ref={i === selectedIndex ? selectedRef : undefined}
+                            role="option"
+                            aria-selected={i === selectedIndex}
+                            className={cn(
+                                'flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm',
+                                i === selectedIndex ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50',
+                            )}
+                            onMouseDown={(e) => {
+                                e.preventDefault() // Prevent textarea blur
+                                onSelect(i)
+                            }}
+                        >
+                            {item.type === 'skill' ? (
+                                <Zap className="size-3.5 shrink-0 text-warning" />
+                            ) : item.type === 'directory' ? (
+                                <Folder className="size-3.5 shrink-0 text-warning" />
+                            ) : (
+                                <FileText className="size-3.5 shrink-0 text-info" />
+                            )}
+                            <span className="shrink-0 font-mono text-xs">{item.label}</span>
+                            {item.description && (
+                                <span className="truncate text-xs text-muted-foreground opacity-30">
+                                    {item.description}
+                                </span>
+                            )}
+                        </div>
+                    </Fragment>
+                )
+            })}
         </div>,
         document.body,
     )

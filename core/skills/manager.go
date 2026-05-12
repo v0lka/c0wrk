@@ -56,6 +56,7 @@ func (m *SkillManager) Scan() error {
 }
 
 // scanDir reads all subdirectories of dir and attempts to parse each as a skill.
+// Symlinks pointing to directories are followed.
 func (m *SkillManager) scanDir(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -67,7 +68,16 @@ func (m *SkillManager) scanDir(dir string) {
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
-			continue
+			// Follow symlinks: os.ReadDir reports symlinks as non-dirs even
+			// if they point to a directory. Use os.Stat to resolve.
+			if entry.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			target := filepath.Join(dir, entry.Name())
+			info, err := os.Stat(target)
+			if err != nil || !info.IsDir() {
+				continue
+			}
 		}
 		skillDir := filepath.Join(dir, entry.Name())
 		skillMD := filepath.Join(skillDir, "SKILL.md")

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -293,6 +294,32 @@ func mergeSkillNames(routerMatched, userSpecified []string) []string {
 	return merged
 }
 
+// buildSkillAugmentedRoutingMessage constructs a routing-specific message that
+// restores the skill invocation context stripped by preprocessMessageText.
+// When the user types "/vibespec-check entire codebase", the preprocessor
+// strips the /skill ref, leaving "entire codebase". The router would classify
+// this without context, producing unreliable domain/complexity. This method
+// prepends the skill invocation with its description so the router can
+// classify based on the actual task semantics.
+func (o *Orchestrator) buildSkillAugmentedRoutingMessage(message string, userSkills []string) string {
+	parts := make([]string, 0, len(userSkills))
+	for _, name := range userSkills {
+		if s, ok := o.skillManager.Get(name); ok {
+			parts = append(parts, fmt.Sprintf("/%s (skill: %s)", name, s.Metadata.Description))
+		} else {
+			parts = append(parts, "/"+name)
+		}
+	}
+
+	// Reconstruct: "/vibespec-check (skill: ...) entire codebase"
+	prefix := strings.Join(parts, " ")
+
+	if message == "" {
+		return prefix
+	}
+	return prefix + " " + message
+}
+
 // logDebug logs a DEBUG level message if logger is not nil.
 func (o *Orchestrator) logDebug(msg string, args ...any) {
 	if o.logger != nil {
@@ -562,7 +589,17 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	if o.skillManager != nil {
 		skillDescriptors = o.skillManager.List()
 	}
-	routing, err := o.router.Route(ctx, message, availableTools, o.conversationHistory, skillDescriptors)
+
+	// When the user explicitly invoked skill(s) via /skill-name, the message
+	// has the skill reference stripped (e.g. "/vibespec-check entire codebase"
+	// → "entire codebase"). The router would classify the stripped message
+	// without skill context, producing unreliable domain/complexity/clarification
+	// judgments. Build a routing-specific message that restores the skill context.
+	routingMessage := message
+	if len(opts.UserSkills) > 0 && o.skillManager != nil {
+		routingMessage = o.buildSkillAugmentedRoutingMessage(message, opts.UserSkills)
+	}
+	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.conversationHistory, skillDescriptors)
 	if err != nil {
 		o.logDebug("orchestrator: routing failed", "error", err)
 		return nil, fmt.Errorf("routing failed: %w", err)
@@ -617,13 +654,21 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}()
 
 	// 5. Handle clarification
-	if routing.NeedsClarification {
+	// When the user explicitly invoked skills via /skill-name, their intent is
+	// clear. Even though the routing message is now augmented with skill
+	// context, suppress clarification as a safety net — the router may still
+	// misjudge ambiguity for terse arguments like "entire codebase".
+	if routing.NeedsClarification && len(opts.UserSkills) == 0 {
 		o.logDebug("orchestrator: returning clarification request")
 		return &HandleResult{
 			Output:          "I need more information to help you. Could you please clarify your request?",
 			RoutingDecision: routing,
 			Blackboard:      bb,
 		}, nil
+	}
+	if routing.NeedsClarification && len(opts.UserSkills) > 0 {
+		o.logDebug("orchestrator: suppressing clarification — user explicitly invoked skills", "skills", opts.UserSkills)
+		routing.NeedsClarification = false
 	}
 
 	var output string

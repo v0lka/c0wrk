@@ -4,14 +4,16 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { listSkills } from '@/api/skills'
 import { listDirectory } from '@/api/workspace'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
 import type { SkillDescriptor, FileEntry } from '@/types/models'
 
 export interface AutocompleteItem {
-  type: 'skill' | 'file'
+  type: 'skill' | 'file' | 'directory'
   label: string
   value: string
   description?: string
+  pinned?: boolean
 }
 
 interface AutocompleteState {
@@ -48,13 +50,13 @@ export function useAutocomplete() {
     return skills
   }, [])
 
-  // Preload files on first use.
+  // Preload workspace entries (files + directories) on first use.
   const ensureFiles = useCallback(async () => {
     if (filesLoaded.current) return filesCache.current
     const rootPath = useFileTreeStore.getState().rootPath
     if (!rootPath) return []
     const entries = await listDirectory(rootPath, true)
-    filesCache.current = entries.filter((e) => !e.is_dir)
+    filesCache.current = entries
     filesLoaded.current = true
     return filesCache.current
   }, [])
@@ -114,13 +116,44 @@ export function useAutocomplete() {
           description: s.description,
         }))
       } else {
-        const files = await ensureFiles()
-        const filtered = fuzzyFilter(query, files, (f) => f.path)
-        items = filtered.map((f) => ({
-          type: 'file' as const,
-          label: f.path,
-          value: f.path,
-        }))
+        const entries = await ensureFiles()
+        const openTabs = useFileViewerStore.getState().openTabs
+        const openTabsSet = new Set(openTabs)
+
+        const pinned: AutocompleteItem[] = []
+        const rest: AutocompleteItem[] = []
+
+        if (query.length === 0) {
+          // Show all open tabs at the top, then fill with remaining entries.
+          for (const path of openTabs) {
+            const entry = entries.find((e) => e.path === path)
+            if (entry) {
+              pinned.push({ type: 'file', label: entry.path, value: entry.path, pinned: true })
+            }
+          }
+          const limit = 50 - pinned.length
+          for (const f of entries) {
+            if (rest.length >= limit) break
+            if (!openTabsSet.has(f.path)) {
+              rest.push({ type: f.is_dir ? 'directory' : 'file', label: f.path, value: f.path })
+            }
+          }
+        } else {
+          // Fuzzy match against last path component (file/dir name).
+          const filtered = fuzzyFilter(query, entries, (f) => f.name)
+          for (const f of filtered) {
+            const item: AutocompleteItem = {
+              type: f.is_dir ? 'directory' : 'file',
+              label: f.path,
+              value: f.path,
+              pinned: openTabsSet.has(f.path),
+            }
+            if (item.pinned) pinned.push(item)
+            else rest.push(item)
+          }
+        }
+
+        items = [...pinned, ...rest]
       }
 
       setState({
@@ -181,9 +214,16 @@ export function useAutocomplete() {
       if (!item) return { text: currentText, cursorPos: currentText.length }
 
       const prefix = state.triggerType === 'skill' ? '/' : '@'
-      // Escape spaces in file paths.
-      const value =
-        item.type === 'file' ? item.value.replace(/ /g, '\\ ') : item.value
+      // Escape spaces in file/directory paths; append trailing slash for directories.
+      let value: string
+      if (item.type === 'directory') {
+        const dir = item.value.endsWith('/') ? item.value : item.value + '/'
+        value = dir.replace(/ /g, '\\ ')
+      } else if (item.type === 'file') {
+        value = item.value.replace(/ /g, '\\ ')
+      } else {
+        value = item.value
+      }
 
       const before = currentText.slice(0, state.triggerPos)
       const after = currentText.slice(state.triggerPos + 1 + state.query.length)

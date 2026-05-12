@@ -51,7 +51,7 @@ Three-column panel layout (no router, single-page app):
 
 Resize handles (4px) between panels. Panel states persisted via localStorage.
 
-Chat input supports `/skill` and `@file` autocomplete: typing `/` or `@` (at word boundary) triggers a fuzzy-filtered popup of available skills or project files. Selection inserts the reference into the textarea. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
+Chat input supports `/skill` and `@file` autocomplete: typing `/` or `@` (at word boundary) triggers a fuzzy-filtered popup of available skills or workspace entries (files and directories). Fuzzy matching runs against the entry name (last path component), not the full path. Files currently open in the file viewer appear pinned at the top of the list, separated from the rest by a horizontal rule; with an empty query all open tabs are shown. Selection inserts the reference into the textarea (directories with a trailing `/`). On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
 
 ## Design System
 

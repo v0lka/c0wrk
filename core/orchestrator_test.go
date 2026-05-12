@@ -1478,6 +1478,192 @@ func TestHandleMessage_Clarification(t *testing.T) {
 	}
 }
 
+// TestHandleMessage_ClarificationSuppressedWithUserSkills verifies that when the
+// router returns needs_clarification=true but the user explicitly invoked a skill
+// (UserSkills is non-empty), the clarification short-circuit is bypassed and
+// execution proceeds to planning. It also verifies that the routing message
+// contains the skill's description so the router can classify accurately.
+func TestHandleMessage_ClarificationSuppressedWithUserSkills(t *testing.T) {
+	// Create a temp skill directory so the SkillManager can resolve the skill.
+	skillDir := t.TempDir()
+	vsDir := filepath.Join(skillDir, "vibespec-check")
+	if err := os.MkdirAll(vsDir, 0o755); err != nil {
+		t.Fatalf("failed to create skill dir: %v", err)
+	}
+	skillMD := "---\nname: vibespec-check\ndescription: Analyze codebase for specification compliance\n---\nRun the vibespec check.\n"
+	if err := os.WriteFile(filepath.Join(vsDir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("failed to write SKILL.md: %v", err)
+	}
+	sm := skills.NewSkillManager([]string{skillDir}, nil)
+	if err := sm.Scan(); err != nil {
+		t.Fatalf("SkillManager.Scan failed: %v", err)
+	}
+
+	var routerReceivedMessage string
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router — capture the user message it receives
+				for _, m := range req.Messages {
+					if m.Role == "user" {
+						routerReceivedMessage = m.Content
+					}
+				}
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "needs_clarification": true, "matched_skills": []}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Planner
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant",
+						Content: `{"steps": [
+							{"id": "step_1", "description": "Run vibespec check", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash_exec"]}
+						]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 3: // Executor — finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Check complete",
+						ToolCalls: []llm.ToolCall{
+							{
+								ID:    "call_1",
+								Name:  "finish",
+								Input: json.RawMessage(`{"answer": "Vibespec check done"}`),
+							},
+						},
+					},
+					StopReason: "tool_use",
+				}, nil
+			default:
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: ""},
+					StopReason: "end_turn",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+		SkillManager:   sm,
+	})
+
+	// Simulate "/vibespec-check entire codebase" → message="entire codebase", UserSkills=["vibespec-check"]
+	result, err := orchestrator.HandleMessage(context.Background(), "entire codebase", "session-test", HandleOptions{
+		ExecutionMode: "advanced",
+		UserSkills:    []string{"vibespec-check"},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Must NOT return the clarification message
+	clarificationMsg := "I need more information to help you. Could you please clarify your request?"
+	if result.Output == clarificationMsg {
+		t.Error("expected clarification to be suppressed when UserSkills is non-empty, but got clarification message")
+	}
+
+	// Routing decision should have NeedsClarification overridden to false
+	if result.RoutingDecision != nil && result.RoutingDecision.NeedsClarification {
+		t.Error("expected NeedsClarification to be false after suppression")
+	}
+
+	// Verify the router received the skill-augmented message (not bare "entire codebase")
+	if !strings.Contains(routerReceivedMessage, "vibespec-check") {
+		t.Errorf("router message should contain skill name, got: %s", routerReceivedMessage)
+	}
+	if !strings.Contains(routerReceivedMessage, "Analyze codebase") {
+		t.Errorf("router message should contain skill description, got: %s", routerReceivedMessage)
+	}
+	if !strings.Contains(routerReceivedMessage, "entire codebase") {
+		t.Errorf("router message should contain the original arguments, got: %s", routerReceivedMessage)
+	}
+
+	// Verify execution proceeded past routing (planner was called)
+	if callIdx < 2 {
+		t.Errorf("expected at least 2 LLM calls (router + planner), got %d", callIdx)
+	}
+}
+
+// TestBuildSkillAugmentedRoutingMessage verifies the message augmentation logic.
+func TestBuildSkillAugmentedRoutingMessage(t *testing.T) {
+	// Create a SkillManager with a test skill
+	skillDir := t.TempDir()
+	checkDir := filepath.Join(skillDir, "code-check")
+	if err := os.MkdirAll(checkDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	md := "---\nname: code-check\ndescription: Run static analysis on source code\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(checkDir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	sm := skills.NewSkillManager([]string{skillDir}, nil)
+	if err := sm.Scan(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	o := &Orchestrator{skillManager: sm}
+
+	t.Run("single skill with args", func(t *testing.T) {
+		got := o.buildSkillAugmentedRoutingMessage("src/main.go", []string{"code-check"})
+		if !strings.Contains(got, "/code-check") {
+			t.Errorf("expected /code-check in message, got: %s", got)
+		}
+		if !strings.Contains(got, "Run static analysis") {
+			t.Errorf("expected skill description in message, got: %s", got)
+		}
+		if !strings.Contains(got, "src/main.go") {
+			t.Errorf("expected original args in message, got: %s", got)
+		}
+	})
+
+	t.Run("skill without args", func(t *testing.T) {
+		got := o.buildSkillAugmentedRoutingMessage("", []string{"code-check"})
+		if !strings.Contains(got, "/code-check") {
+			t.Errorf("expected /code-check in message, got: %s", got)
+		}
+		if strings.HasSuffix(got, " ") {
+			t.Errorf("message should not have trailing space, got: %q", got)
+		}
+	})
+
+	t.Run("unknown skill falls back to bare name", func(t *testing.T) {
+		got := o.buildSkillAugmentedRoutingMessage("args", []string{"unknown-skill"})
+		if !strings.Contains(got, "/unknown-skill") {
+			t.Errorf("expected /unknown-skill in message, got: %s", got)
+		}
+		if strings.Contains(got, "skill:") {
+			t.Errorf("unknown skill should not have description, got: %s", got)
+		}
+	})
+}
+
 // TestBuildSystemPrompt_PlanMode verifies that buildSystemPrompt includes the
 // Plan Context section when PlanModeKey is set in the context.
 func TestBuildSystemPrompt_PlanMode(t *testing.T) {
