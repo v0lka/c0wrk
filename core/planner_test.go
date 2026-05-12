@@ -1654,7 +1654,7 @@ func TestFormatActiveSkills(t *testing.T) {
 	t.Parallel()
 
 	t.Run("no skills in context", func(t *testing.T) {
-		result := formatActiveSkills(context.Background(), "test preamble", 2000)
+		result := formatActiveSkills(context.Background(), "test preamble")
 		if result != "" {
 			t.Error("expected empty string when no skills in context")
 		}
@@ -1675,7 +1675,7 @@ func TestFormatActiveSkills(t *testing.T) {
 			},
 		})
 
-		result := formatActiveSkills(ctx, "test preamble", 2000)
+		result := formatActiveSkills(ctx, "test preamble")
 		if !strings.Contains(result, "Active Skills") {
 			t.Error("expected Active Skills heading")
 		}
@@ -1693,7 +1693,7 @@ func TestFormatActiveSkills(t *testing.T) {
 		}
 	})
 
-	t.Run("long skill body is truncated", func(t *testing.T) {
+	t.Run("long skill body is emitted in full", func(t *testing.T) {
 		longBody := strings.Repeat("x", 3000)
 		ctx := WithActiveSkills(context.Background(), &ActiveSkills{
 			Skills: []*skills.Skill{
@@ -1705,19 +1705,12 @@ func TestFormatActiveSkills(t *testing.T) {
 			},
 		})
 
-		result := formatActiveSkills(ctx, "test preamble", 2000)
-		if !strings.Contains(result, "truncated") {
-			t.Error("expected truncation marker for long skill body")
+		result := formatActiveSkills(ctx, "test preamble")
+		if strings.Contains(result, "truncated") {
+			t.Error("skill body must not be truncated")
 		}
-		// The body portion should not contain the full 3000 chars
-		bodyStart := strings.Index(result, "### Skill: long-skill")
-		if bodyStart == -1 {
-			t.Fatal("skill section not found")
-		}
-		skillSection := result[bodyStart:]
-		// The section should be much shorter than 3000 chars
-		if len(skillSection) > 2500 {
-			t.Errorf("skill section too long (%d chars), expected truncation", len(skillSection))
+		if !strings.Contains(result, longBody) {
+			t.Error("expected full skill body to appear verbatim")
 		}
 	})
 
@@ -1737,7 +1730,7 @@ func TestFormatActiveSkills(t *testing.T) {
 			},
 		})
 
-		result := formatActiveSkills(ctx, "test preamble", 2000)
+		result := formatActiveSkills(ctx, "test preamble")
 		if !strings.Contains(result, "skill-a") {
 			t.Error("expected skill-a name")
 		}

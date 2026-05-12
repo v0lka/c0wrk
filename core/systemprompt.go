@@ -141,10 +141,11 @@ func formatAgentsMD(ctx context.Context) string {
 }
 
 // formatActiveSkills returns a prompt section with active skill instructions,
-// or an empty string when no skills are active.
+// or an empty string when no skills are active. The full skill body is always
+// emitted verbatim — truncating guidance silently degrades plan/execution
+// fidelity, so callers must not trim skill bodies here.
 // preamble is the text after the "## Active Skills\n" heading.
-// maxBodyLen is the per-skill body truncation limit; 0 means no truncation.
-func formatActiveSkills(ctx context.Context, preamble string, maxBodyLen int) string {
+func formatActiveSkills(ctx context.Context, preamble string) string {
 	activeSkills := ActiveSkillsFromContext(ctx)
 	if activeSkills == nil || len(activeSkills.Skills) == 0 {
 		return ""
@@ -163,11 +164,7 @@ func formatActiveSkills(ctx context.Context, preamble string, maxBodyLen int) st
 			sb.WriteString("Allowed tools: " + s.Metadata.AllowedTools + "\n")
 		}
 		sb.WriteString("\n")
-		body := s.Body
-		if maxBodyLen > 0 && len(body) > maxBodyLen {
-			body = body[:maxBodyLen] + "\n... (truncated)"
-		}
-		sb.WriteString(body)
+		sb.WriteString(s.Body)
 		sb.WriteString("\n\n")
 	}
 	return sb.String()
@@ -187,7 +184,6 @@ func appendPlannerContextSections(ctx context.Context, base string) string {
 	result += formatAgentsMD(ctx)
 	result += formatActiveSkills(ctx,
 		"The following skills have been matched to this task. When formulating steps, incorporate their guidance into the plan.",
-		2000,
 	)
 
 	return result
@@ -237,10 +233,9 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	// Append auto-RAG vector search hints (with semantic_search guidance for executors).
 	result += formatVectorSearchHints(ctx, "\nUse semantic_search tool for deeper investigation.")
 
-	// Append active Agent Skills (full body, no truncation for executors).
+	// Append active Agent Skills.
 	result += formatActiveSkills(ctx,
 		"The following skills have been activated for this task. Follow their instructions carefully.",
-		0,
 	)
 
 	return result

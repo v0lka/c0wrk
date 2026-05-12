@@ -150,8 +150,15 @@ func coreStepConfigurator(
 		// Option 3b preserves the Normal-mode invariant: CreateSyntheticPlan emits
 		// AgentProfile{} (empty Skills) so this branch is a no-op and the full
 		// router-matched pool reaches the single synthetic step via fallback (2).
+		//
+		// skillMgr is NOT required here: narrowActiveSkills resolves names first
+		// against the task-scope pool (router-matched skills live there), and only
+		// falls back to the manager for names absent from the pool. Gating on
+		// skillMgr != nil would wrongly suppress narrowing whenever the caller
+		// does not wire a manager, even though every requested skill is already
+		// present in ctx.
 		stepSystemPrompt := profile.SystemPrompt
-		if stepSystemPrompt == "" && len(profile.Skills) > 0 && sysPromptBuilder != nil && taskCtxProvider != nil && skillMgr != nil {
+		if stepSystemPrompt == "" && len(profile.Skills) > 0 && sysPromptBuilder != nil && taskCtxProvider != nil {
 			taskCtx := taskCtxProvider()
 			narrowed := narrowActiveSkills(taskCtx, profile.Skills, skillMgr, logger, step.ID)
 			if narrowed != nil && len(narrowed.Skills) > 0 {

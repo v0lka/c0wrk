@@ -1983,7 +1983,7 @@ func TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills(t *testing.T) 
 	taskCtxProvider := func() context.Context { return taskCtx }
 
 	builder := func(ctx context.Context, userMessage string, _ llm.ModelMetadata) string {
-		return formatActiveSkills(ctx, "preamble", 0)
+		return formatActiveSkills(ctx, "preamble")
 	}
 
 	configurator := coreStepConfigurator(cfg, nil, nil, builder, taskCtxProvider, nil)
@@ -2018,7 +2018,7 @@ func TestCoreStepConfigurator_StepSkillNarrowing(t *testing.T) {
 	taskCtx := WithActiveSkills(context.Background(), taskPool)
 
 	builder := func(ctx context.Context, _ string, _ llm.ModelMetadata) string {
-		return formatActiveSkills(ctx, "preamble", 0)
+		return formatActiveSkills(ctx, "preamble")
 	}
 
 	configurator := coreStepConfigurator(
@@ -2097,7 +2097,7 @@ func TestCoreStepConfigurator_UnknownSkillDropped(t *testing.T) {
 	builderCalls := 0
 	builder := func(ctx context.Context, _ string, _ llm.ModelMetadata) string {
 		builderCalls++
-		return formatActiveSkills(ctx, "preamble", 0)
+		return formatActiveSkills(ctx, "preamble")
 	}
 
 	configurator := coreStepConfigurator(
