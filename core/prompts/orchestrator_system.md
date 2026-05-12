@@ -113,3 +113,13 @@ Example:
 ```
 
 WORKSPACE-CONTEXT
+
+## File References
+
+User messages may contain `fileref://` URIs indicating files the user explicitly referenced:
+
+- `fileref://path/to/file.ts` — entire file is relevant context
+- `fileref://path/to/file.ts#L5` — line 5 is specifically relevant
+- `fileref://path/to/file.ts#L5-10` — lines 5-10 are specifically relevant
+
+These are explicit user hints about which files matter. Prioritize reading these files when planning your approach.

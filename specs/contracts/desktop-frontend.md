@@ -10,18 +10,18 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 ### Session (`backend/frontend_api_session.go`)
 
-| Method               | Parameters     | Returns                   | Description                         |
-| -------------------- | -------------- | ------------------------- | ----------------------------------- |
-| `CreateSession`      | —              | SessionInfo               | Create new session (active project) |
-| `DeleteSession`      | id             | error                     | Delete session                      |
-| `RenameSession`      | id, name       | error                     | Rename session                      |
-| `ArchiveSession`     | id             | error                     | Archive/unarchive session           |
-| `ListSessions`       | —              | []SessionInfo             | List active project sessions        |
-| `GetSessionHistory`  | id             | []ChatMessage             | Get message history                 |
-| `GetBlackboardState` | sessionID      | \*BlackboardStateResponse | Get blackboard task state           |
-| `SendMessage`        | id, text, mode | error                     | Send user message (async execution) |
-| `CancelTask`         | id             | error                     | Cancel running task                 |
-| `ResumeTask`         | id             | error                     | Resume failed task                  |
+| Method               | Parameters                   | Returns                   | Description                         |
+| -------------------- | ---------------------------- | ------------------------- | ----------------------------------- |
+| `CreateSession`      | —                            | SessionInfo               | Create new session (active project) |
+| `DeleteSession`      | id                           | error                     | Delete session                      |
+| `RenameSession`      | id, name                     | error                     | Rename session                      |
+| `ArchiveSession`     | id                           | error                     | Archive/unarchive session           |
+| `ListSessions`       | —                            | []SessionInfo             | List active project sessions        |
+| `GetSessionHistory`  | id                           | []ChatMessage             | Get message history                 |
+| `GetBlackboardState` | sessionID                    | \*BlackboardStateResponse | Get blackboard task state           |
+| `SendMessage`        | id, text, mode, activeSkills | error                     | Send user message (async execution) |
+| `CancelTask`         | id                           | error                     | Cancel running task                 |
+| `ResumeTask`         | id                           | error                     | Resume failed task                  |
 
 ### Project (`backend/frontend_api_project.go`)
 
@@ -90,6 +90,12 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | Method           | Parameters | Returns                  | Description          |
 | ---------------- | ---------- | ------------------------ | -------------------- |
 | `OptimizePrompt` | prompt     | \*OptimizePromptResponse | Optimize user prompt |
+
+### Skills (`backend/frontend_api_skills.go`)
+
+| Method       | Parameters | Returns              | Description                              |
+| ------------ | ---------- | -------------------- | ---------------------------------------- |
+| `ListSkills` | —          | []SkillDescriptorDTO | List available skills (name+description) |
 
 ## Event Protocol
 

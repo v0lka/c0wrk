@@ -778,7 +778,7 @@ func (m *Manager) ArchiveSession(id string) error {
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error {
+func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, activeSkills []string) error {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to restore session: %w", err)
@@ -855,7 +855,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 	}
 
 	// Launch goroutine to handle the message
-	go func(ctx context.Context, msg string) {
+	go func(ctx context.Context, msg string, skills []string) {
 		defer close(doneCh)
 		defer func() {
 			session.mu.Lock()
@@ -873,6 +873,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
 			TaskID:        lastTaskID,
 			ExecutionMode: mode,
+			UserSkills:    skills,
 		})
 
 		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh
@@ -884,6 +885,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
 				TaskID:        "",
 				ExecutionMode: mode,
+				UserSkills:    skills,
 			})
 		}
 
@@ -970,7 +972,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string) error 
 			},
 		})
 		m.emitResumableIfUnfinished(id)
-	}(taskCtx, text)
+	}(taskCtx, text, activeSkills)
 
 	return nil
 }

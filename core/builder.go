@@ -509,6 +509,13 @@ func (b *OrchestratorBuilder) SetSkillDirs(dirs []string) {
 	b.baseSkillDirs = append([]string(nil), dirs...)
 }
 
+// GetBaseSkillDirs returns a copy of the base (shared) skill discovery directories.
+func (b *OrchestratorBuilder) GetBaseSkillDirs() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return append([]string(nil), b.baseSkillDirs...)
+}
+
 // buildSessionSkillManager constructs a per-session SkillManager that always
 // scans the current project's `.agents/skills` (when workspacePath is set) in
 // addition to the shared base dirs. Scan errors are logged and do not abort

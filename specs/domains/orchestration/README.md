@@ -65,6 +65,13 @@ type RoutingDecision struct {
     MatchedSkills      []string
 }
 
+// Handle options
+type HandleOptions struct {
+    TaskID        string   // non-empty = continuation of existing task
+    ExecutionMode string   // "normal" = synthetic plan, "advanced" = full Plan&Execute
+    UserSkills    []string // explicitly requested by user via /skill refs (bypass router)
+}
+
 // Handle result
 type HandleResult struct {
     Output          string
@@ -96,6 +103,7 @@ HandleMessage(ctx, message, sessionID, opts)
 │     → Emit Routing event
 │
 ├─ 4. Activate matched skills:
+│     → Merge router-matched skills with opts.UserSkills (deduplicated union)
 │     → Set ActiveSkills in context
 │     → Apply skill policy overrides to tool registry
 │     → Emit SkillsActivated event

@@ -443,6 +443,20 @@ export namespace backend {
 	        this.family = source["family"];
 	    }
 	}
+	export class SkillDescriptorDTO {
+	    name: string;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SkillDescriptorDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	    }
+	}
 	export class ToolInfo {
 	    name: string;
 	    description: string;

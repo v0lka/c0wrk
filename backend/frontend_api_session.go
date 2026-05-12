@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/user/agent/backend/session"
@@ -133,7 +135,8 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 
 // SendMessage sends a user message to a session (async - results come via events).
 // mode controls execution strategy: "normal" = synthetic single-step, "advanced" = full Plan&Execute.
-func (f *FrontendAPI) SendMessage(id, text, mode string) error {
+// activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
+func (f *FrontendAPI) SendMessage(id, text, mode string, activeSkills []string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
@@ -144,7 +147,7 @@ func (f *FrontendAPI) SendMessage(id, text, mode string) error {
 			f.log().Error("failed to update session activity", "error", err)
 		}
 	}
-	// Save user message to store
+	// Save user message to store (original text with /skill and @file markers for display on reload).
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
 		if err := f.store.SaveMessage(context.Background(), session.ChatMessage{
@@ -157,10 +160,10 @@ func (f *FrontendAPI) SendMessage(id, text, mode string) error {
 		}
 	}
 
-	// Check if this is the first message (session has default name)
-	// Title generation is handled by the backend session Manager.
+	// Preprocess text for the orchestrator: strip /skill refs and convert @file refs to fileref:// URIs.
+	processedText := preprocessMessageText(text, activeSkills)
 
-	if err := f.app.Manager().SendMessage(f.ctx(), id, text, mode); err != nil {
+	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, mode, activeSkills); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil
@@ -274,4 +277,49 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 	}
 
 	return resp
+}
+
+// fileRefPattern matches @path references (with optional backslash-escaped spaces and #LN or #LN-M suffix).
+var fileRefPattern = regexp.MustCompile(`(?:^|\s)@((?:[^\s\\]|\\.)+(?:#\d+(?:-\d+)?)?)`)
+
+// preprocessMessageText transforms a user message for the orchestrator:
+// 1. Strips /skill-name references for each skill in activeSkills.
+// 2. Converts @file-path references to fileref:// URIs.
+func preprocessMessageText(text string, activeSkills []string) string {
+	result := text
+
+	// Strip skill references.
+	for _, name := range activeSkills {
+		pattern := regexp.MustCompile(`(?:^|\s)/` + regexp.QuoteMeta(name) + `(?:\s|$)`)
+		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
+			// Preserve surrounding whitespace boundaries: if the match had leading/trailing space,
+			// collapse to a single space; if it was at start/end, remove entirely.
+			leading := match != "" && match[0] == ' '
+			trailing := match != "" && match[len(match)-1] == ' '
+			if leading || trailing {
+				return " "
+			}
+			return ""
+		})
+	}
+
+	// Convert @file references to fileref:// URIs.
+	result = fileRefPattern.ReplaceAllStringFunc(result, func(match string) string {
+		// Preserve leading whitespace.
+		prefix := ""
+		trimmed := match
+		if trimmed != "" && (trimmed[0] == ' ' || trimmed[0] == '\t' || trimmed[0] == '\n') {
+			prefix = trimmed[:1]
+			trimmed = trimmed[1:]
+		}
+		// Remove the @ prefix.
+		path := strings.TrimPrefix(trimmed, "@")
+		// Unescape backslash-escaped spaces.
+		path = strings.ReplaceAll(path, `\ `, " ")
+		return prefix + "fileref://" + path
+	})
+
+	// Collapse multiple spaces into one.
+	result = regexp.MustCompile(`  +`).ReplaceAllString(result, " ")
+	return strings.TrimSpace(result)
 }

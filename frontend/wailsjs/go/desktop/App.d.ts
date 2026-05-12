@@ -56,6 +56,8 @@ export function ListProviderModels(arg1:string):Promise<Array<string>>;
 
 export function ListSessions():Promise<Array<session.SessionInfo>>;
 
+export function ListSkills():Promise<Array<backend.SkillDescriptorDTO>>;
+
 export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;
 
 export function PickDirectory():Promise<string>;
@@ -70,7 +72,7 @@ export function ResumeTask(arg1:string):Promise<void>;
 
 export function SearchVectorStore(arg1:string,arg2:number,arg3:string):Promise<Array<backend.VectorStoreEntry>>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
 
 export function SetConfigLoadState(arg1:Array<string>):Promise<void>;
 

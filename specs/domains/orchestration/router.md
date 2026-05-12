@@ -50,7 +50,7 @@ Classifies user requests by domain, complexity, and matched skills to determine 
 
 ### Skill Matching
 
-The router prompt includes the full list of available skills (name + description). The LLM selects which skills are relevant to the current request. Selected skills are activated for the task (system prompt injection, tool policy overrides).
+The router prompt includes the full list of available skills (name + description). The LLM selects which skills are relevant to the current request. Selected skills are merged with user-specified skills (from `/skill` references in the message) via `mergeSkillNames()` — a deduplicated union where router-matched skills come first. The combined set is activated for the task (system prompt injection, tool policy overrides).
 
 ### Process
 
@@ -82,6 +82,7 @@ The router prompt includes the full list of available skills (name + description
 - Domain is always from the valid set after validation
 - Complexity is always in [1, 5] after clamping
 - Skill names in MatchedSkills are always deduplicated
+- User-specified skills (from HandleOptions.UserSkills) are merged with router-matched skills in the orchestrator, not in the router
 - Router never modifies tool registry or any state (pure classification)
 
 ## Related Specs

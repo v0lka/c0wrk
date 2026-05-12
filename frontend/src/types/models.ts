@@ -97,6 +97,11 @@ export interface PlanGroup {
   totalCount?: number
 }
 
+export interface SkillDescriptor {
+  name: string
+  description: string
+}
+
 // --- Config types ---
 
 export interface ConfigProviderFull {

@@ -29,14 +29,18 @@ User clicks "New Chat" (or first message in empty state)
 
 ```
 User sends message
-  → Frontend: SendMessage(sessionId, text, mode)
+  → Frontend: SendMessage(sessionId, text, mode, activeSkills)
   → Backend: FrontendAPI.SendMessage()
+      ├─ Persist original text to DB (preserves /skill and @file refs)
+      ├─ Preprocess text for orchestrator:
+      │   ├─ Strip /skill references from text
+      │   └─ Convert @file references to fileref:// URIs
       ├─ Get or create Orchestrator for session (via factory)
       ├─ Create emitter (WailsEmitter + EventPersister)
-      ├─ Determine opts: {TaskID, ExecutionMode}
+      ├─ Determine opts: {TaskID, ExecutionMode, UserSkills: activeSkills}
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
-      ├─ Call orchestrator.HandleMessage(ctx, text, sessionId, opts)
+      ├─ Call orchestrator.HandleMessage(ctx, preprocessedText, sessionId, opts)
       │   (executes asynchronously, events stream to frontend)
       ├─ On success: persist result, emit task_complete
       └─ On failure: emit task_failed_resumable or error

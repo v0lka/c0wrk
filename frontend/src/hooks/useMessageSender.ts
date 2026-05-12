@@ -12,7 +12,7 @@ import { logger } from '@/lib/logger'
 
 interface UseMessageSenderResult {
   /** Send a user message, auto-creating a session if needed. */
-  send: (messageText: string) => Promise<void>
+  send: (messageText: string, activeSkills?: string[]) => Promise<void>
   /** Cancel the running task in the active session. */
   cancel: () => Promise<void>
   /** True while the send/create-session RPC is in flight. */
@@ -23,7 +23,7 @@ export function useMessageSender(): UseMessageSenderResult {
   const [isProcessing, setIsProcessing] = useState(false)
   const executionMode = useExecutionModeStore(s => s.mode)
 
-  const send = useCallback(async (messageText: string) => {
+  const send = useCallback(async (messageText: string, activeSkills?: string[]) => {
     if (!messageText.trim()) return
     setIsProcessing(true)
 
@@ -54,7 +54,7 @@ export function useMessageSender(): UseMessageSenderResult {
     useChatStore.getState().setActivityStatus('Processing...')
 
     try {
-      await sendMessage(sessionId, messageText, executionMode)
+      await sendMessage(sessionId, messageText, executionMode, activeSkills ?? [])
     } catch (error) {
       logger.error('Failed to send message:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)

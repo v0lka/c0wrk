@@ -187,3 +187,9 @@ type BlackboardFactResponse struct {
 	Content  string   `json:"content"`
 	Author   string   `json:"author"`
 }
+
+// SkillDescriptorDTO is a lightweight skill descriptor exposed to the frontend.
+type SkillDescriptorDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}

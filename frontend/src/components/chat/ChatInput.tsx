@@ -9,6 +9,9 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { TerminalPanel } from '@/components/terminal/TerminalPanel'
 import { useMessageSender } from '@/hooks/useMessageSender'
+import { useAutocomplete } from '@/hooks/useAutocomplete'
+import { AutocompletePopup } from '@/components/chat/AutocompletePopup'
+import { extractSkillRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
 import { Play, Square, Maximize2, Minimize2, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow } from 'lucide-react'
 import { useExecutionModeStore } from '@/stores/executionModeStore'
@@ -19,6 +22,7 @@ export function ChatInput() {
   const [text, setText] = useState('')
   const [isOptimizing, setIsOptimizing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const inputAreaRef = useRef<HTMLDivElement>(null)
 
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
@@ -35,6 +39,7 @@ export function ChatInput() {
   const toggleExpanded = useInputModeStore(s => s.toggleExpanded)
 
   const { send, cancel, isProcessing } = useMessageSender()
+  const autocomplete = useAutocomplete()
 
   const executionMode = useExecutionModeStore(s => s.mode)
   const setExecutionMode = useExecutionModeStore(s => s.setMode)
@@ -52,14 +57,16 @@ export function ChatInput() {
   const handleSend = useCallback(async () => {
     if (!text.trim()) return
     const messageText = text.trim()
+    const skills = extractSkillRefs(messageText)
     setText('')
+    autocomplete.close()
     try {
-      await send(messageText)
+      await send(messageText, skills)
     } catch {
       // send() threw during session creation — restore the text
       setText(messageText)
     }
-  }, [text, send])
+  }, [text, send, autocomplete])
 
   const handleOptimize = useCallback(async () => {
     if (!text.trim() || isOptimizing) return
@@ -75,11 +82,26 @@ export function ChatInput() {
   }, [text, isOptimizing])
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // Let autocomplete handle its keys first.
+    if (autocomplete.handleKeyDown(e)) {
+      // If Enter/Tab was pressed with autocomplete open, apply selection.
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const { text: newText, cursorPos } = autocomplete.select(autocomplete.selectedIndex, text)
+        setText(newText)
+        requestAnimationFrame(() => {
+          if (textareaRef.current) {
+            textareaRef.current.selectionStart = cursorPos
+            textareaRef.current.selectionEnd = cursorPos
+          }
+        })
+      }
+      return
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       if (!showCancel && !isInputDisabled) handleSend()
     }
-  }, [handleSend, showCancel, isInputDisabled])
+  }, [handleSend, showCancel, isInputDisabled, autocomplete, text])
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -145,14 +167,36 @@ export function ChatInput() {
         >
           {isExpanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
         </Button>
-        <div className={cn(
+        <div ref={inputAreaRef} className={cn(
           'absolute inset-0 flex flex-col px-3 py-1',
           mode !== 'chat' && 'opacity-0 pointer-events-none -z-10',
         )}>
+          {autocomplete.isOpen && (
+            <AutocompletePopup
+              items={autocomplete.items}
+              selectedIndex={autocomplete.selectedIndex}
+              anchorRef={inputAreaRef}
+              onSelect={(i) => {
+                const { text: newText, cursorPos } = autocomplete.select(i, text)
+                setText(newText)
+                requestAnimationFrame(() => {
+                  if (textareaRef.current) {
+                    textareaRef.current.selectionStart = cursorPos
+                    textareaRef.current.selectionEnd = cursorPos
+                    textareaRef.current.focus()
+                  }
+                })
+              }}
+            />
+          )}
           <textarea
             ref={textareaRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              const newText = e.target.value
+              setText(newText)
+              autocomplete.handleChange(newText, e.target.selectionStart ?? newText.length)
+            }}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             disabled={isInputDisabled}

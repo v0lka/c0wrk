@@ -10,6 +10,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 - `frontend/src/stores/` — Zustand state management (12 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
+- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config)
 - `frontend/src/components/` — UI component tree
 - `frontend/src/types/` — TypeScript type definitions
 - `frontend/src/index.css` — design tokens (Tailwind v4 @theme)
@@ -49,6 +50,8 @@ Three-column panel layout (no router, single-page app):
 ```
 
 Resize handles (4px) between panels. Panel states persisted via localStorage.
+
+Chat input supports `/skill` and `@file` autocomplete: typing `/` or `@` (at word boundary) triggers a fuzzy-filtered popup of available skills or project files. Selection inserts the reference into the textarea. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
 
 ## Design System
 

@@ -154,6 +154,8 @@ Large tool results are truncated to stay within context:
 - Each step has its own ContextManager (isolated memory)
 - Parallel steps run in separate goroutines with independent contexts
 - A step's output is immutable once stored on Blackboard
+- Active skill bodies are rendered verbatim in the step system prompt (no truncation)
+- Step-local skill narrowing fires whenever `step.Profile.Skills` is non-empty; requested names resolve from the task-scope ActiveSkills pool first, falling back to the SkillManager only for names absent from the pool
 
 ## Related Specs
 

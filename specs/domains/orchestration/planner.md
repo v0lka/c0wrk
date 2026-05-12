@@ -148,6 +148,7 @@ Provider-specific prompt variants are selected based on model family.
 - Continuation step IDs are prefixed with `continuation_`
 - Planner never executes mutating tools during exploration phase
 - Exploration uses a separate ContextManager (isolated from main execution)
+- Active skill bodies are rendered verbatim in the planner prompt (no truncation); plan steps must reflect the full skill guidance the executor will receive
 
 ## Related Specs
 

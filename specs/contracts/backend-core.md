@@ -12,7 +12,7 @@
 | `Orchestrator`        | core           | core → backend | Per-session orchestration engine      |
 | `BuilderConfig`       | core           | backend → core | Configuration transfer object         |
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
-| `HandleOptions`       | core           | backend → core | Execution mode control                |
+| `HandleOptions`       | core           | backend → core | Execution mode + user skill overrides |
 | `Emitter`             | core           | backend → core | Event emission interface              |
 | `Blackboard`          | core (alias)   | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
@@ -86,6 +86,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | ---------------------- | -------------- | ---------------------------------------- |
 | User message           | backend → core | `string` via `HandleMessage()`           |
 | Execution mode         | backend → core | `HandleOptions.ExecutionMode`            |
+| User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
 | Available tools config | backend → core | `BuiltinToolsConfig`                     |
 | Security policies      | backend → core | `BuilderConfig.Security`                 |

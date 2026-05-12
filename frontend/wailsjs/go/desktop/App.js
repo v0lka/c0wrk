@@ -102,6 +102,10 @@ export function ListSessions() {
   return window['go']['desktop']['App']['ListSessions']();
 }
 
+export function ListSkills() {
+  return window['go']['desktop']['App']['ListSkills']();
+}
+
 export function OptimizePrompt(arg1) {
   return window['go']['desktop']['App']['OptimizePrompt'](arg1);
 }
@@ -130,8 +134,8 @@ export function SearchVectorStore(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1, arg2, arg3);
 }
 
-export function SendMessage(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3);
+export function SendMessage(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4);
 }
 
 export function SetConfigLoadState(arg1) {

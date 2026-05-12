@@ -270,6 +270,29 @@ func (o *Orchestrator) logInfo(msg string, args ...any) {
 	}
 }
 
+// mergeSkillNames combines router-matched skill names with user-specified skill names,
+// deduplicating by name. Router-matched names come first, user names add any extras.
+func mergeSkillNames(routerMatched, userSpecified []string) []string {
+	if len(routerMatched) == 0 && len(userSpecified) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(routerMatched)+len(userSpecified))
+	merged := make([]string, 0, len(routerMatched)+len(userSpecified))
+	for _, name := range routerMatched {
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			merged = append(merged, name)
+		}
+	}
+	for _, name := range userSpecified {
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			merged = append(merged, name)
+		}
+	}
+	return merged
+}
+
 // logDebug logs a DEBUG level message if logger is not nil.
 func (o *Orchestrator) logDebug(msg string, args ...any) {
 	if o.logger != nil {
@@ -550,12 +573,13 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
 	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
 
-	// 4b. Activate matched skills
+	// 4b. Activate matched skills (merge router-matched + user-specified, deduplicated)
 	var activeSkillDescriptors []skills.SkillDescriptor
-	if len(routing.MatchedSkills) > 0 && o.skillManager != nil {
+	mergedSkillNames := mergeSkillNames(routing.MatchedSkills, opts.UserSkills)
+	if len(mergedSkillNames) > 0 && o.skillManager != nil {
 		var activeSkills []*skills.Skill
 		var activatedNames []string
-		for _, name := range routing.MatchedSkills {
+		for _, name := range mergedSkillNames {
 			if s, ok := o.skillManager.Get(name); ok {
 				activeSkills = append(activeSkills, s)
 				activatedNames = append(activatedNames, name)
