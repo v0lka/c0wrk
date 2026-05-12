@@ -107,12 +107,13 @@ type AskUserPayload struct {
 
 // --- Step limit payloads ---
 
-// StepLimitPayload is emitted when an agent reaches its tool call step limit,
-// prompting the user for a decision on whether to continue.
+// StepLimitPayload is emitted when an agent reaches its tool call step limit
+// or a circuit breaker abort threshold, prompting the user for a decision on whether to continue.
 type StepLimitPayload struct {
 	RequestID   string `json:"request_id"`
 	CurrentStep int    `json:"current_step"`
 	MaxSteps    int    `json:"max_steps"`
+	Reason      string `json:"reason,omitempty"` // empty for normal step limit; describes circuit breaker trigger
 }
 
 // StepLimitResponsePayload carries the user's decision about continuing

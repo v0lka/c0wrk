@@ -60,7 +60,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | -------------- | -------------------------------------------- | --------------- | ---------------------------------------------- |
 | `tool_confirm` | `{confirm_id, tool, args, reasoning}`        | useActionEvents | Confirmation required (`reasoning` from judge) |
 | `ask_user`     | `{request_id, questions: AskUserQuestion[]}` | useActionEvents | Agent asks user                                |
-| `step_limit`   | `{request_id, current_step, max_steps}`      | useActionEvents | Step limit reached                             |
+| `step_limit`   | `{request_id, current_step, max_steps, reason?}` | useActionEvents | Step limit or circuit breaker reached          |
 
 ### Context & Memory
 

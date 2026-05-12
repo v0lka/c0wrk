@@ -95,9 +95,11 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │      → Extract output, return success
 │   │
 │   ├─ 4. Circuit breaker check (see below)
+│   │      → If abort threshold reached: call StepLimitFunc(reason)
+│   │      → AllowOnce: reset + nudge, AllowAlways: disable + nudge, Deny: stop
 │   │
 │   └─ 5. If step limit reached:
-│          → Call StepLimitFunc for user decision
+│          → Call StepLimitFunc(reason="")
 │          → AllowOnce: +N steps, AllowAlways: unlimited, Deny: stop
 │
 └─ Return ExecutorResult {Steps, Output, Finished}
@@ -105,16 +107,23 @@ Executor.Run(ctx, task, tools, systemPrompt)
 
 ### Circuit Breaker
 
-Detects pathological patterns and nudges the LLM:
+Detects pathological patterns. Each detector has a nudge threshold and an abort threshold:
 
-| Detection    | Trigger                                     | Action                            |
-| ------------ | ------------------------------------------- | --------------------------------- |
-| Repeat       | Same tool + same args + same error N times  | Nudge: "try a different approach" |
-| Repeat abort | Same tool + same args N+2 times             | Hard stop with error              |
-| Truncation   | LLM output truncated (tool call incomplete) | Nudge: "split into smaller calls" |
-| Parse error  | Invalid tool input N times                  | Nudge: "simplify your input"      |
-| Fruitless    | Last N tool results are empty/minimal       | Nudge: "consider wrapping up"     |
-| Same tool    | Same tool name N times with similar results | Nudge: "try a different strategy" |
+| Detection    | Trigger                                     | Nudge Action                      | Abort Action                      |
+| ------------ | ------------------------------------------- | --------------------------------- | --------------------------------- |
+| Repeat       | Same tool + same args + same error N times  | "try a different approach"        | Call StepLimitFunc with reason     |
+| Truncation   | LLM output truncated (tool call incomplete) | "split into smaller calls"        | Call StepLimitFunc with reason     |
+| Parse error  | Invalid tool input N times                  | "simplify your input"             | Call StepLimitFunc with reason     |
+| Fruitless    | Last N tool results are empty/minimal       | "consider wrapping up"            | Call StepLimitFunc with reason     |
+| Same tool    | Same tool name N times with similar results | "try a different strategy"        | Call StepLimitFunc with reason     |
+
+When a circuit breaker abort threshold is reached, the executor calls `StepLimitFunc` with a reason string describing the trigger (same mechanism as the step limit). The user receives the same three options:
+
+- **AllowOnce**: resets the counter, injects a nudge urging the LLM to change approach, continues one more iteration
+- **AllowAlways**: resets the counter, disables that specific circuit breaker for the remainder of the execution, injects a permissive nudge
+- **Deny**: aborts execution (returns `ExecutorResult{Finished: false}`)
+
+If `StepLimitFunc` is nil (no UI connected), the executor aborts immediately (preserving headless/test behavior).
 
 Config: `CircuitBreakerConfig` (thresholds per detection type).
 

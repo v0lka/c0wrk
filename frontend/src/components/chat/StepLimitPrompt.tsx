@@ -16,6 +16,7 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
   const requestId = typeof metadata?.request_id === 'string' ? metadata.request_id : undefined
   const currentStep = typeof metadata?.current_step === 'number' ? metadata.current_step : 0
   const maxSteps = typeof metadata?.max_steps === 'number' ? metadata.max_steps : 0
+  const reason = typeof metadata?.reason === 'string' ? metadata.reason : ''
   const resolved = getStepLimitResolution(metadata)
 
   const handleResponse = (response: StepLimitDecision) => {
@@ -46,14 +47,20 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
     )
   }
 
+  const title = reason ? 'Circuit Breaker Triggered' : 'Tool Call Limit Reached'
+  const description = reason
+    ? reason
+    : `Agent has reached its tool call limit (step ${currentStep} of ${maxSteps}). Allow it to continue?`
+
   return (
     <div className="border-2 border-warning/50 rounded-lg p-4 bg-warning/5 max-w-full overflow-hidden">
       <div className="flex items-center gap-2 mb-3">
         <AlertOctagon className="h-4 w-4 text-warning" />
-        <span className="text-sm font-medium">Tool Call Limit Reached</span>
+        <span className="text-sm font-medium">{title}</span>
       </div>
       <div className="mb-4">
-        <p className="text-sm">Agent has reached its tool call limit (step {currentStep} of {maxSteps}). Allow it to continue?</p>
+        <p className="text-sm">{description}</p>
+        {reason && <p className="text-sm text-muted-foreground mt-1">Allow the agent to continue?</p>}
       </div>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={() => handleResponse('allow_once')} className="text-xs">Allow Once</Button>

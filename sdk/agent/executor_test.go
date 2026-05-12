@@ -1322,7 +1322,7 @@ func TestStepLimit_Deny(t *testing.T) {
 	var receivedCurrentStep, receivedMaxSteps int
 
 	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error) {
+	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callbackCallCount++
 		receivedCurrentStep = currentStep
 		receivedMaxSteps = maxSteps
@@ -1375,7 +1375,7 @@ func TestStepLimit_AllowOnce(t *testing.T) {
 	callbackCallCount := 0
 
 	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error) {
+	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callbackCallCount++
 		if callbackCallCount == 1 {
 			return StepLimitAllowOnce, nil
@@ -1446,7 +1446,7 @@ func TestStepLimit_AllowAlways(t *testing.T) {
 	callbackCallCount := 0
 
 	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error) {
+	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callbackCallCount++
 		return StepLimitAllowAlways, nil
 	})

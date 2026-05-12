@@ -39,15 +39,22 @@ export function useActionEvents(sessionId: string | null): void {
           id: `step-limit-${data.request_id}`,
           sessionId,
           type: 'step_limit',
-          content: `Step limit reached: ${data.current_step} of ${data.max_steps}`,
+          content: data.reason
+            ? `Circuit breaker: ${data.reason}`
+            : `Step limit reached: ${data.current_step} of ${data.max_steps}`,
           metadata: {
             request_id: data.request_id,
             current_step: data.current_step,
             max_steps: data.max_steps,
+            reason: data.reason,
           } as Record<string, unknown>,
           timestamp: Date.now(),
         })
-        useChatStore.getState().setActivityStatus('Step limit reached — awaiting decision...')
+        useChatStore.getState().setActivityStatus(
+          data.reason
+            ? 'Circuit breaker triggered — awaiting decision...'
+            : 'Step limit reached — awaiting decision...',
+        )
       }),
     )
 

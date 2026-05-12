@@ -40,7 +40,7 @@ export interface AskUserQuestion {
   multi_select?: boolean; recommended?: string[]
 }
 export interface AskUserData { request_id: string; questions: AskUserQuestion[] }
-export interface StepLimitData { request_id: string; current_step: number; max_steps: number }
+export interface StepLimitData { request_id: string; current_step: number; max_steps: number; reason?: string }
 
 export interface ContextFillData {
   fill_percent: number; used_tokens: number; max_tokens: number; status: string

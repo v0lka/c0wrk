@@ -122,6 +122,7 @@ const (
 	StepLimitDeny StepLimitResponse = "deny"
 )
 
-// StepLimitFunc is called when the agent exhausts its step limit.
-// It blocks until the user responds with a decision.
-type StepLimitFunc func(ctx context.Context, currentStep int, maxSteps int) (StepLimitResponse, error)
+// StepLimitFunc is called when the agent exhausts its step limit or a circuit
+// breaker abort threshold is reached. It blocks until the user responds with a decision.
+// The reason parameter describes why execution was paused (empty string for normal step limit).
+type StepLimitFunc func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error)

@@ -15,7 +15,7 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `CompactionStrategy`   | sdk/agent | core/stepconfig                  | Memory compaction          |
 | `AgentEvents`          | sdk/agent | core/types (embedded in Emitter) | Lifecycle event hooks      |
 | `ContextManager`       | sdk/agent | core/types (extended)            | Context window management  |
-| `StepLimitFunc`        | sdk/agent | core/orchestrator config         | Step limit callback        |
+| `StepLimitFunc`        | sdk/agent | core/orchestrator config         | Step limit / circuit breaker callback |
 | `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration     |
 | `ExecutorResult`       | sdk/agent | core/types (alias)               | Executor output            |
 | `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds |

@@ -216,7 +216,7 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// StepLimit callback: emits step limit prompt to frontend, waits for response.
-	stepLimitFunc := func(ctx context.Context, currentStep int, maxSteps int) (backend.StepLimitResponse, error) {
+	stepLimitFunc := func(ctx context.Context, currentStep int, maxSteps int, reason string) (backend.StepLimitResponse, error) {
 		if a.ctx == nil {
 			return backend.StepLimitDeny, nil
 		}
@@ -234,6 +234,7 @@ func (a *App) Startup(ctx context.Context) {
 			RequestID:   requestID,
 			CurrentStep: currentStep,
 			MaxSteps:    maxSteps,
+			Reason:      reason,
 		}
 
 		uiEmitFunc(session.Event{SessionID: sessionID, Type: "step_limit", Data: payload})

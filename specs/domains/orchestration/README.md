@@ -171,7 +171,7 @@ Note: yaml key casing is mixed across config sections — `executor.*` and `reas
 
 - Custom `ContextManagerFactory` for alternative memory strategies
 - Custom `BlackboardFactory` for alternative persistence
-- Custom `StepLimitFunc` for step limit handling
+- Custom `StepLimitFunc` for step limit and circuit breaker handling
 - System prompt customization via `buildSystemPrompt` function
 
 ## Related Specs
