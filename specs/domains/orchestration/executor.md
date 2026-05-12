@@ -109,13 +109,13 @@ Executor.Run(ctx, task, tools, systemPrompt)
 
 Detects pathological patterns. Each detector has a nudge threshold and an abort threshold:
 
-| Detection    | Trigger                                     | Nudge Action                      | Abort Action                      |
-| ------------ | ------------------------------------------- | --------------------------------- | --------------------------------- |
-| Repeat       | Same tool + same args + same error N times  | "try a different approach"        | Call StepLimitFunc with reason     |
-| Truncation   | LLM output truncated (tool call incomplete) | "split into smaller calls"        | Call StepLimitFunc with reason     |
-| Parse error  | Invalid tool input N times                  | "simplify your input"             | Call StepLimitFunc with reason     |
-| Fruitless    | Last N tool results are empty/minimal       | "consider wrapping up"            | Call StepLimitFunc with reason     |
-| Same tool    | Same tool name N times with similar results | "try a different strategy"        | Call StepLimitFunc with reason     |
+| Detection   | Trigger                                     | Nudge Action               | Abort Action                   |
+| ----------- | ------------------------------------------- | -------------------------- | ------------------------------ |
+| Repeat      | Same tool + same args + same error N times  | "try a different approach" | Call StepLimitFunc with reason |
+| Truncation  | LLM output truncated (tool call incomplete) | "split into smaller calls" | Call StepLimitFunc with reason |
+| Parse error | Invalid tool input N times                  | "simplify your input"      | Call StepLimitFunc with reason |
+| Fruitless   | Last N tool results are empty/minimal       | "consider wrapping up"     | Call StepLimitFunc with reason |
+| Same tool   | Same tool name N times with similar results | "try a different strategy" | Call StepLimitFunc with reason |
 
 When a circuit breaker abort threshold is reached, the executor calls `StepLimitFunc` with a reason string describing the trigger (same mechanism as the step limit). The user receives the same three options:
 

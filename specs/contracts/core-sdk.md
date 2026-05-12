@@ -8,19 +8,19 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 
 ### Consumed from `sdk/agent`
 
-| Interface / Type       | Package   | Consumed By                      | Purpose                    |
-| ---------------------- | --------- | -------------------------------- | -------------------------- |
-| `LLMCaller`            | sdk/agent | core/orchestrator, core/planner  | LLM call interface         |
-| `ToolExecutor`         | sdk/agent | core (via sdk/orchestration)     | Tool execution interface   |
-| `CompactionStrategy`   | sdk/agent | core/stepconfig                  | Memory compaction          |
-| `AgentEvents`          | sdk/agent | core/types (embedded in Emitter) | Lifecycle event hooks      |
-| `ContextManager`       | sdk/agent | core/types (extended)            | Context window management  |
+| Interface / Type       | Package   | Consumed By                      | Purpose                               |
+| ---------------------- | --------- | -------------------------------- | ------------------------------------- |
+| `LLMCaller`            | sdk/agent | core/orchestrator, core/planner  | LLM call interface                    |
+| `ToolExecutor`         | sdk/agent | core (via sdk/orchestration)     | Tool execution interface              |
+| `CompactionStrategy`   | sdk/agent | core/stepconfig                  | Memory compaction                     |
+| `AgentEvents`          | sdk/agent | core/types (embedded in Emitter) | Lifecycle event hooks                 |
+| `ContextManager`       | sdk/agent | core/types (extended)            | Context window management             |
 | `StepLimitFunc`        | sdk/agent | core/orchestrator config         | Step limit / circuit breaker callback |
-| `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration     |
-| `ExecutorResult`       | sdk/agent | core/types (alias)               | Executor output            |
-| `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds |
-| `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation     |
-| `TodoItem`             | sdk/agent | core/types (adapter)             | Step todo item             |
+| `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration                |
+| `ExecutorResult`       | sdk/agent | core/types (alias)               | Executor output                       |
+| `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds            |
+| `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation                |
+| `TodoItem`             | sdk/agent | core/types (adapter)             | Step todo item                        |
 
 ### Consumed from `sdk/orchestration`
 
