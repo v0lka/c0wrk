@@ -8,6 +8,11 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence)
+- `backend/session/events.go` — event data structs (session created/renamed/deleted/archived, message received)
+- `backend/session/emitter.go` — WailsEmitter (bridges events to frontend)
+- `backend/session/event_persister.go` — EventPersister (persists events to SQLite)
+- `backend/session/task_adapter.go` — task step/fact adapter for persistence
+- `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume
 
@@ -82,6 +87,28 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 
 Blackboard state is reconstructed from `tasks` + `task_steps` + `task_facts` on resume (no dedicated `blackboard` column). Events are streamed via the Wails runtime and are NOT persisted to a standalone table — any event state that must survive restart is folded into `session_messages` or `tasks`/`task_steps` via `backend/session/event_persister.go`.
 
+### SessionStore Interface
+
+The `backend/session/persistence.go` defines the `SessionStore` interface:
+
+| Method | Description |
+|--------|-------------|
+| `SaveSession(ctx, info)` | Upsert session (INSERT OR REPLACE) |
+| `LoadSession(ctx, id)` | Load session by ID (returns nil if not found) |
+| `ListSessions(ctx)` | List all sessions ordered by last activity |
+| `ListSessionsByProject(ctx, projectID)` | List sessions for a specific project |
+| `DeleteSession(ctx, id)` | Delete session and cascade messages |
+| `ArchiveSession(ctx, id, archived)` | Set archived flag on session |
+| `RenameSession(ctx, id, name)` | Update session name |
+| `UpdateSessionTokens(ctx, id, input, output, model, family)` | Update accumulated token counts and model info |
+| `UpdateSessionActivity(ctx, id)` | Update last_active_at timestamp to now |
+| `SaveMessage(ctx, msg)` | Insert a new chat message |
+| `LoadMessages(ctx, sessionID)` | Load all messages for session (ordered by created_at) |
+| `DeleteMessages(ctx, sessionID)` | Delete all messages for session |
+| `SaveTerminalCommand(ctx, sessionID, command)` | Save terminal command to history |
+| `LoadTerminalCommands(ctx, sessionID, limit)` | Load most recent terminal commands |
+| `Close()` | Close the store (no-op for SQLite, lifecycle managed externally) |
+
 ### Conversation History
 
 The orchestrator maintains a conversation history window:
@@ -98,6 +125,43 @@ After first successful task completion:
 - Backend calls LLM to generate session title from user message + response
 - Emits `session_renamed` event
 - Frontend updates session list
+
+## Core Types
+
+```go
+// SessionInfo — session metadata returned to frontend
+type SessionInfo struct {
+    ID         string
+    ProjectID  string
+    Name       string
+    CreatedAt  time.Time
+    LastActive time.Time
+    Archived   bool
+}
+
+// HandleOptions — execution mode + user-specified skill overrides
+type HandleOptions struct {
+    TaskID        string
+    ExecutionMode string   // "normal" | "advanced"
+    UserSkills    []string
+}
+
+// HandleResult — orchestration output
+type HandleResult struct {
+    Output          string
+    RoutingDecision RoutingDecision
+    Plan            *Plan
+    Blackboard      Blackboard
+}
+```
+
+## Extension Points
+
+- **SessionStore interface**: replace SQLite with a different backend by implementing all methods in `backend/session/persistence.go`
+- **Auto-title generation**: customize the LLM prompt or model used for title generation in `backend/session/title.go`
+- **Preprocessing pipeline**: add custom message transforms (e.g., additional filter types) before orchestrator invocation in `FrontendAPI.SendMessage()`
+- **Event persistence**: implement `EventPersister` interface for alternative storage backends
+- **Session metadata enrichment**: add custom fields to `SessionInfo` and populate them in `SessionManager.Create()`
 
 ## Invariants
 

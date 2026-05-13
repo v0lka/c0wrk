@@ -15,6 +15,8 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 - `sdk/orchestration/orchestrator.go` — SDK Plan&Execute engine (Execute, Resume)
 - `sdk/orchestration/dag.go` — DAG data structure
 - `sdk/agent/executor.go` — ReAct loop (per-step execution)
+- `sdk/prompt/builder.go` — fluent prompt construction with cache-break support
+- `sdk/prompt/sampling.go` — family-aware temperature defaults (SamplingConfig, DefaultSampling)
 
 ## Core Types
 

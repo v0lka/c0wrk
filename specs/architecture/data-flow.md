@@ -180,6 +180,32 @@ Orchestrator.HandleMessage()
 - Blackboard is created per-task, never shared across tasks
 - Async init in builder MUST complete before any Build() call returns
 
+## Anti-Patterns
+
+### ❌ Frontend directly calling `sdk/*` packages
+
+The data flow requires all requests to go through Wails RPC → backend → core → sdk. Skipping layers breaks security, event tracking, and session isolation.
+
+### ❌ Bypassing config adapter
+
+Never read `config.yaml` directly from core or sdk packages. All config flows through `backend/configadapter.go → core.BuilderConfig`. Adding a field to config requires updates to all three layers.
+
+### ❌ Emitting events without persisting
+
+Every event must be emitted to frontend AND persisted to SQLite (dual write). Frontend-only events will be lost on refresh and break resume; persistence-only events will leave the UI stale.
+
+### ❌ Sharing Blackboard across tasks
+
+The Blackboard is per-task, lifecycle-tied to a single `HandleMessage()` invocation. Reusing a Blackboard across tasks corrupts step dependency resolution and reflection data.
+
+### ❌ Tight coupling between frontend stores and event format
+
+Stores should depend on the semantic meaning of events, not the raw payload structure. If an event payload changes, only the event handler hook should need updating — not the store or the component that renders it.
+
+### ❌ Blocking the UI thread for backend RPCs
+
+All Wails RPC calls return Promises. Never `await` in the component render path; always dispatch async state updates through hooks that set loading flags.
+
 ## Related Specs
 
 - [domains/orchestration/README.md](../domains/orchestration/README.md) - Orchestration cycle details

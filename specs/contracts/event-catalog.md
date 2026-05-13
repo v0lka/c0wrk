@@ -20,6 +20,11 @@ Payloads are emitted as-is (no wrapping object) unless shown as `{...}`.
 | `project:switched`       | backend → frontend | `ProjectInfo`                                                                                     | backend/frontend_api_project.go | Active project changed                                      |
 | `workspace:tree_changed` | backend → frontend | no payload (`nil`)                                                                                | backend/frontend_api_project.go | File tree modified (workspace watcher callback)             |
 | `vector_index:status`    | backend → frontend | `{state, progress, files_indexed, total_files, current_file?, branch?}` (see `VectorIndexStatus`) | backend/frontend_api_project.go | Vector index status update                                  |
+| `session_created`        | backend → frontend | `{id: string, name: string, created_at: string}`                                                  | backend/session/manager.go      | New session created (emitted on first user message)         |
+| `session_deleted`        | backend → frontend | `{id: string}`                                                                                    | backend/session/manager.go      | Session permanently deleted                                 |
+| `session_archived`       | backend → frontend | `{id: string, archived: bool}`                                                                    | backend/session/manager.go      | Session archived (archived=true) or unarchived (archived=false) |
+| `session_renamed`        | backend → frontend | `{id: string, old_name: string, new_name: string}`                                                | backend/session/manager.go / title.go | Session renamed (auto-generated title or manual rename) |
+| `message_received`       | backend → frontend | `{session_id: string, text: string}`                                                              | backend/session/manager.go      | User message persisted (text includes /skill and @file refs) |
 
 ## Session-Scoped Events
 
@@ -88,7 +93,6 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `subagent_complete` | `{step_id, success, duration (ms)}`                                 | useSubagentEvents  | Subagent finished       |
 | `skills_activated`  | `{skills: string[]}`                                                | useChatEvents      | Skills matched for task |
 | `step_todo_update`  | `{step_id, items: {text, checked}[], completed_count, total_count}` | usePlanEvents      | Step checklist update   |
-| `session_renamed`   | `{id, old_name, new_name}`                                          | useLifecycleEvents | Auto-generated title    |
 
 ### Executor Internals
 

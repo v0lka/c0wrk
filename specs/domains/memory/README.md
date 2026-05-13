@@ -7,6 +7,7 @@ Manages the agent's context window during step execution: tracks token usage, tr
 ## Key Files
 
 - `sdk/memory/context.go` — ContextWindow struct (token tracking, compaction orchestration)
+- `sdk/memory/compaction.go` — CompactionStrategy factory (NewCompactionStrategy)
 - `sdk/memory/compaction_sliding.go` — sliding window strategy
 - `sdk/memory/compaction_summary.go` — summarization strategy
 - `sdk/memory/compaction_hierarchy.go` — hierarchical strategy
@@ -22,12 +23,12 @@ type ContextWindow struct {
     tokenTracker    *ContextTokenTracker
     thresholds      CompactionThresholds
     strategy        CompactionStrategy
-    toolOutputPrune ToolOutputPruning
+    pruning     ToolOutputPruning
 }
 
 // CompactionStrategy interface
 type CompactionStrategy interface {
-    Compact(messages []llm.Message, tokenBudget int) ([]llm.Message, CompactionResult)
+    Compact(ctx context.Context, steps []agent.Step, budgetTokens int) []Message
 }
 
 // CompactionResult
@@ -77,6 +78,13 @@ From `config.yaml` (values are percentages, not fractions):
 | `executor.compaction.thresholds.emergency_percent`  | 98      | Aggressive compaction trigger (%)  |
 | `executor.compaction.sliding_window.keep_first`     | 3       | Messages to always retain at start |
 | `executor.compaction.sliding_window.keep_last`      | 10      | Messages to always retain at end   |
+
+## Extension Points
+
+- **New compaction strategy**: implement `CompactionStrategy` interface and register in `NewCompactionStrategy` factory
+- **Custom thresholds**: override compaction trigger percentages in config.yaml per execution mode
+- **Alternative token counter**: swap `TokenCounter` implementation for different model families
+- **Compaction event hooks**: add custom logic on `ContextWindow.compact()` for logging or metrics
 
 ## Related Specs
 

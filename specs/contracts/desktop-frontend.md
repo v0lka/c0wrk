@@ -4,6 +4,27 @@
 
 Frontend communicates with Go exclusively through Wails IPC. No direct Go imports. Two channels: RPC (request/response) and Events (push notifications).
 
+## Interfaces
+
+| Interface / Type         | Package               | Direction          | Purpose                                  |
+| ------------------------ | --------------------- | ------------------ | ---------------------------------------- |
+| `FrontendAPI`            | backend               | backend → frontend | Wails-bound API (promoted to `App`)      |
+| `SessionInfo`            | backend               | backend → frontend | Session metadata                         |
+| `ProjectInfo`            | backend               | backend → frontend | Project metadata                         |
+| `FileNode`               | backend               | backend → frontend | File tree entry                          |
+| `ChatMessage`            | backend               | backend → frontend | Message history entry                    |
+| `VectorIndexStatus`      | backend               | backend → frontend | Index progress                           |
+| `MCPServerStatus`        | backend               | backend → frontend | MCP server state                         |
+| `ToolInfo`               | backend               | backend → frontend | Tool descriptor for UI                   |
+| `ConfigResponse`         | backend               | backend → frontend | Sanitized config view                    |
+| `LLMSettingsRequest`     | frontend               | frontend → backend | LLM provider config update               |
+| `SecuritySettingsResponse`| backend               | backend ↔ frontend | Security policy CRUD                     |
+| `OptimizePromptResponse` | backend               | backend → frontend | Prompt optimization result               |
+| `SkillDescriptorDTO`     | backend               | backend → frontend | Skill listing                            |
+| `TerminalCommand`        | backend               | backend → frontend | Terminal command history                 |
+| `VectorStoreEntry`       | backend               | backend → frontend | Vector search result                     |
+| `BlackboardStateResponse`| backend               | backend → frontend | Task state for resume UI                 |
+
 ## RPC Surface
 
 All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callable from frontend via `window.go.desktop.App.<MethodName>()`.
@@ -110,6 +131,65 @@ See [event-catalog.md](event-catalog.md) for complete event reference.
 
 - Session-scoped: `session:${sessionId}:${eventType}`
 - Global: bare event name (e.g., `backend:ready`)
+
+## Data Flow Across Boundary
+
+```
+┌──────────────────┐                    ┌──────────────────┐
+│   Desktop App    │                    │  Backend (Go)    │
+│  (TypeScript)    │                    │                  │
+│                  │   Wails Binding    │                  │
+│  Wails API calls ├────────────────────►  App struct      │
+│  (async Go fn)   │                    │  (methods)       │
+│                  │                    │                  │
+│  Event handlers  │◄───────────────────┤  EventsEmit()    │
+│  (Go events)     │   Wails Events     │                  │
+│                  │                    │                  │
+│  state → store   │                    │  persistence     │
+│  update (Zustand)│                    │  (SQLite)        │
+└──────────────────┘                    └──────────────────┘
+```
+
+- **Synchronous**: Wails RPC method calls from frontend are async (TypeScript `Promise`) but the Go handler may block
+- **Asynchronous**: real-time event stream is push-only; frontend listens with `EventsOn` and publishes to stores
+- **Startup**: backend exposes RPC methods after `Startup()` completes; frontend polls `GetConfig()` to detect readiness
+- **Teardown**: `Shutdown()` triggers backend cleanup; frontend stops polling and unregisters event listeners
+
+## Error Propagation
+
+- **RPC errors**: Go methods return `error`; Wails serializes as `Error` thrown in the TypeScript `Promise` rejection
+- **Event errors**: sent as `frontend:event:error` type with `{message, code}` payload; frontend `useWailsEvent` hook catches and displays toast
+- **Startup failures**: if backend `Startup()` panics, Wails shows a native error dialog; if startup completes but services fail, `GetConfig()` returns an error which frontend uses to display a "Backend unavailable" banner
+- **Streaming failures**: SSE/event stream disconnects bubble to `frontend:event:error`; `chatStore.flushStreamingToMessage()` preserves partial content
+- **Panic recovery**: Wails runtime catches Go panics and returns them as RPC errors; backend uses `recover()` middleware in handler chain
+- **Fallback**: methods invoked before backend ready return "backend not initialized" error
+
+## Initialization
+
+```go
+// backend main.go — startup sequence
+func Startup() {
+    config.Load()
+    db := persistence.Open(config.DBPath())
+    embeddingService := vectorindex.NewService(...)
+    sessionManager := session.NewManager(db, embeddingService)
+    app := NewApp(sessionManager, config)
+    // App is now registered with Wails runtime
+}
+```
+
+```typescript
+// frontend/src/main.tsx — mount sequence
+// 1. React renders App shell (header, sidebar placeholders)
+// 2. useWailsEvent registers for all streaming events
+// 3. Components mount and call backend RPCs:
+//    - projectStore.fetchProjects()  → GetProjectList()
+//    - sessionStore.fetchSessions()  → ListSessions()
+// 4. UI transitions from loading state when stores are loaded = true
+```
+
+- Frontend must handle the case where backend RPCs return "not initialized" during startup race conditions
+- All stores initialize to empty/loading state; no implicit default data
 
 ## Type Mapping
 

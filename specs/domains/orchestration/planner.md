@@ -71,6 +71,7 @@ type PlanStep struct {
 Profile fields:
 
 - `Role` — selects system prompt variant and pruning defaults
+- `SystemPrompt` — per-step system prompt override (optional; empty = use role default)
 - `AllowedTools` — restricts available tools (nil = all)
 - `Skills` — restricts active skills (nil = full task-scope pool)
 - `Domain` — controls compaction strategy for this step

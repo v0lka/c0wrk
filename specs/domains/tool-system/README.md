@@ -70,7 +70,7 @@ const (
 └─────────────────────────────────────────────────────┘
 ```
 
-## Execution Pipeline
+## Flow
 
 ```
 ToolRegistry.Execute(ctx, name, input)

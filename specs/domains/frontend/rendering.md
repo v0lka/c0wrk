@@ -88,6 +88,17 @@ The most recent user message is rendered as a sticky element at the top of the c
 - Pending actions are always visible (sticky bar, never scrolled off-screen)
 - No component file exceeds 200 lines (extract into sub-components)
 
+## Error Handling
+
+- **Missing event data**: `groupMessages()` skips items with unrecognized types rather than throwing; malformed payloads are silently dropped
+- **Markdown rendering**: `react-markdown` wraps parse failures in a `<pre>` block with the error message; invalid markdown does not crash the component
+- **Syntax highlighting**: `highlight.js` falls back to plain text rendering when the language is not recognized (no error boundary needed)
+- **Mermaid diagrams**: rendering failures are caught by the Mermaid error callback and displayed as an error snippet instead of a blank diagram; lazy loading failures produce a "Diagram unavailable" placeholder
+- **Streaming interruption**: if the WebSocket/event stream disconnects mid-stream, `chatStore.flushStreamingToMessage()` preserves the partial content as a permanent message
+- **File viewer errors**: binary detection (null byte) returns a "binary file" notice; read failures from backend display the error message in the viewer pane
+- **Missing message types**: `ChatMessageRenderer` renders unknown display item types as a muted "Unsupported message type" fallback
+- **Scroll lock resilience**: `ChatScrollManager` handles edge cases where the scroll target element is unmounted during a transition (no-op, no exception)
+
 ## Related Specs
 
 - [stores.md](stores.md) — chatStore provides raw message data

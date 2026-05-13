@@ -93,6 +93,14 @@ Role-based defaults:
 - Protected tools are NEVER pruned regardless of KeepLastN
 - After compaction, fill percentage must be below warning threshold
 
+## Error Handling
+
+- **Compaction failure**: if a strategy cannot produce a result (e.g., LLM summarization API error), the system falls back to sliding window compaction with conservative defaults
+- **Empty history**: compaction on an empty conversation history is a no-op (returns empty slice, no error)
+- **Budget overflow**: if `budgetTokens` is unrealistically small (less than system prompt + last message tokens), compaction preserves the system prompt and last message, returning only those
+- **Tool output pruning**: if a tool result exceeds the per-result size limit, it is truncated with a marker; protected tools' results are exempt from truncation
+- **Strategy selection**: if the domain-to-strategy mapping yields an unrecognized domain, `sliding_window` is used as the universal fallback
+
 ## Related Specs
 
 - [README.md](README.md) — memory overview

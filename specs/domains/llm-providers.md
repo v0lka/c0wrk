@@ -14,7 +14,7 @@ Abstracts multiple LLM providers behind a unified interface, with model routing,
 - `sdk/llm/tokencount.go` — token counting
 - `sdk/llm/usage.go` — TrackingCaller (usage tracking wrapper)
 - `sdk/llm/errors.go` — typed provider errors (rate limit, context exceeded, etc.)
-- `sdk/llm/message.go` — ChatMessage / ChatRequest / ChatResponse types
+- `sdk/llm/message.go` — Message / ChatRequest / ChatResponse / ChatChunk / TokenUsage / ToolDefinition types
 - `sdk/llm/schema_sanitize.go` — JSON Schema sanitization for function calling
 - `sdk/llm/provider_helpers.go` — shared provider helpers (retry, streaming)
 - `sdk/llm/provider_openai.go` — OpenAI provider (ChatGPT / OpenAI-compatible Chat Completions transport)
@@ -22,6 +22,8 @@ Abstracts multiple LLM providers behind a unified interface, with model routing,
 - `sdk/llm/provider_anthropic.go` — Anthropic provider
 - `sdk/llm/provider_gemini.go` — Google Gemini provider
 - `sdk/llm/provider_lmstudio.go` — LM Studio provider
+- `sdk/prompt/builder.go` — fluent prompt building with cache-break markers for Anthropic prompt caching
+- `sdk/prompt/sampling.go` — family-aware default temperatures (SamplingConfig, DefaultSampling)
 
 ## Core Types
 
@@ -35,17 +37,50 @@ type Provider interface {
 
 // Router selects and routes to active provider
 type Router struct {
-    activeProvider Provider
-    // retry config, backoff settings
+    providers          map[string]Provider // all registered providers
+    activeProvider     Provider            // currently active provider
+    activeModel        string              // default model
+    activeProviderName string              // logical name of active provider
+    maxRetries         int                 // max retry attempts on retryable errors
+    initialBackoff     time.Duration       // initial backoff duration
+    maxBackoff         time.Duration       // max backoff duration
+    registry           *ModelRegistry      // model metadata for context validation
+    tokenCounter       TokenCounter        // token estimator for pre-call validation
+    sampling           SamplingFunc        // family-aware temperature defaults
+    safetyMarginPercent int                // percentage of context window reserved as safety margin (default: 5)
+    outputTokenReserve int                 // default output token reserve (default: 4096)
 }
+
+// RouterConfig holds pre-resolved config for Router construction
+type RouterConfig struct {
+    ActiveProvider      string
+    ProviderType        string
+    APIKey              string
+    BaseURL             string
+    Model               string
+    MaxRetries          int
+    InitialBackoff      time.Duration
+    MaxBackoff          time.Duration
+    SafetyMarginPercent int
+    OutputTokenReserve  int
+    SamplingFunc        SamplingFunc
+}
+
+// SamplingFunc returns a default temperature for the given model family.
+// Return nil to use the provider's built-in default.
+type SamplingFunc func(family string) *float64
 
 // ModelMetadata from registry
 type ModelMetadata struct {
-    ContextWindow int    // total token capacity
-    OutputLimit   int    // max output tokens
-    TokenizerType string // e.g., "cl100k_base"
-    Family        string // e.g., "openai", "anthropic"
-    Capabilities  ModelCapabilities
+    ContextWindow     int    // total token capacity
+    OutputLimit       int    // max output tokens
+    TokenizerType     string // e.g., "cl100k_base"
+    Family            string // e.g., "openai", "anthropic"
+    Capabilities      ModelCapabilities
+    InputCostPer1M    float64 // USD per 1M input tokens
+    OutputCostPer1M   float64 // USD per 1M output tokens
+    CacheReadCostPer1M float64 // USD per 1M cache-read tokens (Anthropic prompt caching)
+    CacheWriteCostPer1M float64 // USD per 1M cache-write tokens (Anthropic prompt caching)
 }
 
 // Reasoning effort levels
@@ -83,7 +118,7 @@ llm.Router.Call(ctx, ChatRequest)
 | `anthropic`                      | provider_anthropic.go                             | Prompt caching (CacheBreak + ephemeral), thinking |
 | `gemini`                         | provider_gemini.go                                | Safety settings, large context                    |
 | `lmstudio`                       | provider_lmstudio.go                              | Any local model, OpenAI-compatible API            |
-| `openai_compatible`              | provider_openai.go + provider_openai_responses.go | Generic OpenAI-compatible API endpoint            |
+| `openai_compatible`              | provider_openai.go + provider_openai_responses.go | Generic OpenAI-compatible API endpoint. `openai_codex` family routes to Responses API automatically. |
 | `chatgpt`                        | provider_openai.go                                | Simplified OpenAI mode (Chat Completions only)    |
 
 ## Reasoning Effort
@@ -137,11 +172,11 @@ llm:
 
   anthropic:
     api_key: "${ANTHROPIC_API_KEY}"
-    model: "claude-sonnet-4-20250514"
+    model: "claude-sonnet-4.6"
 
   gemini:
     api_key: "${GEMINI_API_KEY}"
-    model: ""
+    model: "gemini-3.1-pro"
 
   lmstudio:
     api_key: ""
@@ -151,11 +186,11 @@ llm:
   openai_compatible:
     api_key: "${OPENAI_API_KEY}"
     base_url: "" # user-supplied endpoint
-    model: ""
+    model: "gpt-5.4"
 
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
-    model: ""
+    model: "gpt-5.4"
 
 reasoning:
   base_effort: "high" # default when model supports reasoning

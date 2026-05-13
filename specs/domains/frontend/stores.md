@@ -80,6 +80,14 @@ const active = useStore((s) => s.activeId);
 - Persisted stores use Zustand `persist` middleware exclusively
 - Store actions are synchronous (async operations in hooks that call actions)
 
+## Error Handling
+
+- **Selector errors**: Zustand selectors never throw — they return `undefined` for uninitialized state; hooks must guard before rendering
+- **Persistence failures**: Zustand `persist` middleware silently catches `localStorage` write errors (storage full, private browsing); state remains in-memory
+- **Missing session data**: stores keyed by `sessionId` return empty collections when the session ID is not yet initialized (no error, just empty)
+- **Async initialization**: stores that depend on backend data (sessionList, projectList) use a `loaded` flag; components show loading state until `loaded === true`
+- **Cross-store consistency**: hooks that read from multiple stores must handle the case where one store has data and another does not (e.g., event arrives before related entity)
+
 ## Related Specs
 
 - [README.md](README.md) — frontend architecture overview

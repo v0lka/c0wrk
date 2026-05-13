@@ -56,6 +56,11 @@ type IndexerConfig struct {
 	Overlap      int
 	OnProgress   ProgressCallback
 	Logger       *slog.Logger
+
+	// Ignore patterns for file filtering (merged with defaults).
+	IgnoreDirs       map[string]bool
+	IgnoreExtensions map[string]bool
+	IgnoreFileNames  map[string]bool
 }
 
 // Indexer orchestrates initial and incremental indexing of project files.
@@ -67,6 +72,10 @@ type Indexer struct {
 	overlap      int
 	onProgress   ProgressCallback
 	logger       *slog.Logger
+
+	ignoreDirs       map[string]bool
+	ignoreExtensions map[string]bool
+	ignoreFileNames  map[string]bool
 }
 
 // NewIndexer creates a new Indexer with the given configuration.
@@ -99,6 +108,9 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		overlap:      overlap,
 		onProgress:   onProgress,
 		logger:       logger,
+		ignoreDirs:       cfg.IgnoreDirs,
+		ignoreExtensions: cfg.IgnoreExtensions,
+		ignoreFileNames:  cfg.IgnoreFileNames,
 	}
 }
 
@@ -107,7 +119,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 	idx.service.SetReady(false)
 
-	files, err := walkProjectFiles(workspacePath)
+	files, err := walkProjectFiles(workspacePath, idx.ignoreDirs, idx.ignoreExtensions, idx.ignoreFileNames)
 	if err != nil {
 		return fmt.Errorf("walking project files: %w", err)
 	}
@@ -373,7 +385,7 @@ func (idx *Indexer) collectDocumentIDs(ctx context.Context, filePaths []string) 
 }
 
 // walkProjectFiles walks the workspace and returns all indexable file paths.
-func walkProjectFiles(root string) ([]string, error) {
+func walkProjectFiles(root string, extraIgnoreDirs, extraIgnoreExtensions, extraIgnoreFileNames map[string]bool) ([]string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolving root path: %w", err)
@@ -388,7 +400,7 @@ func walkProjectFiles(root string) ([]string, error) {
 		}
 
 		if d.IsDir() {
-			if isIgnoredDir(path, absRoot, gitignorePatterns) {
+			if isIgnoredDir(path, absRoot, gitignorePatterns, extraIgnoreDirs) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -398,7 +410,7 @@ func walkProjectFiles(root string) ([]string, error) {
 			return nil
 		}
 
-		if isIgnoredFile(path, absRoot, gitignorePatterns) {
+		if isIgnoredFile(path, absRoot, gitignorePatterns, extraIgnoreExtensions, extraIgnoreFileNames) {
 			return nil
 		}
 
@@ -458,7 +470,7 @@ var defaultIgnoreFileNames = map[string]bool{
 }
 
 // isIgnoredDir checks if a directory should be skipped during file walking.
-func isIgnoredDir(path, root string, gitignorePatterns []string) bool {
+func isIgnoredDir(path, root string, gitignorePatterns []string, extraIgnoreDirs map[string]bool) bool {
 	base := filepath.Base(path)
 
 	// Always skip hidden directories (starting with .)
@@ -467,6 +479,10 @@ func isIgnoredDir(path, root string, gitignorePatterns []string) bool {
 	}
 
 	if defaultIgnoreDirs[base] {
+		return true
+	}
+
+	if extraIgnoreDirs != nil && extraIgnoreDirs[base] {
 		return true
 	}
 
@@ -490,7 +506,7 @@ func isIgnoredDir(path, root string, gitignorePatterns []string) bool {
 }
 
 // isIgnoredFile checks if a file should be skipped during file walking.
-func isIgnoredFile(path, root string, gitignorePatterns []string) bool {
+func isIgnoredFile(path, root string, gitignorePatterns []string, extraIgnoreExtensions, extraIgnoreFileNames map[string]bool) bool {
 	base := filepath.Base(path)
 
 	if strings.HasPrefix(base, ".") {
@@ -501,8 +517,16 @@ func isIgnoredFile(path, root string, gitignorePatterns []string) bool {
 		return true
 	}
 
+	if extraIgnoreFileNames != nil && extraIgnoreFileNames[base] {
+		return true
+	}
+
 	ext := strings.ToLower(filepath.Ext(base))
 	if defaultIgnoreExtensions[ext] {
+		return true
+	}
+
+	if extraIgnoreExtensions != nil && extraIgnoreExtensions[ext] {
 		return true
 	}
 

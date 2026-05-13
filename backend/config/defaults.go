@@ -7,9 +7,16 @@ var defaultProtectedTools = []string{"store_fact", "search_facts"}
 // the `skills.dirs` config key is omitted. The current project's
 // `.agents/skills` directory is always scanned automatically (see core/builder.go)
 // and does NOT need to be listed here.
-var defaultSkillDirs = []string{
+	var defaultSkillDirs = []string{
 	"~/.agents/skills",
 	"~/.c0wrk/.agents/skills",
+}
+
+// setDefault sets *ptr to val if *ptr is nil or an empty slice.
+func setDefault[T any](ptr *[]T, val []T) {
+	if ptr == nil || *ptr == nil {
+		*ptr = val
+	}
 }
 
 // ApplyDefaults sets default values for zero-value fields in the configuration.
@@ -280,4 +287,22 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Orchestration.MaxPlannerExploreSteps == 0 {
 		cfg.Orchestration.MaxPlannerExploreSteps = 7
 	}
+
+	// Workspace ignore patterns.
+	setDefault(&cfg.Workspace.IgnoreDirs, []string{
+		"vendor", "node_modules", "__pycache__",
+		"dist", "build", "target", "bin", "obj",
+	})
+	setDefault(&cfg.Workspace.IgnoreExtensions, []string{
+		".exe", ".dll", ".so", ".dylib", ".bin", ".dat",
+		".zip", ".tar", ".gz", ".7z", ".rar",
+		".jpg", ".jpeg", ".png", ".gif", ".svg", ".ico",
+		".mp3", ".mp4", ".mov", ".avi", ".wav",
+		".pdf", ".doc", ".docx", ".xls", ".xlsx",
+		".ttf", ".otf", ".woff", ".woff2",
+		".pyc", ".class", ".o", ".a", ".lib",
+		".lock", ".min.js", ".min.css",
+		".onnx", ".onnx_data",
+	})
+	setDefault(&cfg.Workspace.IgnoreFileNames, []string{})
 }

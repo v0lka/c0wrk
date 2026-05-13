@@ -11,7 +11,41 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - `backend/vectorindex/git.go` — git CLI wrapper for branch detection and branch-change monitoring
 - `backend/vectorindex/manager.go` — vector index lifecycle (branch-partitioned collections)
 - `backend/vectorindex/service.go` — vector index indexing and search
+- `backend/vectorindex/collection.go` — collection data structure (per-branch document store)
+- `backend/vectorindex/indexer.go` — file-to-document indexing logic
+- `backend/vectorindex/search_result.go` — search result types and filtering
 - `sdk/embedding/` — embedding model interface
+
+## Core Types
+
+```go
+// FileNode — flat file/directory entry for tree display
+type FileNode struct {
+    Name       string
+    Path       string
+    IsDir      bool
+    Hidden     bool
+    GitStatus  string
+    GitIgnored bool
+}
+
+// GitStatusEntry — per-file git status
+type GitStatusEntry struct {
+    Status    string // "M", "A", "D", "?"
+    Staged    bool
+    FileName  string
+}
+
+// VectorIndexStatus — indexing progress for frontend
+type VectorIndexStatus struct {
+    State        string
+    Progress     float64
+    FilesIndexed int
+    TotalFiles   int
+    CurrentFile  string
+    Branch       string
+}
+```
 
 ## Behavior
 
@@ -20,7 +54,7 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - Loaded lazily on frontend request (not preloaded)
 - Depth-limited to avoid scanning huge directories
 - Excludes: `.git/`, `node_modules/`, `build/`, `.cache/`, etc. (configurable ignores)
-- Returns `FileNode` tree: name, path, isDir, children, gitStatus
+- Returns `FileNode` list: name, path, isDir, hidden, gitStatus, gitIgnored (flat list, no children)
 
 ### Filesystem Watcher
 
@@ -75,7 +109,8 @@ Project switched / app started
 | `ReadFile(path)`                    | Read file content (binary detection via null bytes) |
 | `GetFileDiff(path)`                 | Unified git diff for file                           |
 | `GetGitStatus()`                    | Workspace-level git status summary                  |
-| `SearchFiles(query)`                | Filename search within workspace                    |
+
+Filename search (`search_files`) is available as a built-in tool (`sdk/tools/builtins/file_search.go`), not as a direct Workspace API method.
 
 ## Invariants
 
@@ -93,7 +128,15 @@ Project switched / app started
 | ---------------- | --------------------- | ---------------------------------- |
 | Workspace path   | Active project config | Root directory for file operations |
 | Ignore patterns  | config.yaml           | Patterns excluded from tree/index  |
-| Index chunk size | config.yaml           | Characters per embedding chunk     |
+| Index chunk size | Internal (hardcoded)  | Characters per embedding chunk     |
+
+## Extension Points
+
+- **Custom ignore patterns**: add patterns to config.yaml to exclude directories from tree and index
+- **Alternative embedding model**: replace ONNX Runtime with a different model by implementing the embedding interface
+- **Vector store backend**: replace chromem-go with an alternative vector database by implementing the service interface
+- **Git monitor hooks**: add custom callbacks on branch change detected by `GitMonitor`
+- **Additional file attributes**: extend `FileNode` with custom fields and populate them in `ListDirectory()`
 
 ## Related Specs
 

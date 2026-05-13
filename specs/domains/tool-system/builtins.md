@@ -8,8 +8,53 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 - `sdk/tools/builtins/*.go` — tool implementations
 - `sdk/tools/builtins/ripgrep.go` — wraps the `rg` CLI (`--json` event stream)
-- `sdk/tools/builtins/web_search/` — web search provider abstraction
+- `sdk/tools/builtins/web_search/` — web search provider abstraction (brave, duckduckgo, exa, tavily)
+- `sdk/tools/builtins/web_search/brave.go` — Brave Search API provider
+- `sdk/tools/builtins/web_search/duckduckgo.go` — DuckDuckGo Instant Answer API provider
+- `sdk/tools/builtins/web_search/exa.go` — Exa Search API provider
+- `sdk/tools/builtins/web_search/tavily.go` — Tavily Search API provider
+- `sdk/tools/builtins/doc.go` — package documentation
+- `sdk/tools/builtins/limits.go` — BuiltinToolsConfig and limit types
+- `sdk/tools/builtins/paths.go` — workspace path resolution
+- `sdk/tools/builtins/workspace.go` — workspace detection
+- `sdk/tools/builtins/netcheck.go` — network connectivity check for web tools
 - `core/tools/builtin_registration.go` — registration function + config types
+
+## Behavior
+
+### Tool Registration
+
+All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)`. Registration is ordered (earlier tools take precedence in case of name conflicts). Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`) always bypass policy checks during execution.
+
+### Policy Resolution
+
+Each tool's effective policy is resolved at execution time:
+
+1. Check per-tool override in config (`security.tool_policies`)
+2. Fall back to skill-specified policy (if tool is invoked by a skill)
+3. Fall back to global default (`security.default_policy`)
+4. Fall back to tool's own `DefaultPolicy()`
+
+### File Safety Judging
+
+File write/edit tools (`write_file`, `edit_file`, `delete_file`, `delete_directory`) implement `ToolJudger`. Even with `PolicyAlwaysAllow`, the judge inspects the target path and escalates to `PolicyUserConfirm` if the path:
+- Is outside the workspace root
+- References system directories (`/etc`, `/usr`, `/System`, etc.)
+- Contains path traversal sequences (`../`)
+
+### Tool Execution
+
+All built-in tools accept `json.RawMessage` input and return `ToolResult{Content, IsError}`. Tools that shell out (`ripgrep`, `bash_exec`) use `exec.CommandContext` with the caller's context.
+
+## Error Handling
+
+- **Tool not found**: `ToolRegistry.Execute()` returns `ToolResult{IsError: true}` with an "unknown tool" message — does not panic
+- **Path validation**: file tools reject paths outside workspace with a descriptive error before any I/O
+- **Bash blacklist**: commands matching blacklist patterns are rejected with `IsError: true` and a "blocked by security policy" message
+- **Ripgrep**: exit code 1 ("no matches") is NOT an error; exit codes ≥ 2 produce `IsError` with stderr content
+- **Web tools**: network errors surface as `IsError` with a descriptive message; timeout errors include the configured timeout value
+- **File I/O errors**: propagated as `IsError` with the OS error message; binary files detected by null byte presence are rejected with an appropriate message
+- **Optional tool absence**: if a dependency func/key is not provided (e.g., no web search API key), the tool is silently not registered (no error at registration time)
 
 ## Tool Catalog
 
@@ -66,13 +111,13 @@ File write/edit tools implement the `ToolJudger` interface (`sdk/tools/builtins/
 
 | Config                       | Affects                   | Default             |
 | ---------------------------- | ------------------------- | ------------------- |
-| `FileLimits.MaxReadSize`     | read_file, search_content | 50KB                |
-| `RipgrepLimits.MaxMatches`   | ripgrep                   | 200                 |
+| `FileLimits.ReadMaxBytes`    | read_file, search_content | 50KB                |
+| `RipgrepLimits.MaxResults`   | ripgrep                   | 200                 |
 | `GlobLimits.MaxResults`      | glob                      | 200                 |
-| `WebFetchLimits.MaxSize`     | web_fetch                 | 2MB                 |
+| `WebFetchLimits.MaxBodySize` | web_fetch                 | 2MB                 |
 | `WebSearchLimits.MaxResults` | web_search                | 5                   |
-| `BashTimeouts.Default`       | bash_exec                 | 120s                |
-| `BashTimeouts.Max`           | bash_exec                 | 120s                |
+| `BashTimeouts.MaxTimeout`    | bash_exec                 | 120s                |
+| `BashTimeouts.WaitDelay`     | bash_exec                 | 100ms               |
 | `BashBlacklist`              | bash_exec                 | [] (regex patterns) |
 
 ## Adding a New Built-in Tool — Checklist

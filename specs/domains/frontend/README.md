@@ -15,6 +15,39 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 - `frontend/src/types/` — TypeScript type definitions
 - `frontend/src/index.css` — design tokens (Tailwind v4 @theme)
 
+## Core Types
+
+```typescript
+// SessionInfo — session metadata from backend
+interface SessionInfo {
+  id: string
+  projectId: string
+  name: string
+  createdAt: string
+  lastActive: string
+  archived: boolean
+}
+
+// ProjectInfo — project metadata from backend
+interface ProjectInfo {
+  id: string
+  name: string
+  externalPath: string
+  lastActive: string
+  sessionCount: number
+}
+
+// FileNode — file tree entry from backend
+interface FileNode {
+  name: string
+  path: string
+  isDir: boolean
+  hidden: boolean
+  gitStatus: string
+  gitIgnored: boolean
+}
+```
+
 ## Stack
 
 - React 19 + TypeScript ~5.7
@@ -94,6 +127,29 @@ Base font: 14px. Dark color-scheme. Focus outlines globally suppressed. Custom s
 - Every selector returns referentially stable value (primitive or direct store property)
 - Derived values computed with `useMemo` in custom hooks, not in selectors
 - All backend calls are async (never blocking UI thread)
+
+## Configuration
+
+Frontend configuration is derived from backend (no separate frontend config file):
+
+| Source                          | Parameter          | Purpose                    |
+| ------------------------------- | ------------------ | -------------------------- |
+| `GetConfig()` RPC              | `active_provider`  | Provider badge in chat     |
+| `GetConfig()` RPC              | `model`            | Model name display         |
+| `GetLogLevel()` RPC            | log level          | Console/log verbosity      |
+| `GetSecuritySettings()` RPC    | `default_policy`   | Tool confirmation UI state |
+| `ListSkills()` RPC             | skills             | `/skill` autocomplete      |
+| `localStorage`                 | panel widths       | Persistent layout          |
+| `localStorage`                 | collapsed states   | Sidebar/file viewer state  |
+| `localStorage`                 | execution mode     | Normal/advanced toggle     |
+
+## Extension Points
+
+- **New RPC wrapper**: add module in `frontend/src/api/` when backend exposes a new method
+- **New store**: create in `frontend/src/stores/`, register in the store initialization sequence
+- **New event handler hook**: add to `frontend/src/hooks/` with type guard and store update logic
+- **New display item type**: extend `groupMessages()` in `frontend/src/lib/chatUtils.ts` and add renderer in `ChatMessageRenderer.tsx`
+- **Custom autocomplete**: extend `/` and `@` autocomplete logic in chat input
 
 ## Related Specs
 

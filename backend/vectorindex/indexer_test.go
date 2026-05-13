@@ -344,7 +344,7 @@ func TestWalkProjectFiles(t *testing.T) {
 		}
 	}
 
-	files, err := walkProjectFiles(dir)
+	files, err := walkProjectFiles(dir, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("walkProjectFiles: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestWalkProjectFiles_WithGitignore(t *testing.T) {
 		}
 	}
 
-	files, err := walkProjectFiles(dir)
+	files, err := walkProjectFiles(dir, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("walkProjectFiles: %v", err)
 	}

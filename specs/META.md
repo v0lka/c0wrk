@@ -59,7 +59,8 @@ specs/
     ├── _template.md
     ├── 001-single-module.md
     ├── 002-sdk-isolation.md
-    └── 003-cgo-free-sqlite.md
+    ├── 003-cgo-free-sqlite.md
+    └── 004-external-binary-dependencies.md
 ```
 
 ## Naming Conventions

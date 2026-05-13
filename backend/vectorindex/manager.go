@@ -20,8 +20,11 @@ type ManagerConfig struct {
 	LibraryPath   string // libonnxruntime path
 	MaxSeqLength  int    // default 512
 	HiddenDim     int    // default 512 for jina-v2-small
-	PersistPath   string // base path for vector storage
-	Logger        *slog.Logger
+	PersistPath      string   // base path for vector storage
+	IgnoreDirs       []string // user-configured dirs to skip (merged with defaults)
+	IgnoreExtensions []string // user-configured extensions to skip
+	IgnoreFileNames  []string // user-configured file names to skip
+	Logger           *slog.Logger
 }
 
 // ProjectCallbacks holds callbacks for project-level indexing events.
@@ -45,6 +48,11 @@ type Manager struct {
 	debounceTimer *time.Timer
 
 	logger *slog.Logger
+
+	// Ignore patterns for file filtering.
+	ignoreDirs       map[string]bool
+	ignoreExtensions map[string]bool
+	ignoreFileNames  map[string]bool
 }
 
 // NewManager creates embedder and service from flattened config.
@@ -87,7 +95,63 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		embedder: emb,
 		service:  svc,
 		logger:   logger,
+		ignoreDirs:       buildMap(mergeSlices(DefaultIgnoreDirPatterns(), cfg.IgnoreDirs)),
+		ignoreExtensions: buildMap(cfg.IgnoreExtensions),
+		ignoreFileNames:  buildMap(cfg.IgnoreFileNames),
 	}, nil
+}
+
+// buildMap returns a map from slice elements for O(1) lookup.
+func buildMap(items []string) map[string]bool {
+	m := make(map[string]bool, len(items))
+	for _, item := range items {
+		m[item] = true
+	}
+	return m
+}
+
+// mergeSlices concatenates two slices de-duplicating by the first occurrence.
+func mergeSlices(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	result := make([]string, 0, len(a)+len(b))
+	for _, item := range a {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	for _, item := range b {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// mergeMaps returns a new map containing all entries from a and b.
+// Entries from b override entries from a.
+func mergeMaps[V any](a, b map[string]V) map[string]V {
+	result := make(map[string]V, len(a)+len(b))
+	for k, v := range a {
+		result[k] = v
+	}
+	for k, v := range b {
+		result[k] = v
+	}
+	return result
+}
+
+// DefaultIgnoreDirPatterns returns the default directory names excluded from
+// file walking and vector indexing. Merged with user-configured patterns at
+// Manager construction time.
+func DefaultIgnoreDirPatterns() []string {
+	return []string{
+		".git", "node_modules", "vendor", "build", "dist",
+		".cache", "__pycache__", ".idea", ".vscode",
+		".next", ".nuxt", "target", "coverage",
+		".terraform", ".svn", ".hg",
+	}
 }
 
 // Service returns the underlying Service for search operations.
@@ -154,11 +218,14 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 
 	// Create indexer.
 	indexer := NewIndexer(IndexerConfig{
-		Service:    m.service,
-		ChunkFn:    chunkFn,
-		HashFn:     core.ComputeFileHash,
-		OnProgress: cbs.OnProgress,
-		Logger:     m.logger,
+		Service:          m.service,
+		ChunkFn:          chunkFn,
+		HashFn:           core.ComputeFileHash,
+		OnProgress:       cbs.OnProgress,
+		Logger:           m.logger,
+		IgnoreDirs:       m.ignoreDirs,
+		IgnoreExtensions: m.ignoreExtensions,
+		IgnoreFileNames:  m.ignoreFileNames,
 	})
 
 	m.mu.Lock()
