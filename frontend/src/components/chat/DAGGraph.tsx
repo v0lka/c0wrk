@@ -9,19 +9,27 @@ const PADDING = 4
 const STROKE_COLOR = 'var(--color-muted-foreground)'
 const STROKE_WIDTH = 1
 
-function computeRowHeight(item: PlanItem): number {
-  if (!item.todoItems || item.todoItems.length === 0) return BASE_ROW_HEIGHT
+function computeRowHeight(item: PlanItem, isExpanded: boolean): number {
+  if (!isExpanded || !item.todoItems || item.todoItems.length === 0) return BASE_ROW_HEIGHT
   return BASE_ROW_HEIGHT + item.todoItems.length * TODO_ITEM_HEIGHT + 4
 }
 
-export function DAGGraph({ items }: { items: PlanItem[] }) {
+interface DAGGraphProps {
+  items: PlanItem[]
+  expandedItems: ReadonlySet<string>
+}
+
+export function DAGGraph({ items, expandedItems }: DAGGraphProps) {
   const layout = useMemo(() => computeDAGLayout(items), [items])
-  const rowHeights = useMemo(() => items.map(computeRowHeight), [items])
+  const rowHeights = useMemo(
+    () => items.map(item => computeRowHeight(item, expandedItems.has(item.id))),
+    [items, expandedItems],
+  )
   const rowOffsets = useMemo(() => {
     const offsets: number[] = []
     let offset = 0
     for (let i = 0; i < rowHeights.length; i++) {
-      offsets.push(offset + rowHeights[i]! / 2)
+      offsets.push(offset + BASE_ROW_HEIGHT / 2)
       offset += rowHeights[i]!
     }
     return offsets

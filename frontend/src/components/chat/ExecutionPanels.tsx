@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { ChevronDown, ListChecks, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { usePlanStore, usePlanCompleted, usePlanTotal } from '@/stores/planStore'
@@ -18,6 +18,16 @@ export function ExecutionPanels() {
   const hasViewerTabs = useFileViewerStore(s => s.openTabs.length > 0)
 
   const [planOpen, setPlanOpen] = useState(false)
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(() => new Set())
+
+  const handleToggleItem = useCallback((itemId: string) => {
+    setExpandedItems(prev => {
+      const next = new Set(prev)
+      if (next.has(itemId)) next.delete(itemId)
+      else next.add(itemId)
+      return next
+    })
+  }, [])
 
   const hasPlan = planGroups.length > 0
   if (!hasPlan || !activeSessionId) return null
@@ -46,9 +56,9 @@ export function ExecutionPanels() {
           <div className="max-h-48 overflow-y-auto px-3 pb-2">
             {planGroups.map((group) => (
               <div key={group.id} className="flex items-start">
-                <DAGGraph items={group.items} />
+                <DAGGraph items={group.items} expandedItems={expandedItems} />
                 <div className="flex-1 min-w-0">
-                  <PlanView />
+                  <PlanView expandedItems={expandedItems} onToggleItem={handleToggleItem} />
                 </div>
               </div>
             ))}

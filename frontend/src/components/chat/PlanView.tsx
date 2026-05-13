@@ -1,4 +1,4 @@
-import { CheckCircle2, Circle, Loader2, XCircle, Clock, Square, CheckSquare } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle2, Circle, Loader2, XCircle, Clock, Square, CheckSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { usePlanStore } from '@/stores/planStore'
@@ -22,7 +22,7 @@ function StatusIcon({ status }: { status: PlanItem['status'] }) {
 function TodoChecklist({ items }: { items: PlanItem['todoItems'] }) {
   if (!items || items.length === 0) return null
   return (
-    <ul className="space-y-0.5 ml-5.5">
+    <ul className="space-y-0.5 ml-9">
       {items.map((todo, i) => (
         <li key={`${todo.text}-${i}`} className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
           {todo.checked ? (
@@ -37,7 +37,14 @@ function TodoChecklist({ items }: { items: PlanItem['todoItems'] }) {
   )
 }
 
-function PlanStepItem({ item, onClick }: { item: PlanItem; onClick?: () => void }) {
+interface PlanStepItemProps {
+  item: PlanItem
+  isExpanded: boolean
+  onToggle: () => void
+  onClick?: () => void
+}
+
+function PlanStepItem({ item, isExpanded, onToggle, onClick }: PlanStepItemProps) {
   const hasDescription = !!item.description && item.description !== item.title
   const hasTodos = !!item.todoItems && item.todoItems.length > 0
 
@@ -49,7 +56,19 @@ function PlanStepItem({ item, onClick }: { item: PlanItem; onClick?: () => void 
       )}
       onClick={onClick}
     >
-      <div className="flex items-center gap-2 h-[24px] w-full text-left">
+      <div className="flex items-center gap-1 h-[24px] w-full text-left">
+        {hasTodos ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggle() }}
+            className="flex items-center justify-center h-3.5 w-3.5 shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {isExpanded
+              ? <ChevronDown className="h-3 w-3" />
+              : <ChevronRight className="h-3 w-3" />}
+          </button>
+        ) : (
+          <span className="w-3.5 shrink-0" />
+        )}
         <StatusIcon status={item.status} />
         <StepTooltip description={item.description || item.title} enabled={hasDescription}>
           <span className="text-xs text-muted-foreground truncate min-w-0">{item.title}</span>
@@ -61,12 +80,17 @@ function PlanStepItem({ item, onClick }: { item: PlanItem; onClick?: () => void 
           </span>
         )}
       </div>
-      {hasTodos && <TodoChecklist items={item.todoItems} />}
+      {hasTodos && isExpanded && <TodoChecklist items={item.todoItems} />}
     </div>
   )
 }
 
-export function PlanView() {
+interface PlanViewProps {
+  expandedItems: ReadonlySet<string>
+  onToggleItem: (itemId: string) => void
+}
+
+export function PlanView({ expandedItems, onToggleItem }: PlanViewProps) {
   const latestGroup = usePlanStore(s => s.planGroups[0] ?? null)
   const scrollToStep = useScrollContext().scrollToStep
 
@@ -78,6 +102,8 @@ export function PlanView() {
         <PlanStepItem
           key={item.id}
           item={item}
+          isExpanded={expandedItems.has(item.id)}
+          onToggle={() => onToggleItem(item.id)}
           onClick={scrollToStep ? () => scrollToStep(item.id) : undefined}
         />
       ))}
