@@ -87,7 +87,7 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 		}
 
 		if d.IsDir() {
-			if isIgnoredDir(path, absRoot, gitignorePatterns, nil) {
+			if isIgnoredDir(path, absRoot, gitignorePatterns, s.ignoreDirs) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -97,7 +97,7 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 			return nil
 		}
 
-		if isIgnoredFile(path, absRoot, gitignorePatterns, nil, nil) {
+		if isIgnoredFile(path, absRoot, gitignorePatterns, s.ignoreExtensions, s.ignoreFileNames) {
 			return nil
 		}
 

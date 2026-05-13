@@ -259,16 +259,16 @@ func (a *App) Startup(ctx context.Context) {
 	libraryPath := resolveONNXLibPath()
 
 	vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
-		ModelPath:       modelPath,
-		TokenizerPath:   tokenizerPath,
-		LibraryPath:     libraryPath,
-		MaxSeqLength:    512,
-		HiddenDim:       512,
-		PersistPath:     filepath.Join(agentDir, "vector_index"),
-		IgnoreDirs:      cfg.Workspace.IgnoreDirs,
+		ModelPath:        modelPath,
+		TokenizerPath:    tokenizerPath,
+		LibraryPath:      libraryPath,
+		MaxSeqLength:     512,
+		HiddenDim:        512,
+		PersistPath:      filepath.Join(agentDir, "vector_index"),
+		IgnoreDirs:       cfg.Workspace.IgnoreDirs,
 		IgnoreExtensions: cfg.Workspace.IgnoreExtensions,
-		IgnoreFileNames: cfg.Workspace.IgnoreFileNames,
-		Logger:          log,
+		IgnoreFileNames:  cfg.Workspace.IgnoreFileNames,
+		Logger:           log,
 	})
 	if err != nil {
 		log.Warn("vector search unavailable", "error", err)

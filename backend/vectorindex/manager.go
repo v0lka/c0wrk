@@ -15,11 +15,11 @@ import (
 // ManagerConfig holds configuration for creating a Manager.
 // Fields are flattened so callers never need to import core/ or sdk/.
 type ManagerConfig struct {
-	ModelPath     string // ONNX model path
-	TokenizerPath string // tokenizer.json path
-	LibraryPath   string // libonnxruntime path
-	MaxSeqLength  int    // default 512
-	HiddenDim     int    // default 512 for jina-v2-small
+	ModelPath        string   // ONNX model path
+	TokenizerPath    string   // tokenizer.json path
+	LibraryPath      string   // libonnxruntime path
+	MaxSeqLength     int      // default 512
+	HiddenDim        int      // default 512 for jina-v2-small
 	PersistPath      string   // base path for vector storage
 	IgnoreDirs       []string // user-configured dirs to skip (merged with defaults)
 	IgnoreExtensions []string // user-configured extensions to skip
@@ -79,10 +79,17 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		return nil, err
 	}
 
+	ignoreDirs := mergeMapWithSlice(defaultIgnoreDirs, cfg.IgnoreDirs)
+	ignoreExts := buildMap(cfg.IgnoreExtensions)
+	ignoreNames := buildMap(cfg.IgnoreFileNames)
+
 	svc, err := NewService(ServiceConfig{
-		PersistPath:   cfg.PersistPath,
-		EmbeddingFunc: chromem.EmbeddingFunc(emb.EmbeddingFunc()),
-		Logger:        logger,
+		PersistPath:      cfg.PersistPath,
+		EmbeddingFunc:    chromem.EmbeddingFunc(emb.EmbeddingFunc()),
+		Logger:           logger,
+		IgnoreDirs:       ignoreDirs,
+		IgnoreExtensions: ignoreExts,
+		IgnoreFileNames:  ignoreNames,
 	})
 	if err != nil {
 		if closeErr := emb.Close(); closeErr != nil {
@@ -92,12 +99,12 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	}
 
 	return &Manager{
-		embedder: emb,
-		service:  svc,
-		logger:   logger,
-		ignoreDirs:       buildMap(mergeSlices(DefaultIgnoreDirPatterns(), cfg.IgnoreDirs)),
-		ignoreExtensions: buildMap(cfg.IgnoreExtensions),
-		ignoreFileNames:  buildMap(cfg.IgnoreFileNames),
+		embedder:         emb,
+		service:          svc,
+		logger:           logger,
+		ignoreDirs:       ignoreDirs,
+		ignoreExtensions: ignoreExts,
+		ignoreFileNames:  ignoreNames,
 	}, nil
 }
 
@@ -110,48 +117,17 @@ func buildMap(items []string) map[string]bool {
 	return m
 }
 
-// mergeSlices concatenates two slices de-duplicating by the first occurrence.
-func mergeSlices(a, b []string) []string {
-	seen := make(map[string]bool, len(a)+len(b))
-	result := make([]string, 0, len(a)+len(b))
-	for _, item := range a {
-		if !seen[item] {
-			seen[item] = true
-			result = append(result, item)
-		}
-	}
-	for _, item := range b {
-		if !seen[item] {
-			seen[item] = true
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
-// mergeMaps returns a new map containing all entries from a and b.
-// Entries from b override entries from a.
-func mergeMaps[V any](a, b map[string]V) map[string]V {
-	result := make(map[string]V, len(a)+len(b))
-	for k, v := range a {
+// mergeMapWithSlice returns a new map containing all entries from base
+// plus additional entries from the extra slice.
+func mergeMapWithSlice(base map[string]bool, extra []string) map[string]bool {
+	result := make(map[string]bool, len(base)+len(extra))
+	for k, v := range base {
 		result[k] = v
 	}
-	for k, v := range b {
-		result[k] = v
+	for _, item := range extra {
+		result[item] = true
 	}
 	return result
-}
-
-// DefaultIgnoreDirPatterns returns the default directory names excluded from
-// file walking and vector indexing. Merged with user-configured patterns at
-// Manager construction time.
-func DefaultIgnoreDirPatterns() []string {
-	return []string{
-		".git", "node_modules", "vendor", "build", "dist",
-		".cache", "__pycache__", ".idea", ".vscode",
-		".next", ".nuxt", "target", "coverage",
-		".terraform", ".svn", ".hg",
-	}
 }
 
 // Service returns the underlying Service for search operations.

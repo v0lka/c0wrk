@@ -101,13 +101,13 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		onProgress = func(IndexState, int, int, string) {}
 	}
 	return &Indexer{
-		service:      cfg.Service,
-		chunkFn:      cfg.ChunkFn,
-		hashFn:       hashFn,
-		maxChunkSize: maxChunkSize,
-		overlap:      overlap,
-		onProgress:   onProgress,
-		logger:       logger,
+		service:          cfg.Service,
+		chunkFn:          cfg.ChunkFn,
+		hashFn:           hashFn,
+		maxChunkSize:     maxChunkSize,
+		overlap:          overlap,
+		onProgress:       onProgress,
+		logger:           logger,
 		ignoreDirs:       cfg.IgnoreDirs,
 		ignoreExtensions: cfg.IgnoreExtensions,
 		ignoreFileNames:  cfg.IgnoreFileNames,

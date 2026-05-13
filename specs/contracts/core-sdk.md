@@ -103,22 +103,26 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 
 ## Data Flow Across Boundary
 
-| Data                       | Direction   | Form                                       |
-| -------------------------- | ----------- | -------------------------------------------|
-| LLM request                | core → sdk  | `llm.ChatRequest` via `Router.Call()`      |
-| LLM response               | sdk → core  | `llm.ChatResponse`                         |
-| Tool execution request     | core → sdk  | `tools.Tool.Execute()`                     |
-| Tool result                | sdk → core  | `tools.ToolResult`                         |
-| Compaction trigger         | core → sdk  | `CompactionStrategy.Compact()`             |
-| Compacted messages         | sdk → core  | `[]llm.Message`                            |
-| Plan generation request    | core → sdk  | `Planner.Plan()` via adapter               |
-| Plan structure             | sdk → core  | `orchestration.Plan` (aliased)             |
-| Orchestration lifecycle    | core → sdk  | `orchestration.Events` (adapted Emitter)   |
-| Blackboard state           | sdk ↔ core  | `orchestration.Blackboard` (aliased, shared)|
-| Context window status      | sdk → core  | `ContextManager.State()`                   |
-| CompactionResult           | sdk → core  | `CompactionResult{BeforeFill, AfterFill, Strategy}` |
+| Data                    | Direction  | Form                                                |
+| ----------------------- | ---------- | --------------------------------------------------- |
+| LLM request             | core → sdk | `llm.ChatRequest` via `Router.Call()`               |
+| LLM response            | sdk → core | `llm.ChatResponse`                                  |
+| Tool execution request  | core → sdk | `tools.Tool.Execute()`                              |
+| Tool result             | sdk → core | `tools.ToolResult`                                  |
+| Compaction trigger      | core → sdk | `CompactionStrategy.Compact()`                      |
+| Compacted messages      | sdk → core | `[]llm.Message`                                     |
+| Plan generation request | core → sdk | `Planner.Plan()` via adapter                        |
+| Plan structure          | sdk → core | `orchestration.Plan` (aliased)                      |
+| Orchestration lifecycle | core → sdk | `orchestration.Events` (adapted Emitter)            |
+| Blackboard state        | sdk ↔ core | `orchestration.Blackboard` (aliased, shared)        |
+| Context window status   | sdk → core | `ContextManager.State()`                            |
+| CompactionResult        | sdk → core | `CompactionResult{BeforeFill, AfterFill, Strategy}` |
 
 ## Error Propagation
+
+- SDK errors bubble up through core as-is (no re-wrapping at this boundary)
+- Core adds context when the error's origin is ambiguous: `fmt.Errorf("routing failed: %w", err)`
+- SDK never returns core-specific error types
 
 ## Breaking Change Checklist
 

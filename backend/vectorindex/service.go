@@ -25,6 +25,12 @@ type ServiceConfig struct {
 	// (from Embedder.EmbeddingFunc()).
 	EmbeddingFunc chromem.EmbeddingFunc
 
+	// Ignore patterns for file filtering in ValidateCollection.
+	// nil means no extra patterns beyond hardcoded defaults.
+	IgnoreDirs       map[string]bool
+	IgnoreExtensions map[string]bool
+	IgnoreFileNames  map[string]bool
+
 	// Logger for structured logging.
 	Logger *slog.Logger
 }
@@ -43,6 +49,11 @@ type Service struct {
 	readyCh       chan struct{} // closed when ready becomes true; recreated on false
 	readyMu       sync.Mutex    // protects readyCh swaps
 	logger        *slog.Logger
+
+	// Extra ignore patterns for ValidateCollection file filtering.
+	ignoreDirs       map[string]bool
+	ignoreExtensions map[string]bool
+	ignoreFileNames  map[string]bool
 }
 
 // NewService creates a new vector index Service.
@@ -57,10 +68,13 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 
 	s := &Service{
-		embeddingFunc: cfg.EmbeddingFunc,
-		persistPath:   cfg.PersistPath,
-		readyCh:       make(chan struct{}),
-		logger:        logger,
+		embeddingFunc:    cfg.EmbeddingFunc,
+		persistPath:      cfg.PersistPath,
+		readyCh:          make(chan struct{}),
+		logger:           logger,
+		ignoreDirs:       cfg.IgnoreDirs,
+		ignoreExtensions: cfg.IgnoreExtensions,
+		ignoreFileNames:  cfg.IgnoreFileNames,
 	}
 
 	return s, nil

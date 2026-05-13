@@ -7,14 +7,14 @@ var defaultProtectedTools = []string{"store_fact", "search_facts"}
 // the `skills.dirs` config key is omitted. The current project's
 // `.agents/skills` directory is always scanned automatically (see core/builder.go)
 // and does NOT need to be listed here.
-	var defaultSkillDirs = []string{
+var defaultSkillDirs = []string{
 	"~/.agents/skills",
 	"~/.c0wrk/.agents/skills",
 }
 
-// setDefault sets *ptr to val if *ptr is nil or an empty slice.
+// setDefault sets *ptr to val if *ptr is nil.
 func setDefault[T any](ptr *[]T, val []T) {
-	if ptr == nil || *ptr == nil {
+	if *ptr == nil {
 		*ptr = val
 	}
 }
