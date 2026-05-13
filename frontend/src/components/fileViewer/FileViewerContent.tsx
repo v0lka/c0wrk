@@ -1,5 +1,5 @@
-import { useEffect, useRef, useCallback, useMemo } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react'
+import { Loader2, Code, Eye } from 'lucide-react'
 import { EditorView } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { lineNumbers } from '@codemirror/view'
@@ -7,7 +7,8 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { subscribe } from '@/api/runtime'
 import { readFile, getFileDiff } from '@/api/workspace'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
-import { MarkdownViewer } from '@/components/MarkdownViewer'
+import { Markdown } from '@/lib/markdownConfig'
+import { Button } from '@/components/ui/button'
 import { isBinaryContent } from '@/lib/fileViewerUtils'
 import { detectLanguageFromPath } from '@/lib/cmLanguages'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
@@ -239,7 +240,7 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: {
   )
 }
 
-// -- Viewer shell (handles markdown preview vs raw toggle) -------------------
+// -- Viewer shell (handles markdown preview vs source toggle) ----------------
 
 function CodeMirrorViewer({ content, language, diff, highlightLine }: {
   content: string
@@ -248,11 +249,30 @@ function CodeMirrorViewer({ content, language, diff, highlightLine }: {
   highlightLine: number | null
 }) {
   const isMarkdown = language === 'Markdown' || language === 'markdown'
+  const [showSource, setShowSource] = useState(false)
 
   if (isMarkdown) {
     return (
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <MarkdownViewer content={content} className="flex-1 overflow-auto custom-scrollbar p-4" />
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={() => setShowSource((s) => !s)}
+          className="absolute top-2 right-4 z-10"
+          title={showSource ? 'Preview' : 'Source'}
+        >
+          {showSource ? <Eye className="size-4" /> : <Code className="size-4" />}
+        </Button>
+        {showSource ? (
+          <CodeMirrorEditor
+            content={content}
+            language="Markdown"
+            diff={diff}
+            highlightLine={highlightLine}
+          />
+        ) : (
+          <Markdown content={content} className="flex-1 overflow-auto custom-scrollbar p-4" />
+        )}
       </div>
     )
   }
