@@ -5,11 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	chromem "github.com/philippgille/chromem-go"
+
+	"github.com/user/agent/backend/vectorindex/lexical"
 )
 
 // fakeEmbeddingFunc returns a deterministic embedding for testing.
@@ -260,7 +263,7 @@ func TestSearchWithDocuments(t *testing.T) {
 	}
 
 	svc.AcquireWriteLock()
-	if err := svc.AddDocuments(context.Background(), docs); err != nil {
+	if err := svc.AddDocuments(context.Background(), docs, nil); err != nil {
 		svc.ReleaseWriteLock()
 		t.Fatalf("AddDocuments failed: %v", err)
 	}
@@ -507,7 +510,7 @@ func TestValidateCollection(t *testing.T) {
 	}
 
 	svc.AcquireWriteLock()
-	if err := svc.AddDocuments(context.Background(), docs); err != nil {
+	if err := svc.AddDocuments(context.Background(), docs, nil); err != nil {
 		svc.ReleaseWriteLock()
 		t.Fatalf("AddDocuments failed: %v", err)
 	}
@@ -573,7 +576,7 @@ func TestRebuildCollection(t *testing.T) {
 		},
 	}
 	svc.AcquireWriteLock()
-	if err := svc.AddDocuments(context.Background(), []chromem.Document{doc}); err != nil {
+	if err := svc.AddDocuments(context.Background(), []chromem.Document{doc}, nil); err != nil {
 		svc.ReleaseWriteLock()
 		t.Fatalf("AddDocuments failed: %v", err)
 	}
@@ -691,7 +694,7 @@ func TestGetCollectionFiles(t *testing.T) {
 	}
 
 	svc.AcquireWriteLock()
-	if err := svc.AddDocuments(context.Background(), docs); err != nil {
+	if err := svc.AddDocuments(context.Background(), docs, nil); err != nil {
 		svc.ReleaseWriteLock()
 		t.Fatalf("AddDocuments failed: %v", err)
 	}
@@ -745,7 +748,7 @@ func TestDeleteDocumentsByIDs(t *testing.T) {
 	}
 
 	svc.AcquireWriteLock()
-	if err := svc.AddDocuments(context.Background(), docs); err != nil {
+	if err := svc.AddDocuments(context.Background(), docs, nil); err != nil {
 		svc.ReleaseWriteLock()
 		t.Fatalf("AddDocuments failed: %v", err)
 	}
@@ -773,4 +776,223 @@ func containsPath(paths []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// --- Hybrid search tests ---
+
+// seedHybridService builds a persistent service with a lexical index,
+// adds two documents (one matching query "main" via chromem, another
+// matching the exact term "MatcherFactory" via bleve), and returns it.
+func seedHybridService(t *testing.T) *Service {
+	t.Helper()
+	dir := t.TempDir()
+	svc, err := NewService(ServiceConfig{
+		PersistPath:   dir,
+		EmbeddingFunc: fakeEmbeddingFunc(),
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if err := svc.SetProject("hybrid-proj"); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+
+	mkDoc := func(id, path, name, content string) (chromem.Document, lexical.Doc) {
+		return chromem.Document{
+				ID:      id,
+				Content: content,
+				Metadata: map[string]string{
+					"file_path":    path,
+					"file_name":    name,
+					"content_hash": id + "-hash",
+					"start_line":   "1",
+					"end_line":     "5",
+					"language":     "go",
+				},
+			},
+			lexical.Doc{
+				ID:       id,
+				FilePath: path,
+				Language: "go",
+				Content:  content,
+			}
+	}
+
+	vec1, lex1 := mkDoc("f1:0", "/proj/main.go", "main.go", "func main() { fmt.Println(\"hello\") }")
+	vec2, lex2 := mkDoc("f2:0", "/proj/matcher.go", "matcher.go", "type MatcherFactory struct { rules []Rule }")
+
+	svc.AcquireWriteLock()
+	if err := svc.AddDocuments(context.Background(),
+		[]chromem.Document{vec1, vec2},
+		[]lexical.Doc{lex1, lex2},
+	); err != nil {
+		svc.ReleaseWriteLock()
+		t.Fatalf("AddDocuments: %v", err)
+	}
+	svc.ReleaseWriteLock()
+	svc.SetReady(true)
+	return svc
+}
+
+func TestHybridSearch_Modes(t *testing.T) {
+	svc := seedHybridService(t)
+
+	t.Run("hybrid fuses both sides", func(t *testing.T) {
+		results, err := svc.HybridSearch(context.Background(), SearchOptions{
+			Query: "MatcherFactory", TopK: 5, Mode: ModeHybrid,
+		})
+		if err != nil {
+			t.Fatalf("HybridSearch: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected non-empty results")
+		}
+		// Top result should be matcher.go (lexical exact match)
+		if results[0].FileName != "matcher.go" {
+			t.Errorf("expected matcher.go as top hybrid result, got %q", results[0].FileName)
+		}
+		if results[0].LexicalRank == 0 {
+			t.Error("expected LexicalRank > 0 on hybrid hit")
+		}
+	})
+
+	t.Run("vector-only mode only populates VectorRank", func(t *testing.T) {
+		results, err := svc.HybridSearch(context.Background(), SearchOptions{
+			Query: "main", TopK: 5, Mode: ModeVector,
+		})
+		if err != nil {
+			t.Fatalf("vector search: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected non-empty vector results")
+		}
+		for _, r := range results {
+			if r.LexicalRank != 0 {
+				t.Errorf("vector-only mode should not set LexicalRank, got %d", r.LexicalRank)
+			}
+		}
+	})
+
+	t.Run("lexical-only mode only populates LexicalRank", func(t *testing.T) {
+		results, err := svc.HybridSearch(context.Background(), SearchOptions{
+			Query: "MatcherFactory", TopK: 5, Mode: ModeLexical,
+		})
+		if err != nil {
+			t.Fatalf("lexical search: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected non-empty lexical results")
+		}
+		if results[0].FileName != "matcher.go" {
+			t.Errorf("expected matcher.go, got %q", results[0].FileName)
+		}
+		for _, r := range results {
+			if r.VectorRank != 0 {
+				t.Errorf("lexical-only mode should not set VectorRank, got %d", r.VectorRank)
+			}
+		}
+	})
+}
+
+func TestHybridSearch_FilePatternAppliedBeforeFusion(t *testing.T) {
+	svc := seedHybridService(t)
+	results, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "MatcherFactory", TopK: 5, Mode: ModeHybrid, FilePattern: "**/main.go",
+	})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	for _, r := range results {
+		if r.FileName != "main.go" {
+			t.Errorf("FilePattern should filter out matcher.go, got %q", r.FileName)
+		}
+	}
+}
+
+func TestHybridSearch_MustMatchEnforced(t *testing.T) {
+	svc := seedHybridService(t)
+	results, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "main MatcherFactory", TopK: 5, Mode: ModeHybrid,
+		MustMatch: []string{"MatcherFactory"},
+	})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	for _, r := range results {
+		if !strings.Contains(r.Content, "MatcherFactory") {
+			t.Errorf("MustMatch not enforced on %q content %q", r.FileName, r.Content)
+		}
+	}
+}
+
+func TestHybridSearch_PlusSugarMergesIntoMustMatch(t *testing.T) {
+	svc := seedHybridService(t)
+	results, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "function +MatcherFactory", TopK: 5, Mode: ModeHybrid,
+	})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	for _, r := range results {
+		if !strings.Contains(r.Content, "MatcherFactory") {
+			t.Errorf("+sugar must-match not enforced on %q", r.FileName)
+		}
+	}
+}
+
+func TestHybridSearch_AutoFallbackWhenLexicalEmpty(t *testing.T) {
+	// In-memory service has no lexical index at all.
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if err := svc.SetProject("fallback-proj"); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+	docs := []chromem.Document{{
+		ID:      "x:0",
+		Content: "hello world",
+		Metadata: map[string]string{
+			"file_path":    "/p/a.go",
+			"file_name":    "a.go",
+			"content_hash": "h",
+			"start_line":   "1",
+			"end_line":     "2",
+			"language":     "go",
+		},
+	}}
+	svc.AcquireWriteLock()
+	if err := svc.AddDocuments(context.Background(), docs, nil); err != nil {
+		svc.ReleaseWriteLock()
+		t.Fatalf("AddDocuments: %v", err)
+	}
+	svc.ReleaseWriteLock()
+	svc.SetReady(true)
+
+	// Hybrid should auto-fall-back to vector (no error, results populated).
+	results, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "hello", TopK: 2, Mode: ModeHybrid,
+	})
+	if err != nil {
+		t.Fatalf("hybrid with empty lexical should fall back, got err: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected vector fallback to return results")
+	}
+
+	// Explicit ModeLexical should error out because there is no lexical index at all.
+	if _, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "hello", TopK: 2, Mode: ModeLexical,
+	}); err == nil {
+		t.Error("ModeLexical with no lexical index should return error")
+	}
 }

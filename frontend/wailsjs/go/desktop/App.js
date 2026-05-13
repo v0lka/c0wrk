@@ -130,8 +130,8 @@ export function ResumeTask(arg1) {
   return window['go']['desktop']['App']['ResumeTask'](arg1);
 }
 
-export function SearchVectorStore(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['SearchVectorStore'](arg1, arg2, arg3);
+export function SearchVectorStore(arg1) {
+  return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }
 
 export function SendMessage(arg1, arg2, arg3, arg4) {

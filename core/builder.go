@@ -634,7 +634,7 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 
 	if searchFunc != nil && len(keywords) > 0 {
 		query := strings.Join(keywords, " ")
-		results, searchErr := searchFunc(ctx, query, 5, "")
+		results, searchErr := searchFunc(ctx, builtins.VectorSearchOptions{Query: query, TopK: 5})
 		if searchErr != nil {
 			b.log().Warn("optimize prompt: vector search failed, proceeding without context", "error", searchErr)
 		} else if len(results) > 0 {

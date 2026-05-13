@@ -428,7 +428,7 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 	// Vector search (optional, non-blocking).
 	if o.vectorSearchFunc != nil {
 		ragCtx, ragCancel := context.WithTimeout(ctx, 2*time.Second)
-		results, err := o.vectorSearchFunc(ragCtx, query, 5, "")
+		results, err := o.vectorSearchFunc(ragCtx, tools.VectorSearchOptions{Query: query, TopK: 5})
 		ragCancel()
 
 		if err != nil {

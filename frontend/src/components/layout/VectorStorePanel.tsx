@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
@@ -9,10 +9,13 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { IndexingStatus } from './IndexingStatus'
 import { Search, X, Loader2, FileCode } from 'lucide-react'
-import type { VectorStoreEntry } from '@/types/models'
+import type { SearchMode, VectorStoreEntry } from '@/types/models'
+import { parsePlusTokens } from '@/lib/plusTokens'
 
 const MAX_PREVIEW_LINES = 4
 const MAX_PREVIEW_CHARS = 300
+
+const MODES: SearchMode[] = ['hybrid', 'vector', 'lexical']
 
 export function VectorStorePanel() {
     const status = useVectorIndexStore((s) => s.status)
@@ -21,11 +24,16 @@ export function VectorStorePanel() {
     const query = useVectorIndexStore((s) => s.query)
     const topK = useVectorIndexStore((s) => s.topK)
     const filePattern = useVectorIndexStore((s) => s.filePattern)
+    const mustMatch = useVectorIndexStore((s) => s.mustMatch)
+    const mode = useVectorIndexStore((s) => s.mode)
     const setEntries = useVectorIndexStore((s) => s.setEntries)
     const setLoading = useVectorIndexStore((s) => s.setLoading)
     const setQuery = useVectorIndexStore((s) => s.setQuery)
     const setTopK = useVectorIndexStore((s) => s.setTopK)
     const setFilePattern = useVectorIndexStore((s) => s.setFilePattern)
+    const setMustMatch = useVectorIndexStore((s) => s.setMustMatch)
+    const removeMustMatch = useVectorIndexStore((s) => s.removeMustMatch)
+    const setMode = useVectorIndexStore((s) => s.setMode)
     const clearFilter = useVectorIndexStore((s) => s.clearFilter)
 
     const activeProjectId = useProjectStore((s) => s.activeProjectId)
@@ -34,10 +42,22 @@ export function VectorStorePanel() {
     const prevProjectRef = useRef(activeProjectId)
 
     // Fetch entries (browse or search)
-    const fetchEntries = useCallback(async (q: string, k: number, pattern: string) => {
+    const fetchEntries = useCallback(async (
+        q: string,
+        k: number,
+        pattern: string,
+        tokens: string[],
+        m: SearchMode,
+    ) => {
         setLoading(true)
         try {
-            const results = await searchVectorStore(q, k, pattern)
+            const results = await searchVectorStore({
+                query: q,
+                top_k: k,
+                file_pattern: pattern,
+                must_match: tokens,
+                mode: q === '' ? '' : m,
+            })
             setEntries(results)
         } catch {
             setEntries([])
@@ -49,9 +69,9 @@ export function VectorStorePanel() {
     // Auto-browse on mount and when index becomes ready
     useEffect(() => {
         if (status.state === 'ready' && activeProjectId) {
-            fetchEntries(query, topK, filePattern)
+            fetchEntries(query, topK, filePattern, mustMatch, mode)
         }
-    }, [status.state, activeProjectId, fetchEntries, query, topK, filePattern])
+    }, [status.state, activeProjectId, fetchEntries, query, topK, filePattern, mustMatch, mode])
 
     // Reset entries when project changes
     useEffect(() => {
@@ -68,21 +88,33 @@ export function VectorStorePanel() {
             if (data && typeof data === 'object' && 'state' in data) {
                 const record = data as Record<string, unknown>
                 if (record.state === 'ready') {
-                    fetchEntries('', topK, '')
+                    fetchEntries('', topK, '', [], mode)
                 }
             }
         })
         return unsub
-    }, [fetchEntries, topK])
+    }, [fetchEntries, topK, mode])
 
     const handleSearch = useCallback(() => {
-        fetchEntries(query, topK, filePattern)
-    }, [fetchEntries, query, topK, filePattern])
+        // Strip +tokens from query and merge into mustMatch before search
+        const parsed = parsePlusTokens(query)
+        let finalTokens = mustMatch
+        if (parsed.tokens.length > 0) {
+            const merged = [...mustMatch]
+            for (const tok of parsed.tokens) {
+                if (!merged.includes(tok)) merged.push(tok)
+            }
+            finalTokens = merged
+            setQuery(parsed.query)
+            setMustMatch(merged)
+        }
+        fetchEntries(parsed.query, topK, filePattern, finalTokens, mode)
+    }, [fetchEntries, query, topK, filePattern, mustMatch, mode, setQuery, setMustMatch])
 
     const handleClear = useCallback(() => {
         clearFilter()
-        fetchEntries('', topK, '')
-    }, [clearFilter, fetchEntries, topK])
+        fetchEntries('', topK, '', [], mode)
+    }, [clearFilter, fetchEntries, topK, mode])
 
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
         if (e.key === 'Enter') {
@@ -91,6 +123,11 @@ export function VectorStorePanel() {
     }, [handleSearch])
 
     const isSearchMode = query !== ''
+
+    const statusMetaText = useMemo(() => {
+        if (status.state !== 'ready') return null
+        return `${entries.length} entries · ${isSearchMode ? `Search (${mode})` : 'Browse'}`
+    }, [status.state, entries.length, isSearchMode, mode])
 
     return (
         <div className="flex h-full flex-col gap-2 p-2">
@@ -102,7 +139,7 @@ export function VectorStorePanel() {
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleKeyDown}
-                        placeholder="Keywords..."
+                        placeholder="Keywords... (+tok forces match)"
                         className="h-7 text-xs"
                     />
                     <Input
@@ -142,17 +179,48 @@ export function VectorStorePanel() {
                         </Button>
                     )}
                 </div>
+
+                {/* Mode selector */}
+                <div className="flex gap-1">
+                    {MODES.map((m) => (
+                        <Button
+                            key={m}
+                            variant={mode === m ? 'default' : 'ghost'}
+                            size="sm"
+                            onClick={() => setMode(m)}
+                            className="h-6 flex-1 px-2 text-[11px] capitalize"
+                        >
+                            {m}
+                        </Button>
+                    ))}
+                </div>
+
+                {/* MustMatch chips */}
+                {mustMatch.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                        {mustMatch.map((tok) => (
+                            <button
+                                key={tok}
+                                type="button"
+                                onClick={() => removeMustMatch(tok)}
+                                className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] hover:bg-destructive hover:text-destructive-foreground"
+                                title="Click to remove"
+                            >
+                                <span>+{tok}</span>
+                                <X className="size-2.5" />
+                            </button>
+                        ))}
+                    </div>
+                )}
             </div>
 
             {/* Status bar */}
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <IndexingStatus />
-                {status.state === 'ready' && (
+                {statusMetaText && (
                     <>
                         <span className="text-border">|</span>
-                        <span>{entries.length} entries</span>
-                        <span className="text-border">|</span>
-                        <span>{isSearchMode ? 'Search' : 'Browse'}</span>
+                        <span>{statusMetaText}</span>
                     </>
                 )}
             </div>
@@ -226,6 +294,16 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
                 {entry.language && (
                     <Badge variant="outline" className="h-4 px-1 text-[10px] leading-none">
                         {entry.language}
+                    </Badge>
+                )}
+                {showScore && entry.vector_rank !== undefined && entry.vector_rank > 0 && (
+                    <Badge variant="outline" className="h-4 px-1 text-[10px] leading-none text-info" title={`Vector rank ${entry.vector_rank}`}>
+                        V#{entry.vector_rank}
+                    </Badge>
+                )}
+                {showScore && entry.lexical_rank !== undefined && entry.lexical_rank > 0 && (
+                    <Badge variant="outline" className="h-4 px-1 text-[10px] leading-none text-warning" title={`Lexical rank ${entry.lexical_rank}`}>
+                        L#{entry.lexical_rank}
                     </Badge>
                 )}
                 {showScore && (

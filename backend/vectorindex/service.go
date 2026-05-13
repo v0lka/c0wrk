@@ -13,6 +13,8 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	chromem "github.com/philippgille/chromem-go"
+
+	"github.com/user/agent/backend/vectorindex/lexical"
 )
 
 // ServiceConfig holds configuration for creating a Service.
@@ -36,10 +38,13 @@ type ServiceConfig struct {
 }
 
 // Service manages chromem-go collections with git-branch awareness,
-// readiness state, and vector search capabilities.
+// readiness state, and vector search capabilities. It also owns a
+// per-branch bleve lexical index that is written in lock-step with the
+// chromem collection.
 type Service struct {
 	db            *chromem.DB
 	collection    *chromem.Collection
+	lexical       lexical.Index
 	embeddingFunc chromem.EmbeddingFunc
 	persistPath   string
 	projectID     string
@@ -94,6 +99,12 @@ func (s *Service) SetProject(projectID string) error {
 	s.currentBranch = ""
 	s.projectID = projectID
 	s.db = nil
+	if s.lexical != nil {
+		if err := s.lexical.Close(); err != nil {
+			s.logger.Warn("failed to close previous lexical index", "error", err)
+		}
+		s.lexical = nil
+	}
 
 	if s.persistPath != "" {
 		projectPath := filepath.Join(s.persistPath, projectID)
@@ -170,48 +181,24 @@ func (s *Service) BrowseWithFilter(ctx context.Context, topK int, fileFilter str
 }
 
 // Search queries the current collection for the top-K most similar results.
+//
+// This is a thin shim that delegates to HybridSearch with Mode=ModeVector
+// so there is a single code path for glob/must-match filtering.
 func (s *Service) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
-	return s.SearchWithFilter(ctx, query, topK, "")
+	return s.HybridSearch(ctx, SearchOptions{Query: query, TopK: topK, Mode: ModeVector})
 }
 
 // SearchWithFilter queries the current collection with an optional file path
 // glob filter. Blocks via WaitReady if the index is not yet ready.
-func (s *Service) SearchWithFilter(ctx context.Context, query string, topK int, fileFilter string) ([]SearchResult, error) {
-	if err := s.WaitReady(ctx); err != nil {
-		return nil, fmt.Errorf("waiting for index readiness: %w", err)
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.collection == nil {
-		return nil, errors.New("no collection available; call SetProject and SwitchBranch first")
-	}
-
-	results, err := s.collection.Query(ctx, query, topK, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("querying collection: %w", err)
-	}
-
-	out := make([]SearchResult, 0, len(results))
-	for _, r := range results {
-		sr := resultToSearchResult(r)
-
-		if fileFilter != "" {
-			matched, matchErr := doublestar.Match(fileFilter, sr.FilePath)
-			if matchErr != nil {
-				s.logger.Warn("invalid file filter pattern", "pattern", fileFilter, "error", matchErr)
-				continue
-			}
-			if !matched {
-				continue
-			}
-		}
-
-		out = append(out, sr)
-	}
-
-	return out, nil
+//
+// This is a thin shim that delegates to HybridSearch with Mode=ModeVector.
+func (s *Service) SearchWithFilter(ctx context.Context, query string, topK int, filePattern string) ([]SearchResult, error) {
+	return s.HybridSearch(ctx, SearchOptions{
+		Query:       query,
+		TopK:        topK,
+		Mode:        ModeVector,
+		FilePattern: filePattern,
+	})
 }
 
 // IsReady returns whether the index is ready for queries.
@@ -276,6 +263,26 @@ func (s *Service) GetCollection() *chromem.Collection {
 	return s.collection
 }
 
+// GetLexical returns the current lexical index (may be nil for in-memory
+// mode or before a branch is opened).
+func (s *Service) GetLexical() lexical.Index {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lexical
+}
+
+// LexicalCount returns the number of documents in the lexical index, or
+// 0 if no lexical index is currently open.
+func (s *Service) LexicalCount() (uint64, error) {
+	s.mu.RLock()
+	lex := s.lexical
+	s.mu.RUnlock()
+	if lex == nil {
+		return 0, nil
+	}
+	return lex.Count()
+}
+
 // GetEmbeddingFunc returns the configured embedding function.
 func (s *Service) GetEmbeddingFunc() chromem.EmbeddingFunc {
 	return s.embeddingFunc
@@ -308,6 +315,12 @@ func (s *Service) Close() error {
 
 	s.collection = nil
 	s.db = nil
+	if s.lexical != nil {
+		if err := s.lexical.Close(); err != nil {
+			s.logger.Warn("failed to close lexical index on service close", "error", err)
+		}
+		s.lexical = nil
+	}
 	s.logger.Info("vector index service closed")
 	return nil
 }

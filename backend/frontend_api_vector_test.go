@@ -10,7 +10,7 @@ func TestSearchVectorStore_NilManager(t *testing.T) {
 		appCtx: context.Background,
 	}
 
-	_, err := f.SearchVectorStore("query", 10, "")
+	_, err := f.SearchVectorStore(SearchRequest{Query: "query", TopK: 10})
 	if err == nil {
 		t.Fatal("expected error when vectorManager is nil")
 	}

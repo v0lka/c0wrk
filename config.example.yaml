@@ -271,3 +271,18 @@ orchestration:
   maxHistoryMessages: 20 # Max history messages retained
   maxJudgeCacheSize: 1000 # Max entries in judge decision cache
 
+
+# ---------------------------------------------------------------------------
+# Vector Index / Hybrid Search
+# ---------------------------------------------------------------------------
+# Controls whether the vector index operates in hybrid (vector + BM25)
+# or vector-only mode. When hybrid is true (the default), the service
+# writes each chunk to both chromem (embeddings) and bleve (BM25), and
+# queries fuse the ranked lists with Reciprocal Rank Fusion (k=60).
+#
+# Set hybrid: false to disable lexical search entirely — the bleve
+# directory will still be opened but never consulted at query time.
+#
+# vector_index:
+#   hybrid: true
+

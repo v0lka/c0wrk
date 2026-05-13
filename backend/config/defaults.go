@@ -305,4 +305,11 @@ func ApplyDefaults(cfg *Config) {
 		".onnx", ".onnx_data",
 	})
 	setDefault(&cfg.Workspace.IgnoreFileNames, []string{})
+
+	// Vector index / hybrid search defaults. The generic setDefault
+	// helper only supports slices, so we hand-roll this for *bool.
+	if cfg.VectorIndex.Hybrid == nil {
+		trueVal := true
+		cfg.VectorIndex.Hybrid = &trueVal
+	}
 }

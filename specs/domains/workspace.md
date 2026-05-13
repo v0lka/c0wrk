@@ -12,8 +12,10 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - `backend/vectorindex/manager.go` — vector index lifecycle (branch-partitioned collections)
 - `backend/vectorindex/service.go` — vector index indexing and search
 - `backend/vectorindex/collection.go` — collection data structure (per-branch document store)
-- `backend/vectorindex/indexer.go` — file-to-document indexing logic
+- `backend/vectorindex/indexer.go` — file-to-document indexing logic (dual-writes chromem + lexical)
 - `backend/vectorindex/search_result.go` — search result types and filtering
+- `backend/vectorindex/hybrid.go` — hybrid search (vector ∪ lexical) with RRF fusion, per-side filters
+- `backend/vectorindex/lexical/` — bleve/BM25 lexical index with `c0wrk_code` analyzer (camelCase split + lowercase + stop-en)
 - `sdk/embedding/` — embedding model interface
 
 ## Core Types
@@ -44,6 +46,17 @@ type VectorIndexStatus struct {
     TotalFiles   int
     CurrentFile  string
     Branch       string
+    Phase        string   // "both" | "embedding" | "lexical"
+    Indices      []string // ["vector", "lexical"]
+}
+
+// SearchOptions — hybrid search request
+type SearchOptions struct {
+    Query       string     // may contain `+token` sugar for must-match
+    TopK        int
+    Mode        SearchMode // "hybrid" | "vector" | "lexical" (default hybrid)
+    FilePattern string     // doublestar glob applied per-side before fusion
+    MustMatch   []string   // post-filter substrings enforced per-side before fusion
 }
 ```
 
@@ -80,14 +93,18 @@ backend/workspace.StartWatcher(projectPath)
 
 ### Vector Index
 
-- Indexes workspace files into a vector database (chromem-go, in-memory with persistence)
+- Dual-indexed: chromem-go vector store (cosine similarity on ONNX embeddings) and bleve BM25 lexical store with a custom `c0wrk_code` analyzer (camelCase splitter → lowercase → stop-en). Both indices share a deterministic document ID (`sha256(path)[:8hex]:{chunkIndex}`); lexical hits enrich their content via `chromem.Collection.GetByID`.
 - Embeddings computed via ONNX Runtime (local, no API calls)
 - Model: quantized embedding model downloaded by `make fetch-embedding-model`
-- Collections are partitioned per git branch; switching branches produces a new collection
+- Collections are partitioned per git branch; switching branches produces a new pair of collections (`vector/` and `lexical/<branch>/`)
 - Branch detection on project switch uses `vectorindex.CurrentBranch`; detection failure propagates and aborts the switch rather than silently degrading
 - A `GitMonitor` watches `.git/HEAD` via fsnotify and triggers re-partitioning on branch change
+- Hybrid search fuses the two ranked lists via Reciprocal Rank Fusion (`score = Σ 1/(k+rank)`, `k=60`). Per-side fanout is `max(topK*4, 100)`; `FilePattern` (doublestar glob) and `MustMatch` post-filters are applied **before** fusion so rank spaces are comparable.
+- Auto-fallback: `ModeHybrid` silently degrades to `ModeVector` when the lexical index is empty or unavailable; `ModeLexical` returns empty (or an error if no lexical index has been opened at all).
+- Dual-write invariant: chromem commits first (source of truth); lexical upsert/delete is best-effort and drift is repaired by `Indexer.RebuildLexical`, which the manager invokes during `SwitchProject` when `chromem.Count() > 0 && lexical.Count() == 0`.
+- Indexing progress is phased: `PhaseBoth` (parallel full index of a fresh project), `PhaseEmbedding` (chromem-only chunk), `PhaseLexical` (bleve backfill). The phase is surfaced to the frontend via the `vector_index:status` event `phase` field.
 - Used for:
-  - `semantic_search` tool (agent searches code by meaning)
+  - `semantic_search` tool (agent searches code by meaning; accepts `mode`, `must_match`, `file_pattern`, `top_k`)
   - RAG hint injection before routing/planning (top-5 relevant files)
 
 Lifecycle:
@@ -117,6 +134,9 @@ Filename search (`search_files`) is available as a built-in tool (`sdk/tools/bui
 - File tree is always relative to active project's workspace path
 - Watcher emits events only for the active project's workspace
 - Vector index collection is partitioned by git branch and rebuilt when the branch changes
+- Chromem is the source of truth; lexical is a best-effort mirror reconciled via `RebuildLexical`
+- Per-side filters (FilePattern, MustMatch) are applied BEFORE RRF fusion so vector and lexical rank spaces remain comparable
+- A single `ready atomic.Bool` on `Service`; hybrid auto-falls-back to vector-only when `lexical.Count() == 0`
 - Binary files detected by null byte presence in first 8KB
 - File operations are sandboxed to workspace path (no directory traversal)
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)

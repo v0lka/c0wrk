@@ -322,21 +322,29 @@ func (a *App) Startup(ctx context.Context) {
 	var vectorSearchWaitFunc backend.VectorSearchWaitFunc
 	if vectorMgr != nil {
 		vectorSvc := vectorMgr.Service()
-		vectorSearchFunc = func(ctx context.Context, query string, topK int, fileFilter string) ([]backend.VectorSearchResult, error) {
-			results, searchErr := vectorSvc.SearchWithFilter(ctx, query, topK, fileFilter)
+		vectorSearchFunc = func(ctx context.Context, opts backend.VectorSearchOptions) ([]backend.VectorSearchResult, error) {
+			results, searchErr := vectorSvc.HybridSearch(ctx, vectorindex.SearchOptions{
+				Query:       opts.Query,
+				TopK:        opts.TopK,
+				Mode:        vectorindex.ParseMode(opts.Mode),
+				FilePattern: opts.FilePattern,
+				MustMatch:   opts.MustMatch,
+			})
 			if searchErr != nil {
 				return nil, searchErr
 			}
 			out := make([]backend.VectorSearchResult, len(results))
 			for i, r := range results {
 				out[i] = backend.VectorSearchResult{
-					FilePath:  r.FilePath,
-					FileName:  r.FileName,
-					Content:   r.Content,
-					Score:     r.Score,
-					StartLine: r.StartLine,
-					EndLine:   r.EndLine,
-					Language:  r.Language,
+					FilePath:    r.FilePath,
+					FileName:    r.FileName,
+					Content:     r.Content,
+					Score:       r.Score,
+					StartLine:   r.StartLine,
+					EndLine:     r.EndLine,
+					Language:    r.Language,
+					VectorRank:  r.VectorRank,
+					LexicalRank: r.LexicalRank,
 				}
 			}
 			return out, nil

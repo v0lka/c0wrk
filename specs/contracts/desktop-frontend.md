@@ -6,24 +6,24 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 
 ## Interfaces
 
-| Interface / Type         | Package               | Direction          | Purpose                                  |
-| ------------------------ | --------------------- | ------------------ | ---------------------------------------- |
-| `FrontendAPI`            | backend               | backend → frontend | Wails-bound API (promoted to `App`)      |
-| `SessionInfo`            | backend               | backend → frontend | Session metadata                         |
-| `ProjectInfo`            | backend               | backend → frontend | Project metadata                         |
-| `FileNode`               | backend               | backend → frontend | File tree entry                          |
-| `ChatMessage`            | backend               | backend → frontend | Message history entry                    |
-| `VectorIndexStatus`      | backend               | backend → frontend | Index progress                           |
-| `MCPServerStatus`        | backend               | backend → frontend | MCP server state                         |
-| `ToolInfo`               | backend               | backend → frontend | Tool descriptor for UI                   |
-| `ConfigResponse`         | backend               | backend → frontend | Sanitized config view                    |
-| `LLMSettingsRequest`     | frontend               | frontend → backend | LLM provider config update               |
-| `SecuritySettingsResponse`| backend               | backend ↔ frontend | Security policy CRUD                     |
-| `OptimizePromptResponse` | backend               | backend → frontend | Prompt optimization result               |
-| `SkillDescriptorDTO`     | backend               | backend → frontend | Skill listing                            |
-| `TerminalCommand`        | backend               | backend → frontend | Terminal command history                 |
-| `VectorStoreEntry`       | backend               | backend → frontend | Vector search result                     |
-| `BlackboardStateResponse`| backend               | backend → frontend | Task state for resume UI                 |
+| Interface / Type           | Package  | Direction          | Purpose                             |
+| -------------------------- | -------- | ------------------ | ----------------------------------- |
+| `FrontendAPI`              | backend  | backend → frontend | Wails-bound API (promoted to `App`) |
+| `SessionInfo`              | backend  | backend → frontend | Session metadata                    |
+| `ProjectInfo`              | backend  | backend → frontend | Project metadata                    |
+| `FileNode`                 | backend  | backend → frontend | File tree entry                     |
+| `ChatMessage`              | backend  | backend → frontend | Message history entry               |
+| `VectorIndexStatus`        | backend  | backend → frontend | Index progress                      |
+| `MCPServerStatus`          | backend  | backend → frontend | MCP server state                    |
+| `ToolInfo`                 | backend  | backend → frontend | Tool descriptor for UI              |
+| `ConfigResponse`           | backend  | backend → frontend | Sanitized config view               |
+| `LLMSettingsRequest`       | frontend | frontend → backend | LLM provider config update          |
+| `SecuritySettingsResponse` | backend  | backend ↔ frontend | Security policy CRUD                |
+| `OptimizePromptResponse`   | backend  | backend → frontend | Prompt optimization result          |
+| `SkillDescriptorDTO`       | backend  | backend → frontend | Skill listing                       |
+| `TerminalCommand`          | backend  | backend → frontend | Terminal command history            |
+| `VectorStoreEntry`         | backend  | backend → frontend | Vector search result                |
+| `BlackboardStateResponse`  | backend  | backend → frontend | Task state for resume UI            |
 
 ## RPC Surface
 
@@ -102,9 +102,9 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 ### Vector (`backend/frontend_api_vector.go`)
 
-| Method              | Parameters               | Returns            | Description                |
-| ------------------- | ------------------------ | ------------------ | -------------------------- |
-| `SearchVectorStore` | query, topK, filePattern | []VectorStoreEntry | Search/browse vector store |
+| Method              | Parameters                                                    | Returns            | Description                                         |
+| ------------------- | ------------------------------------------------------------- | ------------------ | --------------------------------------------------- |
+| `SearchVectorStore` | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | []VectorStoreEntry | Hybrid search/browse; mode= hybrid\|vector\|lexical |
 
 ### Prompt (`backend/frontend_api_prompt.go`)
 

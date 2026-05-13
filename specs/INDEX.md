@@ -100,3 +100,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [002-sdk-isolation.md](decisions/002-sdk-isolation.md) - SDK imports confined to core
 - [003-cgo-free-sqlite.md](decisions/003-cgo-free-sqlite.md) - CGO-free SQLite choice
 - [004-external-binary-dependencies.md](decisions/004-external-binary-dependencies.md) - git and rg as hard runtime dependencies
+- [005-bleve-rrf-hybrid-search.md](decisions/005-bleve-rrf-hybrid-search.md) - Bleve BM25 + Reciprocal Rank Fusion hybrid search

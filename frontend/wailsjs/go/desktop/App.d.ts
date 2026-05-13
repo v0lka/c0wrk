@@ -70,7 +70,7 @@ export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
 export function ResumeTask(arg1:string):Promise<void>;
 
-export function SearchVectorStore(arg1:string,arg2:number,arg3:string):Promise<Array<backend.VectorStoreEntry>>;
+export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
 export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
 

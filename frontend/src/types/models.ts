@@ -47,6 +47,10 @@ export interface GitStatusEntry {
   staged: boolean
 }
 
+export type SearchMode = 'hybrid' | 'vector' | 'lexical'
+
+export type IndexPhase = 'both' | 'embedding' | 'lexical'
+
 export interface VectorIndexStatus {
   state: 'idle' | 'indexing' | 'ready' | 'reindexing'
   progress: number
@@ -54,6 +58,8 @@ export interface VectorIndexStatus {
   total_files: number
   current_file?: string
   branch?: string
+  phase?: IndexPhase
+  indices?: string[]
 }
 
 export interface VectorStoreEntry {
@@ -64,6 +70,18 @@ export interface VectorStoreEntry {
   start_line: number
   end_line: number
   language: string
+  vector_score?: number
+  lexical_score?: number
+  vector_rank?: number
+  lexical_rank?: number
+}
+
+export interface SearchRequest {
+  query: string
+  top_k: number
+  file_pattern: string
+  must_match: string[]
+  mode: SearchMode | ''
 }
 
 export interface TokenInfo {

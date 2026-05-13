@@ -122,6 +122,10 @@ type VectorSearchWaitFunc = tools.VectorSearchWaitFunc
 // VectorSearchResult holds a single vector search hit.
 type VectorSearchResult = tools.VectorSearchResult
 
+// VectorSearchOptions is the request payload passed from the tool to the
+// backend-supplied VectorSearchFunc.
+type VectorSearchOptions = tools.VectorSearchOptions
+
 // ---------------------------------------------------------------------------
 // MCP types (from core/tools/mcp)
 // ---------------------------------------------------------------------------

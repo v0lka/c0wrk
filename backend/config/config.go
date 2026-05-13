@@ -32,6 +32,7 @@ type Config struct {
 	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
 	Workspace     WorkspaceConfig     `yaml:"workspace"`
+	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
 }
 
 // WorkspaceConfig holds workspace file/index ignore pattern configuration.
@@ -43,6 +44,16 @@ type WorkspaceConfig struct {
 	IgnoreExtensions []string `yaml:"ignore_extensions"`
 	// IgnoreFileNames are specific file names to exclude from vector index.
 	IgnoreFileNames []string `yaml:"ignore_file_names"`
+}
+
+// VectorIndexConfig holds vector / hybrid search runtime settings.
+//
+// Hybrid is a pointer-bool so callers can distinguish "unset" (defaults
+// to true) from "explicitly disabled" (false). When Hybrid is false the
+// service only writes and reads the chromem vector index; bleve is
+// still opened but not consulted at query time.
+type VectorIndexConfig struct {
+	Hybrid *bool `yaml:"hybrid"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.

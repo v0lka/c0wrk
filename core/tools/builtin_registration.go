@@ -21,6 +21,7 @@ type (
 	VectorSearchFunc     = builtins.VectorSearchFunc
 	VectorSearchWaitFunc = builtins.VectorSearchWaitFunc
 	VectorSearchResult   = builtins.VectorSearchResult
+	VectorSearchOptions  = builtins.VectorSearchOptions
 )
 
 // BuiltinToolsConfig holds configuration for registering built-in tools.

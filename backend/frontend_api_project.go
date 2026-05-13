@@ -152,9 +152,11 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		capturedBranch := branch
 
 		if switchErr := f.vectorManager.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
-			OnProgress: func(state vectorindex.IndexState, indexed, total int, file string) {
+			OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
 				f.emitEvent(EventVectorIndexStatus, map[string]any{
 					"state":         string(state),
+					"phase":         string(phase),
+					"indices":       []string{"vector", "lexical"},
 					"progress":      progressPercent(indexed, total),
 					"files_indexed": indexed,
 					"total_files":   total,

@@ -1858,7 +1858,7 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 // returns results, hints are injected into the context and available downstream.
 func TestOrchestrator_VectorSearchHints_WithResults(t *testing.T) {
 	// Create a vector search function that returns test results
-	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+	searchFunc := func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
 		return []builtins.VectorSearchResult{
 			{
 				FilePath: "src/main.go",
@@ -1902,7 +1902,7 @@ func TestOrchestrator_VectorSearchHints_WithResults(t *testing.T) {
 // are truncated to 100 characters.
 func TestOrchestrator_VectorSearchHints_ContentTruncation(t *testing.T) {
 	longContent := strings.Repeat("a", 200)
-	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+	searchFunc := func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
 		return []builtins.VectorSearchResult{
 			{
 				FilePath: "long.go",
@@ -1930,7 +1930,7 @@ func TestOrchestrator_VectorSearchHints_ContentTruncation(t *testing.T) {
 // TestOrchestrator_VectorSearchHints_ErrorSkipped verifies that when the vector search
 // function returns an error, hints are silently skipped.
 func TestOrchestrator_VectorSearchHints_ErrorSkipped(t *testing.T) {
-	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+	searchFunc := func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
 		return nil, context.DeadlineExceeded
 	}
 
@@ -2023,7 +2023,7 @@ func TestOrchestrator_AgentsMD_WithVectorSearch(t *testing.T) {
 		t.Fatalf("failed to write AGENTS.md: %v", err)
 	}
 
-	searchFunc := func(ctx context.Context, query string, topK int, fileFilter string) ([]builtins.VectorSearchResult, error) {
+	searchFunc := func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
 		return []builtins.VectorSearchResult{
 			{
 				FilePath: "src/main.go",

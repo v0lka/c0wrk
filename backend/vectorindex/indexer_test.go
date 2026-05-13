@@ -93,7 +93,7 @@ func TestIndexFull(t *testing.T) {
 		Service: svc,
 		ChunkFn: fakeChunkFunc,
 		HashFn:  fakeHashFunc,
-		OnProgress: func(state IndexState, filesIndexed, totalFiles int, currentFile string) {
+		OnProgress: func(phase IndexPhase, state IndexState, filesIndexed, totalFiles int, currentFile string) {
 			progressCalls = append(progressCalls, state)
 		},
 	})
@@ -189,7 +189,7 @@ func TestIndexIncremental(t *testing.T) {
 
 	var progressStates []IndexState
 	var readyTotalFiles int
-	indexer.onProgress = func(state IndexState, filesIndexed, totalFiles int, currentFile string) {
+	indexer.onProgress = func(phase IndexPhase, state IndexState, filesIndexed, totalFiles int, currentFile string) {
 		progressStates = append(progressStates, state)
 		if state == IndexStateReady {
 			readyTotalFiles = totalFiles

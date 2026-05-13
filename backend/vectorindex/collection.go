@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	chromem "github.com/philippgille/chromem-go"
+
+	"github.com/user/agent/backend/vectorindex/lexical"
 )
 
 // sanitizeRe matches characters that are not alphanumeric, hyphens, or underscores.
@@ -26,6 +28,17 @@ func collectionName(branch string) string {
 		sanitized = "default"
 	}
 	return "branch_" + sanitized
+}
+
+// lexicalBranchDirName returns a sanitized directory name for a branch,
+// used as the per-branch subdirectory under the project's lexical folder.
+func lexicalBranchDirName(branch string) string {
+	sanitized := strings.ReplaceAll(branch, "/", "_")
+	sanitized = sanitizeRe.ReplaceAllString(sanitized, "")
+	if sanitized == "" {
+		sanitized = "default"
+	}
+	return sanitized
 }
 
 // SwitchBranch switches to (or creates) a collection for the given branch.
@@ -46,6 +59,31 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	col, err := s.db.GetOrCreateCollection(name, nil, s.embeddingFunc)
 	if err != nil {
 		return fmt.Errorf("getting or creating collection %q: %w", name, err)
+	}
+
+	// Close any previously-open lexical index and open the one for this
+	// branch. The lexical index is only persisted when the service was
+	// configured with a PersistPath; in-memory mode skips it entirely.
+	if s.lexical != nil {
+		if closeErr := s.lexical.Close(); closeErr != nil {
+			s.logger.Warn("failed to close previous lexical index", "error", closeErr)
+		}
+		s.lexical = nil
+	}
+	if s.persistPath != "" && s.projectID != "" {
+		lexDir := filepath.Join(s.persistPath, s.projectID, "lexical", lexicalBranchDirName(branchName))
+		// Ensure the parent directory (…/{projectID}/lexical/) exists;
+		// bleve's New() creates the leaf (branch) directory itself.
+		if mkErr := os.MkdirAll(filepath.Dir(lexDir), 0o750); mkErr != nil {
+			s.logger.Warn("failed to create lexical parent directory", "path", lexDir, "error", mkErr)
+		} else {
+			lex, lexErr := lexical.Open(lexDir)
+			if lexErr != nil {
+				s.logger.Warn("failed to open lexical index", "path", lexDir, "error", lexErr)
+			} else {
+				s.lexical = lex
+			}
+		}
 	}
 
 	s.collection = col
@@ -207,23 +245,36 @@ func (s *Service) RebuildCollection(ctx context.Context) error {
 	return nil
 }
 
-// AddDocuments adds documents to the current collection.
+// AddDocuments adds documents to the current collection and mirrors them
+// to the per-branch lexical index. Chromem commits first; lexical errors
+// are logged but not returned, since the reconciliation loop in the
+// manager will repair drift via RebuildLexical on the next project open.
 // Caller must hold s.mu (write lock).
-func (s *Service) AddDocuments(ctx context.Context, docs []chromem.Document) error {
+func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
 	if s.collection == nil {
 		return errors.New("no collection available")
 	}
-	if len(docs) == 0 {
+	if len(vecDocs) == 0 && len(lexDocs) == 0 {
 		return nil
 	}
 
-	if err := s.collection.AddDocuments(ctx, docs, 1); err != nil {
-		return fmt.Errorf("adding %d documents: %w", len(docs), err)
+	if len(vecDocs) > 0 {
+		if err := s.collection.AddDocuments(ctx, vecDocs, 1); err != nil {
+			return fmt.Errorf("adding %d documents: %w", len(vecDocs), err)
+		}
+	}
+
+	if s.lexical != nil && len(lexDocs) > 0 {
+		if err := s.lexical.Upsert(ctx, lexDocs); err != nil {
+			s.logger.Warn("lexical upsert failed; will be repaired via RebuildLexical",
+				"branch", s.currentBranch, "docs", len(lexDocs), "error", err)
+		}
 	}
 	return nil
 }
 
-// DeleteDocumentsByIDs removes documents with the given IDs from the current collection.
+// DeleteDocumentsByIDs removes documents with the given IDs from the current
+// chromem collection and from the lexical index (best-effort).
 // Caller must hold s.mu (write lock).
 func (s *Service) DeleteDocumentsByIDs(ctx context.Context, ids []string) error {
 	if s.collection == nil {
@@ -235,6 +286,13 @@ func (s *Service) DeleteDocumentsByIDs(ctx context.Context, ids []string) error 
 
 	if err := s.collection.Delete(ctx, nil, nil, ids...); err != nil {
 		return fmt.Errorf("deleting %d documents: %w", len(ids), err)
+	}
+
+	if s.lexical != nil {
+		if err := s.lexical.Delete(ctx, ids); err != nil {
+			s.logger.Warn("lexical delete failed; will be repaired via RebuildLexical",
+				"branch", s.currentBranch, "ids", len(ids), "error", err)
+		}
 	}
 	return nil
 }

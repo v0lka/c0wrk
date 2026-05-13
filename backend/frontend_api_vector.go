@@ -8,15 +8,21 @@ import (
 
 const defaultVectorBrowseTopK = 50
 
-// SearchVectorStore searches the vector store for the given query.
-// When query is empty it browses arbitrary chunks (no semantic ordering).
-// topK defaults to 50 when <= 0.
-// An optional filePattern glob filter (e.g. "*.go", "src/**") can be applied.
-func (f *FrontendAPI) SearchVectorStore(query string, topK int, filePattern string) ([]VectorStoreEntry, error) {
+// SearchVectorStore searches the vector store for the given request.
+//
+// When req.Query is empty it browses arbitrary chunks (no semantic
+// ordering) through BrowseWithFilter. Otherwise it dispatches to
+// Service.HybridSearch with the requested mode (hybrid | vector |
+// lexical; empty defaults to hybrid with auto-fallback to vector when
+// the lexical index is empty).
+//
+// req.TopK defaults to 50 when <= 0.
+func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, error) {
 	if f.vectorManager == nil {
 		return nil, errors.New("vector search not available")
 	}
 
+	topK := req.TopK
 	if topK <= 0 {
 		topK = defaultVectorBrowseTopK
 	}
@@ -28,10 +34,17 @@ func (f *FrontendAPI) SearchVectorStore(query string, topK int, filePattern stri
 
 	ctx := f.ctx()
 
-	if query == "" {
-		results, err = vectorSvc.BrowseWithFilter(ctx, topK, filePattern)
+	if req.Query == "" {
+		results, err = vectorSvc.BrowseWithFilter(ctx, topK, req.FilePattern)
 	} else {
-		results, err = vectorSvc.SearchWithFilter(ctx, query, topK, filePattern)
+		mode := vectorindex.ParseMode(req.Mode)
+		results, err = vectorSvc.HybridSearch(ctx, vectorindex.SearchOptions{
+			Query:       req.Query,
+			TopK:        topK,
+			Mode:        mode,
+			FilePattern: req.FilePattern,
+			MustMatch:   req.MustMatch,
+		})
 	}
 	if err != nil {
 		return nil, err
@@ -40,13 +53,17 @@ func (f *FrontendAPI) SearchVectorStore(query string, topK int, filePattern stri
 	out := make([]VectorStoreEntry, len(results))
 	for i, r := range results {
 		out[i] = VectorStoreEntry{
-			FilePath:  r.FilePath,
-			FileName:  r.FileName,
-			Content:   r.Content,
-			Score:     r.Score,
-			StartLine: r.StartLine,
-			EndLine:   r.EndLine,
-			Language:  r.Language,
+			FilePath:     r.FilePath,
+			FileName:     r.FileName,
+			Content:      r.Content,
+			Score:        r.Score,
+			StartLine:    r.StartLine,
+			EndLine:      r.EndLine,
+			Language:     r.Language,
+			VectorScore:  r.VectorScore,
+			LexicalScore: r.LexicalScore,
+			VectorRank:   r.VectorRank,
+			LexicalRank:  r.LexicalRank,
 		}
 	}
 

@@ -365,6 +365,26 @@ export namespace backend {
 	        this.used_context = source["used_context"];
 	    }
 	}
+	export class SearchRequest {
+	    query: string;
+	    top_k: number;
+	    file_pattern: string;
+	    must_match: string[];
+	    mode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SearchRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.query = source["query"];
+	        this.top_k = source["top_k"];
+	        this.file_pattern = source["file_pattern"];
+	        this.must_match = source["must_match"];
+	        this.mode = source["mode"];
+	    }
+	}
 	export class SearchSettingsRequest {
 	    provider: string;
 	    api_key: string;
@@ -484,6 +504,10 @@ export namespace backend {
 	    start_line: number;
 	    end_line: number;
 	    language: string;
+	    vector_score?: number;
+	    lexical_score?: number;
+	    vector_rank?: number;
+	    lexical_rank?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new VectorStoreEntry(source);
@@ -498,6 +522,10 @@ export namespace backend {
 	        this.start_line = source["start_line"];
 	        this.end_line = source["end_line"];
 	        this.language = source["language"];
+	        this.vector_score = source["vector_score"];
+	        this.lexical_score = source["lexical_score"];
+	        this.vector_rank = source["vector_rank"];
+	        this.lexical_rank = source["lexical_rank"];
 	    }
 	}
 

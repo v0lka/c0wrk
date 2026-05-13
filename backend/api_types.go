@@ -115,14 +115,41 @@ type ToolInfo struct {
 }
 
 // VectorStoreEntry represents a single chunk from the vector store for the frontend.
+//
+// VectorScore/LexicalScore/VectorRank/LexicalRank are optional per-side
+// attribution fields populated by hybrid (RRF) and per-side searches.
+// Pure vector results populate VectorScore/VectorRank; pure lexical
+// results populate LexicalScore/LexicalRank; hybrid results may populate
+// any subset depending on which retriever returned the document.
 type VectorStoreEntry struct {
-	FilePath  string  `json:"file_path"`
-	FileName  string  `json:"file_name"`
-	Content   string  `json:"content"`
-	Score     float32 `json:"score"`
-	StartLine int     `json:"start_line"`
-	EndLine   int     `json:"end_line"`
-	Language  string  `json:"language"`
+	FilePath     string  `json:"file_path"`
+	FileName     string  `json:"file_name"`
+	Content      string  `json:"content"`
+	Score        float32 `json:"score"`
+	StartLine    int     `json:"start_line"`
+	EndLine      int     `json:"end_line"`
+	Language     string  `json:"language"`
+	VectorScore  float32 `json:"vector_score,omitempty"`
+	LexicalScore float32 `json:"lexical_score,omitempty"`
+	VectorRank   int     `json:"vector_rank,omitempty"`
+	LexicalRank  int     `json:"lexical_rank,omitempty"`
+}
+
+// SearchRequest is the request payload for SearchVectorStore.
+//
+// Mode accepts "hybrid" | "vector" | "lexical"; empty/unknown defaults
+// to "hybrid" (with auto-fallback to vector-only when the lexical index
+// is empty or unavailable).
+//
+// FilePattern is a doublestar glob against the chunk's file_path (e.g.
+// "**/*.go", "src/**"). MustMatch is a list of literal substrings that
+// must all appear in a chunk's content for it to be returned.
+type SearchRequest struct {
+	Query       string   `json:"query"`
+	TopK        int      `json:"top_k"`
+	FilePattern string   `json:"file_pattern"`
+	MustMatch   []string `json:"must_match"`
+	Mode        string   `json:"mode"`
 }
 
 // OptimizePromptResponse holds the result of prompt optimization for the frontend.

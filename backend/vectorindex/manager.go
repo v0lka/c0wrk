@@ -226,6 +226,25 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 			m.logger.Info("empty collection, running full index", "project", projectID)
 			idxErr = indexer.IndexFull(indexCtx, workspacePath)
 		} else {
+			// Reconciliation: if the chromem collection has data but the
+			// lexical index is empty (e.g. the project was indexed before
+			// the BM25 upgrade, or a previous dual-write failed), backfill
+			// the lexical side first so hybrid search works immediately.
+			lexCount, lexCountErr := m.service.LexicalCount()
+			if lexCountErr != nil {
+				m.logger.Warn("failed to read lexical count; skipping reconciliation",
+					"project", projectID, "error", lexCountErr)
+			} else if lexCount == 0 && m.service.GetLexical() != nil {
+				m.logger.Info("lexical index empty, running BM25 backfill",
+					"project", projectID, "chunks", col.Count())
+				if rbErr := indexer.RebuildLexical(indexCtx); rbErr != nil {
+					if context.Cause(indexCtx) != nil {
+						m.logger.Info("lexical backfill cancelled", "project", projectID)
+					} else {
+						m.logger.Warn("lexical backfill failed", "error", rbErr)
+					}
+				}
+			}
 			m.logger.Info("existing collection found, running incremental index", "project", projectID)
 			idxErr = indexer.IndexIncremental(indexCtx, workspacePath)
 		}

@@ -3,6 +3,7 @@ package vectorindex
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	chromem "github.com/philippgille/chromem-go"
+
+	"github.com/user/agent/backend/vectorindex/lexical"
 )
 
 // IndexState represents the current state of the indexer.
@@ -27,11 +30,27 @@ const (
 	IndexStateReady IndexState = "ready"
 )
 
+// IndexPhase describes which side(s) of the dual index are being produced
+// for a given progress event. Hybrid indexing normally reports PhaseBoth;
+// the lazy BM25 backfill (RebuildLexical) reports PhaseLexical so the UI
+// can distinguish it from a cold-start embedding pass.
+type IndexPhase string
+
+const (
+	// PhaseBoth indicates progress for combined vector + lexical indexing.
+	PhaseBoth IndexPhase = "both"
+	// PhaseEmbedding indicates progress for vector embedding only.
+	PhaseEmbedding IndexPhase = "embedding"
+	// PhaseLexical indicates progress for lexical (BM25) indexing only.
+	PhaseLexical IndexPhase = "lexical"
+)
+
 // addDocumentBatchSize is the number of documents added per batch call.
 const addDocumentBatchSize = 50
 
-// ProgressCallback is called to report indexing progress.
-type ProgressCallback func(state IndexState, filesIndexed, totalFiles int, currentFile string)
+// ProgressCallback is called to report indexing progress. The phase
+// argument identifies which side of the dual index the event relates to.
+type ProgressCallback func(phase IndexPhase, state IndexState, filesIndexed, totalFiles int, currentFile string)
 
 // ChunkResult represents a chunk of file content produced by a chunker.
 type ChunkResult struct {
@@ -98,7 +117,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 	}
 	onProgress := cfg.OnProgress
 	if onProgress == nil {
-		onProgress = func(IndexState, int, int, string) {}
+		onProgress = func(IndexPhase, IndexState, int, int, string) {}
 	}
 	return &Indexer{
 		service:          cfg.Service,
@@ -115,7 +134,8 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 }
 
 // IndexFull performs a full workspace indexing: walks all files, chunks them,
-// and adds the resulting documents to the collection.
+// and adds the resulting documents to both the vector collection and the
+// lexical index.
 func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 	idx.service.SetReady(false)
 
@@ -125,13 +145,14 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 	}
 
 	totalFiles := len(files)
-	idx.onProgress(IndexStateIndexing, 0, totalFiles, "")
+	idx.onProgress(PhaseBoth, IndexStateIndexing, 0, totalFiles, "")
 	idx.logger.Info("starting full index", "workspace", workspacePath, "files", totalFiles)
 
 	idx.service.AcquireWriteLock()
 	defer idx.service.ReleaseWriteLock()
 
-	var batch []chromem.Document
+	var vecBatch []chromem.Document
+	var lexBatch []lexical.Doc
 	indexed := 0
 
 	for _, filePath := range files {
@@ -139,43 +160,46 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 			return fmt.Errorf("indexing cancelled: %w", err)
 		}
 
-		docs, chunkErr := idx.processFile(filePath)
+		vecDocs, lexDocs, chunkErr := idx.processFile(filePath)
 		if chunkErr != nil {
 			idx.logger.Warn("skipping file", "path", filePath, "error", chunkErr)
 			continue
 		}
-		batch = append(batch, docs...)
+		vecBatch = append(vecBatch, vecDocs...)
+		lexBatch = append(lexBatch, lexDocs...)
 
-		if len(batch) >= addDocumentBatchSize {
-			idx.logger.Debug("embedding document batch", "batchSize", len(batch), "indexed", indexed, "total", totalFiles)
-			if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
+		if len(vecBatch) >= addDocumentBatchSize {
+			idx.logger.Debug("embedding document batch", "batchSize", len(vecBatch), "indexed", indexed, "total", totalFiles)
+			if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
 				return fmt.Errorf("adding document batch: %w", addErr)
 			}
 			idx.logger.Debug("batch embedded successfully")
-			batch = batch[:0]
+			vecBatch = vecBatch[:0]
+			lexBatch = lexBatch[:0]
 		}
 
 		indexed++
-		idx.onProgress(IndexStateIndexing, indexed, totalFiles, filePath)
+		idx.onProgress(PhaseBoth, IndexStateIndexing, indexed, totalFiles, filePath)
 	}
 
 	// Flush remaining documents.
-	if len(batch) > 0 {
-		idx.logger.Debug("embedding final document batch", "batchSize", len(batch), "indexed", indexed, "total", totalFiles)
-		if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
+	if len(vecBatch) > 0 || len(lexBatch) > 0 {
+		idx.logger.Debug("embedding final document batch", "batchSize", len(vecBatch), "indexed", indexed, "total", totalFiles)
+		if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
 			return fmt.Errorf("adding final document batch: %w", addErr)
 		}
 		idx.logger.Debug("final batch embedded successfully")
 	}
 
 	idx.service.SetReady(true)
-	idx.onProgress(IndexStateReady, totalFiles, totalFiles, "")
+	idx.onProgress(PhaseBoth, IndexStateReady, totalFiles, totalFiles, "")
 	idx.logger.Info("full index complete", "files", indexed)
 	return nil
 }
 
 // IndexIncremental performs an incremental re-index: validates the current
-// collection against disk, then updates only changed/new/deleted files.
+// collection against disk, then updates only changed/new/deleted files
+// across both the vector collection and the lexical index.
 func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) error {
 	idx.service.SetReady(false)
 
@@ -189,7 +213,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	if totalChanges == 0 {
 		idx.service.SetReady(true)
 		idx.logger.Info("incremental index: no changes detected")
-		idx.onProgress(IndexStateReady, 0, 0, "")
+		idx.onProgress(PhaseBoth, IndexStateReady, 0, 0, "")
 		return nil
 	}
 
@@ -209,7 +233,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	idx.service.AcquireWriteLock()
 	defer idx.service.ReleaseWriteLock()
 
-	idx.onProgress(IndexStateReindexing, 0, totalChanges, "")
+	idx.onProgress(PhaseBoth, IndexStateReindexing, 0, totalChanges, "")
 
 	// Delete documents for deleted and stale files.
 	filesToDelete := make([]string, 0, len(deleted)+len(stale))
@@ -229,7 +253,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	}
 
 	if len(filesToDelete) > 0 {
-		idx.onProgress(IndexStateReindexing, len(deleted), totalChanges, "")
+		idx.onProgress(PhaseBoth, IndexStateReindexing, len(deleted), totalChanges, "")
 	}
 
 	// Re-index stale + new files.
@@ -237,7 +261,8 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	filesToIndex = append(filesToIndex, stale...)
 	filesToIndex = append(filesToIndex, newFiles...)
 
-	var batch []chromem.Document
+	var vecBatch []chromem.Document
+	var lexBatch []lexical.Doc
 	progress := len(deleted)
 
 	for _, filePath := range filesToIndex {
@@ -247,31 +272,33 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 
 		idx.logger.Debug("processing file", "path", filePath, "progress", progress+1, "total", totalChanges)
 
-		docs, chunkErr := idx.processFile(filePath)
+		vecDocs, lexDocs, chunkErr := idx.processFile(filePath)
 		if chunkErr != nil {
 			idx.logger.Warn("skipping file during incremental index", "path", filePath, "error", chunkErr)
 			progress++
-			idx.onProgress(IndexStateReindexing, progress, totalChanges, filePath)
+			idx.onProgress(PhaseBoth, IndexStateReindexing, progress, totalChanges, filePath)
 			continue
 		}
-		batch = append(batch, docs...)
+		vecBatch = append(vecBatch, vecDocs...)
+		lexBatch = append(lexBatch, lexDocs...)
 
-		if len(batch) >= addDocumentBatchSize {
-			idx.logger.Debug("embedding document batch (incremental)", "batchSize", len(batch), "progress", progress, "total", totalChanges)
-			if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
+		if len(vecBatch) >= addDocumentBatchSize {
+			idx.logger.Debug("embedding document batch (incremental)", "batchSize", len(vecBatch), "progress", progress, "total", totalChanges)
+			if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
 				return fmt.Errorf("adding document batch: %w", addErr)
 			}
 			idx.logger.Debug("batch embedded successfully")
-			batch = batch[:0]
+			vecBatch = vecBatch[:0]
+			lexBatch = lexBatch[:0]
 		}
 
 		progress++
-		idx.onProgress(IndexStateReindexing, progress, totalChanges, filePath)
+		idx.onProgress(PhaseBoth, IndexStateReindexing, progress, totalChanges, filePath)
 	}
 
-	if len(batch) > 0 {
-		idx.logger.Debug("embedding final document batch (incremental)", "batchSize", len(batch), "progress", progress, "total", totalChanges)
-		if addErr := idx.service.AddDocuments(ctx, batch); addErr != nil {
+	if len(vecBatch) > 0 || len(lexBatch) > 0 {
+		idx.logger.Debug("embedding final document batch (incremental)", "batchSize", len(vecBatch), "progress", progress, "total", totalChanges)
+		if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
 			return fmt.Errorf("adding final document batch: %w", addErr)
 		}
 		idx.logger.Debug("final batch embedded successfully")
@@ -279,7 +306,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 
 	idx.service.SetReady(true)
 	totalInIndex := idx.service.collectionUniqueFileCount()
-	idx.onProgress(IndexStateReady, totalChanges, totalInIndex, "")
+	idx.onProgress(PhaseBoth, IndexStateReady, totalChanges, totalInIndex, "")
 	idx.logger.Info("incremental index complete", "changes", totalChanges, "totalFiles", totalInIndex)
 	return nil
 }
@@ -304,26 +331,28 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 	return idx.IndexIncremental(ctx, workspacePath)
 }
 
-// processFile reads a file, computes its hash, chunks it, and returns chromem documents.
-func (idx *Indexer) processFile(filePath string) ([]chromem.Document, error) {
+// processFile reads a file, computes its hash, chunks it, and returns
+// parallel chromem and lexical document slices keyed by the same shared
+// document ID.
+func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.Doc, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("reading file %s: %w", filePath, err)
+		return nil, nil, fmt.Errorf("reading file %s: %w", filePath, err)
 	}
 
 	if isBinaryFile(content) {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if len(content) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	hash := idx.hashFn(content)
 
 	chunks, err := idx.chunkFn(filePath, content, idx.maxChunkSize, idx.overlap)
 	if err != nil {
-		return nil, fmt.Errorf("chunking file %s: %w", filePath, err)
+		return nil, nil, fmt.Errorf("chunking file %s: %w", filePath, err)
 	}
 
 	fileName := filepath.Base(filePath)
@@ -333,10 +362,12 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, error) {
 		lastModified = info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
 	}
 
-	docs := make([]chromem.Document, 0, len(chunks))
+	vecDocs := make([]chromem.Document, 0, len(chunks))
+	lexDocs := make([]lexical.Doc, 0, len(chunks))
 	for i, chunk := range chunks {
-		docs = append(docs, chromem.Document{
-			ID:      DocumentID(filePath, i),
+		docID := DocumentID(filePath, i)
+		vecDocs = append(vecDocs, chromem.Document{
+			ID:      docID,
 			Content: chunk.Content,
 			Metadata: map[string]string{
 				"file_path":     filePath,
@@ -348,8 +379,83 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, error) {
 				"language":      chunk.Language,
 			},
 		})
+		lexDocs = append(lexDocs, lexical.Doc{
+			ID:       docID,
+			FilePath: filePath,
+			Language: chunk.Language,
+			Content:  chunk.Content,
+		})
 	}
-	return docs, nil
+	return vecDocs, lexDocs, nil
+}
+
+// RebuildLexical enumerates the current chromem collection and rebuilds the
+// per-branch lexical index from scratch. It is used as a one-time backfill
+// when a project that was indexed before the BM25 upgrade is opened.
+//
+// The caller must not hold s.mu; this method acquires the write lock
+// internally to prevent concurrent mutation of the lexical index.
+func (idx *Indexer) RebuildLexical(ctx context.Context) error {
+	lex := idx.service.GetLexical()
+	if lex == nil {
+		// In-memory mode or lexical open failed; nothing to do.
+		return nil
+	}
+	col := idx.service.GetCollection()
+	if col == nil {
+		return errors.New("no collection available for lexical rebuild")
+	}
+
+	count := col.Count()
+	if count == 0 {
+		idx.onProgress(PhaseLexical, IndexStateReady, 0, 0, "")
+		return nil
+	}
+
+	idx.service.AcquireWriteLock()
+	defer idx.service.ReleaseWriteLock()
+
+	idx.onProgress(PhaseLexical, IndexStateIndexing, 0, count, "")
+	idx.logger.Info("starting lexical backfill", "chunks", count)
+
+	// chromem has no ListAll API; a single-space query returns all docs
+	// ranked by similarity (the ranking is irrelevant here — we only need
+	// to enumerate every document for the lexical backfill).
+	results, err := col.Query(ctx, " ", count, nil, nil)
+	if err != nil {
+		return fmt.Errorf("enumerating collection for lexical rebuild: %w", err)
+	}
+
+	batch := make([]lexical.Doc, 0, addDocumentBatchSize)
+	processed := 0
+	for _, r := range results {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("lexical rebuild cancelled: %w", err)
+		}
+		batch = append(batch, lexical.Doc{
+			ID:       r.ID,
+			FilePath: r.Metadata["file_path"],
+			Language: r.Metadata["language"],
+			Content:  r.Content,
+		})
+		if len(batch) >= addDocumentBatchSize {
+			if upErr := lex.Upsert(ctx, batch); upErr != nil {
+				return fmt.Errorf("lexical upsert batch: %w", upErr)
+			}
+			batch = batch[:0]
+		}
+		processed++
+		idx.onProgress(PhaseLexical, IndexStateIndexing, processed, count, r.Metadata["file_path"])
+	}
+	if len(batch) > 0 {
+		if upErr := lex.Upsert(ctx, batch); upErr != nil {
+			return fmt.Errorf("lexical final upsert: %w", upErr)
+		}
+	}
+
+	idx.onProgress(PhaseLexical, IndexStateReady, count, count, "")
+	idx.logger.Info("lexical backfill complete", "chunks", processed)
+	return nil
 }
 
 // collectDocumentIDs enumerates document IDs for the given file paths
