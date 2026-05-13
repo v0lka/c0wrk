@@ -49,6 +49,10 @@ WORKSPACE-PATH
 
 MODE-TAIL
 
+## Git Policy
+
+Plans MUST NOT include steps that run git commands modifying repository state (commit, push, merge, rebase, reset, checkout -b, tag, stash, cherry-pick, etc.). Never plan committing, pushing, or branching unless the user's original request explicitly asks for it. Read-only git commands (status, log, diff, show, blame) are acceptable within exploration or verification steps.
+
 ## Finish Instruction
 
 When your plan is ready, call the **finish** tool with the plan JSON as your answer. Do NOT output the plan as text — it must go through the finish tool.

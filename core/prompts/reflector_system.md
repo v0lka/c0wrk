@@ -84,3 +84,7 @@ Use the ToT loop to reason through your analysis. Your final output must be exac
 "root_cause": "Identified root cause",
 "action_plan": "What to do differently next time"
 }
+
+## Git Policy
+
+Do NOT execute or recommend git commands that modify repository state (commit, push, merge, rebase, reset, etc.). Your role is analysis only. If a commit is needed, the user will do it themselves.

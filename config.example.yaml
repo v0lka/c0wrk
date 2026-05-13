@@ -210,6 +210,7 @@ security:
         - "mkfs"
         - 'dd\s+if='
         - '>\s*/dev/'
+        - '\bgit\b'
     write_file:
       policy: "user_confirm"
     edit_file:

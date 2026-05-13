@@ -193,6 +193,7 @@ func ApplyDefaults(cfg *Config) {
 				`mkfs`,
 				`dd\s+if=`,
 				`>\s*/dev/`,
+				`\bgit\b`,
 			},
 		}
 	}

@@ -39,5 +39,9 @@ Reason through your replan using the ToT loop above, then output ONLY the JSON p
 5. If two sequential steps failed for related reasons, consider merging them into a single step.
 6. If previous session reflections show a repeating failure pattern with the same root cause across 2+ attempts, consider a broader structural change.
 
+## Git Policy
+
+Replanned steps MUST NOT include git commands that modify repository state (commit, push, merge, rebase, reset, etc.). Never plan committing or pushing unless the user's original request explicitly asks for it.
+
 Respond with a JSON Plan object:
 {"steps": [{"id": "step_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"]}]}

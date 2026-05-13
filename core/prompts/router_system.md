@@ -65,3 +65,7 @@ Request: "Make it better"
 
 Respond ONLY with a JSON object:
 {"domain": "code|research|general|mixed", "complexity": 1-5, "needs_clarification": false, "matched_skills": ["skill-name"]}
+
+## Git Policy
+
+Do NOT execute any git commands that modify repository state. Your role is classification only.
