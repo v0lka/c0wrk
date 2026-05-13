@@ -3,8 +3,10 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	sdkagent "github.com/user/agent/sdk/agent"
@@ -427,6 +429,74 @@ func (cw *ContextWindow) computeProtectedIndices() map[int]struct{} {
 	}
 
 	return protected
+}
+
+// VulnerableOutputs returns the list of tool outputs that will be pruned on the
+// next pruning cycle. These are non-protected outputs outside the KeepLastN window.
+// Returns nil when pruning is inactive (KeepLastN <= 0, below threshold, or no steps).
+func (cw *ContextWindow) VulnerableOutputs() []sdkagent.VulnerableOutput {
+	if cw.pruning.KeepLastN <= 0 || len(cw.steps) == 0 {
+		return nil
+	}
+
+	// If fill is below pruning threshold, nothing is vulnerable.
+	if cw.pruning.ThresholdPercent > 0 && cw.FillPercent() < cw.pruning.ThresholdPercent {
+		return nil
+	}
+
+	protected := cw.computeProtectedIndices()
+
+	var vulnerable []sdkagent.VulnerableOutput
+	for i, step := range cw.steps {
+		if step.Action.ID == "" {
+			continue // not a tool-result step
+		}
+		if _, isProtected := protected[i]; isProtected {
+			continue
+		}
+		vulnerable = append(vulnerable, sdkagent.VulnerableOutput{
+			ToolName:  step.Action.Name,
+			InputHint: extractInputHint(step.Action.Input),
+		})
+	}
+	return vulnerable
+}
+
+// extractInputHint extracts a human-readable summary from tool input JSON.
+// Tries common parameter names, falls back to first short string value.
+func extractInputHint(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(input, &m); err != nil {
+		return ""
+	}
+
+	// Try common parameter names in priority order.
+	for _, key := range []string{"path", "file_path", "file", "pattern", "query", "command", "url"} {
+		if v, ok := m[key]; ok {
+			s := fmt.Sprint(v)
+			if len(s) > 60 {
+				return s[:57] + "..."
+			}
+			return s
+		}
+	}
+
+	// Fallback: first short string value (sorted for determinism).
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && s != "" && len(s) <= 60 {
+			return s
+		}
+	}
+	return ""
 }
 
 // CompactionResult is an alias for sdkagent.CompactionResult.

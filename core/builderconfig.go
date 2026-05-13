@@ -136,6 +136,7 @@ type BuilderCompactionThresholds struct {
 	PredictivePercent int
 	WarningPercent    int
 	EmergencyPercent  int
+	PreWarningPercent int
 }
 
 // BuilderToolResultBudget configures tool-result size limits.

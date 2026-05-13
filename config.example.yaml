@@ -160,6 +160,7 @@ executor:
       predictive_percent: 85 # Predictive compaction trigger
       warning_percent: 92 # Warning-level compaction trigger
       emergency_percent: 98 # Emergency compaction trigger
+      pre_warning_percent: 75 # store_fact nudge trigger (must be < predictive_percent)
 
     maxSummarizeTokens: 16000 # Max tokens for summarization LLM calls
     observationTruncate: 500 # Characters to truncate observations in summaries

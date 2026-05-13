@@ -52,6 +52,7 @@ type Config struct {
 	MaxDependencyContextChars int // default: 8000
 	ToolResultBudget          agent.ToolResultBudget
 	CircuitBreaker            agent.CircuitBreakerConfig
+	PreWarningPercent         int // context fill % for pre-compaction store_fact nudge (0 = disabled)
 
 	// ReasoningEffort is the base reasoning effort for step executors.
 	// When set, each executor gets AgentReasoningMode(stepRole, effort),

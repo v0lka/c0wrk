@@ -88,6 +88,13 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.Compaction.Thresholds.EmergencyPercent == 0 {
 		cfg.Executor.Compaction.Thresholds.EmergencyPercent = 98
 	}
+	if cfg.Executor.Compaction.Thresholds.PreWarningPercent == 0 {
+		cfg.Executor.Compaction.Thresholds.PreWarningPercent = 75
+	}
+	// Ensure pre_warning_percent < predictive_percent; clamp if misconfigured.
+	if cfg.Executor.Compaction.Thresholds.PreWarningPercent >= cfg.Executor.Compaction.Thresholds.PredictivePercent {
+		cfg.Executor.Compaction.Thresholds.PreWarningPercent = cfg.Executor.Compaction.Thresholds.PredictivePercent - 5
+	}
 
 	// Tool result budget defaults
 	if cfg.Executor.ToolResultBudget.HardCapTokens == 0 {

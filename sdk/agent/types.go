@@ -96,6 +96,12 @@ type CompactionResult struct {
 	AfterPercent  float64
 }
 
+// VulnerableOutput describes a tool output that will be pruned on the next pruning cycle.
+type VulnerableOutput struct {
+	ToolName  string // name of the tool that produced the output
+	InputHint string // human-readable summary of tool input (file path, pattern, etc.)
+}
+
 // ContextManager is the interface Executor needs for context window management.
 // NOTE: This is the SDK-level interface WITHOUT SetTask (c0wrk-core adds that).
 type ContextManager interface {
@@ -108,6 +114,7 @@ type ContextManager interface {
 	FillPercent() float64
 	AvailableTokens() int
 	OutputLimit() int
+	VulnerableOutputs() []VulnerableOutput
 }
 
 // StepLimitResponse represents the user's decision when the agent's step limit is reached.

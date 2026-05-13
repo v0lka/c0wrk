@@ -262,6 +262,7 @@ func (b *OrchestratorBuilder) Build(
 		ReasoningEffort:           baseEffort,
 		RoleOverrides:             cfg.Reasoning.RoleOverrides,
 		StepLimitFunc:             stepLimitFunc,
+		PreWarningPercent:         cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 	}
 
 	// Token counter, budgets, circuit breaker

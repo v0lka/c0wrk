@@ -1409,3 +1409,165 @@ func TestPruningThreshold_SmallContextWindow(t *testing.T) {
 		t.Errorf("Step 30 tool output should be preserved (within KeepLastN), got %q", messages[60].Content)
 	}
 }
+
+// TestVulnerableOutputs verifies that VulnerableOutputs correctly identifies
+// tool outputs that will be pruned on the next cycle.
+func TestVulnerableOutputs(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        3,
+		ProtectedTools:   []string{"store_fact"},
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 0, // always prune (no threshold)
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Add 6 steps:
+	// Steps 1-3 are outside KeepLastN (vulnerable)
+	// Steps 4-6 are within KeepLastN (protected)
+	cw.AddStep(makeStepWithTool("T1", "Obs 1", "read_file", 1))
+	cw.AddStep(makeStepWithTool("T2", "Obs 2", "ripgrep", 2))
+	cw.AddStep(makeStepWithTool("T3", "Obs 3", "store_fact", 3)) // protected tool
+	cw.AddStep(makeStepWithTool("T4", "Obs 4", "read_file", 4))
+	cw.AddStep(makeStepWithTool("T5", "Obs 5", "semantic_search", 5))
+	cw.AddStep(makeStepWithTool("T6", "Obs 6", "read_file", 6))
+
+	vulnerable := cw.VulnerableOutputs()
+
+	// Steps 1 and 2 are outside KeepLastN and not protected → vulnerable
+	// Step 3 is outside KeepLastN but "store_fact" is protected → NOT vulnerable
+	// Steps 4, 5, 6 are within KeepLastN → NOT vulnerable
+	if len(vulnerable) != 2 {
+		t.Fatalf("Expected 2 vulnerable outputs, got %d: %+v", len(vulnerable), vulnerable)
+	}
+
+	if vulnerable[0].ToolName != "read_file" {
+		t.Errorf("Expected vulnerable[0].ToolName = 'read_file', got %q", vulnerable[0].ToolName)
+	}
+	if vulnerable[1].ToolName != "ripgrep" {
+		t.Errorf("Expected vulnerable[1].ToolName = 'ripgrep', got %q", vulnerable[1].ToolName)
+	}
+}
+
+// TestVulnerableOutputsEmpty verifies VulnerableOutputs returns nil when no pruning.
+func TestVulnerableOutputsEmpty(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	// No pruning configured (KeepLastN = 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw.AddStep(makeStep("T1", "Obs 1", 1))
+	cw.AddStep(makeStep("T2", "Obs 2", 2))
+
+	vulnerable := cw.VulnerableOutputs()
+	if vulnerable != nil {
+		t.Errorf("Expected nil vulnerable outputs with no pruning, got %+v", vulnerable)
+	}
+}
+
+// TestVulnerableOutputsBelowThreshold verifies VulnerableOutputs returns nil
+// when context fill is below the pruning threshold.
+func TestVulnerableOutputsBelowThreshold(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        3,
+		ProtectedTools:   []string{"store_fact"},
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 50, // pruning only active above 50%
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Add a few steps — total tokens will be well below 50% of 128k
+	cw.AddStep(makeStep("T1", "Obs 1", 1))
+	cw.AddStep(makeStep("T2", "Obs 2", 2))
+	cw.AddStep(makeStep("T3", "Obs 3", 3))
+	cw.AddStep(makeStep("T4", "Obs 4", 4))
+	cw.AddStep(makeStep("T5", "Obs 5", 5))
+
+	vulnerable := cw.VulnerableOutputs()
+	if vulnerable != nil {
+		t.Errorf("Expected nil vulnerable outputs below threshold, got %+v", vulnerable)
+	}
+}
+
+// TestVulnerableOutputsInputHint verifies that InputHint is extracted from tool input JSON.
+func TestVulnerableOutputsInputHint(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        1,
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 0,
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Step with file_path input
+	cw.AddStep(sdkagent.Step{
+		Thought: "T1",
+		Action: llm.ToolCall{
+			ID:    "call_1",
+			Name:  "read_file",
+			Input: json.RawMessage(`{"file_path": "core/orchestrator.go", "offset": 0}`),
+		},
+		Observation: "file content...",
+		TokensUsed:  100,
+	})
+	// Step with pattern input
+	cw.AddStep(sdkagent.Step{
+		Thought: "T2",
+		Action: llm.ToolCall{
+			ID:    "call_2",
+			Name:  "ripgrep",
+			Input: json.RawMessage(`{"pattern": "CheckFill", "path": "sdk/"}`),
+		},
+		Observation: "grep results...",
+		TokensUsed:  100,
+	})
+	// Last step (within KeepLastN=1, protected)
+	cw.AddStep(makeStep("T3", "Obs 3", 3))
+
+	vulnerable := cw.VulnerableOutputs()
+	if len(vulnerable) != 2 {
+		t.Fatalf("Expected 2 vulnerable outputs, got %d", len(vulnerable))
+	}
+
+	// read_file should extract "file_path" key
+	if vulnerable[0].InputHint != "core/orchestrator.go" {
+		t.Errorf("Expected InputHint 'core/orchestrator.go', got %q", vulnerable[0].InputHint)
+	}
+
+	// ripgrep tries keys in order: path, file_path, file, pattern, query, command
+	// "path" comes before "pattern" in the priority list
+	if vulnerable[1].InputHint != "sdk/" {
+		t.Errorf("Expected InputHint 'sdk/', got %q", vulnerable[1].InputHint)
+	}
+}
+
+// TestVulnerableOutputsAllWithinKeepLastN verifies that VulnerableOutputs returns
+// nil when total steps <= KeepLastN (everything is protected by recency).
+func TestVulnerableOutputsAllWithinKeepLastN(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:        5,
+		PlaceholderText:  "[PRUNED]",
+		ThresholdPercent: 0, // always active
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+
+	// Add 3 steps — all within KeepLastN=5
+	cw.AddStep(makeStepWithTool("T1", "Obs 1", "read_file", 1))
+	cw.AddStep(makeStepWithTool("T2", "Obs 2", "ripgrep", 2))
+	cw.AddStep(makeStepWithTool("T3", "Obs 3", "read_file", 3))
+
+	vulnerable := cw.VulnerableOutputs()
+	if len(vulnerable) != 0 {
+		t.Errorf("Expected no vulnerable outputs when all steps within KeepLastN, got %d: %+v", len(vulnerable), vulnerable)
+	}
+}

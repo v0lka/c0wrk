@@ -439,16 +439,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			stepCaller := o.callerForStep(cm)
 			executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, false, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
-			if o.cfg.StepLimitFunc != nil {
-				executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
-			}
-			if o.cfg.ReasoningEffort != "" {
-				stepRole := stepCfg.AgentRole
-				if stepRole == "" {
-					stepRole = "executor"
-				}
-				executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
-			}
+			o.configureExecutor(executor, stepCfg)
 
 			todoUpdateFunc := func(stepID string, items []agent.TodoItem) {
 				scopedEvents.OnStepTodoUpdate(stepID, items)
@@ -612,16 +603,7 @@ func (o *Orchestrator) executePlanWithSteps(
 					retryCaller := o.callerForStep(cm)
 					executor := agent.NewExecutor(retryCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 					executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
-					if o.cfg.StepLimitFunc != nil {
-						executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
-					}
-					if o.cfg.ReasoningEffort != "" {
-						stepRole := stepCfg.AgentRole
-						if stepRole == "" {
-							stepRole = "executor"
-						}
-						executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
-					}
+					o.configureExecutor(executor, stepCfg)
 
 					todoUpdateFunc := func(stepID string, items []agent.TodoItem) {
 						scopedEvents.OnStepTodoUpdate(stepID, items)
@@ -901,6 +883,23 @@ func (o *Orchestrator) findStepIndex(plan *Plan, stepID string) int {
 	return -1
 }
 
+// configureExecutor applies shared executor settings from orchestrator config.
+func (o *Orchestrator) configureExecutor(executor *agent.Executor, stepCfg StepConfig) {
+	if o.cfg.StepLimitFunc != nil {
+		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
+	}
+	if o.cfg.PreWarningPercent > 0 {
+		executor.SetPreWarningPercent(o.cfg.PreWarningPercent)
+	}
+	if o.cfg.ReasoningEffort != "" {
+		stepRole := stepCfg.AgentRole
+		if stepRole == "" {
+			stepRole = "executor"
+		}
+		executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
+	}
+}
+
 // resolveStepConfig resolves step-specific configuration via StepConfigurator.
 func (o *Orchestrator) resolveStepConfig(step PlanStep, allTools []tools.ToolDescriptor) StepConfig {
 	if o.cfg.StepConfigurator != nil {
@@ -1016,16 +1015,7 @@ func (o *Orchestrator) ExecuteAdHocStep(
 	stepCaller := o.callerForStep(cm)
 	executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 	executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
-	if o.cfg.StepLimitFunc != nil {
-		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
-	}
-	if o.cfg.ReasoningEffort != "" {
-		stepRole := stepCfg.AgentRole
-		if stepRole == "" {
-			stepRole = "executor"
-		}
-		executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
-	}
+	o.configureExecutor(executor, stepCfg)
 
 	// 5. Inject StepOutputStore into context so tools can read step outputs
 	ctx = agent.WithStepOutputStore(ctx, NewStepOutputStore(bb))

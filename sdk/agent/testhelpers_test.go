@@ -161,6 +161,10 @@ func (m *mockContextManager) OutputLimit() int {
 	return 8192
 }
 
+func (m *mockContextManager) VulnerableOutputs() []VulnerableOutput {
+	return nil
+}
+
 // --- Mock TokenCounter ---
 
 type mockTokenCounter struct{}

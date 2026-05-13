@@ -56,6 +56,9 @@ type StepLimitFunc = agent.StepLimitFunc
 // StepLimitResponse represents the user's decision when the step limit is reached.
 type StepLimitResponse = agent.StepLimitResponse
 
+// VulnerableOutput describes a tool output that will be pruned on the next pruning cycle.
+type VulnerableOutput = agent.VulnerableOutput
+
 // Step limit response constants.
 var (
 	StepLimitAllowOnce   = agent.StepLimitAllowOnce

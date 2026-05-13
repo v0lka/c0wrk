@@ -215,6 +215,7 @@ type CompactionThresholds struct {
 	PredictivePercent int `yaml:"predictive_percent"`
 	WarningPercent    int `yaml:"warning_percent"`
 	EmergencyPercent  int `yaml:"emergency_percent"`
+	PreWarningPercent int `yaml:"pre_warning_percent"`
 }
 
 // SlidingWindowConfig configures sliding window compaction.

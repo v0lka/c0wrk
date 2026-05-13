@@ -376,6 +376,7 @@ func (m *mockContextManager) CorrectTokenCount(_ int)                           
 func (m *mockContextManager) FillPercent() float64                              { return 0 }
 func (m *mockContextManager) AvailableTokens() int                              { return 8000 }
 func (m *mockContextManager) OutputLimit() int                                  { return 1000 }
+func (m *mockContextManager) VulnerableOutputs() []agent.VulnerableOutput       { return nil }
 func (m *mockContextManager) SetTask(task string)                               { m.taskDefinition = task }
 
 // TestExecuteAdHocStep_AppendsToBlackboard verifies that ExecuteAdHocStep

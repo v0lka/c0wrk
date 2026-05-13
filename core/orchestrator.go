@@ -49,6 +49,11 @@ type OrchestratorConfig struct {
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
 	StepLimitFunc agent.StepLimitFunc
+
+	// PreWarningPercent is the context fill % that triggers the pre-compaction
+	// store_fact nudge. When fill reaches this threshold (but below predictive),
+	// a warning listing vulnerable tool outputs is appended to the observation.
+	PreWarningPercent int
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -214,6 +219,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		MaxDependencyContextChars: cfg.MaxDependencyContextChars,
 		ToolResultBudget:          deps.ToolResultBudget,
 		CircuitBreaker:            deps.CircuitBreaker,
+		PreWarningPercent:         cfg.PreWarningPercent,
 		ReasoningEffort:           cfg.ReasoningEffort,
 		RoleOverrides:             cfg.RoleOverrides,
 		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger, buildSystemPrompt, taskCtxProvider, deps.SkillManager),

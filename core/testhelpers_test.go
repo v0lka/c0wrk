@@ -194,6 +194,10 @@ func (m *mockContextManager) OutputLimit() int {
 	return 8192
 }
 
+func (m *mockContextManager) VulnerableOutputs() []VulnerableOutput {
+	return nil
+}
+
 // mockEmitter is a mock implementation of Emitter for testing.
 // It tracks all calls for assertion purposes.
 type mockEmitter struct {

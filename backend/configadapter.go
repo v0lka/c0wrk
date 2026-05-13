@@ -89,6 +89,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 					PredictivePercent: cfg.Executor.Compaction.Thresholds.PredictivePercent,
 					WarningPercent:    cfg.Executor.Compaction.Thresholds.WarningPercent,
 					EmergencyPercent:  cfg.Executor.Compaction.Thresholds.EmergencyPercent,
+					PreWarningPercent: cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 				},
 				MaxSummarizeTokens:  cfg.Executor.Compaction.MaxSummarizeTokens,
 				ObservationTruncate: cfg.Executor.Compaction.ObservationTruncate,

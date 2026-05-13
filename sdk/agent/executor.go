@@ -94,6 +94,9 @@ type Executor struct {
 	// Reasoning effort for LLM calls (empty = no reasoning control)
 	reasoningEffort llm.ReasoningEffort
 
+	// Pre-compaction nudge: context fill % that triggers store_fact warning (0 = disabled)
+	preWarningPercent int
+
 	logger *slog.Logger
 }
 
@@ -123,6 +126,11 @@ func (e *Executor) SetLogger(l *slog.Logger) { e.logger = l }
 
 // SetReasoningEffort sets the reasoning effort for LLM calls.
 func (e *Executor) SetReasoningEffort(effort llm.ReasoningEffort) { e.reasoningEffort = effort }
+
+// SetPreWarningPercent sets the context fill percentage that triggers the pre-compaction
+// store_fact nudge. When fill reaches this threshold (but is below the compaction trigger),
+// a warning listing vulnerable tool outputs is appended to the observation.
+func (e *Executor) SetPreWarningPercent(percent int) { e.preWarningPercent = percent }
 
 // log returns the executor's logger or slog.Default() if none was set.
 func (e *Executor) log() *slog.Logger {
@@ -219,6 +227,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 	nudgeAttempted := false
 	wrapUpNudgeAttempted := false
 	reactiveCompactAttempted := false
+	preCompactionNudgeEmitted := false
 	unlimitedSteps := false
 	effectiveMaxSteps := e.maxSteps // local copy to avoid mutating struct field
 
@@ -874,6 +883,24 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			// Emit tool result
 			e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
 
+			// Pre-compaction nudge: warn LLM when context pressure enters danger zone.
+			// NOTE: The nudge is appended AFTER ToolResult emission intentionally — it is
+			// only for LLM context (stored in Step.Observation), not for frontend display.
+			// Only on the last tool call in the response, so the nudge appears once at the end.
+			if callIdx == len(toolCalls)-1 && e.preWarningPercent > 0 && !preCompactionNudgeEmitted {
+				fill := cw.CheckFill()
+				if fill.Status == "ok" && fill.Percent >= float64(e.preWarningPercent) {
+					if vulnerable := cw.VulnerableOutputs(); len(vulnerable) > 0 {
+						observation += "\n\n" + formatPreCompactionNudge(fill.Percent, vulnerable)
+						preCompactionNudgeEmitted = true
+						e.emitter.ExecutorDiagnostic(stepNum, "pre_compaction_nudge", map[string]any{
+							"fill_percent":     fill.Percent,
+							"vulnerable_count": len(vulnerable),
+						})
+					}
+				}
+			}
+
 			// Create step - only first tool call in the group carries the Thought
 			stepThought := ""
 			stepReasoning := ""
@@ -935,17 +962,20 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
 			}
 			reactiveCompactAttempted = false
+			preCompactionNudgeEmitted = false
 		case "emergency":
 			if result := cw.Compact(ctx); result != nil {
 				e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
 			}
 			reactiveCompactAttempted = false
+			preCompactionNudgeEmitted = false
 		case "reject":
 			if !reactiveCompactAttempted {
 				reactiveCompactAttempted = true
 				if result := cw.Compact(ctx); result != nil {
 					e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
 				}
+				preCompactionNudgeEmitted = false
 				continue
 			}
 			return nil, fmt.Errorf("context window full after reactive compaction (%.1f%% of %d tokens)", fill.Percent, fill.Max)
@@ -1010,6 +1040,25 @@ func compactJSON(raw json.RawMessage) string {
 		return string(raw) // fallback to raw if malformed
 	}
 	return buf.String()
+}
+
+// formatPreCompactionNudge formats the context pressure warning message
+// listing vulnerable tool outputs that will be pruned.
+func formatPreCompactionNudge(fillPercent float64, vulnerable []VulnerableOutput) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "--- CONTEXT PRESSURE WARNING ---\nContext is %.0f%% full. The following tool outputs will be pruned within the next few steps:\n", fillPercent)
+	for _, v := range vulnerable {
+		if v.InputHint != "" {
+			fmt.Fprintf(&sb, "- %s(%q)\n", v.ToolName, v.InputHint)
+		} else {
+			sb.WriteString("- ")
+			sb.WriteString(v.ToolName)
+			sb.WriteByte('\n')
+		}
+	}
+	sb.WriteString("If you need information from these outputs later, call store_fact NOW to preserve key findings.\n")
+	sb.WriteString("After pruning, only search_facts or re-reading the source will recover this information.")
+	return sb.String()
 }
 
 // isParseError checks if a tool result content indicates a JSON parse failure.
