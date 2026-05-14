@@ -1090,34 +1090,274 @@ func TestSanitizeSchemaForOpenAI(t *testing.T) {
 }
 
 func TestSanitizeSchemaForAnthropic(t *testing.T) {
-	t.Run("AnthropicPassthrough", func(t *testing.T) {
+	t.Run("removes unsupported keywords", func(t *testing.T) {
 		schema := json.RawMessage(`{
+			"$schema": "http://json-schema.org/draft-07/schema#",
+			"$id": "test",
+			"$comment": "should be removed",
+			"patternProperties": {"^S_": {"type": "string"}},
 			"type": "object",
 			"properties": {
 				"name": {"type": "string"}
-			},
-			"additionalProperties": true
+			}
 		}`)
 
 		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 
-		// Should return the exact same bytes
-		if string(result) != string(schema) {
-			t.Errorf("Anthropic should return schema unchanged.\nExpected: %s\nGot: %s", string(schema), string(result))
+		for _, key := range []string{"$schema", "$id", "$comment", "patternProperties"} {
+			if _, exists := parsed[key]; exists {
+				t.Errorf("expected key %q to be removed", key)
+			}
+		}
+		if parsed["type"] != "object" {
+			t.Errorf("expected type to remain, got %v", parsed["type"])
 		}
 	})
 
-	t.Run("AnthropicHandlesNil", func(t *testing.T) {
+	t.Run("resolves $ref and removes $defs", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"address": {"$ref": "#/$defs/Address"}
+			},
+			"$defs": {
+				"Address": {
+					"type": "object",
+					"properties": {
+						"street": {"type": "string"}
+					}
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if _, exists := parsed["$defs"]; exists {
+			t.Error("expected $defs to be removed")
+		}
+
+		props, _ := parsed["properties"].(map[string]any)
+		addr, _ := props["address"].(map[string]any)
+		if addr["type"] != "object" {
+			t.Errorf("expected resolved address type to be 'object', got %v", addr["type"])
+		}
+		addrProps, _ := addr["properties"].(map[string]any)
+		if addrProps == nil || addrProps["street"] == nil {
+			t.Error("expected resolved address to have street property")
+		}
+	})
+
+	t.Run("flattens allOf single item", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"allOf": [
+				{
+					"type": "object",
+					"properties": {
+						"name": {"type": "string"}
+					}
+				}
+			]
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if _, exists := parsed["allOf"]; exists {
+			t.Error("expected allOf to be removed after flattening")
+		}
+		if parsed["type"] != "object" {
+			t.Errorf("expected type 'object', got %v", parsed["type"])
+		}
+		props, _ := parsed["properties"].(map[string]any)
+		if props["name"] == nil {
+			t.Error("expected 'name' property to be present")
+		}
+	})
+
+	t.Run("flattens allOf multiple items merges properties", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"allOf": [
+				{
+					"type": "object",
+					"properties": {
+						"name": {"type": "string"}
+					},
+					"required": ["name"]
+				},
+				{
+					"properties": {
+						"age": {"type": "integer"}
+					},
+					"required": ["age"]
+				}
+			]
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if _, exists := parsed["allOf"]; exists {
+			t.Error("expected allOf to be removed after flattening")
+		}
+		props, _ := parsed["properties"].(map[string]any)
+		if props["name"] == nil || props["age"] == nil {
+			t.Errorf("expected merged properties, got %v", props)
+		}
+		required, _ := parsed["required"].([]any)
+		if len(required) < 2 {
+			t.Errorf("expected at least 2 required fields, got %v", required)
+		}
+	})
+
+	t.Run("flattens oneOf picks first variant", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"oneOf": [
+				{"type": "string", "description": "first"},
+				{"type": "integer", "description": "second"}
+			]
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if _, exists := parsed["oneOf"]; exists {
+			t.Error("expected oneOf to be removed after flattening")
+		}
+		if parsed["type"] != "string" {
+			t.Errorf("expected type 'string' (first variant), got %v", parsed["type"])
+		}
+	})
+
+	t.Run("infers object type from properties", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"properties": {
+				"name": {"type": "string"}
+			},
+			"required": ["name"]
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if parsed["type"] != "object" {
+			t.Errorf("expected inferred type 'object', got %v", parsed["type"])
+		}
+	})
+
+	t.Run("recursive nested processing", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"inner": {
+					"$comment": "should be removed",
+					"type": "object",
+					"properties": {
+						"value": {"type": "string"}
+					}
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		props, _ := parsed["properties"].(map[string]any)
+		inner, _ := props["inner"].(map[string]any)
+		if _, exists := inner["$comment"]; exists {
+			t.Error("expected nested $comment to be removed")
+		}
+	})
+
+	t.Run("handles nil input", func(t *testing.T) {
 		result := SanitizeSchemaForAnthropic(nil)
 		if result != nil {
 			t.Errorf("nil should return nil, got %q", string(result))
 		}
 	})
 
-	t.Run("AnthropicHandlesEmpty", func(t *testing.T) {
+	t.Run("handles empty input", func(t *testing.T) {
 		result := SanitizeSchemaForAnthropic(json.RawMessage{})
 		if len(result) != 0 {
 			t.Errorf("empty should return empty, got %q", string(result))
+		}
+	})
+
+	t.Run("handles invalid JSON", func(t *testing.T) {
+		input := json.RawMessage(`{not valid json`)
+		result := SanitizeSchemaForAnthropic(input)
+		if string(result) != string(input) {
+			t.Error("invalid JSON should be returned unchanged")
+		}
+	})
+
+	t.Run("processes array items recursively", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "array",
+			"items": {
+				"$comment": "remove me",
+				"type": "object",
+				"properties": {
+					"id": {"type": "integer"}
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		items, _ := parsed["items"].(map[string]any)
+		if _, exists := items["$comment"]; exists {
+			t.Error("expected $comment in items to be removed")
+		}
+	})
+
+	t.Run("processes additionalProperties recursively", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"additionalProperties": {
+				"$comment": "should go",
+				"type": "string"
+			}
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		addProps, _ := parsed["additionalProperties"].(map[string]any)
+		if _, exists := addProps["$comment"]; exists {
+			t.Error("expected $comment in additionalProperties to be removed")
+		}
+		if addProps["type"] != "string" {
+			t.Errorf("expected type 'string' in additionalProperties, got %v", addProps["type"])
 		}
 	})
 }

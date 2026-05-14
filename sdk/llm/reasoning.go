@@ -18,12 +18,16 @@ type ReasoningConfig struct {
 	BudgetTokens int
 	// OpenAIEffort is the OpenAI reasoning_effort parameter ("low", "medium", "high", "max").
 	OpenAIEffort string
-	// GeminiThinkingLevel is the Gemini thinking level.
+	// GeminiThinkingLevel is the Gemini/Google thinking level.
 	GeminiThinkingLevel string
-	// GeminiThinkingBudget is the Gemini thinking budget in tokens.
+	// GeminiThinkingBudget is the Gemini/Google thinking budget in tokens.
 	GeminiThinkingBudget int
 	// DeepSeekThinking is the DeepSeek thinking toggle ("enabled" or "disabled").
 	DeepSeekThinking string
+	// QwenThinking is the Qwen enable_thinking toggle ("enabled" or "disabled").
+	QwenThinking string
+	// GLMThinking is the GLM thinking toggle ("enabled" or "disabled").
+	GLMThinking string
 	// Enabled indicates whether reasoning/thinking is enabled at all.
 	Enabled bool
 }
@@ -38,10 +42,14 @@ func ResolveReasoning(effort ReasoningEffort, family string) ReasoningConfig {
 		return resolveOpenAIReasoning(effort)
 	case "openai_codex":
 		return resolveOpenAICodexReasoning(effort)
-	case "gemini":
+	case "google":
 		return resolveGeminiReasoning(effort)
 	case "deepseek":
 		return resolveDeepSeekReasoning(effort)
+	case "qwen":
+		return resolveQwenReasoning(effort)
+	case "glm":
+		return resolveGLMReasoning(effort)
 	default:
 		// For families without reasoning support (default/grok, mistral, kimi),
 		// return disabled config.
@@ -131,6 +139,28 @@ func resolveGeminiReasoning(effort ReasoningEffort) ReasoningConfig {
 		return ReasoningConfig{Enabled: true, GeminiThinkingLevel: "high", GeminiThinkingBudget: 16384}
 	default:
 		return ReasoningConfig{Enabled: true, GeminiThinkingLevel: "high", GeminiThinkingBudget: 8192}
+	}
+}
+
+// resolveQwenReasoning resolves reasoning for Qwen models.
+// Qwen uses enable_thinking parameter (boolean toggle).
+func resolveQwenReasoning(effort ReasoningEffort) ReasoningConfig {
+	switch effort {
+	case ReasoningOff:
+		return ReasoningConfig{Enabled: false, QwenThinking: "disabled"}
+	default:
+		return ReasoningConfig{Enabled: true, QwenThinking: "enabled"}
+	}
+}
+
+// resolveGLMReasoning resolves reasoning for GLM models (Zhipu AI).
+// GLM uses thinking parameter with {"type": "enabled"/"disabled"} format.
+func resolveGLMReasoning(effort ReasoningEffort) ReasoningConfig {
+	switch effort {
+	case ReasoningOff:
+		return ReasoningConfig{Enabled: false, GLMThinking: "disabled"}
+	default:
+		return ReasoningConfig{Enabled: true, GLMThinking: "enabled"}
 	}
 }
 

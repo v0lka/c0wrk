@@ -193,6 +193,18 @@ func (p *OpenAIProvider) buildChatParams(req ChatRequest) oai.ChatCompletionNewP
 				"thinking": map[string]string{"type": rc.DeepSeekThinking},
 			})
 		}
+		// Qwen thinking models use enable_thinking in extra_body
+		if rc.QwenThinking != "" {
+			params.SetExtraFields(map[string]any{
+				"enable_thinking": rc.QwenThinking == "enabled",
+			})
+		}
+		// GLM thinking uses same format as DeepSeek
+		if rc.GLMThinking != "" {
+			params.SetExtraFields(map[string]any{
+				"thinking": map[string]string{"type": rc.GLMThinking},
+			})
+		}
 	}
 
 	if len(req.Tools) > 0 {

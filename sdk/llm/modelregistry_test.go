@@ -63,9 +63,9 @@ func TestModelRegistry_BuiltInResolution(t *testing.T) {
 		{"gemini-2.5-pro", 1048576, 65536, "approximate"},
 		{"gemini-2.0-flash", 1048576, 8192, "approximate"},
 
-		// DeepSeek models
-		{"deepseek-chat", 128000, 8192, "approximate"},
-		{"deepseek-reasoner", 128000, 8192, "approximate"},
+		// DeepSeek V4 models
+		{"deepseek-v4-pro", 1000000, 16384, "approximate"},
+		{"deepseek-v4-flash", 1000000, 16384, "approximate"},
 
 		// Grok models
 		{"grok-4.20", 2000000, 32768, "approximate"},
@@ -303,15 +303,15 @@ func TestResolveFamily_BuiltinModels(t *testing.T) {
 		{"claude-3.5-haiku", "anthropic"},
 
 		// Gemini models
-		{"gemini-3.1-pro", "gemini"},
-		{"gemini-3.1-flash-lite", "gemini"},
-		{"gemini-2.5-pro", "gemini"},
-		{"gemini-2.5-flash", "gemini"},
-		{"gemini-2.0-flash", "gemini"},
+		{"gemini-3.1-pro", "google"},
+		{"gemini-3.1-flash-lite", "google"},
+		{"gemini-2.5-pro", "google"},
+		{"gemini-2.5-flash", "google"},
+		{"gemini-2.0-flash", "google"},
 
-		// DeepSeek models
-		{"deepseek-chat", "deepseek"},
-		{"deepseek-reasoner", "deepseek"},
+		// DeepSeek V4 models
+		{"deepseek-v4-pro", "deepseek"},
+		{"deepseek-v4-flash", "deepseek"},
 
 		// Grok models → default family
 		{"grok-4.20", "default"},
@@ -352,7 +352,7 @@ func TestResolveFamily_PatternMatching(t *testing.T) {
 		{"claude-custom-model", "anthropic"},
 
 		// Gemini patterns
-		{"gemini-custom-pro", "gemini"},
+		{"gemini-custom-pro", "google"},
 
 		// DeepSeek patterns
 		{"deepseek-v3-custom", "deepseek"},
@@ -366,14 +366,18 @@ func TestResolveFamily_PatternMatching(t *testing.T) {
 
 		// Kimi patterns
 		{"kimi-k2", "kimi"},
-		{"qwen-2.5-72b", "kimi"},
-		{"moonshot-v1", "kimi"},
+
+		// Qwen patterns
+		{"qwen-2.5-72b", "qwen"},
+		{"qwq-plus", "qwen"},
+
+		// GLM patterns
+		{"glm-z1-32b", "glm"},
 
 		// Default family (no specific pattern)
 		{"grok-custom-model", "default"},
 		{"llama-3.1-70b", "default"},
 		{"phi-3-mini", "default"},
-		{"gemma-2-27b", "default"},
 		{"codellama-34b", "default"},
 	}
 
@@ -402,9 +406,9 @@ func TestResolveFamily_SourceWithoutFamily(t *testing.T) {
 			expectedFamily: "anthropic",
 		},
 		{
-			name:           "gemini model from source gets gemini family",
+			name:           "gemini model from source gets google family",
 			model:          "gemini-custom-pro",
-			expectedFamily: "gemini",
+			expectedFamily: "google",
 		},
 		{
 			name:           "unknown model from source gets default family",
@@ -452,10 +456,10 @@ func TestResolveFamily_UserOverride(t *testing.T) {
 			expectedFamily: "anthropic",
 		},
 		{
-			name:           "override with explicit gemini family",
+			name:           "override with explicit google family",
 			model:          "custom-model",
-			overrideFamily: "gemini",
-			expectedFamily: "gemini",
+			overrideFamily: "google",
+			expectedFamily: "google",
 		},
 		{
 			name:           "override without family should get DetectFamily result",

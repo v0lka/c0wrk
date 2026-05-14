@@ -31,8 +31,8 @@ func TestDefaultSampling(t *testing.T) {
 			wantTopP: nil,
 		},
 		{
-			name:     "gemini returns 1.0 temperature",
-			family:   "gemini",
+			name:     "google returns 1.0 temperature",
+			family:   "google",
 			wantTemp: pfloat(1.0),
 			wantTopP: nil,
 		},
@@ -43,15 +43,27 @@ func TestDefaultSampling(t *testing.T) {
 			wantTopP: nil,
 		},
 		{
-			name:     "deepseek returns 0.3 temperature",
+			name:     "deepseek returns 0.0 temperature",
 			family:   "deepseek",
-			wantTemp: pfloat(0.3),
+			wantTemp: pfloat(0.0),
 			wantTopP: nil,
 		},
 		{
-			name:     "kimi returns 0.55 temperature",
+			name:     "qwen returns 0.6 temperature",
+			family:   "qwen",
+			wantTemp: pfloat(0.6),
+			wantTopP: nil,
+		},
+		{
+			name:     "glm returns 0.2 temperature",
+			family:   "glm",
+			wantTemp: pfloat(0.2),
+			wantTopP: nil,
+		},
+		{
+			name:     "kimi returns all nil (server-managed)",
 			family:   "kimi",
-			wantTemp: pfloat(0.55),
+			wantTemp: nil,
 			wantTopP: nil,
 		},
 		{

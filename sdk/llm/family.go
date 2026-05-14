@@ -9,10 +9,12 @@ const (
 	FamilyAnthropic      ModelFamily = "anthropic"
 	FamilyOpenAIFlagship ModelFamily = "openai_flagship"
 	FamilyOpenAIStandard ModelFamily = "openai_standard"
-	FamilyGemini         ModelFamily = "gemini"
+	FamilyGoogle         ModelFamily = "google"
 	FamilyMistral        ModelFamily = "mistral"
 	FamilyDeepSeek       ModelFamily = "deepseek"
 	FamilyOpenAICodex    ModelFamily = "openai_codex"
+	FamilyQwen           ModelFamily = "qwen"
+	FamilyGLM            ModelFamily = "glm"
 	FamilyKimi           ModelFamily = "kimi"
 	FamilyDefault        ModelFamily = "default"
 )
@@ -47,9 +49,9 @@ func DetectFamily(modelID string) ModelFamily {
 		return FamilyAnthropic
 	}
 
-	// Google Gemini
-	if strings.Contains(id, "gemini") {
-		return FamilyGemini
+	// Google (Gemini and Gemma)
+	if strings.Contains(id, "gemini") || strings.Contains(id, "gemma") {
+		return FamilyGoogle
 	}
 
 	// Mistral / Devstral
@@ -62,8 +64,18 @@ func DetectFamily(modelID string) ModelFamily {
 		return FamilyDeepSeek
 	}
 
-	// Kimi / Moonshot
-	if strings.Contains(id, "kimi") || strings.Contains(id, "moonshot") || strings.Contains(id, "qwen") {
+	// Qwen / QwQ (Alibaba)
+	if strings.Contains(id, "qwen") || strings.Contains(id, "qwq") {
+		return FamilyQwen
+	}
+
+	// GLM / ChatGLM (Zhipu AI)
+	if strings.Contains(id, "glm") {
+		return FamilyGLM
+	}
+
+	// Kimi (Moonshot AI)
+	if strings.Contains(id, "kimi") {
 		return FamilyKimi
 	}
 

@@ -201,7 +201,7 @@ func (p *GeminiProvider) buildConfig(req ChatRequest, systemInstruction *genai.C
 
 	// Apply reasoning effort if set and not explicitly off
 	if req.ReasoningEffort != "" {
-		rc := ResolveReasoning(req.ReasoningEffort, "gemini")
+		rc := ResolveReasoning(req.ReasoningEffort, "google")
 		if rc.Enabled {
 			tc := &genai.ThinkingConfig{
 				IncludeThoughts: true,

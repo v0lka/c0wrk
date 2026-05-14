@@ -27,7 +27,9 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"OrchestratorAnthropic", OrchestratorAnthropic},
 		{"OrchestratorOpenAIFlagship", OrchestratorOpenAIFlagship},
 		{"OrchestratorOpenAIStandard", OrchestratorOpenAIStandard},
-		{"OrchestratorGemini", OrchestratorGemini},
+		{"OrchestratorGoogle", OrchestratorGoogle},
+		{"OrchestratorQwen", OrchestratorQwen},
+		{"OrchestratorGLM", OrchestratorGLM},
 		{"OrchestratorDeepSeek", OrchestratorDeepSeek},
 		{"OrchestratorMistral", OrchestratorMistral},
 		{"OrchestratorKimi", OrchestratorKimi},
@@ -37,7 +39,9 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"PlannerAnthropic", PlannerAnthropic},
 		{"PlannerOpenAIFlagship", PlannerOpenAIFlagship},
 		{"PlannerOpenAIStandard", PlannerOpenAIStandard},
-		{"PlannerGemini", PlannerGemini},
+		{"PlannerGoogle", PlannerGoogle},
+		{"PlannerQwen", PlannerQwen},
+		{"PlannerGLM", PlannerGLM},
 		{"PlannerDeepSeek", PlannerDeepSeek},
 		{"PlannerMistral", PlannerMistral},
 		{"PlannerKimi", PlannerKimi},
@@ -103,7 +107,7 @@ func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 }
 
 func TestFamilyPrompt_Orchestrator(t *testing.T) {
-	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "kimi", "openai_codex", "default"}
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "google", "deepseek", "mistral", "kimi", "qwen", "glm", "openai_codex", "default"}
 	for _, fam := range families {
 		t.Run(fam, func(t *testing.T) {
 			result := FamilyPrompt("orchestrator", fam)
@@ -115,7 +119,7 @@ func TestFamilyPrompt_Orchestrator(t *testing.T) {
 }
 
 func TestFamilyPrompt_Planner(t *testing.T) {
-	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek", "mistral", "kimi", "openai_codex", "default"}
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "google", "deepseek", "mistral", "kimi", "qwen", "glm", "openai_codex", "default"}
 	for _, fam := range families {
 		t.Run(fam, func(t *testing.T) {
 			result := FamilyPrompt("planner", fam)

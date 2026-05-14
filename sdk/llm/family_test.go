@@ -34,11 +34,13 @@ func TestDetectFamily(t *testing.T) {
 		{"claude-haiku-4.5", FamilyAnthropic},
 		{"claude-custom", FamilyAnthropic},
 
-		// Gemini
-		{"gemini-2.5-pro", FamilyGemini},
-		{"gemini-2.5-flash", FamilyGemini},
-		{"gemini-2.0-flash", FamilyGemini},
-		{"gemini-custom", FamilyGemini},
+		// Google (Gemini + Gemma)
+		{"gemini-2.5-pro", FamilyGoogle},
+		{"gemini-2.5-flash", FamilyGoogle},
+		{"gemini-2.0-flash", FamilyGoogle},
+		{"gemini-custom", FamilyGoogle},
+		{"gemma-4-31b-it", FamilyGoogle},
+		{"gemma-2-27b", FamilyGoogle},
 
 		// Mistral / Devstral / Codestral
 		{"mistral-large-latest", FamilyMistral},
@@ -52,14 +54,26 @@ func TestDetectFamily(t *testing.T) {
 		{"gpt-5.3-codex", FamilyOpenAICodex}, // "codex" takes priority over "gpt-5"
 
 		// DeepSeek
+		{"deepseek-v4-pro", FamilyDeepSeek},
+		{"deepseek-v4-flash", FamilyDeepSeek},
 		{"deepseek-chat", FamilyDeepSeek},
-		{"deepseek-reasoner", FamilyDeepSeek},
-		{"deepseek-v3", FamilyDeepSeek},
 
-		// Kimi / Moonshot / Qwen
+		// Qwen / QwQ (Alibaba)
+		{"qwen-plus", FamilyQwen},
+		{"qwen-max", FamilyQwen},
+		{"qwen-2.5-72b", FamilyQwen},
+		{"qwq-plus", FamilyQwen},
+		{"qwq-32b", FamilyQwen},
+
+		// GLM (Zhipu AI)
+		{"glm-5.1", FamilyGLM},
+		{"glm-4.7", FamilyGLM},
+		{"glm-z1-32b", FamilyGLM},
+		{"chatglm-4", FamilyGLM},
+
+		// Kimi (Moonshot AI)
 		{"kimi-k2", FamilyKimi},
-		{"moonshot-v1", FamilyKimi},
-		{"qwen-2.5-72b", FamilyKimi},
+		{"kimi-k2-thinking", FamilyKimi},
 
 		// Default (no specific pattern)
 		{"grok-4", FamilyDefault},
@@ -86,9 +100,11 @@ func TestDetectFamily_CaseInsensitive(t *testing.T) {
 	}{
 		{"Claude-Opus-4.6", FamilyAnthropic},
 		{"GPT-4O", FamilyOpenAIFlagship},
-		{"GEMINI-2.5-PRO", FamilyGemini},
+		{"GEMINI-2.5-PRO", FamilyGoogle},
 		{"DeepSeek-Chat", FamilyDeepSeek},
 		{"MISTRAL-LARGE", FamilyMistral},
+		{"QWEN-PLUS", FamilyQwen},
+		{"GLM-5.1", FamilyGLM},
 	}
 
 	for _, tt := range tests {
@@ -108,9 +124,11 @@ func TestModelFamilyConstants(t *testing.T) {
 		FamilyOpenAIFlagship: "openai_flagship",
 		FamilyOpenAIStandard: "openai_standard",
 		FamilyOpenAICodex:    "openai_codex",
-		FamilyGemini:         "gemini",
+		FamilyGoogle:         "google",
 		FamilyMistral:        "mistral",
 		FamilyDeepSeek:       "deepseek",
+		FamilyQwen:           "qwen",
+		FamilyGLM:            "glm",
 		FamilyKimi:           "kimi",
 		FamilyDefault:        "default",
 	}

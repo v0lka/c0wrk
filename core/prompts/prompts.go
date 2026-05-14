@@ -28,8 +28,8 @@ var PlannerOpenAIFlagship string
 //go:embed planner_openai_standard.md
 var PlannerOpenAIStandard string
 
-//go:embed planner_gemini.md
-var PlannerGemini string
+//go:embed planner_google.md
+var PlannerGoogle string
 
 //go:embed planner_deepseek.md
 var PlannerDeepSeek string
@@ -39,6 +39,12 @@ var PlannerMistral string
 
 //go:embed planner_kimi.md
 var PlannerKimi string
+
+//go:embed planner_qwen.md
+var PlannerQwen string
+
+//go:embed planner_glm.md
+var PlannerGLM string
 
 //go:embed planner_openai_codex.md
 var PlannerOpenAICodex string
@@ -65,8 +71,8 @@ var OrchestratorOpenAIFlagship string
 //go:embed orchestrator_openai_standard.md
 var OrchestratorOpenAIStandard string
 
-//go:embed orchestrator_gemini.md
-var OrchestratorGemini string
+//go:embed orchestrator_google.md
+var OrchestratorGoogle string
 
 //go:embed orchestrator_deepseek.md
 var OrchestratorDeepSeek string
@@ -76,6 +82,12 @@ var OrchestratorMistral string
 
 //go:embed orchestrator_kimi.md
 var OrchestratorKimi string
+
+//go:embed orchestrator_qwen.md
+var OrchestratorQwen string
+
+//go:embed orchestrator_glm.md
+var OrchestratorGLM string
 
 //go:embed orchestrator_openai_codex.md
 var OrchestratorOpenAICodex string
@@ -130,14 +142,18 @@ func orchestratorFamilyPrompt(family string) string {
 		return OrchestratorOpenAIFlagship
 	case "openai_standard":
 		return OrchestratorOpenAIStandard
-	case "gemini":
-		return OrchestratorGemini
+	case "google":
+		return OrchestratorGoogle
 	case "deepseek":
 		return OrchestratorDeepSeek
 	case "mistral":
 		return OrchestratorMistral
 	case "kimi":
 		return OrchestratorKimi
+	case "qwen":
+		return OrchestratorQwen
+	case "glm":
+		return OrchestratorGLM
 	case "openai_codex":
 		return OrchestratorOpenAICodex
 	default:
@@ -153,14 +169,18 @@ func plannerFamilyPrompt(family string) string {
 		return PlannerOpenAIFlagship
 	case "openai_standard":
 		return PlannerOpenAIStandard
-	case "gemini":
-		return PlannerGemini
+	case "google":
+		return PlannerGoogle
 	case "deepseek":
 		return PlannerDeepSeek
 	case "mistral":
 		return PlannerMistral
 	case "kimi":
 		return PlannerKimi
+	case "qwen":
+		return PlannerQwen
+	case "glm":
+		return PlannerGLM
 	case "openai_codex":
 		return PlannerOpenAICodex
 	default:

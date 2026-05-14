@@ -425,8 +425,240 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]any) map[string]any {
 	return result
 }
 
-// SanitizeSchemaForAnthropic is a no-op passthrough.
-// Placeholder for future cache control headers on tool definitions.
+// SanitizeSchemaForAnthropic normalizes JSON Schema for Anthropic API compatibility.
+// Anthropic has specific requirements:
+//   - Unsupported keywords ($schema, $id, $comment, patternProperties) are removed
+//   - $ref references are resolved inline from $defs/definitions
+//   - $defs/definitions are removed after resolution
+//   - Top-level allOf single item is unwrapped; multiple items are merged
+//   - Top-level oneOf/anyOf picks the first variant
+//   - Type "object" is inferred when properties/required present but type missing
+//   - Recursively processes properties, items, and additionalProperties
 func SanitizeSchemaForAnthropic(raw json.RawMessage) json.RawMessage {
-	return raw
+	if len(raw) == 0 {
+		return raw
+	}
+
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return raw
+	}
+
+	defs := extractDefs(schema)
+	sanitized := sanitizeAnthropicSchema(schema, defs)
+	result, err := json.Marshal(sanitized)
+	if err != nil {
+		return raw
+	}
+	return result
+}
+
+// sanitizeAnthropicSchema recursively processes a schema map for Anthropic compatibility.
+func sanitizeAnthropicSchema(schema, defs map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+
+	// Resolve $ref before processing
+	schema = resolveRef(schema, defs)
+
+	// Flatten top-level composition keywords before filtering
+	schema = flattenAnthropicComposition(schema, defs)
+
+	// Copy keys, filtering out unsupported keywords
+	result := make(map[string]any)
+	for key, value := range schema {
+		switch key {
+		case "$schema", "$id", "$comment", "$defs", "definitions", "patternProperties", "$ref":
+			continue
+		default:
+			result[key] = value
+		}
+	}
+
+	// Infer object type if type is missing but has object indicators
+	typeVal := result["type"]
+	types := getTypes(typeVal)
+	_, hasProperties := result["properties"]
+	_, hasRequired := result["required"]
+
+	if len(types) == 0 && (hasProperties || hasRequired) {
+		result["type"] = "object"
+	}
+
+	// Process nested objects in properties
+	if props, ok := result["properties"].(map[string]any); ok {
+		newProps := make(map[string]any)
+		for propName, propVal := range props {
+			if propMap, ok := propVal.(map[string]any); ok {
+				newProps[propName] = sanitizeAnthropicSchema(propMap, defs)
+			} else {
+				newProps[propName] = propVal
+			}
+		}
+		result["properties"] = newProps
+	}
+
+	// Process items for array type
+	if items, ok := result["items"]; ok {
+		switch v := items.(type) {
+		case map[string]any:
+			result["items"] = sanitizeAnthropicSchema(v, defs)
+		case []any:
+			newItems := make([]any, len(v))
+			for i, item := range v {
+				if itemMap, ok := item.(map[string]any); ok {
+					newItems[i] = sanitizeAnthropicSchema(itemMap, defs)
+				} else {
+					newItems[i] = item
+				}
+			}
+			result["items"] = newItems
+		}
+	}
+
+	// Process additionalProperties if it's a schema object
+	if addProps, ok := result["additionalProperties"].(map[string]any); ok {
+		result["additionalProperties"] = sanitizeAnthropicSchema(addProps, defs)
+	}
+
+	// Process anyOf, oneOf, allOf recursively (nested, non-top-level)
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := result[key].([]any); ok {
+			newArr := make([]any, len(arr))
+			for i, item := range arr {
+				if itemMap, ok := item.(map[string]any); ok {
+					newArr[i] = sanitizeAnthropicSchema(itemMap, defs)
+				} else {
+					newArr[i] = item
+				}
+			}
+			result[key] = newArr
+		}
+	}
+
+	return result
+}
+
+// flattenAnthropicComposition flattens top-level allOf/oneOf/anyOf for Anthropic.
+//   - allOf single item → unwrap
+//   - allOf multiple → merge properties (union)
+//   - oneOf/anyOf → pick first variant
+func flattenAnthropicComposition(schema, defs map[string]any) map[string]any {
+	// Handle allOf
+	if allOf, ok := schema["allOf"].([]any); ok && len(allOf) > 0 {
+		if len(allOf) == 1 {
+			// Single item: unwrap into parent
+			if item, ok := allOf[0].(map[string]any); ok {
+				merged := mergeSchemas(schema, resolveRef(item, defs))
+				delete(merged, "allOf")
+				return merged
+			}
+		} else {
+			// Multiple items: merge all into parent
+			merged := copySchemaExcluding(schema, "allOf")
+			for _, entry := range allOf {
+				if item, ok := entry.(map[string]any); ok {
+					merged = mergeSchemas(merged, resolveRef(item, defs))
+				}
+			}
+			return merged
+		}
+	}
+
+	// Handle oneOf: pick first variant
+	if oneOf, ok := schema["oneOf"].([]any); ok && len(oneOf) > 0 {
+		if item, ok := oneOf[0].(map[string]any); ok {
+			merged := mergeSchemas(schema, resolveRef(item, defs))
+			delete(merged, "oneOf")
+			return merged
+		}
+	}
+
+	// Handle anyOf: pick first variant
+	if anyOf, ok := schema["anyOf"].([]any); ok && len(anyOf) > 0 {
+		if item, ok := anyOf[0].(map[string]any); ok {
+			merged := mergeSchemas(schema, resolveRef(item, defs))
+			delete(merged, "anyOf")
+			return merged
+		}
+	}
+
+	return schema
+}
+
+// mergeSchemas merges src into dst. Properties are unioned; other fields from src
+// overwrite dst only if not already set (dst takes precedence for scalars).
+func mergeSchemas(dst, src map[string]any) map[string]any {
+	result := make(map[string]any, len(dst)+len(src))
+	for k, v := range dst {
+		result[k] = v
+	}
+
+	for k, v := range src {
+		if k == "properties" {
+			// Union properties
+			dstProps, _ := result["properties"].(map[string]any)
+			srcProps, _ := v.(map[string]any)
+			if srcProps != nil {
+				if dstProps == nil {
+					dstProps = make(map[string]any)
+				}
+				for propName, propVal := range srcProps {
+					if _, exists := dstProps[propName]; !exists {
+						dstProps[propName] = propVal
+					}
+				}
+				result["properties"] = dstProps
+			}
+		} else if k == "required" {
+			// Union required arrays
+			dstReq := toStringSlice(result["required"])
+			srcReq := toStringSlice(v)
+			seen := make(map[string]struct{})
+			for _, r := range dstReq {
+				seen[r] = struct{}{}
+			}
+			for _, r := range srcReq {
+				if _, exists := seen[r]; !exists {
+					dstReq = append(dstReq, r)
+					seen[r] = struct{}{}
+				}
+			}
+			anySlice := make([]any, len(dstReq))
+			for i, s := range dstReq {
+				anySlice[i] = s
+			}
+			result["required"] = anySlice
+		} else if _, exists := result[k]; !exists {
+			result[k] = v
+		}
+	}
+	return result
+}
+
+// copySchemaExcluding copies a schema map excluding a specific key.
+func copySchemaExcluding(schema map[string]any, excludeKey string) map[string]any {
+	result := make(map[string]any, len(schema))
+	for k, v := range schema {
+		if k != excludeKey {
+			result[k] = v
+		}
+	}
+	return result
+}
+
+// toStringSlice extracts a []string from an any that is expected to be []any of strings.
+func toStringSlice(val any) []string {
+	arr, ok := val.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }

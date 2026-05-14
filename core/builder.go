@@ -438,7 +438,11 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 		if apiKey == "" {
 			return nil, errors.New("ChatGPT API key not configured")
 		}
-		return listOpenAIModels(ctx, "", apiKey)
+		models, err := listOpenAIModels(ctx, "", apiKey)
+		if err != nil {
+			return nil, err
+		}
+		return filterKnownFamilyModels(models), nil
 	case "openai_compatible":
 		baseURL := cfg.ExpandEnvVars(cfg.LLM.OpenAICompatBaseURL)
 		apiKey := cfg.ExpandEnvVars(cfg.LLM.OpenAICompatAPIKey)
@@ -456,6 +460,17 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
+}
+
+// filterKnownFamilyModels returns only models that belong to a recognized family.
+func filterKnownFamilyModels(models []string) []string {
+	result := make([]string, 0, len(models))
+	for _, m := range models {
+		if llm.DetectFamily(m) != llm.FamilyDefault {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 // StopGateway stops the MCP gateway. Called during app shutdown.

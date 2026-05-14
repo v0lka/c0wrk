@@ -18,14 +18,19 @@ func DefaultSampling(family string) SamplingConfig {
 		return SamplingConfig{} // all nil
 	case "openai_flagship", "openai_standard":
 		return SamplingConfig{Temperature: fp(0.3)}
-	case "gemini":
-		return SamplingConfig{Temperature: fp(1.0)} // Google recommends higher; 0.3 causes looping
+	case "google":
+		return SamplingConfig{Temperature: fp(1.0)} // Google recommends higher; low values cause looping
 	case "mistral":
 		return SamplingConfig{Temperature: fp(0.3)}
 	case "deepseek":
-		return SamplingConfig{Temperature: fp(0.3)}
+		return SamplingConfig{Temperature: fp(0.0)} // Recommended for coding/math; ignored when thinking enabled
+	case "qwen":
+		return SamplingConfig{Temperature: fp(0.6)} // Recommended for reasoning/analytical tasks
+	case "glm":
+		return SamplingConfig{Temperature: fp(0.2)} // Optimal for analytical/coding tasks
 	case "kimi":
-		return SamplingConfig{Temperature: fp(0.55)} // Empirically optimal for coding
+		// Kimi server enforces temperature per model (0.6 standard, 1.0 thinking)
+		return SamplingConfig{} // all nil — let server decide
 	default:
 		return SamplingConfig{
 			Temperature: fp(0.5),

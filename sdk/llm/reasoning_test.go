@@ -71,9 +71,9 @@ func TestResolveReasoning_Gemini(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.effort), func(t *testing.T) {
-			cfg := ResolveReasoning(tt.effort, "gemini")
+			cfg := ResolveReasoning(tt.effort, "google")
 			if !cfg.Enabled {
-				t.Fatal("expected Enabled=true for Gemini")
+				t.Fatal("expected Enabled=true for Google")
 			}
 			if cfg.GeminiThinkingLevel != tt.wantLevel {
 				t.Errorf("GeminiThinkingLevel = %q, want %q", cfg.GeminiThinkingLevel, tt.wantLevel)
@@ -128,9 +128,61 @@ func TestResolveReasoning_DeepSeek(t *testing.T) {
 	}
 }
 
+func TestResolveReasoning_Qwen(t *testing.T) {
+	tests := []struct {
+		effort       ReasoningEffort
+		wantEnabled  bool
+		wantThinking string
+	}{
+		{ReasoningOff, false, "disabled"},
+		{ReasoningLow, true, "enabled"},
+		{ReasoningMedium, true, "enabled"},
+		{ReasoningHigh, true, "enabled"},
+		{ReasoningMaximum, true, "enabled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.effort), func(t *testing.T) {
+			cfg := ResolveReasoning(tt.effort, "qwen")
+			if cfg.Enabled != tt.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", cfg.Enabled, tt.wantEnabled)
+			}
+			if cfg.QwenThinking != tt.wantThinking {
+				t.Errorf("QwenThinking = %q, want %q", cfg.QwenThinking, tt.wantThinking)
+			}
+		})
+	}
+}
+
+func TestResolveReasoning_GLM(t *testing.T) {
+	tests := []struct {
+		effort       ReasoningEffort
+		wantEnabled  bool
+		wantThinking string
+	}{
+		{ReasoningOff, false, "disabled"},
+		{ReasoningLow, true, "enabled"},
+		{ReasoningMedium, true, "enabled"},
+		{ReasoningHigh, true, "enabled"},
+		{ReasoningMaximum, true, "enabled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.effort), func(t *testing.T) {
+			cfg := ResolveReasoning(tt.effort, "glm")
+			if cfg.Enabled != tt.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", cfg.Enabled, tt.wantEnabled)
+			}
+			if cfg.GLMThinking != tt.wantThinking {
+				t.Errorf("GLMThinking = %q, want %q", cfg.GLMThinking, tt.wantThinking)
+			}
+		})
+	}
+}
+
 func TestResolveReasoning_Off(t *testing.T) {
 	// Verify ReasoningOff disables reasoning across all supported families
-	families := []string{"anthropic", "openai_flagship", "openai_standard", "gemini", "deepseek"}
+	families := []string{"anthropic", "openai_flagship", "openai_standard", "google", "deepseek", "qwen", "glm"}
 	for _, family := range families {
 		t.Run(family, func(t *testing.T) {
 			cfg := ResolveReasoning(ReasoningOff, family)

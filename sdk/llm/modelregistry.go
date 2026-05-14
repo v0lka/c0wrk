@@ -402,65 +402,142 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Family:        "gemini",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-3.1-flash-lite": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Family:        "gemini",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-3-flash": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Family:        "gemini",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.5-pro": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Family:        "gemini",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.5-flash": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Family:        "gemini",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.5-flash-lite": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
 			TokenizerType: "approximate",
-			Family:        "gemini",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 		"gemini-2.0-flash": {
 			ContextWindow: 1048576,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
-			Family:        "gemini",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
-
-		// DeepSeek models
-		"deepseek-chat": {
+		// Google Gemma models
+		"gemma-4-31b-it": {
 			ContextWindow: 128000,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
-			Family:        "deepseek",
+			Family:        "google",
 			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
-		"deepseek-reasoner": {
-			ContextWindow: 128000,
-			OutputLimit:   8192,
+
+		// DeepSeek V4 models
+		"deepseek-v4-pro": {
+			ContextWindow: 1000000,
+			OutputLimit:   16384,
 			TokenizerType: "approximate",
 			Family:        "deepseek",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"deepseek-v4-flash": {
+			ContextWindow: 1000000,
+			OutputLimit:   16384,
+			TokenizerType: "approximate",
+			Family:        "deepseek",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
+
+		// Kimi models (Moonshot AI)
+		"kimi-k2": {
+			ContextWindow: 131072,
+			OutputLimit:   8192,
+			TokenizerType: "approximate",
+			Family:        "kimi",
+			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
+		},
+		"kimi-k2-thinking": {
+			ContextWindow: 131072,
+			OutputLimit:   8192,
+			TokenizerType: "approximate",
+			Family:        "kimi",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
+		},
+
+		// Qwen models (Alibaba)
+		"qwen-plus": {
+			ContextWindow: 131072,
+			OutputLimit:   8192,
+			TokenizerType: "approximate",
+			Family:        "qwen",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"qwen-max": {
+			ContextWindow: 131072,
+			OutputLimit:   8192,
+			TokenizerType: "approximate",
+			Family:        "qwen",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"qwq-plus": {
+			ContextWindow: 131072,
+			OutputLimit:   16384,
+			TokenizerType: "approximate",
+			Family:        "qwen",
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
+		},
+
+		// GLM models (Zhipu AI)
+		"glm-5.1": {
+			ContextWindow: 128000,
+			OutputLimit:   16384,
+			TokenizerType: "approximate",
+			Family:        "glm",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"glm-5": {
+			ContextWindow: 128000,
+			OutputLimit:   16384,
+			TokenizerType: "approximate",
+			Family:        "glm",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"glm-4.7": {
+			ContextWindow: 128000,
+			OutputLimit:   16384,
+			TokenizerType: "approximate",
+			Family:        "glm",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"glm-z1-32b": {
+			ContextWindow: 128000,
+			OutputLimit:   16384,
+			TokenizerType: "approximate",
+			Family:        "glm",
 			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 
