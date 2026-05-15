@@ -116,7 +116,7 @@ toolLimits:
   globMaxResults: 200 # max glob results
   fileSearchMaxMatches: 100 # max matches for file content search
   webSearchMaxResults: 5 # max web search results
-  webFetchMaxBodySize: 102400 # max response body size (100 KB)
+  webFetchMaxBodySize: 2097152 # max response body size (2 MB)
 
 timeouts:
   bashMaxTimeout: 120 # seconds

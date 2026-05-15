@@ -4,7 +4,7 @@ import type { ProjectInfo, VectorIndexStatus } from '@/types/models'
 
 // --- Session event payload interfaces ---
 
-export interface RoutingData { domain: string; complexity: string }
+export interface RoutingData { domain: string; complexity: string; mode: string }
 
 export interface ToolCallData {
   tool_call_id?: string; step: number; tool: string; args: string
@@ -88,7 +88,7 @@ export interface SessionEventMap {
   plan_step_start: PlanStepStartData
   plan_step_complete: PlanStepCompleteData
   assistant_chunk: AssistantChunkData
-  assistant_done: void
+  assistant_done: { content: string; input_tokens: number; output_tokens: number }
   error: ErrorData
   task_complete: TaskCompleteData
   task_cancelled: void
@@ -121,7 +121,7 @@ export interface GlobalEventMap {
   'backend:ready': void
   'projects:loaded': void
   'sessions:loaded': void
-  'workspace:tree_changed': { path: string }
+  'workspace:tree_changed': void
   'vector_index:status': VectorIndexStatus
   'project:created': ProjectInfo
   'project:deleted': string
