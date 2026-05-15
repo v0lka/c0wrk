@@ -2,8 +2,8 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isConfigResponse, isSecuritySettingsResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMSettingsRequest, SearchSettingsRequest } from '@/types/models'
+import { isConfigResponse, isSecuritySettingsResponse, isProxySettingsResponse } from '@/types/guards'
+import type { ConfigResponse, SecuritySettingsResponse, LLMSettingsRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -82,6 +82,30 @@ export async function setLogLevel(level: string): Promise<void> {
     await app.SetLogLevel(level)
   } catch (err) {
     logger.error('Failed to set log level:', err)
+    throw err
+  }
+}
+
+export async function getProxySettings(): Promise<ProxySettingsResponse> {
+  try {
+    const app = getApp()
+    const result = await app.GetProxySettings()
+    if (!isProxySettingsResponse(result)) {
+      logger.warn('getProxySettings: unexpected response shape', result)
+    }
+    return result as ProxySettingsResponse
+  } catch (err) {
+    logger.error('Failed to get proxy settings:', err)
+    throw err
+  }
+}
+
+export async function updateProxySettings(settings: ProxySettingsRequest): Promise<void> {
+  try {
+    const app = getApp()
+    await app.UpdateProxySettings(settings)
+  } catch (err) {
+    logger.error('Failed to update proxy settings:', err)
     throw err
   }
 }

@@ -29,9 +29,18 @@ func NewDuckDuckGoProvider() *DuckDuckGoProvider {
 
 // NewDuckDuckGoProviderWithTimeout creates a new DuckDuckGoProvider with the given timeout.
 func NewDuckDuckGoProviderWithTimeout(timeout time.Duration) *DuckDuckGoProvider {
+	return NewDuckDuckGoProviderWithClient(timeout, nil)
+}
+
+// NewDuckDuckGoProviderWithClient creates a new DuckDuckGoProvider with the given timeout
+// and optional HTTP client. If client is nil, a default client with the specified timeout is used.
+func NewDuckDuckGoProviderWithClient(timeout time.Duration, client *http.Client) *DuckDuckGoProvider {
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
 	return &DuckDuckGoProvider{
 		baseURL: "https://html.duckduckgo.com/html/",
-		client:  &http.Client{Timeout: timeout},
+		client:  client,
 	}
 }
 

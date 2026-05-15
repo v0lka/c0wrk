@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type RouterConfig struct {
 	MaxBackoff          time.Duration // Already parsed max backoff duration
 	SafetyMarginPercent int           // Percentage of context window reserved as safety margin (default: 5)
 	OutputTokenReserve  int           // Default output token reserve when model metadata doesn't specify (default: 4096)
+	HTTPClient          *http.Client  // Optional proxy-configured HTTP client (nil = default)
 	SamplingFunc        SamplingFunc  // Optional family-aware temperature defaults; nil = no default (provider decides)
 }
 
@@ -56,7 +58,7 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 	}
 
 	// Create the active provider — values are already expanded by the caller
-	provider, err := createProviderFromConfig(ctx, cfg.ProviderType, cfg.APIKey, cfg.BaseURL)
+	provider, err := createProviderFromConfig(ctx, cfg.ProviderType, cfg.APIKey, cfg.BaseURL, cfg.HTTPClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create provider %q: %w", cfg.ActiveProvider, err)
 	}
@@ -108,30 +110,34 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 
 // createProviderFromConfig creates a Provider based on the provider type.
 // The caller must have already expanded environment variables.
-func createProviderFromConfig(ctx context.Context, provType, apiKey, baseURL string) (Provider, error) {
+func createProviderFromConfig(ctx context.Context, provType, apiKey, baseURL string, httpClient *http.Client) (Provider, error) {
 	switch provType {
 	case "openai":
 		return NewOpenAIProvider(OpenAIProviderConfig{
-			Name:    "openai",
-			APIKey:  apiKey,
-			BaseURL: baseURL,
+			Name:       "openai",
+			APIKey:     apiKey,
+			BaseURL:    baseURL,
+			HTTPClient: httpClient,
 		})
 
 	case "lmstudio":
 		return NewLMStudioProvider(LMStudioProviderConfig{
-			Name:    "lmstudio",
-			APIKey:  apiKey,
-			BaseURL: baseURL,
+			Name:       "lmstudio",
+			APIKey:     apiKey,
+			BaseURL:    baseURL,
+			HTTPClient: httpClient,
 		})
 
 	case "anthropic":
 		return NewAnthropicProvider(AnthropicProviderConfig{
-			APIKey: apiKey,
+			APIKey:     apiKey,
+			HTTPClient: httpClient,
 		})
 
 	case "gemini":
 		return NewGeminiProvider(ctx, GeminiProviderConfig{
-			APIKey: apiKey,
+			APIKey:     apiKey,
+			HTTPClient: httpClient,
 		})
 
 	default:

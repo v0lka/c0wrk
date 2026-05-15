@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -17,12 +18,15 @@ import (
 const responseEventPrefix = "response."
 
 // newResponsesClient creates an official OpenAI SDK client for the Responses API.
-func newResponsesClient(apiKey, baseURL string) *oai.Client {
+func newResponsesClient(apiKey, baseURL string, httpClient *http.Client) *oai.Client {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
 	client := oai.NewClient(opts...)
 	return &client

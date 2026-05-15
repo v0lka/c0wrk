@@ -7,12 +7,13 @@ package backend
 
 // ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
 type ConfigResponse struct {
-	Loaded       bool              `json:"loaded"`
-	LogLevel     string            `json:"log_level"`
-	ConfigErrors []string          `json:"config_errors"`
-	LLM          ConfigLLMResponse `json:"llm"`
-	Memory       ConfigMemResponse `json:"memory"`
-	Search       ConfigSearchResp  `json:"search"`
+	Loaded       bool                  `json:"loaded"`
+	LogLevel     string                `json:"log_level"`
+	ConfigErrors []string              `json:"config_errors"`
+	LLM          ConfigLLMResponse     `json:"llm"`
+	Memory       ConfigMemResponse     `json:"memory"`
+	Search       ConfigSearchResp      `json:"search"`
+	Proxy        ProxySettingsResponse `json:"proxy"`
 }
 
 // ConfigLLMResponse holds sanitised LLM provider info.
@@ -61,6 +62,22 @@ type LLMSettingsRequest struct {
 type SearchSettingsRequest struct {
 	Provider string `json:"provider"`
 	APIKey   string `json:"api_key"`
+}
+
+// ProxySettingsResponse holds proxy settings for the frontend.
+type ProxySettingsResponse struct {
+	Enabled    bool     `json:"enabled"`
+	URL        string   `json:"url"`          // password masked in response
+	BypassList []string `json:"bypass_list"`
+	TLSCertDir string   `json:"tls_cert_dir"`
+}
+
+// ProxySettingsRequest holds proxy settings from the frontend.
+type ProxySettingsRequest struct {
+	Enabled    bool     `json:"enabled"`
+	URL        string   `json:"url"`
+	BypassList []string `json:"bypass_list"`
+	TLSCertDir string   `json:"tls_cert_dir"`
 }
 
 // SecuritySettingsResponse holds security settings for the frontend.

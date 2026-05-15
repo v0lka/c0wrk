@@ -28,10 +28,19 @@ func NewExaProvider(apiKey string) *ExaProvider {
 
 // NewExaProviderWithTimeout creates a new ExaProvider with the given API key and timeout.
 func NewExaProviderWithTimeout(apiKey string, timeout time.Duration) *ExaProvider {
+	return NewExaProviderWithClient(apiKey, timeout, nil)
+}
+
+// NewExaProviderWithClient creates a new ExaProvider with the given API key, timeout,
+// and optional HTTP client. If client is nil, a default client with the specified timeout is used.
+func NewExaProviderWithClient(apiKey string, timeout time.Duration, client *http.Client) *ExaProvider {
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
 	return &ExaProvider{
 		apiKey:  apiKey,
 		baseURL: "https://api.exa.ai/search",
-		client:  &http.Client{Timeout: timeout},
+		client:  client,
 	}
 }
 

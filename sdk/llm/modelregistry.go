@@ -65,6 +65,15 @@ func NewModelRegistry(overrides map[string]ModelMetadata) *ModelRegistry {
 	return registry
 }
 
+// SetHTTPClient replaces the HTTP client used for metadata lookups (e.g., HuggingFace).
+func (r *ModelRegistry) SetHTTPClient(client *http.Client) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if client != nil {
+		r.httpClient = client
+	}
+}
+
 // Resolve returns model metadata using 5-tier lookup:
 // 1. User overrides (from config)
 // 2. Built-in registry (hardcoded table)

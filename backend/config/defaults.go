@@ -320,4 +320,9 @@ func ApplyDefaults(cfg *Config) {
 		trueVal := true
 		cfg.VectorIndex.Hybrid = &trueVal
 	}
+
+	// Proxy defaults
+	if cfg.Proxy.BypassList == nil {
+		cfg.Proxy.BypassList = []string{"localhost", "127.0.0.1"}
+	}
 }

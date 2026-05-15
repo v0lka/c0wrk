@@ -158,6 +158,7 @@ export interface ConfigResponse {
   llm: ConfigLLMResponse
   memory: ConfigMemResponse
   search: ConfigSearchResp
+  proxy: ProxySettingsResponse
 }
 
 export interface LLMSettingsRequest {
@@ -170,6 +171,20 @@ export interface LLMSettingsRequest {
 export interface SearchSettingsRequest {
   provider: string
   api_key: string
+}
+
+export interface ProxySettingsResponse {
+  enabled: boolean
+  url: string
+  bypass_list: string[]
+  tls_cert_dir: string
+}
+
+export interface ProxySettingsRequest {
+  enabled: boolean
+  url: string
+  bypass_list: string[]
+  tls_cert_dir: string
 }
 
 export interface ToolPolicyResponse {

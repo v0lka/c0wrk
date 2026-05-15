@@ -28,10 +28,19 @@ func NewBraveProvider(apiKey string) *BraveProvider {
 
 // NewBraveProviderWithTimeout creates a new BraveProvider with the given API key and timeout.
 func NewBraveProviderWithTimeout(apiKey string, timeout time.Duration) *BraveProvider {
+	return NewBraveProviderWithClient(apiKey, timeout, nil)
+}
+
+// NewBraveProviderWithClient creates a new BraveProvider with the given API key, timeout,
+// and optional HTTP client. If client is nil, a default client with the specified timeout is used.
+func NewBraveProviderWithClient(apiKey string, timeout time.Duration, client *http.Client) *BraveProvider {
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
 	return &BraveProvider{
 		apiKey:  apiKey,
 		baseURL: "https://api.search.brave.com/res/v1/web/search",
-		client:  &http.Client{Timeout: timeout},
+		client:  client,
 	}
 }
 

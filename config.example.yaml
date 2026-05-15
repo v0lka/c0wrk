@@ -288,3 +288,19 @@ orchestration:
 # vector_index:
 #   hybrid: true
 
+# ---------------------------------------------------------------------------
+# Proxy — HTTP/HTTPS proxy for all outbound connections.
+# ---------------------------------------------------------------------------
+# When enabled, all LLM requests, web_search, web_fetch, MCP HTTP transports,
+# and model registry calls go through this proxy. Hosts in bypass_list connect
+# directly. The tls_cert_dir (optional) adds custom CA certificates for TLS
+# verification through the proxy (e.g., corporate MITM proxy root CA).
+#
+# proxy:
+#   enabled: false
+#   url: "http://user:password@proxy.corp.local:8080"
+#   bypass_list:
+#     - localhost
+#     - 127.0.0.1
+#   tls_cert_dir: ""  # /path/to/custom/ca-certs
+

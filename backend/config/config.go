@@ -33,6 +33,15 @@ type Config struct {
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
 	Workspace     WorkspaceConfig     `yaml:"workspace"`
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
+	Proxy         ProxyConfig         `yaml:"proxy"`
+}
+
+// ProxyConfig holds HTTP/HTTPS proxy settings for all outbound connections.
+type ProxyConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	URL        string   `yaml:"url"`          // scheme://user:password@host:port
+	BypassList []string `yaml:"bypass_list"`  // hostnames/IPs to skip proxy
+	TLSCertDir string   `yaml:"tls_cert_dir"` // directory with .pem/.crt CA certs
 }
 
 // WorkspaceConfig holds workspace file/index ignore pattern configuration.

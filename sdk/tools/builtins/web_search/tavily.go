@@ -27,10 +27,19 @@ func NewTavilyProvider(apiKey string) *TavilyProvider {
 
 // NewTavilyProviderWithTimeout creates a new TavilyProvider with the given API key and timeout.
 func NewTavilyProviderWithTimeout(apiKey string, timeout time.Duration) *TavilyProvider {
+	return NewTavilyProviderWithClient(apiKey, timeout, nil)
+}
+
+// NewTavilyProviderWithClient creates a new TavilyProvider with the given API key, timeout,
+// and optional HTTP client. If client is nil, a default client with the specified timeout is used.
+func NewTavilyProviderWithClient(apiKey string, timeout time.Duration, client *http.Client) *TavilyProvider {
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
 	return &TavilyProvider{
 		apiKey:  apiKey,
 		baseURL: "https://api.tavily.com/search",
-		client:  &http.Client{Timeout: timeout},
+		client:  client,
 	}
 }
 

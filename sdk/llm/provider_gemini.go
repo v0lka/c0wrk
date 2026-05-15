@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"google.golang.org/genai"
@@ -22,9 +23,10 @@ var geminiStopReasonMap = map[string]string{
 
 // GeminiProviderConfig holds configuration for the Gemini provider.
 type GeminiProviderConfig struct {
-	APIKey    string
-	ProjectID string // optional, for Vertex AI
-	Location  string // optional, for Vertex AI
+	APIKey     string
+	ProjectID  string       // optional, for Vertex AI
+	Location   string       // optional, for Vertex AI
+	HTTPClient *http.Client // optional proxy-configured HTTP client (nil = default)
 }
 
 // GeminiProvider implements LLM Provider using Google's Gen AI SDK.
@@ -47,6 +49,10 @@ func NewGeminiProvider(ctx context.Context, cfg GeminiProviderConfig) (*GeminiPr
 		// Use Gemini API backend
 		clientCfg.APIKey = cfg.APIKey
 		clientCfg.Backend = genai.BackendGeminiAPI
+	}
+
+	if cfg.HTTPClient != nil {
+		clientCfg.HTTPClient = cfg.HTTPClient
 	}
 
 	client, err := genai.NewClient(ctx, clientCfg)

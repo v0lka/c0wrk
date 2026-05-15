@@ -11,6 +11,7 @@ import type {
     MCPServerStatus,
     SecuritySettingsResponse,
     BlackboardState,
+    ProxySettingsResponse,
 } from './models'
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -66,4 +67,8 @@ export function isBlackboardState(v: unknown): v is BlackboardState {
 
 export function isProjectRenamed(v: unknown): v is { id: string; name: string } {
     return isObj(v) && typeof v.id === 'string' && typeof v.name === 'string'
+}
+
+export function isProxySettingsResponse(v: unknown): v is ProxySettingsResponse {
+    return isObj(v) && has(v, 'enabled', 'bypass_list')
 }

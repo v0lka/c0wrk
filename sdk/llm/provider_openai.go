@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -12,9 +13,10 @@ import (
 
 // OpenAIProviderConfig contains configuration for OpenAI-compatible providers.
 type OpenAIProviderConfig struct {
-	Name    string // logical provider name ("openai", "deepseek", "grok", etc.)
-	APIKey  string
-	BaseURL string // empty = default OpenAI; otherwise custom endpoint
+	Name       string // logical provider name ("openai", "deepseek", "grok", etc.)
+	APIKey     string
+	BaseURL    string       // empty = default OpenAI; otherwise custom endpoint
+	HTTPClient *http.Client // optional proxy-configured HTTP client (nil = default)
 }
 
 // OpenAIProvider implements Provider for OpenAI and compatible APIs.
@@ -39,9 +41,12 @@ func NewOpenAIProvider(cfg OpenAIProviderConfig) (*OpenAIProvider, error) {
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	}
+	if cfg.HTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
+	}
 	client := oai.NewClient(opts...)
 
-	responsesClient := newResponsesClient(cfg.APIKey, cfg.BaseURL)
+	responsesClient := newResponsesClient(cfg.APIKey, cfg.BaseURL, cfg.HTTPClient)
 
 	return &OpenAIProvider{
 		client:          &client,

@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { LogLevelSelector } from './LogLevelSelector'
+import { ProxySettings } from './ProxySettings'
 import { LLMSettings } from './LLMSettings'
 import { SearchSettings } from './SearchSettings'
 import { MCPSettings } from './MCPSettings'
@@ -77,6 +78,10 @@ export function SettingsModal() {
           <TabsContent value="general" className="mt-4 overflow-y-auto min-h-0">
             <div className="space-y-6">
               <LogLevelSelector />
+              <div className="border-t border-border pt-4">
+                <h3 className="text-sm font-medium mb-3">HTTP Proxy</h3>
+                <ProxySettings />
+              </div>
             </div>
           </TabsContent>
 

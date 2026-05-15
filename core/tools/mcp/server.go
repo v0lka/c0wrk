@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"sync"
@@ -20,13 +21,14 @@ import (
 // ServerConfig defines how to launch an MCP server.
 // This is a local copy to avoid importing backend/config.
 type ServerConfig struct {
-	Transport string            // "stdio" | "http"; default "stdio"
-	Command   string            // stdio: command to execute
-	Args      []string          // stdio: command arguments
-	Env       map[string]string // stdio: environment variables
-	URL       string            // http: server URL
-	Headers   map[string]string // http: custom headers
-	WorkDir   string            // stdio: working directory for the server process
+	Transport  string            // "stdio" | "http"; default "stdio"
+	Command    string            // stdio: command to execute
+	Args       []string          // stdio: command arguments
+	Env        map[string]string // stdio: environment variables
+	URL        string            // http: server URL
+	Headers    map[string]string // http: custom headers
+	WorkDir    string            // stdio: working directory for the server process
+	HTTPClient *http.Client      // http: optional proxy-configured HTTP client
 }
 
 // Server represents a connection to an external MCP server process.
@@ -155,6 +157,9 @@ func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.
 	if len(cfg.Headers) > 0 {
 		opts = append(opts, transport.WithHTTPHeaders(cfg.Headers))
 	}
+	if cfg.HTTPClient != nil {
+		opts = append(opts, transport.WithHTTPBasicClient(cfg.HTTPClient))
+	}
 
 	// Try Streamable HTTP first
 	client, err := mcpclient.NewStreamableHttpClient(cfg.URL, opts...)
@@ -172,6 +177,9 @@ func (s *Server) connectHTTP(ctx context.Context, cfg ServerConfig) (*mcpclient.
 	var sseOpts []transport.ClientOption
 	if len(cfg.Headers) > 0 {
 		sseOpts = append(sseOpts, transport.WithHeaders(cfg.Headers))
+	}
+	if cfg.HTTPClient != nil {
+		sseOpts = append(sseOpts, transport.WithHTTPClient(cfg.HTTPClient))
 	}
 
 	client, err = mcpclient.NewSSEMCPClient(cfg.URL, sseOpts...)

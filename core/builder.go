@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -43,6 +44,7 @@ type OrchestratorBuilder struct {
 	logger           *slog.Logger
 	vectorSearchFunc tools.VectorSearchFunc
 	baseSkillDirs    []string // resolved skill directories shared across sessions (highest priority first)
+	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 
 	// Cached reasoning config from config; updated by runAsyncInit/RebuildRouter.
 	baseReasoningEffort llm.ReasoningEffort
@@ -76,11 +78,29 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 		initDone: make(chan struct{}),
 	}
 
+	// 0. Build proxy client (fast — no network, just config parsing)
+	if cfg.Proxy.Enabled {
+		proxyClient, err := BuildProxyClient(cfg.Proxy, 30*time.Second, logger)
+		if err != nil {
+			logger.Warn("failed to build proxy client, proceeding without proxy", "error", err)
+		} else {
+			b.proxyClient = proxyClient
+			SetProxyEnvVars(cfg.Proxy)
+			if proxyClient != nil {
+				// Mutate DefaultTransport as safety net for any code using http.DefaultClient
+				if t, tErr := BuildProxyTransport(cfg.Proxy, logger); tErr == nil && t != nil {
+					http.DefaultTransport = t
+				}
+			}
+		}
+	}
+
 	// 1. Tool registry + built-in tools (fast — synchronous)
 	b.registry = tools.NewToolRegistry()
 
 	toolsCfg := configToBuiltinToolsConfig(cfg)
 	toolsCfg.AskUserFunc = askUserFunc
+	toolsCfg.HTTPClient = b.proxyClient
 	if err := tools.RegisterBuiltinTools(b.registry, toolsCfg); err != nil {
 		return nil, fmt.Errorf("registering built-in tools: %w", err)
 	}
@@ -111,6 +131,7 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 
 	// MCP Gateway (optional — failures are non-fatal)
 	mcpCfg := configToGatewayConfig(cfg)
+	mcpCfg.HTTPClient = b.proxyClient
 	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable
@@ -358,6 +379,7 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 	}
 
 	mcpCfg := configToGatewayConfig(cfg)
+	mcpCfg.HTTPClient = b.proxyClient
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -386,7 +408,71 @@ func (b *OrchestratorBuilder) UpdateSearchTool(cfg *BuilderConfig) {
 		MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 		Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 	}
-	tools.UpdateSearchTool(b.registry, cfg.Search.Provider, apiKey, limits)
+	tools.UpdateSearchToolWithClient(b.registry, cfg.Search.Provider, apiKey, limits, b.proxyClient)
+}
+
+// RebuildProxy rebuilds the proxy HTTP client from the given config and propagates
+// the new transport to all subsystems: web tools, MCP gateway, LLM router, and judge.
+func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConfig) error {
+	if err := b.waitReady(ctx); err != nil {
+		return err
+	}
+
+	if !cfg.Proxy.Enabled {
+		b.mu.Lock()
+		b.proxyClient = nil
+		b.mu.Unlock()
+		ClearProxyEnvVars()
+		http.DefaultTransport = &http.Transport{
+			ForceAttemptHTTP2: true,
+		}
+	} else {
+		proxyClient, err := BuildProxyClient(cfg.Proxy, 30*time.Second, b.logger)
+		if err != nil {
+			return fmt.Errorf("building proxy client: %w", err)
+		}
+		b.mu.Lock()
+		b.proxyClient = proxyClient
+		b.mu.Unlock()
+		SetProxyEnvVars(cfg.Proxy)
+		if t, tErr := BuildProxyTransport(cfg.Proxy, b.logger); tErr == nil && t != nil {
+			http.DefaultTransport = t
+		}
+	}
+
+	// Propagate to web tools
+	b.UpdateWebTools(cfg)
+
+	// Propagate to MCP gateway (reconnects HTTP servers with new transport)
+	if err := b.ReconfigureMCP(ctx, cfg); err != nil {
+		b.log().Warn("failed to reconfigure MCP with new proxy", "error", err)
+	}
+
+	// Rebuild LLM router (new sessions will use the new proxy client)
+	if err := b.RebuildRouter(cfg); err != nil {
+		b.log().Warn("failed to rebuild router with new proxy", "error", err)
+	}
+
+	// Rebuild judge
+	b.RebuildJudge(cfg)
+
+	return nil
+}
+
+// UpdateWebTools re-registers web_fetch and web_search tools with the current proxy client.
+func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
+	fetchLimits := tools.WebFetchLimits{
+		MaxBodySize: cfg.ToolLimits.WebFetchMaxBodySize,
+		Timeout:     time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
+	}
+	tools.UpdateWebFetchTool(b.registry, fetchLimits, b.proxyClient)
+
+	searchLimits := tools.WebSearchLimits{
+		MaxResults: cfg.ToolLimits.WebSearchMaxResults,
+		Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
+	}
+	apiKey := cfg.ExpandEnvVars(cfg.Search.APIKey)
+	tools.UpdateSearchToolWithClient(b.registry, cfg.Search.Provider, apiKey, searchLimits, b.proxyClient)
 }
 
 // GenerateTitle generates a concise title for a conversation using the cached LLM router.
@@ -713,6 +799,9 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		}
 	}
 	modelRegistry := llm.NewModelRegistry(overrides)
+	if b.proxyClient != nil {
+		modelRegistry.SetHTTPClient(b.proxyClient)
+	}
 
 	initialBackoff, err := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
 	if err != nil && cfg.LLM.Retry.InitialBackoff != "" {
@@ -733,6 +822,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		MaxBackoff:          maxBackoff,
 		SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
 		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
+		HTTPClient:          b.proxyClient,
 		SamplingFunc: func(family string) *float64 {
 			return prompt.DefaultSampling(family).Temperature
 		},

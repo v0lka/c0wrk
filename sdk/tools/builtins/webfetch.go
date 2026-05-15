@@ -31,6 +31,12 @@ type WebFetchTool struct {
 
 // NewWebFetchTool creates a new WebFetchTool with specified limits.
 func NewWebFetchTool(limits WebFetchLimits) *WebFetchTool {
+	return NewWebFetchToolWithClient(limits, nil)
+}
+
+// NewWebFetchToolWithClient creates a new WebFetchTool with specified limits
+// and an optional HTTP client. If client is nil, a default client is created.
+func NewWebFetchToolWithClient(limits WebFetchLimits, client *http.Client) *WebFetchTool {
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -49,6 +55,18 @@ func NewWebFetchTool(limits WebFetchLimits) *WebFetchTool {
 		},
 		"required": ["url"]
 	}`
+
+	if client == nil {
+		client = &http.Client{Timeout: limits.Timeout}
+	}
+	// Always enforce redirect limit
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many redirects (max 10)")
+		}
+		return nil
+	}
+
 	return &WebFetchTool{
 		BaseTool: &tools.BaseTool{
 			ToolName:        "web_fetch",
@@ -56,15 +74,7 @@ func NewWebFetchTool(limits WebFetchLimits) *WebFetchTool {
 			Schema:          json.RawMessage(schema),
 			Policy:          tools.PolicyAlwaysAllow,
 		},
-		client: &http.Client{
-			Timeout: limits.Timeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return errors.New("too many redirects (max 10)")
-				}
-				return nil
-			},
-		},
+		client: client,
 		limits: limits,
 	}
 }

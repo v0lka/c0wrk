@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/user/agent/backend/config"
+	"github.com/user/agent/core"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
@@ -56,6 +57,12 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		Search: ConfigSearchResp{
 			Provider: f.config.Search.Provider,
 			APIKey:   maskAPIKey(f.config.Search.APIKey),
+		},
+		Proxy: ProxySettingsResponse{
+			Enabled:    f.config.Proxy.Enabled,
+			URL:        core.MaskProxyURL(f.config.Proxy.URL),
+			BypassList: nonNilStringSlice(f.config.Proxy.BypassList),
+			TLSCertDir: f.config.Proxy.TLSCertDir,
 		},
 	}
 }
@@ -166,6 +173,59 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 	// Rebuild web search tool via the backend builder.
 	if f.app != nil {
 		f.app.Builder().UpdateSearchTool(ToBuilderConfig(f.config))
+	}
+
+	return nil
+}
+
+// GetProxySettings returns current proxy settings for the UI.
+// The proxy URL password is masked.
+func (f *FrontendAPI) GetProxySettings() ProxySettingsResponse {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+
+	if f.config == nil {
+		return ProxySettingsResponse{BypassList: []string{}}
+	}
+
+	return ProxySettingsResponse{
+		Enabled:    f.config.Proxy.Enabled,
+		URL:        core.MaskProxyURL(f.config.Proxy.URL),
+		BypassList: nonNilStringSlice(f.config.Proxy.BypassList),
+		TLSCertDir: f.config.Proxy.TLSCertDir,
+	}
+}
+
+// UpdateProxySettings updates proxy configuration at runtime and propagates
+// the change to all subsystems (LLM providers, web tools, MCP, child processes).
+func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+
+	if f.config == nil {
+		return errors.New("config not initialized")
+	}
+
+	f.config.Proxy.Enabled = settings.Enabled
+	if settings.URL != "" {
+		f.config.Proxy.URL = settings.URL
+	}
+	if settings.BypassList != nil {
+		f.config.Proxy.BypassList = settings.BypassList
+	}
+	f.config.Proxy.TLSCertDir = settings.TLSCertDir
+
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist proxy settings", "error", err)
+	}
+
+	// Rebuild proxy transport and propagate to all subsystems.
+	if f.app != nil {
+		bcfg := ToBuilderConfig(f.config)
+		if err := f.app.Builder().RebuildProxy(context.Background(), bcfg); err != nil {
+			f.log().Warn("failed to rebuild proxy after settings update", "error", err)
+			return fmt.Errorf("proxy rebuild failed: %w", err)
+		}
 	}
 
 	return nil

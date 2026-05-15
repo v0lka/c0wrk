@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 
 	"github.com/liushuangls/go-anthropic/v2"
@@ -21,7 +22,8 @@ func sanitizeAnthropicToolID(id string) string {
 
 // AnthropicProviderConfig holds configuration for Anthropic provider.
 type AnthropicProviderConfig struct {
-	APIKey string
+	APIKey     string
+	HTTPClient *http.Client // optional proxy-configured HTTP client (nil = default)
 }
 
 // AnthropicProvider implements LLM Provider using Anthropic's Claude API.
@@ -36,7 +38,11 @@ func NewAnthropicProvider(cfg AnthropicProviderConfig) (*AnthropicProvider, erro
 		return nil, errors.New("anthropic: API key is required")
 	}
 
-	client := anthropic.NewClient(cfg.APIKey)
+	var opts []anthropic.ClientOption
+	if cfg.HTTPClient != nil {
+		opts = append(opts, anthropic.WithHTTPClient(cfg.HTTPClient))
+	}
+	client := anthropic.NewClient(cfg.APIKey, opts...)
 
 	return &AnthropicProvider{
 		client: client,

@@ -480,14 +480,14 @@ func TestWrapResponsesError(t *testing.T) {
 
 func TestNewResponsesClient(t *testing.T) {
 	t.Run("default endpoint", func(t *testing.T) {
-		client := newResponsesClient("test-key", "")
+		client := newResponsesClient("test-key", "", nil)
 		if client == nil {
 			t.Fatal("expected non-nil client")
 		}
 	})
 
 	t.Run("custom base URL", func(t *testing.T) {
-		client := newResponsesClient("test-key", "https://custom.api.com/v1")
+		client := newResponsesClient("test-key", "https://custom.api.com/v1", nil)
 		if client == nil {
 			t.Fatal("expected non-nil client")
 		}

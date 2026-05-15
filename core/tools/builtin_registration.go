@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/user/agent/sdk/agent"
@@ -39,6 +40,10 @@ type BuiltinToolsConfig struct {
 	SearchAPIKey   string
 	SearchTimeout  time.Duration
 
+	// HTTPClient is an optional proxy-configured client for web tools.
+	// If nil, tools create their own default clients.
+	HTTPClient *http.Client
+
 	// AskUserFunc is the callback for the ask_user tool.
 	// If nil, the ask_user tool is not registered.
 	AskUserFunc AskUserFunc
@@ -75,10 +80,10 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	registry.Register(agent.NewFinishTool())
 
 	// Web fetch
-	registry.Register(builtins.NewWebFetchTool(cfg.WebFetchLimits))
+	registry.Register(builtins.NewWebFetchToolWithClient(cfg.WebFetchLimits, cfg.HTTPClient))
 
 	// Web search (optional)
-	if provider := CreateSearchProvider(cfg.SearchProvider, cfg.SearchAPIKey, cfg.SearchTimeout); provider != nil {
+	if provider := CreateSearchProviderWithClient(cfg.SearchProvider, cfg.SearchAPIKey, cfg.SearchTimeout, cfg.HTTPClient); provider != nil {
 		registry.Register(websearch.NewWebSearchTool(provider, cfg.WebSearchLimits))
 	}
 
@@ -113,33 +118,50 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 // CreateSearchProvider creates a search provider based on the configured provider name.
 // Returns nil if the provider requires an API key but none is configured.
 func CreateSearchProvider(providerName, apiKey string, timeout time.Duration) websearch.SearchProvider {
+	return CreateSearchProviderWithClient(providerName, apiKey, timeout, nil)
+}
+
+// CreateSearchProviderWithClient creates a search provider with an optional HTTP client.
+// Returns nil if the provider requires an API key but none is configured.
+func CreateSearchProviderWithClient(providerName, apiKey string, timeout time.Duration, client *http.Client) websearch.SearchProvider {
 	switch providerName {
 	case "brave":
 		if apiKey == "" {
 			return nil
 		}
-		return websearch.NewBraveProviderWithTimeout(apiKey, timeout)
+		return websearch.NewBraveProviderWithClient(apiKey, timeout, client)
 	case "exa":
 		if apiKey == "" {
 			return nil
 		}
-		return websearch.NewExaProviderWithTimeout(apiKey, timeout)
+		return websearch.NewExaProviderWithClient(apiKey, timeout, client)
 	case "duckduckgo":
-		return websearch.NewDuckDuckGoProviderWithTimeout(timeout)
+		return websearch.NewDuckDuckGoProviderWithClient(timeout, client)
 	default: // "tavily" or empty
 		if apiKey == "" {
 			return nil
 		}
-		return websearch.NewTavilyProviderWithTimeout(apiKey, timeout)
+		return websearch.NewTavilyProviderWithClient(apiKey, timeout, client)
 	}
 }
 
 // UpdateSearchTool replaces or removes the web_search tool in the registry
 // based on the given search configuration.
 func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limits WebSearchLimits) {
-	if provider := CreateSearchProvider(providerName, apiKey, limits.Timeout); provider != nil {
+	UpdateSearchToolWithClient(registry, providerName, apiKey, limits, nil)
+}
+
+// UpdateSearchToolWithClient replaces or removes the web_search tool in the registry
+// with an optional HTTP client for proxy support.
+func UpdateSearchToolWithClient(registry *ToolRegistry, providerName, apiKey string, limits WebSearchLimits, client *http.Client) {
+	if provider := CreateSearchProviderWithClient(providerName, apiKey, limits.Timeout, client); provider != nil {
 		registry.Register(websearch.NewWebSearchTool(provider, limits))
 	} else {
 		registry.Unregister("web_search")
 	}
+}
+
+// UpdateWebFetchTool replaces the web_fetch tool in the registry with an optional HTTP client.
+func UpdateWebFetchTool(registry *ToolRegistry, limits WebFetchLimits, client *http.Client) {
+	registry.Register(builtins.NewWebFetchToolWithClient(limits, client))
 }

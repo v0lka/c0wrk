@@ -15,6 +15,7 @@ type BuilderConfig struct {
 	Orchestration BuilderOrchestrationConfig
 	ToolLimits    BuilderToolLimitsConfig
 	Timeouts      BuilderTimeoutsConfig
+	Proxy         BuilderProxyConfig
 
 	// ExpandEnvVars resolves ${ENV_VAR} patterns in a string.
 	// Injected by the backend so core does not import os/config.
@@ -261,4 +262,16 @@ type BuilderTimeoutsConfig struct {
 	RipgrepTimeout   int
 	WebFetchTimeout  int
 	WebSearchTimeout int
+}
+
+// ---------------------------------------------------------------------------
+// Proxy
+// ---------------------------------------------------------------------------
+
+// BuilderProxyConfig holds HTTP/HTTPS proxy settings.
+type BuilderProxyConfig struct {
+	Enabled    bool
+	URL        string   // env-expanded proxy URL
+	BypassList []string // hostnames/IPs to skip proxy
+	TLSCertDir string   // env-expanded path to custom CA certs directory
 }

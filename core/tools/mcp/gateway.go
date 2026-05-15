@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"sync"
 
@@ -201,13 +202,14 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 			workDir = g.defaultWorkDir
 		}
 		newCfg := ServerConfig{
-			Transport: entry.Transport,
-			Command:   entry.Command,
-			Args:      entry.Args,
-			Env:       env,
-			URL:       expandEnv(entry.URL),
-			Headers:   headers,
-			WorkDir:   workDir,
+			Transport:  entry.Transport,
+			Command:    entry.Command,
+			Args:       entry.Args,
+			Env:        env,
+			URL:        expandEnv(entry.URL),
+			Headers:    headers,
+			WorkDir:    workDir,
+			HTTPClient: newConfig.HTTPClient,
 		}
 
 		if currentNames[name] {
@@ -424,7 +426,8 @@ type ServerStatus struct {
 // GatewayConfig holds the raw MCP server entries for gateway initialization.
 type GatewayConfig struct {
 	Servers        map[string]ServerEntry
-	DefaultWorkDir string // fallback working directory for stdio servers
+	DefaultWorkDir string       // fallback working directory for stdio servers
+	HTTPClient     *http.Client // optional proxy-configured HTTP client for HTTP transport servers
 }
 
 // ServerEntry describes how to launch a single MCP server.
@@ -459,13 +462,14 @@ func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRe
 		}
 
 		mcpConfigs[name] = ServerConfig{
-			Transport: entry.Transport,
-			Command:   entry.Command,
-			Args:      entry.Args,
-			Env:       env,
-			URL:       expandEnv(entry.URL),
-			Headers:   headers,
-			WorkDir:   entry.WorkDir,
+			Transport:  entry.Transport,
+			Command:    entry.Command,
+			Args:       entry.Args,
+			Env:        env,
+			URL:        expandEnv(entry.URL),
+			Headers:    headers,
+			WorkDir:    entry.WorkDir,
+			HTTPClient: cfg.HTTPClient,
 		}
 	}
 

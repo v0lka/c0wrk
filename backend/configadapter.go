@@ -156,6 +156,12 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			WebFetchTimeout:  cfg.Timeouts.WebFetchTimeout,
 			WebSearchTimeout: cfg.Timeouts.WebSearchTimeout,
 		},
+		Proxy: core.BuilderProxyConfig{
+			Enabled:    cfg.Proxy.Enabled,
+			URL:        config.ExpandEnvVars(cfg.Proxy.URL),
+			BypassList: cfg.Proxy.BypassList,
+			TLSCertDir: config.ExpandEnvVars(cfg.Proxy.TLSCertDir),
+		},
 		ExpandEnvVars: config.ExpandEnvVars,
 	}
 }

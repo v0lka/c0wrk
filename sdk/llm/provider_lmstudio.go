@@ -16,9 +16,10 @@ import (
 
 // LMStudioProviderConfig contains configuration for LM Studio provider.
 type LMStudioProviderConfig struct {
-	Name    string // logical name for logging
-	BaseURL string // default: http://localhost:1234
-	APIKey  string // optional bearer token
+	Name       string       // logical name for logging
+	BaseURL    string       // default: http://localhost:1234
+	APIKey     string       // optional bearer token
+	HTTPClient *http.Client // optional proxy-configured HTTP client (nil = custom default)
 }
 
 // LMStudioProvider implements Provider using LM Studio's native REST API v1.
@@ -52,8 +53,11 @@ func NewLMStudioProvider(cfg LMStudioProviderConfig) (*LMStudioProvider, error) 
 	// Remove trailing slash from base URL
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
-	return &LMStudioProvider{
-		client: &http.Client{
+	var client *http.Client
+	if cfg.HTTPClient != nil {
+		client = cfg.HTTPClient
+	} else {
+		client = &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{
@@ -66,7 +70,11 @@ func NewLMStudioProvider(cfg LMStudioProviderConfig) (*LMStudioProvider, error) 
 				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 			},
-		},
+		}
+	}
+
+	return &LMStudioProvider{
+		client:  client,
 		baseURL: baseURL,
 		apiKey:  cfg.APIKey,
 		name:    cfg.Name,
