@@ -321,6 +321,6 @@ type HandleResult struct {
 // HandleOptions controls how a message is processed by HandleMessage.
 type HandleOptions struct {
 	TaskID        string   // non-empty = continuation of existing task
-	ExecutionMode string   // "normal" = synthetic plan, "advanced" = full Plan&Execute
+	ExecutionMode string   // "normal" = single-step plan, "advanced" = full multi-step DAG
 	UserSkills    []string // explicitly requested by user via /skill refs (bypass router)
 }

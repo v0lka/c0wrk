@@ -277,7 +277,7 @@ func TestBuildPlanExecutionSteps(t *testing.T) {
 		}
 	})
 
-	t.Run("synthetic fallback when no steps", func(t *testing.T) {
+	t.Run("summary fallback when no steps", func(t *testing.T) {
 		completed := []CompletedStep{
 			{StepID: "s1", Output: "output text"},
 		}
@@ -290,7 +290,7 @@ func TestBuildPlanExecutionSteps(t *testing.T) {
 		}
 	})
 
-	t.Run("synthetic fallback with error", func(t *testing.T) {
+	t.Run("summary fallback with error", func(t *testing.T) {
 		completed := []CompletedStep{
 			{StepID: "s1", Output: "partial", Error: errors.New("boom")},
 		}

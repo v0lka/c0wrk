@@ -275,7 +275,7 @@ func TestChunkFile_FixedSplitOther(t *testing.T) {
 }
 
 func TestChunkFile_LineNumbersWithBlankLines(t *testing.T) {
-	// Synthetic TSX-like file with blank lines to verify line numbers
+	// Fabricated TSX-like file with blank lines to verify line numbers
 	// match the frontend's split('\n') counting.
 	content := `import { useState } from 'react'
 

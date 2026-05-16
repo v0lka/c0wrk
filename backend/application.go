@@ -185,7 +185,7 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 }
 
 // GetMCPStatus returns the status of all MCP servers.
-// If the gateway failed to start, returns a synthetic entry surfacing the error.
+// If the gateway failed to start, returns a placeholder entry surfacing the error.
 func (app *Application) GetMCPStatus() []MCPServerStatus {
 	gw := app.builder.MCPGateway()
 	if gw == nil {

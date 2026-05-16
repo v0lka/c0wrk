@@ -147,9 +147,9 @@ func coreStepConfigurator(
 		//   3. Leave empty → SDK falls back to cfg.SystemPrompt(ctx, ...),
 		//      which reads the full task-scope ActiveSkills from request ctx.
 		//
-		// Option 3b preserves the Normal-mode invariant: CreateSyntheticPlan emits
+		// Option 3b preserves the Normal-mode invariant: single-step plans emit
 		// AgentProfile{} (empty Skills) so this branch is a no-op and the full
-		// router-matched pool reaches the single synthetic step via fallback (2).
+		// router-matched pool reaches the step via fallback (2).
 		//
 		// skillMgr is NOT required here: narrowActiveSkills resolves names first
 		// against the task-scope pool (router-matched skills live there), and only

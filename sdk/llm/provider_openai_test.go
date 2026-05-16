@@ -514,7 +514,7 @@ func TestOpenAIProvider_ConvertRequestMessage_EmptyReasoningContentWithToolCalls
 func TestOpenAIProvider_ConvertRequestMessage_EmptyReasoningContentNoToolCalls(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
 
-	// Synthetic assistant messages (e.g., executor nudges) have no tool_calls
+	// Constructed assistant messages (e.g., executor nudges) have no tool_calls
 	// and empty reasoning_content. DeepSeek V4 still requires the field.
 	msg := Message{
 		Role:             "assistant",
@@ -538,9 +538,9 @@ func TestOpenAIProvider_ConvertRequestMessage_EmptyReasoningContentNoToolCalls(t
 		t.Fatalf("failed to unmarshal JSON: %v", err)
 	}
 
-	// reasoning_content must be present even for synthetic messages without tool_calls
+	// reasoning_content must be present even for constructed messages without tool_calls
 	if _, ok := parsed["reasoning_content"]; !ok {
-		t.Errorf("reasoning_content field missing for synthetic assistant message")
+		t.Errorf("reasoning_content field missing for constructed assistant message")
 	}
 	if parsed["reasoning_content"] != "" {
 		t.Errorf("reasoning_content = %q, want empty string", parsed["reasoning_content"])

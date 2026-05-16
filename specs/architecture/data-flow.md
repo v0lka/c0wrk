@@ -35,10 +35,9 @@ core/orchestrator.go: Orchestrator.HandleMessage(ctx, msg, opts)
   │
   ├─ 2. PLAN:
   │      ├─ Normal mode (mode == "normal"):
-  │      │    → Synthetic 1-step plan (no LLM call)
+  │      │    → Planner.Plan(singleStep=true) → exactly 1 step
   │      ├─ Advanced mode:
-  │      │    → Planner.Plan(ctx, task, tools, reflections)
-  │      │    → DAG of PlanSteps
+  │      │    → Planner.Plan(singleStep=false) → DAG of PlanSteps
   │      └─ → Emitter.PlanGenerated(stepCount, steps)
   │
   ├─ 3. EXECUTE: engine.Execute(ctx, plan, task)

@@ -2129,20 +2129,20 @@ func mockAllTools() []tools.ToolDescriptor {
 
 // TestCoreStepConfigurator_NormalMode_KeepsFullToolPool verifies the hard
 // invariant: when resolveAgentProfile returns the default executor profile
-// (empty AllowedTools) — as it does for CreateSyntheticPlan — StepConfig leaves
+// (empty AllowedTools) — as it does for single-step plans — StepConfig leaves
 // AllowedTools nil so the SDK falls through to defaults.AllTools (= full pool).
 func TestCoreStepConfigurator_NormalMode_KeepsFullToolPool(t *testing.T) {
 	cfg := OrchestratorConfig{MaxSteps: 10}
 	configurator := coreStepConfigurator(cfg, nil, nil, nil, nil, nil)
 
-	// Simulate CreateSyntheticPlan: AgentProfile emitted as value type, so the
+	// Simulate a single-step plan: AgentProfile emitted as value type, so the
 	// *AgentProfile type assertion in resolveAgentProfile fails and the default
 	// executor profile (empty AllowedTools, empty Skills) is used.
-	syntheticPlan := (&Planner{}).CreateSyntheticPlan("run task", "general")
+	singleStepPlan := &Plan{Steps: []PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
 	step := orchestration.PlanStep{
-		ID:          syntheticPlan.Steps[0].ID,
-		Description: syntheticPlan.Steps[0].Description,
-		Profile:     syntheticPlan.Steps[0].Profile,
+		ID:          singleStepPlan.Steps[0].ID,
+		Description: singleStepPlan.Steps[0].Description,
+		Profile:     singleStepPlan.Steps[0].Profile,
 	}
 
 	defaults := orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()}
@@ -2154,7 +2154,7 @@ func TestCoreStepConfigurator_NormalMode_KeepsFullToolPool(t *testing.T) {
 }
 
 // TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills verifies that
-// normal-mode synthetic plans emit no step-local SystemPrompt so the SDK falls
+// normal-mode single-step plans emit no step-local SystemPrompt so the SDK falls
 // back to cfg.SystemPrompt(ctx, ...) which renders the full task-scope
 // ActiveSkills pool.
 func TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills(t *testing.T) {
@@ -2174,11 +2174,11 @@ func TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills(t *testing.T) 
 
 	configurator := coreStepConfigurator(cfg, nil, nil, builder, taskCtxProvider, nil)
 
-	syntheticPlan := (&Planner{}).CreateSyntheticPlan("run task", "general")
+	singleStepPlan := &Plan{Steps: []PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
 	step := orchestration.PlanStep{
-		ID:          syntheticPlan.Steps[0].ID,
-		Description: syntheticPlan.Steps[0].Description,
-		Profile:     syntheticPlan.Steps[0].Profile,
+		ID:          singleStepPlan.Steps[0].ID,
+		Description: singleStepPlan.Steps[0].Description,
+		Profile:     singleStepPlan.Steps[0].Profile,
 	}
 
 	stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})

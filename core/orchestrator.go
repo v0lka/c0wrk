@@ -259,7 +259,7 @@ type plannerSDKAdapter struct {
 }
 
 func (a *plannerSDKAdapter) Plan(ctx context.Context, task string, availableTools []sdktools.ToolDescriptor, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	return a.planner.Plan(ctx, task, availableTools, reflections, a.skillsFor())
+	return a.planner.Plan(ctx, task, availableTools, reflections, a.skillsFor(), false)
 }
 
 func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan, completed []orchestration.CompletedStep, failedStep orchestration.CompletedStep, reflection *orchestration.Reflection, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
@@ -267,7 +267,7 @@ func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan
 }
 
 func (a *plannerSDKAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []sdktools.ToolDescriptor) (*orchestration.Plan, error) {
-	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, a.skillsFor())
+	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, a.skillsFor(), false)
 }
 
 // logInfo logs an INFO level message if logger is not nil.
@@ -488,10 +488,10 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 	return ctx
 }
 
-// shouldUseSyntheticPlan determines whether to use a synthetic (single-step) plan.
-// Only "normal" mode uses synthetic plans; everything else (including empty string)
-// defaults to full Plan&Execute.
-func (o *Orchestrator) shouldUseSyntheticPlan(mode string) bool {
+// shouldUseSingleStep determines whether to use a single-step plan.
+// Only "normal" mode produces exactly 1 step; everything else (including empty string)
+// defaults to full multi-step Plan&Execute.
+func (o *Orchestrator) shouldUseSingleStep(mode string) bool {
 	return mode == "normal"
 }
 
@@ -689,23 +689,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		ctx = WithDomain(ctx, routing.Domain)
 		ctx = WithComplexity(ctx, routing.Complexity)
 
-		var plan *Plan
+		singleStep := o.shouldUseSingleStep(opts.ExecutionMode)
+		o.logDebug("orchestrator: generating plan", "mode", opts.ExecutionMode, "singleStep", singleStep)
+		o.emitter.ServiceWithMeta("Planning approach...", map[string]any{"phase": "orchestration"})
 
-		// Determine whether to use synthetic plan based on user-selected mode.
-		useSynthetic := o.shouldUseSyntheticPlan(opts.ExecutionMode)
-		if useSynthetic {
-			o.logDebug("orchestrator: using synthetic plan", "mode", opts.ExecutionMode)
-			plan = o.planner.CreateSyntheticPlan(message, routing.Domain)
-		} else {
-			// Generate full plan via LLM
-			o.logDebug("orchestrator: generating full plan", "mode", opts.ExecutionMode)
-			o.emitter.ServiceWithMeta("Planning approach...", map[string]any{"phase": "orchestration"})
-			var planErr error
-			plan, planErr = o.planner.Plan(ctx, message, availableTools, nil, activeSkillDescriptors)
-			if planErr != nil {
-				o.logDebug("orchestrator: planning failed", "error", planErr)
-				return nil, fmt.Errorf("planning failed: %w", planErr)
-			}
+		plan, planErr := o.planner.Plan(ctx, message, availableTools, nil, activeSkillDescriptors, singleStep)
+		if planErr != nil {
+			o.logDebug("orchestrator: planning failed", "error", planErr)
+			return nil, fmt.Errorf("planning failed: %w", planErr)
 		}
 		o.logDebug("orchestrator: plan ready", "steps", len(plan.Steps))
 
@@ -742,60 +733,32 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 			return nil, errors.New("no existing plan found for continuation")
 		}
 
-		// Determine whether to use synthetic continuation based on user-selected mode.
-		useSyntheticContinuation := o.shouldUseSyntheticPlan(opts.ExecutionMode)
-		if useSyntheticContinuation {
-			o.logDebug("orchestrator: using synthetic continuation plan", "mode", opts.ExecutionMode)
-
-			terminalSteps := FindTerminalSteps(existingPlan)
-
-			// Create synthetic continuation step with unique ID
-			syntheticStep := PlanStep{
-				ID:             fmt.Sprintf("continuation_%d", len(existingPlan.Steps)+1),
-				Summary:        message,
-				Description:    message,
-				DependsOn:      terminalSteps,
-				Parallelizable: true,
-				Profile: AgentProfile{
-					Role:   "executor",
-					Domain: routing.Domain,
-				},
-			}
-
-			mergedPlan := &Plan{
-				Steps: append(existingPlan.Steps, syntheticStep),
-			}
-			bb.SetPlan(mergedPlan)
-
-			o.logDebug("orchestrator: synthetic continuation step added", "stepID", syntheticStep.ID)
-		} else {
-			// Build completedSteps from BB's step results for PlanContinuation
-			allResults := bb.GetAllStepResults()
-			completedSteps := make([]orchestration.CompletedStep, 0, len(allResults))
-			for stepID, sr := range allResults {
-				completedSteps = append(completedSteps, orchestration.CompletedStep{
-					StepID: stepID,
-					Output: sr.FullOutput,
-					Steps:  sr.Steps,
-				})
-			}
-
-			// Call planner's PlanContinuation for complex tasks
-			o.logDebug("orchestrator: calling PlanContinuation")
-			continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkillDescriptors)
-			if planErr != nil {
-				o.logDebug("orchestrator: PlanContinuation failed", "error", planErr)
-				return nil, fmt.Errorf("continuation planning failed: %w", planErr)
-			}
-
-			// Merge continuation plan's steps into existing plan
-			mergedPlan := &orchestration.Plan{
-				Steps: append(existingPlan.Steps, continuationPlan.Steps...),
-			}
-			bb.SetPlan(mergedPlan)
-
-			o.logDebug("orchestrator: merged continuation plan", "newSteps", len(continuationPlan.Steps), "totalSteps", len(mergedPlan.Steps))
+		// Build completedSteps from BB's step results for PlanContinuation
+		singleStep := o.shouldUseSingleStep(opts.ExecutionMode)
+		allResults := bb.GetAllStepResults()
+		completedSteps := make([]orchestration.CompletedStep, 0, len(allResults))
+		for stepID, sr := range allResults {
+			completedSteps = append(completedSteps, orchestration.CompletedStep{
+				StepID: stepID,
+				Output: sr.FullOutput,
+				Steps:  sr.Steps,
+			})
 		}
+
+		o.logDebug("orchestrator: calling PlanContinuation", "singleStep", singleStep)
+		continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkillDescriptors, singleStep)
+		if planErr != nil {
+			o.logDebug("orchestrator: PlanContinuation failed", "error", planErr)
+			return nil, fmt.Errorf("continuation planning failed: %w", planErr)
+		}
+
+		// Merge continuation plan's steps into existing plan
+		mergedPlan := &orchestration.Plan{
+			Steps: append(existingPlan.Steps, continuationPlan.Steps...),
+		}
+		bb.SetPlan(mergedPlan)
+
+		o.logDebug("orchestrator: merged continuation plan", "newSteps", len(continuationPlan.Steps), "totalSteps", len(mergedPlan.Steps))
 
 		// Resume execution with the merged plan (picks up un-completed steps)
 		execResult, err = o.engine.Resume(ctx, bb)

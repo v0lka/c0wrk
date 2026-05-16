@@ -252,9 +252,9 @@ func (o *Orchestrator) runPlanExecute(
 		o.events.OnServiceMeta("steps failed", map[string]any{"attempt": attempt + 1, "retriesRemaining": o.maxRetries - attempt})
 		if attempt < o.maxRetries {
 			if o.cfg.Reflection != nil {
-				syntheticSteps := BuildPlanExecutionSteps(completedSteps, currentPlan)
+				executionSteps := BuildPlanExecutionSteps(completedSteps, currentPlan)
 				o.events.OnServiceMeta("Some steps failed, reflecting...", map[string]any{"phase": "orchestration"})
-				reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, currentPlan, sessionReflections)
+				reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, executionSteps, currentPlan, sessionReflections)
 				if reflectErr != nil {
 					continue // retry without reflection guidance
 				}
@@ -520,8 +520,8 @@ func (o *Orchestrator) executePlanWithSteps(
 					// Reflect on failure if reflector is configured
 					if o.cfg.Reflection != nil {
 						o.events.OnServiceMeta(fmt.Sprintf("Step %s failed, reflecting...", failedStepID), map[string]any{"phase": "orchestration"})
-						syntheticSteps := BuildPlanExecutionSteps(completedList, plan)
-						reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, syntheticSteps, plan, sessionReflections)
+						executionSteps := BuildPlanExecutionSteps(completedList, plan)
+						reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, executionSteps, plan, sessionReflections)
 						if reflectErr == nil {
 							if reflection.SuggestedAction == "abort" {
 								sessionReflections = append(sessionReflections, *reflection)

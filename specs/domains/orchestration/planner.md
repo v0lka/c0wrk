@@ -6,8 +6,8 @@ Generates DAG execution plans from user tasks, assigns agent profiles to steps, 
 
 ## Key Files
 
-- `core/planner.go` — Planner struct (Plan, Replan, PlanContinuation, CreateSyntheticPlan)
-- `core/prompts/planner_base.md` — base planning prompt
+- `core/planner.go` — Planner struct (Plan, Replan, PlanContinuation), planPromptMode configs
+- `core/prompts/planner_base.md` — base planning prompt (MODE-TOT, MODE-GUIDANCE placeholders)
 - `core/prompts/planner_informed.md` — informed planning prompt (after exploration)
 - `core/prompts/planner_replan.md` — replanning prompt
 - `core/prompts/planner_*.md` — provider-specific variants (anthropic, openai, gemini, etc.)
@@ -20,10 +20,11 @@ Generates DAG execution plans from user tasks, assigns agent profiles to steps, 
 ```
 User message + routing decision
          │
-         ├─ Normal mode: CreateSyntheticPlan()
-         │   → Single step, no LLM call
+         ├─ Normal mode: Plan(singleStep=true)
+         │   → LLM call with single-step ToT + guidance
+         │   → Produces exactly 1 step (truncated if LLM returns more)
          │
-         └─ Advanced mode: Plan()
+         └─ Advanced mode: Plan(singleStep=false)
               │
               ├─ Complexity ≤ 3: Direct planning
               │   → Single LLM call generates DAG
@@ -33,6 +34,15 @@ User message + routing decision
                   → Uses read-only tools to understand codebase
                   → Then generates informed plan
 ```
+
+All modes receive full Tree of Thoughts reasoning and structured step descriptions (What/How/Where/Acceptance Criteria). The `planPromptMode` struct parameterizes mode-varying prompt segments:
+
+| Mode Config              | singleStep | ToT variant     | Guidance variant     | Used by                   |
+| ------------------------ | ---------- | --------------- | -------------------- | ------------------------- |
+| `multiStepMode`          | false      | multi-step ToT  | multi-step guidance  | Advanced Plan()           |
+| `singleStepMode`         | true       | single-step ToT | single-step guidance | Normal Plan()             |
+| `continuationMultiMode`  | false      | multi-step ToT  | multi-step guidance  | Advanced PlanContinuation |
+| `continuationSingleMode` | true       | single-step ToT | single-step guidance | Normal PlanContinuation   |
 
 ### Granularity Rules
 
@@ -109,27 +119,29 @@ When execution fails and Reflector produces a reflection:
 
 For follow-up messages in an existing task:
 
-1. Receive: original request, existing plan, completed steps, new message
+1. Receive: original request, existing plan, completed steps, new message, singleStep
 2. Find terminal steps of existing plan
 3. Generate continuation steps (IDs prefixed `continuation_`)
-4. New steps DependsOn terminal steps
-5. Merged with existing plan
+4. When singleStep=true, exactly 1 continuation step is produced (truncated if LLM returns more)
+5. New steps DependsOn terminal steps
+6. Merged with existing plan
 
 ### Prompt Construction
 
-The planner assembles prompts from template sections:
+The planner assembles prompts from template sections using a unified `buildSystemPromptFromMode` builder. Templates (`planner_base.md`, `planner_informed.md`) contain placeholders that are substituted with mode-appropriate content:
 
-- Preamble (role description + granularity rules)
-- Domain assignment guidance
-- Agent profile descriptions
-- Step description format (What/How/Where/Acceptance Criteria)
-- Output expectations per role
-- Research decomposition guidance
-- Parallelization rules
-- Available tools (grouped list)
-- Available skills
-- Reflections (if replan)
-- JSON example for output format
+- `MODE-PREAMBLE` — role description + granularity rules (single vs multi-step)
+- `MODE-TOT` — Tree of Thoughts reasoning block (single-step or multi-step variant)
+- `MODE-GUIDANCE` — step format and granularity guidance (single-step or multi-step variant)
+- `DOMAIN-ASSIGNMENT` — domain assignment guidance
+- `AGENT-PROFILES` — agent profile descriptions
+- `MODE-EXTRA-SECTIONS` — step description format (What/How/Where/Acceptance Criteria), parallelization rules, research decomposition
+- `MODE-TAIL` — reflections (if replan), output expectations
+- `MODE-JSON-EXAMPLE` — JSON output format example (single-step or multi-step variant)
+- `AVAILABLE-TOOLS` — grouped tool list
+- `AVAILABLE-SKILLS` — active skill list
+- `WORKSPACE-PATH` — current workspace path
+- `MAX-STEPS` — maximum step count
 
 Provider-specific prompt variants are selected based on model family.
 
@@ -145,7 +157,8 @@ Provider-specific prompt variants are selected based on model family.
 - Plan steps always form a valid DAG (no cycles)
 - Every step has a unique ID within the plan
 - Every ID in DependsOn references an existing step ID
-- Synthetic plans always have exactly 1 step
+- Single-step mode (normal) always produces exactly 1 step (hard truncation enforced post-parse)
+- All modes (single-step and multi-step) receive Tree of Thoughts reasoning and structured What/How/Where/Acceptance Criteria
 - Continuation step IDs are prefixed with `continuation_`
 - Planner never executes mutating tools during exploration phase
 - Exploration uses a separate ContextManager (isolated from main execution)

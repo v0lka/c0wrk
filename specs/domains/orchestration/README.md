@@ -70,7 +70,7 @@ type RoutingDecision struct {
 // Handle options
 type HandleOptions struct {
     TaskID        string   // non-empty = continuation of existing task
-    ExecutionMode string   // "normal" = synthetic plan, "advanced" = full Plan&Execute
+    ExecutionMode string   // "normal" = single-step plan, "advanced" = full multi-step DAG
     UserSkills    []string // explicitly requested by user via /skill refs (bypass router)
 }
 
@@ -119,13 +119,13 @@ HandleMessage(ctx, message, sessionID, opts)
 │
 ├─ 6. Branch:
 │     ├─ First message (TaskID == ""):
-│     │     ├─ opts.ExecutionMode == "normal" → synthetic single-step plan
-│     │     └─ otherwise → Planner.Plan() → full DAG
+│     │     ├─ opts.ExecutionMode == "normal" → Plan(singleStep=true) → 1 step
+│     │     └─ otherwise → Plan(singleStep=false) → full DAG
 │     │     → Set plan on BB → engine.Resume(ctx, bb)
 │     │
 │     └─ Continuation (TaskID != ""):
-│           ├─ opts.ExecutionMode == "normal" → synthetic continuation step
-│           └─ otherwise → Planner.PlanContinuation()
+│           ├─ opts.ExecutionMode == "normal" → PlanContinuation(singleStep=true)
+│           └─ otherwise → PlanContinuation(singleStep=false)
 │           → Merge into existing plan → engine.Resume(ctx, bb)
 │
 ├─ 7. SDK engine executes (Plan&Execute loop with retry/replan)
@@ -137,10 +137,10 @@ HandleMessage(ctx, message, sessionID, opts)
 
 ## Execution Modes
 
-| Mode     | Condition                              | Behavior                                      |
-| -------- | -------------------------------------- | --------------------------------------------- |
-| Normal   | `opts.ExecutionMode == "normal"`       | Synthetic 1-step plan, no Planner LLM call    |
-| Advanced | any other value (including "advanced") | Full DAG plan via Planner, parallel execution |
+| Mode     | Condition                              | Behavior                                                  |
+| -------- | -------------------------------------- | --------------------------------------------------------- |
+| Normal   | `opts.ExecutionMode == "normal"`       | Plan(singleStep=true) → exactly 1 step with full ToT     |
+| Advanced | any other value (including "advanced") | Plan(singleStep=false) → full DAG, parallel execution     |
 
 ## Invariants
 

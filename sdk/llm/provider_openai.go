@@ -286,7 +286,7 @@ func (p *OpenAIProvider) convertRequestMessage(msg Message) oai.ChatCompletionMe
 			assistantParam.ToolCalls = toolCalls
 		}
 		// DeepSeek V4 requires reasoning_content to be echoed back for ALL
-		// assistant messages in thinking mode, even when empty. Synthetic
+		// assistant messages in thinking mode, even when empty. Constructed
 		// assistant messages (e.g., nudges without tool calls) must also
 		// include the field to avoid 400 errors.
 		assistantParam.SetExtraFields(map[string]any{

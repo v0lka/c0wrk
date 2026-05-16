@@ -134,7 +134,7 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 }
 
 // SendMessage sends a user message to a session (async - results come via events).
-// mode controls execution strategy: "normal" = synthetic single-step, "advanced" = full Plan&Execute.
+// mode controls execution strategy: "normal" = single-step plan, "advanced" = full multi-step DAG.
 // activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
 func (f *FrontendAPI) SendMessage(id, text, mode string, activeSkills []string) error {
 	if f.app == nil || f.app.Manager() == nil {

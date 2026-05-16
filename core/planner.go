@@ -28,6 +28,19 @@ func systemMessagesFromPrompt(systemPrompt string) []llm.Message {
 	return msgs
 }
 
+// planPromptMode groups all mode-varying parts of the planner prompt template.
+// Each variant (multi-step, single-step, continuation) provides its own config
+// while sharing common elements (domain assignment, agent profiles, extra sections).
+type planPromptMode struct {
+	preamble      string
+	tot           string
+	guidance      string
+	extraSections string
+	tail          string
+	jsonExample   string
+	maxSteps      string
+}
+
 // Plan mode template content.
 const (
 	planModePreamble = `You are a task planner. Decompose the user's task into a DAG (directed acyclic graph) of execution steps.
@@ -47,6 +60,73 @@ Match step granularity to task scope. Each step must be bounded so a single exec
 CRITICAL: A single step CANNOT read an entire large codebase and retain all findings. For tasks requiring broad codebase analysis, decompose research into multiple parallel steps, each covering a bounded area. Then add a synthesis step that depends on all research steps.
 
 Limit plans to MAX-STEPS steps maximum.
+`
+
+	// singleStepPreamble is used when ExecutionMode == "normal" — produces exactly 1 step.
+	singleStepPreamble = `You are a task structurer. Given the user's task, produce exactly ONE well-defined execution step.
+
+The step must be executable by a single agent with access to tools. Do NOT decompose the task into multiple steps. Instead, produce a single comprehensive step whose What/How/Where/Acceptance Criteria covers the full scope of work.
+
+The step must be bounded so a single executor can complete it within its context window. If the task is broad, the step's How section should outline a phased approach that the executor can follow sequentially.
+
+Limit plans to MAX-STEPS steps maximum.
+`
+
+	// multiStepToT is the Tree of Thoughts section for multi-step plan generation.
+	multiStepToT = `## Tree of Thoughts Reasoning Framework
+
+You reason using the Tree of Thoughts (ToT) framework. Do NOT skip or abbreviate the reasoning steps — explicit branching and evaluation improves your final output.
+
+### How ToT Applies to Planning
+
+- BRANCH: Generate 2-4 alternative task decompositions (different groupings, step boundaries, parallelization strategies)
+- EVALUATE: Score each decomposition on step independence, context fit, and coverage of acceptance criteria
+- SELECT: Pick the decomposition that best balances parallelism with correctness
+- DEEPEN: Flesh out each step's What/How/Where/Acceptance Criteria
+- BACKTRACK: If a step description reveals an implicit dependency or scope mismatch, return to the decomposition point and try an alternative grouping
+
+Reason through your plan design using the ToT loop above, then output ONLY the JSON plan object.
+`
+
+	// singleStepToT is the Tree of Thoughts section for single-step task structuring.
+	singleStepToT = `## Tree of Thoughts Reasoning Framework
+
+You reason using the Tree of Thoughts (ToT) framework. Do NOT skip or abbreviate the reasoning steps — explicit branching and evaluation improves your final output.
+
+### How ToT Applies to Task Structuring
+
+- BRANCH: Generate 2-3 alternative approaches to the task (different strategies, techniques, tool choices, starting points)
+- EVALUATE: Score each approach on feasibility, completeness within a single execution context, and verifiability of acceptance criteria
+- SELECT: Pick the approach that most reliably achieves the task's goals within the executor's context window
+- DEEPEN: Flesh out the selected approach into a precise What/How/Where/Acceptance Criteria specification
+- BACKTRACK: If deepening reveals the approach is infeasible or acceptance criteria are unverifiable, return and select an alternative
+
+Reason through your approach using the ToT loop above, then output ONLY the JSON plan object.
+`
+
+	// multiStepGuidance provides decomposition guidance for multi-step plans.
+	multiStepGuidance = `## Guidance — Balance
+
+Apply BRANCH/EVALUATE when decomposing:
+
+- BRANCH multiple decompositions; EVALUATE which keeps each step bounded and context-safe
+- Decompose research-heavy tasks into multiple bounded-area steps rather than one monolithic "read everything" step
+- Let the coder verify as they go rather than creating separate verify steps
+- Ensure each step produces concrete progress toward the goal
+- Merge related requirements only when a single executor can complete them without context overflow
+- If EVALUATE reveals an implicit dependency between supposedly parallel steps, BACKTRACK and restructure
+`
+
+	// singleStepGuidance provides guidance for single-step task structuring.
+	singleStepGuidance = `## Guidance — Quality
+
+Your plan MUST contain exactly 1 step. Focus on producing a comprehensive specification:
+
+- The What section must fully describe the deliverable — no ambiguity about scope
+- The How section must outline a concrete approach (algorithms, patterns, tool order) — not just "implement the feature"
+- The Where section must name specific files, functions, or modules to touch — use paths discovered during exploration when available
+- Acceptance Criteria must be concrete and verifiable by the executor using tool calls (read_file, bash_exec, ripgrep, etc.) — not subjective assessments
+- If the task involves multiple files or concerns, the How section should define the order of operations
 `
 
 	planModeDomainAssignment = `
@@ -127,6 +207,9 @@ Step executors follow the tool priority order from the system prompt. When writi
 	planModeTail = "REFLECTIONS\n"
 
 	planModeJSONExample = `{"steps": [{"id": "step_1", "summary": "Implement auth middleware", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "skills": ["go-testing"], "domain": "code", "keep_last_n": 5, "protected_tools": ["store_fact", "search_facts"]}}]}`
+
+	// singleStepJSONExample provides the JSON format for single-step plans.
+	singleStepJSONExample = `{"steps": [{"id": "step_1", "summary": "5-7 word task label", "description": "## Task Title\n### What:\nFull description of what needs to be done.\n### How:\nConcrete approach, techniques, tool usage order.\n### Where:\nSpecific files, functions, modules.\n### Acceptance Criteria:\n- Verifiable condition 1\n- Verifiable condition 2", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1", "tool2"], "profile": {"role": "executor", "domain": "code"}}]}`
 )
 
 // Continuation mode template content.
@@ -158,9 +241,84 @@ The following steps are the terminal (final) steps of the completed plan. New st
 TERMINAL-STEPS
 `
 
-	continuationModeExtraSections = ""
+	// continuationSingleStepPreamble is used for continuations in normal mode — produces exactly 1 step.
+	continuationSingleStepPreamble = `You are a planning agent that creates a single continuation step for a follow-up request.
+
+A task was completed successfully, and the user has sent a follow-up message. Create exactly ONE new step to address the follow-up.
+
+## Context
+
+Original request:
+ORIGINAL-REQUEST
+
+Completed plan (step summaries):
+COMPLETED-PLAN-SUMMARY
+
+## Instructions
+
+1. Analyze the new user message to understand what additional work is needed.
+2. Create exactly ONE step that addresses the follow-up request.
+3. The step ID MUST be prefixed with ` + "`continuation_`" + `.
+4. The step MUST reference the terminal steps of the existing plan in its DependsOn field.
+5. Do NOT decompose — produce one comprehensive step whose What/How/Where/Acceptance Criteria covers the full scope.
+
+## Terminal Steps
+
+The following steps are the terminal (final) steps of the completed plan. The new step should depend on these:
+TERMINAL-STEPS
+
+Limit plans to MAX-STEPS steps maximum.
+`
+
+	continuationModeExtraSections = planModeExtraSections
 	continuationModeTail          = ""
 	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "skills": ["go-testing"], "domain": "code"}}]}`
+
+	// continuationSingleStepJSONExample provides the JSON format for single-step continuations.
+	continuationSingleStepJSONExample = `{"steps": [{"id": "continuation_1", "summary": "5-7 word continuation label", "description": "## Continuation Title\n### What:\nFull description of what needs to be done.\n### How:\nConcrete approach building on completed work.\n### Where:\nSpecific files, functions, modules.\n### Acceptance Criteria:\n- Verifiable condition 1\n- Verifiable condition 2", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "executor", "domain": "code"}}]}`
+)
+
+// Pre-built mode configurations used by the unified prompt builder.
+var (
+	multiStepMode = planPromptMode{
+		preamble:      planModePreamble,
+		tot:           multiStepToT,
+		guidance:      multiStepGuidance,
+		extraSections: planModeExtraSections,
+		tail:          planModeTail,
+		jsonExample:   planModeJSONExample,
+		maxSteps:      "10",
+	}
+
+	singleStepMode = planPromptMode{
+		preamble:      singleStepPreamble,
+		tot:           singleStepToT,
+		guidance:      singleStepGuidance,
+		extraSections: planModeExtraSections,
+		tail:          planModeTail,
+		jsonExample:   singleStepJSONExample,
+		maxSteps:      "1",
+	}
+
+	continuationMultiMode = planPromptMode{
+		preamble:      continuationModePreamble,
+		tot:           multiStepToT,
+		guidance:      multiStepGuidance,
+		extraSections: continuationModeExtraSections,
+		tail:          continuationModeTail,
+		jsonExample:   continuationModeJSONExample,
+		maxSteps:      "10",
+	}
+
+	continuationSingleMode = planPromptMode{
+		preamble:      continuationSingleStepPreamble,
+		tot:           singleStepToT,
+		guidance:      singleStepGuidance,
+		extraSections: continuationModeExtraSections,
+		tail:          continuationModeTail,
+		jsonExample:   continuationSingleStepJSONExample,
+		maxSteps:      "1",
+	}
 )
 
 // compile-time check: Planner's public method surface is adapted to
@@ -276,8 +434,10 @@ func (p *Planner) getFamily(ctx context.Context) string {
 	return meta.Family
 }
 
-// Plan generates a DAG execution plan for the given task.
-// If domain is "general" or no planner tools are available, uses a direct one-shot LLM call.
+// Plan generates an execution plan for the given task.
+// When singleStep is true, produces exactly 1 step (normal mode).
+// When singleStep is false, produces a multi-step DAG (advanced mode).
+// If domain is "general" and complexity < 4, or no planner tools are available, uses a direct one-shot LLM call.
 // Otherwise, runs a bounded ReAct exploration loop before producing the plan.
 // availableSkills is the router-matched skill pool for this turn; the planner may assign
 // a subset per step via profile.skills. Empty = full pool reused at executor time.
@@ -287,30 +447,38 @@ func (p *Planner) Plan(
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
 	availableSkills []skills.SkillDescriptor,
+	singleStep bool,
 ) (*Plan, error) {
+	mode := multiStepMode
+	if singleStep {
+		mode = singleStepMode
+	}
+
 	domain := DomainFromContext(ctx)
 	plannerTools := p.getPlannerTools()
 
 	complexity := ComplexityFromContext(ctx)
 	if (domain == "general" && complexity < 4) || len(plannerTools) == 0 {
-		p.log().Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools))
-		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
+		p.log().Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools), "singleStep", singleStep)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
 	}
 
-	p.log().Debug("planner: using informed exploration planning", "domain", domain, "planner_tools", len(plannerTools))
-	return p.planWithExploration(ctx, task, availableTools, reflections, plannerTools, availableSkills)
+	p.log().Debug("planner: using informed exploration planning", "domain", domain, "planner_tools", len(plannerTools), "singleStep", singleStep)
+	return p.planWithExploration(ctx, task, mode, availableTools, reflections, plannerTools, availableSkills, singleStep)
 }
 
-// planDirect performs a one-shot LLM plan generation (original behavior).
+// planDirect performs a one-shot LLM plan generation.
 // Used for "general" domain or when no exploration tools are available.
 func (p *Planner) planDirect(
 	ctx context.Context,
 	task string,
+	mode planPromptMode,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
 	availableSkills []skills.SkillDescriptor,
+	singleStep bool,
 ) (*Plan, error) {
-	systemPrompt := p.buildPlanSystemPrompt(ctx, availableTools, reflections, availableSkills)
+	systemPrompt := p.buildPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills)
 
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
@@ -330,6 +498,13 @@ func (p *Planner) planDirect(
 		return nil, fmt.Errorf("failed to parse plan response: %w", err)
 	}
 
+	// Enforce single-step constraint: if the planner returned more than 1 step
+	// in single-step mode, truncate to the first step.
+	if singleStep && len(plan.Steps) > 1 {
+		p.log().Warn("planner: single-step mode returned multiple steps, truncating", "count", len(plan.Steps))
+		plan.Steps = plan.Steps[:1]
+	}
+
 	return plan, nil
 }
 
@@ -345,13 +520,15 @@ func (p *Planner) emitService(content string, meta map[string]any) {
 func (p *Planner) planWithExploration(
 	ctx context.Context,
 	task string,
+	mode planPromptMode,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
 	plannerTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
+	singleStep bool,
 ) (*Plan, error) {
 	// Build the informed planner system prompt
-	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, availableTools, reflections, availableSkills)
+	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills)
 
 	// Resolve model metadata for context window management
 	var modelMeta llm.ModelMetadata
@@ -369,7 +546,7 @@ func (p *Planner) planWithExploration(
 	if p.contextFactory == nil {
 		// Fall back to direct planning if no context factory is available
 		p.log().Warn("planner: contextFactory is nil, falling back to direct planning")
-		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
 	}
 	cm := p.contextFactory(systemPrompt, modelMeta, "sliding")
 
@@ -415,7 +592,7 @@ func (p *Planner) planWithExploration(
 	)
 	exec.SetReasoningEffort(llm.ResolveAgentReasoningMode("researcher", p.baseReasoningEffort, p.roleOverrides))
 
-	// Run the exploration loop with a synthetic step ID so context-aware tools
+	// Run the exploration loop with a placeholder step ID so context-aware tools
 	// (e.g. set_step_status) know which logical step they belong to.
 	ctx = agent.WithStepID(ctx, "planner-exploration")
 	p.emitService("Exploring codebase...", map[string]any{"phase": "planning"})
@@ -427,7 +604,7 @@ func (p *Planner) planWithExploration(
 		}
 		// Degrade gracefully for other executor failures
 		p.log().Warn("planner: exploration executor failed, falling back to direct planning", "error", err)
-		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
 	}
 
 	// Parse the plan from the executor's output
@@ -435,14 +612,19 @@ func (p *Planner) planWithExploration(
 	if result.Output == "" {
 		// Exploration exhausted budget without producing a plan — fall back to direct
 		p.log().Warn("planner: exploration produced no output, falling back to direct planning")
-		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
 	}
 
 	plan, err := p.parsePlanResponse(result.Output, availableSkills)
 	if err != nil {
 		// If parsing fails, the LLM might have returned free text — fall back
 		p.log().Warn("planner: failed to parse exploration plan output, falling back to direct", "error", err)
-		return p.planDirect(ctx, task, availableTools, reflections, availableSkills)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
+	}
+
+	if singleStep && len(plan.Steps) > 1 {
+		p.log().Warn("planner: single-step mode returned multiple steps from exploration, truncating", "count", len(plan.Steps))
+		plan.Steps = plan.Steps[:1]
 	}
 
 	plan.ExplorationContext = summarizeExplorationSteps(result.Steps)
@@ -492,38 +674,12 @@ func (p *Planner) getPlannerTools() []tools.ToolDescriptor {
 // buildInformedPlanSystemPrompt constructs the system prompt for the informed planning exploration.
 func (p *Planner) buildInformedPlanSystemPrompt(
 	ctx context.Context,
+	mode planPromptMode,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
 	availableSkills []skills.SkillDescriptor,
 ) string {
-	// Build available tools string (grouped by priority tier)
-	availableToolsStr := agent.BuildGroupedToolList(availableTools)
-
-	// Resolve MODE-TAIL with reflections
-	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", formatPlanReflections(reflections))
-
-	substitutions := map[string]string{
-		"MODE-PREAMBLE":       planModePreamble,
-		"DOMAIN-ASSIGNMENT":   planModeDomainAssignment,
-		"AGENT-PROFILES":      planModeAgentProfiles,
-		"MODE-EXTRA-SECTIONS": planModeExtraSections,
-		"MODE-TAIL":           resolvedTail,
-		"MODE-JSON-EXAMPLE":   planModeJSONExample,
-		"AVAILABLE-TOOLS":     availableToolsStr,
-		"AVAILABLE-SKILLS":    formatSkillList(availableSkills),
-		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
-		"MAX-STEPS":           "10",
-	}
-
-	result := prompt.NewBuilder().
-		Core(prompts.PlannerInformed).
-		Core(prompts.FamilyPrompt("planner", p.getFamily(ctx))).
-		Core(prompts.VerificationMandate).
-		CacheBreak().
-		ReplaceAll(substitutions).
-		Build()
-
-	return appendPlannerContextSections(ctx, result)
+	return p.buildSystemPromptFromMode(ctx, mode, prompts.PlannerInformed, availableTools, reflections, availableSkills, nil)
 }
 func (p *Planner) Replan(
 	ctx context.Context,
@@ -575,8 +731,14 @@ func (p *Planner) PlanContinuation(
 	newMessage string,
 	availableTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
+	singleStep bool,
 ) (*Plan, error) {
-	systemPrompt := p.buildContinuationSystemPrompt(ctx, originalRequest, existingPlan, completedSteps, availableTools, availableSkills)
+	mode := continuationMultiMode
+	if singleStep {
+		mode = continuationSingleMode
+	}
+
+	systemPrompt := p.buildContinuationSystemPrompt(ctx, mode, originalRequest, existingPlan, completedSteps, availableTools, availableSkills)
 
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: newMessage})
@@ -596,41 +758,59 @@ func (p *Planner) PlanContinuation(
 		return nil, fmt.Errorf("failed to parse continuation plan: %w", err)
 	}
 
+	if singleStep && len(plan.Steps) > 1 {
+		p.log().Warn("planner: single-step continuation returned multiple steps, truncating", "count", len(plan.Steps))
+		plan.Steps = plan.Steps[:1]
+	}
+
 	return plan, nil
 }
 
-// buildPlanSystemPrompt constructs the system prompt for initial planning.
-func (p *Planner) buildPlanSystemPrompt(
+// buildSystemPromptFromMode constructs the system prompt using mode-specific configuration.
+// It is the unified builder underlying all planner prompt variants (plan, informed, continuation).
+// baseTemplate is the embedded markdown template (PlannerBase or PlannerInformed).
+// extraSubstitutions are merged on top of mode-derived substitutions (used for continuation context).
+func (p *Planner) buildSystemPromptFromMode(
 	ctx context.Context,
+	mode planPromptMode,
+	baseTemplate string,
 	availableTools []tools.ToolDescriptor,
 	reflections []Reflection,
 	availableSkills []skills.SkillDescriptor,
+	extraSubstitutions map[string]string,
 ) string {
 	// Build available tools string (grouped by priority tier)
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
 
-	// Build reflections string
-	// Resolve MODE-TAIL: it contains the REFLECTIONS placeholder, so pre-substitute
+	// Resolve MODE-TAIL: it may contain the REFLECTIONS placeholder, so pre-substitute
 	// to avoid order-dependent substitution issues in the builder.
-	resolvedTail := strings.ReplaceAll(planModeTail, "REFLECTIONS", formatPlanReflections(reflections))
+	resolvedTail := mode.tail
+	if strings.Contains(resolvedTail, "REFLECTIONS") {
+		resolvedTail = strings.ReplaceAll(resolvedTail, "REFLECTIONS", formatPlanReflections(reflections))
+	}
 
-	// Build substitutions for template placeholders
 	substitutions := map[string]string{
-		"MODE-PREAMBLE":       planModePreamble,
+		"MODE-PREAMBLE":       mode.preamble,
+		"MODE-TOT":            mode.tot,
+		"MODE-GUIDANCE":       mode.guidance,
 		"DOMAIN-ASSIGNMENT":   planModeDomainAssignment,
 		"AGENT-PROFILES":      planModeAgentProfiles,
-		"MODE-EXTRA-SECTIONS": planModeExtraSections,
+		"MODE-EXTRA-SECTIONS": mode.extraSections,
 		"MODE-TAIL":           resolvedTail,
-		"MODE-JSON-EXAMPLE":   planModeJSONExample,
+		"MODE-JSON-EXAMPLE":   mode.jsonExample,
 		"AVAILABLE-TOOLS":     availableToolsStr,
 		"AVAILABLE-SKILLS":    formatSkillList(availableSkills),
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
-		"MAX-STEPS":           "10",
+		"MAX-STEPS":           mode.maxSteps,
 	}
 
-	// Use prompt builder with family-specific adapters
+	// Merge extra substitutions (e.g. continuation-specific placeholders)
+	for k, v := range extraSubstitutions {
+		substitutions[k] = v
+	}
+
 	result := prompt.NewBuilder().
-		Core(prompts.PlannerBase).
+		Core(baseTemplate).
 		Core(prompts.FamilyPrompt("planner", p.getFamily(ctx))).
 		Core(prompts.VerificationMandate).
 		CacheBreak().
@@ -638,6 +818,17 @@ func (p *Planner) buildPlanSystemPrompt(
 		Build()
 
 	return appendPlannerContextSections(ctx, result)
+}
+
+// buildPlanSystemPrompt constructs the system prompt for initial planning.
+func (p *Planner) buildPlanSystemPrompt(
+	ctx context.Context,
+	mode planPromptMode,
+	availableTools []tools.ToolDescriptor,
+	reflections []Reflection,
+	availableSkills []skills.SkillDescriptor,
+) string {
+	return p.buildSystemPromptFromMode(ctx, mode, prompts.PlannerBase, availableTools, reflections, availableSkills, nil)
 }
 
 // replanContext groups the parameters needed for replan prompt construction.
@@ -720,6 +911,7 @@ func (p *Planner) buildReplanSystemPrompt(
 // buildContinuationSystemPrompt constructs the system prompt for continuation planning.
 func (p *Planner) buildContinuationSystemPrompt(
 	ctx context.Context,
+	mode planPromptMode,
 	originalRequest string,
 	existingPlan *Plan,
 	completedSteps []CompletedStep,
@@ -751,35 +943,13 @@ func (p *Planner) buildContinuationSystemPrompt(
 	terminalSteps := FindTerminalSteps(existingPlan)
 	terminalStepsStr := strings.Join(terminalSteps, ", ")
 
-	// Build available tools string (grouped by priority tier)
-	availableToolsStr := agent.BuildGroupedToolList(availableTools)
-
-	// Build substitutions for template placeholders
-	substitutions := map[string]string{
-		"MODE-PREAMBLE":          continuationModePreamble,
-		"DOMAIN-ASSIGNMENT":      planModeDomainAssignment,
-		"AGENT-PROFILES":         planModeAgentProfiles,
-		"MODE-EXTRA-SECTIONS":    continuationModeExtraSections,
-		"MODE-TAIL":              continuationModeTail,
-		"MODE-JSON-EXAMPLE":      continuationModeJSONExample,
+	extraSubs := map[string]string{
 		"ORIGINAL-REQUEST":       originalRequest,
 		"COMPLETED-PLAN-SUMMARY": completedPlanSummary,
 		"TERMINAL-STEPS":         terminalStepsStr,
-		"AVAILABLE-TOOLS":        availableToolsStr,
-		"AVAILABLE-SKILLS":       formatSkillList(availableSkills),
-		"WORKSPACE-PATH":         formatWorkspacePath(ctx),
 	}
 
-	// Use prompt builder with family-specific adapters
-	result := prompt.NewBuilder().
-		Core(prompts.PlannerBase).
-		Core(prompts.FamilyPrompt("planner", p.getFamily(ctx))).
-		Core(prompts.VerificationMandate).
-		CacheBreak().
-		ReplaceAll(substitutions).
-		Build()
-
-	return appendPlannerContextSections(ctx, result)
+	return p.buildSystemPromptFromMode(ctx, mode, prompts.PlannerBase, availableTools, nil, availableSkills, extraSubs)
 }
 
 // FindTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
@@ -898,7 +1068,7 @@ func (p *Planner) parsePlanResponse(content string, availableSkills []skills.Ski
 		}
 		profileMap, isMap := step.Profile.(map[string]any)
 		if !isMap {
-			// Already a concrete type (e.g. set by CreateSyntheticPlan)
+			// Already a concrete type (e.g. set programmatically)
 			continue
 		}
 		raw, err := json.Marshal(profileMap)
@@ -970,22 +1140,4 @@ func summarizeExplorationSteps(steps []agent.Step) string {
 	return result
 }
 
-// CreateSyntheticPlan creates a minimal 1-step plan without LLM calls.
-// Used for simple tasks where full planning is unnecessary overhead.
-func (p *Planner) CreateSyntheticPlan(task, domain string) *Plan {
-	return &Plan{
-		Steps: []PlanStep{
-			{
-				ID:             "step_1",
-				Summary:        task,
-				Description:    task,
-				DependsOn:      []string{},
-				Parallelizable: true,
-				Profile: AgentProfile{
-					Role:   "executor",
-					Domain: domain,
-				},
-			},
-		},
-	}
-}
+

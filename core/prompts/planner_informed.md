@@ -20,9 +20,13 @@ You have access to tools for codebase exploration. Use them to gather facts befo
 
 MODE-PREAMBLE
 
+MODE-TOT
+
 ### Domain Assignment
 
 DOMAIN-ASSIGNMENT
+
+MODE-GUIDANCE
 
 ### Agent Profiles
 

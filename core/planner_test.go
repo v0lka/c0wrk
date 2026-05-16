@@ -47,7 +47,7 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 		{Name: "file_write", Description: "Write content to a file"},
 	}
 
-	plan, err := planner.Plan(context.Background(), "Create a new Go project", availableTools, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Create a new Go project", availableTools, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestPlan_IncludesToolsInPrompt(t *testing.T) {
 		{Name: "file_read", Description: "Read file contents"},
 	}
 
-	_, err := planner.Plan(context.Background(), "Build project", availableTools, nil, nil)
+	_, err := planner.Plan(context.Background(), "Build project", availableTools, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestPlan_WithReflections(t *testing.T) {
 		},
 	}
 
-	_, err := planner.Plan(context.Background(), "Deploy application", nil, reflections, nil)
+	_, err := planner.Plan(context.Background(), "Deploy application", nil, reflections, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Test task", nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Test task", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() should parse markdown code block, got error: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Research task", nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Research task", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	plan, err := planner.Plan(context.Background(), "Simple task", nil, nil, nil)
+	plan, err := planner.Plan(context.Background(), "Simple task", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -485,7 +485,7 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 
 	// With workspace path
 	ctx := tools.WithWorkspacePath(context.Background(), "/my/project")
-	_, err := planner.Plan(ctx, "Build project", nil, nil, nil)
+	_, err := planner.Plan(ctx, "Build project", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 	}
 
 	// Without workspace path
-	_, err = planner.Plan(context.Background(), "Build project", nil, nil, nil)
+	_, err = planner.Plan(context.Background(), "Build project", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
 	}
 	ctx := tools.WithEnvInfo(context.Background(), info)
 
-	_, err := planner.Plan(ctx, "Build project", nil, nil, nil)
+	_, err := planner.Plan(ctx, "Build project", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -837,7 +837,7 @@ func TestPlanWithExploration_InformedPath(t *testing.T) {
 	ctx := WithDomain(context.Background(), "code")
 	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 
-	plan, err := planner.Plan(ctx, "Refactor authentication module", nil, nil, nil)
+	plan, err := planner.Plan(ctx, "Refactor authentication module", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -892,7 +892,7 @@ func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
 	ctx := WithDomain(context.Background(), "code")
 	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 
-	plan, err := planner.Plan(ctx, "Analyze codebase", nil, nil, nil)
+	plan, err := planner.Plan(ctx, "Analyze codebase", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -932,7 +932,7 @@ func TestPlanDirect_GeneralDomain(t *testing.T) {
 		// domain="general" with no/low complexity → still uses planDirect
 		ctx := WithDomain(context.Background(), "general")
 
-		plan, err := planner.Plan(ctx, "Write a poem", nil, nil, nil)
+		plan, err := planner.Plan(ctx, "Write a poem", nil, nil, nil, false)
 		if err != nil {
 			t.Fatalf("Plan() returned error: %v", err)
 		}
@@ -985,7 +985,7 @@ func TestPlanDirect_GeneralDomain(t *testing.T) {
 		ctx = WithComplexity(ctx, 5)
 		ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 
-		plan, err := planner.Plan(ctx, "Analyze the entire codebase architecture and produce a comprehensive report", nil, nil, nil)
+		plan, err := planner.Plan(ctx, "Analyze the entire codebase architecture and produce a comprehensive report", nil, nil, nil, false)
 		if err != nil {
 			t.Fatalf("Plan() returned error: %v", err)
 		}
@@ -1022,7 +1022,7 @@ func TestPlanDirect_NoToolsAvailable(t *testing.T) {
 
 	ctx := WithDomain(context.Background(), "code")
 
-	plan, err := planner.Plan(ctx, "Do something", nil, nil, nil)
+	plan, err := planner.Plan(ctx, "Do something", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestPlanDirect_NoToolsAvailable(t *testing.T) {
 	planner2 := NewPlanner(mockLLM)
 	planner2.SetToolRegistry(reg)
 
-	plan2, err := planner2.Plan(ctx, "Do something", nil, nil, nil)
+	plan2, err := planner2.Plan(ctx, "Do something", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -1147,7 +1147,7 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 			ctx := WithDomain(context.Background(), domain)
 			ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 
-			plan, err := planner.Plan(ctx, "Domain-specific task", nil, nil, nil)
+			plan, err := planner.Plan(ctx, "Domain-specific task", nil, nil, nil, false)
 			if err != nil {
 				t.Fatalf("Plan() returned error for domain %q: %v", domain, err)
 			}
@@ -1192,7 +1192,7 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 		ctx := WithDomain(context.Background(), "general")
 		ctx = WithComplexity(ctx, 2) // below threshold → planDirect
 
-		_, err := planner.Plan(ctx, "General task", nil, nil, nil)
+		_, err := planner.Plan(ctx, "General task", nil, nil, nil, false)
 		if err != nil {
 			t.Fatalf("Plan() returned error: %v", err)
 		}
@@ -1231,7 +1231,7 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 		ctx = WithComplexity(ctx, 5) // >= 4 threshold → exploration
 		ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 
-		plan, err := planner.Plan(ctx, "Analyze the entire codebase", nil, nil, nil)
+		plan, err := planner.Plan(ctx, "Analyze the entire codebase", nil, nil, nil, false)
 		if err != nil {
 			t.Fatalf("Plan() returned error: %v", err)
 		}
@@ -1282,7 +1282,7 @@ func TestPlanWithExploration_ExecutorError_FallsBackToDirect(t *testing.T) {
 	ctx := WithDomain(context.Background(), "code")
 	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 
-	plan, err := planner.Plan(ctx, "Refactor module", nil, nil, nil)
+	plan, err := planner.Plan(ctx, "Refactor module", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() should have fallen back to planDirect, got error: %v", err)
 	}
@@ -1326,7 +1326,7 @@ func TestPlanWithExploration_ContextCancellation_Propagates(t *testing.T) {
 	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 	cancel() // cancel immediately
 
-	_, err := planner.Plan(ctx, "Refactor module", nil, nil, nil)
+	_, err := planner.Plan(ctx, "Refactor module", nil, nil, nil, false)
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}
@@ -1465,7 +1465,7 @@ func TestPlanContinuation(t *testing.T) {
 	}
 	newMessage := "Now add a version flag"
 
-	plan, err := planner.PlanContinuation(context.Background(), originalRequest, existingPlan, completedSteps, newMessage, nil, nil)
+	plan, err := planner.PlanContinuation(context.Background(), originalRequest, existingPlan, completedSteps, newMessage, nil, nil, false)
 	if err != nil {
 		t.Fatalf("PlanContinuation() returned error: %v", err)
 	}
@@ -1509,7 +1509,7 @@ func TestPlan_AgentsMD_InjectedInPrompt(t *testing.T) {
 	agentsContent := "# Project Instructions\nAlways run `make test` before committing."
 	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
 
-	_, err := planner.Plan(ctx, "Build the feature", nil, nil, nil)
+	_, err := planner.Plan(ctx, "Build the feature", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -1549,7 +1549,7 @@ func TestPlan_AgentsMD_AbsentWhenNotInContext(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	_, err := planner.Plan(context.Background(), "Build the feature", nil, nil, nil)
+	_, err := planner.Plan(context.Background(), "Build the feature", nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -1636,7 +1636,7 @@ func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
 		{StepID: "step_1", Output: "done"},
 	}
 
-	_, err := planner.PlanContinuation(ctx, "Original request", existingPlan, completedSteps, "Follow-up", nil, nil)
+	_, err := planner.PlanContinuation(ctx, "Original request", existingPlan, completedSteps, "Follow-up", nil, nil, false)
 	if err != nil {
 		t.Fatalf("PlanContinuation() returned error: %v", err)
 	}
