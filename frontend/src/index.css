@@ -463,3 +463,96 @@ body {
   outline-offset: -2px;
 }
 
+/* ==========================================================================
+   CodeMirror — Chat Input Editor
+   ========================================================================== */
+
+.cm-chat-container {
+  height: 100%;
+}
+
+.cm-chat-container .cm-editor {
+  height: 100%;
+  background: transparent;
+}
+
+.cm-chat-container .cm-scroller {
+  overflow: auto;
+  font-family: 'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.cm-chat-container .cm-scroller::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+
+.cm-chat-container .cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cm-chat-container .cm-scroller::-webkit-scrollbar-thumb {
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--color-border) 50%, transparent);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+}
+
+.cm-chat-container .cm-gutters {
+  display: none;
+}
+
+.cm-chat-container .cm-activeLine {
+  background: transparent;
+}
+
+.cm-chat-container .cm-ref-skill {
+  color: var(--color-warning);
+}
+
+.cm-chat-container .cm-ref-file {
+  color: var(--color-info);
+}
+
+.cm-chat-container .cm-placeholder {
+  color: color-mix(in srgb, var(--color-foreground) 50%, transparent);
+  font-style: normal;
+}
+
+.cm-chat-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Autocomplete tooltip */
+.cm-chat-container .cm-tooltip-autocomplete {
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.cm-chat-container .cm-tooltip-autocomplete ul {
+  max-height: 240px;
+  font-family: 'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace;
+  font-size: 0.75rem;
+}
+
+.cm-chat-container .cm-tooltip-autocomplete li {
+  padding: 0.25rem 0.5rem;
+}
+
+.cm-chat-container .cm-tooltip-autocomplete li[aria-selected] {
+  background: var(--color-muted);
+  color: var(--color-foreground);
+}
+
+.cm-chat-container .cm-completionDetail {
+  color: var(--color-muted-foreground);
+  font-style: normal;
+  margin-left: 0.5rem;
+}
+

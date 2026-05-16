@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, type KeyboardEvent } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -9,8 +9,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { TerminalPanel } from '@/components/terminal/TerminalPanel'
 import { useMessageSender } from '@/hooks/useMessageSender'
-import { useAutocomplete } from '@/hooks/useAutocomplete'
-import { AutocompletePopup } from '@/components/chat/AutocompletePopup'
+import { useChatEditor } from '@/hooks/useChatEditor'
 import { extractSkillRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
 import { Play, Square, Maximize2, Minimize2, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow } from 'lucide-react'
@@ -19,10 +18,10 @@ import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
 export function ChatInput() {
-  const [text, setText] = useState('')
   const [isOptimizing, setIsOptimizing] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [hasContent, setHasContent] = useState(false)
   const inputAreaRef = useRef<HTMLDivElement>(null)
+  const handleSendRef = useRef<() => void>(() => {})
 
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
@@ -39,69 +38,61 @@ export function ChatInput() {
   const toggleExpanded = useInputModeStore(s => s.toggleExpanded)
 
   const { send, cancel, isProcessing } = useMessageSender()
-  const autocomplete = useAutocomplete()
 
   const executionMode = useExecutionModeStore(s => s.mode)
   const setExecutionMode = useExecutionModeStore(s => s.setMode)
-
-  useEffect(() => {
-    if (mode === 'terminal' && textareaRef.current) {
-      textareaRef.current.blur()
-    }
-  }, [mode])
 
   const isNoProject = !activeProjectId
   const isInputDisabled = taskActive || isNoProject
   const showCancel = taskActive || isProcessing
 
+  let placeholderText = 'Type a message... (Enter to send, Shift+Enter for new line)'
+  if (isNoProject) {
+    placeholderText = 'Select or create a project to start'
+  } else if (taskActive) {
+    placeholderText = 'Session is processing...'
+  }
+
+  const editor = useChatEditor({
+    disabled: isInputDisabled,
+    placeholder: placeholderText,
+    onSend: () => handleSendRef.current(),
+    onContentChange: setHasContent,
+  })
+
   const handleSend = useCallback(async () => {
-    if (!text.trim()) return
-    const messageText = text.trim()
+    const messageText = editor.getText().trim()
+    if (!messageText) return
     const skills = extractSkillRefs(messageText)
-    setText('')
-    autocomplete.close()
+    editor.clear()
     try {
       await send(messageText, skills)
     } catch {
-      // send() threw during session creation — restore the text
-      setText(messageText)
+      editor.setText(messageText)
     }
-  }, [text, send, autocomplete])
+  }, [editor, send])
+
+  handleSendRef.current = handleSend
 
   const handleOptimize = useCallback(async () => {
-    if (!text.trim() || isOptimizing) return
+    const text = editor.getText().trim()
+    if (!text || isOptimizing) return
     setIsOptimizing(true)
     try {
-      const result = await optimizePrompt(text.trim())
-      setText(result.optimized_prompt)
+      const result = await optimizePrompt(text)
+      editor.setText(result.optimized_prompt)
     } catch (error) {
       logger.error('Failed to optimize prompt:', error)
     } finally {
       setIsOptimizing(false)
     }
-  }, [text, isOptimizing])
+  }, [editor, isOptimizing])
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    // Let autocomplete handle its keys first.
-    if (autocomplete.handleKeyDown(e)) {
-      // If Enter/Tab was pressed with autocomplete open, apply selection.
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        const { text: newText, cursorPos } = autocomplete.select(autocomplete.selectedIndex, text)
-        setText(newText)
-        requestAnimationFrame(() => {
-          if (textareaRef.current) {
-            textareaRef.current.selectionStart = cursorPos
-            textareaRef.current.selectionEnd = cursorPos
-          }
-        })
-      }
-      return
+  useEffect(() => {
+    if (mode === 'chat') {
+      editor.focus()
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      if (!showCancel && !isInputDisabled) handleSend()
-    }
-  }, [handleSend, showCancel, isInputDisabled, autocomplete, text])
+  }, [mode, editor])
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -133,13 +124,9 @@ export function ChatInput() {
     }
   }, [height, setHeight])
 
-  let placeholder = 'Type a message... (Enter to send, Shift+Enter for new line)'
   let blockingMessage: string | null = null
   if (isNoProject) {
-    placeholder = 'Select or create a project to start'
     blockingMessage = 'Select or create a project'
-  } else if (taskActive) {
-    placeholder = 'Session is processing...'
   }
 
   return (
@@ -171,38 +158,11 @@ export function ChatInput() {
           'absolute inset-0 flex flex-col px-3 py-1',
           mode !== 'chat' && 'opacity-0 pointer-events-none -z-10',
         )}>
-          {autocomplete.isOpen && (
-            <AutocompletePopup
-              items={autocomplete.items}
-              selectedIndex={autocomplete.selectedIndex}
-              anchorRef={inputAreaRef}
-              onSelect={(i) => {
-                const { text: newText, cursorPos } = autocomplete.select(i, text)
-                setText(newText)
-                requestAnimationFrame(() => {
-                  if (textareaRef.current) {
-                    textareaRef.current.selectionStart = cursorPos
-                    textareaRef.current.selectionEnd = cursorPos
-                    textareaRef.current.focus()
-                  }
-                })
-              }}
-            />
-          )}
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => {
-              const newText = e.target.value
-              setText(newText)
-              autocomplete.handleChange(newText, e.target.selectionStart ?? newText.length)
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            disabled={isInputDisabled}
+          <div
+            ref={editor.containerRef}
             className={cn(
-              'c0-input c0-input-transparent w-full h-full resize-none text-sm focus-visible:outline-none custom-scrollbar pr-8',
-              isInputDisabled && 'opacity-50 cursor-not-allowed',
+              'cm-chat-container w-full h-full custom-scrollbar pr-8',
+              isInputDisabled && 'cm-chat-disabled',
             )}
           />
         </div>
@@ -295,7 +255,7 @@ export function ChatInput() {
               variant="ghost"
               size="icon-xs"
               onClick={handleOptimize}
-              disabled={!text.trim() || isOptimizing || isInputDisabled}
+              disabled={!hasContent || isOptimizing || isInputDisabled}
               title="Optimize prompt"
               aria-label="Optimize prompt"
               className="text-muted-foreground hover:text-foreground"
@@ -306,7 +266,7 @@ export function ChatInput() {
             </Button>
             <Button
               onClick={handleSend}
-              disabled={!text.trim() || isInputDisabled || isOptimizing}
+              disabled={!hasContent || isInputDisabled || isOptimizing}
               className="shrink-0 h-8 w-8 rounded-md text-input bg-success hover:bg-success/90 active:bg-success/75 transition-colors"
               title="Send message"
               aria-label="Send message"
