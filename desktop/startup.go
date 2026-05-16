@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,9 +39,34 @@ type pendingConfirmData struct {
 
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
+	// ══════════════════════════════════════════════════════════════════
+	// STARTUP MANIFEST — Critical Path Time Budget: <500ms total
+	//
+	// CRITICAL PATH (blocks UI):
+	//   Phase 1: shell_env + logger      — budget: 50ms
+	//   Phase 2: config + deps_check     — budget: 100ms (parallel)
+	//   Phase 3: database + terminal     — budget: 100ms (parallel)
+	//   Phase 4: stores + preload        — budget: 100ms
+	//   Phase 5: application + api       — budget: 150ms
+	//   → EventBackendReady emitted here ←
+	//
+	// BACKGROUND (non-blocking, starts after EventBackendReady):
+	//   - ONNX embedder + vector index manager
+	//   - MCP gateway (already async inside builder)
+	//   - LLM router (already async inside builder)
+	//
+	// RULES:
+	//   1. New subsystems MUST go in BACKGROUND unless they absolutely
+	//      require completion before EventBackendReady.
+	//   2. Any change that adds >50ms to a critical phase MUST be
+	//      justified in a code review comment.
+	//   3. Run with LOG_LEVEL=INFO to see per-phase timing.
+	// ══════════════════════════════════════════════════════════════════
+
+	startTime := time.Now()
 	a.ctx = ctx
 
-	// Load shell environment variables BEFORE any other initialization.
+	// ── Phase 1: Shell Environment + Logger ──────────────────────────
 	// On macOS, apps launched from Finder/Dock don't inherit shell env vars.
 	// This ensures ${OPENAI_API_KEY} and similar vars in config.yaml resolve correctly.
 	config.LoadShellEnvironment(nil)
@@ -58,17 +86,33 @@ func (a *App) Startup(ctx context.Context) {
 		log = slog.Default()
 	}
 	a.logger = log
+	log.Info("startup phase complete", "phase", "logger", "elapsed_ms", time.Since(startTime).Milliseconds())
+
+	// ── Phase 2: Config + External Dependencies (parallel) ───────────
+	// verifyExternalDependencies only needs the Wails ctx (for modal on failure).
+	// ResolveAndLoad needs env vars (loaded above) and logger.
+	var resolved *config.ResolvedConfig
+	var depsOK bool
+
+	var phase2 sync.WaitGroup
+	phase2.Add(2)
+	go func() {
+		defer phase2.Done()
+		resolved = config.ResolveAndLoad(log)
+	}()
+	go func() {
+		defer phase2.Done()
+		depsOK = verifyExternalDependencies(ctx)
+	}()
+	phase2.Wait()
+	log.Info("startup phase complete", "phase", "config", "elapsed_ms", time.Since(startTime).Milliseconds())
 
 	// Fail fast if any required external CLI tool (git, rg) is missing.
-	// c0wrk hard-depends on these for workspace features; silent fallbacks
-	// have been removed. The helper blocks on a modal and quits the app
-	// when dependencies are missing.
-	if !verifyExternalDependencies(ctx) {
+	// The helper blocks on a modal and quits the app when dependencies are missing.
+	if !depsOK {
 		return
 	}
 
-	// Determine config path and load configuration via backend.
-	resolved := config.ResolveAndLoad(log)
 	cfg := resolved.Config
 	configPath := resolved.ConfigPath
 	configLoadErrors := resolved.LoadErrors
@@ -89,15 +133,39 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
-	// Note: workspace watcher is initialized per-project in SwitchProject
-
-	// Initialize shared SQLite database
+	// ── Phase 3: Database + Terminal Manager (parallel) ───────────────
+	// OpenDatabase needs config (for dbPath). Terminal manager needs only logger.
 	dbPath := filepath.Join(agentDir, cfg.Memory.Database)
-	db, err := backend.OpenDatabase(dbPath, log)
-	if err != nil {
-		log.Error("failed to open sqlite database", "error", err)
+	var db *sql.DB
+	var dbErr error
+	var termManager *terminal.Manager
+
+	var phase3 sync.WaitGroup
+	phase3.Add(2)
+	go func() {
+		defer phase3.Done()
+		db, dbErr = backend.OpenDatabase(dbPath, log)
+	}()
+	go func() {
+		defer phase3.Done()
+		// Terminal manager: emits raw PTY output as session-scoped events.
+		// Output is base64-encoded to preserve raw bytes through JSON serialization
+		// (string(data) would corrupt invalid UTF-8 split across read boundaries,
+		// and json.Marshal replaces invalid UTF-8 with U+FFFD).
+		termManager = terminal.NewManager(log, func(sessionID string, data []byte) {
+			eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
+			wailsRuntime.EventsEmit(a.ctx, eventName, map[string]string{"data": base64.StdEncoding.EncodeToString(data)})
+		})
+	}()
+	phase3.Wait()
+	log.Info("startup phase complete", "phase", "database", "elapsed_ms", time.Since(startTime).Milliseconds())
+
+	if dbErr != nil {
+		log.Error("failed to open sqlite database", "error", dbErr)
 	}
 	a.db = db
+
+	// ── Phase 4: Stores + Project/Session Preload ────────────────────
 
 	// Project store first (sessions FK references projects)
 	var projStore *project.SQLiteProjectStore
@@ -121,6 +189,8 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
+	log.Info("startup phase complete", "phase", "stores", "elapsed_ms", time.Since(startTime).Milliseconds())
+
 	// UI emit function: bridges events to Wails frontend (persistence is handled by Application).
 	uiEmitFunc := func(evt session.Event) {
 		eventName := fmt.Sprintf("session:%s:%s", evt.SessionID, evt.Type)
@@ -128,16 +198,7 @@ func (a *App) Startup(ctx context.Context) {
 		a.log().Debug("desktop: Wails EventsEmit called", "eventName", eventName)
 	}
 
-	// Terminal manager: emits raw PTY output as session-scoped events.
-	// Output is base64-encoded to preserve raw bytes through JSON serialization
-	// (string(data) would corrupt invalid UTF-8 split across read boundaries,
-	// and json.Marshal replaces invalid UTF-8 with U+FFFD).
-	termManager := terminal.NewManager(log, func(sessionID string, data []byte) {
-		eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
-		wailsRuntime.EventsEmit(a.ctx, eventName, map[string]string{"data": base64.StdEncoding.EncodeToString(data)})
-	})
-
-	// --- Desktop UI callbacks ---
+	// Desktop UI callbacks: closures captured here, invoked by Application at runtime.
 
 	// AskUser callback: emits question to frontend, waits for response.
 	askUserFunc := func(ctx context.Context, req backend.AskUserRequest) (backend.AskUserResponse, error) {
@@ -251,28 +312,10 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
-	// --- Create backend Application (owns builder, manager, persister) ---
-
-	// --- Vector Search Initialization ---
-	modelPath := resolveModelPath("jina-v2-small.onnx", agentDir)
-	tokenizerPath := resolveModelPath("jina-v2-small-tokenizer.json", agentDir)
-	libraryPath := resolveONNXLibPath()
-
-	vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
-		ModelPath:        modelPath,
-		TokenizerPath:    tokenizerPath,
-		LibraryPath:      libraryPath,
-		MaxSeqLength:     512,
-		HiddenDim:        512,
-		PersistPath:      filepath.Join(agentDir, "vector_index"),
-		IgnoreDirs:       cfg.Workspace.IgnoreDirs,
-		IgnoreExtensions: cfg.Workspace.IgnoreExtensions,
-		IgnoreFileNames:  cfg.Workspace.IgnoreFileNames,
-		Logger:           log,
-	})
-	if err != nil {
-		log.Warn("vector search unavailable", "error", err)
-	}
+	// Vector search deferred init — expensive ONNX loading runs in Background.
+	var vectorMgrPtr atomic.Pointer[vectorindex.Manager]
+	vectorReady := make(chan struct{})
+	var vectorOnce sync.Once
 
 	logDir := filepath.Join(agentDir, "logs")
 	projectsDir := filepath.Join(agentDir, "projects")
@@ -292,9 +335,11 @@ func (a *App) Startup(ctx context.Context) {
 	// This happens before the slow NewApplication() call so the sidebar
 	// populates right away. The project resolver is wired later, so lazy
 	// session restoration only works after backend:ready fires.
+	var cachedProjects []project.ProjectInfo
 	if projectMgr != nil {
 		projects, pErr := projectMgr.ListProjects()
 		if pErr == nil && len(projects) > 0 {
+			cachedProjects = projects
 			// NOTE: We intentionally do NOT set activeProjectID here.
 			// Setting it prematurely causes SwitchProject's idempotency guard
 			// to reject the frontend's first call, which skips vector index
@@ -317,40 +362,60 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
-	// Wire vector search callbacks into Application config.
-	var vectorSearchFunc backend.VectorSearchFunc
-	var vectorSearchWaitFunc backend.VectorSearchWaitFunc
-	if vectorMgr != nil {
-		vectorSvc := vectorMgr.Service()
-		vectorSearchFunc = func(ctx context.Context, opts backend.VectorSearchOptions) ([]backend.VectorSearchResult, error) {
-			results, searchErr := vectorSvc.HybridSearch(ctx, vectorindex.SearchOptions{
-				Query:       opts.Query,
-				TopK:        opts.TopK,
-				Mode:        vectorindex.ParseMode(opts.Mode),
-				FilePattern: opts.FilePattern,
-				MustMatch:   opts.MustMatch,
-			})
-			if searchErr != nil {
-				return nil, searchErr
-			}
-			out := make([]backend.VectorSearchResult, len(results))
-			for i, r := range results {
-				out[i] = backend.VectorSearchResult{
-					FilePath:    r.FilePath,
-					FileName:    r.FileName,
-					Content:     r.Content,
-					Score:       r.Score,
-					StartLine:   r.StartLine,
-					EndLine:     r.EndLine,
-					Language:    r.Language,
-					VectorRank:  r.VectorRank,
-					LexicalRank: r.LexicalRank,
-				}
-			}
-			return out, nil
+	log.Info("startup phase complete", "phase", "preload", "elapsed_ms", time.Since(startTime).Milliseconds())
+
+	// ── Phase 5: Application + FrontendAPI ───────────────────────────
+
+	// Wire lazy vector search callbacks that gate on background init.
+	vectorSearchFunc := backend.VectorSearchFunc(func(ctx context.Context, opts backend.VectorSearchOptions) ([]backend.VectorSearchResult, error) {
+		select {
+		case <-vectorReady:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("vector search not ready: %w", ctx.Err())
 		}
-		vectorSearchWaitFunc = vectorSvc.WaitReady
-	}
+		mgr := vectorMgrPtr.Load()
+		if mgr == nil {
+			return nil, errors.New("vector search unavailable")
+		}
+		vectorSvc := mgr.Service()
+		results, searchErr := vectorSvc.HybridSearch(ctx, vectorindex.SearchOptions{
+			Query:       opts.Query,
+			TopK:        opts.TopK,
+			Mode:        vectorindex.ParseMode(opts.Mode),
+			FilePattern: opts.FilePattern,
+			MustMatch:   opts.MustMatch,
+		})
+		if searchErr != nil {
+			return nil, searchErr
+		}
+		out := make([]backend.VectorSearchResult, len(results))
+		for i, r := range results {
+			out[i] = backend.VectorSearchResult{
+				FilePath:    r.FilePath,
+				FileName:    r.FileName,
+				Content:     r.Content,
+				Score:       r.Score,
+				StartLine:   r.StartLine,
+				EndLine:     r.EndLine,
+				Language:    r.Language,
+				VectorRank:  r.VectorRank,
+				LexicalRank: r.LexicalRank,
+			}
+		}
+		return out, nil
+	})
+	vectorSearchWaitFunc := backend.VectorSearchWaitFunc(func(ctx context.Context) error {
+		select {
+		case <-vectorReady:
+			mgr := vectorMgrPtr.Load()
+			if mgr == nil {
+				return errors.New("vector search unavailable")
+			}
+			return mgr.Service().WaitReady(ctx)
+		case <-ctx.Done():
+			return fmt.Errorf("vector search not ready: %w", ctx.Err())
+		}
+	})
 
 	application, err := backend.NewApplication(backend.ApplicationConfig{
 		Config:               cfg,
@@ -376,8 +441,9 @@ func (a *App) Startup(ctx context.Context) {
 		return
 	}
 	a.app = application
+	log.Info("startup phase complete", "phase", "application", "elapsed_ms", time.Since(startTime).Milliseconds())
 
-	// --- Construct FrontendAPI (all components are ready) ---
+	// Construct FrontendAPI — all components are ready.
 	a.FrontendAPI = backend.NewFrontendAPI(backend.FrontendAPIConfig{
 		App:             application,
 		Logger:          log,
@@ -389,7 +455,7 @@ func (a *App) Startup(ctx context.Context) {
 		LogLevel:        logLevel,
 		ProjectManager:  projectMgr,
 		ProjectsDir:     projectsDir,
-		VectorManager:   vectorMgr,
+		VectorManager:   nil, // set lazily once background init completes
 		TerminalManager: termManager,
 		EmitEvent: func(eventName string, data ...any) {
 			wailsRuntime.EventsEmit(a.ctx, eventName, data...)
@@ -398,6 +464,9 @@ func (a *App) Startup(ctx context.Context) {
 			return a.ctx
 		},
 	})
+
+	log.Info("startup phase complete", "phase", "frontend_api", "elapsed_ms", time.Since(startTime).Milliseconds())
+
 	a.SetConfigLoadState(configLoadErrors)
 
 	manager := application.Manager()
@@ -426,24 +495,72 @@ func (a *App) Startup(ctx context.Context) {
 		})
 	}
 
-	// --- Wire Wails event listeners ---
 	a.wireWailsEventListeners(log, uiEmitFunc)
 
+	// ── EventBackendReady ────────────────────────────────────────────
 	// Signal frontend that all backend subsystems are ready.
-	// Pre-load projects so the frontend doesn't need a separate round-trip.
-	if projectMgr != nil {
-		projects, err := projectMgr.ListProjects()
-		if err == nil && len(projects) > 0 {
+	// Reuse the pre-loaded projects slice to avoid a redundant SQLite query.
+	switch {
+	case len(cachedProjects) > 0:
+		wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady, cachedProjects)
+	case projectMgr != nil:
+		projects, lErr := projectMgr.ListProjects()
+		if lErr == nil && len(projects) > 0 {
 			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady, projects)
 		} else {
-			if err != nil {
-				log.Warn("failed to pre-load projects for backend:ready", "error", err)
+			if lErr != nil {
+				log.Warn("failed to load projects for backend:ready", "error", lErr)
 			}
 			wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
 		}
-	} else {
+	default:
 		wailsRuntime.EventsEmit(a.ctx, backend.EventBackendReady)
 	}
+	log.Info("startup complete \u2014 backend ready", "total_elapsed_ms", time.Since(startTime).Milliseconds())
+
+	// ── Background: Vector Index ─────────────────────────────────────
+	// ONNX embedder loading is expensive (~500-2000ms). Starts after
+	// EventBackendReady so it never blocks the critical path.
+
+	go func() {
+		defer vectorOnce.Do(func() { close(vectorReady) })
+
+		modelPath := resolveModelPath("jina-v2-small.onnx", agentDir)
+		tokenizerPath := resolveModelPath("jina-v2-small-tokenizer.json", agentDir)
+		libraryPath := resolveONNXLibPath()
+
+		vectorMgr, vecErr := vectorindex.NewManager(vectorindex.ManagerConfig{
+			ModelPath:        modelPath,
+			TokenizerPath:    tokenizerPath,
+			LibraryPath:      libraryPath,
+			MaxSeqLength:     512,
+			HiddenDim:        512,
+			PersistPath:      filepath.Join(agentDir, "vector_index"),
+			IgnoreDirs:       cfg.Workspace.IgnoreDirs,
+			IgnoreExtensions: cfg.Workspace.IgnoreExtensions,
+			IgnoreFileNames:  cfg.Workspace.IgnoreFileNames,
+			Logger:           log,
+		})
+		if vecErr != nil {
+			log.Warn("vector search unavailable", "error", vecErr)
+			return
+		}
+		if vectorMgr == nil {
+			log.Info("vector search disabled (model files not found)")
+			return
+		}
+
+		vectorMgrPtr.Store(vectorMgr)
+		log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
+	}()
+
+	// Wire vector manager into FrontendAPI once background init completes.
+	go func() {
+		<-vectorReady
+		if mgr := vectorMgrPtr.Load(); mgr != nil {
+			a.SetVectorManager(mgr)
+		}
+	}()
 }
 
 // Shutdown is called when the Wails app is shutting down.

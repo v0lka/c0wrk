@@ -79,6 +79,17 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	params.Path = resolvePath(ctx, params.Path)
 
+	// Coherence check: block edit if file was modified since this session's last read.
+	checker := tools.CoherenceFrom(ctx)
+	if checker != nil {
+		checker.Lock(params.Path)
+		if conflict := checker.CheckWrite(ctx, params.Path); conflict != nil {
+			checker.Unlock(params.Path)
+			return tools.ToolResult{Content: formatWriteConflict(conflict), IsError: true}, nil
+		}
+		defer checker.Unlock(params.Path)
+	}
+
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil
@@ -99,6 +110,10 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	if err := os.WriteFile(params.Path, []byte(newContent), 0o644); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
+	}
+
+	if checker != nil {
+		checker.RecordWrite(ctx, params.Path)
 	}
 
 	return tools.ToolResult{Content: "successfully edited file", IsError: false}, nil

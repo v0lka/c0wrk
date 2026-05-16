@@ -53,13 +53,16 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 
 ### Consumed from `sdk/tools`
 
-| Interface / Type | Package   | Consumed By                    | Purpose          |
-| ---------------- | --------- | ------------------------------ | ---------------- |
-| `Tool`           | sdk/tools | core/tools (embedded registry) | Tool interface   |
-| `ToolRegistry`   | sdk/tools | core/tools (embedded)          | Basic tool store |
-| `ToolDescriptor` | sdk/tools | core/orchestrator, planner     | Tool metadata    |
-| `ToolPolicy`     | sdk/tools | core/tools                     | Policy enum      |
-| `ToolResult`     | sdk/tools | core/tools                     | Execution result |
+| Interface / Type       | Package   | Consumed By                    | Purpose                                        |
+| ---------------------- | --------- | ------------------------------ | ---------------------------------------------- |
+| `Tool`                 | sdk/tools | core/tools (embedded registry) | Tool interface                                 |
+| `ToolRegistry`         | sdk/tools | core/tools (embedded)          | Basic tool store                               |
+| `ToolDescriptor`       | sdk/tools | core/orchestrator, planner     | Tool metadata                                  |
+| `ToolPolicy`           | sdk/tools | core/tools                     | Policy enum                                    |
+| `ToolResult`           | sdk/tools | core/tools                     | Execution result                               |
+| `FileCoherenceChecker` | sdk/tools | core/tools (re-exported)       | Cross-session file conflict detection          |
+| `FileSig`              | sdk/tools | core/tools (re-exported)       | File signature (mtime + size) for coherence    |
+| `CoherenceConflict`    | sdk/tools | core/tools (re-exported)       | Conflict record with session and timing detail |
 
 ### Consumed from `sdk/memory`
 
@@ -109,6 +112,7 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 | LLM response            | sdk → core | `llm.ChatResponse`                                  |
 | Tool execution request  | core → sdk | `tools.Tool.Execute()`                              |
 | Tool result             | sdk → core | `tools.ToolResult`                                  |
+| File coherence state    | sdk ↔ core | `FileCoherenceChecker` (injected via context)       |
 | Compaction trigger      | core → sdk | `CompactionStrategy.Compact()`                      |
 | Compacted messages      | sdk → core | `[]llm.Message`                                     |
 | Plan generation request | core → sdk | `Planner.Plan()` via adapter                        |
@@ -131,3 +135,4 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 - If you modify `sdk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
 - If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go` AND all builtins
 - If you add a new sdk type that backend needs → add alias in `core/types.go`
+- If you modify `sdk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation AND `core/tools/tool.go` re-export

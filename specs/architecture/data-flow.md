@@ -119,6 +119,18 @@ core/builder.go: Build() → per-session Orchestrator
   → Blocks until async init complete (initDone channel)
 ```
 
+Vector index initialization is separate from the builder pipeline:
+
+```
+desktop/startup.go (background goroutine, after EventBackendReady):
+  → Load ONNX embedder from disk (~500-2000ms)
+  → Create vectorindex.Manager
+  → Wire into FrontendAPI via SetVectorManager()
+  → Emit vector_index:status (state=ready)
+```
+
+`EventBackendReady` fires without waiting for vector index or MCP gateway async init. The frontend receives projects/sessions immediately; vector search becomes available asynchronously.
+
 ## Tool Execution Flow
 
 ```

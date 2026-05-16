@@ -10,7 +10,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 - `frontend/src/stores/` — Zustand state management (12 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
-- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config)
+- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config, CodeMirror extensions)
 - `frontend/src/components/` — UI component tree
 - `frontend/src/types/` — TypeScript type definitions
 - `frontend/src/index.css` — design tokens (Tailwind v4 @theme)
@@ -56,8 +56,9 @@ interface FileNode {
 - Zustand 5 (state management)
 - shadcn/ui + Radix UI (component primitives)
 - lucide-react (icons)
+- CodeMirror 6 (file viewer + chat input editor, with Markdown mode and custom extensions)
 - react-markdown 10 + remark/rehype plugins (markdown rendering)
-- highlight.js 11 (syntax highlighting)
+- highlight.js 11 (syntax highlighting in rendered messages)
 - Mermaid 11 (lazy-loaded diagrams)
 
 ## Layout
@@ -84,7 +85,7 @@ Three-column panel layout (no router, single-page app):
 
 Resize handles (4px) between panels. Panel states persisted via localStorage.
 
-Chat input supports `/skill` and `@file` autocomplete: typing `/` or `@` (at word boundary) triggers a fuzzy-filtered popup of available skills or workspace entries (files and directories). Fuzzy matching runs against the entry name (last path component), not the full path. Files currently open in the file viewer appear pinned at the top of the list, separated from the rest by a horizontal rule; with an empty query all open tabs are shown. Selection inserts the reference into the textarea (directories with a trailing `/`). On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
+Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and custom token decorations for `/skill` references (warning color) and `@file` references (info color) via a ViewPlugin. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions: typing `/` at a word boundary triggers fuzzy-filtered skill suggestions, and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
 
 ## Design System
 
@@ -149,7 +150,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 - **New store**: create in `frontend/src/stores/`, register in the store initialization sequence
 - **New event handler hook**: add to `frontend/src/hooks/` with type guard and store update logic
 - **New display item type**: extend `groupMessages()` in `frontend/src/lib/chatUtils.ts` and add renderer in `ChatMessageRenderer.tsx`
-- **Custom autocomplete**: extend `/` and `@` autocomplete logic in chat input
+- **Custom autocomplete**: add a new `CompletionSource` in `frontend/src/lib/cmChatAutocomplete.ts` and register it in the `autocompletion({ override: [...] })` array
 
 ## Related Specs
 

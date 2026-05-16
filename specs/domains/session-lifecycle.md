@@ -7,6 +7,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 ## Key Files
 
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing)
+- `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence)
 - `backend/session/events.go` — event data structs (session created/renamed/deleted/archived, message received)
 - `backend/session/emitter.go` — WailsEmitter (bridges events to frontend)
@@ -42,6 +43,10 @@ User sends message
       │   └─ Convert @file references to fileref:// URIs
       ├─ Get or create Orchestrator for session (via factory)
       ├─ Create emitter (WailsEmitter + EventPersister)
+      ├─ Enrich task context:
+      │   ├─ WithWorkspacePath (project workspace)
+      │   ├─ WithTempDir (session-specific temp directory)
+      │   └─ WithCoherence (FileCoherenceTracker for cross-session conflict detection)
       ├─ Determine opts: {TaskID, ExecutionMode, UserSkills: activeSkills}
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
@@ -162,6 +167,7 @@ type HandleResult struct {
 - **Preprocessing pipeline**: add custom message transforms (e.g., additional filter types) before orchestrator invocation in `FrontendAPI.SendMessage()`
 - **Event persistence**: implement `EventPersister` interface for alternative storage backends
 - **Session metadata enrichment**: add custom fields to `SessionInfo` and populate them in `SessionManager.Create()`
+- **File coherence strategy**: replace `FileCoherenceTracker` in `backend/session/file_coherence.go` with an alternative conflict detection implementation (must satisfy `FileCoherenceChecker` interface from `sdk/tools/coherence.go`)
 
 ## Invariants
 

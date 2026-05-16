@@ -17,6 +17,7 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - `backend/vectorindex/hybrid.go` — hybrid search (vector ∪ lexical) with RRF fusion, per-side filters
 - `backend/vectorindex/lexical/` — bleve/BM25 lexical index with `c0wrk_code` analyzer (camelCase split + lowercase + stop-en)
 - `sdk/embedding/` — embedding model interface
+- `backend/frontend_api_vector.go` — FrontendAPI vector methods + lazy manager access (SetVectorManager/getVectorManager with RWMutex)
 
 ## Core Types
 
@@ -110,7 +111,12 @@ backend/workspace.StartWatcher(projectPath)
 Lifecycle:
 
 ```
-Project switched / app started
+App started
+  → ONNX embedder loads in background goroutine (after EventBackendReady)
+  → Vector index manager created and wired into FrontendAPI via SetVectorManager()
+  → Emit vector_index:status event (state=ready)
+
+Project switched (after vector index ready)
   → vectorindex.CurrentBranch(ctx, workspacePath) via git CLI
   → backend/vectorindex: SwitchBranch(branch) → Start indexing (background goroutine)
   → GitMonitor watches .git/HEAD for subsequent branch changes
@@ -141,6 +147,8 @@ Filename search (`search_files`) is available as a built-in tool (`sdk/tools/bui
 - File operations are sandboxed to workspace path (no directory traversal)
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)
 - Missing `git` binary is a fatal startup condition, never a runtime surprise
+- ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path
+- Vector search RPC returns empty results (not an error) if invoked before the embedder is ready
 
 ## Configuration
 

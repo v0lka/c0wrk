@@ -8,6 +8,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 - `sdk/tools/builtins/*.go` — tool implementations
 - `sdk/tools/builtins/ripgrep.go` — wraps the `rg` CLI (`--json` event stream)
+- `sdk/tools/builtins/coherence_format.go` — conflict message formatting for cross-session coherence
 - `sdk/tools/builtins/web_search/` — web search provider abstraction (brave, duckduckgo, exa, tavily)
 - `sdk/tools/builtins/web_search/brave.go` — Brave Search API provider
 - `sdk/tools/builtins/web_search/duckduckgo.go` — DuckDuckGo Instant Answer API provider
@@ -18,6 +19,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 - `sdk/tools/builtins/paths.go` — workspace path resolution
 - `sdk/tools/builtins/workspace.go` — workspace detection
 - `sdk/tools/builtins/netcheck.go` — network connectivity check for web tools
+- `sdk/tools/coherence.go` — FileCoherenceChecker interface, FileSig, CoherenceConflict types
 - `core/tools/builtin_registration.go` — registration function + config types
 
 ## Behavior
@@ -42,6 +44,20 @@ File write/edit tools (`write_file`, `edit_file`, `delete_file`, `delete_directo
 - References system directories (`/etc`, `/usr`, `/System`, etc.)
 - Contains path traversal sequences (`../`)
 
+### File Coherence Checking
+
+File tools perform cross-session conflict detection via `FileCoherenceChecker` (injected into context by the session manager). The checker tracks file signatures (mtime + size) per session and detects when a file was modified by another session since the current session last read it.
+
+**Protocol:**
+
+- `read_file`: after reading, records the file's signature. If the file changed since this session's previous read, prepends a warning annotation to the result (non-blocking).
+- `write_file`, `edit_file`, `delete_file`: before mutating, checks the file's current signature against this session's last-read snapshot. If mismatched, returns `IsError: true` with a conflict message instructing the LLM to re-read.
+- `bash_exec`: not covered (bash modifications are detected naturally by subsequent coherence checks on affected files).
+
+**Atomicity:** Each file tool acquires a per-file in-process mutex (`Lock`/`Unlock`) around the check-then-act window to eliminate TOCTOU races between concurrent sessions.
+
+**Conflict resolution:** The LLM receives the conflict as a tool error and decides how to proceed (typically by re-reading the file and retrying the edit with updated content).
+
 ### Tool Execution
 
 All built-in tools accept `json.RawMessage` input and return `ToolResult{Content, IsError}`. Tools that shell out (`ripgrep`, `bash_exec`) use `exec.CommandContext` with the caller's context.
@@ -54,6 +70,7 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 - **Ripgrep**: exit code 1 ("no matches") is NOT an error; exit codes ≥ 2 produce `IsError` with stderr content
 - **Web tools**: network errors surface as `IsError` with a descriptive message; timeout errors include the configured timeout value
 - **File I/O errors**: propagated as `IsError` with the OS error message; binary files detected by null byte presence are rejected with an appropriate message
+- **File coherence conflict**: when a file was modified since the session's last read, `write_file`/`edit_file`/`delete_file` return `IsError` with a conflict description and instruction to re-read; `read_file` prepends a non-blocking warning annotation
 - **Optional tool absence**: if a dependency func/key is not provided (e.g., no web search API key), the tool is silently not registered (no error at registration time)
 
 ## Tool Catalog

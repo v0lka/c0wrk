@@ -65,6 +65,17 @@ func (t *DeleteFileTool) Execute(ctx context.Context, input json.RawMessage) (to
 
 	params.Path = resolvePath(ctx, params.Path)
 
+	// Coherence check: block delete if file was modified since this session's last read.
+	checker := tools.CoherenceFrom(ctx)
+	if checker != nil {
+		checker.Lock(params.Path)
+		if conflict := checker.CheckWrite(ctx, params.Path); conflict != nil {
+			checker.Unlock(params.Path)
+			return tools.ToolResult{Content: formatWriteConflict(conflict), IsError: true}, nil
+		}
+		defer checker.Unlock(params.Path)
+	}
+
 	info, err := os.Stat(params.Path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to stat path: %v", err), IsError: true}, nil
@@ -76,5 +87,10 @@ func (t *DeleteFileTool) Execute(ctx context.Context, input json.RawMessage) (to
 	if err := os.Remove(params.Path); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to delete file: %v", err), IsError: true}, nil
 	}
+
+	if checker != nil {
+		checker.RecordDelete(ctx, params.Path)
+	}
+
 	return tools.ToolResult{Content: "successfully deleted file: " + params.Path, IsError: false}, nil
 }

@@ -45,7 +45,8 @@ type FrontendAPI struct {
 	activeProjectMu   sync.RWMutex
 
 	// Vector search
-	vectorManager *vectorindex.Manager
+	vectorManager   *vectorindex.Manager
+	vectorManagerMu sync.RWMutex
 
 	// Terminal
 	terminalManager TerminalManager
@@ -126,8 +127,8 @@ func (f *FrontendAPI) Cleanup() {
 	if f.terminalManager != nil {
 		f.terminalManager.StopAll()
 	}
-	if f.vectorManager != nil {
-		f.vectorManager.Shutdown()
+	if vm := f.getVectorManager(); vm != nil {
+		vm.Shutdown()
 	}
 	if f.watcher != nil {
 		if err := f.watcher.Close(); err != nil {
@@ -158,4 +159,19 @@ func (f *FrontendAPI) log() *slog.Logger {
 		return f.logger
 	}
 	return slog.Default()
+}
+
+// SetVectorManager sets the vector index manager after background initialization.
+// Thread-safe; may be called from any goroutine.
+func (f *FrontendAPI) SetVectorManager(m *vectorindex.Manager) {
+	f.vectorManagerMu.Lock()
+	f.vectorManager = m
+	f.vectorManagerMu.Unlock()
+}
+
+// getVectorManager returns the vector index manager (may be nil if not yet initialized).
+func (f *FrontendAPI) getVectorManager() *vectorindex.Manager {
+	f.vectorManagerMu.RLock()
+	defer f.vectorManagerMu.RUnlock()
+	return f.vectorManager
 }

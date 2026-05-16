@@ -89,6 +89,16 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	params.Path = resolvePath(ctx, params.Path)
 
+	// Coherence check: detect if file was modified by another session since last read.
+	var coherenceWarning string
+	if checker := tools.CoherenceFrom(ctx); checker != nil {
+		checker.Lock(params.Path)
+		if conflict := checker.CheckRead(ctx, params.Path); conflict != nil {
+			coherenceWarning = formatReadConflict(conflict)
+		}
+		checker.Unlock(params.Path)
+	}
+
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil
@@ -146,6 +156,10 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		content = header + content + fmt.Sprintf("\n[Use start_line=%d to continue reading]", endLine+1)
 	} else {
 		content = header + content
+	}
+
+	if coherenceWarning != "" {
+		content = coherenceWarning + "\n" + content
 	}
 
 	return tools.ToolResult{Content: content, IsError: false}, nil

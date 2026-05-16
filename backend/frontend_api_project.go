@@ -44,8 +44,8 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	}
 
 	// Clean up vector index data for the deleted project.
-	if f.vectorManager != nil {
-		_ = f.vectorManager.DeleteProjectData(id) // Best-effort; error is non-critical.
+	if vm := f.getVectorManager(); vm != nil {
+		_ = vm.DeleteProjectData(id) // Best-effort; error is non-critical.
 	}
 
 	// Stop watcher if this was the active project
@@ -102,8 +102,8 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	}
 
 	// Cancel any in-flight indexing from a previous project.
-	if f.vectorManager != nil {
-		f.vectorManager.CancelIndexing()
+	if vm := f.getVectorManager(); vm != nil {
+		vm.CancelIndexing()
 	}
 
 	f.activeProjectMu.Lock()
@@ -130,8 +130,8 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 
 		// Trigger debounced incremental indexing via Manager.
-		if f.vectorManager != nil {
-			f.vectorManager.NotifyFileChange(p.WorkspacePath)
+		if vm := f.getVectorManager(); vm != nil {
+			vm.NotifyFileChange(p.WorkspacePath)
 		}
 	})
 	if err != nil {
@@ -144,14 +144,14 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// Git is a hard dependency (verified at startup), so any branch
 	// detection failure is a real error — not an excuse to silently fall
 	// back to DefaultBranch and potentially mis-partition the index.
-	if f.vectorManager != nil {
+	if vm := f.getVectorManager(); vm != nil {
 		branch, branchErr := vectorindex.CurrentBranch(f.ctx(), p.WorkspacePath)
 		if branchErr != nil {
 			return fmt.Errorf("detecting git branch for project %s: %w", p.ID, branchErr)
 		}
 		capturedBranch := branch
 
-		if switchErr := f.vectorManager.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
+		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
 			OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
 				f.emitEvent(EventVectorIndexStatus, map[string]any{
 					"state":         string(state),

@@ -94,6 +94,7 @@ type Manager struct {
 	stopTimeout         time.Duration       // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                 // character limit for auto-generated step summaries
 	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
+	fileTracker         *FileCoherenceTracker
 	logger              *slog.Logger
 }
 
@@ -114,7 +115,7 @@ func (m *Manager) log() *slog.Logger {
 
 // NewManager creates a new session Manager.
 func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir, projectsDir string) *Manager {
-	return &Manager{
+	m := &Manager{
 		sessions:            make(map[string]*Session),
 		orchestratorFactory: factory,
 		emitFunc:            emitFunc,
@@ -123,6 +124,21 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir, proje
 		projectsDir:         projectsDir,
 		stopTimeout:         10 * time.Second,
 	}
+	m.fileTracker = NewFileCoherenceTracker(m.resolveSessionName)
+	return m
+}
+
+// resolveSessionName returns a display name for the given session ID.
+func (m *Manager) resolveSessionName(id string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s, ok := m.sessions[id]; ok {
+		return s.Name
+	}
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // SetFactory replaces the orchestrator factory used for new sessions.
@@ -640,6 +656,9 @@ func (m *Manager) DeleteSession(id string) error {
 	delete(m.sessions, id)
 	m.mu.Unlock()
 
+	// Purge file coherence state for this session.
+	m.fileTracker.PurgeSession(id)
+
 	// Clean up temp directory
 	if session.TempDir != "" {
 		if err := os.RemoveAll(session.TempDir); err != nil {
@@ -802,6 +821,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	// Enrich context with session workspace path for tool security heuristics
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
 	taskCtx = tools.WithTempDir(taskCtx, session.TempDir)
+	taskCtx = tools.WithCoherence(taskCtx, m.fileTracker)
 	session.cancel = cancel
 	session.mu.Unlock()
 
@@ -1039,6 +1059,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
 	taskCtx = tools.WithTempDir(taskCtx, session.TempDir)
+	taskCtx = tools.WithCoherence(taskCtx, m.fileTracker)
 	session.cancel = cancel
 	session.mu.Unlock()
 

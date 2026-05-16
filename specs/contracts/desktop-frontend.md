@@ -152,7 +152,7 @@ See [event-catalog.md](event-catalog.md) for complete event reference.
 
 - **Synchronous**: Wails RPC method calls from frontend are async (TypeScript `Promise`) but the Go handler may block
 - **Asynchronous**: real-time event stream is push-only; frontend listens with `EventsOn` and publishes to stores
-- **Startup**: backend exposes RPC methods after `Startup()` completes; frontend polls `GetConfig()` to detect readiness
+- **Startup**: backend exposes RPC methods after `Startup()` completes; frontend waits for `backend:ready` event. Vector search methods may return empty results until background ONNX init completes (~1-2s after startup).
 - **Teardown**: `Shutdown()` triggers backend cleanup; frontend stops polling and unregisters event listeners
 
 ## Error Propagation
@@ -163,29 +163,29 @@ See [event-catalog.md](event-catalog.md) for complete event reference.
 - **Streaming failures**: SSE/event stream disconnects bubble to `frontend:event:error`; `chatStore.flushStreamingToMessage()` preserves partial content
 - **Panic recovery**: Wails runtime catches Go panics and returns them as RPC errors; backend uses `recover()` middleware in handler chain
 - **Fallback**: methods invoked before backend ready return "backend not initialized" error
+- **Vector not ready**: vector search methods invoked before embedder initialization completes return empty results with no error (graceful degradation)
 
 ## Initialization
 
 ```go
-// backend main.go — startup sequence
-func Startup() {
-    config.Load()
-    db := persistence.Open(config.DBPath())
-    embeddingService := vectorindex.NewService(...)
-    sessionManager := session.NewManager(db, embeddingService)
-    app := NewApp(sessionManager, config)
-    // App is now registered with Wails runtime
-}
+// desktop/startup.go — phased startup (critical path < 500ms)
+// Phase 1: shell_env + logger
+// Phase 2: config + deps_check (parallel)
+// Phase 3: database + terminal (parallel)
+// Phase 4: stores + project/session preload
+// Phase 5: application + FrontendAPI
+// → EventBackendReady emitted here ←
+// Background: ONNX embedder + vector index manager (non-blocking)
 ```
 
 ```typescript
 // frontend/src/main.tsx — mount sequence
 // 1. React renders App shell (header, sidebar placeholders)
 // 2. useWailsEvent registers for all streaming events
-// 3. Components mount and call backend RPCs:
-//    - projectStore.fetchProjects()  → GetProjectList()
-//    - sessionStore.fetchSessions()  → ListSessions()
-// 4. UI transitions from loading state when stores are loaded = true
+// 3. useProjectLoader calls listProjects() immediately; falls back to backend:ready event
+// 4. On project selected: useSessionLoader fetches sessions, FileTreePanel loads directory
+// 5. UI transitions from loading state as stores populate
+// 6. Vector search becomes available when vector_index:status reports ready (~1-2s)
 ```
 
 - Frontend must handle the case where backend RPCs return "not initialized" during startup race conditions

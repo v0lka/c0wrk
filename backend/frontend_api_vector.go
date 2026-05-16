@@ -18,7 +18,8 @@ const defaultVectorBrowseTopK = 50
 //
 // req.TopK defaults to 50 when <= 0.
 func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, error) {
-	if f.vectorManager == nil {
+	vm := f.getVectorManager()
+	if vm == nil {
 		return nil, errors.New("vector search not available")
 	}
 
@@ -27,7 +28,7 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 		topK = defaultVectorBrowseTopK
 	}
 
-	vectorSvc := f.vectorManager.Service()
+	vectorSvc := vm.Service()
 
 	var results []vectorindex.SearchResult
 	var err error

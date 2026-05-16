@@ -16,6 +16,9 @@ type ToolDescriptor = sdktools.ToolDescriptor
 type BaseTool = sdktools.BaseTool
 type EnvInfo = sdktools.EnvInfo
 type AskUserQuestion = sdktools.AskUserQuestion
+type FileCoherenceChecker = sdktools.FileCoherenceChecker
+type FileSig = sdktools.FileSig
+type CoherenceConflict = sdktools.CoherenceConflict
 
 // Re-export SDK constants.
 const (
@@ -39,6 +42,8 @@ var (
 	FormatFullEnvBlock    = sdktools.FormatFullEnvBlock
 	FormatCompactEnvBlock = sdktools.FormatCompactEnvBlock
 	WithTempDir           = sdktools.WithTempDir
+	WithCoherence         = sdktools.WithCoherence
+	CoherenceFrom         = sdktools.CoherenceFrom
 )
 
 // ToolJudger is an optional interface that tools can implement to provide

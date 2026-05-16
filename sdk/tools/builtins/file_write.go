@@ -71,6 +71,20 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (too
 
 	params.Path = resolvePath(ctx, params.Path)
 
+	// Coherence check: block write if file was modified since this session's last read.
+	checker := tools.CoherenceFrom(ctx)
+	if checker != nil {
+		checker.Lock(params.Path)
+		if conflict := checker.CheckWrite(ctx, params.Path); conflict != nil {
+			checker.Unlock(params.Path)
+			return tools.ToolResult{Content: formatWriteConflict(conflict), IsError: true}, nil
+		}
+		defer func() {
+			checker.RecordWrite(ctx, params.Path)
+			checker.Unlock(params.Path)
+		}()
+	}
+
 	dir := filepath.Dir(params.Path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to create directories: %v", err), IsError: true}, nil
