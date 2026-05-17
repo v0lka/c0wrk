@@ -478,6 +478,7 @@ body {
 
 .cm-chat-container .cm-scroller {
   overflow: auto;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 0.875rem;
   line-height: 1.5;
 }

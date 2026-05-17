@@ -1,5 +1,5 @@
 import { markdown } from '@codemirror/lang-markdown'
-import { EditorView } from '@codemirror/view'
+import { EditorView, drawSelection } from '@codemirror/view'
 import { history, defaultKeymap, historyKeymap } from '@codemirror/commands'
 import { keymap } from '@codemirror/view'
 import type { Extension } from '@codemirror/state'
@@ -18,6 +18,7 @@ export function createChatExtensions(
 ): Extension[] {
   return [
     createChatEditorTheme(),
+    drawSelection(),
     markdown(),
     referenceHighlighter,
     createChatAutocomplete(),

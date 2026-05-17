@@ -97,6 +97,7 @@ async function skillSource(ctx: CompletionContext): Promise<CompletionResult | n
 
   return {
     from,
+    filter: false,
     options: filtered.map((s) => ({
       label: s.name,
       detail: s.description,
@@ -186,7 +187,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
 
   if (options.length === 0) return null
 
-  return { from, options }
+  return { from, filter: false, options }
 }
 
 /**

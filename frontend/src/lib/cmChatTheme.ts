@@ -18,14 +18,14 @@ export function createChatEditorTheme(): Extension {
       color: fg,
     },
     '.cm-content': {
-      caretColor: caret,
+      caretColor: 'transparent',
       fontSize: '0.875rem',
       lineHeight: '1.5',
       padding: '0.25rem 0',
     },
     '.cm-cursor, .cm-dropCursor': {
       borderLeftColor: caret,
-      borderLeftWidth: '2px',
+      borderLeftWidth: '1.5px',
     },
     '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
       backgroundColor: selection,
@@ -38,6 +38,7 @@ export function createChatEditorTheme(): Extension {
     },
     '.cm-scroller': {
       overflow: 'auto',
+      fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
     },
     '&.cm-focused': {
       outline: 'none',
