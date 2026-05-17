@@ -26,7 +26,7 @@ var rolePruningDefaults = map[string]struct {
 }{
 	"researcher": {
 		KeepLastN:      10,
-		ProtectedTools: []string{"store_fact", "search_facts", "read_file", "search_content", "ripgrep", "semantic_search"},
+		ProtectedTools: []string{"store_fact", "search_facts", "read_file", "ripgrep", "semantic_search"},
 	},
 	"coder": {
 		KeepLastN:      5,

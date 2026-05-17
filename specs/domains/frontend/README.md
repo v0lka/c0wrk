@@ -150,6 +150,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 - **New store**: create in `frontend/src/stores/`, register in the store initialization sequence
 - **New event handler hook**: add to `frontend/src/hooks/` with type guard and store update logic
 - **New display item type**: extend `groupMessages()` in `frontend/src/lib/chatUtils.ts` and add renderer in `ChatMessageRenderer.tsx`
+- **New tool card**: add a `CardConfig` entry in `frontend/src/components/chat/toolCards/toolCardRegistry.ts` and (optionally) a body component in `toolCards/bodies/`
 - **Custom autocomplete**: add a new `CompletionSource` in `frontend/src/lib/cmChatAutocomplete.ts` and register it in the `autocompletion({ override: [...] })` array
 
 ## Related Specs

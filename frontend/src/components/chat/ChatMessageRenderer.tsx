@@ -3,7 +3,7 @@ import type { DisplayItem, DisplayItemKind } from '@/types/messages'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
-import { ToolBlock } from './ToolBlock'
+import { ToolCard } from './toolCards'
 import { PlanStepBlock } from './PlanStepBlock'
 import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
@@ -15,9 +15,7 @@ import { ReflectionBlock } from './ReflectionBlock'
 import { ActionPlaceholder } from './ActionPlaceholder'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { CheckCircle2, Minimize2, BookOpen, Check, Loader2, X } from 'lucide-react'
-import { CollapsibleBlock } from './CollapsibleBlock'
-import { ToolContentBlock, parseArgs } from './ToolContentBlock'
+import { CheckCircle2, Minimize2 } from 'lucide-react'
 
 // --- Inline small components ---
 
@@ -39,44 +37,8 @@ function ContextCompactionBlock({ item }: { item: Extract<DisplayItem, { kind: '
   )
 }
 
-// --- MemoryBlock ---
-
-const MEMORY_LABELS: Record<string, string> = {
-  read_evidence: 'Read evidence',
-  read_step_output: 'Read step output',
-  list_step_outputs: 'Listed step outputs',
-  store_fact: 'Stored fact',
-  search_facts: 'Searched facts',
-}
-
-const MemoryBlock = React.memo(function MemoryBlock({ item }: { item: Extract<DisplayItem, { kind: 'memory_read' }> }) {
-  const label = MEMORY_LABELS[item.toolName] ?? 'Memory operation'
-  const formattedArgs = parseArgs(item.args, item.parsedArgs)
-
-  const StatusIcon = item.status === 'success' ? Check : item.status === 'error' ? X : Loader2
-  const statusClass = item.status === 'success' ? 'text-success' : item.status === 'error' ? 'text-destructive' : 'text-muted-foreground animate-spin'
-
-  return (
-    <CollapsibleBlock
-      icon={<BookOpen className="h-3.5 w-3.5 text-accent" />}
-      label={label}
-      statusIcon={<StatusIcon className={`h-3.5 w-3.5 ${statusClass}`} />}
-    >
-      <ToolContentBlock
-        args={formattedArgs}
-        result={item.result}
-        resultLen={item.resultLen}
-        borderClass="border-accent/30"
-      />
-    </CollapsibleBlock>
-  )
-})
-
 // --- Component Registry ---
 
-// Each renderer accepts its specific DisplayItem variant. The registry uses a common
-// base type for the value; the type-safe boundary is in ChatMessageRenderer below,
-// where item.kind guarantees the correct variant is passed to the matching component.
 type ItemRenderer = React.ComponentType<{ item: Extract<DisplayItem, { kind: DisplayItemKind }> }>
 
 const renderers: Record<DisplayItemKind, ItemRenderer> = {
@@ -84,7 +46,7 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   assistant: AssistantMessage as ItemRenderer,
   thought: ThoughtBlock as ItemRenderer,
   thought_group: ThoughtGroupBlock as ItemRenderer,
-  tool: ToolBlock as ItemRenderer,
+  tool: ToolCard as ItemRenderer,
   tool_confirm: ToolConfirmation as ItemRenderer,
   ask_user: AskUserPanel as ItemRenderer,
   step_limit: StepLimitPrompt as ItemRenderer,
@@ -94,7 +56,6 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   plan_step: PlanStepBlock as ItemRenderer,
   reflection: ReflectionBlock as ItemRenderer,
   step_finish: StepFinishMarker as ItemRenderer,
-  memory_read: MemoryBlock as ItemRenderer,
   action_placeholder: ActionPlaceholder as ItemRenderer,
   context_compaction: ContextCompactionBlock as ItemRenderer,
 }

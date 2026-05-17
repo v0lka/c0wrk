@@ -13,10 +13,15 @@ import (
 // internalTools is the set of tool names that are always allowed,
 // excluded from policy configuration, and bypass the tool judge entirely.
 var internalTools = map[string]struct{}{
-	"ask_user":          {},
-	"finish":            {},
-	"list_step_outputs": {},
-	"read_step_output":  {},
+	"ask_user":            {},
+	"finish":              {},
+	"list_step_outputs":   {},
+	"read_skill_resource": {},
+	"read_step_output":    {},
+	"search_facts":        {},
+	"semantic_search":     {},
+	"set_step_status":     {},
+	"store_fact":          {},
 }
 
 // IsInternalTool returns true if the given tool name is an internal tool

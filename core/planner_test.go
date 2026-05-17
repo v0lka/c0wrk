@@ -826,7 +826,6 @@ func TestPlanWithExploration_InformedPath(t *testing.T) {
 		{"list_directory", ""},
 		{"glob", ""},
 		{"ripgrep", ""},
-		{"search_files", ""},
 	})
 
 	planner := NewPlanner(mockLLM)
@@ -875,7 +874,6 @@ func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
 		{"list_directory", ""},
 		{"glob", ""},
 		{"ripgrep", ""},
-		{"search_files", ""},
 	})
 
 	planner := NewPlanner(mockLLM)
@@ -972,7 +970,6 @@ func TestPlanDirect_GeneralDomain(t *testing.T) {
 			{"list_directory", ""},
 			{"glob", ""},
 			{"ripgrep", ""},
-			{"search_files", ""},
 		})
 
 		planner := NewPlanner(mockLLM)
@@ -1064,7 +1061,6 @@ func TestGetPlannerTools(t *testing.T) {
 			{"list_directory", ""},
 			{"glob", ""},
 			{"ripgrep", ""},
-			{"search_files", ""},
 			{"write_file", ""}, // should NOT be included
 		})
 
@@ -1077,7 +1073,7 @@ func TestGetPlannerTools(t *testing.T) {
 			names[td.Name] = true
 		}
 
-		expectedFS := []string{"read_file", "list_directory", "glob", "ripgrep", "search_files"}
+		expectedFS := []string{"read_file", "list_directory", "glob", "ripgrep"}
 		for _, e := range expectedFS {
 			if !names[e] {
 				t.Errorf("expected tool %q in result", e)
@@ -1219,7 +1215,6 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 			{"list_directory", ""},
 			{"glob", ""},
 			{"ripgrep", ""},
-			{"search_files", ""},
 		})
 
 		planner := NewPlanner(mockLLM)
@@ -1271,7 +1266,6 @@ func TestPlanWithExploration_ExecutorError_FallsBackToDirect(t *testing.T) {
 		{"list_directory", ""},
 		{"glob", ""},
 		{"ripgrep", ""},
-		{"search_files", ""},
 	})
 
 	planner := NewPlanner(mockLLM)

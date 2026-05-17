@@ -142,7 +142,6 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			ReadDefaultLines:     cfg.ToolLimits.ReadDefaultLines,
 			ReadMaxLineLength:    cfg.ToolLimits.ReadMaxLineLength,
 			ReadMaxBytes:         cfg.ToolLimits.ReadMaxBytes,
-			FileSearchMaxMatches: cfg.ToolLimits.FileSearchMaxMatches,
 			RipgrepMaxResults:    cfg.ToolLimits.RipgrepMaxResults,
 			RipgrepMaxLineLength: cfg.ToolLimits.RipgrepMaxLineLength,
 			GlobMaxResults:       cfg.ToolLimits.GlobMaxResults,

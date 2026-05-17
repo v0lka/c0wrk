@@ -120,6 +120,12 @@ type rgContextData struct {
 	LineNumber int    `json:"line_number"`
 }
 
+// Judge checks whether the search targets a path within the workspace.
+// Paths outside workspace require user confirmation.
+func (t *RipgrepTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
+	return judgeReadInWorkspace(ctx, input)
+}
+
 // Execute performs the ripgrep search and returns formatted results.
 func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params RipgrepInput

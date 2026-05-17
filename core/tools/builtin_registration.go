@@ -70,8 +70,6 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	registry.Register(builtins.NewWriteFileTool())
 	registry.Register(builtins.NewEditFileTool())
 	registry.Register(builtins.NewListDirectoryTool())
-	registry.Register(builtins.NewSearchFilesTool())
-	registry.Register(builtins.NewSearchContentToolWithLimits(cfg.FileLimits))
 	registry.Register(builtins.NewCreateDirectoryTool())
 	registry.Register(builtins.NewDeleteDirectoryTool())
 	registry.Register(builtins.NewDeleteFileTool())

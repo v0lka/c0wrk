@@ -7,8 +7,10 @@ Transforms flat message arrays into a structured display tree, rendering each it
 ## Key Files
 
 - `frontend/src/lib/chatUtils.ts` — groupMessages() transform
+- `frontend/src/lib/chatGroupingHandlers.ts` — tool call, plan step, and reflection grouping handlers
 - `frontend/src/components/chat/ChatArea.tsx` — chat container (hosts pinned last user message + message list + new-activity banner)
 - `frontend/src/components/chat/ChatMessageRenderer.tsx` — item type dispatch
+- `frontend/src/components/chat/toolCards/` — specialized tool card system (registry-driven per-tool rendering)
 - `frontend/src/components/chat/PendingActionsBar.tsx` — action bar (confirm/ask/limit)
 - `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
 - `frontend/src/components/chat/UserMessageContent.tsx` — renders user message content with skill chips and clickable file links (falls back to Markdown for messages without references)
@@ -28,13 +30,13 @@ Backend persists: ChatMessage[] (flat, role-based)
 Frontend converts: ChatMessageUI[] (semantic type, metadata)
          │
          ▼
-groupMessages(): DisplayItem[] (tree structure, 17 kinds)
+groupMessages(): DisplayItem[] (tree structure, 16 kinds)
          │
          ▼
 ChatMessageRenderer: renders each DisplayItem by type
 ```
 
-### Display Item Types (17 kinds)
+### Display Item Types (16 kinds)
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
@@ -42,7 +44,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `assistant`          | Assistant response        | Left-aligned, markdown rendered; local file links clickable (open File Viewer)|
 | `thought`            | Single reasoning block    | Collapsed by default, muted                                                   |
 | `thought_group`      | Multiple thoughts grouped | Collapsible container                                                         |
-| `tool`               | Tool call + result pair   | Code block with status icon                                                   |
+| `tool`               | Tool call + result pair   | Specialized card per tool (icon + verb + title + type-specific body)           |
 | `tool_confirm`       | Pending confirmation      | Action buttons (Allow/Deny)                                                   |
 | `ask_user`           | Agent question to user    | Form with inputs                                                              |
 | `step_limit`         | Budget decision           | Action buttons                                                                |
@@ -52,7 +54,6 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `plan_step`          | Plan step indicator       | Step badge with status                                                        |
 | `reflection`         | Reflector analysis        | Warning accent, collapsible                                                   |
 | `step_finish`        | Step completion marker    | Success/fail indicator                                                        |
-| `memory_read`        | Fact retrieval indicator  | Info accent                                                                   |
 | `action_placeholder` | Pending action indicator  | Placeholder with label                                                        |
 | `context_compaction` | Compaction notice         | Info badge                                                                    |
 

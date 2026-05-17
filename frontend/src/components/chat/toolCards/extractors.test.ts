@@ -1,0 +1,115 @@
+import { describe, it, expect } from 'vitest'
+import {
+  extractBashTitle, extractFileTitle, extractDirTitle,
+  extractSearchTitle, extractUrlTitle, extractMemoTitle,
+  extractFileHint, extractBashHint, extractSearchHint,
+} from './extractors'
+
+describe('extractBashTitle', () => {
+  it('extracts command from parsedArgs', () => {
+    expect(extractBashTitle({ command: 'go test ./...' }, '')).toBe('go test ./...')
+  })
+  it('truncates long commands', () => {
+    const long = 'a'.repeat(100)
+    expect(extractBashTitle({ command: long }, '')).toBe('a'.repeat(60) + '...')
+  })
+  it('falls back to raw args', () => {
+    expect(extractBashTitle(undefined, '{"command":"npm run build"}')).toBe('npm run build')
+  })
+  it('returns fallback when empty', () => {
+    expect(extractBashTitle(undefined, '')).toBe('command')
+  })
+})
+
+describe('extractFileTitle', () => {
+  it('extracts basename from path', () => {
+    expect(extractFileTitle({ path: '/src/lib/utils.ts' }, '')).toBe('utils.ts')
+  })
+  it('appends line range', () => {
+    expect(extractFileTitle({ path: '/a/b.ts', start_line: 10, end_line: 20 }, '')).toBe('b.ts L10-20')
+  })
+  it('appends start_line only', () => {
+    expect(extractFileTitle({ path: '/a/b.ts', start_line: 5 }, '')).toBe('b.ts L5')
+  })
+  it('falls back to raw args', () => {
+    expect(extractFileTitle(undefined, '{"path":"/x/y.go"}')).toBe('y.go')
+  })
+  it('returns fallback when empty', () => {
+    expect(extractFileTitle(undefined, '{}')).toBe('file')
+  })
+})
+
+describe('extractDirTitle', () => {
+  it('extracts basename', () => {
+    expect(extractDirTitle({ path: '/src/components' }, '')).toBe('components')
+  })
+  it('returns fallback', () => {
+    expect(extractDirTitle(undefined, '')).toBe('directory')
+  })
+})
+
+describe('extractSearchTitle', () => {
+  it('extracts pattern', () => {
+    expect(extractSearchTitle({ pattern: '**/*.tsx' }, '')).toBe('**/*.tsx')
+  })
+  it('extracts query', () => {
+    expect(extractSearchTitle({ query: 'handle error' }, '')).toBe('handle error')
+  })
+  it('extracts keywords array', () => {
+    expect(extractSearchTitle({ keywords: ['auth', 'login'] }, '')).toBe('auth, login')
+  })
+  it('truncates long patterns', () => {
+    const long = 'x'.repeat(80)
+    expect(extractSearchTitle({ pattern: long }, '')).toBe('x'.repeat(50) + '...')
+  })
+})
+
+describe('extractUrlTitle', () => {
+  it('extracts url', () => {
+    expect(extractUrlTitle({ url: 'https://example.com/api' }, '')).toBe('https://example.com/api')
+  })
+  it('truncates long urls', () => {
+    const long = 'https://' + 'a'.repeat(100)
+    expect(extractUrlTitle({ url: long }, '').length).toBe(53)
+  })
+})
+
+describe('extractMemoTitle', () => {
+  it('returns step status for set_step_status', () => {
+    expect(extractMemoTitle('set_step_status', {}, '')).toBe('step status')
+  })
+  it('returns fact with keywords for store_fact', () => {
+    expect(extractMemoTitle('store_fact', { keywords: ['auth', 'jwt'] }, '')).toBe('fact: auth, jwt')
+  })
+  it('returns fact fallback when no keywords', () => {
+    expect(extractMemoTitle('store_fact', {}, '')).toBe('fact')
+  })
+})
+
+describe('extractFileHint', () => {
+  it('returns full path', () => {
+    expect(extractFileHint({ path: '/home/user/project/src/main.ts' }, '')).toBe('/home/user/project/src/main.ts')
+  })
+  it('returns undefined when no path', () => {
+    expect(extractFileHint({}, '')).toBeUndefined()
+  })
+})
+
+describe('extractBashHint', () => {
+  it('returns full command when truncated', () => {
+    const long = 'a'.repeat(100)
+    expect(extractBashHint({ command: long }, '')).toBe(long)
+  })
+  it('returns undefined for short commands', () => {
+    expect(extractBashHint({ command: 'ls' }, '')).toBeUndefined()
+  })
+})
+
+describe('extractSearchHint', () => {
+  it('returns search path', () => {
+    expect(extractSearchHint({ path: '/src' }, '')).toBe('/src')
+  })
+  it('returns undefined when no path', () => {
+    expect(extractSearchHint({ pattern: '*.ts' }, '')).toBeUndefined()
+  })
+})

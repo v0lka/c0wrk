@@ -238,6 +238,24 @@ export namespace backend {
 	}
 	
 	
+	export class ProxySettingsResponse {
+	    enabled: boolean;
+	    url: string;
+	    bypass_list: string[];
+	    tls_cert_dir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxySettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.url = source["url"];
+	        this.bypass_list = source["bypass_list"];
+	        this.tls_cert_dir = source["tls_cert_dir"];
+	    }
+	}
 	export class ConfigSearchResp {
 	    provider: string;
 	    api_key: string;
@@ -259,6 +277,7 @@ export namespace backend {
 	    llm: ConfigLLMResponse;
 	    memory: ConfigMemResponse;
 	    search: ConfigSearchResp;
+	    proxy: ProxySettingsResponse;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResponse(source);
@@ -272,6 +291,7 @@ export namespace backend {
 	        this.llm = this.convertValues(source["llm"], ConfigLLMResponse);
 	        this.memory = this.convertValues(source["memory"], ConfigMemResponse);
 	        this.search = this.convertValues(source["search"], ConfigSearchResp);
+	        this.proxy = this.convertValues(source["proxy"], ProxySettingsResponse);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -365,6 +385,25 @@ export namespace backend {
 	        this.used_context = source["used_context"];
 	    }
 	}
+	export class ProxySettingsRequest {
+	    enabled: boolean;
+	    url: string;
+	    bypass_list: string[];
+	    tls_cert_dir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxySettingsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.url = source["url"];
+	        this.bypass_list = source["bypass_list"];
+	        this.tls_cert_dir = source["tls_cert_dir"];
+	    }
+	}
+	
 	export class SearchRequest {
 	    query: string;
 	    top_k: number;
@@ -657,6 +696,23 @@ export namespace session {
 	        this.session_id = source["session_id"];
 	        this.command = source["command"];
 	        this.created_at = source["created_at"];
+	    }
+	}
+
+}
+
+export namespace vectorindex {
+	
+	export class Manager {
+	
+	
+	    static createFrom(source: any = {}) {
+	        return new Manager(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	
 	    }
 	}
 

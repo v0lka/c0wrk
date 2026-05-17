@@ -82,8 +82,6 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 | `write_file`          | File      | always_allow   | Create/overwrite file                              |
 | `edit_file`           | File      | always_allow   | Apply targeted edits to existing file              |
 | `list_directory`      | File      | always_allow   | List directory contents                            |
-| `search_files`        | File      | always_allow   | Find files by name pattern                         |
-| `search_content`      | File      | always_allow   | Search file contents (grep-like)                   |
 | `create_directory`    | File      | always_allow   | Create directory (recursive)                       |
 | `delete_directory`    | File      | user_confirm   | Remove directory recursively                       |
 | `delete_file`         | File      | user_confirm   | Remove single file                                 |
@@ -106,7 +104,7 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 ```go
 RegisterBuiltinTools(registry, cfg):
   1. bash_exec (with blacklist + timeouts)
-  2. File tools (read, write, edit, list, search, search_content, mkdir, rmdir, rm)
+  2. File tools (read, write, edit, list, mkdir, rmdir, rm)
   3. finish
   4. web_fetch
   5. web_search (optional: needs search provider config)
@@ -128,7 +126,7 @@ File write/edit tools implement the `ToolJudger` interface (`sdk/tools/builtins/
 
 | Config                       | Affects                   | Default             |
 | ---------------------------- | ------------------------- | ------------------- |
-| `FileLimits.ReadMaxBytes`    | read_file, search_content | 50KB                |
+| `FileLimits.ReadMaxBytes`    | read_file                 | 50KB                |
 | `RipgrepLimits.MaxResults`   | ripgrep                   | 200                 |
 | `GlobLimits.MaxResults`      | glob                      | 200                 |
 | `WebFetchLimits.MaxBodySize` | web_fetch                 | 2MB                 |

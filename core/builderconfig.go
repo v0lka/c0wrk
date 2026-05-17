@@ -241,7 +241,6 @@ type BuilderToolLimitsConfig struct {
 	ReadDefaultLines     int
 	ReadMaxLineLength    int
 	ReadMaxBytes         int
-	FileSearchMaxMatches int
 
 	RipgrepMaxResults    int
 	RipgrepMaxLineLength int

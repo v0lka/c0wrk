@@ -283,7 +283,6 @@ type ToolLimitsConfig struct {
 	RipgrepMaxResults    int `yaml:"ripgrepMaxResults"`    // max matches for ripgrep (default: 200)
 	RipgrepMaxLineLength int `yaml:"ripgrepMaxLineLength"` // max chars per ripgrep line (default: 2000)
 	GlobMaxResults       int `yaml:"globMaxResults"`       // max glob results (default: 200)
-	FileSearchMaxMatches int `yaml:"fileSearchMaxMatches"` // max matches for file content search (default: 100)
 	WebSearchMaxResults  int `yaml:"webSearchMaxResults"`  // max web search results (default: 5)
 
 	// Web fetch limit

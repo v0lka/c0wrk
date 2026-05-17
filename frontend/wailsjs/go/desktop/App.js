@@ -62,6 +62,10 @@ export function GetMCPStatus() {
   return window['go']['desktop']['App']['GetMCPStatus']();
 }
 
+export function GetProxySettings() {
+  return window['go']['desktop']['App']['GetProxySettings']();
+}
+
 export function GetSecuritySettings() {
   return window['go']['desktop']['App']['GetSecuritySettings']();
 }
@@ -146,6 +150,10 @@ export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
 }
 
+export function SetVectorManager(arg1) {
+  return window['go']['desktop']['App']['SetVectorManager'](arg1);
+}
+
 export function StartTerminal(arg1) {
   return window['go']['desktop']['App']['StartTerminal'](arg1);
 }
@@ -176,6 +184,10 @@ export function UpdateLLMSettings(arg1) {
 
 export function UpdateMCPServers(arg1) {
   return window['go']['desktop']['App']['UpdateMCPServers'](arg1);
+}
+
+export function UpdateProxySettings(arg1) {
+  return window['go']['desktop']['App']['UpdateProxySettings'](arg1);
 }
 
 export function UpdateSearchSettings(arg1) {

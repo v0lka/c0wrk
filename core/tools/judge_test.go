@@ -802,7 +802,7 @@ func TestAllPathsInWorkspace(t *testing.T) {
 // TestJudge_InternalTools_ReturnsAllowImmediately tests that Judge() returns
 // VerdictAllow immediately for internal tools without calling the LLM.
 func TestJudge_InternalTools_ReturnsAllowImmediately(t *testing.T) {
-	internalTools := []string{"ask_user", "finish", "list_step_outputs", "read_step_output"}
+	internalTools := []string{"ask_user", "finish", "list_step_outputs", "read_skill_resource", "read_step_output", "search_facts", "semantic_search", "set_step_status", "store_fact"}
 
 	for _, toolName := range internalTools {
 		t.Run(toolName, func(t *testing.T) {

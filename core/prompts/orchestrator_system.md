@@ -16,7 +16,7 @@ When investigating, exploring, or understanding code, use tools in this priority
 
 - **semantic_search** — searches the entire codebase by semantic similarity in a single call. Use for concept-based discovery: "authentication middleware", "error handling patterns", "database connection logic".
 
-ALWAYS start with Tier 1 tools when exploring code. They understand code semantics and structure, providing more relevant results than text-based search. ALWAYS prefer these over ripgrep/glob/search_files for code discovery.
+ALWAYS start with Tier 1 tools when exploring code. They understand code semantics and structure, providing more relevant results than text-based search. ALWAYS prefer these over ripgrep/glob for code discovery.
 
 Fall back to Tier 2 when searching for exact string literals, error messages, config values, non-code files, or when Tier 1 returns insufficient results.
 
@@ -24,7 +24,6 @@ Fall back to Tier 2 when searching for exact string literals, error messages, co
 
 - **ripgrep** — fast regex/literal search. Use ONLY when you need exact string matches: error messages, specific identifiers, config keys.
 - **glob** — find files by name pattern. Use when you know the filename pattern.
-- **search_files**, **search_content** — file discovery by pattern.
 
 ### Tier 3 — File Operations
 

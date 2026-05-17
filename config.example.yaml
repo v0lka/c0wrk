@@ -247,7 +247,6 @@ toolLimits:
   ripgrepMaxResults: 200 # Max ripgrep matches
   ripgrepMaxLineLength: 2000 # Max chars per ripgrep result line
   globMaxResults: 200 # Max glob pattern results
-  fileSearchMaxMatches: 100 # Max file content search matches
   webSearchMaxResults: 5 # Max web search results
 
   # Web fetch

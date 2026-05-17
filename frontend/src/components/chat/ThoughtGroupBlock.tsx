@@ -15,16 +15,19 @@ export function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
       label={`Reasoning (${item.thoughts.length})`}
     >
       <div className="mt-2 pl-3 border-l-2 border-muted space-y-2 min-w-0">
-        {item.thoughts.map((t, idx) => (
-          <div key={`thought-${idx}`}>
-            {t.reasoning && t.reasoning.trim() !== '' && (
-              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.reasoning}</p>
-            )}
-            {t.content && t.content.trim() !== '' && (
-              <p className="text-muted-foreground text-sm whitespace-pre-wrap">{t.content}</p>
-            )}
-          </div>
-        ))}
+        {item.thoughts.map((t, idx) => {
+          const hasReasoning = !!t.reasoning && t.reasoning.trim() !== ''
+          return (
+            <div key={`thought-${idx}`}>
+              {hasReasoning && (
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.reasoning}</p>
+              )}
+              {t.content && t.content.trim() !== '' && (
+                <p className={`text-muted-foreground text-sm whitespace-pre-wrap${hasReasoning ? ' mt-1.5' : ''}`}>{t.content}</p>
+              )}
+            </div>
+          )
+        })}
       </div>
     </CollapsibleBlock>
   )

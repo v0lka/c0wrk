@@ -154,7 +154,8 @@ func (p *EventPersister) Persist(evt Event) {
 	}
 
 	// For non-assistant roles, use metadata as content if content is empty.
-	if content == "" {
+	// Exception: for "thought" events, empty content is valid (reasoning lives in metadata).
+	if content == "" && role != "thought" {
 		content = string(metadata)
 	}
 

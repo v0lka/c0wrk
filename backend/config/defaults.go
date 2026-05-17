@@ -249,9 +249,6 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.ToolLimits.GlobMaxResults == 0 {
 		cfg.ToolLimits.GlobMaxResults = 200
 	}
-	if cfg.ToolLimits.FileSearchMaxMatches == 0 {
-		cfg.ToolLimits.FileSearchMaxMatches = 100
-	}
 	if cfg.ToolLimits.WebSearchMaxResults == 0 {
 		cfg.ToolLimits.WebSearchMaxResults = 5
 	}

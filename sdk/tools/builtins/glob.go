@@ -71,6 +71,12 @@ type GlobInput struct {
 // errMaxResults is a sentinel error used to stop walking when max results is reached.
 var errMaxResults = errors.New("max results reached")
 
+// Judge checks whether the glob targets a path within the workspace.
+// Paths outside workspace require user confirmation.
+func (t *GlobTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
+	return judgeReadInWorkspace(ctx, input)
+}
+
 // Execute runs the glob pattern search and returns matching file paths.
 func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params GlobInput

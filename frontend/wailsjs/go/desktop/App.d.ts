@@ -5,6 +5,7 @@ import {session} from '../models';
 import {backend} from '../models';
 import {config} from '../models';
 import {mcp} from '../models';
+import {vectorindex} from '../models';
 
 export function ArchiveSession(arg1:string):Promise<void>;
 
@@ -35,6 +36,8 @@ export function GetLogLevel():Promise<string>;
 export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
 
 export function GetMCPStatus():Promise<Array<mcp.ServerStatus>>;
+
+export function GetProxySettings():Promise<backend.ProxySettingsResponse>;
 
 export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
@@ -78,6 +81,8 @@ export function SetConfigLoadState(arg1:Array<string>):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 
+export function SetVectorManager(arg1:vectorindex.Manager):Promise<void>;
+
 export function StartTerminal(arg1:string):Promise<void>;
 
 export function StopTerminal(arg1:string):Promise<void>;
@@ -93,6 +98,8 @@ export function UnwatchDirectory(arg1:string):Promise<void>;
 export function UpdateLLMSettings(arg1:backend.LLMSettingsRequest):Promise<void>;
 
 export function UpdateMCPServers(arg1:Record<string, config.MCPServerConfig>):Promise<void>;
+
+export function UpdateProxySettings(arg1:backend.ProxySettingsRequest):Promise<void>;
 
 export function UpdateSearchSettings(arg1:backend.SearchSettingsRequest):Promise<void>;
 

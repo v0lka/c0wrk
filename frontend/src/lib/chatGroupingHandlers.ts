@@ -3,9 +3,9 @@
  * Extracted to keep the main module under 200 lines.
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
-import { MEMORY_TOOL_NAMES, resolveToolKey } from './chatUtilsHelpers'
+import { resolveToolKey } from './chatUtilsHelpers'
 
-export type ToolLike = (DisplayItem & { kind: 'tool' }) | (DisplayItem & { kind: 'memory_read' })
+export type ToolLike = DisplayItem & { kind: 'tool' }
 export type PlanStep = DisplayItem & { kind: 'plan_step' }
 
 export function handlePlanStepStart(
@@ -86,17 +86,6 @@ export function handleToolCall(
   }
   const key = meta ? resolveToolKey(meta, planStepId) : undefined
   const hasResult = meta?.completed === true
-  if (MEMORY_TOOL_NAMES.has(toolName)) {
-    const item: DisplayItem & { kind: 'memory_read' } = {
-      kind: 'memory_read', id: msg.id, toolName, args: (meta?.args as string) || '',
-      parsedArgs: meta?.parsed_args as Record<string, unknown> | undefined,
-      result: hasResult ? ((meta?.result as string) ?? (meta?.result_preview as string)) : undefined,
-      resultLen: hasResult ? (meta?.result_len as number) : undefined, status: hasResult ? 'success' : 'running',
-    }
-    applyPending(item, key, toolItemsByKey, pendingResults)
-    pushItem(item, planStepId)
-    return
-  }
   const isAwaiting = meta?.awaiting_confirmation === true
   const toolItem: DisplayItem & { kind: 'tool' } = {
     kind: 'tool', id: msg.id, toolName: toolName || 'Tool', args: (meta?.args as string) || '',

@@ -7,7 +7,6 @@ type FileLimits struct {
 	ReadDefaultLines  int // max lines per read call
 	ReadMaxLineLength int // max characters per line
 	ReadMaxBytes      int // total output cap in bytes
-	FileSearchMatches int // max matches for search_content action
 }
 
 // BashTimeouts holds configurable timeout values for the bash_exec tool.
@@ -30,7 +29,6 @@ func DefaultFileLimits() FileLimits {
 		ReadDefaultLines:  2000,
 		ReadMaxLineLength: 2000,
 		ReadMaxBytes:      51200, // 50KB
-		FileSearchMatches: 100,
 	}
 }
 

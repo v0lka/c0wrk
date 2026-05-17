@@ -37,7 +37,7 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: T
         </CollapsibleBlock>
       )}
       {item.content && item.content.trim() !== '' && (
-        <p className="text-muted-foreground text-sm whitespace-pre-wrap">{item.content}</p>
+        <p className={`text-muted-foreground text-sm whitespace-pre-wrap${hasReasoning ? ' mt-3' : ''}`}>{item.content}</p>
       )}
     </div>
   )

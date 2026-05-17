@@ -4,11 +4,6 @@
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 
-/** Tool names rendered as compact memory_read blocks. */
-export const MEMORY_TOOL_NAMES = new Set([
-  'read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts',
-])
-
 /** Build a composite tool key for correlating tool_call ↔ tool_result. */
 export function makeToolKey(
   planStepId: string | undefined,
@@ -63,7 +58,17 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
       return (d || c) ? `Domain: ${d ?? ''} | Complexity: ${c ?? ''}` : rawContent
     }
     case 'tool_call': { const t = meta.tool as string | undefined; return t ? `${t}(${(meta.args as string) ?? ''})` : rawContent }
-    case 'thought': return rawContent
+    case 'thought': {
+      // Older persisted rows may have full JSON metadata as content when the actual content was empty.
+      // Detect and discard so the UI doesn't render raw JSON.
+      if (rawContent.startsWith('{') && rawContent.includes('"content"')) {
+        try {
+          const parsed = JSON.parse(rawContent) as { content?: string }
+          return parsed.content ?? ''
+        } catch { /* not JSON — pass through */ }
+      }
+      return rawContent
+    }
     case 'thinking': return `Step ${(meta.step_num as number) ?? ''}...`
     case 'error': return (meta.error as string) || rawContent
     case 'plan_step_start': return (meta.description as string) || ''

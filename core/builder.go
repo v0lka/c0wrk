@@ -1063,7 +1063,6 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			ReadDefaultLines:  cfg.ToolLimits.ReadDefaultLines,
 			ReadMaxLineLength: cfg.ToolLimits.ReadMaxLineLength,
 			ReadMaxBytes:      cfg.ToolLimits.ReadMaxBytes,
-			FileSearchMatches: cfg.ToolLimits.FileSearchMaxMatches,
 		},
 		RipgrepLimits: tools.RipgrepLimits{
 			MaxResults:    cfg.ToolLimits.RipgrepMaxResults,

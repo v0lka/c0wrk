@@ -20,8 +20,6 @@ func TestFilterNilAllowedReturnsAll(t *testing.T) {
 	allTools := []ToolDescriptor{
 		mockToolDescriptor("read_file"),
 		mockToolDescriptor("list_directory"),
-		mockToolDescriptor("search_files"),
-		mockToolDescriptor("search_content"),
 		mockToolDescriptor("write_file"),
 		mockToolDescriptor("edit_file"),
 		mockToolDescriptor("ripgrep"),
@@ -70,19 +68,17 @@ func TestFilterWithSpecificNames(t *testing.T) {
 	allTools := []ToolDescriptor{
 		mockToolDescriptor("read_file"),
 		mockToolDescriptor("list_directory"),
-		mockToolDescriptor("search_files"),
-		mockToolDescriptor("search_content"),
 		mockToolDescriptor("ripgrep"),
 		mockToolDescriptor("glob"),
 		mockToolDescriptor("bash_exec"),
 		mockToolDescriptor("web_search"),
 	}
 
-	allowedNames := []string{"read_file", "list_directory", "search_files", "search_content", "ripgrep", "glob"}
+	allowedNames := []string{"read_file", "list_directory", "ripgrep", "glob"}
 	filtered := FilterToolsByProfile(allTools, allowedNames)
 
-	if len(filtered) != 6 {
-		t.Errorf("should get exactly 6 tools, got %d", len(filtered))
+	if len(filtered) != 4 {
+		t.Errorf("should get exactly 4 tools, got %d", len(filtered))
 	}
 
 	toolNames := make(map[string]bool)

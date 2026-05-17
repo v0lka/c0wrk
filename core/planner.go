@@ -642,8 +642,6 @@ var fsToolNames = map[string]bool{
 	"glob":            true,
 	"ripgrep":         true,
 	"read_file":       true,
-	"search_files":    true,
-	"search_content":  true,
 	"semantic_search": true,
 }
 

@@ -106,45 +106,45 @@ describe('groupMessages', () => {
     expect(result.items[0]!.kind).toBe('step_finish')
   })
 
-  it('renders memory tools as memory_read with tool metadata', () => {
+  it('renders memory tools as tool with tool metadata', () => {
     const msg = makeUI({
       type: 'tool_call',
       metadata: { tool: 'read_evidence', args: '{"key":"val"}', step: 1 },
     })
     const result = groupMessages([msg])
     expect(result.items).toHaveLength(1)
-    const item = result.items[0]! as DisplayItem & { kind: 'memory_read' }
-    expect(item.kind).toBe('memory_read')
+    const item = result.items[0]! as DisplayItem & { kind: 'tool' }
+    expect(item.kind).toBe('tool')
     expect(item.toolName).toBe('read_evidence')
     expect(item.args).toBe('{"key":"val"}')
     expect(item.status).toBe('running')
   })
 
-  it('renders store_fact as memory_read', () => {
+  it('renders store_fact as tool', () => {
     const msg = makeUI({
       type: 'tool_call',
       metadata: { tool: 'store_fact', args: '{"fact":"hello"}', step: 2 },
     })
     const result = groupMessages([msg])
     expect(result.items).toHaveLength(1)
-    const item = result.items[0]! as DisplayItem & { kind: 'memory_read' }
-    expect(item.kind).toBe('memory_read')
+    const item = result.items[0]! as DisplayItem & { kind: 'tool' }
+    expect(item.kind).toBe('tool')
     expect(item.toolName).toBe('store_fact')
   })
 
-  it('renders search_facts as memory_read', () => {
+  it('renders search_facts as tool', () => {
     const msg = makeUI({
       type: 'tool_call',
       metadata: { tool: 'search_facts', args: '{"query":"test"}', step: 3 },
     })
     const result = groupMessages([msg])
     expect(result.items).toHaveLength(1)
-    const item = result.items[0]! as DisplayItem & { kind: 'memory_read' }
-    expect(item.kind).toBe('memory_read')
+    const item = result.items[0]! as DisplayItem & { kind: 'tool' }
+    expect(item.kind).toBe('tool')
     expect(item.toolName).toBe('search_facts')
   })
 
-  it('pairs memory_read tool with tool_result via tool_call_id', () => {
+  it('pairs memory tool with tool_result via tool_call_id', () => {
     const call = makeUI({
       type: 'tool_call',
       metadata: { tool: 'search_facts', args: '{"query":"test"}', step: 4, tool_call_id: 'tc_789_1' },
@@ -155,8 +155,8 @@ describe('groupMessages', () => {
     })
     const grouped = groupMessages([call, result])
     expect(grouped.items).toHaveLength(1)
-    const item = grouped.items[0]! as DisplayItem & { kind: 'memory_read' }
-    expect(item.kind).toBe('memory_read')
+    const item = grouped.items[0]! as DisplayItem & { kind: 'tool' }
+    expect(item.kind).toBe('tool')
     expect(item.result).toBe('found facts')
     expect(item.status).toBe('success')
   })

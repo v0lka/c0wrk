@@ -34,7 +34,12 @@ These tools bypass ALL policy checks, judge evaluation, and confirmation flow:
 - `ask_user` — prompts the user for information
 - `finish` — signals task completion
 - `list_step_outputs` — reads completed step metadata
+- `read_skill_resource` — reads a resource file from an activated skill
 - `read_step_output` — reads a specific step's output
+- `search_facts` — searches stored facts by keywords
+- `semantic_search` — searches the project codebase by semantic similarity
+- `set_step_status` — updates the to-do checklist for the current step
+- `store_fact` — stores a fact for later retrieval
 
 Source: `core/tools/registry.go` `internalTools` map
 

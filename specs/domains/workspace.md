@@ -133,7 +133,7 @@ Project switched (after vector index ready)
 | `GetFileDiff(path)`                 | Unified git diff for file                           |
 | `GetGitStatus()`                    | Workspace-level git status summary                  |
 
-Filename search (`search_files`) is available as a built-in tool (`sdk/tools/builtins/file_search.go`), not as a direct Workspace API method.
+Filename search is available via the `glob` built-in tool (`sdk/tools/builtins/glob.go`), not as a direct Workspace API method.
 
 ## Invariants
 
