@@ -797,7 +797,7 @@ func (p *Planner) buildSystemPromptFromMode(
 		"MODE-TAIL":           resolvedTail,
 		"MODE-JSON-EXAMPLE":   mode.jsonExample,
 		"AVAILABLE-TOOLS":     availableToolsStr,
-		"AVAILABLE-SKILLS":    formatSkillList(availableSkills),
+		"AVAILABLE-SKILLS":    formatSkillListForPlanner(ctx, availableSkills),
 		"WORKSPACE-PATH":      formatWorkspacePath(ctx),
 		"MAX-STEPS":           mode.maxSteps,
 	}
@@ -890,7 +890,7 @@ func (p *Planner) buildReplanSystemPrompt(
 		"FAILED-STEP":                  failedStepStr,
 		"PREVIOUS-SESSION-REFLECTIONS": formatSessionReflections(rc.sessionReflections),
 		"CURRENT-REFLECTION":           reflectionStr,
-		"AVAILABLE-SKILLS":             formatSkillList(rc.availableSkills),
+		"AVAILABLE-SKILLS":             formatSkillListForPlanner(ctx, rc.availableSkills),
 		"WORKSPACE-PATH":               formatWorkspacePath(ctx),
 	}
 
@@ -1009,6 +1009,46 @@ func formatWorkspacePath(ctx context.Context) string {
 		return ""
 	}
 	return fmt.Sprintf("Session workspace: %s\nWhen steps produce file artifacts, they must be created inside this workspace unless the task explicitly specifies an external location.", wp)
+}
+
+// formatSkillListForPlanner formats the skill list for planner prompts,
+// distinguishing user-activated (mandatory) skills from router-matched ones.
+// User-activated skills are marked as mandatory and the planner is instructed
+// to build the plan around their execution.
+func formatSkillListForPlanner(ctx context.Context, availableSkills []skills.SkillDescriptor) string {
+	if len(availableSkills) == 0 {
+		return "None"
+	}
+
+	userSkills := UserSkillsFromContext(ctx)
+	if len(userSkills) == 0 {
+		return formatSkillList(availableSkills)
+	}
+
+	userSet := make(map[string]bool, len(userSkills))
+	for _, name := range userSkills {
+		userSet[name] = true
+	}
+
+	var sb strings.Builder
+	sb.WriteString("The user explicitly activated the following skills. The plan MUST be built around executing these skills — they define the primary task, not optional context:\n")
+	for _, s := range availableSkills {
+		if userSet[s.Name] {
+			sb.WriteString("- " + s.Name + " [MANDATORY]: " + s.Description + "\n")
+		}
+	}
+	// Add any router-matched (non-mandatory) skills
+	var hasOptional bool
+	for _, s := range availableSkills {
+		if !userSet[s.Name] {
+			if !hasOptional {
+				sb.WriteString("\nAdditional available skills (optional):\n")
+				hasOptional = true
+			}
+			sb.WriteString("- " + s.Name + ": " + s.Description + "\n")
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // parsePlanResponse extracts a Plan from the LLM response content.

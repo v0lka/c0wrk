@@ -9,7 +9,7 @@ import (
 // LLMTitleCaller is the interface for making LLM calls for title generation.
 // This avoids importing sdk/llm in the backend layer.
 type LLMTitleCaller interface {
-	GenerateTitle(ctx context.Context, userMessage string) (string, error)
+	GenerateTitle(ctx context.Context, userMessage string, activeSkills []string) (string, error)
 }
 
 // TitleGenerator generates concise session titles from user messages.
@@ -39,10 +39,10 @@ func (g *TitleGenerator) SetLogger(l *slog.Logger) {
 
 // Generate produces a title for the given user message.
 // It tries LLM-based generation first, falling back to extracting first words.
-func (g *TitleGenerator) Generate(ctx context.Context, userMessage string) string {
+func (g *TitleGenerator) Generate(ctx context.Context, userMessage string, activeSkills []string) string {
 	// Try LLM-based title generation
 	if g.caller != nil {
-		title, err := g.caller.GenerateTitle(ctx, userMessage)
+		title, err := g.caller.GenerateTitle(ctx, userMessage, activeSkills)
 		if err != nil {
 			g.log().Warn("failed to generate session title via LLM, using fallback", "error", err)
 		} else if title != "" {

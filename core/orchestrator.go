@@ -688,6 +688,9 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		// === First message: plan first, then decide mode ===
 		ctx = WithDomain(ctx, routing.Domain)
 		ctx = WithComplexity(ctx, routing.Complexity)
+		if len(opts.UserSkills) > 0 {
+			ctx = WithUserSkills(ctx, opts.UserSkills)
+		}
 
 		singleStep := o.shouldUseSingleStep(opts.ExecutionMode)
 		o.logDebug("orchestrator: generating plan", "mode", opts.ExecutionMode, "singleStep", singleStep)
@@ -726,6 +729,9 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		o.logDebug("orchestrator: executing in Plan&Execute mode (continuation)")
 		ctx = WithDomain(ctx, routing.Domain)
 		ctx = WithComplexity(ctx, routing.Complexity)
+		if len(opts.UserSkills) > 0 {
+			ctx = WithUserSkills(ctx, opts.UserSkills)
+		}
 
 		// Get existing plan
 		existingPlan := bb.GetPlan()

@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { onSessionEvent } from '@/api/runtime'
 import { isSubAgentLaunchData, isSubAgentCompleteData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
+import { usePlanStore } from '@/stores/planStore'
 
 export function useSubagentEvents(sessionId: string | null): void {
   useEffect(() => {
@@ -41,6 +42,13 @@ export function useSubagentEvents(sessionId: string | null): void {
             plan_step_id: data.plan_step_id,
           },
         })
+        // Update plan store immediately so steps reflect completion
+        // without waiting for the batched plan_step_complete event.
+        usePlanStore.getState().updateStepStatus(
+          data.step_id,
+          data.success ? 'completed' : 'failed',
+          data.duration,
+        )
       }),
     )
 

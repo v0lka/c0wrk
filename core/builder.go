@@ -476,7 +476,7 @@ func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
 }
 
 // GenerateTitle generates a concise title for a conversation using the cached LLM router.
-func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage string) (string, error) {
+func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage string, activeSkills []string) (string, error) {
 	if err := b.waitReady(ctx); err != nil {
 		return "", err
 	}
@@ -491,11 +491,16 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		return "", errors.New("llm router not available")
 	}
 
+	systemPrompt := "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."
+	if len(activeSkills) > 0 {
+		systemPrompt += "\n\nThe user has explicitly activated the following skills: " + strings.Join(activeSkills, ", ") + ". Consider these when determining the topic."
+	}
+
 	titleEffort := llm.ResolveAgentReasoningMode("title", baseEffort, roleOverrides)
 	temp := 1.0
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
-			{Role: "system", Content: "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},
 		},
 		MaxTokens:       30,

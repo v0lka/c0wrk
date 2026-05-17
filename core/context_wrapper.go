@@ -29,6 +29,9 @@ func DomainFromContext(ctx context.Context) string {
 // complexityKey is the context key for the routing complexity.
 type complexityKey struct{}
 
+// userSkillsKey is the context key for explicitly user-activated skill names.
+type userSkillsKey struct{}
+
 // WithComplexity returns a new context with the routing complexity attached.
 func WithComplexity(ctx context.Context, complexity int) context.Context {
 	return context.WithValue(ctx, complexityKey{}, complexity)
@@ -41,6 +44,20 @@ func ComplexityFromContext(ctx context.Context) int {
 		return v
 	}
 	return 0
+}
+
+// WithUserSkills returns a new context with the explicitly user-activated skill names attached.
+func WithUserSkills(ctx context.Context, skills []string) context.Context {
+	return context.WithValue(ctx, userSkillsKey{}, skills)
+}
+
+// UserSkillsFromContext extracts the user-activated skill names from the context.
+// Returns nil if not found.
+func UserSkillsFromContext(ctx context.Context) []string {
+	if v, ok := ctx.Value(userSkillsKey{}).([]string); ok {
+		return v
+	}
+	return nil
 }
 
 // CoreContextManager wraps sdk/memory.ContextWindow to implement the core-level

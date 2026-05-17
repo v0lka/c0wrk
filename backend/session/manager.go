@@ -856,7 +856,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			title := titleGen.Generate(ctx, text)
+			title := titleGen.Generate(ctx, text, activeSkills)
 			if title == "" {
 				return
 			}
