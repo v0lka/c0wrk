@@ -12,6 +12,8 @@ Transforms flat message arrays into a structured display tree, rendering each it
 - `frontend/src/components/chat/PendingActionsBar.tsx` — action bar (confirm/ask/limit)
 - `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
 - `frontend/src/components/chat/UserMessageContent.tsx` — renders user message content with skill chips and clickable file links (falls back to Markdown for messages without references)
+- `frontend/src/lib/markdownConfig.tsx` — Markdown wrapper component with remark/rehype plugins and custom link handler for local file navigation
+- `frontend/src/lib/localFileLink.ts` — pure utility functions for detecting, parsing, and validating local file link hrefs in markdown output
 - `frontend/src/components/chat/ChatScrollManager.tsx` — scroll lock / auto-scroll coordination
 - `frontend/src/components/chat/ChatNewActivityBanner.tsx` — “new activity” pill
 
@@ -37,7 +39,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
 | `user`               | User message              | Right-aligned bubble; `/skill` refs as chips, `@file` refs as clickable links |
-| `assistant`          | Assistant response        | Left-aligned, markdown rendered                                               |
+| `assistant`          | Assistant response        | Left-aligned, markdown rendered; local file links clickable (open File Viewer)|
 | `thought`            | Single reasoning block    | Collapsed by default, muted                                                   |
 | `thought_group`      | Multiple thoughts grouped | Collapsible container                                                         |
 | `tool`               | Tool call + result pair   | Code block with status icon                                                   |

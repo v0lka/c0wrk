@@ -1,4 +1,4 @@
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
 import remarkBreaks from 'remark-breaks'
@@ -8,6 +8,9 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeExternalLinks from 'rehype-external-links'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import { cn } from '@/lib/utils'
+import { isLocalFileHref, parseLocalFileHref, normalizePath } from '@/lib/localFileLink'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useFileTreeStore } from '@/stores/fileTreeStore'
 import type { PluggableList } from 'unified'
 
 // Custom sanitize schema — extends default to allow highlight.js classes,
@@ -41,6 +44,41 @@ const rehypePlugins: PluggableList = [
   [rehypeSanitize, customSanitizeSchema],
 ]
 
+// --- Custom link component for local file navigation ---
+
+const markdownComponents: Components = {
+  a: ({ href, children, node: _node, ...rest }) => {
+    if (!isLocalFileHref(href)) {
+      return <a href={href} {...rest}>{children}</a>
+    }
+
+    const handleClick = () => {
+      const { path, line } = parseLocalFileHref(href!)
+      const rootPath = useFileTreeStore.getState().rootPath
+      if (!rootPath) return
+      const resolved = normalizePath(rootPath, path)
+      if (!resolved) return
+      if (line !== undefined) {
+        useFileViewerStore.getState().openFileAtLine(resolved, line)
+      } else {
+        useFileViewerStore.getState().openFile(resolved)
+      }
+    }
+
+    return (
+      <span
+        className="text-info hover:underline cursor-pointer"
+        onClick={handleClick}
+        role="link"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter') handleClick() }}
+      >
+        {children}
+      </span>
+    )
+  },
+}
+
 // --- Markdown wrapper component ---
 
 interface MarkdownProps {
@@ -55,6 +93,7 @@ export function Markdown({ content, className, compact }: MarkdownProps) {
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
+        components={markdownComponents}
       >
         {content}
       </ReactMarkdown>
