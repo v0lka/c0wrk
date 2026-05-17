@@ -102,68 +102,77 @@ export function SessionSelector() {
 
   return (
     <div className="border-b border-border px-2 py-1">
-      <DropdownMenu open={dropdownOpen} onOpenChange={(o) => { setDropdownOpen(o); if (!o) setSearch('') }}>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" className="h-7 w-full justify-between gap-1 px-2 text-sm">
-            <span className="truncate text-muted-foreground">
-              {activeSession?.name ?? 'Select session'}
-            </span>
-            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-64">
-          {showSearch && (
-            <>
-              <div className="px-2 py-1">
-                <Input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search sessions..."
-                  className="h-7 text-sm"
-                  autoFocus
-                />
-              </div>
-              <DropdownMenuSeparator />
-            </>
-          )}
+      <div className="flex items-center gap-1">
+        <DropdownMenu open={dropdownOpen} onOpenChange={(o) => { setDropdownOpen(o); if (!o) setSearch('') }}>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
+              <span className="truncate text-muted-foreground">
+                {activeSession?.name ?? 'Select session'}
+              </span>
+              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-64">
+            {showSearch && (
+              <>
+                <div className="px-2 py-1">
+                  <Input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search sessions..."
+                    className="h-7 text-sm"
+                    autoFocus
+                  />
+                </div>
+                <DropdownMenuSeparator />
+              </>
+            )}
 
-          {activeSessionsList.filter((s) => filterFn(s.name)).map((session) => (
-            <SessionItem
-              key={session.id}
-              session={session}
-              isActive={session.id === activeSessionId}
-              onSelect={() => { setActiveSessionId(session.id); setDropdownOpen(false) }}
-              onRename={() => startRename(session.id, session.name)}
-              onArchive={() => handleArchive(session.id, session.archived)}
-              onDelete={() => handleDelete(session.id)}
-            />
-          ))}
+            {activeSessionsList.filter((s) => filterFn(s.name)).map((session) => (
+              <SessionItem
+                key={session.id}
+                session={session}
+                isActive={session.id === activeSessionId}
+                onSelect={() => { setActiveSessionId(session.id); setDropdownOpen(false) }}
+                onRename={() => startRename(session.id, session.name)}
+                onArchive={() => handleArchive(session.id, session.archived)}
+                onDelete={() => handleDelete(session.id)}
+              />
+            ))}
 
-          {archivedList.filter((s) => filterFn(s.name)).length > 0 && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="text-xs text-muted-foreground">Archived</DropdownMenuLabel>
-              {archivedList.filter((s) => filterFn(s.name)).map((session) => (
-                <SessionItem
-                  key={session.id}
-                  session={session}
-                  isActive={session.id === activeSessionId}
-                  onSelect={() => { setActiveSessionId(session.id); setDropdownOpen(false) }}
-                  onRename={() => startRename(session.id, session.name)}
-                  onArchive={() => handleArchive(session.id, session.archived)}
-                  onDelete={() => handleDelete(session.id)}
-                />
-              ))}
-            </>
-          )}
+            {archivedList.filter((s) => filterFn(s.name)).length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-xs text-muted-foreground">Archived</DropdownMenuLabel>
+                {archivedList.filter((s) => filterFn(s.name)).map((session) => (
+                  <SessionItem
+                    key={session.id}
+                    session={session}
+                    isActive={session.id === activeSessionId}
+                    onSelect={() => { setActiveSessionId(session.id); setDropdownOpen(false) }}
+                    onRename={() => startRename(session.id, session.name)}
+                    onArchive={() => handleArchive(session.id, session.archived)}
+                    onDelete={() => handleDelete(session.id)}
+                  />
+                ))}
+              </>
+            )}
 
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={handleNewSession}>
-            <Plus className="size-3.5" />
-            New Session...
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={handleNewSession}>
+              <Plus className="size-3.5" />
+              New Session...
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <button
+          type="button"
+          className="rounded p-0.5 hover:bg-muted/50 active:bg-muted/30"
+          onClick={handleNewSession}
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </div>
     </div>
   )
 }

@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { ChevronDown, Check, FolderPlus, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, Check, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-react'
 
 export function ProjectSelector() {
   const projects = useProjectStore((s) => s.projects)
@@ -89,44 +89,49 @@ export function ProjectSelector() {
   return (
     <>
       <div className="px-2 py-1">
-        <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-7 w-full justify-between gap-1 px-2 text-sm font-medium">
-              <span className="truncate">{activeProject?.name ?? 'Select project'}</span>
-              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {projects?.map((project) => (
-              <DropdownMenuItem
-                key={project.id}
-                className="group/item gap-2"
-                onSelect={() => handleSwitch(project.id)}
-              >
-                {project.id === activeProjectId && <Check className="size-3.5 shrink-0" />}
-                <span className="flex-1 truncate">{project.name}</span>
-                <span
-                  className="ml-auto flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onPointerUp={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
+        <div className="flex items-center gap-1">
+          <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm font-medium">
+                <span className="truncate">{activeProject?.name ?? 'Select project'}</span>
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              {projects?.map((project) => (
+                <DropdownMenuItem
+                  key={project.id}
+                  className="group/item gap-2"
+                  onSelect={() => handleSwitch(project.id)}
                 >
-                  <button type="button" className="rounded p-0.5 hover:bg-accent" onClick={() => { startRename(project.id, project.name); setDropdownOpen(false) }}>
-                    <Pencil className="size-3" />
-                  </button>
-                  <button type="button" className="rounded p-0.5 hover:bg-destructive/20" onClick={() => { handleDelete(project.id); setDropdownOpen(false) }}>
-                    <Trash2 className="size-3 text-destructive" />
-                  </button>
-                </span>
+                  {project.id === activeProjectId && <Check className="size-3.5 shrink-0" />}
+                  <span className="flex-1 truncate">{project.name}</span>
+                  <span
+                    className="ml-auto flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onPointerUp={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button type="button" className="rounded p-0.5 hover:bg-accent" onClick={() => { startRename(project.id, project.name); setDropdownOpen(false) }}>
+                      <Pencil className="size-3" />
+                    </button>
+                    <button type="button" className="rounded p-0.5 hover:bg-destructive/20" onClick={() => { handleDelete(project.id); setDropdownOpen(false) }}>
+                      <Trash2 className="size-3 text-destructive" />
+                    </button>
+                  </span>
+                </DropdownMenuItem>
+              ))}
+              {projects && projects.length > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuItem onClick={() => setCreateOpen(true)}>
+                <FolderPlus className="size-3.5" />
+                New Project...
               </DropdownMenuItem>
-            ))}
-            {projects && projects.length > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuItem onClick={() => setCreateOpen(true)}>
-              <FolderPlus className="size-3.5" />
-              New Project...
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <button type="button" className="rounded p-0.5 hover:bg-muted/50 active:bg-muted/30" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-3.5" />
+          </button>
+        </div>
       </div>
       <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
     </>

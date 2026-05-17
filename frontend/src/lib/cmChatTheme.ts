@@ -19,7 +19,6 @@ export function createChatEditorTheme(): Extension {
     },
     '.cm-content': {
       caretColor: caret,
-      fontFamily: "'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace",
       fontSize: '0.875rem',
       lineHeight: '1.5',
       padding: '0.25rem 0',

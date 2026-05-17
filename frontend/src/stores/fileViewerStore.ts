@@ -46,7 +46,13 @@ interface FileViewerActions {
 
 // --- Constants ---
 
-const DEFAULT_WIDTH = 500
+const VIEWER_MIN = 250
+const VIEWER_MAX = 900
+
+function getDefaultViewerWidth(): number {
+  const screenWidth = typeof window !== 'undefined' ? window.innerWidth : 1440
+  return Math.max(VIEWER_MIN, Math.min(VIEWER_MAX, Math.round(screenWidth * 3 / 6)))
+}
 
 // --- Store ---
 
@@ -56,7 +62,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       files: {},
       openTabs: [],
       activeFile: null,
-      width: DEFAULT_WIDTH,
+      width: getDefaultViewerWidth(),
       collapsed: false,
       highlightLine: null,
       fileIcons: {},

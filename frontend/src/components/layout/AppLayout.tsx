@@ -10,12 +10,19 @@ import { FileViewerPanel } from '@/components/fileViewer/FileViewerPanel'
 
 // --- Constants ---
 
-const SIDEBAR_DEFAULT = 300
 const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 500
 const VIEWER_MIN = 250
 const VIEWER_MAX = 900
 const COLLAPSED_WIDTH = 40
+
+function clamp(value: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, value))
+}
+
+function getDefaultSidebarWidth(): number {
+  return clamp(Math.round(window.innerWidth / 6), SIDEBAR_MIN, SIDEBAR_MAX)
+}
 
 export function AppLayout() {
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
@@ -28,7 +35,7 @@ export function AppLayout() {
 
   const showFileViewer = openTabs.length > 0
 
-  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT)
+  const [sidebarWidth, setSidebarWidth] = useState(getDefaultSidebarWidth)
 
   const sidebarResize = useResize({
     initialWidth: sidebarCollapsed ? COLLAPSED_WIDTH : sidebarWidth,

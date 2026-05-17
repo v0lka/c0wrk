@@ -478,7 +478,6 @@ body {
 
 .cm-chat-container .cm-scroller {
   overflow: auto;
-  font-family: 'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace;
   font-size: 0.875rem;
   line-height: 1.5;
 }
