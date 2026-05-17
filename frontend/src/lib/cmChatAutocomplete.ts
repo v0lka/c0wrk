@@ -1,4 +1,9 @@
-import { autocompletion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete'
+import {
+  autocompletion,
+  type Completion,
+  type CompletionContext,
+  type CompletionResult,
+} from '@codemirror/autocomplete'
 import type { Extension } from '@codemirror/state'
 import { listSkills } from '@/api/skills'
 import { listDirectory } from '@/api/workspace'
@@ -6,6 +11,14 @@ import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
 import type { SkillDescriptor, FileEntry } from '@/types/models'
+
+const DEFAULT_FILE_ICON = '\uf15b'
+const DEFAULT_FOLDER_ICON = '\uf07b'
+
+interface FileCompletion extends Completion {
+  nerdIcon?: string
+  nerdIconColor?: string
+}
 
 let skillsCache: SkillDescriptor[] = []
 let skillsLoaded = false
@@ -49,6 +62,13 @@ async function getFiles(): Promise<FileEntry[]> {
   return filesCache
 }
 
+function relativePath(absPath: string, rootPath: string | null): string {
+  if (rootPath && absPath.startsWith(rootPath + '/')) {
+    return absPath.slice(rootPath.length + 1)
+  }
+  return absPath
+}
+
 async function skillSource(ctx: CompletionContext): Promise<CompletionResult | null> {
   // Scan backward for '/' trigger.
   const line = ctx.state.doc.lineAt(ctx.pos)
@@ -68,7 +88,7 @@ async function skillSource(ctx: CompletionContext): Promise<CompletionResult | n
 
   if (triggerIdx === -1) return null
 
-  const from = line.from + triggerIdx
+  const from = line.from + triggerIdx + 1
   const query = textBefore.slice(triggerIdx + 1)
 
   const skills = await getSkills()
@@ -78,10 +98,10 @@ async function skillSource(ctx: CompletionContext): Promise<CompletionResult | n
   return {
     from,
     options: filtered.map((s) => ({
-      label: '/' + s.name,
+      label: s.name,
       detail: s.description,
       type: 'keyword',
-      apply: '/' + s.name + ' ',
+      apply: s.name + ' ',
     })),
   }
 }
@@ -106,16 +126,17 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
 
   if (triggerIdx === -1) return null
 
-  const from = line.from + triggerIdx
+  const from = line.from + triggerIdx + 1
   const query = textBefore.slice(triggerIdx + 1)
 
   const entries = await getFiles()
   if (entries.length === 0) return null
 
+  const rootPath = useFileTreeStore.getState().rootPath
   const openTabs = useFileViewerStore.getState().openTabs
   const openTabsSet = new Set(openTabs)
 
-  const options: Array<{ label: string; type: string; boost?: number; apply: string }> = []
+  const options: FileCompletion[] = []
 
   if (query.length === 0) {
     // Show pinned tabs first, then remaining entries.
@@ -123,25 +144,29 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
       const entry = entries.find((e) => e.path === path)
       if (entry) {
         options.push({
-          label: '@' + entry.path,
+          label: relativePath(entry.path, rootPath),
           type: 'file',
           boost: 10,
-          apply: '@' + entry.path.replace(/ /g, '\\ ') + ' ',
+          apply: entry.path.replace(/ /g, '\\ ') + ' ',
+          nerdIcon: entry.icon || DEFAULT_FILE_ICON,
+          nerdIconColor: entry.icon_color,
         })
       }
     }
-    const limit = 50 - options.length
+    const cap = 50 - options.length
     for (const f of entries) {
       if (options.length >= 50) break
       if (!openTabsSet.has(f.path)) {
         const suffix = f.is_dir ? '/' : ' '
         options.push({
-          label: '@' + f.path,
+          label: relativePath(f.path, rootPath),
           type: f.is_dir ? 'folder' : 'file',
-          apply: '@' + f.path.replace(/ /g, '\\ ') + suffix,
+          apply: f.path.replace(/ /g, '\\ ') + suffix,
+          nerdIcon: f.is_dir ? (f.icon || DEFAULT_FOLDER_ICON) : (f.icon || DEFAULT_FILE_ICON),
+          nerdIconColor: f.icon_color,
         })
       }
-      if (options.length - openTabs.length >= limit) break
+      if (options.length - openTabs.length >= cap) break
     }
   } else {
     const filtered = fuzzyFilter(query, entries, (f) => f.name)
@@ -149,10 +174,12 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
       const pinned = openTabsSet.has(f.path)
       const suffix = f.is_dir ? '/' : ' '
       options.push({
-        label: '@' + f.path,
+        label: relativePath(f.path, rootPath),
         type: f.is_dir ? 'folder' : 'file',
         boost: pinned ? 10 : 0,
-        apply: '@' + f.path.replace(/ /g, '\\ ') + suffix,
+        apply: f.path.replace(/ /g, '\\ ') + suffix,
+        nerdIcon: f.is_dir ? (f.icon || DEFAULT_FOLDER_ICON) : (f.icon || DEFAULT_FILE_ICON),
+        nerdIconColor: f.icon_color,
       })
     }
   }
@@ -171,5 +198,23 @@ export function createChatAutocomplete(): Extension {
     override: [skillSource, fileSource],
     closeOnBlur: true,
     activateOnTyping: true,
+    icons: false,
+    optionClass: (completion) => (completion.type === 'keyword' ? 'skill-item' : 'file-item'),
+    addToOptions: [
+      {
+        render: (completion: Completion) => {
+          const fc = completion as FileCompletion
+          if (!fc.nerdIcon) return null
+          const span = document.createElement('span')
+          span.className = 'cm-completion-nerd-icon'
+          span.textContent = fc.nerdIcon
+          if (fc.nerdIconColor) {
+            span.style.color = fc.nerdIconColor
+          }
+          return span
+        },
+        position: 20,
+      },
+    ],
   })
 }
