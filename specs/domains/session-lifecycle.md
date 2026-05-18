@@ -68,6 +68,22 @@ User clicks "Resume" (after task_failed_resumable)
           (continues from last checkpoint)
 ```
 
+`task_failed_resumable` is NOT emitted when the router decides
+`needs_clarification` (and the user did not explicitly invoke a /skill). In
+that case the planner never runs, so there is nothing to resume — the
+orchestrator marks the just-created task as completed and returns the
+clarification message instead.
+
+### Discarding an Unfinished Task
+
+```
+User clicks "Cancel" on the resume prompt
+  → Frontend: CancelUnfinishedTask(sessionId)
+  → Backend: FrontendAPI.CancelUnfinishedTask()
+      └─ TaskStoreAdapter.PersistCompletion(taskID, "", 0)
+          (marks the unfinished task as completed; no further resume prompt)
+```
+
 ### Task Cancellation
 
 ```
@@ -96,23 +112,23 @@ Blackboard state is reconstructed from `tasks` + `task_steps` + `task_facts` on 
 
 The `backend/session/persistence.go` defines the `SessionStore` interface:
 
-| Method | Description |
-|--------|-------------|
-| `SaveSession(ctx, info)` | Upsert session (INSERT OR REPLACE) |
-| `LoadSession(ctx, id)` | Load session by ID (returns nil if not found) |
-| `ListSessions(ctx)` | List all sessions ordered by last activity |
-| `ListSessionsByProject(ctx, projectID)` | List sessions for a specific project |
-| `DeleteSession(ctx, id)` | Delete session and cascade messages |
-| `ArchiveSession(ctx, id, archived)` | Set archived flag on session |
-| `RenameSession(ctx, id, name)` | Update session name |
-| `UpdateSessionTokens(ctx, id, input, output, model, family)` | Update accumulated token counts and model info |
-| `UpdateSessionActivity(ctx, id)` | Update last_active_at timestamp to now |
-| `SaveMessage(ctx, msg)` | Insert a new chat message |
-| `LoadMessages(ctx, sessionID)` | Load all messages for session (ordered by created_at) |
-| `DeleteMessages(ctx, sessionID)` | Delete all messages for session |
-| `SaveTerminalCommand(ctx, sessionID, command)` | Save terminal command to history |
-| `LoadTerminalCommands(ctx, sessionID, limit)` | Load most recent terminal commands |
-| `Close()` | Close the store (no-op for SQLite, lifecycle managed externally) |
+| Method                                                       | Description                                                      |
+| ------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `SaveSession(ctx, info)`                                     | Upsert session (INSERT OR REPLACE)                               |
+| `LoadSession(ctx, id)`                                       | Load session by ID (returns nil if not found)                    |
+| `ListSessions(ctx)`                                          | List all sessions ordered by last activity                       |
+| `ListSessionsByProject(ctx, projectID)`                      | List sessions for a specific project                             |
+| `DeleteSession(ctx, id)`                                     | Delete session and cascade messages                              |
+| `ArchiveSession(ctx, id, archived)`                          | Set archived flag on session                                     |
+| `RenameSession(ctx, id, name)`                               | Update session name                                              |
+| `UpdateSessionTokens(ctx, id, input, output, model, family)` | Update accumulated token counts and model info                   |
+| `UpdateSessionActivity(ctx, id)`                             | Update last_active_at timestamp to now                           |
+| `SaveMessage(ctx, msg)`                                      | Insert a new chat message                                        |
+| `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at)            |
+| `DeleteMessages(ctx, sessionID)`                             | Delete all messages for session                                  |
+| `SaveTerminalCommand(ctx, sessionID, command)`               | Save terminal command to history                                 |
+| `LoadTerminalCommands(ctx, sessionID, limit)`                | Load most recent terminal commands                               |
+| `Close()`                                                    | Close the store (no-op for SQLite, lifecycle managed externally) |
 
 ### Conversation History
 
@@ -125,9 +141,9 @@ The orchestrator maintains a conversation history window:
 
 ### Auto Title Generation
 
-After first successful task completion:
+When the first message is received for a session with the default auto-generated name:
 
-- Backend calls LLM to generate session title from user message + response
+- Backend calls LLM to generate session title from user message
 - Emits `session_renamed` event
 - Frontend updates session list
 
@@ -136,12 +152,17 @@ After first successful task completion:
 ```go
 // SessionInfo — session metadata returned to frontend
 type SessionInfo struct {
-    ID         string
-    ProjectID  string
-    Name       string
-    CreatedAt  time.Time
-    LastActive time.Time
-    Archived   bool
+    ID               string
+    ProjectID        string
+    Name             string
+    CreatedAt        string // RFC 3339
+    LastActiveAt     string // RFC 3339
+    Archived         bool
+    Active           bool
+    TotalInputTokens  int
+    TotalOutputTokens int
+    Model            string
+    Family           string
 }
 
 // HandleOptions — execution mode + user-specified skill overrides
@@ -153,10 +174,12 @@ type HandleOptions struct {
 
 // HandleResult — orchestration output
 type HandleResult struct {
-    Output          string
-    RoutingDecision RoutingDecision
-    Plan            *Plan
-    Blackboard      Blackboard
+    Output          string           `json:"output"`
+    RoutingDecision *RoutingDecision `json:"routing_decision"`
+    Plan            *Plan            `json:"plan,omitempty"`
+    Blackboard      Blackboard       `json:"-"`
+    AttemptCount    int              `json:"attempt_count,omitempty"`
+    Reflections     []Reflection     `json:"reflections,omitempty"`
 }
 ```
 
@@ -177,6 +200,11 @@ type HandleResult struct {
 - Task state is checkpointed on each step completion (enables resume)
 - Cancellation is cooperative (executor checks context at each iteration)
 - A failed task can be resumed exactly once (subsequent failure = new task)
+- Router-driven `needs_clarification` never produces a resumable task: the
+  planner has not run yet and the just-created task record is closed before
+  the orchestrator returns.
+- The Cancel button on the resume prompt is a hard discard: it persists
+  completion on the unfinished task without launching the orchestrator.
 
 ## Configuration
 

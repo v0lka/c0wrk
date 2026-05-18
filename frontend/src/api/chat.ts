@@ -62,3 +62,13 @@ export async function resumeTask(sessionId: string): Promise<void> {
     throw err
   }
 }
+
+export async function cancelUnfinishedTask(sessionId: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CancelUnfinishedTask(sessionId)
+  } catch (err) {
+    logger.error('Failed to cancel unfinished task:', err)
+    throw err
+  }
+}

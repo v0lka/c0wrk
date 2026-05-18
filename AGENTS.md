@@ -84,7 +84,7 @@ React 19 + TypeScript ~5.7 + Vite 6 + Tailwind CSS v4 + Zustand 5. UI primitives
 
 ### Layout
 
-Three-column panel layout (no router): Sidebar (300px default, collapsible to 32px) | Main Chat Area | File Viewer (500px default, collapsible to 32px). Resize handles between panels (4px, drag + keyboard). File viewer only visible when files are open. Sidebar and file viewer states persist via `localStorage`.
+Three-column panel layout (no router): Sidebar (300px default, collapsible to 40px) | Main Chat Area | File Viewer (500px default, collapsible to 40px). Resize handles between panels (4px, drag + keyboard). File viewer only visible when files are open. Sidebar and file viewer states persist via `localStorage`.
 
 ### Communication with Go backend
 
@@ -144,7 +144,7 @@ Session event handler subscribes to all session-scoped events on session change.
 - Normalized store, incremental updates. Don't rebuild trees from flat arrays on every render. Index by ID, update in place.
 - Stable Zustand selectors. Every selector passed to `useStore(selector)` must return a referentially stable value — either a primitive, a direct store property, or use a custom hook with granular selectors + `useMemo`. Never allocate arrays/objects inside a selector.
 - Type safety at boundaries. Validate and type event data at ingestion point. Everything downstream typed — no Record<string, unknown>.
-- Small, focused components. No file over 200 lines. No component handling more than one domain concept. Extract hooks for data loading.
+- Small, focused components. Target no file over 200 lines (281-line `ChatInput.tsx` uses sub-hooks to manage complexity). No component handling more than one domain concept. Extract hooks for data loading.
 - One import path for backend calls. All RPC through @/api/\*. No direct imports from wailsjs/go/desktop/App.
 - Declarative persistence. Use Zustand middleware, not manual localStorage calls.
 - No module-level side effects. Store files define stores. Initialization happens in React lifecycle hooks after runtime readiness confirmed.

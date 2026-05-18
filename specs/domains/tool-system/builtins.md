@@ -39,7 +39,7 @@ Each tool's effective policy is resolved at execution time:
 
 ### File Safety Judging
 
-File write/edit tools (`write_file`, `edit_file`, `delete_file`, `delete_directory`) implement `ToolJudger`. Even with `PolicyAlwaysAllow`, the judge inspects the target path and escalates to `PolicyUserConfirm` if the path:
+Eleven built-in tools implement `ToolJudger`: `write_file`, `edit_file`, `delete_file`, `delete_directory`, `create_directory`, `bash_exec` (all `PolicyUserConfirm` — judged before policy check), plus `read_file`, `list_directory`, `glob`, `ripgrep`, `web_fetch` (all `PolicyAlwaysAllow` — judge can escalate to user confirmation). The judge inspects the target path and escalates to `PolicyUserConfirm` if the path:
 - Is outside the workspace root
 - References system directories (`/etc`, `/usr`, `/System`, etc.)
 - Contains path traversal sequences (`../`)
@@ -50,7 +50,7 @@ File tools perform cross-session conflict detection via `FileCoherenceChecker` (
 
 **Protocol:**
 
-- `read_file`: after reading, records the file's signature. If the file changed since this session's previous read, prepends a warning annotation to the result (non-blocking).
+- `read_file`: before reading, calls `CheckRead` to record the current file signature. If the file changed since this session's previous read, prepends a warning annotation to the result (non-blocking).
 - `write_file`, `edit_file`, `delete_file`: before mutating, checks the file's current signature against this session's last-read snapshot. If mismatched, returns `IsError: true` with a conflict message instructing the LLM to re-read.
 - `bash_exec`: not covered (bash modifications are detected naturally by subsequent coherence checks on affected files).
 
@@ -79,10 +79,10 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 | --------------------- | --------- | -------------- | -------------------------------------------------- |
 | `bash_exec`           | Execution | user_confirm   | Shell command execution with timeout and blacklist |
 | `read_file`           | File      | always_allow   | Read file contents (with size limits)              |
-| `write_file`          | File      | always_allow   | Create/overwrite file                              |
-| `edit_file`           | File      | always_allow   | Apply targeted edits to existing file              |
+| `write_file`          | File      | user_confirm   | Create/overwrite file                              |
+| `edit_file`           | File      | user_confirm   | Apply targeted edits to existing file              |
 | `list_directory`      | File      | always_allow   | List directory contents                            |
-| `create_directory`    | File      | always_allow   | Create directory (recursive)                       |
+| `create_directory`    | File      | user_confirm   | Create directory (recursive)                       |
 | `delete_directory`    | File      | user_confirm   | Remove directory recursively                       |
 | `delete_file`         | File      | user_confirm   | Remove single file                                 |
 | `glob`                | Search    | always_allow   | Glob pattern file matching                         |
@@ -120,7 +120,7 @@ Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder`
 
 ## File Tools — ToolJudger
 
-File write/edit tools implement the `ToolJudger` interface (`sdk/tools/builtins/file_judge.go`). When a file tool has `PolicyAlwaysAllow` but the target path looks risky (outside workspace, system files), the judge escalates to user confirmation.
+Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). When a tool with `PolicyAlwaysAllow` has a judge and the target path looks risky (outside workspace, system files), the judge escalates to user confirmation.
 
 ## Limits Configuration
 

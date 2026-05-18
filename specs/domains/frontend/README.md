@@ -68,7 +68,7 @@ Three-column panel layout (no router, single-page app):
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Sidebar (300px)  │  Main Chat Area  │  File Viewer (500px)      │
-│  collapsible→32px │                  │  collapsible→32px         │
+│  collapsible→40px │                  │  collapsible→40px         │
 │                   │                  │  (only when files open)   │
 │  ┌─────────────┐  │  ┌────────────┐  │  ┌─────────────────────┐ │
 │  │ Project sel │  │  │ Pinned msg │  │  │ Tab bar             │ │
@@ -85,7 +85,7 @@ Three-column panel layout (no router, single-page app):
 
 Resize handles (4px) between panels. Panel states persisted via localStorage.
 
-Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and custom token decorations for `/skill` references (warning color) and `@file` references (info color) via a ViewPlugin. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions: typing `/` at a word boundary triggers fuzzy-filtered skill suggestions, and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
+Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and custom token decorations for `/skill` references (warning color) and `@file` references (info color) via a `StateField`. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions: typing `/` at a word boundary triggers fuzzy-filtered skill suggestions, and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
 
 ## Design System
 

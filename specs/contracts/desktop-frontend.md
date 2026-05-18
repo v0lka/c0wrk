@@ -31,18 +31,19 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 ### Session (`backend/frontend_api_session.go`)
 
-| Method               | Parameters                   | Returns                   | Description                         |
-| -------------------- | ---------------------------- | ------------------------- | ----------------------------------- |
-| `CreateSession`      | —                            | SessionInfo               | Create new session (active project) |
-| `DeleteSession`      | id                           | error                     | Delete session                      |
-| `RenameSession`      | id, name                     | error                     | Rename session                      |
-| `ArchiveSession`     | id                           | error                     | Archive/unarchive session           |
-| `ListSessions`       | —                            | []SessionInfo             | List active project sessions        |
-| `GetSessionHistory`  | id                           | []ChatMessage             | Get message history                 |
-| `GetBlackboardState` | sessionID                    | \*BlackboardStateResponse | Get blackboard task state           |
-| `SendMessage`        | id, text, mode, activeSkills | error                     | Send user message (async execution) |
-| `CancelTask`         | id                           | error                     | Cancel running task                 |
-| `ResumeTask`         | id                           | error                     | Resume failed task                  |
+| Method                 | Parameters                   | Returns                   | Description                                           |
+| ---------------------- | ---------------------------- | ------------------------- | ----------------------------------------------------- |
+| `CreateSession`        | —                            | SessionInfo               | Create new session (active project)                   |
+| `DeleteSession`        | id                           | error                     | Delete session                                        |
+| `RenameSession`        | id, name                     | error                     | Rename session                                        |
+| `ArchiveSession`       | id                           | error                     | Archive/unarchive session                             |
+| `ListSessions`         | —                            | []SessionInfo             | List active project sessions                          |
+| `GetSessionHistory`    | id                           | []ChatMessage             | Get message history                                   |
+| `GetBlackboardState`   | sessionID                    | \*BlackboardStateResponse | Get blackboard task state                             |
+| `SendMessage`          | id, text, mode, activeSkills | error                     | Send user message (async execution)                   |
+| `CancelTask`           | id                           | error                     | Cancel running task                                   |
+| `ResumeTask`           | id                           | error                     | Resume failed task                                    |
+| `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
 
 ### Project (`backend/frontend_api_project.go`)
 

@@ -90,8 +90,8 @@ ToolRegistry.Execute(ctx, name, input)
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools (ask_user, finish, list_step_outputs, read_step_output) bypass all checks
-- MCP tools are tagged with source `mcp:<server_name>`
+- Internal tools (ask_user, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact) bypass all checks
+- MCP tools are tagged with source `mcp`
 - Core built-in tools are tagged with source `core`
 - Tool filter can silently reject registration (no error returned)
 - The registry is thread-safe (sync.RWMutex)

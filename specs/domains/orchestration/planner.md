@@ -35,14 +35,14 @@ User message + routing decision
                   → Then generates informed plan
 ```
 
-All modes receive full Tree of Thoughts reasoning and structured step descriptions (What/How/Where/Acceptance Criteria). The `planPromptMode` struct parameterizes mode-varying prompt segments:
+All modes receive full Tree of Thoughts reasoning and structured step descriptions (What/How/Where/Acceptance Criteria). The `planPromptMode` struct parameterizes mode-varying prompt segments with fields `preamble`, `tot`, `guidance`, `extraSections`, `tail`, `jsonExample`, and `maxSteps`:
 
-| Mode Config              | singleStep | ToT variant     | Guidance variant     | Used by                   |
+| Mode Config              | maxSteps | ToT variant     | Guidance variant     | Used by                   |
 | ------------------------ | ---------- | --------------- | -------------------- | ------------------------- |
-| `multiStepMode`          | false      | multi-step ToT  | multi-step guidance  | Advanced Plan()           |
-| `singleStepMode`         | true       | single-step ToT | single-step guidance | Normal Plan()             |
-| `continuationMultiMode`  | false      | multi-step ToT  | multi-step guidance  | Advanced PlanContinuation |
-| `continuationSingleMode` | true       | single-step ToT | single-step guidance | Normal PlanContinuation   |
+| `multiStepMode`          | "10"      | multi-step ToT  | multi-step guidance  | Advanced Plan()           |
+| `singleStepMode`         | "1"       | single-step ToT | single-step guidance | Normal Plan()             |
+| `continuationMultiMode`  | "10"      | multi-step ToT  | multi-step guidance  | Advanced PlanContinuation |
+| `continuationSingleMode` | "1"       | single-step ToT | single-step guidance | Normal PlanContinuation   |
 
 ### Granularity Rules
 
@@ -70,6 +70,8 @@ type PlanStep struct {
 ```
 
 ### Agent Profiles
+
+Agent profiles are defined in the `AgentProfile` struct (`core/types.go`) and described to the LLM planner via `planModeAgentProfiles` constant in `core/planner.go`:
 
 | Role         | Primary Tools                                        | Compaction Bias        |
 | ------------ | ---------------------------------------------------- | ---------------------- |
@@ -141,9 +143,8 @@ The planner assembles prompts from template sections using a unified `buildSyste
 - `AVAILABLE-TOOLS` — grouped tool list
 - `AVAILABLE-SKILLS` — active skill list
 - `WORKSPACE-PATH` — current workspace path
-- `MAX-STEPS` — maximum step count
 
-Provider-specific prompt variants are selected based on model family.
+Provider-specific prompt variants are selected based on model family. The `maxSteps` value from `planPromptMode` is substituted into the fully assembled prompt (not the markdown template).
 
 ## Error Handling
 

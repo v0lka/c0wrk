@@ -186,6 +186,16 @@ func (f *FrontendAPI) ResumeTask(id string) error {
 	return f.app.Manager().ResumeTask(f.ctx(), id)
 }
 
+// CancelUnfinishedTask discards an unfinished task in the given session,
+// preventing future resume prompts. Safe to call when no unfinished task
+// exists; in that case it is a no-op.
+func (f *FrontendAPI) CancelUnfinishedTask(id string) error {
+	if f.app == nil || f.app.Manager() == nil {
+		return errors.New("session manager not initialized")
+	}
+	return f.app.Manager().CancelUnfinishedTask(id)
+}
+
 // GetSessionHistory returns chat history for a session.
 func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	if f.store != nil {

@@ -944,6 +944,85 @@ func TestEmitResumableIfUnfinished_NoEventWithoutTaskStore(t *testing.T) {
 	}
 }
 
+// recordingCancelTaskStore extends mockTaskStoreForResumable by capturing
+// CompleteTask invocations so CancelUnfinishedTask tests can assert on them.
+type recordingCancelTaskStore struct {
+	mockTaskStoreForResumable
+	mu              sync.Mutex
+	completedID     string
+	completedOutput string
+	completedCount  int
+	completedCalls  int
+}
+
+func (m *recordingCancelTaskStore) CompleteTask(_ context.Context, taskID, finalOutput string, attemptCount int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completedID = taskID
+	m.completedOutput = finalOutput
+	m.completedCount = attemptCount
+	m.completedCalls++
+	return nil
+}
+
+// TestCancelUnfinishedTask_PersistsCompletion verifies that CancelUnfinishedTask
+// looks up the unfinished task and marks it as completed in the store.
+func TestCancelUnfinishedTask_PersistsCompletion(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	store := &recordingCancelTaskStore{
+		mockTaskStoreForResumable: mockTaskStoreForResumable{
+			unfinished: &TaskRecord{ID: "task-abc", SessionID: "sess-1", Status: "in_progress"},
+		},
+	}
+	manager.SetTaskStore(store)
+
+	if err := manager.CancelUnfinishedTask("sess-1"); err != nil {
+		t.Fatalf("CancelUnfinishedTask returned error: %v", err)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.completedCalls != 1 {
+		t.Errorf("expected exactly one CompleteTask call, got %d", store.completedCalls)
+	}
+	if store.completedID != "task-abc" {
+		t.Errorf("expected CompleteTask to be called with task-abc, got %q", store.completedID)
+	}
+}
+
+// TestCancelUnfinishedTask_NoUnfinished verifies that CancelUnfinishedTask is a
+// no-op when the session has no unfinished task.
+func TestCancelUnfinishedTask_NoUnfinished(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	store := &recordingCancelTaskStore{
+		mockTaskStoreForResumable: mockTaskStoreForResumable{unfinished: nil},
+	}
+	manager.SetTaskStore(store)
+
+	if err := manager.CancelUnfinishedTask("sess-1"); err != nil {
+		t.Fatalf("CancelUnfinishedTask returned error: %v", err)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.completedCalls != 0 {
+		t.Errorf("expected no CompleteTask calls, got %d", store.completedCalls)
+	}
+}
+
+// TestCancelUnfinishedTask_NoTaskStore verifies that CancelUnfinishedTask
+// returns nil without error when no task store is configured.
+func TestCancelUnfinishedTask_NoTaskStore(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	// Do not call SetTaskStore — taskStore stays nil.
+	if err := manager.CancelUnfinishedTask("sess-1"); err != nil {
+		t.Fatalf("CancelUnfinishedTask should be a no-op without task store, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Continuation Routing Tests
 // ---------------------------------------------------------------------------

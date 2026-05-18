@@ -27,16 +27,16 @@ type FileNode struct {
     Name       string
     Path       string
     IsDir      bool
+    Icon       string // Nerd Font icon name
+    IconColor  string // hex color for icon
     Hidden     bool
-    GitStatus  string
     GitIgnored bool
 }
 
-// GitStatusEntry — per-file git status
+// GitStatusEntry — per-file git status (map key is the absolute file path)
 type GitStatusEntry struct {
-    Status    string // "M", "A", "D", "?"
+    Status    string // "M", "A", "R", "C", or "U"
     Staged    bool
-    FileName  string
 }
 
 // VectorIndexStatus — indexing progress for frontend

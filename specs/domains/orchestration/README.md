@@ -53,6 +53,7 @@ type OrchestratorConfig struct {
     MaxRetries                int    // default: 2 (3 total attempts)
     MaxHistoryMessages        int    // default: 20
     MaxDependencyContextChars int    // default: 8000
+    PreWarningPercent         int    // default: 75 (context-fill notification threshold)
     Model                     string
     ReasoningEffort           llm.ReasoningEffort
     RoleOverrides             map[string]string

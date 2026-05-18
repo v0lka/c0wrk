@@ -1,7 +1,7 @@
-import { AlertTriangle, RefreshCw } from 'lucide-react'
+import { AlertTriangle, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useChatStore } from '@/stores/chatStore'
-import { resumeTask } from '@/api/chat'
+import { resumeTask, cancelUnfinishedTask } from '@/api/chat'
 import type { DisplayItem } from '@/types/messages'
 import { isResolved, resumeResolved } from '@/types/messages'
 
@@ -18,6 +18,11 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
     resumeTask(sessionId).catch(() => { /* error event will handle */ })
   }
 
+  const handleCancel = () => {
+    updateMessage(sessionId, item.message.id, { metadata: resumeResolved() })
+    cancelUnfinishedTask(sessionId).catch(() => { /* best-effort: UI is already dismissed */ })
+  }
+
   return (
     <div className="border-2 border-destructive/50 rounded-lg p-4 bg-destructive/5 max-w-full overflow-hidden">
       <div className="flex items-center gap-2 mb-3">
@@ -25,9 +30,14 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
         <span className="text-sm font-medium">Task Failed</span>
       </div>
       <p className="text-sm text-muted-foreground mb-4">{content}</p>
-      <Button size="sm" onClick={handleResume} className="text-xs">
-        <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Resume
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={handleResume} className="text-xs">
+          <RefreshCw className="h-3.5 w-3.5 mr-1.5" />Resume
+        </Button>
+        <Button size="sm" variant="outline" onClick={handleCancel} className="text-xs">
+          <X className="h-3.5 w-3.5 mr-1.5" />Cancel
+        </Button>
+      </div>
     </div>
   )
 }

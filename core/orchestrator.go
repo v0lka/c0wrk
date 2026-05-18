@@ -666,6 +666,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// misjudge ambiguity for terse arguments like "entire codebase".
 	if routing.NeedsClarification && len(opts.UserSkills) == 0 {
 		o.logDebug("orchestrator: returning clarification request")
+		// Close the task in the persistence layer: the planner never ran, so
+		// there is nothing to resume. Marking the task as completed prevents
+		// the session manager's emitResumableIfUnfinished safety net from
+		// firing a stale "task_failed_resumable" event.
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			pbb.SetRouting(routing)
+			pbb.CompleteTask(0)
+		}
 		return &HandleResult{
 			Output:          "I need more information to help you. Could you please clarify your request?",
 			RoutingDecision: routing,

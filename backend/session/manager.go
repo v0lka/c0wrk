@@ -1145,6 +1145,33 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	return nil
 }
 
+// CancelUnfinishedTask discards any unfinished task in the given session by
+// marking it as completed in the task store. After this returns successfully,
+// the session no longer has a resumable task and emitResumableIfUnfinished
+// will not emit a "task_failed_resumable" event for it.
+// Returns nil if no task store is configured or no unfinished task exists.
+func (m *Manager) CancelUnfinishedTask(sessionID string) error {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return nil
+	}
+
+	adapter := NewTaskStoreAdapter(ts)
+	taskID, err := adapter.GetUnfinishedTaskID(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to look up unfinished task: %w", err)
+	}
+	if taskID == "" {
+		return nil
+	}
+	if err := adapter.PersistCompletion(taskID, "", 0); err != nil {
+		return fmt.Errorf("failed to mark task as completed: %w", err)
+	}
+	return nil
+}
+
 // emitResumableIfUnfinished checks whether the session has an unfinished task
 // in the task store and, if so, emits a "task_failed_resumable" event so the
 // frontend can offer a Resume button.

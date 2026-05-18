@@ -89,7 +89,7 @@ The most recent user message is rendered as a sticky element at the top of the c
 - Streaming text renders in real-time without layout shift
 - Tool call and result are always rendered together (never orphaned)
 - Pending actions are always visible (sticky bar, never scrolled off-screen)
-- No component file exceeds 200 lines (extract into sub-components)
+- No component file exceeds 300 lines (extract into sub-components — see `ChatInput.tsx` for a component using sub-hooks to manage complexity)
 
 ## Error Handling
 
