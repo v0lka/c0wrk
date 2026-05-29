@@ -48,7 +48,7 @@ High-level layers and responsibilities:
 
 Verified from project configuration and build files:
 
-- **Go 1.26.1**
+- **Go 1.26.3**
 - **Node.js + npm** (used by Wails frontend commands and `frontend/package.json` scripts)
 - **Wails v2 CLI** (`wails build`, `wails dev` are used by Makefile)
 - **golangci-lint** (for `make lint`)
@@ -56,6 +56,33 @@ Verified from project configuration and build files:
   - macOS (`arm64`, `x86_64`)
   - Linux (`aarch64`, `x64`)
   - Windows (`x64`, via zip runtime artifact path)
+
+### Linux System Dependencies
+
+Wails v2 requires native libraries for the WebKit GTK backend:
+
+**Ubuntu/Debian 24.04+:**
+```bash
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
+```
+
+**Fedora 39+:**
+```bash
+sudo dnf install gtk3-devel webkit2gtk4.1-devel gcc pkg-config
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S gtk3 webkit2gtk-4.1 base-devel
+```
+
+For CI/headless builds, also install `xvfb` (`sudo apt install xvfb` on Debian/Ubuntu).
+
+**Runtime only** (for end users, not developers):
+```bash
+# Ubuntu/Debian
+sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0
+```
 
 ## Installation
 
@@ -177,7 +204,7 @@ make fetch-onnx
 
 - **Config not detected**: ensure file is exactly at `~/.c0wrk/config.yaml`.
 - **App fails after build due to missing ONNX library**: run `make fetch-onnx`.
-- **Missing embedding files in app bundle**: run `make fetch-embedding-model`.
+- **Missing embedding model files**: run `make fetch-embedding-model`.
 - **`make dev-desktop` shows only frontend**: this command runs Vite only; use `wails dev` for full desktop runtime loop.
 - **Generated Wails bindings drift** (`frontend/wailsjs/go/desktop/App.*`): regenerate via `wails build` or `wails dev` (do not hand-edit generated files).
 
@@ -185,7 +212,7 @@ make fetch-onnx
 
 ## Contributing
 
-**CI is not configured in this repo** — local verification is the gate. Before opening a PR, run the full validation sequence:
+CI runs on every push and PR (see `.github/workflows/ci.yml`). Before opening a PR, also run the full local validation sequence:
 
 ```bash
 make build

@@ -916,6 +916,12 @@ func resolveModelPath(filename, agentDir string) string {
 		if _, statErr := os.Stat(bundlePath); statErr == nil {
 			return bundlePath
 		}
+
+		// Flat layout (Linux/Windows): models/ next to the binary
+		flatPath := filepath.Join(exeDir, "models", filename)
+		if _, statErr := os.Stat(flatPath); statErr == nil {
+			return flatPath
+		}
 	}
 
 	// Fallback: <agentDir>/models/<filename>

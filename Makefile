@@ -32,16 +32,32 @@ else
 	ONNX_LIB_OUT := onnxruntime.dll
 endif
 
+# Go build tags for Wails (Linux requires webkit2_41 for Ubuntu 24.04+)
+ifeq ($(UNAME_S),Linux)
+	WAILS_TAGS := -tags webkit2_41
+else
+	WAILS_TAGS :=
+endif
+
+# Platform-specific output directories
+ifeq ($(UNAME_S),Darwin)
+	APP_BUNDLE_DIR := build/bin/c0wrk-desktop.app/Contents/MacOS
+	APP_MODELS_DIR := build/bin/c0wrk-desktop.app/Contents/Resources/models
+else ifeq ($(UNAME_S),Linux)
+	APP_BUNDLE_DIR := build/bin
+	APP_MODELS_DIR := build/bin/models
+else
+	APP_BUNDLE_DIR := build/bin
+	APP_MODELS_DIR := build/bin/models
+endif
+
 ONNX_URL := https://github.com/microsoft/onnxruntime/releases/download/v$(ONNX_VERSION)/$(ONNX_ARCHIVE)
 ONNX_DIR := $(ONNX_ARCHIVE:.tgz=)
 # Cache directory for downloaded ONNX library
 ONNX_CACHE_DIR := .cache
-# Target directory inside the .app bundle
-APP_BUNDLE_DIR := build/bin/c0wrk-desktop.app/Contents/MacOS
 
 # Embedding model configuration
 MODELS_CACHE_DIR := .cache/models
-APP_MODELS_DIR := build/bin/c0wrk-desktop.app/Contents/Resources/models
 EMBEDDING_MODEL_URL := https://huggingface.co/jinaai/jina-embeddings-v2-small-en/resolve/main/model.onnx
 EMBEDDING_TOKENIZER_URL := https://huggingface.co/jinaai/jina-embeddings-v2-small-en/resolve/main/tokenizer.json
 EMBEDDING_MODEL_NAME := jina-v2-small.onnx
@@ -52,7 +68,7 @@ frontend-deps:
 	cd frontend && npm install
 
 build: frontend-deps
-	wails build
+	wails build $(WAILS_TAGS)
 	$(MAKE) fetch-onnx
 	$(MAKE) fetch-embedding-model
 
