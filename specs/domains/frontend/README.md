@@ -21,11 +21,16 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 // SessionInfo — session metadata from backend
 interface SessionInfo {
   id: string
-  projectId: string
+  project_id: string
   name: string
-  createdAt: string
-  lastActive: string
+  created_at: string
+  last_active_at: string
   archived: boolean
+  active: boolean
+  total_input_tokens: number
+  total_output_tokens: number
+  model: string
+  family: string
 }
 
 // ProjectInfo — project metadata from backend
@@ -37,16 +42,19 @@ interface ProjectInfo {
   sessionCount: number
 }
 
-// FileNode — file tree entry from backend
-interface FileNode {
+// FileEntry — file tree entry from backend
+interface FileEntry {
   name: string
   path: string
-  isDir: boolean
-  hidden: boolean
-  gitStatus: string
-  gitIgnored: boolean
+  is_dir: boolean
+  icon?: string
+  icon_color?: string
+  hidden?: boolean
+  gitignored?: boolean
 }
 ```
+
+Note: Wails auto-generates TypeScript types from Go structs using snake_case JSON field names. Git status is stored separately in `fileTreeStore.gitStatus` (a `Record<string, GitStatusEntry>` keyed by absolute path), not as a field on each file entry.
 
 ## Stack
 

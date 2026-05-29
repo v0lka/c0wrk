@@ -19,11 +19,15 @@ Manages the agent's context window during step execution: tracks token usage, tr
 // ContextWindow manages token budget during step execution
 type ContextWindow struct {
     systemPrompt    string
-    modelMeta       llm.ModelMetadata  // context window size, output limit
-    tokenTracker    *ContextTokenTracker
-    thresholds      CompactionThresholds
+    taskContent     string
+    planContent     string
+    steps           []agent.Step
     strategy        CompactionStrategy
-    pruning     ToolOutputPruning
+    tracker         *llm.ContextTokenTracker
+    modelMeta       llm.ModelMetadata  // context window size, output limit
+    thresholds      CompactionThresholds
+    pruning         ToolOutputPruning
+    safetyMargin    int
 }
 
 // CompactionStrategy interface

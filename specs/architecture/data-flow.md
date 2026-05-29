@@ -72,8 +72,7 @@ core/Orchestrator (via Emitter interface)
          ▼
 backend/session/emitter.go: EventEmitter
   ├─ Formats event data as typed struct
-  ├─ Persists to SQLite (EventPersister)
-  └─ Calls runtime.EventsEmit(ctx, eventName, payload)
+  └─ Calls emit callback → runtime.EventsEmit(ctx, eventName, payload)
          │
          ▼
 Wails runtime (IPC bridge)
@@ -87,6 +86,8 @@ frontend: window.runtime.EventsOn(eventName, handler)
          ▼
 React re-renders affected components
 ```
+
+Persistence is a **separate concern** from event emission. Task state (step results, facts, reflections) is persisted by `PersistentBlackboard` on each write. Chat messages are persisted by `FrontendAPI.SendMessage()` before orchestration starts. Token counts are persisted via a callback wired through `emitter.SetTokenPersist()`. The emitter itself only emits — it does not write to SQLite.
 
 Event naming:
 
@@ -203,7 +204,7 @@ Never read `config.yaml` directly from core or sdk packages. All config flows th
 
 ### ❌ Emitting events without persisting
 
-Every event must be emitted to frontend AND persisted to SQLite (dual write). Frontend-only events will be lost on refresh and break resume; persistence-only events will leave the UI stale.
+Every piece of task state must be both emitted to the frontend for live updates AND persisted to SQLite for resume. Event emission (via EventEmitter) handles the frontend channel; persistence happens through PersistentBlackboard (step results, facts), SessionStore (messages, tokens), and TaskStore (task lifecycle). Adding a new event that carries resume-critical data requires adding corresponding persistence logic.
 
 ### ❌ Sharing Blackboard across tasks
 

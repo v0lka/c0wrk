@@ -153,15 +153,15 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 
 		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
 			OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
-				f.emitEvent(EventVectorIndexStatus, map[string]any{
-					"state":         string(state),
-					"phase":         string(phase),
-					"indices":       []string{"vector", "lexical"},
-					"progress":      progressPercent(indexed, total),
-					"files_indexed": indexed,
-					"total_files":   total,
-					"current_file":  file,
-					"branch":        capturedBranch,
+				f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
+					State:        string(state),
+					Phase:        string(phase),
+					Indices:      []string{"vector", "lexical"},
+					Progress:     progressPercent(indexed, total),
+					FilesIndexed: indexed,
+					TotalFiles:   total,
+					CurrentFile:  file,
+					Branch:       capturedBranch,
 				})
 			},
 		}); switchErr != nil {

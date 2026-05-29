@@ -131,6 +131,18 @@ type ToolInfo struct {
 	Policy      string `json:"policy"`
 }
 
+// VectorIndexStatus describes the current state of the vector index for the frontend.
+type VectorIndexStatus struct {
+	State        string   `json:"state"`
+	Progress     float64  `json:"progress"`
+	FilesIndexed int      `json:"files_indexed"`
+	TotalFiles   int      `json:"total_files"`
+	CurrentFile  string   `json:"current_file"`
+	Branch       string   `json:"branch"`
+	Phase        string   `json:"phase"`   // "both" | "embedding" | "lexical"
+	Indices      []string `json:"indices"` // e.g. ["vector", "lexical"]
+}
+
 // VectorStoreEntry represents a single chunk from the vector store for the frontend.
 //
 // VectorScore/LexicalScore/VectorRank/LexicalRank are optional per-side

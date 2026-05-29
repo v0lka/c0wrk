@@ -93,7 +93,7 @@ ToolRegistry.Execute()
 
 ## Bash Blacklist
 
-The `bash_exec` tool has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). Blacklisted commands are denied before policy resolution.
+The `bash_exec` tool has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, `BashExecTool.Judge()` evaluates the command against compiled blacklist regexes. A match escalates to user confirmation (same flow as any judge-flagged call).
 
 ## Invariants
 

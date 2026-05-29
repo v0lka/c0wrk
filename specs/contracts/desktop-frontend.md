@@ -29,17 +29,19 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 
 All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callable from frontend via `window.go.desktop.App.<MethodName>()`.
 
+**Convention**: Methods returning complex types always return `(T, error)` in Go. The "Returns" column shows the success type; all non-`error`-only methods also return `error` as a second value (surfaced as a rejected Promise in TypeScript).
+
 ### Session (`backend/frontend_api_session.go`)
 
 | Method                 | Parameters                   | Returns                   | Description                                           |
 | ---------------------- | ---------------------------- | ------------------------- | ----------------------------------------------------- |
-| `CreateSession`        | —                            | SessionInfo               | Create new session (active project)                   |
+| `CreateSession`        | —                            | (\*SessionInfo, error)    | Create new session (active project)                   |
 | `DeleteSession`        | id                           | error                     | Delete session                                        |
 | `RenameSession`        | id, name                     | error                     | Rename session                                        |
 | `ArchiveSession`       | id                           | error                     | Archive/unarchive session                             |
-| `ListSessions`         | —                            | []SessionInfo             | List active project sessions                          |
-| `GetSessionHistory`    | id                           | []ChatMessage             | Get message history                                   |
-| `GetBlackboardState`   | sessionID                    | \*BlackboardStateResponse | Get blackboard task state                             |
+| `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
+| `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
+| `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
 | `SendMessage`          | id, text, mode, activeSkills | error                     | Send user message (async execution)                   |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
 | `ResumeTask`           | id                           | error                     | Resume failed task                                    |
@@ -47,71 +49,73 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 ### Project (`backend/frontend_api_project.go`)
 
-| Method          | Parameters         | Returns       | Description        |
-| --------------- | ------------------ | ------------- | ------------------ |
-| `CreateProject` | name, externalPath | \*ProjectInfo | Create project     |
-| `DeleteProject` | id                 | error         | Delete project     |
-| `RenameProject` | id, name           | error         | Rename project     |
-| `ListProjects`  | —                  | []ProjectInfo | List all projects  |
-| `SwitchProject` | id                 | error         | Set active project |
+| Method          | Parameters         | Returns                | Description        |
+| --------------- | ------------------ | ---------------------- | ------------------ |
+| `CreateProject` | name, externalPath | (\*ProjectInfo, error) | Create project     |
+| `DeleteProject` | id                 | error                  | Delete project     |
+| `RenameProject` | id, name           | error                  | Rename project     |
+| `ListProjects`  | —                  | ([]ProjectInfo, error) | List all projects  |
+| `SwitchProject` | id                 | error                  | Set active project |
 
 ### Config (`backend/frontend_api_config.go`)
 
-| Method                   | Parameters               | Returns                  | Description                    |
-| ------------------------ | ------------------------ | ------------------------ | ------------------------------ |
-| `GetConfig`              | —                        | ConfigResponse           | Get current config (sanitized) |
-| `UpdateLLMSettings`      | LLMSettingsRequest       | error                    | Update LLM provider/model      |
-| `UpdateSearchSettings`   | SearchSettingsRequest    | error                    | Update search config           |
-| `GetSecuritySettings`    | —                        | SecuritySettingsResponse | Get security policies          |
-| `UpdateSecuritySettings` | SecuritySettingsResponse | error                    | Update security policies       |
-| `GetLogLevel`            | —                        | string                   | Get current log level          |
-| `SetLogLevel`            | level                    | error                    | Set log level dynamically      |
-| `ListProviderModels`     | provider                 | []string                 | List models for a provider     |
+| Method                   | Parameters               | Returns                           | Description                    |
+| ------------------------ | ------------------------ | --------------------------------- | ------------------------------ |
+| `GetConfig`              | —                        | (ConfigResponse, error)           | Get current config (sanitized) |
+| `UpdateLLMSettings`      | LLMSettingsRequest       | error                             | Update LLM provider/model      |
+| `UpdateSearchSettings`   | SearchSettingsRequest    | error                             | Update search config           |
+| `GetSecuritySettings`    | —                        | (SecuritySettingsResponse, error) | Get security policies          |
+| `UpdateSecuritySettings` | SecuritySettingsResponse | error                             | Update security policies       |
+| `GetLogLevel`            | —                        | string                            | Get current log level          |
+| `SetLogLevel`            | level                    | error                             | Set log level dynamically      |
+| `ListProviderModels`     | provider                 | ([]string, error)                 | List models for a provider     |
+| `GetProxySettings`       | —                        | (ProxySettingsResponse, error)    | Get proxy configuration        |
+| `UpdateProxySettings`    | ProxySettingsRequest     | error                             | Update proxy configuration     |
 
 ### Workspace (`backend/frontend_api_workspace.go`)
 
-| Method                | Parameters         | Returns                   | Description                  |
-| --------------------- | ------------------ | ------------------------- | ---------------------------- |
-| `ListDirectory`       | dirPath, recursive | []FileNode                | List directory contents      |
-| `ReadFile`            | filePath           | string                    | Read file contents           |
-| `GetFileDiff`         | filePath           | string                    | Get git diff for file        |
-| `GetGitStatus`        | dirPath            | map[string]GitStatusEntry | Get git status for directory |
-| `GetSessionWorkspace` | sessionID          | string                    | Get session workspace path   |
-| `GetFileIcon`         | filePath           | FileIconResponse          | Get devicon for file         |
-| `WatchDirectory`      | dirPath            | error                     | Subscribe to dir changes     |
-| `UnwatchDirectory`    | dirPath            | error                     | Unsubscribe dir changes      |
-| `GetSessionTokens`    | sessionID          | SessionTokensResponse     | Get token usage for session  |
+| Method                | Parameters         | Returns                              | Description                  |
+| --------------------- | ------------------ | ------------------------------------ | ---------------------------- |
+| `ListDirectory`       | dirPath, recursive | ([]FileNode, error)                  | List directory contents      |
+| `ReadFile`            | filePath           | (string, error)                      | Read file contents           |
+| `GetFileDiff`         | filePath           | (string, error)                      | Get git diff for file        |
+| `GetGitStatus`        | dirPath            | (map[string]GitStatusEntry, error)   | Get git status for directory |
+| `GetSessionWorkspace` | sessionID          | (string, error)                      | Get session workspace path   |
+| `GetFileIcon`         | filePath           | (FileIconResponse, error)            | Get devicon for file         |
+| `WatchDirectory`      | dirPath            | error                                | Subscribe to dir changes     |
+| `UnwatchDirectory`    | dirPath            | error                                | Unsubscribe dir changes      |
+| `GetSessionTokens`    | sessionID          | SessionTokensResponse                | Get token usage for session  |
 
 ### MCP (`backend/frontend_api_mcp.go`)
 
-| Method             | Parameters                 | Returns                    | Description                |
-| ------------------ | -------------------------- | -------------------------- | -------------------------- |
-| `GetMCPStatus`     | —                          | []MCPServerStatus          | Get MCP server statuses    |
-| `GetMCPServers`    | —                          | map[string]MCPServerConfig | Get MCP server configs     |
-| `GetToolList`      | —                          | []ToolInfo                 | List all registered tools  |
-| `UpdateMCPServers` | map[string]MCPServerConfig | error                      | Update MCP config + reload |
+| Method             | Parameters                 | Returns                           | Description                |
+| ------------------ | -------------------------- | --------------------------------- | -------------------------- |
+| `GetMCPStatus`     | —                          | ([]MCPServerStatus, error)        | Get MCP server statuses    |
+| `GetMCPServers`    | —                          | (map[string]MCPServerConfig, error) | Get MCP server configs   |
+| `GetToolList`      | —                          | ([]ToolInfo, error)               | List all registered tools  |
+| `UpdateMCPServers` | map[string]MCPServerConfig | error                             | Update MCP config + reload |
 
 ### Terminal (`backend/frontend_api_terminal.go`)
 
-| Method               | Parameters            | Returns           | Description         |
-| -------------------- | --------------------- | ----------------- | ------------------- |
-| `StartTerminal`      | sessionID             | error             | Start PTY terminal  |
-| `TerminalInput`      | sessionID, data       | error             | Write to terminal   |
-| `TerminalResize`     | sessionID, cols, rows | error             | Resize terminal     |
-| `StopTerminal`       | sessionID             | error             | Stop terminal       |
-| `GetTerminalHistory` | sessionID             | []TerminalCommand | Get command history |
+| Method               | Parameters            | Returns                      | Description         |
+| -------------------- | --------------------- | ---------------------------- | ------------------- |
+| `StartTerminal`      | sessionID             | error                        | Start PTY terminal  |
+| `TerminalInput`      | sessionID, data       | error                        | Write to terminal   |
+| `TerminalResize`     | sessionID, cols, rows | error                        | Resize terminal     |
+| `StopTerminal`       | sessionID             | error                        | Stop terminal       |
+| `GetTerminalHistory` | sessionID             | ([]TerminalCommand, error)   | Get command history |
 
 ### Vector (`backend/frontend_api_vector.go`)
 
-| Method              | Parameters                                                    | Returns            | Description                                         |
-| ------------------- | ------------------------------------------------------------- | ------------------ | --------------------------------------------------- |
-| `SearchVectorStore` | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | []VectorStoreEntry | Hybrid search/browse; mode= hybrid\|vector\|lexical |
+| Method              | Parameters                                                    | Returns                       | Description                                         |
+| ------------------- | ------------------------------------------------------------- | ----------------------------- | --------------------------------------------------- |
+| `SearchVectorStore` | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | ([]VectorStoreEntry, error)   | Hybrid search/browse; mode= hybrid\|vector\|lexical |
 
 ### Prompt (`backend/frontend_api_prompt.go`)
 
-| Method           | Parameters | Returns                  | Description          |
-| ---------------- | ---------- | ------------------------ | -------------------- |
-| `OptimizePrompt` | prompt     | \*OptimizePromptResponse | Optimize user prompt |
+| Method           | Parameters | Returns                             | Description          |
+| ---------------- | ---------- | ----------------------------------- | -------------------- |
+| `OptimizePrompt` | prompt     | (\*OptimizePromptResponse, error)   | Optimize user prompt |
 
 ### Skills (`backend/frontend_api_skills.go`)
 
