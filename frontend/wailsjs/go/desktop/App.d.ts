@@ -11,6 +11,8 @@ export function ArchiveSession(arg1:string):Promise<void>;
 
 export function CancelTask(arg1:string):Promise<void>;
 
+export function CancelUnfinishedTask(arg1:string):Promise<void>;
+
 export function Cleanup():Promise<void>;
 
 export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;

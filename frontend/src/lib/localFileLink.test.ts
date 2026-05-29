@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isLocalFileHref, parseLocalFileHref, normalizePath } from './localFileLink'
+import { isLocalFileHref, parseLocalFileHref, normalizePath, relativePath } from './localFileLink'
 
 describe('isLocalFileHref', () => {
   it('returns false for http URLs', () => {
@@ -134,5 +134,54 @@ describe('normalizePath', () => {
 
   it('handles empty file path as root', () => {
     expect(normalizePath(root, '')).toBe('/workspace/project')
+  })
+})
+
+describe('relativePath', () => {
+  const root = '/workspace/project'
+
+  it('computes relative path from workspace root', () => {
+    expect(relativePath(root, '/workspace/project/src/main.ts')).toBe('src/main.ts')
+    expect(relativePath(root, '/workspace/project/lib/utils/helper.go')).toBe('lib/utils/helper.go')
+  })
+
+  it('returns "." when path equals workspace root', () => {
+    expect(relativePath(root, '/workspace/project')).toBe('.')
+  })
+
+  it('handles root path with trailing slash', () => {
+    expect(relativePath('/workspace/project/', '/workspace/project/src/a.ts')).toBe('src/a.ts')
+  })
+
+  it('handles nested deep paths', () => {
+    expect(relativePath(root, '/workspace/project/a/b/c/d/e/file.txt')).toBe('a/b/c/d/e/file.txt')
+  })
+
+  it('converts backslashes to forward slashes', () => {
+    expect(relativePath(root, '\\workspace\\project\\src\\main.ts')).toBe('src/main.ts')
+    expect(relativePath('C:\\Users\\dev\\repo', 'C:\\Users\\dev\\repo\\src\\lib.ts')).toBe('src/lib.ts')
+  })
+
+  it('handles root with backslashes', () => {
+    expect(relativePath('C:\\Users\\dev\\repo', 'C:\\Users\\dev\\repo')).toBe('.')
+    expect(relativePath('C:\\Users\\dev\\repo\\', 'C:\\Users\\dev\\repo\\src\\a.ts')).toBe('src/a.ts')
+  })
+
+  it('returns path without leading slash when not under workspace root', () => {
+    expect(relativePath(root, '/other/project/file.ts')).toBe('other/project/file.ts')
+    expect(relativePath(root, '/workspace/project-other/file.ts')).toBe('workspace/project-other/file.ts')
+  })
+
+  it('handles empty workspace root gracefully', () => {
+    expect(relativePath('', '/absolute/path.ts')).toBe('absolute/path.ts')
+    expect(relativePath('', '')).toBe('.')
+  })
+
+  it('handles relative paths as input (not under root)', () => {
+    expect(relativePath(root, 'src/main.ts')).toBe('src/main.ts')
+  })
+
+  it('handles mixed slashes in input', () => {
+    expect(relativePath(root, '/workspace\\project/src\\lib.ts')).toBe('src/lib.ts')
   })
 })

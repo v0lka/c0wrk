@@ -33,9 +33,11 @@ export function ChatInput() {
   const mode = useInputModeStore(s => s.mode)
   const height = useInputModeStore(s => s.height)
   const isExpanded = useInputModeStore(s => s.isExpanded)
+  const pendingInsertion = useInputModeStore(s => s.pendingInsertion)
   const setMode = useInputModeStore(s => s.setMode)
   const setHeight = useInputModeStore(s => s.setHeight)
   const toggleExpanded = useInputModeStore(s => s.toggleExpanded)
+  const clearPendingInsertion = useInputModeStore(s => s.clearPendingInsertion)
 
   const { send, cancel, isProcessing } = useMessageSender()
 
@@ -59,6 +61,14 @@ export function ChatInput() {
     onSend: () => handleSendRef.current(),
     onContentChange: setHasContent,
   })
+
+  // Watch for programmatic text insertion requests from the store.
+  // Each pendingInsertion value is consumed exactly once, then cleared.
+  useEffect(() => {
+    if (pendingInsertion === null) return
+    editor.insertAtCursor(pendingInsertion)
+    clearPendingInsertion()
+  }, [pendingInsertion, editor, clearPendingInsertion])
 
   const handleSend = useCallback(async () => {
     const messageText = editor.getText().trim()

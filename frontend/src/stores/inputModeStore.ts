@@ -8,12 +8,18 @@ interface InputModeState {
   height: number
   collapsedHeight: number
   isExpanded: boolean
+  /** Transient: set by insertTextIntoInput, consumed by ChatInput, cleared after dispatch. */
+  pendingInsertion: string | null
 }
 
 interface InputModeActions {
   setMode: (mode: InputMode) => void
   setHeight: (height: number) => void
   toggleExpanded: () => void
+  /** Queue a string for programmatic insertion into the chat editor. */
+  insertTextIntoInput: (text: string) => void
+  /** Clear the pending insertion after it has been consumed. */
+  clearPendingInsertion: () => void
 }
 
 const DEFAULT_HEIGHT = 200
@@ -28,6 +34,7 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
       height: DEFAULT_HEIGHT,
       collapsedHeight: DEFAULT_HEIGHT,
       isExpanded: false,
+      pendingInsertion: null,
 
       setMode: (mode) => set({ mode }),
 
@@ -48,6 +55,9 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
           })
         }
       },
+
+      insertTextIntoInput: (text) => set({ pendingInsertion: text }),
+      clearPendingInsertion: () => set({ pendingInsertion: null }),
     }),
     {
       name: 'c0wrk-input-mode',

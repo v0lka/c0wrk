@@ -4,11 +4,14 @@ import { EditorView } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { lineNumbers } from '@codemirror/view'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { relativePath } from '@/lib/localFileLink'
 import { subscribe } from '@/api/runtime'
 import { readFile, getFileDiff } from '@/api/workspace'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
 import { Markdown } from '@/lib/markdownConfig'
 import { Button } from '@/components/ui/button'
+import { FileViewerContextMenu } from '@/components/fileViewer/FileViewerContextMenu'
 import { isBinaryContent } from '@/lib/fileViewerUtils'
 import { detectLanguageFromPath } from '@/lib/cmLanguages'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
@@ -114,6 +117,12 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: {
   const viewRef = useRef<EditorView | null>(null)
   const langCompartment = useRef(new Compartment())
   const clearHighlightLine = useFileViewerStore((s) => s.clearHighlightLine)
+  const activeFile = useFileViewerStore((s) => s.activeFile)
+  const projects = useProjectStore((s) => s.projects)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const workspacePath = activeProjectId && projects
+    ? projects.find((p) => p.id === activeProjectId)?.workspace_path ?? null
+    : null
 
   // Memoize the theme so it's only resolved once
   const theme = useMemo(() => createOneDarkCMTheme(), [])
@@ -235,8 +244,54 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: {
     return () => clearTimeout(timer)
   }, [highlightLine, clearHighlightLine])
 
+  // -- Right-click context menu support ----------------------------------
+
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const contextMenuRef = useRef('')
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      const view = viewRef.current
+      if (!view || !activeFile) return
+
+      const selection = view.state.selection.main
+      if (selection.empty) return // let the browser show its native context menu
+
+      e.preventDefault()
+
+      const doc = view.state.doc
+      const startLine = doc.lineAt(selection.from).number
+      const endLine = doc.lineAt(selection.to).number
+
+      const fileRef = workspacePath ? relativePath(workspacePath, activeFile) : activeFile
+
+      contextMenuRef.current =
+        endLine > startLine
+          ? `@${fileRef}#${startLine}-${endLine}`
+          : `@${fileRef}#${startLine}`
+
+      setContextMenuPos({ x: e.clientX, y: e.clientY })
+    },
+    [activeFile, workspacePath],
+  )
+
+  const closeContextMenu = useCallback(() => setContextMenuPos(null), [])
+
+  // ---------------------------------------------------------------------
+
   return (
-    <div ref={containerRef} className="flex-1 overflow-hidden cm-viewer-container" />
+    <>
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-hidden cm-viewer-container"
+        onContextMenu={handleContextMenu}
+      />
+      <FileViewerContextMenu
+        reference={contextMenuRef.current}
+        position={contextMenuPos}
+        onClose={closeContextMenu}
+      />
+    </>
   )
 }
 

@@ -10,6 +10,10 @@ export function CancelTask(arg1) {
   return window['go']['desktop']['App']['CancelTask'](arg1);
 }
 
+export function CancelUnfinishedTask(arg1) {
+  return window['go']['desktop']['App']['CancelUnfinishedTask'](arg1);
+}
+
 export function Cleanup() {
   return window['go']['desktop']['App']['Cleanup']();
 }

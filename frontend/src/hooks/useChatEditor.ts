@@ -16,6 +16,8 @@ export interface ChatEditorAPI {
   setText: (s: string) => void
   clear: () => void
   focus: () => void
+  /** Insert text at the current cursor position, or append to the end if unfocused. */
+  insertAtCursor: (text: string) => void
 }
 
 /**
@@ -105,5 +107,19 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
     viewRef.current?.focus()
   }, [])
 
-  return { containerRef, getText, setText, clear, focus }
+  const insertAtCursor = useCallback((text: string): void => {
+    const view = viewRef.current
+    if (!view) return
+    const from = view.hasFocus
+      ? view.state.selection.main.head
+      : view.state.doc.length
+    view.dispatch({
+      changes: { from, insert: text },
+      // Place cursor after the inserted text.
+      selection: { anchor: from + text.length },
+    })
+    view.focus()
+  }, [])
+
+  return { containerRef, getText, setText, clear, focus, insertAtCursor }
 }

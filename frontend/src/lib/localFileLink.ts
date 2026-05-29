@@ -70,3 +70,28 @@ export function normalizePath(rootPath: string, filePath: string): string | null
 
   return null
 }
+
+/**
+ * Computes a POSIX-style relative path by stripping the workspace root prefix
+ * from an absolute path. Converts backslashes to forward slashes.
+ * Returns '.' if the absolute path equals the workspace root.
+ * If the path is not under the workspace root, returns the absolute path
+ * with forward slashes (without a leading '/') as a best-effort fallback.
+ */
+export function relativePath(rootPath: string, absolutePath: string): string {
+  const normalizedAbs = absolutePath.replace(/\\/g, '/')
+  const normalizedRoot = rootPath.replace(/\\/g, '/')
+
+  if (normalizedAbs === normalizedRoot) {
+    return '.'
+  }
+
+  const prefix = normalizedRoot.endsWith('/') ? normalizedRoot : normalizedRoot + '/'
+
+  if (normalizedAbs.startsWith(prefix)) {
+    return normalizedAbs.slice(prefix.length)
+  }
+
+  // Not under workspace root — return as a forward-slash path without leading '/'
+  return normalizedAbs.startsWith('/') ? normalizedAbs.slice(1) : normalizedAbs
+}
