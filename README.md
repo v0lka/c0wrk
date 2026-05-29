@@ -11,7 +11,14 @@ Desktop AI research and development agent for really complex tasks.
 - Desktop UI with chat, execution panels (DAG view), workspace tree, and file viewer with diff overlay
 - Tool execution with **per-tool / per-skill / default** security policies (`always_allow`, `user_confirm`, `always_deny`) plus an **LLM judge** for risky paths
 - **MCP** server integration (stdio and HTTP transports), MCP tools obey the same policy pipeline
-- **Hybrid code search**: ONNX-embedded vector search (chromem) + BM25 lexical (bleve) with **Reciprocal Rank Fusion**, partitioned per git branch
+- **Built-in PTY terminal** with per-session shell sessions (xterm.js frontend, `creack/pty` backend)
+- **Agent skills system** — discoverable, composable skill modules per the AgentSkills.io spec, with priority-ordered directory scanning
+- **Built-in web search** via Tavily API with configurable provider settings
+- **Configurable reasoning effort** per agent role (orchestrator, planner, coder, tester, researcher, router, reflector, etc.) with automatic role-based adaptation
+- **Sub-agent spawning** for parallel or delegated task execution within a session
+- **LLM retry with exponential backoff** — configurable max retries, backoff durations for API resilience
+- **HTTP/HTTPS proxy support** for all outbound connections (LLM, web search, MCP) with bypass list and custom CA certs
+- **Hybrid code search**: ONNX Runtime-embedded vector search (chromem-go, jina-embeddings-v2-small-en model) + BM25 lexical (bleve) with **Reciprocal Rank Fusion** (k=60), partitioned per git branch
 - **Cross-session file coherence** with TOCTOU protection
 - **Circuit breakers** for repeat / truncation / parse-error / fruitless / same-tool loops
 - Configurable **context compaction** (sliding window / summarization / hierarchical) tied to task domain
@@ -30,6 +37,7 @@ High-level layers and responsibilities:
 - **`frontend/`** — React + TypeScript UI; communicates with Go via generated Wails bindings (`frontend/wailsjs/go/desktop/App`).
 
 > Important layering rule: SDK usage is routed through `core/`; `backend/` wraps `core`.
+> The layering is enforced at build time: `backend/` never imports `sdk/` directly. See `specs/decisions/002-sdk-isolation.md`.
 
 ### Frontend Stack
 
@@ -46,7 +54,7 @@ Verified from project configuration and build files:
 
 - **Go 1.26.3**
 - **Node.js + npm** (used by Wails frontend commands and `frontend/package.json` scripts)
-- **Wails v2 CLI** (`wails build`, `wails dev` are used by Makefile)
+- **Wails v2.12.0 CLI** (`wails build`, `wails dev` are used by Makefile)
 - **golangci-lint** (for `make lint`)
 - **`git`** and **`rg` (ripgrep)** — hard runtime dependencies; presence is verified at startup by `desktop.verifyExternalDependencies` (the app refuses to launch if either is missing)
 - Platform support in Makefile ONNX fetch logic:
@@ -197,6 +205,7 @@ make fetch-onnx
 ├── core/           # Planner/router/reflector/orchestration/tool + MCP wiring
 ├── sdk/            # Reusable agent engine (LLM, tools, memory, execution primitives)
 ├── frontend/       # React + TS app and generated Wails JS bindings
+├── specs/          # System specs: architecture, contracts, domains, decisions (see specs/INDEX.md)
 ├── config.example.yaml
 ├── wails.json
 └── Makefile
@@ -214,7 +223,7 @@ make fetch-onnx
 
 ## Contributing
 
-CI runs on every push and PR (see `.github/workflows/ci.yml`). Before opening a PR, also run the full local validation sequence:
+CI runs on pushes to `main` and pull requests targeting `main` (see `.github/workflows/ci.yml`). Before opening a PR, also run the full local validation sequence:
 
 ```bash
 make build
