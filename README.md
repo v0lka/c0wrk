@@ -1,27 +1,23 @@
 # c0wrk
 
-Desktop AI coding agent built with **Wails v2** (Go backend + React/TypeScript frontend).
+Desktop AI research and development agent for really complex tasks.
 
-This repository contains a single Go module (`github.com/user/agent` — this path is intentional, not `c0wrk`; do not "fix" it) with a desktop app that orchestrates planning/execution loops, tool calls, local project access, and a multi-panel UI for agent workflows.
-
-## Overview
-
-`c0wrk` is a local-first desktop application for running an AI coding agent with:
-- a Go backend for orchestration, config, persistence, and runtime services,
-- a React frontend for chat, plans, file tree, and file viewer,
-- Wails bindings between UI and backend methods.
-
-The desktop binary name is **`c0wrk-desktop`**.
+![c0wrk main view](docs/screenshots/main_view.png)
 
 ## Features
 
-- ReAct-style agent execution with planner/router/reflector flow
-- Desktop UI with chat, execution panels, workspace tree, and file viewer
-- Tool execution with configurable security policies (`user_confirm`, allow/deny)
-- MCP server integration (stdio and HTTP transports)
-- SQLite persistence (CGO-free `modernc.org/sqlite`)
-- Configurable LLM providers (Anthropic, Gemini, LM Studio, OpenAI-compatible, ChatGPT)
-- Configurable runtime limits (timeouts, tool output limits, compaction thresholds)
+- ReAct-style step execution driven by a **DAG planner**, **router**, and **reflector** (replan on failure)
+- **Normal / Advanced** execution modes selectable from the UI (single-step vs full multi-step plan)
+- Desktop UI with chat, execution panels (DAG view), workspace tree, and file viewer with diff overlay
+- Tool execution with **per-tool / per-skill / default** security policies (`always_allow`, `user_confirm`, `always_deny`) plus an **LLM judge** for risky paths
+- **MCP** server integration (stdio and HTTP transports), MCP tools obey the same policy pipeline
+- **Hybrid code search**: ONNX-embedded vector search (chromem) + BM25 lexical (bleve) with **Reciprocal Rank Fusion**, partitioned per git branch
+- **Cross-session file coherence** with TOCTOU protection
+- **Circuit breakers** for repeat / truncation / parse-error / fruitless / same-tool loops
+- Configurable **context compaction** (sliding window / summarization / hierarchical) tied to task domain
+- SQLite persistence (CGO-free `modernc.org/sqlite`) — full session resume across restarts
+- Configurable LLM providers: **Anthropic, Gemini, LM Studio, OpenAI-compatible (incl. Responses API), ChatGPT** with per-role reasoning effort
+- Configurable runtime limits (timeouts, tool output caps, compaction thresholds, bash blacklist)
 
 ## Architecture
 
@@ -52,6 +48,7 @@ Verified from project configuration and build files:
 - **Node.js + npm** (used by Wails frontend commands and `frontend/package.json` scripts)
 - **Wails v2 CLI** (`wails build`, `wails dev` are used by Makefile)
 - **golangci-lint** (for `make lint`)
+- **`git`** and **`rg` (ripgrep)** — hard runtime dependencies; presence is verified at startup by `desktop.verifyExternalDependencies` (the app refuses to launch if either is missing)
 - Platform support in Makefile ONNX fetch logic:
   - macOS (`arm64`, `x86_64`)
   - Linux (`aarch64`, `x64`)
@@ -62,16 +59,19 @@ Verified from project configuration and build files:
 Wails v2 requires native libraries for the WebKit GTK backend:
 
 **Ubuntu/Debian 24.04+:**
+
 ```bash
 sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
 ```
 
 **Fedora 39+:**
+
 ```bash
 sudo dnf install gtk3-devel webkit2gtk4.1-devel gcc pkg-config
 ```
 
 **Arch Linux:**
+
 ```bash
 sudo pacman -S gtk3 webkit2gtk-4.1 base-devel
 ```
@@ -79,6 +79,7 @@ sudo pacman -S gtk3 webkit2gtk-4.1 base-devel
 For CI/headless builds, also install `xvfb` (`sudo apt install xvfb` on Debian/Ubuntu).
 
 **Runtime only** (for end users, not developers):
+
 ```bash
 # Ubuntu/Debian
 sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0
@@ -171,6 +172,7 @@ make build
 ```
 
 This runs:
+
 1. frontend dependency install,
 2. `wails build`,
 3. ONNX runtime fetch/copy,
