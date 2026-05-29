@@ -9,7 +9,7 @@ import (
 
 	chromem "github.com/philippgille/chromem-go"
 
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // ManagerConfig holds configuration for creating a Manager.

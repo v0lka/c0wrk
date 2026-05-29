@@ -1,8 +1,8 @@
 package backend
 
 import (
-	"github.com/user/agent/backend/config"
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // ToBuilderConfig converts a *config.Config into a *core.BuilderConfig.

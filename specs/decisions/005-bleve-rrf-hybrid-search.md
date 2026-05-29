@@ -14,7 +14,7 @@ Forces at play:
 - BM25/keyword search is excellent for identifiers but cannot understand paraphrases.
 - Adding a separate search backend introduces dual-write complexity and potential index drift.
 - The project already avoids CGO (`modernc.org/sqlite`); a CGO-free BM25 library is required.
-- The codebase uses Go 1.26 and a single module (`github.com/user/agent`).
+- The codebase uses Go 1.26 and a single module (`github.com/v0lka/c0wrk`).
 
 ## Decision
 

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/user/agent/core"
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 // Event type constants for backend-to-frontend communication.

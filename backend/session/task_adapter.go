@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // TaskStoreAdapter adapts a TaskStore to the core.TaskPersistence interface.

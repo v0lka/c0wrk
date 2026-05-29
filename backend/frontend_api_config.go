@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/backend/config"
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.

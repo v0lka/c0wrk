@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // judgeWriteInWorkspace checks whether a write operation targets a path

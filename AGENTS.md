@@ -14,7 +14,7 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 
 ## Project shape
 
-- Single Go module: `github.com/user/agent` (yes, the module path is `user/agent`, **not** `c0wrk`; do not "fix" this). Binary/app name is `c0wrk-desktop` (see `wails.json`).
+- Single Go module: `github.com/v0lka/c0wrk`. Binary/app name is `c0wrk-desktop` (see `wails.json`).
 - Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`).
 - Go `1.26.3` (`go.mod`). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7.
 

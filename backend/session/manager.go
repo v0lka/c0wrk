@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/user/agent/core"
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 // contextKey is a type for context keys in the session package.

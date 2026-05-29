@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/agent/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // spyEmitter records all method calls for assertion.

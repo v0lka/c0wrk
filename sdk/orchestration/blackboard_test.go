@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/user/agent/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 func TestBlackboard_OriginalRequest(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 // Compile-time check that Tool implements tools.ToolJudger.

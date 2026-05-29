@@ -3,7 +3,7 @@ package backend
 import (
 	"path/filepath"
 
-	"github.com/user/agent/core/skills"
+	"github.com/v0lka/c0wrk/core/skills"
 )
 
 // ListSkills returns lightweight descriptors for all available skills,

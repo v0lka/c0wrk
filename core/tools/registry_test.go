@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	sdktools "github.com/user/agent/sdk/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // mockTool is a simple echo tool for testing.

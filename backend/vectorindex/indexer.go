@@ -15,7 +15,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	chromem "github.com/philippgille/chromem-go"
 
-	"github.com/user/agent/backend/vectorindex/lexical"
+	"github.com/v0lka/c0wrk/backend/vectorindex/lexical"
 )
 
 // IndexState represents the current state of the indexer.

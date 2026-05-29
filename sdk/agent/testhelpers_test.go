@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // --- Mock LLMCaller ---

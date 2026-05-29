@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // SubAgent wraps an Executor to run as a goroutine for parallel plan execution.

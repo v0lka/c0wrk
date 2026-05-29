@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // FindReadySteps returns plan steps whose dependencies are all completed successfully.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 func TestBuildGroupedToolList_AllTiers(t *testing.T) {

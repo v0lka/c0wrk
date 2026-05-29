@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/orchestration"
-	tools "github.com/user/agent/sdk/tools" // alias: avoids collision with core/tools subpackage
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
+	tools "github.com/v0lka/c0wrk/sdk/tools" // alias: avoids collision with core/tools subpackage
 )
 
 // ---------------------------------------------------------------------------

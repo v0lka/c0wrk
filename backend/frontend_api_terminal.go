@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/user/agent/backend/session"
+	"github.com/v0lka/c0wrk/backend/session"
 )
 
 // StartTerminal starts a new PTY-backed shell for the given session.

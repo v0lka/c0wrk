@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 func TestNewGateway(t *testing.T) {

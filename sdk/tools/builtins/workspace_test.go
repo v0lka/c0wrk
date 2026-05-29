@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // mockStepOutputStore implements agent.StepOutputStore for testing.

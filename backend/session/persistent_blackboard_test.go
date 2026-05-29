@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // ---------------------------------------------------------------------------

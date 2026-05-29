@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // BuildGroupedToolList formats tool descriptors into a tiered, priority-labeled

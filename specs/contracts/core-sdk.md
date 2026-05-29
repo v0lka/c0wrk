@@ -84,7 +84,7 @@ type Reflection = orchestration.Reflection
 // ... ~20 more aliases
 ```
 
-Backend imports: `"github.com/user/agent/core"` → `core.Step`, `core.Plan`, etc.
+Backend imports: `"github.com/v0lka/c0wrk/core"` → `core.Step`, `core.Plan`, etc.
 
 ## Initialization
 

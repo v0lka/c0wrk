@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // TestReflector_Reflect_Success tests successful reflection generation.

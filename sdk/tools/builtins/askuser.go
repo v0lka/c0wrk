@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolAskUserDescription = `Ask the user one or more questions and present selectable answer options for each. Supports single-select (default) and multi-select modes per question. The user can pick from predefined options or provide a custom free-text answer for each question. Not available in non-interactive (CLI) mode.`

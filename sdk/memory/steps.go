@@ -3,8 +3,8 @@ package memory
 import (
 	"strings"
 
-	sdkagent "github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
+	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/llm"
 )
 
 // stepsToMessages converts a slice of Steps to LLM messages.

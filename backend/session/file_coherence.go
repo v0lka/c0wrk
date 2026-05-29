@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 const defaultActivityCap = 200

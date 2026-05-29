@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolBashDescription = `Execute shell commands via bash -c. Use this for build commands, running scripts, installing packages, git operations, and system tasks. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). An optional working_directory can be set for the command's execution context.`

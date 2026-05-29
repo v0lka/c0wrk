@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/user/agent/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/llm"
 )
 
 // dumpEntry is a single JSONL record written by dumpCaller.

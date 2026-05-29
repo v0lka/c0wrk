@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/user/agent/sdk/llm"
-	tools "github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // mockLLMProvider is a mock implementation of llm.Provider for testing.

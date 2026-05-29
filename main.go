@@ -9,7 +9,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
-	"github.com/user/agent/desktop"
+	"github.com/v0lka/c0wrk/desktop"
 )
 
 //go:embed all:frontend/dist

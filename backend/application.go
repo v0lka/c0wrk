@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/user/agent/backend/config"
-	"github.com/user/agent/backend/session"
-	"github.com/user/agent/core"
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 // ApplicationConfig holds all parameters needed to construct an Application.

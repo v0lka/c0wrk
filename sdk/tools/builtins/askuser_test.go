@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 func TestAskUserTool_Name(t *testing.T) {

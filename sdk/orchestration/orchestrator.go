@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // Orchestrator is the generic Plan&Execute engine. It composes strategy

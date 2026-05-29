@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/tools/builtins"
-	websearch "github.com/user/agent/sdk/tools/builtins/web_search"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	websearch "github.com/v0lka/c0wrk/sdk/tools/builtins/web_search"
 )
 
 // Limit type re-exports so backend can populate BuiltinToolsConfig

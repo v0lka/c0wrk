@@ -12,7 +12,7 @@ import (
 
 	md "github.com/JohannesKaufmann/html-to-markdown"
 	"github.com/go-shiori/go-readability"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. Markdown output is limited to 2MB, requests time out after 30 seconds, and up to 10 redirects are followed. Supports optional start_line/end_line parameters for paginated reading of large pages.`

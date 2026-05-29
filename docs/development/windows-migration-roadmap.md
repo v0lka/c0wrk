@@ -6,18 +6,18 @@
 
 Инфраструктура сборки завязана на POSIX-окружение (`make`, shell-команды), недоступное на Windows без MSYS2.
 
-| Компонент | Статус на Windows | Проблема |
-|---|---|---|
-| Go-компиляция | **Сломана** | `bash.go` исключён build tag, но `builtin_registration.go` вызывает `NewBashExecToolWithTimeouts()` безусловно |
-| `make build` | Недоступен | Нет `make` и POSIX shell без MSYS2 |
-| PTY-терминал | Заглушка (ошибка) | `manager_stub.go` возвращает «not supported» |
-| `bash_exec` tool | **Отсутствует** | Нет Windows-заглушки; shell-альтернатива не реализована |
-| ONNX Runtime | Частично | Архив (.zip) определяется верно, но копируется в `.app/Contents/MacOS/` |
-| Embedding model | Частично | Модель качается, но копируется в `.app/Contents/Resources/` |
-| `resolveModelPath()` | Частично | Не ищет модель рядом с `.exe` |
-| WebView2 Runtime | Требуется | Evergreen Runtime (предустановлен в Win 11) |
-| Системные зависимости | Не документированы | Go 1.21+, CGO (MinGW-w64), WebView2 |
-| CI/CD | Отсутствует | Нет GitHub Actions для Windows |
+| Компонент             | Статус на Windows  | Проблема                                                                                                       |
+| --------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Go-компиляция         | **Сломана**        | `bash.go` исключён build tag, но `builtin_registration.go` вызывает `NewBashExecToolWithTimeouts()` безусловно |
+| `make build`          | Недоступен         | Нет `make` и POSIX shell без MSYS2                                                                             |
+| PTY-терминал          | Заглушка (ошибка)  | `manager_stub.go` возвращает «not supported»                                                                   |
+| `bash_exec` tool      | **Отсутствует**    | Нет Windows-заглушки; shell-альтернатива не реализована                                                        |
+| ONNX Runtime          | Частично           | Архив (.zip) определяется верно, но копируется в `.app/Contents/MacOS/`                                        |
+| Embedding model       | Частично           | Модель качается, но копируется в `.app/Contents/Resources/`                                                    |
+| `resolveModelPath()`  | Частично           | Не ищет модель рядом с `.exe`                                                                                  |
+| WebView2 Runtime      | Требуется          | Evergreen Runtime (предустановлен в Win 11)                                                                    |
+| Системные зависимости | Не документированы | Go 1.21+, CGO (MinGW-w64), WebView2                                                                            |
+| CI/CD                 | Отсутствует        | Нет GitHub Actions для Windows                                                                                 |
 
 ---
 
@@ -42,7 +42,7 @@ import (
     "context"
     "errors"
 
-    "github.com/user/agent/sdk/agent"
+    "github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // BashExecTool is a no-op stub on Windows.
@@ -120,6 +120,7 @@ APP_MODELS_DIR := build/bin\models
 **Новый файл**: `scripts/build.ps1` (PowerShell)
 
 **Содержание**:
+
 ```powershell
 param([switch]$SkipWails, [switch]$SkipOnnx, [switch]$SkipModels)
 
@@ -184,6 +185,7 @@ Write-Host "Build complete. Binary: $BUILD_DIR\c0wrk-desktop.exe"
 **Файл**: `desktop/startup.go` (строки 908-928)
 
 **Реализация**:
+
 - Добавить проверку `exeDir/models/<filename>` (работает и на Windows через `filepath.Join`).
 - Для Windows бандл (.app) не существует, поэтому проверка `exeDir/../Resources/models/` (строка 915) безопасно вернёт `os.Stat` error и перейдёт к flat-пути.
 
@@ -216,18 +218,21 @@ func (*Manager) Start(_, _ string) error {
 **Варианты реализации** (выбрать один):
 
 **Вариант A — PowerShell fallback**:
+
 - В `bash_stub.go` (или новом `bash_windows.go`) реализовать `Execute()` через `powershell -Command "..."`.
 - Чёрный список адаптировать под PowerShell (`rm -rf /` → `Remove-Item -Recurse -Force C:\`).
 - **Плюсы**: PowerShell предустановлен на всех Windows 10+.
 - **Минусы**: другой синтаксис, скрипты macOS/Linux несовместимы.
 
 **Вариант B — Git Bash fallback**:
+
 - Искать `C:\Program Files\Git\bin\bash.exe` при старте.
 - Если найден — использовать как замену `/bin/bash`.
 - **Плюсы**: совместимость с существующими скриптами.
 - **Минусы**: требует установки Git for Windows.
 
 **Вариант C — WSL fallback**:
+
 - Искать `wsl.exe`, выполнять команды через `wsl bash -c "..."`.
 - **Плюсы**: полноценный Linux.
 - **Минусы**: требует установки WSL; медленный запуск.
@@ -267,27 +272,31 @@ type WSLProvider struct { ... }         // wsl bash -c
 
 **Реализация**: добавить секцию «Windows Build Dependencies»:
 
-```markdown
+````markdown
 ### Windows build dependencies
 
 **Required:**
-- Go 1.26.1+ 
+
+- Go 1.26.1+
 - Node.js 22+ with npm
 - Wails v2 CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`)
 - **WebView2 Evergreen Runtime** — preinstalled on Windows 11; on Windows 10, download from [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/)
 
 **C toolchain (for CGO):**
+
 - Install [MSYS2](https://www.msys2.org/)
 - Run: `pacman -S mingw-w64-x86_64-gcc`
 
 Or use [TDM-GCC](https://jmeubank.github.io/tdm-gcc/)
 
 **Runtime only:**
+
 - WebView2 Evergreen Runtime
 - (Optional) Git for Windows — for `git` integration
 - (Optional) ripgrep (`rg`) — for content search tool (`choco install ripgrep` or `scoop install ripgrep`)
 
 **Build commands (PowerShell):**
+
 ```powershell
 # Option 1: Using PowerShell build script
 .\scripts\build.ps1
@@ -297,7 +306,9 @@ cd frontend; npm install; npm run build; cd ..
 wails build
 # Then place onnxruntime.dll and models/ next to c0wrk-desktop.exe in build\bin\
 ```
-```
+````
+
+````
 
 ### 4.2 GitHub Actions workflow для Windows
 
@@ -328,7 +339,7 @@ wails build
         run: go test ./...
       - name: Frontend test
         run: cd frontend && npm test
-```
+````
 
 **Примечание**: на Windows CI нет `make` и `xvfb-run`. Используем прямые команды.
 
@@ -339,6 +350,7 @@ wails build
 **Файл**: `.gitignore`
 
 **Добавить**:
+
 ```
 # Windows build artifacts
 *.exe
@@ -351,18 +363,18 @@ build/bin/onnxruntime.dll
 
 ## Сводка изменений
 
-| Пункт | Файл(ы) | Тип изменения | Фаза |
-|---|---|---|---|
-| 1.1 | `sdk/tools/builtins/bash_stub.go` | **Новый** — Windows no-op заглушка | 1 |
-| 2.1 | `Makefile` | Добавить Windows-ветку для `APP_BUNDLE_DIR`/`APP_MODELS_DIR` | 2 |
-| 2.2 | `scripts/build.ps1` | **Новый** — PowerShell build-скрипт | 2 |
-| 2.3 | `desktop/startup.go:908-928` | Добавить `exeDir/models/` в `resolveModelPath` | 2 |
-| 3.1 | `backend/terminal/manager_stub.go` | Улучшить сообщение об ошибке | 3 |
-| 3.2 | `sdk/tools/builtins/bash_windows.go` | **Новый** — Shell-альтернатива (PowerShell/Git Bash/WSL) | 3 |
-| 3.3 | `frontend/...` | Скрыть/заблокировать терминал на Windows | 3 |
-| 4.1 | `README.md` | Добавить секцию «Windows build dependencies» | 4 |
-| 4.2 | `.github/workflows/ci.yml` | Добавить Windows job | 4 |
-| 4.3 | `.gitignore` | Добавить Windows-паттерны | 4 |
+| Пункт | Файл(ы)                              | Тип изменения                                                | Фаза |
+| ----- | ------------------------------------ | ------------------------------------------------------------ | ---- |
+| 1.1   | `sdk/tools/builtins/bash_stub.go`    | **Новый** — Windows no-op заглушка                           | 1    |
+| 2.1   | `Makefile`                           | Добавить Windows-ветку для `APP_BUNDLE_DIR`/`APP_MODELS_DIR` | 2    |
+| 2.2   | `scripts/build.ps1`                  | **Новый** — PowerShell build-скрипт                          | 2    |
+| 2.3   | `desktop/startup.go:908-928`         | Добавить `exeDir/models/` в `resolveModelPath`               | 2    |
+| 3.1   | `backend/terminal/manager_stub.go`   | Улучшить сообщение об ошибке                                 | 3    |
+| 3.2   | `sdk/tools/builtins/bash_windows.go` | **Новый** — Shell-альтернатива (PowerShell/Git Bash/WSL)     | 3    |
+| 3.3   | `frontend/...`                       | Скрыть/заблокировать терминал на Windows                     | 3    |
+| 4.1   | `README.md`                          | Добавить секцию «Windows build dependencies»                 | 4    |
+| 4.2   | `.github/workflows/ci.yml`           | Добавить Windows job                                         | 4    |
+| 4.3   | `.gitignore`                         | Добавить Windows-паттерны                                    | 4    |
 
 **Общий объём**: ~80 строк Go (заглушки), ~60 строк Makefile, ~80 строк PowerShell, ~10 строк Go (resolveModelPath), ~30 строк README, ~30 строк CI YAML, ~5 строк .gitignore.
 

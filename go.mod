@@ -1,4 +1,4 @@
-module github.com/user/agent
+module github.com/v0lka/c0wrk
 
 go 1.26.3
 

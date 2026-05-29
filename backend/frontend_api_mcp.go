@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/user/agent/backend/config"
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // GetMCPStatus returns current MCP server connection statuses.

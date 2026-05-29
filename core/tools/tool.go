@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 
-	sdktools "github.com/user/agent/sdk/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // Type aliases for SDK types — core/tools re-exports these for convenience.

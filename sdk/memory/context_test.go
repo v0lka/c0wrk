@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	sdkagent "github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
+	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/llm"
 )
 
 // testModelMeta creates a ModelMetadata for testing with the given context window.

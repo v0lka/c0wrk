@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolSetStepStatusDescription = "Update the to-do checklist for the current step. Call this as your FIRST tool call to initialize the checklist, and again after completing each item (mark it as '- [x]'). Use ONLY ASCII checkboxes: '- [ ]' for unchecked, '- [x]' for checked. No nested lists, no Unicode checkboxes."

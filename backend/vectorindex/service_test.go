@@ -12,7 +12,7 @@ import (
 
 	chromem "github.com/philippgille/chromem-go"
 
-	"github.com/user/agent/backend/vectorindex/lexical"
+	"github.com/v0lka/c0wrk/backend/vectorindex/lexical"
 )
 
 // fakeEmbeddingFunc returns a deterministic embedding for testing.

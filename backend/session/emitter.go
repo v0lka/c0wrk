@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // Event represents a structured event emitted during agent execution.

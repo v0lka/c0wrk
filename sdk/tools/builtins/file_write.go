@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolWriteFileDescription = `Creates or overwrites a file with the provided content. Parent directories are created automatically if they do not exist. Use this tool to create new files or fully replace existing file contents. For making targeted changes to an existing file, prefer edit_file instead. Always read the file first before overwriting to avoid accidental data loss.`

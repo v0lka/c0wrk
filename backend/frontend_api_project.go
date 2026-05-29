@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/user/agent/backend/project"
-	"github.com/user/agent/backend/vectorindex"
-	"github.com/user/agent/backend/workspace"
+	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/vectorindex"
+	"github.com/v0lka/c0wrk/backend/workspace"
 )
 
 // CreateProject creates a new project. If externalPath is empty, an internal workspace is created.

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolStoreFactDescription = "Store a fact with 3-5 keywords for later retrieval by yourself or other agents. Use this to record important discoveries, decisions, or intermediate results that may be useful in subsequent steps."

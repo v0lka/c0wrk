@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/sdk/tools"
-	"github.com/user/agent/sdk/tools/builtins"
+	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 
 const toolWebsearchDescription = `Search the web and return a list of results with titles, URLs, and text snippets. Use this to find current information, external documentation, recent events, or any knowledge that may be beyond training data. Returns up to max_results entries (default 5), each with a title, URL, and a brief snippet summarizing the page content.`

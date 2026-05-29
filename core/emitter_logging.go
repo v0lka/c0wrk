@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/user/agent/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // loggingEmitter wraps an Emitter to log all events via a session-specific logger.

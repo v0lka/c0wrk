@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tools "github.com/user/agent/sdk/tools"
+	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // mockSearchProvider implements SearchProvider for unit tests that don't need HTTP.

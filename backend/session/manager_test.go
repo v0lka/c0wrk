@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // testManager creates a Manager with a mock factory for testing.

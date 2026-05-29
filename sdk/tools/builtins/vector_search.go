@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolVectorSearchDescription = `Search the project codebase using hybrid (vector + BM25) similarity matching. Finds code by meaning and intent as well as by literal symbol/keyword match. Returns file paths, line ranges, fused relevance scores, per-side ranks, and content previews. Effective for: finding implementations of a concept (e.g. "authentication middleware"), locating related functionality across files, discovering architecture patterns and data flows, and pinpointing a specific identifier (e.g. +MatcherFactory). For exact string literals or known file-name patterns, use ripgrep or glob.`

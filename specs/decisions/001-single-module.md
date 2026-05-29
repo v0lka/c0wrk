@@ -10,7 +10,7 @@ The project could be structured as multiple Go modules (one per layer: sdk, core
 
 ## Decision
 
-Use a single Go module (`github.com/user/agent`) for the entire project. No `go.work` file. All layers are packages within the same module.
+Use a single Go module (`github.com/v0lka/c0wrk`) for the entire project. No `go.work` file. All layers are packages within the same module.
 
 ## Consequences
 
@@ -25,7 +25,7 @@ Use a single Go module (`github.com/user/agent`) for the entire project. No `go.
 **Negative:**
 
 - Layer boundary violations are only caught by code review and linting conventions (not by the Go module system)
-- The module path (`github.com/user/agent`) doesn't match the binary name (`c0wrk-desktop`) — intentional, do not "fix"
+- The module path (`github.com/v0lka/c0wrk`) doesn't match the binary name (`c0wrk-desktop`) — intentional, do not "fix"
 - Cannot independently version sdk for external consumption (sdk is internal to this project)
 
 ## Alternatives Considered

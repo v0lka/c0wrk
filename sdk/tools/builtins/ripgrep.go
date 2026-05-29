@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolRipgrepDescription = `Search file contents using regex or literal patterns. Returns matches in "file:line: content" format with optional surrounding context lines. Automatically respects .gitignore rules and skips binary files. Use this when you need to find code patterns, function definitions, or text within files. Returns up to 200 matches by default. For finding files by name or path pattern, use glob instead.`

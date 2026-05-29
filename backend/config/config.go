@@ -7,7 +7,7 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/core/tools"
 
 	"gopkg.in/yaml.v3"
 )

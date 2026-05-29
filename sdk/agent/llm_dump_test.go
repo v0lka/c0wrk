@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/user/agent/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/llm"
 )
 
 func TestDumpCaller_Success_WritesBothEntries(t *testing.T) {

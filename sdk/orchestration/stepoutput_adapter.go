@@ -3,7 +3,7 @@ package orchestration
 import (
 	"sort"
 
-	"github.com/user/agent/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // blackboardStepOutputStore adapts a Blackboard to the agent.StepOutputStore interface.

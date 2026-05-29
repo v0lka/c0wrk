@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/agent/backend"
-	"github.com/user/agent/backend/config"
-	"github.com/user/agent/backend/project"
-	"github.com/user/agent/backend/session"
+	"github.com/v0lka/c0wrk/backend"
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/session"
 )
 
 // TestCriticalPathBudget verifies that the synchronous startup phases

@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/user/agent/backend/config"
-	"github.com/user/agent/backend/logger"
-	"github.com/user/agent/backend/project"
-	"github.com/user/agent/backend/session"
-	"github.com/user/agent/backend/vectorindex"
-	"github.com/user/agent/backend/workspace"
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/logger"
+	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/backend/vectorindex"
+	"github.com/v0lka/c0wrk/backend/workspace"
 )
 
 // FrontendAPI holds state and methods that are exposed to the Wails frontend.

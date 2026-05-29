@@ -1,6 +1,6 @@
 package orchestration
 
-import "github.com/user/agent/sdk/agent"
+import "github.com/v0lka/c0wrk/sdk/agent"
 
 // blackboardFactStore adapts a Blackboard to the agent.FactStore interface.
 type blackboardFactStore struct {

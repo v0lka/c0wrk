@@ -17,16 +17,16 @@ import (
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
-	coreprompts "github.com/user/agent/core/prompts"
-	"github.com/user/agent/core/skills"
-	"github.com/user/agent/core/tools"
-	"github.com/user/agent/core/tools/mcp"
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
-	sdkmemory "github.com/user/agent/sdk/memory"
-	"github.com/user/agent/sdk/orchestration"
-	"github.com/user/agent/sdk/prompt"
-	"github.com/user/agent/sdk/tools/builtins"
+	coreprompts "github.com/v0lka/c0wrk/core/prompts"
+	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/tools/mcp"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/prompt"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 
 // OrchestratorBuilder owns the shared tool registry, MCP gateway, and cached

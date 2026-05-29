@@ -3,9 +3,9 @@ package backend
 import (
 	"encoding/json"
 
-	"github.com/user/agent/core"
-	"github.com/user/agent/core/tools"
-	"github.com/user/agent/core/tools/mcp"
+	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/tools/mcp"
 )
 
 // ---------------------------------------------------------------------------

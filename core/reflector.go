@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/agent/core/prompts"
-	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/orchestration"
-	"github.com/user/agent/sdk/prompt"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/core/prompts"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/prompt"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // compile-time check: Reflector implements orchestration.Reflector.

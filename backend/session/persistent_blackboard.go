@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // defaultPersistenceTimeout is the maximum time allowed for a single

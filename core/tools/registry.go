@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	sdktools "github.com/user/agent/sdk/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // internalTools is the set of tool names that are always allowed,

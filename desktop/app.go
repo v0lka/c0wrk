@@ -8,7 +8,7 @@ import (
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/user/agent/backend"
+	"github.com/v0lka/c0wrk/backend"
 )
 
 // App holds the Wails application state and exposes methods to the frontend.

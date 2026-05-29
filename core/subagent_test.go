@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
-	tools "github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // Tests use shared mock types from testhelpers_test.go:

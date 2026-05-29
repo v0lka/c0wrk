@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/user/agent/core/tools"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 // Gateway manages connections to multiple MCP servers and provides

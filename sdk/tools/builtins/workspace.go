@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolReadStepOutputDescription = "Read the complete output of a specific completed step by its ID. Use this when the summary of a dependency step in your task description is insufficient and you need the full, untruncated result. Returns the raw text output exactly as the step produced it."

@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/user/agent/core/prompts"
-	"github.com/user/agent/core/skills"
-	coretools "github.com/user/agent/core/tools"
-	"github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/prompt"
-	tools "github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/core/prompts"
+	"github.com/v0lka/c0wrk/core/skills"
+	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/prompt"
+	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // systemMessagesFromPrompt splits a system prompt on CacheBreakMarker

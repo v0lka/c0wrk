@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/agent/backend/session"
-	"github.com/user/agent/core"
+	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core"
 )
 
 // CreateSession creates a new agent session within the active project.

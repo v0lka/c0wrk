@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	sdkagent "github.com/user/agent/sdk/agent"
-	"github.com/user/agent/sdk/llm"
-	"github.com/user/agent/sdk/prompt"
+	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/prompt"
 )
 
 // CompactionThresholds configures when context compaction triggers.

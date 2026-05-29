@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/user/agent/core/tools/prompts"
-	"github.com/user/agent/sdk/llm"
-	tools "github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/core/tools/prompts"
+	"github.com/v0lka/c0wrk/sdk/llm"
+	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // pathRegex matches absolute path-like substrings in command strings.

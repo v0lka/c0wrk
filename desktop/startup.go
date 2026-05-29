@@ -18,13 +18,13 @@ import (
 	"github.com/google/uuid"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/user/agent/backend"
-	"github.com/user/agent/backend/config"
-	"github.com/user/agent/backend/logger"
-	"github.com/user/agent/backend/project"
-	"github.com/user/agent/backend/session"
-	"github.com/user/agent/backend/terminal"
-	"github.com/user/agent/backend/vectorindex"
+	"github.com/v0lka/c0wrk/backend"
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/logger"
+	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/backend/terminal"
+	"github.com/v0lka/c0wrk/backend/vectorindex"
 )
 
 // pendingConfirmData holds the state for a pending tool confirmation,

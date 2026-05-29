@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/user/agent/sdk/embedding"
+	"github.com/v0lka/c0wrk/sdk/embedding"
 )
 
 // EmbedFunc produces a vector embedding for a single text input.

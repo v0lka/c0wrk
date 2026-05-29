@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/user/agent/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolReadFileDescription = `Reads and returns the contents of a file at the given path. Supports pagination via optional line range parameters. Output includes a metadata header showing the file name, returned line range, and total line count. When more content remains beyond the returned range, a continuation hint is appended.`
