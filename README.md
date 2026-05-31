@@ -1,5 +1,10 @@
 # c0wrk
 
+> [!WARNING]
+> **Early Alpha Stage** — This project is under active development and not yet stable.
+> Features, APIs, and configuration formats may change without notice.
+> Use at your own risk. Do not rely on it for production or critical workflows.
+
 Desktop AI research and development agent for really complex tasks.
 
 ![c0wrk main view](docs/screenshots/main_view.png)
