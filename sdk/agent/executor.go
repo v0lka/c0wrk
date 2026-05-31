@@ -1002,9 +1002,13 @@ func (e *Executor) buildToolDefinitions(taskTools []tools.ToolDescriptor) []llm.
 
 	// Add task tools
 	for _, t := range taskTools {
+		desc := t.Description
+		if t.Source != "" && t.Source != "core" {
+			desc = "[MCP] " + t.Description
+		}
 		defs = append(defs, llm.ToolDefinition{
 			Name:        t.Name,
-			Description: t.Description,
+			Description: desc,
 			InputSchema: t.InputSchema,
 		})
 		if t.Name == "finish" {

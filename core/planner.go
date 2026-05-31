@@ -151,13 +151,15 @@ For each step:
 `
 
 	planModeAgentProfiles = `
-Assign specialized profiles when it adds clear value. Omit profile for simple tasks.
+Assign specialized profiles when it adds clear value. Omit profile for simple tasks. Even when a profile is assigned, ` + "`profile.allowed_tools`" + ` MUST still be set — the role name alone does NOT restrict tool access.
 
 Profiles:
-- "researcher": information gathering, analysis (primary: search_graph, trace_path, get_code_snippet, semantic_search; secondary: ripgrep, glob, read_file, list_directory; web: web_search, web_fetch)
-- "coder": implementation, file operations (primary: search_graph, semantic_search, read_file, write_file, edit_file; secondary: ripgrep, glob, list_directory; bash_exec for build/run/test)
-- "tester": test execution, verification (primary: bash_exec for test runs; discovery: search_graph, semantic_search, ripgrep, glob, read_file)
-- "executor": general purpose (default, all tools)
+- "researcher": information gathering and analysis. Include ALL read-only tools (code exploration, search, file viewing) plus web_search/web_fetch if relevant. Do NOT include file-writing tools.
+- "coder": code implementation. Include all file operations (read_file, write_file, edit_file), code exploration/search tools, and bash_exec for build/run/test. Do NOT include web tools unless external API work is specified.
+- "tester": test execution and verification. Include bash_exec for test runs plus all discovery/read tools for examining code. Do NOT include file-writing tools (except test infrastructure if explicitly needed).
+- "executor": general purpose (default). Include ALL relevant tools for the step's specific activities — do not blindly include every tool.
+
+CRITICAL: ` + "`profile.allowed_tools`" + ` is the AUTHORITATIVE tool gate for each step. Scan the full Available Tools list and include EVERY tool (both built-in and MCP) that could be useful for the step's What/How/Where. Be generous — tool overlap is beneficial. Include MCP tools alongside their built-in equivalents. Only omit a tool if it is clearly irrelevant.
 
 ## Per-step skills (optional)
 
@@ -200,8 +202,14 @@ Steps are parallelizable when they have NO data dependencies — step B can run 
 ## Fields
 
 - ` + "`estimated_tools`" + `: Informational hint about likely tools. Not a constraint — the executor may use any available tool.
+- ` + "`profile.allowed_tools`" + `: REQUIRED for multi-step plans. An explicit list of tool names the executor is permitted to use for this step. When building this list:
+  * Scan ALL tools in the Available Tools section above — both built-in and MCP
+  * Include every tool potentially useful for the step's What/How/Where activities
+  * Be generous: tool overlap is beneficial (e.g., include both ` + "`semantic_search`" + ` and its MCP equivalents)
+  * Do NOT include ` + "`finish`" + `, ` + "`store_fact`" + `, ` + "`search_facts`" + `, ` + "`ask_user`" + `, ` + "`set_step_status`" + `, or ` + "`read_step_output`" + ` — these critical infrastructure tools are automatically added by the system
+  * Omit this field only when the step genuinely needs every available tool (rare; only for unbounded exploration tasks)
 
-Step executors follow the tool priority order from the system prompt. When writing step descriptions, direct executors to use semantic code exploration tools first, then targeted search, then file operations.
+Step executors follow MCP-first tool priority: prefer MCP tools over built-in equivalents. Built-in tools are fallback. ` + "`bash_exec`" + ` is last resort. When writing step descriptions, direct executors to use project-specific MCP tools first, then built-in code exploration, then targeted search, then file operations.
 `
 
 	planModeTail = "REFLECTIONS\n"

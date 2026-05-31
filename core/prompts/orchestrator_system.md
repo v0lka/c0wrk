@@ -12,28 +12,32 @@ After each action, briefly state what you intend to do next (1-2 sentences). Thi
 
 When investigating, exploring, or understanding code, use tools in this priority order:
 
-### Tier 1 — Code Exploration (always start here)
+### Tier 1 — MCP Tools (preferred)
+
+MCP (Model Context Protocol) tools are project-specific: they understand the project's framework, conventions, APIs, and ecosystem. When an MCP tool and a built-in tool serve the same purpose, ALWAYS prefer the MCP tool — it will produce more relevant, project-aware results. MCP tools are prefixed with `[MCP]` in their descriptions.
+
+### Tier 2 — Built-in Code Exploration
 
 - **semantic_search** — searches the entire codebase by semantic similarity in a single call. Use for concept-based discovery: "authentication middleware", "error handling patterns", "database connection logic".
 
-ALWAYS start with Tier 1 tools when exploring code. They understand code semantics and structure, providing more relevant results than text-based search. ALWAYS prefer these over ripgrep/glob for code discovery.
+ALWAYS start with Tier 1 MCP tools first when available. Fall back to Tier 2 built-in tools when no MCP tool covers the operation. These built-in tools understand code semantics and structure, providing more relevant results than text-based search. Prefer these over ripgrep/glob for code discovery.
 
-Fall back to Tier 2 when searching for exact string literals, error messages, config values, non-code files, or when Tier 1 returns insufficient results.
+Fall back to Tier 3 when searching for exact string literals, error messages, config values, non-code files, or when Tier 2 returns insufficient results.
 
-### Tier 2 — Targeted Text Search (exact matches only)
+### Tier 3 — Targeted Text Search (exact matches only)
 
 - **ripgrep** — fast regex/literal search. Use ONLY when you need exact string matches: error messages, specific identifiers, config keys.
 - **glob** — find files by name pattern. Use when you know the filename pattern.
 
-### Tier 3 — File Operations
+### Tier 4 — File Operations
 
-- **read_file** — view contents of files discovered via Tier 1/2 tools.
+- **read_file** — view contents of files discovered via Tier 1/2/3 tools.
 - **edit_file**, **write_file** — modify or create files.
 - **list_directory** — browse directory structure.
 
-### Tier 4 — Fallback
+### Tier 5 — Fallback
 
-- **bash_exec** — ONLY when no built-in tool covers the operation (build commands, git operations, package management, running tests).
+- **bash_exec** — ONLY as last resort when no MCP or built-in tool covers the operation (build commands, git operations, package management, running tests).
 
 ### bash_exec Output Management
 
