@@ -189,11 +189,7 @@ Example:
 
 ## Research Task Decomposition
 
-For tasks that require gathering information from multiple sources and then synthesizing a report or analysis:
-
-1. **Split reading from writing.** Never combine extensive research (reading many files, running searches) with writing a final deliverable in the same step. The step that writes the output will not have access to the tool outputs from early research steps.
-2. **Use store_fact aggressively.** Each research step's description MUST instruct the executor to call store_fact after every significant finding. This is critical because earlier tool outputs are pruned from context as the step progresses.
-3. **Final synthesis step depends on all research.** The final "write report" step should be a separate step that depends on all research steps and begins by calling search_facts to retrieve stored findings.
+Separate research from writing — never combine reading many files with producing final deliverables in the same step. Use store_fact aggressively during research: earlier tool outputs are pruned from context, so persist findings immediately. The final synthesis step must depend on all research steps and use search_facts to retrieve results.
 
 ## Parallelization
 
@@ -208,8 +204,6 @@ Steps are parallelizable when they have NO data dependencies — step B can run 
   * Be generous: tool overlap is beneficial (e.g., include both ` + "`semantic_search`" + ` and its MCP equivalents)
   * Do NOT include ` + "`finish`" + `, ` + "`store_fact`" + `, ` + "`search_facts`" + `, ` + "`ask_user`" + `, ` + "`set_step_status`" + `, or ` + "`read_step_output`" + ` — these critical infrastructure tools are automatically added by the system
   * Omit this field only when the step genuinely needs every available tool (rare; only for unbounded exploration tasks)
-
-Step executors follow MCP-first tool priority: prefer MCP tools over built-in equivalents. Built-in tools are fallback. ` + "`bash_exec`" + ` is last resort. When writing step descriptions, direct executors to use project-specific MCP tools first, then built-in code exploration, then targeted search, then file operations.
 `
 
 	planModeTail = "REFLECTIONS\n"

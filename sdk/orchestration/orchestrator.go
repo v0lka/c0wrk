@@ -774,12 +774,6 @@ func (o *Orchestrator) buildStepTask(
 	// Specific objective
 	fmt.Fprintf(&b, "\nYour specific objective: %s\n\n", step.Description)
 	b.WriteString("**Your primary objective is to satisfy the acceptance criteria defined in the step description above. Every action you take should be directed toward meeting these criteria. Do not consider this step complete until all acceptance criteria are met.**\n\n")
-	b.WriteString("## Pre-Finish Verification\nBefore calling the finish tool, you MUST:\n\n")
-	b.WriteString("1. Re-read the acceptance criteria from the step description above.\n")
-	b.WriteString("2. For EACH criterion, verify it is satisfied — use tool calls (read_file, ripgrep, bash_exec, etc.) to confirm, not assumptions.\n")
-	b.WriteString("3. If ANY criterion is not met, continue working rather than calling finish.\n")
-	b.WriteString("4. Only call finish when ALL criteria are verified.\n\n")
-	b.WriteString("Do NOT call finish based on effort or time spent — call it only when every acceptance criterion is objectively satisfied.\n\n")
 	b.WriteString("Produce output that is scoped to this step only. Later steps will build on your output.\n")
 	b.WriteString("Pass your result through the finish tool. Write files ONLY if the file itself is the deliverable (code, config, etc.) — do NOT write files just to pass data to later steps.\n")
 

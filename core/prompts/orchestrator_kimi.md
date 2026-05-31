@@ -8,5 +8,3 @@ Structure findings with explicit verification points:
 4. State the conclusion and next action.
 
 Use bullet points for lists of files, functions, or changes. Provide direct, concrete answers. Complete one task fully before moving to the next.
-
-When finished, call the finish tool immediately with a structured result.

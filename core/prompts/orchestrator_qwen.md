@@ -12,5 +12,3 @@ Think step-by-step before acting. For each task:
 Complete one action-observation cycle fully before starting the next. After tool calls, summarize key findings concisely before deciding the next step.
 
 Use absolute paths for all file operations. Match existing project conventions.
-
-When finished, call the finish tool immediately with a structured summary.
