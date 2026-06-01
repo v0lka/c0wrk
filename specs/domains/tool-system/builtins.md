@@ -75,29 +75,29 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 
 ## Tool Catalog
 
-| Tool                  | Category  | Default Policy | Description                                        |
-| --------------------- | --------- | -------------- | -------------------------------------------------- |
-| `bash_exec`           | Execution | user_confirm   | Shell command execution with timeout and blacklist |
-| `read_file`           | File      | always_allow   | Read file contents (with size limits)              |
-| `write_file`          | File      | user_confirm   | Create/overwrite file                              |
-| `edit_file`           | File      | user_confirm   | Apply targeted edits to existing file              |
-| `list_directory`      | File      | always_allow   | List directory contents                            |
-| `create_directory`    | File      | user_confirm   | Create directory (recursive)                       |
-| `delete_directory`    | File      | user_confirm   | Remove directory recursively                       |
-| `delete_file`         | File      | user_confirm   | Remove single file                                 |
-| `glob`                | Search    | always_allow   | Glob pattern file matching                         |
-| `ripgrep`             | Search    | always_allow   | Fast regex content search (shells out to `rg`)     |
-| `semantic_search`     | Search    | always_allow   | Vector similarity search (optional)                |
-| `web_fetch`           | Web       | always_allow   | Fetch URL content                                  |
-| `web_search`          | Web       | always_allow   | Search the web (optional, needs API key)           |
-| `finish`              | Agent     | internal       | Signal task/step completion                        |
-| `ask_user`            | Agent     | internal       | Prompt user for information                        |
-| `list_step_outputs`   | Agent     | internal       | List completed step results                        |
-| `read_step_output`    | Agent     | internal       | Read specific step output                          |
-| `set_step_status`     | Agent     | always_allow   | Update step status/checklist                       |
-| `store_fact`          | Agent     | always_allow   | Store fact to blackboard                           |
-| `search_facts`        | Agent     | always_allow   | Search blackboard facts                            |
-| `read_skill_resource` | Agent     | always_allow   | Read skill resource files                          |
+| Tool                  | Category  | Default Policy | Untrusted | Description                                        |
+| --------------------- | --------- | -------------- | --------- | -------------------------------------------------- |
+| `bash_exec`           | Execution | user_confirm   | yes       | Shell command execution with timeout and blacklist |
+| `read_file`           | File      | always_allow   | yes       | Read file contents (with size limits)              |
+| `write_file`          | File      | user_confirm   | no        | Create/overwrite file                              |
+| `edit_file`           | File      | user_confirm   | no        | Apply targeted edits to existing file              |
+| `list_directory`      | File      | always_allow   | no        | List directory contents                            |
+| `create_directory`    | File      | user_confirm   | no        | Create directory (recursive)                       |
+| `delete_directory`    | File      | user_confirm   | no        | Remove directory recursively                       |
+| `delete_file`         | File      | user_confirm   | no        | Remove single file                                 |
+| `glob`                | Search    | always_allow   | yes       | Glob pattern file matching                         |
+| `ripgrep`             | Search    | always_allow   | yes       | Fast regex content search (shells out to `rg`)     |
+| `semantic_search`     | Search    | always_allow   | no        | Vector similarity search (optional)                |
+| `web_fetch`           | Web       | always_allow   | yes       | Fetch URL content                                  |
+| `web_search`          | Web       | always_allow   | yes       | Search the web (optional, needs API key)           |
+| `finish`              | Agent     | internal       | no        | Signal task/step completion                        |
+| `ask_user`            | Agent     | internal       | no        | Prompt user for information                        |
+| `list_step_outputs`   | Agent     | internal       | no        | List completed step results                        |
+| `read_step_output`    | Agent     | internal       | no        | Read specific step output                          |
+| `set_step_status`     | Agent     | always_allow   | no        | Update step status/checklist                       |
+| `store_fact`          | Agent     | always_allow   | no        | Store fact to blackboard                           |
+| `search_facts`        | Agent     | always_allow   | no        | Search blackboard facts                            |
+| `read_skill_resource` | Agent     | always_allow   | no        | Read skill resource files                          |
 
 ## Registration Order
 
@@ -142,10 +142,11 @@ Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). Wh
 3. Register in `core/tools/builtin_registration.go` → `RegisterBuiltinTools()`
 4. If tool needs config, add field to `BuiltinToolsConfig` struct
 5. If config comes from config.yaml, update `backend/configadapter.go` → `configToBuiltinToolsConfig()`
-6. If tool is mutating (writes files, runs commands), set `DefaultPolicy()` to `PolicyUserConfirm`
-7. If tool should be available in specific roles only, update `core/toolprofiles.go`
-8. Add tests: `sdk/tools/builtins/<name>_test.go`
-9. Run `make lint && make test`
+6. If the tool reads data from external sources (filesystem, web, subprocess), set `Untrusted: true` on `BaseTool` so output is wrapped before entering the LLM context
+7. If tool is mutating (writes files, runs commands), set `DefaultPolicy()` to `PolicyUserConfirm`
+8. If tool should be available in specific roles only, update `core/toolprofiles.go`
+9. Add tests: `sdk/tools/builtins/<name>_test.go`
+10. Run `make lint && make test`
 
 ## Invariants
 
@@ -155,6 +156,7 @@ Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). Wh
 - Optional tools (semantic_search, web_search, ask_user) are only registered if their dependency func/key is provided
 - `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a hard runtime dependency verified at startup by `desktop.verifyExternalDependencies`
 - `ripgrep` parses the `rg --json` event stream (match/context/end events); exit code 1 means "no matches" and is not an error, exit codes ≥ 2 surface as `IsError` with stderr content
+- Untrusted built-in tools (`bash_exec`, `read_file`, `glob`, `ripgrep`, `web_fetch`, `web_search`) have `Untrusted: true` on `BaseTool`; their output is wrapped in `<untrusted-content>` tags before entering the LLM context
 
 ## Related Specs
 

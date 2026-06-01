@@ -7,6 +7,7 @@
 | Layer boundaries, import rules           | [architecture/layers.md](architecture/layers.md)                         |
 | Request lifecycle end-to-end             | [architecture/data-flow.md](architecture/data-flow.md)                   |
 | Tool policies, confirmations, judge      | [architecture/security-model.md](architecture/security-model.md)         |
+| Prompt injection defense, content wrapping | [architecture/security-model.md](architecture/security-model.md)         |
 | Routing, complexity classification       | [domains/orchestration/router.md](domains/orchestration/router.md)       |
 | Plan generation, DAG, replan             | [domains/orchestration/planner.md](domains/orchestration/planner.md)     |
 | Agent loop, step limits, circuit breaker | [domains/orchestration/executor.md](domains/orchestration/executor.md)   |

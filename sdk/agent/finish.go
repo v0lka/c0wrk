@@ -46,6 +46,9 @@ func (t *FinishTool) DefaultPolicy() tools.ToolPolicy {
 	return tools.PolicyAlwaysAllow
 }
 
+// IsUntrusted returns false — finish is a trusted internal tool.
+func (t *FinishTool) IsUntrusted() bool { return false }
+
 // Execute parses the input and returns the answer.
 func (t *FinishTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params struct {

@@ -107,6 +107,11 @@ var RouterSystem string
 //go:embed verification_mandate.md
 var VerificationMandate string
 
+// Injection defense — tells LLM to distrust untrusted-tagged tool output
+
+//go:embed injection_defense.md
+var InjectionDefense string
+
 // Compaction summarize prompt
 
 //go:embed compaction_summarize.md

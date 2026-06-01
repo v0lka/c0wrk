@@ -54,7 +54,8 @@ func NewGlobToolWithLimits(limits GlobLimits) *GlobTool {
 		},
 		"required": ["pattern"]
 	}`),
-		Policy: tools.PolicyAlwaysAllow,
+		Policy:    tools.PolicyAlwaysAllow,
+		Untrusted: true,
 	},
 		limits: limits,
 	}

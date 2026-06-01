@@ -6,7 +6,7 @@ Manages the agent's context window during step execution: tracks token usage, tr
 
 ## Key Files
 
-- `sdk/memory/context.go` — ContextWindow struct (token tracking, compaction orchestration)
+- `sdk/memory/context.go` — ContextWindow struct (token tracking, compaction orchestration, untrusted content wrapping)
 - `sdk/memory/compaction.go` — CompactionStrategy factory (NewCompactionStrategy)
 - `sdk/memory/compaction_sliding.go` — sliding window strategy
 - `sdk/memory/compaction_summary.go` — summarization strategy
@@ -55,6 +55,10 @@ Executor calls LLM
       └─ >= emergency threshold (98%): aggressive compaction
 ```
 
+### Content Wrapping for Untrusted Tools
+
+Before observations are added to the LLM context, `buildStepMessages()` checks `Step.IsUntrusted`. If `true`, the observation content is wrapped in `<untrusted-content>` XML tags (via `sdk/security.WrapUntrustedContent()`). Wrapping happens after pruning and empty-check, but before the observation is turned into an LLM message. This is the last point before content reaches the LLM API.
+
 ## Domain → Strategy Mapping
 
 | Domain (from Router)        | Strategy       | Rationale                            |
@@ -70,6 +74,7 @@ Executor calls LLM
 - System prompt is ALWAYS preserved (never compacted away)
 - Compaction is triggered proactively (before overflow, not after)
 - Each step has its own ContextWindow (no sharing between parallel steps)
+- Tool output from untrusted sources is wrapped in `<untrusted-content>` tags before becoming an LLM message; wrapping happens after pruning and before message construction
 
 ## Configuration
 

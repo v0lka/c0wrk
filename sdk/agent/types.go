@@ -23,6 +23,10 @@ type Step struct {
 	// rendered as one assistant message with multiple tool_calls in BuildPrompt().
 	// Zero means standalone step (single tool call).
 	ResponseGroup int64 `json:"response_group,omitempty"`
+	// IsUntrusted indicates the Observation came from an untrusted external source
+	// (web, MCP, filesystem) and should be wrapped in <untrusted-content> tags
+	// before entering the LLM context as a prompt injection defense.
+	IsUntrusted bool `json:"is_untrusted,omitempty"`
 }
 
 // ExecutorResult — result of Executor.Run.

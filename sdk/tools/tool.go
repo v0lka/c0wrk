@@ -26,6 +26,9 @@ type Tool interface {
 	InputSchema() json.RawMessage
 	Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	DefaultPolicy() ToolPolicy
+	// IsUntrusted reports whether this tool returns external/untrusted data
+	// (web, MCP, filesystem) that should be sanitized before LLM context.
+	IsUntrusted() bool
 }
 
 // ToolResult — result of tool execution.
@@ -67,12 +70,13 @@ func ParseInputError(err error) (ToolResult, error) {
 }
 
 // BaseTool provides default implementations of Name, Description, InputSchema,
-// and DefaultPolicy so concrete tools only need to implement Execute.
+// DefaultPolicy, and IsUntrusted so concrete tools only need to implement Execute.
 type BaseTool struct {
 	ToolName        string
 	ToolDescription string
 	Schema          json.RawMessage
 	Policy          ToolPolicy
+	Untrusted       bool // marks tool output as external/untrusted data for prompt injection defense
 }
 
 // Name returns the tool name.
@@ -86,6 +90,9 @@ func (b *BaseTool) InputSchema() json.RawMessage { return b.Schema }
 
 // DefaultPolicy returns the tool's default security policy.
 func (b *BaseTool) DefaultPolicy() ToolPolicy { return b.Policy }
+
+// IsUntrusted returns whether this tool produces external/untrusted data.
+func (b *BaseTool) IsUntrusted() bool { return b.Untrusted }
 
 // workspacePathKey is the context key for the session workspace path.
 type workspacePathKey struct{}
@@ -173,3 +180,21 @@ type AskUserResponse struct {
 // AskUserFunc is called when the ask_user tool needs to display questions to the user.
 // If nil, ask_user is not available (CLI mode).
 type AskUserFunc func(ctx context.Context, req AskUserRequest) (AskUserResponse, error)
+
+// untrustedBuiltinTools is the set of built-in tool names that return external/untrusted data.
+var untrustedBuiltinTools = map[string]struct{}{
+	"web_search": {},
+	"web_fetch":  {},
+	"bash_exec":  {},
+	"ripgrep":    {},
+	"glob":       {},
+	"read_file":  {},
+}
+
+// IsUntrustedTool reports whether a built-in tool with the given name
+// typically returns external/untrusted data that should be sanitized
+// before LLM context. Returns false for unknown names.
+func IsUntrustedTool(name string) bool {
+	_, ok := untrustedBuiltinTools[name]
+	return ok
+}

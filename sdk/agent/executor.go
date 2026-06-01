@@ -652,6 +652,11 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			observation := result.Content
 			e.lastToolResultIsError = result.IsError
 
+			// Determine if the tool output is from an untrusted external source
+			// for prompt injection defense wrapping in BuildPrompt().
+			isUntrusted := strings.HasPrefix(e.tools.GetToolSource(action.Name), "mcp") ||
+				tools.IsUntrustedTool(action.Name)
+
 			// --- Fruitless result detector: consecutive minimal-result calls ---
 			// A result is "fruitless" if it's small AND not an error (errors have their own tracking)
 			fruitlessMaxLen := e.circuitBreaker.FruitlessMaxResultLen
@@ -913,6 +918,7 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				ReasoningContent: stepReasoning,
 				Action:           action,
 				Observation:      observation,
+				IsUntrusted:      isUntrusted,
 				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 				ResponseGroup:    responseGroup,
 			}

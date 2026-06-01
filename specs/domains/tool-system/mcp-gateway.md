@@ -54,6 +54,7 @@ MCP tools are wrapped in `MCPTool` struct that implements `sdk/tools.Tool`:
 - `InputSchema()` — JSON schema from MCP (sanitized)
 - `Execute()` — proxies to `server.CallTool()`
 - `DefaultPolicy()` — `PolicyUserConfirm` (MCP tools are external, conservative default)
+- `IsUntrusted()` — returns `true` (all MCP tool output is wrapped in `<untrusted-content>` tags)
 
 ### Schema Sanitization
 
@@ -107,6 +108,7 @@ mcp:
 - Schema sanitization happens at registration time (not per-call)
 - Gateway.Stop() always attempts graceful close of all server connections
 - ReconfigureMCP() is atomic: old servers stopped before new ones started
+- All MCP tools are untrusted (`IsUntrusted()` returns `true`); their output is wrapped in `<untrusted-content>` tags before entering the LLM context
 
 ## Related Specs
 

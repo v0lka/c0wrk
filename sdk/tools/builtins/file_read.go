@@ -48,7 +48,8 @@ func NewReadFileToolWithLimits(limits FileLimits) *ReadFileTool {
 				},
 				"required": ["path"]
 			}`),
-			Policy: tools.PolicyAlwaysAllow,
+			Policy:    tools.PolicyAlwaysAllow,
+			Untrusted: true,
 		},
 		limits: limits,
 	}

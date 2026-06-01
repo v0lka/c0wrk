@@ -87,8 +87,9 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │
 │   ├─ 2. If tool_call:
 │   │      ├─ Execute tool via ToolExecutor.Execute(ctx, name, input)
+│   │      ├─ Set Step.IsUntrusted ← tool.IsUntrusted() || source starts with "mcp"
 │   │      ├─ Apply ToolResultBudget (truncate if too large)
-│   │      ├─ Add observation to messages
+│   │      ├─ Add observation to messages (context.go wraps untrusted output in <untrusted-content>)
 │   │      └─ Check context fill → compact if needed
 │   │
 │   ├─ 3. If finish tool called:
@@ -165,11 +166,13 @@ Large tool results are truncated to stay within context:
 - A step's output is immutable once stored on Blackboard
 - Active skill bodies are rendered verbatim in the step system prompt (no truncation)
 - Step-local skill narrowing fires whenever `step.Profile.Skills` is non-empty; requested names resolve from the task-scope ActiveSkills pool first, falling back to the SkillManager only for names absent from the pool
+- Every `Step` carries `IsUntrusted`; set by executor after tool execution via `tool.IsUntrusted()` or MCP source check
+- Untrusted tool output is wrapped in `<untrusted-content>` XML tags in `context.go` `buildStepMessages()` before messages are sent to the LLM
 
 ## Related Specs
 
 - [README.md](README.md) — orchestration overview
 - [planner.md](planner.md) — plan generation
 - [../memory/compaction.md](../memory/compaction.md) — compaction strategies
-- [../tool-system/README.md](../tool-system/README.md) — tool execution pipeline
-- [../../architecture/security-model.md](../../architecture/security-model.md) — policy enforcement
+- [../tool-system/README.md](../tool-system/README.md) — tool execution pipeline and trust classification
+- [../../architecture/security-model.md](../../architecture/security-model.md) — policy enforcement and injection defense

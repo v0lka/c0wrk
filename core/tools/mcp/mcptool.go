@@ -126,6 +126,10 @@ func (t *Tool) DefaultPolicy() tools.ToolPolicy {
 	return tools.PolicyUserConfirm
 }
 
+// IsUntrusted always returns true for MCP tools because their output
+// comes from external servers and may contain adversarial content.
+func (t *Tool) IsUntrusted() bool { return true }
+
 // Execute calls the MCP server's tools/call endpoint with the provided input.
 func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	// Parse input JSON into a map for the MCP call

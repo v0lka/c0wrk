@@ -46,6 +46,7 @@ func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) (*Ba
 			ToolDescription: toolBashDescription,
 			Schema:          json.RawMessage(`{"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to execute. Supports pipes, redirects, and chained commands."}, "timeout": {"type": "string", "description": "Timeout as a Go duration string, e.g. \"30s\" or \"2m\". Default: 60s, maximum: 120s."}, "working_directory": {"type": "string", "description": "Absolute path to use as the working directory for command execution. If omitted, defaults to the workspace root when available."}}, "required": ["command"]}`),
 			Policy:          tools.PolicyUserConfirm,
+			Untrusted:       true,
 		},
 		blacklist: blacklist,
 		compiled:  compiled,

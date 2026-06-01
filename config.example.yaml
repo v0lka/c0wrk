@@ -227,6 +227,14 @@ security:
     web_fetch:
       policy: "always_allow"
 
+  # --- Indirect prompt injection defense ---
+  # Content from untrusted external tools (web_search, web_fetch, bash_exec,
+  # ripgrep, glob, read_file, MCP) is wrapped in <untrusted-content> XML tags
+  # before entering the LLM context. The system prompt instructs the LLM to
+  # treat tagged content as data, not instructions.
+  injection_defense:
+    enabled: true # Always-on in current implementation (no runtime gating)
+
 # ---------------------------------------------------------------------------
 # Web Search
 # ---------------------------------------------------------------------------

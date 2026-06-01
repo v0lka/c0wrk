@@ -27,6 +27,7 @@ func (m *mockTool) Name() string                    { return m.name }
 func (m *mockTool) Description() string             { return m.description }
 func (m *mockTool) InputSchema() json.RawMessage    { return json.RawMessage(`{"type":"object"}`) }
 func (m *mockTool) DefaultPolicy() tools.ToolPolicy { return tools.PolicyAlwaysAllow }
+func (m *mockTool) IsUntrusted() bool               { return false }
 func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return m.result, nil
 }

@@ -54,6 +54,8 @@ func (m *mockTool) DefaultPolicy() ToolPolicy {
 	return m.defaultPolicy
 }
 
+func (m *mockTool) IsUntrusted() bool { return false }
+
 func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
 	// Simple echo: return the input as content
 	return ToolResult{

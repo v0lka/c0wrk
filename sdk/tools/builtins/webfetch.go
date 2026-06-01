@@ -73,6 +73,7 @@ func NewWebFetchToolWithClient(limits WebFetchLimits, client *http.Client) *WebF
 			ToolDescription: toolWebfetchDescription,
 			Schema:          json.RawMessage(schema),
 			Policy:          tools.PolicyAlwaysAllow,
+			Untrusted:       true,
 		},
 		client: client,
 		limits: limits,

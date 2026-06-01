@@ -12,6 +12,7 @@ import (
 	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/prompt"
+	"github.com/v0lka/c0wrk/sdk/security"
 )
 
 // CompactionThresholds configures when context compaction triggers.
@@ -282,6 +283,10 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 					if _, protected := protectedIndices[idx]; !protected && cw.pruning.KeepLastN > 0 {
 						observation = cw.pruning.PlaceholderText
 					}
+					// Apply prompt injection defense: wrap untrusted tool output
+					if cw.steps[idx].IsUntrusted {
+						observation = security.WrapUntrustedContent(observation, gs.Action.Name, nil)
+					}
 					messages = append(messages, llm.Message{
 						Role:       "tool",
 						Content:    observation,
@@ -327,6 +332,11 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 				// Apply pruning: use placeholder for non-protected tool outputs
 				if _, protected := protectedIndices[i]; !protected && cw.pruning.KeepLastN > 0 {
 					observation = cw.pruning.PlaceholderText
+				}
+
+				// Apply prompt injection defense: wrap untrusted tool output
+				if step.IsUntrusted {
+					observation = security.WrapUntrustedContent(observation, step.Action.Name, nil)
 				}
 
 				toolMsg := llm.Message{

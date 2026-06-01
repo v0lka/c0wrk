@@ -16,7 +16,7 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `AgentEvents`          | sdk/agent | core/types (embedded in Emitter) | Lifecycle event hooks                 |
 | `ContextManager`       | sdk/agent | core/types (extended)            | Context window management             |
 | `StepLimitFunc`        | sdk/agent | core/orchestrator config         | Step limit / circuit breaker callback |
-| `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration                |
+| `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration (incl. IsUntrusted flag) |
 | `ExecutorResult`       | sdk/agent | core/types (alias)               | Executor output                       |
 | `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds            |
 | `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation                |
@@ -55,11 +55,13 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 
 | Interface / Type       | Package   | Consumed By                    | Purpose                                        |
 | ---------------------- | --------- | ------------------------------ | ---------------------------------------------- |
-| `Tool`                 | sdk/tools | core/tools (embedded registry) | Tool interface                                 |
-| `ToolRegistry`         | sdk/tools | core/tools (embedded)          | Basic tool store                               |
-| `ToolDescriptor`       | sdk/tools | core/orchestrator, planner     | Tool metadata                                  |
-| `ToolPolicy`           | sdk/tools | core/tools                     | Policy enum                                    |
-| `ToolResult`           | sdk/tools | core/tools                     | Execution result                               |
+| `Tool`                 | sdk/tools | core/tools (embedded registry) | Tool interface (incl. IsUntrusted())          |
+| `BaseTool`             | sdk/tools | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
+| `IsUntrustedTool()`    | sdk/tools | sdk/agent/executor             | Static helper to check built-in trust by name |
+| `ToolRegistry`         | sdk/tools | core/tools (embedded)          | Basic tool store                              |
+| `ToolDescriptor`       | sdk/tools | core/orchestrator, planner     | Tool metadata                                 |
+| `ToolPolicy`           | sdk/tools | core/tools                     | Policy enum                                   |
+| `ToolResult`           | sdk/tools | core/tools                     | Execution result                              |
 | `FileCoherenceChecker` | sdk/tools | core/tools (re-exported)       | Cross-session file conflict detection          |
 | `FileSig`              | sdk/tools | core/tools (re-exported)       | File signature (mtime + size) for coherence    |
 | `CoherenceConflict`    | sdk/tools | core/tools (re-exported)       | Conflict record with session and timing detail |
@@ -133,6 +135,7 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 - If you modify an `sdk/orchestration` interface → update `core/types.go` alias AND adapter in `core/orchestrator.go`
 - If you add a field to `sdk/orchestration.Config` → update `NewOrchestrator` in `core/orchestrator.go`
 - If you modify `sdk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
-- If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go` AND all builtins
+- If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sdk type that backend needs → add alias in `core/types.go`
 - If you modify `sdk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation AND `core/tools/tool.go` re-export
+- If you change `IsUntrusted()` semantics → update `untrustedBuiltinTools` map in `sdk/tools/tool.go` AND `sdk/security/wrap.go`

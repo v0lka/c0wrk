@@ -6,8 +6,9 @@ Provides tool infrastructure for the agent: discovery, registration, policy enfo
 
 ## Key Files
 
-- `sdk/tools/tool.go` — Tool interface, ToolDescriptor, ToolPolicy, ToolResult
+- `sdk/tools/tool.go` — Tool interface, ToolDescriptor, ToolPolicy, ToolResult, BaseTool
 - `sdk/tools/registry.go` — SDK ToolRegistry (basic get/list/execute)
+- `sdk/security/wrap.go` — Content wrapping for untrusted tool output (indirect prompt injection defense)
 - `core/tools/registry.go` — core ToolRegistry (wraps SDK, adds policies/judge/hooks)
 - `core/tools/builtin_registration.go` — RegisterBuiltinTools function
 - `core/tools/judge.go` — ToolJudge (LLM-based safety evaluation)
@@ -23,7 +24,17 @@ type Tool interface {
     InputSchema() json.RawMessage
     Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
     DefaultPolicy() ToolPolicy
+    IsUntrusted() bool  // Returns true if tool output must be wrapped in <untrusted-content>
 }
+
+// BaseTool provides defaults for tool implementations
+type BaseTool struct {
+    Name        string
+    Description string
+    InputSchema json.RawMessage
+    Untrusted   bool // Set to true for tools whose output should be delimited
+}
+```
 
 // Tool metadata for planner/executor (no execution capability)
 type ToolDescriptor struct {
@@ -95,6 +106,8 @@ ToolRegistry.Execute(ctx, name, input)
 - Core built-in tools are tagged with source `core`
 - Tool filter can silently reject registration (no error returned)
 - The registry is thread-safe (sync.RWMutex)
+- Untrusted tool output (IsUntrusted() == true) is wrapped in <untrusted-content> tags before entering the LLM context
+- All MCP tools are untrusted; built-in untrusted tools: web_search, web_fetch, bash_exec, ripgrep, glob, read_file
 
 ## Configuration
 
@@ -134,7 +147,7 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 - `ToolFilter` — reject tools during registration (e.g., filter MCP tools by server)
 - `ParamInjector` — transform tool input (e.g., inject workspace path for MCP tools)
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
-- New built-in tools: implement `Tool` interface, register in `RegisterBuiltinTools`
+- New built-in tools: implement `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools`
 
 ## Related Specs
 

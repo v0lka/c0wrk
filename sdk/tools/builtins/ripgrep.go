@@ -71,7 +71,8 @@ func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool {
 		},
 		"required": ["pattern"]
 	}`),
-		Policy: tools.PolicyAlwaysAllow,
+		Policy:    tools.PolicyAlwaysAllow,
+		Untrusted: true,
 	},
 		limits: limits,
 	}

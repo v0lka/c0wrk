@@ -64,6 +64,7 @@ func NewWebSearchTool(provider SearchProvider, limits Limits) *WebSearchTool {
 			ToolDescription: toolWebsearchDescription,
 			Schema:          json.RawMessage(schema),
 			Policy:          tools.PolicyAlwaysAllow,
+			Untrusted:       true,
 		},
 		provider: provider,
 		limits:   limits,

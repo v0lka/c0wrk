@@ -18,6 +18,7 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"ReflectorSystem", ReflectorSystem},
 		{"RouterSystem", RouterSystem},
 		{"VerificationMandate", VerificationMandate},
+		{"InjectionDefense", InjectionDefense},
 		{"CompactionSummarize", CompactionSummarize},
 		// Prompt optimizer prompts
 		{"PromptOptimizeExtract", PromptOptimizeExtract},

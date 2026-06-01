@@ -212,6 +212,7 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		Core(prompts.OrchestratorSystem).
 		Core(prompts.FamilyPrompt("orchestrator", family)).
 		Core(prompts.VerificationMandate).
+		Core(prompts.InjectionDefense).
 		CacheBreak().
 		Replace("WORKSPACE-CONTEXT", workspaceCtxStr).
 		Build()
