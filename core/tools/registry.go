@@ -214,6 +214,14 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		input = injector(name, source, input)
 	}
 
+	// Symlink detection gate: force-confirm when any tool input contains paths
+	// that traverse symlinks, regardless of policy. Shows resolved paths in the
+	// confirmation dialog so the user can make an informed decision.
+	// PolicyAlwaysDeny is still respected — symlinks don't bypass explicit denies.
+	if intercepted, result, err := r.checkSymlinksAndConfirm(ctx, tool, name, input); intercepted {
+		return result, err
+	}
+
 	policy := r.resolvePolicy(name, tool)
 
 	// Workspace/temp auto-approval: if all paths in the input are within

@@ -91,6 +91,62 @@ ToolRegistry.Execute()
   └─ ConfirmDenyAndStop → return context.Canceled (stops entire task)
 ```
 
+## Symlink Confirmation
+
+Before policy resolution, the registry inspects ALL tool call inputs (both structured tools and `bash_exec`) for paths that traverse symlinks. If symlinks are detected, the call is forcibly routed to user confirmation regardless of the tool's resolved policy — except `always_deny`, which returns an error immediately.
+
+### Detection
+
+Path extraction differs by tool type:
+
+- **Structured tools** (JSON input): all string values in the JSON payload are extracted. Paths are identified by heuristics — the value must contain a `/` separator and must not be a URL. Extracted paths are resolved against the workspace directory.
+
+- **`bash_exec`** (shell command): the command is parsed with `mvdan.cc/sh/v3/syntax`. Literal strings, single-quoted and double-quoted strings from `syntax.Word` parts in `*syntax.CallExpr` arguments and redirect paths are extracted. Words containing shell expansions (`$var`, `$(cmd)`, `` `cmd` ``, `<(`) are flagged as **suspicious** — their resolved paths cannot be determined statically, so the entire call is treated as potentially path-masking.
+
+### Symlink Traversal
+
+For each extracted path, the registry walks each path component from root downward using `os.Lstat` (which does NOT follow symlinks). When a component is a symlink, `os.Readlink` resolves its target and the path is re-joined. The traversal continues through the resolved target.
+
+Each detected traversal is recorded as a `SymlinkTraversal`:
+
+```go
+type SymlinkTraversal struct {
+    OriginalPath string // the path as it appears in the input
+    SymlinkAt    string // the symlink component
+    FullResolved string // the fully resolved target
+}
+```
+
+Traversals inside the workspace directory return a different confirmation dialog than traversals outside.
+
+### OS-Level Symlink Filtering
+
+Some operating systems use symlinks as filesystem layout conventions (e.g., macOS `/tmp` → `/private/tmp`, `/var` → `/private/var`). These are not user-created security-relevant symlinks. The gate skips interception when all detected symlinks are OS-level infrastructure — defined as a symlink whose path is a prefix of the workspace directory or the session temp directory.
+
+### Forced Confirmation
+
+When symlinks are found, the confirmation dialog displays the full symlink chain for each path:
+
+```
+This tool call traverses symlinks (target is within workspace):
+
+  /workspace/link/file.txt
+    └─ symlink at: /workspace/link → /etc/secret (outside workspace)
+
+The agent will follow the symlink and operate on the resolved target.
+```
+
+The user can allow (one-time) or deny. A denial returns an error `ToolResult` to the LLM. `ConfirmDenyAndStop` cancels the entire task context.
+
+If the input contains suspicious (unexpandable) shell expressions, a warning is appended:
+```
+⚠ Best-effort check: the command contains unresolved shell expansions ($var, $(cmd), `cmd`) that may hide additional paths.
+```
+
+### Source
+
+`core/tools/symlink.go` — detection, traversal, formatting, and integration method `checkSymlinksAndConfirm()`. Injected in `core/tools/registry.go` `Execute()` between ParamInjector and policy resolution.
+
 ## Bash Blacklist
 
 The `bash_exec` tool has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, `BashExecTool.Judge()` evaluates the command against compiled blacklist regexes. A match escalates to user confirmation (same flow as any judge-flagged call).
@@ -146,7 +202,9 @@ Source: `sdk/security/wrap.go` (wrapping), `core/prompts/injection_defense.md` (
 ## Invariants
 
 - Internal tools ALWAYS execute, regardless of any policy configuration
-- `always_deny` is NEVER bypassed (not by auto-approval, not by judge, not by any mechanism)
+- Symlink detection ALWAYS runs for all non-internal tools, before policy resolution
+- When symlinks are detected, the call ALWAYS forces user confirmation (unless policy is `always_deny`)
+- `always_deny` is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
 - Workspace auto-approval only applies when ALL paths in the input are within workspace/temp
 - Confirmation blocks the executor goroutine until the user responds (no timeout)
 - A denied tool returns an error ToolResult to the LLM (agent can adapt its strategy)

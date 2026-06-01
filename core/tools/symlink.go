@@ -1,0 +1,474 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
+
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+)
+
+// SymlinkTraversal describes a path that traverses a symlink.
+type SymlinkTraversal struct {
+	OriginalPath     string // user-visible path from tool input
+	SymlinkAt        string // component where the symlink was detected
+	ResolvesTo       string // what the symlink points to (readlink result)
+	FullResolved     string // fully resolved absolute path after symlink chain
+	OutsideWorkspace bool   // does the fully resolved path fall outside the workspace?
+}
+
+// detectSymlinksInToolInput extracts all path-like values from a tool input
+// and checks each for symlinks. Returns traversals partitioned by whether
+// the resolved target is inside or outside the workspace, plus a suspicious
+// flag for bash_exec commands with unexpandable tokens.
+func detectSymlinksInToolInput(ctx context.Context, toolName string, input json.RawMessage) (
+	inside []SymlinkTraversal,
+	outside []SymlinkTraversal,
+	suspicious bool,
+) {
+	workspace := WorkspacePathFrom(ctx)
+
+	if toolName == "bash_exec" {
+		paths, unexpandable := extractBashPathsFromInput(input, workspace)
+		inside, outside = checkPathsForSymlinks(paths, workspace)
+		return inside, outside, unexpandable
+	}
+
+	paths := extractAllPathsFromJSON(input, workspace)
+	inside, outside = checkPathsForSymlinks(paths, workspace)
+	return inside, outside, false
+}
+
+// extractAllPathsFromJSON extracts all path-like strings from a JSON tool input.
+// Each string value containing "/" is treated as a candidate path.
+// Relative paths are resolved against workspace.
+func extractAllPathsFromJSON(input json.RawMessage, workspace string) []string {
+	var parsed any
+	if err := json.Unmarshal(input, &parsed); err != nil {
+		return nil
+	}
+
+	strValues := extractJSONStrings(parsed)
+	seen := make(map[string]struct{})
+	var paths []string
+
+	for _, s := range strValues {
+		if !looksLikePath(s) {
+			continue
+		}
+		resolved := resolvePathCandidate(s, workspace)
+		if resolved == "" {
+			continue
+		}
+		cleaned := filepath.Clean(resolved)
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		paths = append(paths, cleaned)
+	}
+
+	return paths
+}
+
+// looksLikePath returns true if a string resembles a filesystem path
+// (contains "/" and is not a URL).
+func looksLikePath(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if !strings.Contains(s, "/") {
+		return false
+	}
+	lower := strings.ToLower(s)
+	for _, scheme := range []string{"http://", "https://", "ftp://", "ssh://", "file://", "git://"} {
+		if strings.HasPrefix(lower, scheme) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolvePathCandidate resolves a potential path to an absolute form.
+// Absolute paths are returned cleaned. Relative paths are joined with workspace.
+func resolvePathCandidate(s, workspace string) string {
+	if s == "" {
+		return ""
+	}
+	if filepath.IsAbs(s) {
+		return s
+	}
+	if workspace == "" {
+		return ""
+	}
+	return filepath.Join(workspace, s)
+}
+
+// extractBashPathsFromInput extracts paths from a bash_exec tool input.
+// Returns resolved paths and a flag indicating whether the command contains
+// unexpandable shell constructs ($var, $(cmd), `cmd`, process substitution).
+func extractBashPathsFromInput(input json.RawMessage, workspace string) (paths []string, hasUnexpandable bool) {
+	var params struct {
+		Command          string `json:"command"`
+		WorkingDirectory string `json:"working_directory"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil || params.Command == "" {
+		return nil, false
+	}
+
+	wd := params.WorkingDirectory
+	if wd == "" {
+		wd = workspace
+	}
+
+	return extractBashPaths(params.Command, wd, workspace)
+}
+
+// extractBashPaths parses a bash command using mvdan.cc/sh and extracts
+// path-like literals. Working directory is used for relative path resolution.
+func extractBashPaths(command, workingDirectory, workspace string) (paths []string, hasUnexpandable bool) {
+	parser := syntax.NewParser()
+	file, err := parser.Parse(strings.NewReader(command), "")
+	if err != nil {
+		return nil, true // unparseable — suspicious
+	}
+
+	seen := make(map[string]struct{})
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch n := node.(type) {
+		case *syntax.CmdSubst:
+			hasUnexpandable = true
+			return false // don't recurse into $(...) or `...`
+		case *syntax.ParamExp:
+			hasUnexpandable = true
+			return false
+		case *syntax.ProcSubst:
+			hasUnexpandable = true
+			return false
+		case *syntax.Word:
+			// Check for unexpandable shell constructs within the word
+			// (e.g., $HOME/file parses as one Word with Parts [ParamExp, Lit]).
+			for _, part := range n.Parts {
+				switch part.(type) {
+				case *syntax.ParamExp, *syntax.CmdSubst, *syntax.ProcSubst:
+					hasUnexpandable = true
+				}
+			}
+			lit := wordLiteral(n)
+			if lit == "" || !looksLikePath(lit) {
+				return false
+			}
+			resolved := resolvePathCandidate(lit, workingDirectory)
+			if resolved == "" {
+				resolved = resolvePathCandidate(lit, workspace)
+			}
+			if resolved == "" {
+				return false
+			}
+			cleaned := filepath.Clean(resolved)
+			if _, ok := seen[cleaned]; !ok {
+				seen[cleaned] = struct{}{}
+				paths = append(paths, cleaned)
+			}
+			return false // already collected — don't recurse into Parts
+		}
+		return true
+	})
+
+	return paths, hasUnexpandable
+}
+
+// wordLiteral extracts the literal (unquoted) value from a shell Word node.
+// Handles Lit, SglQuoted, and DblQuoted parts — but not variable expansions,
+// command substitutions, or process substitutions.
+// Escaped characters (e.g., "\ ") are preserved as-is in Lit values
+// by the parser, so they appear as part of the extracted path.
+func wordLiteral(w *syntax.Word) string {
+	var parts []string
+	for _, part := range w.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			parts = append(parts, p.Value)
+		case *syntax.SglQuoted:
+			parts = append(parts, p.Value)
+		case *syntax.DblQuoted:
+			for _, dp := range p.Parts {
+				if lit, ok := dp.(*syntax.Lit); ok {
+					parts = append(parts, lit.Value)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// checkPathsForSymlinks walks each path component-by-component looking for
+// symlinks. Returns traversals partitioned by workspace containment.
+// OS-level symlinks (those above or at the workspace root, e.g., macOS
+// /var → /private/var) are skipped — they are mapping infrastructure,
+// not security-relevant traversals.
+func checkPathsForSymlinks(paths []string, workspace string) (inside, outside []SymlinkTraversal) {
+	for _, p := range paths {
+		t := walkSymlinkComponents(p, workspace)
+		if t == nil {
+			continue
+		}
+		t.OutsideWorkspace = isPathOutside(t.FullResolved, workspace)
+		if t.OutsideWorkspace {
+			outside = append(outside, *t)
+		} else {
+			inside = append(inside, *t)
+		}
+	}
+	return inside, outside
+}
+
+// walkSymlinkComponents walks a path from root to leaf, checking each component
+// for symlinks. Returns nil if no symlinks are found anywhere in the chain.
+// If the final component doesn't exist but a parent component is a symlink,
+// the symlink is still detected.
+func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
+	if absPath == "" {
+		return nil
+	}
+
+	cleaned := filepath.Clean(absPath)
+	parts := splitPath(cleaned)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	current := string(filepath.Separator) // start from /
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+
+		fi, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // path doesn't exist — no further components to check
+			}
+			return nil // permission or other error — can't determine
+		}
+
+		if fi.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+
+		// Skip OS-level symlinks: if the symlink path is a prefix of the workspace
+		// root, it's filesystem mapping infrastructure (e.g., macOS /var → /private/var,
+		// /tmp → /private/tmp), not a user-created security-relevant traversal.
+		if workspace != "" {
+			symlinkNorm := filepath.Clean(current) + string(filepath.Separator)
+			wsNorm := filepath.Clean(workspace) + string(filepath.Separator)
+			if strings.HasPrefix(wsNorm, symlinkNorm) {
+				continue
+			}
+		}
+
+		// Symlink found at current component
+		target, err := os.Readlink(current)
+		if err != nil {
+			return nil
+		}
+
+		// Resolve the target relative to the symlink's directory
+		resolvedTarget := target
+		if !filepath.IsAbs(target) {
+			resolvedTarget = filepath.Join(filepath.Dir(current), target)
+		}
+
+		// Build the full resolved path: resolvedTarget + remaining components
+		tail := filepath.Join(parts[i+1:]...)
+		fullResolved := filepath.Join(resolvedTarget, tail)
+
+		// Get absolute form
+		fullAbs, err := filepath.Abs(fullResolved)
+		if err != nil {
+			fullAbs = filepath.Clean(fullResolved)
+		}
+
+		return &SymlinkTraversal{
+			OriginalPath: absPath,
+			SymlinkAt:    current,
+			ResolvesTo:   target,
+			FullResolved: fullAbs,
+		}
+	}
+
+	return nil
+}
+
+// splitPath splits a cleaned absolute path into components,
+// handling the leading separator properly.
+func splitPath(p string) []string {
+	sep := string(filepath.Separator)
+	parts := strings.Split(p, sep)
+	// Remove leading empty string from split of absolute path (e.g., "/a/b" → ["", "a", "b"])
+	if len(parts) > 0 && parts[0] == "" {
+		parts = parts[1:]
+	}
+	// Filter empty parts
+	var result []string
+	for _, part := range parts {
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
+// isPathOutside returns true if the given absolute path is not within the
+// workspace directory. Both paths are symlink-resolved for accurate comparison
+// (handles macOS /tmp → /private/tmp and similar OS-level symlinks).
+func isPathOutside(absPath, workspace string) bool {
+	if workspace == "" {
+		return false
+	}
+
+	workspaceAbs := filepath.Clean(workspace)
+	if resolved, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
+		workspaceAbs = resolved
+	}
+
+	pathAbs := filepath.Clean(absPath)
+	if resolved, err := filepath.EvalSymlinks(pathAbs); err == nil {
+		pathAbs = resolved
+	}
+
+	if !strings.HasSuffix(workspaceAbs, string(filepath.Separator)) {
+		workspaceAbs += string(filepath.Separator)
+	}
+
+	return !strings.HasPrefix(pathAbs+string(filepath.Separator), workspaceAbs) &&
+		pathAbs != strings.TrimSuffix(workspaceAbs, string(filepath.Separator))
+}
+
+// formatSymlinkReasoning formats symlink traversals into a human-readable
+// message for the confirmation dialog. Outside-workspace traversals are
+// highlighted as more dangerous.
+func formatSymlinkReasoning(inside, outside []SymlinkTraversal, suspicious bool) string {
+	var sb strings.Builder
+
+	if len(outside) > 0 {
+		sb.WriteString("This tool call traverses symlinks that resolve OUTSIDE the workspace:\n\n")
+		for i, t := range outside {
+			if i >= 10 {
+				fmt.Fprintf(&sb, "  ... and %d more symlink(s)\n", len(outside)-10)
+				break
+			}
+			fmt.Fprintf(&sb, "  %s\n    └─ symlink at: %s → %s (outside workspace)\n\n",
+				t.OriginalPath, t.SymlinkAt, t.FullResolved)
+		}
+	}
+
+	if len(inside) > 0 {
+		sb.WriteString("This tool call traverses symlinks (target is within workspace):\n\n")
+		for i, t := range inside {
+			if i >= 10 {
+				fmt.Fprintf(&sb, "  ... and %d more symlink(s)\n", len(inside)-10)
+				break
+			}
+			fmt.Fprintf(&sb, "  %s\n    └─ symlink at: %s → %s (inside workspace)\n\n",
+				t.OriginalPath, t.SymlinkAt, t.FullResolved)
+		}
+	}
+
+	if len(outside) > 0 {
+		sb.WriteString("The agent will follow the symlink and operate on the actual target outside the workspace.\n")
+	} else if len(inside) > 0 {
+		sb.WriteString("The agent will follow the symlink and operate on the resolved target within the workspace.\n")
+	}
+
+	if suspicious {
+		sb.WriteString("\n⚠ Best-effort check: the command contains unresolved shell expansions ($var, $(cmd), `cmd`) that may hide additional paths.\n")
+	}
+
+	return strings.TrimSpace(sb.String())
+}
+
+// checkSymlinksAndConfirm is the integration method called from ToolRegistry.Execute().
+// It detects symlinks in the tool input and, if found, forces confirmation
+// (respecting PolicyAlwaysDeny). Returns intercepted=true if the call was handled.
+func (r *ToolRegistry) checkSymlinksAndConfirm(ctx context.Context, tool Tool, name string, input json.RawMessage) (intercepted bool, result ToolResult, err error) {
+	inside, outside, suspicious := detectSymlinksInToolInput(ctx, name, input)
+	if len(inside) == 0 && len(outside) == 0 && !suspicious {
+		return false, ToolResult{}, nil
+	}
+
+	// If all symlink traversals are OS-level infrastructure (symlink path
+	// is a prefix of workspace or temp dir, like macOS /tmp -> /private/tmp),
+	// skip interception. These are filesystem mapping details, not user-created
+	// security-relevant symlinks.
+	if len(outside) == 0 {
+		tempDir := sdktools.TempDirFrom(ctx)
+		workspace := WorkspacePathFrom(ctx)
+		allOSLevel := true
+		for _, t := range inside {
+			symlinkPrefix := filepath.Clean(t.SymlinkAt) + string(filepath.Separator)
+			osLevel := false
+			if workspace != "" {
+				wsPrefix := filepath.Clean(workspace) + string(filepath.Separator)
+				if strings.HasPrefix(wsPrefix, symlinkPrefix) {
+					osLevel = true
+				}
+			}
+			if !osLevel && tempDir != "" {
+				tempPrefix := filepath.Clean(tempDir) + string(filepath.Separator)
+				if strings.HasPrefix(tempPrefix, symlinkPrefix) {
+					osLevel = true
+				}
+			}
+			if !osLevel {
+				allOSLevel = false
+				break
+			}
+		}
+		if allOSLevel {
+			return false, ToolResult{}, nil
+		}
+	}
+
+	// Also skip outside traversals that are OS-level infrastructure relative
+	// to the session temp dir (e.g., macOS /tmp -> /private/tmp when the
+	// tool operates within /tmp/c0wrk-session-*/). If every outside traversal's
+	// symlink prefix is a prefix of the temp dir, the traversal is just the
+	// OS mapping the temp dir into the real filesystem — not user-created.
+	if len(outside) > 0 {
+		tempDir := sdktools.TempDirFrom(ctx)
+		if tempDir != "" {
+			allOSLevel := true
+			for _, t := range outside {
+				symlinkPrefix := filepath.Clean(t.SymlinkAt) + string(filepath.Separator)
+				tempPrefix := filepath.Clean(tempDir) + string(filepath.Separator)
+				if !strings.HasPrefix(tempPrefix, symlinkPrefix) {
+					allOSLevel = false
+					break
+				}
+			}
+			if allOSLevel {
+				return false, ToolResult{}, nil
+			}
+		}
+	}
+
+	// Resolve policy to check for AlwaysDeny before forcing confirmation
+	policy := r.resolvePolicy(name, tool)
+	if policy == PolicyAlwaysDeny {
+		return true, ToolResult{
+			Content: fmt.Sprintf("tool %q blocked by security policy", name),
+			IsError: true,
+		}, nil
+	}
+
+	reasoning := formatSymlinkReasoning(inside, outside, suspicious)
+	result, err = r.confirmAndExecute(ctx, tool, name, input, reasoning)
+	return true, result, err
+}
