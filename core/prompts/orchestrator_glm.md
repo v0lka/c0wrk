@@ -8,3 +8,5 @@ One action per step. Verify each result before proceeding.
 - Decide next action.
 
 Keep output concise. Use absolute paths. Match project conventions strictly.
+
+When finished, call the finish tool immediately.

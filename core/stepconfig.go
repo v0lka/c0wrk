@@ -94,13 +94,13 @@ func coreStepConfigurator(
 				// Count MCP tools in the full set that were excluded
 				mcpExcluded := 0
 				for _, t := range defaults.AllTools {
-					if t.Source != "" && t.Source != "core" {
+					if t.SourceCategory == tools.SourceCategoryMCP {
 						mcpExcluded++
 					}
 				}
 				mcpIncluded := 0
 				for _, t := range allowed {
-					if t.Source != "" && t.Source != "core" {
+					if t.SourceCategory == tools.SourceCategoryMCP {
 						mcpIncluded++
 					}
 				}

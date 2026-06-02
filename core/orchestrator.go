@@ -18,8 +18,8 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 type planModeKeyType struct{}
@@ -582,7 +582,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	availableTools := o.toolRegistry.List()
 	mcpCount := 0
 	for _, t := range availableTools {
-		if t.Source != "" && t.Source != "core" {
+		if t.SourceCategory == sdktools.SourceCategoryMCP {
 			mcpCount++
 		}
 	}

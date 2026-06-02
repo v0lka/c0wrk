@@ -77,11 +77,16 @@ func (r *ToolRegistry) List() []ToolDescriptor {
 		if s, ok := r.toolSources[tool.Name()]; ok {
 			source = s
 		}
+		sourceCategory := SourceCategoryCore
+		if strings.HasPrefix(source, "mcp") {
+			sourceCategory = SourceCategoryMCP
+		}
 		descriptors = append(descriptors, ToolDescriptor{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			InputSchema: tool.InputSchema(),
-			Source:      source,
+			Name:           tool.Name(),
+			Description:    tool.Description(),
+			InputSchema:    tool.InputSchema(),
+			Source:         source,
+			SourceCategory: sourceCategory,
 		})
 	}
 	return descriptors

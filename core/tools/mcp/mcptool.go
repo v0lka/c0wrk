@@ -19,6 +19,7 @@ type Tool struct {
 	name        string
 	description string
 	inputSchema json.RawMessage
+	untrusted   bool // cached: true for all MCP tools (external data source)
 }
 
 // SchemaSanitizer transforms an input schema (JSON Schema) before it is exposed to
@@ -103,6 +104,7 @@ func NewTool(server *Server, info ToolInfo, sanitizers ...SchemaSanitizer) *Tool
 		name:        info.Name,
 		description: info.Description,
 		inputSchema: schema,
+		untrusted:   true,
 	}
 }
 
@@ -128,7 +130,7 @@ func (t *Tool) DefaultPolicy() tools.ToolPolicy {
 
 // IsUntrusted always returns true for MCP tools because their output
 // comes from external servers and may contain adversarial content.
-func (t *Tool) IsUntrusted() bool { return true }
+func (t *Tool) IsUntrusted() bool { return t.untrusted }
 
 // Execute calls the MCP server's tools/call endpoint with the provided input.
 func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {

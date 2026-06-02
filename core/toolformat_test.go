@@ -11,7 +11,7 @@ import (
 func TestBuildGroupedToolList_AllTiers(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
 		{Name: "read_file", Description: "reads a file", Source: "core"},
-		{Name: "mcp_tool", Description: "an mcp tool", Source: "mcp"},
+		{Name: "mcp_tool", Description: "an mcp tool", Source: "mcp", SourceCategory: tools.SourceCategoryMCP},
 		{Name: "bash_exec", Description: "run shell commands", Source: "core"},
 	}
 
@@ -70,7 +70,7 @@ func TestBuildGroupedToolList_OnlyOneTier(t *testing.T) {
 		{
 			name: "only mcp",
 			descriptors: []tools.ToolDescriptor{
-				{Name: "mcp_tool", Description: "mcp desc", Source: "mcp"},
+				{Name: "mcp_tool", Description: "mcp desc", Source: "mcp", SourceCategory: tools.SourceCategoryMCP},
 			},
 			wantTier:    "TIER 2",
 			absentTiers: []string{"TIER 1", "TIER 3"},

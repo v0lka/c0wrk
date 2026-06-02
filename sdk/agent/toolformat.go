@@ -10,7 +10,7 @@ import (
 // BuildGroupedToolList formats tool descriptors into a tiered, priority-labeled
 // text block for inclusion in LLM prompts. Tools are grouped into 3 tiers:
 //   - Tier 1 (Built-in): Source == "core" and not bash_exec
-//   - Tier 2 (MCP/External): Source is not empty and not "core"
+//   - Tier 2 (MCP/External): SourceCategory is MCP
 //   - Tier 3 (Fallback): bash_exec
 //
 // Empty tiers are omitted from the output.
@@ -21,7 +21,7 @@ func BuildGroupedToolList(descriptors []tools.ToolDescriptor) string {
 		switch {
 		case t.Name == "bash_exec":
 			fallbackTools = append(fallbackTools, t)
-		case t.Source != "" && t.Source != "core":
+		case t.SourceCategory == tools.SourceCategoryMCP:
 			mcpTools = append(mcpTools, t)
 		default:
 			builtinTools = append(builtinTools, t)

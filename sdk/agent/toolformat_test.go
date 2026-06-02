@@ -11,7 +11,7 @@ import (
 func TestBuildGroupedToolList_AllTiers(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
 		{Name: "read_file", Description: "reads a file", Source: "core"},
-		{Name: "mcp_search", Description: "MCP search", Source: "mcp"},
+		{Name: "mcp_search", Description: "MCP search", Source: "mcp", SourceCategory: tools.SourceCategoryMCP},
 		{Name: "bash_exec", Description: "run bash", Source: "core"},
 	}
 
@@ -70,8 +70,8 @@ func TestBuildGroupedToolList_SingleTier(t *testing.T) {
 func TestBuildGroupedToolList_MCPServerNames(t *testing.T) {
 	descriptors := []tools.ToolDescriptor{
 		{Name: "read_file", Description: "reads a file", Source: "core"},
-		{Name: "mem_search", Description: "memory search", Source: "mcp:test-server"},
-		{Name: "deploy", Description: "deploy tool", Source: "my-server"},
+		{Name: "mem_search", Description: "memory search", Source: "mcp:test-server", SourceCategory: tools.SourceCategoryMCP},
+		{Name: "deploy", Description: "deploy tool", Source: "my-server", SourceCategory: tools.SourceCategoryMCP},
 		{Name: "bash_exec", Description: "run bash", Source: "core"},
 	}
 

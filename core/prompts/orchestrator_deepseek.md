@@ -7,3 +7,5 @@ Investigate one thread at a time. Complete each line of inquiry before starting 
 ## Execution Style
 
 Validate results after each tool call — do not assume success. Focus output on conclusions; internal reasoning chains are handled separately.
+
+When finished, call the finish tool immediately.
