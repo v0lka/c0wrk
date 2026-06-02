@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { createProject, pickDirectory, switchProject } from '@/api/projects'
-import { useProjectStore } from '@/stores/projectStore'
+import { createProject, pickDirectory } from '@/api/projects'
+import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog'
@@ -18,6 +18,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
   const [isExternal, setIsExternal] = useState(false)
   const [externalPath, setExternalPath] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const switchProjectWithState = useProjectSwitchState()
 
   const reset = () => {
     setName('')
@@ -42,8 +43,11 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
     setSubmitting(true)
     try {
       const project = await createProject(name.trim(), isExternal ? externalPath : undefined)
-      try { await switchProject(project.id) } catch { /* best effort */ }
-      useProjectStore.getState().setActiveProjectId(project.id)
+      try {
+        await switchProjectWithState(project.id)
+      } catch {
+        // best effort; errors handled by API layer/logging
+      }
       onOpenChange(false)
       reset()
     } catch {

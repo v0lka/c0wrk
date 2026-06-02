@@ -25,6 +25,7 @@ interface SessionActions {
   removeSession: (id: string) => void
   updateSession: (id: string, updates: Partial<SessionInfo>) => void
   touchSession: (id: string) => void
+  resetForProjectSwitch: () => void
 }
 
 // --- Store ---
@@ -70,6 +71,14 @@ export const useSessionStore = create<SessionState & SessionActions>((set) => ({
           sess.id === id ? { ...sess, last_active_at: now } : sess
         )
       ),
+    }
+  }),
+
+  resetForProjectSwitch: () => set((s) => {
+    if (s.sessions === null && s.activeSessionId === null) return s
+    return {
+      sessions: null,
+      activeSessionId: null,
     }
   }),
 }))

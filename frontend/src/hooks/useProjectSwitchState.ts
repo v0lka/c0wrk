@@ -1,0 +1,114 @@
+import { useCallback } from 'react'
+import { createSession, listSessions } from '@/api/sessions'
+import { getProjectSwitchState, saveProjectSwitchState, switchProject } from '@/api/projects'
+import { logger } from '@/lib/logger'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import type { SessionInfo } from '@/types/models'
+
+function isSessionForProject(sessionId: string, sessions: SessionInfo[]): boolean {
+  return sessions.some((session) => session.id === sessionId)
+}
+
+function getSessionActivityMs(session: SessionInfo): number {
+  const timestamp = Date.parse(session.last_active_at || session.created_at)
+  return Number.isNaN(timestamp) ? 0 : timestamp
+}
+
+function pickLatestSession(sessions: SessionInfo[]): SessionInfo | null {
+  if (sessions.length === 0) {
+    return null
+  }
+
+  return sessions.slice(1).reduce<SessionInfo>((latest, candidate) => {
+    return getSessionActivityMs(candidate) > getSessionActivityMs(latest) ? candidate : latest
+  }, sessions[0]!)
+}
+
+export function useProjectSwitchState() {
+  return useCallback(async (nextProjectId: string): Promise<void> => {
+    const projectState = useProjectStore.getState()
+    const currentProjectId = projectState.activeProjectId
+
+    if (!nextProjectId || nextProjectId === currentProjectId) {
+      return
+    }
+
+    // Best-effort save of source project UI state before changing active project.
+    if (currentProjectId) {
+      try {
+        const fileViewer = useFileViewerStore.getState()
+        const sessionStore = useSessionStore.getState()
+
+        await saveProjectSwitchState({
+          project_id: currentProjectId,
+          open_tabs: fileViewer.openTabs,
+          active_file: fileViewer.activeFile ?? undefined,
+          saved_session_id: sessionStore.activeSessionId ?? undefined,
+        })
+      } catch (error) {
+        logger.warn('Failed to persist source project switch state; continuing switch', error)
+      }
+    }
+
+    await switchProject(nextProjectId)
+
+    const sessionStore = useSessionStore.getState()
+    const fileViewer = useFileViewerStore.getState()
+
+    // Clear previous project session state before loading destination sessions.
+    sessionStore.resetForProjectSwitch()
+
+    useProjectStore.getState().setActiveProjectId(nextProjectId)
+
+    let savedSessionId = ''
+    let savedTabs: string[] = []
+    let savedActiveFile: string | null = null
+
+    try {
+      const saved = await getProjectSwitchState(nextProjectId)
+      if (saved) {
+        savedSessionId = saved.saved_session_id
+        savedTabs = saved.open_tabs
+        savedActiveFile = saved.active_file || null
+      }
+    } catch (error) {
+      logger.warn('Failed to restore persisted project switch state; using fallback', error)
+    }
+
+    fileViewer.restoreProjectFiles(savedTabs, savedActiveFile)
+
+    let sessions: SessionInfo[] = []
+    try {
+      sessions = await listSessions()
+      sessionStore.setSessions(sessions)
+    } catch (error) {
+      logger.warn('Failed to list sessions during project switch restore', error)
+    }
+
+    // Deterministic fallback:
+    // 1) saved session when valid in destination project
+    // 2) latest session for destination project
+    // 3) create new session for empty project
+    if (savedSessionId && isSessionForProject(savedSessionId, sessions)) {
+      sessionStore.setActiveSessionId(savedSessionId)
+      return
+    }
+
+    const latestSession = pickLatestSession(sessions)
+    if (latestSession) {
+      sessionStore.setActiveSessionId(latestSession.id)
+      return
+    }
+
+    try {
+      const created = await createSession()
+      sessionStore.addSession(created)
+      sessionStore.setActiveSessionId(created.id)
+    } catch (error) {
+      logger.error('Failed to create fallback session after project switch restore', error)
+      sessionStore.setActiveSessionId(null)
+    }
+  }, [])
+}

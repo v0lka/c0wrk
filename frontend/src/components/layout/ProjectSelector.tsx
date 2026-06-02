@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { useProjectStore } from '@/stores/projectStore'
-import { switchProject, renameProject, deleteProject } from '@/api/projects'
+import { renameProject, deleteProject } from '@/api/projects'
+import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { logger } from '@/lib/logger'
 import {
@@ -14,9 +15,9 @@ import { ChevronDown, Check, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-rea
 export function ProjectSelector() {
   const projects = useProjectStore((s) => s.projects)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
-  const setActiveProjectId = useProjectStore((s) => s.setActiveProjectId)
   const removeProject = useProjectStore((s) => s.removeProject)
   const updateProject = useProjectStore((s) => s.updateProject)
+  const switchProjectWithState = useProjectSwitchState()
 
   const [createOpen, setCreateOpen] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -29,15 +30,12 @@ export function ProjectSelector() {
   const handleSwitch = useCallback(async (id: string) => {
     if (id === activeProjectId) return
     try {
-      await switchProject(id)
-      setActiveProjectId(id)
+      await switchProjectWithState(id)
       setDropdownOpen(false)
-      // Session loading is handled reactively by useSessionLoader
-      // when activeProjectId changes — no manual fetch needed.
     } catch (error) {
       logger.error('Failed to switch project:', error)
     }
-  }, [activeProjectId, setActiveProjectId])
+  }, [activeProjectId, switchProjectWithState])
 
   const handleDelete = useCallback(async (id: string) => {
     try {
@@ -46,12 +44,11 @@ export function ProjectSelector() {
       if (id === activeProjectId) {
         const remaining = useProjectStore.getState().projects
         if (remaining && remaining.length > 0) {
-          await switchProject(remaining[0]!.id)
-          setActiveProjectId(remaining[0]!.id)
+          await switchProjectWithState(remaining[0]!.id)
         }
       }
     } catch (error) { logger.error('Failed to delete project:', error) }
-  }, [removeProject, activeProjectId, setActiveProjectId])
+  }, [removeProject, activeProjectId, switchProjectWithState])
 
   const startRename = useCallback((id: string, currentName: string) => {
     setRenamingId(id)

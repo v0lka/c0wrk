@@ -25,10 +25,10 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | -------------------- | ------------------------------------------------------------------ | ------------ |
 | `chatStore`          | Messages per session, streaming text, activity flags, token counts | No           |
 | `planStore`          | DAG items per session, step status, routing stats                  | No           |
-| `sessionStore`       | Session list (sorted by last_active_at), active session ID         | No           |
+| `sessionStore`       | Session list (sorted by last_active_at), active session ID, project-switch reset (`resetForProjectSwitch`) | No           |
 | `projectStore`       | Project list (sorted by last_active_at), active project ID         | No           |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search, git status      | No           |
-| `fileViewerStore`    | Open files (content/diff/language), tabs, panel width              | localStorage |
+| `fileViewerStore`    | Open files (content/diff/language), tabs, panel width, project-switch file restore (`restoreProjectFiles`) | localStorage |
 | `inputModeStore`     | Chat/terminal input mode, panel height, expanded state             | localStorage |
 | `executionModeStore` | Normal/advanced execution mode toggle                              | localStorage |
 | `blackboardStore`    | Blackboard facts and metadata for current session                  | No           |
@@ -79,6 +79,8 @@ const active = useStore((s) => s.activeId);
 - Initialization happens in React lifecycle after runtime readiness confirmed
 - Persisted stores use Zustand `persist` middleware exclusively
 - Store actions are synchronous (async operations in hooks that call actions)
+- Project switch orchestration executes in hooks (`useProjectSwitchState`) with ordered cross-store updates: reset `sessionStore` before destination session load, then restore `fileViewerStore` tabs/files from persisted project state
+- Session activation after project switch uses deterministic fallback (saved session ID when valid, otherwise latest session, otherwise newly created session)
 
 ## Error Handling
 
@@ -87,6 +89,7 @@ const active = useStore((s) => s.activeId);
 - **Missing session data**: stores keyed by `sessionId` return empty collections when the session ID is not yet initialized (no error, just empty)
 - **Async initialization**: stores that depend on backend data (sessionList, projectList) use a `loaded` flag; components show loading state until `loaded === true`
 - **Cross-store consistency**: hooks that read from multiple stores must handle the case where one store has data and another does not (e.g., event arrives before related entity)
+- **Project switch save/restore RPC failures**: `saveProjectSwitchState` and `getProjectSwitchState` are treated as best-effort; hooks continue switch execution and fall back to session list / session creation logic
 
 ## Related Specs
 

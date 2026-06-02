@@ -9,6 +9,21 @@ export interface ProjectInfo {
   last_active_at: string
 }
 
+export interface ProjectSwitchState {
+  project_id: string
+  saved_session_id: string
+  open_tabs: string[]
+  active_file: string
+  updated_at: string
+}
+
+export interface ProjectSwitchStatePayload {
+  project_id: string
+  saved_session_id?: string
+  open_tabs: string[]
+  active_file?: string
+}
+
 export interface SessionInfo {
   id: string
   project_id: string

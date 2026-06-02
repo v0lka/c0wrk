@@ -42,6 +42,7 @@ interface FileViewerActions {
   setFileIcon: (path: string, icon: string, iconColor: string) => void
   clearHighlightLine: () => void
   closeAllFiles: () => void
+  restoreProjectFiles: (openTabs: string[], activeFile: string | null) => void
 }
 
 // --- Constants ---
@@ -196,6 +197,39 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         openTabs: [],
         activeFile: null,
         fileIcons: {},
+      }),
+
+      restoreProjectFiles: (openTabs, activeFile) => set((s) => {
+        const uniqueTabs = openTabs.filter((tab, idx) => openTabs.indexOf(tab) === idx)
+        const normalizedActive = activeFile && uniqueTabs.includes(activeFile) ? activeFile : (uniqueTabs[0] ?? null)
+
+        const nextFiles: Record<string, FileData> = {}
+        for (const tab of uniqueTabs) {
+          const existing = s.files[tab]
+          nextFiles[tab] = existing ?? { content: '', loading: true }
+        }
+
+        const nextIcons: Record<string, FileIconData> = {}
+        for (const tab of uniqueTabs) {
+          const icon = s.fileIcons[tab]
+          if (icon) nextIcons[tab] = icon
+        }
+
+        if (
+          s.openTabs.length === uniqueTabs.length
+          && s.openTabs.every((tab, i) => tab === uniqueTabs[i])
+          && s.activeFile === normalizedActive
+        ) {
+          return s
+        }
+
+        return {
+          openTabs: uniqueTabs,
+          activeFile: normalizedActive,
+          files: nextFiles,
+          fileIcons: nextIcons,
+          collapsed: uniqueTabs.length === 0 ? s.collapsed : false,
+        }
       }),
     }),
     {

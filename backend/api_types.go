@@ -123,6 +123,23 @@ type SessionTokensResponse struct {
 	Family            string `json:"family"`
 }
 
+// ProjectUIStateRequest is the payload used to persist project switch UI state.
+type ProjectUIStateRequest struct {
+	ProjectID      string   `json:"project_id"`
+	SavedSessionID string   `json:"saved_session_id"`
+	OpenTabs       []string `json:"open_tabs"`
+	ActiveFile     string   `json:"active_file"`
+}
+
+// ProjectUIStateResponse is the persisted project switch UI state returned to the frontend.
+type ProjectUIStateResponse struct {
+	ProjectID      string   `json:"project_id"`
+	SavedSessionID string   `json:"saved_session_id"`
+	OpenTabs       []string `json:"open_tabs"`
+	ActiveFile     string   `json:"active_file"`
+	UpdatedAt      string   `json:"updated_at"`
+}
+
 // ToolInfo represents a tool with its metadata, source, and policy for the frontend.
 type ToolInfo struct {
 	Name        string `json:"name"`

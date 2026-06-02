@@ -15,6 +15,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/task_adapter.go` — task step/fact adapter for persistence
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
+- `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
 - `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume
 
 ## Flow
@@ -23,12 +24,38 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 
 ```
 User clicks "New Chat" (or first message in empty state)
-  → Frontend: CreateSession(projectID)
-  → Backend: SessionManager.Create()
-      ├─ Generate session ID
-      ├─ Persist to SQLite (sessions table)
+  → Frontend: CreateSession()
+  → Backend: FrontendAPI.CreateSession()
+      ├─ Read active project ID + workspace path
+      ├─ Call SessionManager.CreateSession(projectID, workspacePath)
+      ├─ Persist to SQLite (sessions table; best-effort when store wired)
       └─ Return SessionInfo {id, name, projectId, createdAt}
   → Frontend: sessionStore.addSession()
+```
+
+### Project Switch Session Restoration
+
+```
+User switches project
+  → Frontend hook: useProjectSwitchState(nextProjectId)
+      ├─ Save source project UI state (best-effort):
+      │   SaveProjectSwitchState({project_id, saved_session_id, open_tabs, active_file})
+      ├─ SwitchProject(nextProjectId)
+      ├─ Reset session store for destination project
+      ├─ GetProjectSwitchState(nextProjectId)
+      ├─ Restore open tabs + active file in fileViewerStore
+      └─ Resolve active session deterministically:
+          1) saved_session_id when it belongs to destination project
+          2) latest destination session by activity timestamp
+          3) create new session for empty destination project
+
+Backend SwitchProject path
+  → persistCurrentProjectSwitchState(previousProjectID) (normalize/validate persisted source state)
+  → applySavedProjectSwitchState(destinationProjectID)
+      ├─ resolveSavedSessionForProject(projectID, savedSessionID)
+      ├─ fallback to resolveLatestSessionForProject(projectID)
+      └─ fallback to createSessionForProject(projectID)
+  → Persist resolved saved_session_id in project_ui_state
 ```
 
 ### Message Handling
@@ -99,6 +126,7 @@ User clicks "Cancel"
 Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/session/persistence.go` and `backend/project/persistence.go`:
 
 - `projects` — project roster (in `backend/project/persistence.go`)
+- `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
 - `sessions` — id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family
 - `session_messages` — id, session_id, role, content, metadata (JSON), created_at
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
@@ -196,6 +224,8 @@ type HandleResult struct {
 
 - One Orchestrator per session (created lazily on first message)
 - Session state survives app restart (SQLite persistence)
+- Project switch session restore order is deterministic: valid saved session for destination project, otherwise latest destination session, otherwise new destination session
+- Destination project switch state always persists the resolved `saved_session_id` in `project_ui_state` when project persistence is wired
 - Messages are persisted immediately on receive (not after processing)
 - Task state is checkpointed on each step completion (enables resume)
 - Cancellation is cooperative (executor checks context at each iteration)

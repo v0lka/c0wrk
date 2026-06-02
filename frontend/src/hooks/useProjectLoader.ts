@@ -2,11 +2,13 @@
 
 import { useEffect } from 'react'
 import { subscribe } from '@/api/runtime'
-import { listProjects, switchProject } from '@/api/projects'
+import { listProjects } from '@/api/projects'
+import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import { useProjectStore } from '@/stores/projectStore'
 import { isProjectInfo, isProjectRenamed } from '@/types/guards'
 
 export function useProjectLoader(): void {
+  const switchProjectWithState = useProjectSwitchState()
   useEffect(() => {
     let cancelled = false
     const cleanups: Array<() => void> = []
@@ -20,9 +22,7 @@ export function useProjectLoader(): void {
           store().setProjects(projects)
           if (!store().activeProjectId && projects.length > 0) {
             const firstId = projects[0]!.id
-            switchProject(firstId)
-              .then(() => { if (!cancelled) store().setActiveProjectId(firstId) })
-              .catch(() => { })
+            switchProjectWithState(firstId).catch(() => { })
           }
         })
         .catch(() => { /* will retry on backend:ready */ })
@@ -71,5 +71,5 @@ export function useProjectLoader(): void {
       cancelled = true
       cleanups.forEach(fn => fn())
     }
-  }, [])
+  }, [switchProjectWithState])
 }

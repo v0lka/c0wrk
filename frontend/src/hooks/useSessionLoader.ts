@@ -17,13 +17,16 @@ export function useSessionLoader(): void {
     const cleanups: Array<() => void> = []
     const store = () => useSessionStore.getState()
 
+    // Clear stale active session from previous project while destination sessions are loading.
+    store().setActiveSessionId(null)
+
     // Subscribe to sessions:loaded for push updates
     cleanups.push(
       subscribe('sessions:loaded', (data: unknown) => {
         if (cancelled) return
         if (!Array.isArray(data) || !isArrayOf(data, isSessionInfo)) return
         store().setSessions(data)
-        // Auto-select first if none active
+        // Auto-select first if none active (preserves explicit restored selection)
         if (!store().activeSessionId && data.length > 0) {
           store().setActiveSessionId(data[0]!.id)
         }

@@ -348,3 +348,118 @@ func TestSaveProjectLastActiveAtFallback(t *testing.T) {
 		t.Errorf("expected last_active_at to fall back to created_at, got %q", loaded.LastActiveAt)
 	}
 }
+
+func TestSaveAndLoadProjectUIState(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-ui-state",
+		Name:          "UI State",
+		WorkspacePath: "/tmp/ui-state",
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	state := ProjectUIState{
+		ProjectID:      proj.ID,
+		SavedSessionID: "session-123",
+		OpenTabs:       []string{"a.go", "dir/b.go"},
+		ActiveFile:     "dir/b.go",
+		UpdatedAt:      "2024-06-01T12:00:00Z",
+	}
+	if err := store.SaveUIState(context.Background(), state); err != nil {
+		t.Fatalf("failed to save UI state: %v", err)
+	}
+
+	loaded, err := store.LoadUIState(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load UI state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded UI state should not be nil")
+	}
+	if loaded.ProjectID != proj.ID {
+		t.Errorf("ProjectID mismatch: got %q, want %q", loaded.ProjectID, proj.ID)
+	}
+	if loaded.SavedSessionID != "session-123" {
+		t.Errorf("SavedSessionID mismatch: got %q", loaded.SavedSessionID)
+	}
+	if len(loaded.OpenTabs) != 2 || loaded.OpenTabs[0] != "a.go" || loaded.OpenTabs[1] != "dir/b.go" {
+		t.Errorf("OpenTabs mismatch: got %#v", loaded.OpenTabs)
+	}
+	if loaded.ActiveFile != "dir/b.go" {
+		t.Errorf("ActiveFile mismatch: got %q", loaded.ActiveFile)
+	}
+	if loaded.UpdatedAt != "2024-06-01T12:00:00Z" {
+		t.Errorf("UpdatedAt mismatch: got %q", loaded.UpdatedAt)
+	}
+}
+
+func TestSaveProjectUIState_UpsertAndDefaults(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-ui-upsert",
+		Name:          "UI Upsert",
+		WorkspacePath: "/tmp/ui-upsert",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	if err := store.SaveUIState(context.Background(), ProjectUIState{
+		ProjectID:      proj.ID,
+		SavedSessionID: "first-session",
+		OpenTabs:       []string{"first.go"},
+		ActiveFile:     "first.go",
+	}); err != nil {
+		t.Fatalf("failed to save initial UI state: %v", err)
+	}
+
+	if err := store.SaveUIState(context.Background(), ProjectUIState{
+		ProjectID:      proj.ID,
+		SavedSessionID: "",
+		OpenTabs:       []string{},
+		ActiveFile:     "",
+	}); err != nil {
+		t.Fatalf("failed to upsert UI state: %v", err)
+	}
+
+	loaded, err := store.LoadUIState(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load UI state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded UI state should not be nil")
+	}
+	if loaded.SavedSessionID != "" {
+		t.Errorf("SavedSessionID should be empty after overwrite, got %q", loaded.SavedSessionID)
+	}
+	if len(loaded.OpenTabs) != 0 {
+		t.Errorf("OpenTabs should be empty after overwrite, got %#v", loaded.OpenTabs)
+	}
+	if loaded.ActiveFile != "" {
+		t.Errorf("ActiveFile should be empty after overwrite, got %q", loaded.ActiveFile)
+	}
+	if loaded.UpdatedAt == "" {
+		t.Error("UpdatedAt should be auto-populated when omitted")
+	}
+}
+
+func TestLoadProjectUIState_NotFound(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	loaded, err := store.LoadUIState(context.Background(), "missing-project")
+	if err != nil {
+		t.Fatalf("failed to load missing UI state: %v", err)
+	}
+	if loaded != nil {
+		t.Error("missing UI state should return nil")
+	}
+}

@@ -4,6 +4,7 @@
 import type {
     SessionInfo,
     ProjectInfo,
+    ProjectSwitchState,
     ChatMessage,
     TokenInfo,
     FileEntry,
@@ -35,6 +36,10 @@ export function isSessionInfo(v: unknown): v is SessionInfo {
 
 export function isProjectInfo(v: unknown): v is ProjectInfo {
     return isObj(v) && has(v, 'id', 'name', 'workspace_path')
+}
+
+export function isProjectSwitchState(v: unknown): v is ProjectSwitchState {
+    return isObj(v) && has(v, 'project_id', 'open_tabs')
 }
 
 export function isChatMessage(v: unknown): v is ChatMessage {

@@ -37,9 +37,19 @@ interface SessionInfo {
 interface ProjectInfo {
   id: string
   name: string
-  externalPath: string
-  lastActive: string
-  sessionCount: number
+  workspace_path: string
+  is_external: boolean
+  created_at: string
+  last_active_at: string
+}
+
+// ProjectSwitchState — persisted per-project UI switch state
+interface ProjectSwitchState {
+  project_id: string
+  saved_session_id: string
+  open_tabs: string[]
+  active_file: string
+  updated_at: string
 }
 
 // FileEntry — file tree entry from backend
@@ -128,6 +138,8 @@ Base font: 14px. Dark color-scheme. Focus outlines globally suppressed. Custom s
 └──────────────────────────────────────────────────────────┘
 ```
 
+Project switching is orchestrated by `useProjectSwitchState`: it saves source-project UI state through project RPC wrappers (`saveProjectSwitchState`), calls `switchProject`, restores destination tabs/files from `getProjectSwitchState`, and then applies session fallback (saved session → latest session → create session).
+
 ## Invariants
 
 - No direct imports from `wailsjs/go/desktop/App` in components — all through `@/api/*`
@@ -136,6 +148,9 @@ Base font: 14px. Dark color-scheme. Focus outlines globally suppressed. Custom s
 - Every selector returns referentially stable value (primitive or direct store property)
 - Derived values computed with `useMemo` in custom hooks, not in selectors
 - All backend calls are async (never blocking UI thread)
+- Project-switch persistence and restoration is hook-driven (`useProjectSwitchState`) and uses best-effort source-state save plus deterministic destination session fallback
+- Project switch flow preserves order: save source UI state before `switchProject`, then restore destination file/session state after switch
+- Session restore fallback during project switch is deterministic: saved session for destination project, otherwise latest destination session, otherwise a new session
 
 ## Configuration
 
@@ -155,8 +170,10 @@ Frontend configuration is derived from backend (no separate frontend config file
 ## Extension Points
 
 - **New RPC wrapper**: add module in `frontend/src/api/` when backend exposes a new method
+- **Project-switch persistence wrapper updates**: when project switch-state RPC names or payload fields change, update method probing (`Save/GetProjectSwitchState`, `Save/GetProjectUIState`) and guards in `frontend/src/api/projects.ts` + `frontend/src/types/guards.ts`
 - **New store**: create in `frontend/src/stores/`, register in the store initialization sequence
 - **New event handler hook**: add to `frontend/src/hooks/` with type guard and store update logic
+- **Project-switch orchestration changes**: extend `frontend/src/hooks/useProjectSwitchState.ts` to keep save-before-switch and restore-after-switch ordering stable
 - **New display item type**: extend `groupMessages()` in `frontend/src/lib/chatUtils.ts` and add renderer in `ChatMessageRenderer.tsx`
 - **New tool card**: add a `CardConfig` entry in `frontend/src/components/chat/toolCards/toolCardRegistry.ts` and (optionally) a body component in `toolCards/bodies/`
 - **Custom autocomplete**: add a new `CompletionSource` in `frontend/src/lib/cmChatAutocomplete.ts` and register it in the `autocompletion({ override: [...] })` array

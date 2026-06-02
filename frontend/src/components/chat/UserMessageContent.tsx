@@ -89,7 +89,7 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
                     return (
                         <span
                             key={i}
-                            className="inline-flex items-center bg-muted text-foreground rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
+                            className="inline-flex items-center bg-background text-foreground rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
                         >
                             /{seg.content}
                         </span>

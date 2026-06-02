@@ -11,6 +11,8 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `FrontendAPI`              | backend  | backend → frontend | Wails-bound API (promoted to `App`) |
 | `SessionInfo`              | backend  | backend → frontend | Session metadata                    |
 | `ProjectInfo`              | backend  | backend → frontend | Project metadata                    |
+| `ProjectUIStateRequest`    | backend  | frontend → backend | Persisted project switch UI state write payload |
+| `ProjectUIStateResponse`   | backend  | backend → frontend | Persisted project switch UI state read payload  |
 | `FileNode`                 | backend  | backend → frontend | File tree entry                     |
 | `ChatMessage`              | backend  | backend → frontend | Message history entry               |
 | `VectorIndexStatus`        | backend  | backend → frontend | Index progress                      |
@@ -49,13 +51,17 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 ### Project (`backend/frontend_api_project.go`)
 
-| Method          | Parameters         | Returns                | Description        |
-| --------------- | ------------------ | ---------------------- | ------------------ |
-| `CreateProject` | name, externalPath | (\*ProjectInfo, error) | Create project     |
-| `DeleteProject` | id                 | error                  | Delete project     |
-| `RenameProject` | id, name           | error                  | Rename project     |
-| `ListProjects`  | —                  | ([]ProjectInfo, error) | List all projects  |
-| `SwitchProject` | id                 | error                  | Set active project |
+| Method                   | Parameters                  | Returns                         | Description |
+| ------------------------ | --------------------------- | ------------------------------- | ----------- |
+| `CreateProject`          | name, externalPath          | (\*ProjectInfo, error)         | Create project |
+| `DeleteProject`          | id                          | error                           | Delete project |
+| `RenameProject`          | id, name                    | error                           | Rename project |
+| `ListProjects`           | —                           | ([]ProjectInfo, error)          | List all projects |
+| `SaveProjectUIState`     | `ProjectUIStateRequest`     | error                           | Persist per-project UI switch state (saved session + open tabs + active file) |
+| `GetProjectUIState`      | projectID                   | (\*ProjectUIStateResponse, error) | Load per-project UI switch state |
+| `SaveProjectSwitchState` | `ProjectUIStateRequest`     | error                           | Backward-compatible alias for `SaveProjectUIState` |
+| `GetProjectSwitchState`  | projectID                   | (\*ProjectUIStateResponse, error) | Backward-compatible alias for `GetProjectUIState` |
+| `SwitchProject`          | id                          | error                           | Set active project and resolve destination session fallback |
 
 ### Config (`backend/frontend_api_config.go`)
 
@@ -157,6 +163,12 @@ See [event-catalog.md](event-catalog.md) for complete event reference.
 
 - **Synchronous**: Wails RPC method calls from frontend are async (TypeScript `Promise`) but the Go handler may block
 - **Asynchronous**: real-time event stream is push-only; frontend listens with `EventsOn` and publishes to stores
+- **Project switch state flow**:
+  1. Frontend snapshots source project UI state (`open_tabs`, `active_file`, `saved_session_id`) and calls `SaveProjectSwitchState`/`SaveProjectUIState` (best-effort)
+  2. Frontend calls `SwitchProject(id)`
+  3. Backend persists/normalizes source project state and switches active project context
+  4. Backend resolves destination session fallback deterministically: saved session if valid for destination project → latest project session by activity (`ListSessionsByProject`) → backend creates a new project-scoped session via `SessionManager.CreateSession(projectID, workspacePath)` when no sessions exist
+  5. Frontend calls `GetProjectSwitchState`/`GetProjectUIState`, restores file tabs/active file, refreshes session list, and activates the resolved session
 - **Startup**: backend exposes RPC methods after `Startup()` completes; frontend waits for `backend:ready` event. Vector search methods may return empty results until background ONNX init completes (~1-2s after startup).
 - **Teardown**: `Shutdown()` triggers backend cleanup; frontend stops polling and unregisters event listeners
 
@@ -218,5 +230,6 @@ Adding/removing/renaming a method on `desktop.App` or `backend.FrontendAPI` requ
 
 - Adding a method to FrontendAPI -> run `wails build` to regenerate bindings -> update `frontend/src/api/` wrapper
 - Changing method signature -> regenerate bindings -> update frontend callers
+- Changing `ProjectUIStateRequest`/`ProjectUIStateResponse` fields or renaming `SaveProjectUIState` / `GetProjectUIState` aliases -> regenerate bindings -> update `frontend/src/api/projects.ts` RPC probing and `frontend/src/types/guards.ts` shape validators
 - Adding new event type -> add Go emitter method -> add TS type + type guard -> add handler in relevant hook
 - Renaming event -> update both Go emitter AND all frontend subscribers
