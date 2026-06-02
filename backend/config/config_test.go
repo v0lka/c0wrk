@@ -195,6 +195,17 @@ llm:
 		t.Errorf("Expected default lmstudio base_url 'http://localhost:1234', got %q", cfg.LLM.LMStudio.BaseURL)
 	}
 
+	// Check LLM retry defaults
+	if cfg.LLM.Retry.MaxRetries != 3 {
+		t.Errorf("Expected default llm.retry.max_retries 3, got %d", cfg.LLM.Retry.MaxRetries)
+	}
+	if cfg.LLM.Retry.InitialBackoff != "1s" {
+		t.Errorf("Expected default llm.retry.initial_backoff '1s', got %q", cfg.LLM.Retry.InitialBackoff)
+	}
+	if cfg.LLM.Retry.MaxBackoff != "30s" {
+		t.Errorf("Expected default llm.retry.max_backoff '30s', got %q", cfg.LLM.Retry.MaxBackoff)
+	}
+
 	// Check Models map is initialized
 	if cfg.LLM.Models == nil {
 		t.Error("Expected Models map to be initialized")

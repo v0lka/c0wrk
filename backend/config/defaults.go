@@ -32,6 +32,19 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Skills.Dirs = append([]string(nil), defaultSkillDirs...)
 	}
 
+	// LLM retry defaults — keep this in sync with the SDK Router defaults
+	// (sdk/llm/router.go) so config-driven and code-driven values agree.
+	// Retries cover transient failures: HTTP 429/502/503/529 and network blips.
+	if cfg.LLM.Retry.MaxRetries == 0 {
+		cfg.LLM.Retry.MaxRetries = 3
+	}
+	if cfg.LLM.Retry.InitialBackoff == "" {
+		cfg.LLM.Retry.InitialBackoff = "1s"
+	}
+	if cfg.LLM.Retry.MaxBackoff == "" {
+		cfg.LLM.Retry.MaxBackoff = "30s"
+	}
+
 	// Executor defaults
 	if cfg.Executor.MaxReactSteps == 0 {
 		cfg.Executor.MaxReactSteps = 50

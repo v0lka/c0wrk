@@ -585,6 +585,27 @@ func TestNewRouter(t *testing.T) {
 		}
 	})
 
+	// Test that zero MaxRetries falls back to a non-zero default so transient
+	// errors (HTTP 429/502/503/529) are retried automatically when the caller
+	// hasn't configured retries explicitly.
+	t.Run("zero max retries uses default", func(t *testing.T) {
+		cfg := RouterConfig{
+			ActiveProvider: "lmstudio",
+			ProviderType:   "lmstudio",
+			BaseURL:        "http://localhost:9999",
+			Model:          "test-model",
+			MaxRetries:     0,
+		}
+
+		router, err := NewRouter(context.Background(), cfg, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if router.maxRetries != 3 {
+			t.Errorf("expected default maxRetries 3, got %d", router.maxRetries)
+		}
+	})
+
 	// Test with anthropic provider (no key = error)
 	t.Run("anthropic without key fails", func(t *testing.T) {
 		cfg := RouterConfig{

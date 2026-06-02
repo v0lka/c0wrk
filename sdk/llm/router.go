@@ -73,6 +73,13 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		}
 	}
 
+	maxRetries := cfg.MaxRetries
+	if maxRetries <= 0 {
+		// Default to 3 retries so transient errors (HTTP 429/502/503/529,
+		// network blips) recover automatically. Callers that truly want to
+		// disable retries should pass a negative value.
+		maxRetries = 3
+	}
 	initialBackoff := cfg.InitialBackoff
 	if initialBackoff == 0 {
 		initialBackoff = 1 * time.Second
@@ -97,7 +104,7 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		activeProvider:      provider,
 		activeModel:         cfg.Model,
 		activeProviderName:  cfg.ActiveProvider,
-		maxRetries:          cfg.MaxRetries,
+		maxRetries:          maxRetries,
 		initialBackoff:      initialBackoff,
 		maxBackoff:          maxBackoff,
 		registry:            registry,
