@@ -5,6 +5,14 @@ import (
 	"github.com/v0lka/c0wrk/core"
 )
 
+// derefBool safely dereferences a *bool, defaulting to true when nil.
+func derefBool(b *bool) bool {
+	if b == nil {
+		return true
+	}
+	return *b
+}
+
 // ToBuilderConfig converts a *config.Config into a *core.BuilderConfig.
 // This is the single conversion point so that core never imports backend/config.
 func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
@@ -118,9 +126,10 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			},
 		},
 		Security: core.BuilderSecurityConfig{
-			JudgeModel:    cfg.Security.Judge.Model,
-			ToolPolicies:  toolPolicies,
-			DefaultPolicy: cfg.Security.DefaultPolicy,
+			JudgeModel:              cfg.Security.Judge.Model,
+			InjectionDefenseEnabled: derefBool(cfg.Security.InjectionDefense.Enabled),
+			ToolPolicies:            toolPolicies,
+			DefaultPolicy:           cfg.Security.DefaultPolicy,
 		},
 		Skills: core.BuilderSkillsConfig{
 			Dirs: cfg.Skills.Dirs,

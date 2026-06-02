@@ -87,6 +87,9 @@ type ToolExecutor interface {
 	// GetToolSource returns the source of a tool (e.g., "core", "mcp:<server>").
 	// Returns empty string if the tool is not found.
 	GetToolSource(name string) string
+	// IsToolUntrusted reports whether a tool's output is from an untrusted external source.
+	// Returns true for MCP-sourced tools and tools with IsUntrusted() == true.
+	IsToolUntrusted(name string) bool
 }
 
 // CompactionStrategy defines an algorithm for compressing step history.

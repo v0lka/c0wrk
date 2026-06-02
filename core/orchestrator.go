@@ -27,6 +27,13 @@ type planModeKeyType struct{}
 // PlanModeKey is the context key for signaling plan-execute mode to buildSystemPrompt.
 var PlanModeKey = planModeKeyType{}
 
+type injectionDefenseKeyType struct{}
+
+// InjectionDefenseKey is the context key for signaling injection defense is enabled.
+// When set to a non-nil bool pointer in the context, buildSystemPrompt reads it to decide
+// whether to include the injection defense prompt text.
+var InjectionDefenseKey = injectionDefenseKeyType{}
+
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps                  int
@@ -54,6 +61,10 @@ type OrchestratorConfig struct {
 	// store_fact nudge. When fill reaches this threshold (but below predictive),
 	// a warning listing vulnerable tool outputs is appended to the observation.
 	PreWarningPercent int
+
+	// InjectionDefenseEnabled gates the prompt injection defense prompt text
+	// and the <untrusted-content> wrapping of tool outputs in the context window.
+	InjectionDefenseEnabled bool
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -529,6 +540,9 @@ func (o *Orchestrator) SetBlackboardRestoreFunc(fn BlackboardRestoreFunc) {
 func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID string, opts HandleOptions) (*HandleResult, error) {
 	// 0. Always set plan mode context key (planning always happens first).
 	ctx = context.WithValue(ctx, PlanModeKey, true)
+	if o.config.InjectionDefenseEnabled {
+		ctx = context.WithValue(ctx, InjectionDefenseKey, true)
+	}
 
 	// Generate RAG hints from vector index (non-blocking, 2s timeout).
 	ctx = o.injectVectorSearchHints(ctx, message)

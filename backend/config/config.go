@@ -247,11 +247,17 @@ type HierarchicalConfig struct {
 	RecentRatio       float64 `yaml:"recentRatio"`  // ratio for recent zone (default: 0.3)
 }
 
+// InjectionDefenseConfig holds prompt injection defense settings.
+type InjectionDefenseConfig struct {
+	Enabled *bool `yaml:"enabled"` // pointer to distinguish "not set" from "false"; nil defaults to true
+}
+
 // SecurityConfig holds security settings.
 type SecurityConfig struct {
-	Judge         JudgeConfig                 `yaml:"judge"`
-	ToolPolicies  map[string]ToolPolicyConfig `yaml:"tool_policies"`
-	DefaultPolicy string                      `yaml:"default_policy"`
+	Judge            JudgeConfig               `yaml:"judge"`
+	InjectionDefense InjectionDefenseConfig    `yaml:"injection_defense"`
+	ToolPolicies     map[string]ToolPolicyConfig `yaml:"tool_policies"`
+	DefaultPolicy    string                    `yaml:"default_policy"`
 }
 
 // ToolPolicyConfig holds per-tool security policy configuration.

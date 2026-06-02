@@ -113,7 +113,8 @@ ToolRegistry.Execute(ctx, name, input)
 - Tool filter can silently reject registration (no error returned)
 - The registry is thread-safe (sync.RWMutex)
 - Untrusted tool output (IsUntrusted() == true) is wrapped in <untrusted-content> tags before entering the LLM context
-- All MCP tools are untrusted; built-in untrusted tools: web_search, web_fetch, bash_exec, ripgrep, glob, read_file
+- All MCP tools are untrusted; built-in untrusted tools set `Untrusted: true` on their `BaseTool` (classifications: web_search, web_fetch, bash_exec, ripgrep, glob, read_file)
+- `ToolExecutor.IsToolUntrusted(name)` reports trust status by delegating to `Tool.IsUntrusted()` plus MCP source check
 
 ## Configuration
 

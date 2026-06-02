@@ -86,6 +86,10 @@ func (m *mockToolExecutor) GetToolSource(name string) string {
 	return "core"
 }
 
+func (m *mockToolExecutor) IsToolUntrusted(name string) bool {
+	return false
+}
+
 // --- Mock ContextManager ---
 
 type mockContextManager struct {
@@ -307,6 +311,10 @@ func (m *countingToolExecutor) Execute(_ context.Context, name string, input jso
 
 func (m *countingToolExecutor) GetToolSource(name string) string {
 	return "core"
+}
+
+func (m *countingToolExecutor) IsToolUntrusted(name string) bool {
+	return false
 }
 
 // llmResponseWithMultipleToolCalls creates a ChatResponse with multiple tool calls.

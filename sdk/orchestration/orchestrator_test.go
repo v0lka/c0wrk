@@ -525,6 +525,10 @@ func (m *mockToolExecutor) GetToolSource(name string) string {
 	return "mock"
 }
 
+func (m *mockToolExecutor) IsToolUntrusted(name string) bool {
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // ExecuteWithBlackboard Tests
 // ---------------------------------------------------------------------------

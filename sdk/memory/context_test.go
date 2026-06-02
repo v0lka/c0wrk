@@ -77,7 +77,7 @@ func TestBuildPromptWithReasoningContent(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("You are helpful.", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("You are helpful.", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
 	cw.SetTask("Do something")
 
 	// Add a step with reasoning content
@@ -123,7 +123,7 @@ func TestBuildPromptOrdering(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("You are a helpful assistant.", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("You are a helpful assistant.", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
 
 	// Set task (caller is responsible for formatting criteria into task string)
 	cw.SetTask("Complete the coding task\n\nAcceptance Criteria:\n- First criterion (llm_judge)\n- Second criterion (programmatic: go test)")
@@ -174,7 +174,7 @@ func TestBuildPromptWithEmptySections(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("System prompt only", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("System prompt only", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
 
 	// Only add steps, no task, criteria, or plan
 	cw.AddStep(makeStep("Thought 1", "Obs 1", 1))
@@ -279,7 +279,7 @@ func TestSlidingWindowNoCompactionNeeded(t *testing.T) {
 func TestAddStep(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Initially no steps
 	messages := cw.BuildPrompt()
@@ -316,7 +316,7 @@ func TestCompactClearsCompactedOnNewStep(t *testing.T) {
 		OutputLimit:   1000,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
 
 	// Add steps
 	for i := 1; i <= 10; i++ {
@@ -379,7 +379,7 @@ func TestNewCompactionStrategy(t *testing.T) {
 func TestEmptyContextWindow(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	messages := cw.BuildPrompt()
 
@@ -402,7 +402,7 @@ func TestEffectiveMax(t *testing.T) {
 		OutputLimit:   8192,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
 
 	expectedMax := 100000 - 8192 - 5000 // 86808
 	if cw.EffectiveMax() != expectedMax {
@@ -423,7 +423,7 @@ func TestFillPercent(t *testing.T) {
 		OutputLimit:   1000,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
 
 	// Initially should be 0% (no tokens used)
 	if cw.FillPercent() != 0.0 {
@@ -513,7 +513,7 @@ func TestCheckFill(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := llm.NewContextTokenTracker(counter)
-			cw := NewContextWindow("System", modelMeta, tracker, thresholds, strategy, 0)
+			cw := NewContextWindow("System", modelMeta, tracker, thresholds, strategy, 0, false)
 
 			for i := 1; i <= tt.steps; i++ {
 				cw.AddStep(makeStep(
@@ -547,7 +547,7 @@ func TestCheckFillReject(t *testing.T) {
 		OutputLimit:   500,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
 
 	// Add many steps to exceed 100%
 	for i := 1; i <= 500; i++ {
@@ -569,7 +569,7 @@ func TestCorrectTokenCount(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(3, 5)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), strategy, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
 
 	// Add some steps
 	cw.AddStep(makeStep("Thought 1", "Observation 1", 1))
@@ -597,7 +597,7 @@ func TestCorrectTokenCount(t *testing.T) {
 func TestAddStepUpdatesTracker(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Initial state
 	initialTotal := cw.tracker.EstimateTotal()
@@ -629,7 +629,7 @@ func TestAddStepUpdatesTracker(t *testing.T) {
 func TestBuildStepMessages_EmptyThoughtNoAction(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Add a step with empty thought and no action (edge case that could cause API errors)
 	emptyStep := sdkagent.Step{
@@ -692,7 +692,7 @@ func TestBuildStepMessages_EmptyThoughtNoAction(t *testing.T) {
 func TestBuildStepMessages_TrimsTrailingInvisibleChars(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Add a step with thought containing trailing zero-width space characters
 	step := sdkagent.Step{
@@ -726,7 +726,7 @@ func TestBuildStepMessages_TrimsTrailingInvisibleChars(t *testing.T) {
 func TestBuildStepMessages_EmptyThoughtAfterTrimmingBecomesProceeding(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Add a step with thought containing only whitespace and invisible characters, no tool call
 	step := sdkagent.Step{
@@ -759,7 +759,7 @@ func TestBuildStepMessages_EmptyThoughtAfterTrimmingBecomesProceeding(t *testing
 func TestBuildStepMessages_WhitespaceUserNudgeSkipped(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Add a step with a valid thought but whitespace-only nudge
 	step := sdkagent.Step{
@@ -791,7 +791,7 @@ func TestBuildStepMessages_WhitespaceUserNudgeSkipped(t *testing.T) {
 func TestBuildStepMessages_ValidUserNudgePreserved(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Add a step with a valid thought and valid nudge
 	step := sdkagent.Step{
@@ -828,7 +828,7 @@ func TestPruningKeepsLastN(t *testing.T) {
 		KeepLastN:       3,
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Create 10 steps with unique observations
 	for i := 1; i <= 10; i++ {
@@ -875,7 +875,7 @@ func TestPruningProtectsTools(t *testing.T) {
 		ProtectedTools:  []string{"read_evidence"},
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Create 5 steps (all have tool results):
 	// Step 1: regular tool (outside KeepLastN -> pruned)
@@ -933,7 +933,7 @@ func TestPruningSkipsNonToolSteps(t *testing.T) {
 		KeepLastN:       1, // Only keep the last 1 tool-result step
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Create steps: tool step, non-tool step, tool step, non-tool step
 	// Tool-result steps are at indices 0 and 2 (steps 1 and 3)
@@ -993,7 +993,7 @@ func TestPruningDisabledWhenKeepLastNZero(t *testing.T) {
 		KeepLastN:       0, // Pruning disabled
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Create 5 steps
 	for i := 1; i <= 5; i++ {
@@ -1038,7 +1038,7 @@ func makeGroupedStep(thought, observation, toolName string, toolID int, group in
 func TestBuildStepMessages_GroupedStepsProduceOneAssistantMessage(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Add 3 steps with the same ResponseGroup
 	cw.AddStep(makeGroupedStep("I'll read all files", "content of a", "read_file", 1, 42))
@@ -1084,7 +1084,7 @@ func TestBuildStepMessages_GroupedStepsProduceOneAssistantMessage(t *testing.T) 
 func TestBuildStepMessages_MixedGroupedAndStandalone(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	// Standalone step
 	cw.AddStep(makeStep("standalone thought", "standalone obs", 1))
@@ -1144,7 +1144,7 @@ func TestPruningGroupAwareness_ProtectsEntireGroup(t *testing.T) {
 		KeepLastN:       2, // Only protect last 2 tool-result steps
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// 2 standalone steps (will be pruned, outside KeepLastN)
 	cw.AddStep(makeStep("old 1", "old obs 1", 1))
@@ -1201,7 +1201,7 @@ func TestBuildStepMessages_GroupedStepsBackwardCompat(t *testing.T) {
 	// Steps with ResponseGroup == 0 work exactly as before
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 
 	cw.AddStep(makeStep("Thought 1", "Obs 1", 1))
 	cw.AddStep(makeStep("Thought 2", "Obs 2", 2))
@@ -1236,7 +1236,7 @@ func TestPruningThreshold_SkipsWhenBelowThreshold(t *testing.T) {
 		ThresholdPercent: 80, // Set threshold high so fill is below it
 	}
 	// Large context window → fill will be very low (well under 80%)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	for i := 1; i <= 10; i++ {
 		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
@@ -1279,7 +1279,7 @@ func TestPruningThreshold_PrunesWhenAboveThreshold(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 2, // Low threshold; 10 steps at ~3% fill will exceed it
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, true, pruning)
 
 	for i := 1; i <= 10; i++ {
 		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
@@ -1327,7 +1327,7 @@ func TestPruningThreshold_ZeroMeansDisabled(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0, // Zero = no threshold, pruning always active
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	for i := 1; i <= 5; i++ {
 		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
@@ -1374,7 +1374,7 @@ func TestPruningThreshold_SmallContextWindow(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 20, // Low threshold to ensure we cross it
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Add enough steps to push fill above 20%
 	for i := 1; i <= 30; i++ {
@@ -1422,7 +1422,7 @@ func TestVulnerableOutputs(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0, // always prune (no threshold)
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Add 6 steps:
 	// Steps 1-3 are outside KeepLastN (vulnerable)
@@ -1457,7 +1457,7 @@ func TestVulnerableOutputsEmpty(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 
 	// No pruning configured (KeepLastN = 0)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
 	cw.AddStep(makeStep("T1", "Obs 1", 1))
 	cw.AddStep(makeStep("T2", "Obs 2", 2))
 
@@ -1479,7 +1479,7 @@ func TestVulnerableOutputsBelowThreshold(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 50, // pruning only active above 50%
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Add a few steps — total tokens will be well below 50% of 128k
 	cw.AddStep(makeStep("T1", "Obs 1", 1))
@@ -1504,7 +1504,7 @@ func TestVulnerableOutputsInputHint(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0,
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Step with file_path input
 	cw.AddStep(sdkagent.Step{
@@ -1559,7 +1559,7 @@ func TestVulnerableOutputsAllWithinKeepLastN(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0, // always active
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, pruning)
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
 
 	// Add 3 steps — all within KeepLastN=5
 	cw.AddStep(makeStepWithTool("T1", "Obs 1", "read_file", 1))

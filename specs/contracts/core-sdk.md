@@ -57,7 +57,7 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | ---------------------- | --------- | ------------------------------ | ---------------------------------------------- |
 | `Tool`                 | sdk/tools | core/tools (embedded registry) | Tool interface (incl. IsUntrusted())          |
 | `BaseTool`             | sdk/tools | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
-| `IsUntrustedTool()`    | sdk/tools | sdk/agent/executor             | Static helper to check built-in trust by name |
+| `IsUntrustedTool()`    | sdk/tools | REMOVED                        | Replaced by ToolExecutor.IsToolUntrusted() — delegates to Tool.IsUntrusted() + MCP source check |
 | `ToolRegistry`         | sdk/tools | core/tools (embedded)          | Basic tool store                              |
 | `ToolDescriptor`       | sdk/tools | core/orchestrator, planner     | Tool metadata                                 |
 | `ToolPolicy`           | sdk/tools | core/tools                     | Policy enum                                   |
@@ -138,4 +138,4 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 - If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sdk type that backend needs → add alias in `core/types.go`
 - If you modify `sdk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation AND `core/tools/tool.go` re-export
-- If you change `IsUntrusted()` semantics → update `untrustedBuiltinTools` map in `sdk/tools/tool.go` AND `sdk/security/wrap.go`
+- If you change `IsUntrusted()` semantics → update ALL built-in tool registrations (`sdk/tools/builtins/*.go`) AND `sdk/security/wrap.go`

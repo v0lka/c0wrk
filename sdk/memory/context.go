@@ -44,6 +44,9 @@ type ContextWindow struct {
 	pruning      ToolOutputPruning
 	safetyMargin int // percentage of context window reserved as safety margin (default: 5)
 
+	// injectionDefenseEnabled gates the prompt injection defense wrapping (<untrusted-content> tags).
+	injectionDefenseEnabled bool
+
 	// compactedMessages stores the result of compaction.
 	// When non-nil, BuildPrompt uses this instead of converting steps.
 	compactedMessages []llm.Message
@@ -54,13 +57,14 @@ const defaultSafetyMargin = 5 // 5% of context window
 
 // NewContextWindow creates a new ContextWindow.
 // safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
-func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, pruning ...ToolOutputPruning) *ContextWindow {
+func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, injectionDefenseEnabled bool, pruning ...ToolOutputPruning) *ContextWindow {
 	cw := &ContextWindow{
-		systemPrompt: systemPrompt,
-		modelMeta:    modelMeta,
-		tracker:      tracker,
-		thresholds:   thresholds,
-		strategy:     strategy,
+		systemPrompt:            systemPrompt,
+		modelMeta:               modelMeta,
+		tracker:                 tracker,
+		thresholds:              thresholds,
+		strategy:                strategy,
+		injectionDefenseEnabled: injectionDefenseEnabled,
 	}
 	if safetyMarginPercent <= 0 {
 		safetyMarginPercent = defaultSafetyMargin
@@ -284,7 +288,7 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 						observation = cw.pruning.PlaceholderText
 					}
 					// Apply prompt injection defense: wrap untrusted tool output
-					if cw.steps[idx].IsUntrusted {
+					if cw.injectionDefenseEnabled && cw.steps[idx].IsUntrusted {
 						observation = security.WrapUntrustedContent(observation, gs.Action.Name, nil)
 					}
 					messages = append(messages, llm.Message{
@@ -335,10 +339,10 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 				}
 
 				// Apply prompt injection defense: wrap untrusted tool output
-				if step.IsUntrusted {
+				if cw.injectionDefenseEnabled && step.IsUntrusted {
 					observation = security.WrapUntrustedContent(observation, step.Action.Name, nil)
 				}
-
+				
 				toolMsg := llm.Message{
 					Role:       "tool",
 					Content:    observation,

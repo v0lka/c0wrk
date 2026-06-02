@@ -208,11 +208,14 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 
 	// Build base prompt: system core + family-specific overlay + verification mandate (stable).
 	// CacheBreak separates stable content from dynamic per-session context below.
-	result := prompt.NewBuilder().
+	b := prompt.NewBuilder().
 		Core(prompts.OrchestratorSystem).
 		Core(prompts.FamilyPrompt("orchestrator", family)).
-		Core(prompts.VerificationMandate).
-		Core(prompts.InjectionDefense).
+		Core(prompts.VerificationMandate)
+	if ctx.Value(InjectionDefenseKey) != nil {
+		b.Core(prompts.InjectionDefense)
+	}
+	result := b.
 		CacheBreak().
 		Replace("WORKSPACE-CONTEXT", workspaceCtxStr).
 		Build()

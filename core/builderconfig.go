@@ -173,9 +173,10 @@ type BuilderCircuitBreaker struct {
 
 // BuilderSecurityConfig holds security settings.
 type BuilderSecurityConfig struct {
-	JudgeModel    string
-	ToolPolicies  map[string]BuilderToolPolicy
-	DefaultPolicy string
+	JudgeModel              string
+	InjectionDefenseEnabled bool
+	ToolPolicies            map[string]BuilderToolPolicy
+	DefaultPolicy           string
 }
 
 // BuilderToolPolicy holds per-tool policy and optional blacklist.

@@ -344,8 +344,9 @@ func TestWalkSymlinkComponents_SimpleSymlink(t *testing.T) {
 	if result.SymlinkAt != symlinkPath {
 		t.Fatalf("expected symlink at %s, got %s", symlinkPath, result.SymlinkAt)
 	}
-	if result.FullResolved != targetFile {
-		t.Fatalf("expected full resolved %s, got %s", targetFile, result.FullResolved)
+	expectedResolved, _ := filepath.EvalSymlinks(targetFile)
+	if result.FullResolved != expectedResolved {
+		t.Fatalf("expected full resolved %s, got %s", expectedResolved, result.FullResolved)
 	}
 }
 
@@ -371,7 +372,8 @@ func TestWalkSymlinkComponents_DeepSymlink(t *testing.T) {
 	if result.SymlinkAt != symlinkAt {
 		t.Fatalf("expected symlink at %s, got %s", symlinkAt, result.SymlinkAt)
 	}
-	if result.FullResolved != filepath.Join(outsideDir, "secret") {
+	expectedResolved, _ := filepath.EvalSymlinks(filepath.Join(outsideDir, "secret"))
+	if result.FullResolved != expectedResolved {
 		t.Fatalf("expected full resolved outside/secret, got %s", result.FullResolved)
 	}
 }
@@ -415,8 +417,9 @@ func TestWalkSymlinkComponents_LastComponentSymlink(t *testing.T) {
 	if result.SymlinkAt != symlinkPath {
 		t.Fatalf("expected symlink at %s, got %s", symlinkPath, result.SymlinkAt)
 	}
-	if result.FullResolved != target {
-		t.Fatalf("expected full resolved %s, got %s", target, result.FullResolved)
+	expectedResolved, _ := filepath.EvalSymlinks(target)
+	if result.FullResolved != expectedResolved {
+		t.Fatalf("expected full resolved %s, got %s", expectedResolved, result.FullResolved)
 	}
 }
 

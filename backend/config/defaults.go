@@ -184,6 +184,10 @@ func ApplyDefaults(cfg *Config) {
 	}
 
 	// Security defaults
+	if cfg.Security.InjectionDefense.Enabled == nil {
+		t := true
+		cfg.Security.InjectionDefense.Enabled = &t
+	}
 	if cfg.Security.DefaultPolicy == "" {
 		cfg.Security.DefaultPolicy = "user_confirm"
 	}

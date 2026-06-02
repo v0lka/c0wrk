@@ -117,6 +117,10 @@ func (m *mockToolExecutor) GetToolSource(name string) string {
 	return "core"
 }
 
+func (m *mockToolExecutor) IsToolUntrusted(name string) bool {
+	return false
+}
+
 // mockContextManager is a mock implementation of ContextManager for testing.
 type mockContextManager struct {
 	// steps records all steps added

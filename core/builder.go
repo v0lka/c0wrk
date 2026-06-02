@@ -284,6 +284,7 @@ func (b *OrchestratorBuilder) Build(
 		RoleOverrides:             cfg.Reasoning.RoleOverrides,
 		StepLimitFunc:             stepLimitFunc,
 		PreWarningPercent:         cfg.Executor.Compaction.Thresholds.PreWarningPercent,
+		InjectionDefenseEnabled:   cfg.Security.InjectionDefenseEnabled,
 	}
 
 	// Token counter, budgets, circuit breaker
@@ -996,7 +997,7 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 			}
 		}
 
-		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy, cfg.Executor.Compaction.SafetyMarginPercent, pruning)
+		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy, cfg.Executor.Compaction.SafetyMarginPercent, cfg.Security.InjectionDefenseEnabled, pruning)
 		return NewCoreContextManager(cw)
 	}
 }

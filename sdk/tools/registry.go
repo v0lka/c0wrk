@@ -120,6 +120,31 @@ func (r *ToolRegistry) GetToolSource(name string) string {
 	return "core"
 }
 
+// IsToolUntrusted reports whether a tool's output is from an untrusted external source.
+// Returns true if:
+//   - The tool implements IsUntrusted() == true
+//   - The tool is sourced from MCP (always untrusted)
+//
+// Returns false for unknown tools.
+func (r *ToolRegistry) IsToolUntrusted(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	tool, ok := r.tools[name]
+	if !ok {
+		return false
+	}
+	// Use the Tool interface's IsUntrusted() method for per-tool classification.
+	if tool.IsUntrusted() {
+		return true
+	}
+	// MCP-sourced tools are always untrusted regardless of their IsUntrusted() value.
+	if source, ok := r.toolSources[name]; ok && strings.HasPrefix(source, "mcp") {
+		return true
+	}
+	return false
+}
+
 // HasSourceContaining reports whether any registered tool has a source
 // whose name contains the given substring (case-insensitive).
 func (r *ToolRegistry) HasSourceContaining(substr string) bool {

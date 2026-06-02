@@ -172,7 +172,7 @@ Untrusted tools:
 - Built-in: `web_search`, `web_fetch`, `bash_exec`, `ripgrep`, `glob`, `read_file` (`Untrusted: true` on `BaseTool`)
 - `finish` tool is trusted (`IsUntrusted()` returns `false`)
 
-Trust classification is determined by the `IsUntrusted() bool` method on the `Tool` interface. The executor sets `Step.IsUntrusted` after tool execution; the context builder reads it to decide whether to wrap.
+Trust classification is determined by `ToolExecutor.IsToolUntrusted()` which delegates to the `IsUntrusted() bool` method on the `Tool` interface. MCP-sourced tools are always considered untrusted regardless of their `IsUntrusted()` value. The executor sets `Step.IsUntrusted` after tool execution; the context builder reads it to decide whether to wrap.
 
 ### Tag Breakout Protection
 
@@ -209,10 +209,10 @@ Source: `sdk/security/wrap.go` (wrapping), `core/prompts/injection_defense.md` (
 - Confirmation blocks the executor goroutine until the user responds (no timeout)
 - A denied tool returns an error ToolResult to the LLM (agent can adapt its strategy)
 - `ConfirmDenyAndStop` cancels the entire context (unrecoverable for the current task)
-- All MCP tool output is ALWAYS wrapped in `<untrusted-content>` tags before entering the LLM context
-- `IsUntrusted()` returning `true` on any `Tool` implementation causes its output to be wrapped unconditionally
+- All MCP tool output is wrapped in `<untrusted-content>` tags before entering the LLM context (when injection defense is enabled via `security.injection_defense.enabled`)
+- `IsUntrusted()` returning `true` on any `Tool` implementation causes its output to be wrapped (when injection defense is enabled)
 - Literal `<untrusted-content` patterns in tool output are ALWAYS escaped before wrapping (tag breakout prevention)
-- System prompt injection defense instructions are ALWAYS present in the system prompt (embedded via `go:embed`)
+- System prompt injection defense instructions are included in the system prompt only when `security.injection_defense.enabled` is true (default: true)
 
 ## Configuration
 

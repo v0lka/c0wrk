@@ -289,6 +289,14 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 		tail := filepath.Join(parts[i+1:]...)
 		fullResolved := filepath.Join(resolvedTarget, tail)
 
+		// Resolve any remaining symlinks in the chain component-by-component.
+		// Without this, chained symlinks (e.g., /ws/link1 → /real/link2 → /outside)
+		// would only report the first symlink and miss subsequent ones that could
+		// escape the workspace.
+		if evaled, err := filepath.EvalSymlinks(fullResolved); err == nil {
+			fullResolved = evaled
+		}
+
 		// Get absolute form
 		fullAbs, err := filepath.Abs(fullResolved)
 		if err != nil {
@@ -328,6 +336,9 @@ func splitPath(p string) []string {
 // isPathOutside returns true if the given absolute path is not within the
 // workspace directory. Both paths are symlink-resolved for accurate comparison
 // (handles macOS /tmp → /private/tmp and similar OS-level symlinks).
+// Uses filepath.Rel for robust boundary detection that correctly handles
+// sibling directories (e.g., /home/user/proj vs /home/user/proj-other),
+// case-insensitive filesystems, and other edge cases.
 func isPathOutside(absPath, workspace string) bool {
 	if workspace == "" {
 		return false
@@ -343,12 +354,13 @@ func isPathOutside(absPath, workspace string) bool {
 		pathAbs = resolved
 	}
 
-	if !strings.HasSuffix(workspaceAbs, string(filepath.Separator)) {
-		workspaceAbs += string(filepath.Separator)
+	rel, err := filepath.Rel(workspaceAbs, pathAbs)
+	if err != nil {
+		// Different volume roots — path is definitely outside workspace.
+		return true
 	}
-
-	return !strings.HasPrefix(pathAbs+string(filepath.Separator), workspaceAbs) &&
-		pathAbs != strings.TrimSuffix(workspaceAbs, string(filepath.Separator))
+	// If the relative path starts with "..", the path escapes the workspace.
+	return strings.HasPrefix(rel, "..")
 }
 
 // formatSymlinkReasoning formats symlink traversals into a human-readable

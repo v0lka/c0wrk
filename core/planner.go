@@ -204,6 +204,7 @@ Steps are parallelizable when they have NO data dependencies — step B can run 
   * Be generous: tool overlap is beneficial (e.g., include both ` + "`semantic_search`" + ` and its MCP equivalents)
   * Do NOT include ` + "`finish`" + `, ` + "`store_fact`" + `, ` + "`search_facts`" + `, ` + "`ask_user`" + `, ` + "`set_step_status`" + `, or ` + "`read_step_output`" + ` — these critical infrastructure tools are automatically added by the system
   * Omit this field only when the step genuinely needs every available tool (rare; only for unbounded exploration tasks)
+Step executors follow MCP-first tool priority: prefer MCP tools over built-in equivalents. Built-in tools are fallback. ` + "`bash_exec`" + ` is last resort. When writing step descriptions, direct executors to use project-specific MCP tools first, then built-in code exploration, then targeted search, then file operations.
 `
 
 	planModeTail = "REFLECTIONS\n"
