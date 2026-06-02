@@ -27,7 +27,7 @@
 
 ### 1.1 Создание Windows-заглушки для `bash_exec`
 
-> **Статус**: отсутствует. `sdk/tools/builtins/builtin_registration.go:62` вызывает `builtins.NewBashExecToolWithTimeouts()`, но `bash.go` исключён build tag `!windows`. **Компиляция падает с undefined symbol.**
+> **Статус**: отсутствует. `sdk/tools/builtins/builtin_registration.go` вызывает `builtins.NewBashExecToolWithTimeouts()`, но `bash.go` исключён build tag `!windows`. **Компиляция падает с undefined symbol.**
 
 **Новый файл**: `sdk/tools/builtins/bash_stub.go`
 
@@ -368,7 +368,7 @@ build/bin/onnxruntime.dll
 | 1.1   | `sdk/tools/builtins/bash_stub.go`    | **Новый** — Windows no-op заглушка                           | 1    |
 | 2.1   | `Makefile`                           | Добавить Windows-ветку для `APP_BUNDLE_DIR`/`APP_MODELS_DIR` | 2    |
 | 2.2   | `scripts/build.ps1`                  | **Новый** — PowerShell build-скрипт                          | 2    |
-| 2.3   | `desktop/startup.go:908-928`         | Добавить `exeDir/models/` в `resolveModelPath`               | 2    |
+| 2.3   | `desktop/startup.go`.                | Добавить `exeDir/models/` в `resolveModelPath`               | 2    |
 | 3.1   | `backend/terminal/manager_stub.go`   | Улучшить сообщение об ошибке                                 | 3    |
 | 3.2   | `sdk/tools/builtins/bash_windows.go` | **Новый** — Shell-альтернатива (PowerShell/Git Bash/WSL)     | 3    |
 | 3.3   | `frontend/...`                       | Скрыть/заблокировать терминал на Windows                     | 3    |

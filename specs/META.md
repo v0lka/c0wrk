@@ -235,6 +235,7 @@ What was evaluated and why it was rejected.
 - Format: `[display text](relative/path.md)`
 - For intra-file section references: `[display text](relative/path.md#section-name)` (lowercase, hyphens)
 - When referencing source code: backtick path from repo root, e.g. `core/builder.go`
+- **No line numbers** in code references. File paths combined with identifiers (function names, interface names, struct names, field/variable names) provide sufficient specificity. Line numbers are fragile — they drift with every code change and are impractical to keep current.
 
 ## Update Protocol
 

@@ -45,7 +45,7 @@ All config field mapping happens in this one function. When adding config fields
 Backend creates orchestrators through a closure factory:
 
 ```go
-// backend/session/manager.go:71
+// backend/session/manager.go
 type OrchestratorFactory func(
     emitter core.Emitter,
     logger *slog.Logger,
