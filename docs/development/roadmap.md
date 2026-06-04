@@ -361,9 +361,9 @@ c0wrk — десктопный AI coding-агент продакшн-уровн�
 
 ---
 
-## Трек 10: Усиление безопасности и governance
+## Трек 10: Усиление безопасности и governance (OWASP ASI Top 10)
 
-**Текущее состояние**: Модель безопасности включает: 3-уровневые политики инструментов (`always_allow` / `always_deny` / `user_confirm`), LLM-based `ToolJudge` для автоматической оценки безопасности мутирующих операций с кэшем вердиктов, regex-блоклист для bash_exec, indirect prompt injection defense (`WrapUntrustedContent` с XML boundary). Однако: нет песочницы (bash_exec выполняет `exec.CommandContext` напрямую), нет персистентного аудит-трейла, нет policy DSL, нет сканирования секретов в write/edit.
+**Текущее состояние**: Модель безопасности включает: 3-уровневые политики инструментов (`always_allow` / `always_deny` / `user_confirm`), LLM-based `ToolJudge` для автоматической оценки безопасности мутирующих операций с кэшем вердиктов, regex-блоклист для bash_exec, indirect prompt injection defense (`WrapUntrustedContent` с XML boundary). Проведён аудит соответствия [OWASP Top 10 for Agentic Applications](https://genai.owasp.org) (ASI, 2026): **средневзвешенное покрытие ≈41%**. Нижеперечисленные работы нацелены на закрытие целесообразных пробелов с учётом single-agent desktop-архитектуры проекта. В скобках указаны соответствующие разделы OWASP ASI.
 
 ### 10.1 Песочница выполнения
 
@@ -399,6 +399,69 @@ c0wrk — десктопный AI coding-агент продакшн-уровн�
 
 - **Исследование**: Изучить фреймворк [dunetrace](https://github.com/dunetrace/dunetrace) и его детекторы (prompt injection, tool misuse, data exfiltration, jailbreak и др.). Оценить совместимость с текущим конвейером выполнения агента. Профилировать overhead добавления runtime-детекции к каждому tool-вызову. Сравнить с существующим `ToolJudge`: пересечение и дополнение.
 - **Реализация**: Интегрировать детекторы dunetrace как гардрейлы в цикл выполнения агента. Каждый tool-вызов проходит через детекторы перед выполнением. При срабатывании — блокировка вызова, логирование инцидента, уведомление пользователя. Конфигурируемые пороги чувствительности через секцию `security:` в config.yaml. Интеграция с аудит-трейлом (10.2).
+
+### 10.6 Egress control и network sandboxing (ASI02, ASI05)
+
+> **Статус**: отсутствует — bash_exec и web_fetch не имеют ограничений исходящего сетевого трафика, что позволяет агенту эксфильтровать данные через DNS/HTTP при компрометации.
+
+- **Исследование**: Оценить механизмы egress filtering на macOS (pf firewall, network extension, sandbox-exec network deny). Профилировать легитимные сетевые паттерны агента для построения минимального allowlist.
+- **Реализация**: Внедрить egress allowlist для bash_exec (deny all, allow только явно указанные домены/порты). Добавить секцию `security.egress_control` в config.yaml с конфигурацией разрешённых назначений для каждого инструмента. Сетевая изоляция активируется атомарно с песочницей (10.1). Интегрировать с детекторами dunetrace (10.5) для обнаружения попыток обхода.
+
+### 10.7 Supply chain pinning и integrity verification (ASI04)
+
+> **Статус**: отсутствует — промпты вкомпилированы через `go:embed`, но нет content hash pinning; конфигурация MCP-серверов не верифицируется криптографически; нет kill switch для скомпрометированных инструментов.
+
+- **Исследование**: Оценить встраивание контрольных сумм (SHA-256) для промптов и конфигураций в бинарник на этапе сборки. Изучить подходы к emergency revocation (мгновенное отключение инструментов без перезапуска).
+- **Реализация**: Добавить `content_hash` для каждого встроенного промпта, проверяемый при старте. Верифицировать хеши конфигураций MCP-серверов при подключении (pin по command+args+transport). Добавить API `RevokeMCPTool(serverName, toolName)` — kill switch на уровне Gateway для экстренного отключения инструментов без перезапуска агента.
+
+### 10.8 Memory & context integrity guardrails (ASI06)
+
+> **Статус**: отсутствует — blackboard и векторный индекс не валидируют контент перед записью; нет предотвращения «bootstrap poisoning» (повторное засасывание собственных выводов агента в доверенную память); нет expiration/TTL для unverified memory entries.
+
+- **Исследование**: Оценить lightweight scanning контента перед сохранением в Blackboard (injection pattern detection, structural validation). Изучить механизмы TTL-based expiration для векторных чанков.
+- **Реализация**: Добавить `ValidateMemoryWrite()` — проверка контента перед `StoreFact` и векторной индексацией на наличие prompt injection-паттернов и структурную валидность. Внедрить механизм предотвращения self-reingestion: помечать собственные outputs агента и исключать их из автоматической индексации. Добавить `memory_ttl` в конфигурацию для автоматической экспирации unverified векторных чанков.
+
+### 10.9 Kill-switch и blast-radius guardrails (ASI08, ASI10)
+
+> **Статус**: частично — circuit breaker предотвращает runaway loops, step limit (max_react_steps=50) и retry cap (2) ограничивают масштаб. Отсутствует: явный kill-switch для принудительной остановки executor'а, quotas на количество tool-вызовов за сессию, механизм quarantine подозрительных agent-компонентов.
+
+- **Исследование**: Спроектировать kill-switch, интегрированный с текущим circuit breaker — общий механизм принудительной остановки, доступный и пользователю (кнопка в UI), и внутренним детекторам. Оценить пороги для per-session quotas (tool calls, network bytes, file modifications).
+- **Реализация**: Добавить `SessionKillSwitch` в `Orchestrator` — атомарный флаг, вызывающий немедленное завершение всех горутин шага и предотвращающий запуск новых. Внедрить квоты: `max_tool_calls_per_session`, `max_file_modifications`, `max_network_bytes`. При превышении — уведомление пользователя с опцией override. Пользовательская кнопка «Force Stop» в UI, интегрированная с kill-switch.
+
+### 10.10 Human-agent trust safeguards (ASI09)
+
+> **Статус**: отсутствует — нет confidence cues в UI (low-certainty индикаторов), нет plan-divergence detection (сравнение plan vs. actual), нет визуальных гардрейлов для risk-aware interaction.
+
+- **Исследование**: Изучить подходы к confidence calibration в agentic UI (цветовое кодирование уверенности, явные предупреждения о потенциально опасных действиях). Спроектировать divergence detection на основе сравнения изначального плана с фактическими шагами.
+- **Реализация**: Внедрить `PlanDivergenceDetector` в конвейер Reflector'а: перед каждым шагом сравнивать запланированные действия с фактическими, алертить при отклонении. Добавить confidence cues в frontend: маркировка low-certainty ответов (визуальный индикатор «⚠️ Low confidence»), цветовое кодирование риска для pending confirmations. Интегрировать с ToolJudge reasoning для отображения обоснования вердикта.
+
+### 10.11 Goal intent validation (ASI01)
+
+> **Статус**: отсутствует — нет сверки intent агента с изначальным запросом пользователя перед выполнением goal-changing действий.
+
+- **Исследование**: Оценить lightweight intent validation: сравнение embedding текущей цели с embedding изначального запроса пользователя + сравнение routing domain до и после. Изучить пороги расхождения для алертинга.
+- **Реализация**: Добавить `ValidateGoalIntent()` в `Orchestrator.HandleMessage()`: перед выполнением плана вычислять similarity между исходным запросом и текущим routing domain. При падении similarity ниже порога — запрашивать подтверждение пользователя. Интегрировать с kill-switch (10.9) для автоматической блокировки при критическом расхождении.
+
+### 10.12 MCP transport security hardening (ASI04, ASI07)
+
+> **Статус**: отсутствует — MCP HTTP transport не использует mTLS, нет message integrity verification, нет typo-squatting detection для имён MCP-инструментов.
+
+- **Исследование**: Оценить внедрение mTLS для MCP HTTP-транспорта (сертификаты клиента и сервера). Изучить HMAC-based integrity для MCP stdio-транспорта.
+- **Реализация**: Добавить опциональный mTLS для MCP HTTP-серверов через секцию `mcp.servers.<name>.tls` в config.yaml. Внедрить `ToolNameValidator` — проверка имён MCP-инструментов на typo-squatting (Levenshtein distance между registered names, алерт при подозрительной близости). Интегрировать с kill switch (10.7) для блокировки подозрительных инструментов.
+
+### 10.13 Behavioral drift detection (ASI08, ASI10)
+
+> **Статус**: отсутствует — circuit breaker детектирует повторы и fruitless calls, но нет долгосрочного мониторинга дрейфа поведения агента (постепенное изменение паттернов tool usage, token consumption, success rate).
+
+- **Исследование**: Определить baseline-метрики поведения агента (распределение tool-вызовов, средний tokens/step, частота retry) и пороги для алертинга. Изучить lightweight anomaly detection (статистические методы — Z-score, moving average).
+- **Реализация**: Добавить `BehavioralBaseline` в `SessionManager`: персистентное хранение агрегированных метрик по проекту (скользящее среднее tool calls/task, token efficiency, step success rate). `DriftDetector` сравнивает текущую сессию с baseline и алертит при значимых отклонениях. Интегрировать с аудит-трейлом (10.2).
+
+### 10.14 Content provenance & audit trail hardening (ASI06, ASI08, ASI09)
+
+> **Статус**: отсутствует — нет source attribution для данных в контексте (какой инструмент и когда произвёл содержимое), нет tamper-evident logging.
+
+- **Исследование**: Спроектировать схему provenance metadata для tool results (source tool, timestamp, content hash). Оценить overhead хранения HMAC-подписей для audit log.
+- **Реализация**: Добавить `ProvenanceMetadata` к каждому `ToolResult` (tool_name, invocation_id, timestamp, content_sha256). Инжектировать provenance в контекстное окно вместе с контентом. Добавить HMAC-подписи для записей `audit_log` (10.2) с ключом, привязанным к сессии — обеспечение non-repudiation для аудит-трейла.
 
 ---
 
@@ -478,6 +541,11 @@ c0wrk — десктопный AI coding-агент продакшн-уровн�
 | **P1**                             | T7.6 Специализированные события             | Существенный прирост UX-читаемости чата; Top-15 инструментов покрывают 90% событий.                                        |
 | **P1**                             | T1.5 Подгрузка файлов в Blackboard          | Кросс-шаговый доступ к файлам — ключ к качественной многошаговой работе.                                                  |
 | **P1**                             | T11.1 Python-экосистема                     | Python — второй по популярности язык в AI-среде. Открытие новой аудитории пользователей.                                  |
+| **P1**                             | T10.1 Песочница выполнения (ASI02/05)       | КРИТИЧЕСКИЙ пробел OWASP ASI: sandboxing bash_exec; без него RCE при компрометации агента.                                 |
+| **P1**                             | T10.6 Egress control (ASI02/05)             | Ограничение сетевого трафика агента предотвращает data exfiltration; egress allowlist + песочница.                         |
+| **P1**                             | T10.7 Supply chain pinning (ASI04)          | Content hash pinning промптов и MCP-серверов — защита от supply chain compromise.                                          |
+| **P1**                             | T10.9 Kill-switch & blast-radius (ASI08/10)  | Принудительная остановка + квоты — предотвращение runaway и ограничение радиуса поражения.                                 |
+| **P1**                             | T10.8 Memory integrity (ASI06)              | Валидация записей в Blackboard + предотвращение self-reingestion — последний критический пробел ASI06.                     |
 | **P2** (стратегический)            | T4.1-4.2 Эволюция pruning и адаптивности    | Tool output pruning работает, но можно улучшить; complexity захардкожена.                                                  |
 | **P2**                             | T1.3 Граф знаний                            | Глубокое понимание кодовой базы через графовые запросы.                                                                    |
 | **P2**                             | T9.1-9.2 Разработка через спецификации      | Зарождающаяся парадигма. Преимущество первопроходца.                                                                       |
@@ -485,16 +553,42 @@ c0wrk — десктопный AI coding-агент продакшн-уровн�
 | **P2**                             | T2.5 Режим исследования с гипотезами        | Итеративное исследование — качественно новый паттерн работы агента.                                                       |
 | **P2**                             | T7.7 Навигация по локальным файлам          | Низкий effort, высокий impact на навигацию по результатам агента.                                                          |
 | **P2**                             | T7.8 Редактор Blackboard                    | Дополняет T1.1 — пользовательский контроль над памятью агента.                                                            |
+| **P2**                             | T10.3 Policy-as-Code (ASI02/03)             | Универсальный policy engine вместо regex — улучшает ASI02 (Tool Misuse) и готовит к ASI03 (multi-agent).                   |
+| **P2**                             | T10.4 Обнаружение секретов                  | Pre-write сканирование — низкий effort, высокий compliance-импакт.                                                         |
 | **P2**                             | T10.5 Гардрейлы dunetrace                   | Динамическая детекция аномалий дополняет статические политики.                                                             |
+| **P2**                             | T10.10 Trust safeguards (ASI09)              | UX-безопасность: confidence cues + plan divergence detection — низкий effort, высокий UX impact.                           |
+| **P2**                             | T10.11 Goal intent validation (ASI01)        | Embedding-based сверка intent агента с исходным запросом — закрытие последнего пробела ASI01.                              |
+| **P2**                             | T10.2 Аудит-трейл (ASI08/09)               | OWASP ASI08/09 требуют tamper-evident audit; базовая версия с персистентным логом, расширяемая в 10.14.                   |
 | **P2**                             | T12.1 Авто-коммиты                           | Git-интеграция на уровне чтения уже есть; коммиты и PR — естественное расширение.                                         |
 | **P2**                             | T13.1 Инструментовка времени                | Метрики производительности необходимы для оптимизации всех остальных треков.                                               |
 | **P3** (перспективный)             | T5.3 Автоматизация браузера                 | MCP-подход доступен сейчас.                                                                                                |
 | **P3**                             | T6.2-6.4 Сервер/CI/A2A                      | Платформенная игра.                                                                                                        |
 | **P3**                             | T6.5 Протокол ACP                           | Спецификация ещё формируется; риск раннего внедрения.                                                                      |
-| **P3**                             | T10.1-10.4 Усиление безопасности            | Важно для enterprise-адопции.                                                                                              |
 | **P3**                             | T8.1 Обновление модели эмбеддингов          | Jina v2-small работает хорошо; обновление оправдано при доказанном улучшении recall.                                       |
 | **P3**                             | T12.2 Управление ветками и PR               | Зависит от CLI/CI-режима (T6.1/T6.3).                                                                                     |
 | **P3**                             | T13.2 SWE-bench                              | Требует headless-режима; высокая стоимость прогона.                                                                        |
+| **P3**                             | T10.12 MCP transport security (ASI07)        | mTLS для MCP HTTP; актуален при росте MCP-экосистемы, desktop — риск низкий.                                              |
+| **P3**                             | T10.13 Behavioral drift detection (ASI08)    | Требует baseline-данных; ценно для enterprise-мониторинга аномалий агента.                                                 |
+| **P3**                             | T10.14 Content provenance (ASI06/08/09)      | Зависит от T10.2; HMAC-подписи аудит-лога + source attribution для tool-результатов.                                      |
+
+---
+
+## OWASP ASI Top 10 — сводная таблица покрытия и контрмер (Track 10)
+
+Детальный аудит соответствия проведён в июне 2026. Итоговое средневзвешенное покрытие: **≈41%**. Ниже — маппинг разделов OWASP ASI на целесообразные контрмеры Track 10.
+
+| ASI | Риск                                         | Покрытие | Приоритет | Целесообразные контрмеры (Track 10)                           |
+| --- | -------------------------------------------- | -------- | --------- | ------------------------------------------------------------- |
+| 01  | Goal Hijack (подмена цели)                   | ~60%     | P2        | 10.11 Goal intent validation (embedding-similarity intent ↔ запрос) |
+| 02  | Tool Misuse & Exploitation                   | ~55%     | P0        | 10.1 Sandbox, 10.3 Policy-as-Code, 10.6 Egress control       |
+| 03  | Identity & Privilege Abuse                   | ~25%     | P3        | 10.3 Policy-as-Code (per-action, актуально при multi-agent)   |
+| 04  | Agentic Supply Chain                         | ~35%     | P1        | 10.7 Content hash pinning, 10.12 MCP tool name validation     |
+| 05  | Unexpected Code Execution (RCE)              | ~40%     | P0        | 10.1 Sandbox, 10.6 Egress control, 10.7 pinning               |
+| 06  | Memory & Context Poisoning                   | ~55%     | P1        | 10.8 Memory integrity (validate + self-reingestion prevention), 10.14 Provenance |
+| 07  | Insecure Inter-Agent Communication           | ~20%     | P3        | 10.12 MCP transport (mTLS, HMAC)                              |
+| 08  | Cascading Failures                           | ~50%     | P1        | 10.9 Kill-switch & quotas, 10.13 Drift detection              |
+| 09  | Human-Agent Trust Exploitation               | ~35%     | P2        | 10.10 Trust safeguards (confidence cues + divergence), 10.14 Provenance |
+| 10  | Rogue Agents                                 | ~30%     | P1        | 10.9 Kill-switch, 10.13 Drift detection                       |
 
 ---
 
@@ -521,3 +615,5 @@ c0wrk — десктопный AI coding-агент продакшн-уровн�
 9. **Аудит соответствия принципам агентной архитектуры**: Ревьюить текущую архитектуру c0wrk относительно ключевых принципов из [Agent Architecture](https://agent-axiom.github.io/agent-arch/book/plan/). Идентифицировать пробелы: отсутствующие circuit breaker'ы, недостаточная изоляция состояния, неоптимальные паттерны восстановления после сбоев. Результат — список конкретных доработок с приоритетами.
 
 10. **Анализ топологии Python-проектов**: Изучить типичные структуры Python-проектов для MVP-интеграции (T11.1): распространённые системы сборки (setuptools, poetry, uv, hatch), тестовые фреймворки (pytest, unittest), линтеры (ruff, mypy, pylint). Определить минимальный набор для автоопределения.
+
+11. **Бенчмарк sandboxing-решений (Track 10, OWASP ASI02/05)**: Сравнить Docker-контейнеры vs. macOS sandbox-exec vs. nsjail для изоляции bash_exec. Метрики: латентность запуска, overhead исполнения команд, совместимость с git/ripgrep/Go toolchain, network deny capability. Выбрать компромиссный вариант для desktop single-agent сценария.
