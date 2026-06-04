@@ -246,7 +246,7 @@ func getTruncationHint(toolName string) string {
 
 // applyPerToolTruncation applies Stage 1 line/byte-based truncation from per-tool config.
 // Returns the (possibly truncated) content and a boolean indicating whether truncation occurred.
-func (e *Executor) applyPerToolTruncation(content string, toolName string) (string, bool) {
+func (e *Executor) applyPerToolTruncation(content, toolName string) (string, bool) {
 	if e.perToolTruncation == nil {
 		return content, false
 	}
@@ -268,7 +268,7 @@ func (e *Executor) applyPerToolTruncation(content string, toolName string) (stri
 	// Byte-based truncation (UTF-8 safe: walk back to last valid codepoint boundary).
 	if cfg.MaxBytes > 0 && len(content) > cfg.MaxBytes {
 		truncatedContent := content[:cfg.MaxBytes]
-		for len(truncatedContent) > 0 && !utf8.ValidString(truncatedContent) {
+		for truncatedContent != "" && !utf8.ValidString(truncatedContent) {
 			truncatedContent = truncatedContent[:len(truncatedContent)-1]
 		}
 		content = truncatedContent
@@ -280,7 +280,7 @@ func (e *Executor) applyPerToolTruncation(content string, toolName string) (stri
 
 // formatFragmentationNudge returns a message instructing the LLM how to read
 // truncated output in fragments via tool_result_read.
-func formatFragmentationNudge(hash string, toolName string, maxLines int) string {
+func formatFragmentationNudge(hash, toolName string, maxLines int) string {
 	return fmt.Sprintf(
 		"\n\n[This output was truncated to %d lines for '%s'. "+
 			"The full result is cached with hash: %s. "+

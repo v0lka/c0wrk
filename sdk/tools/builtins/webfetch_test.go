@@ -234,7 +234,7 @@ func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 	}
 
 	// No per-tool byte truncation; central layer handles it. Full content should be returned.
-	if len(result.Content) == 0 {
+	if result.Content == "" {
 		t.Error("expected non-empty content since no per-tool truncation applies")
 	}
 	if strings.Contains(result.Content, "...(content truncated to") {
