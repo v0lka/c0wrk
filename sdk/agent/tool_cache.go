@@ -9,13 +9,14 @@ import (
 	"time"
 )
 
-// ToolResultCache caches raw tool outputs indexed by SHA256 content hash.
+// ToolResultCache caches raw tool outputs indexed by SHA256(toolName + "\x00" + content).
 // Cache entries live for the duration of a session (per-orchestrator lifetime).
 // MCP tool entries are subject to TTL-based expiry.
 type ToolResultCache struct {
-	mu      sync.RWMutex
-	entries map[string]*ToolResultCacheEntry
-	ttl     time.Duration // default TTL for MCP tools (0 = no expiry for non-MCP)
+	mu         sync.RWMutex
+	entries    map[string]*ToolResultCacheEntry
+	ttl        time.Duration // default TTL for MCP tools (0 = no expiry for non-MCP)
+	storeCount int64         // incremented on every Store; periodic eviction on every 100th call
 }
 
 // ToolResultCacheEntry holds a cached tool output with metadata.
@@ -52,12 +53,16 @@ func NewToolResultCache(ttl time.Duration) *ToolResultCache {
 }
 
 // Store caches raw tool output and returns its SHA256 hash.
+// The hash includes both toolName and content so that identical content from
+// different tools gets different hashes.
 // Repeated identical calls produce the same hash (no duplicate entries).
 func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) string {
-	hash := sha256hex(content)
+	hash := sha256hex(toolName + "\x00" + content)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	c.storeCount++
 
 	// Avoid overwriting an existing entry (same content → same hash).
 	if _, ok := c.entries[hash]; ok {
@@ -79,21 +84,29 @@ func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) st
 	}
 
 	c.entries[hash] = entry
+
+	// Periodic eviction: sweep expired MCP entries every 100th Store.
+	if c.storeCount%100 == 0 {
+		c.evictExpiredLocked()
+	}
+
 	return hash
 }
 
 // Get returns a cache entry by hash. Returns nil, false if not found or expired.
+// Uses a write-lock so that expired entries can be deleted inline.
 func (c *ToolResultCache) Get(hash string) (*ToolResultCacheEntry, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	entry, ok := c.entries[hash]
 	if !ok {
 		return nil, false
 	}
 
-	// Check TTL expiry for MCP entries.
+	// Check TTL expiry for MCP entries — delete inline if expired.
 	if entry.TTL > 0 && time.Since(entry.CreatedAt) > entry.TTL {
+		delete(c.entries, hash)
 		return nil, false
 	}
 
@@ -101,8 +114,8 @@ func (c *ToolResultCache) Get(hash string) (*ToolResultCacheEntry, bool) {
 }
 
 // CheckCoherence verifies that a cached file-tool result is still valid.
-// Returns false if the file has changed (mtime or size) since caching.
-// Non-file entries always pass.
+// Returns false if the cache entry has expired (MCP TTL) or the file has
+// changed (mtime or size) since caching. Non-file entries always pass.
 func (c *ToolResultCache) CheckCoherence(hash string) (valid bool, reason string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -111,6 +124,12 @@ func (c *ToolResultCache) CheckCoherence(hash string) (valid bool, reason string
 	if !ok {
 		return false, "cache entry not found"
 	}
+
+	// TTL expiry check for MCP entries.
+	if entry.TTL > 0 && time.Since(entry.CreatedAt) > entry.TTL {
+		return false, "cache entry expired"
+	}
+
 	if entry.FilePath == "" {
 		return true, "" // non-file tool, no coherence check needed
 	}
@@ -131,7 +150,11 @@ func (c *ToolResultCache) CheckCoherence(hash string) (valid bool, reason string
 func (c *ToolResultCache) EvictExpired() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.evictExpiredLocked()
+}
 
+// evictExpiredLocked removes all expired MCP entries. Caller must hold c.mu.
+func (c *ToolResultCache) evictExpiredLocked() {
 	for hash, entry := range c.entries {
 		if entry.TTL > 0 && time.Since(entry.CreatedAt) > entry.TTL {
 			delete(c.entries, hash)

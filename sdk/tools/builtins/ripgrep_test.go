@@ -134,7 +134,6 @@ func TestRipgrepTool_MaxResults(t *testing.T) {
 		Pattern:    "hello",
 		Path:       base,
 		IgnoreCase: true,
-		MaxResults: 1,
 	})
 
 	result, err := tool.Execute(context.Background(), input)

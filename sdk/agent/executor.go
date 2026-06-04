@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/tools"
@@ -263,9 +265,13 @@ func (e *Executor) applyPerToolTruncation(content string, toolName string) (stri
 		}
 	}
 
-	// Byte-based truncation
+	// Byte-based truncation (UTF-8 safe: walk back to last valid codepoint boundary).
 	if cfg.MaxBytes > 0 && len(content) > cfg.MaxBytes {
-		content = content[:cfg.MaxBytes]
+		truncatedContent := content[:cfg.MaxBytes]
+		for len(truncatedContent) > 0 && !utf8.ValidString(truncatedContent) {
+			truncatedContent = truncatedContent[:len(truncatedContent)-1]
+		}
+		content = truncatedContent
 		truncated = true
 	}
 
@@ -274,20 +280,20 @@ func (e *Executor) applyPerToolTruncation(content string, toolName string) (stri
 
 // formatFragmentationNudge returns a message instructing the LLM how to read
 // truncated output in fragments via tool_result_read.
-func formatFragmentationNudge(hash string, toolName string) string {
+func formatFragmentationNudge(hash string, toolName string, maxLines int) string {
 	return fmt.Sprintf(
-		"\n\n[This output was truncated to the default page size for '%s'. "+
+		"\n\n[This output was truncated to %d lines for '%s'. "+
 			"The full result is cached with hash: %s. "+
 			"Use tool_result_read(hash=\"%s\", start_line=1, num_lines=N) to read fragments. "+
-			"num_lines must not exceed the default page size.]",
-		toolName, hash, hash,
+			"num_lines must not exceed %d.]",
+		maxLines, toolName, hash, hash, maxLines,
 	)
 }
 
 // buildCacheMeta extracts file metadata from tool input for file-based tools.
 // Returns ToolCacheMeta with FilePath/FileMtime/FileSize set for file tools,
 // and IsMCP set for MCP-sourced tools.
-func (e *Executor) buildCacheMeta(toolName string, input json.RawMessage) ToolCacheMeta {
+func (e *Executor) buildCacheMeta(ctx context.Context, toolName string, input json.RawMessage) ToolCacheMeta {
 	var meta ToolCacheMeta
 
 	// Detect MCP tools via source.
@@ -303,8 +309,20 @@ func (e *Executor) buildCacheMeta(toolName string, input json.RawMessage) ToolCa
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(input, &params); err == nil && params.Path != "" {
-			if info, err := os.Stat(params.Path); err == nil {
-				meta.FilePath = params.Path
+			absPath := params.Path
+			if !filepath.IsAbs(absPath) {
+				if wsPath := tools.WorkspacePathFrom(ctx); wsPath != "" {
+					absPath = filepath.Join(wsPath, absPath)
+				}
+			}
+			// Validate path is within workspace boundary before stat.
+			if wsPath := tools.WorkspacePathFrom(ctx); wsPath != "" {
+				if !isPathWithinWorkspace(absPath, wsPath) {
+					return meta
+				}
+			}
+			if info, err := os.Stat(absPath); err == nil {
+				meta.FilePath = absPath
 				meta.FileMtime = info.ModTime().UnixNano()
 				meta.FileSize = info.Size()
 			}
@@ -312,6 +330,18 @@ func (e *Executor) buildCacheMeta(toolName string, input json.RawMessage) ToolCa
 	}
 
 	return meta
+}
+
+// isPathWithinWorkspace checks whether the given absolute path lies within the workspace root.
+func isPathWithinWorkspace(path, workspaceRoot string) bool {
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(workspaceRoot)
+	// filepath.HasPrefix is not available; use strings.HasPrefix with trailing separator.
+	rootWithSep := cleanRoot
+	if !strings.HasSuffix(rootWithSep, string(filepath.Separator)) {
+		rootWithSep += string(filepath.Separator)
+	}
+	return cleanPath == cleanRoot || strings.HasPrefix(cleanPath, rootWithSep)
 }
 
 // Run executes the ReAct loop for the given task tools and context manager.
@@ -745,9 +775,11 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 			// Execute the tool (task context should already be set by the caller)
 			// Inject tool result cache into context so tool_result_read can access it.
+			// Also inject per-tool truncation config for num_lines enforcement.
 			execCtx := ctx
 			if e.toolCache != nil {
 				execCtx = WithToolResultCache(ctx, e.toolCache)
+				execCtx = WithPerToolTruncation(execCtx, e.perToolTruncation)
 			}
 			result, err := e.tools.Execute(execCtx, action.Name, action.Input)
 			if err != nil {
@@ -990,20 +1022,36 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			// --- Stage 1: Cache full result and apply per-tool truncation ---
 			if e.toolCache != nil {
 				if _, isNonCacheable := nonCacheableTools[action.Name]; !isNonCacheable {
-					meta := e.buildCacheMeta(action.Name, action.Input)
+					meta := e.buildCacheMeta(execCtx, action.Name, action.Input)
 					hash := e.toolCache.Store(action.Name, result.Content, meta)
 
 					// Apply per-tool line/byte truncation (Stage 1).
 					truncated, wasTruncated := e.applyPerToolTruncation(observation, action.Name)
 					if wasTruncated {
-						observation = truncated + formatFragmentationNudge(hash, action.Name)
+						maxLines := 0
+						if e.perToolTruncation != nil {
+							if cfg, ok := e.perToolTruncation[action.Name]; ok {
+								maxLines = cfg.MaxLines
+							}
+						}
+						nudge := formatFragmentationNudge(hash, action.Name, maxLines)
+						observation = truncated + nudge
 					}
 				}
 			}
 			// --- End Stage 1 caching / truncation ---
 
-			// Apply tool result budget
+			// --- Stage 2: Token-budget truncation (preserve Stage 1 nudge) ---
+			// Extract any Stage 1 nudge so it isn't stripped by token-budget truncation.
+			const stage1NudgePrefix = "\n\n[This output was truncated to"
+			var stage1Nudge string
+			if idx := strings.Index(observation, stage1NudgePrefix); idx >= 0 {
+				stage1Nudge = observation[idx:]
+				observation = observation[:idx]
+			}
 			observation = e.applyToolResultBudget(observation, cw, action.Name)
+			observation += stage1Nudge
+			// --- End Stage 2 ---
 
 			// Emit tool result
 			e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)

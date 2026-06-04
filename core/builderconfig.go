@@ -240,16 +240,9 @@ type BuilderOrchestrationConfig struct {
 
 // BuilderToolLimitsConfig holds configurable limits for built-in tools.
 type BuilderToolLimitsConfig struct {
-	ReadDefaultLines     int
-	ReadMaxLineLength    int
-	ReadMaxBytes         int
-
-	RipgrepMaxResults    int
-	RipgrepMaxLineLength int
-	GlobMaxResults       int
+	ReadDefaultLines int
 
 	WebSearchMaxResults int
-	WebFetchMaxBodySize int
 
 	// Per-tool Stage 1 truncation (line/byte-based, applied before token budget).
 	PerToolTruncation map[string]BuilderToolTruncationConfig

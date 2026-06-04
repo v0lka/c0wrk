@@ -233,10 +233,9 @@ func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 		t.Errorf("unexpected error result: %s", result.Content)
 	}
 
-	maxBody := DefaultWebFetchLimits().MaxBodySize
-	// No per-tool byte truncation; central layer handles it. Content should be large.
-	if len(result.Content) <= maxBody {
-		t.Errorf("expected content larger than MaxBodySize (%d) since truncation is removed, got %d bytes", maxBody, len(result.Content))
+	// No per-tool byte truncation; central layer handles it. Full content should be returned.
+	if len(result.Content) == 0 {
+		t.Error("expected non-empty content since no per-tool truncation applies")
 	}
 	if strings.Contains(result.Content, "...(content truncated to") {
 		t.Error("did not expect truncation notice in output")
@@ -269,11 +268,7 @@ func TestWebFetchTool_TruncationAppliesToMarkdownNotHTML(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Use a small MaxBodySize so truncation of raw HTML would be very visible.
-	limits := WebFetchLimits{
-		MaxBodySize: 50 * 1024, // 50 KB
-		Timeout:     DefaultWebFetchLimits().Timeout,
-	}
+	limits := DefaultWebFetchLimits()
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -564,10 +559,7 @@ func TestWebFetchTool_TruncationShowsLineCount(t *testing.T) {
 	}))
 	defer server.Close()
 
-	limits := WebFetchLimits{
-		MaxBodySize: 50,
-		Timeout:     DefaultWebFetchLimits().Timeout,
-	}
+	limits := DefaultWebFetchLimits()
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -602,10 +594,7 @@ func TestWebFetchTool_LineRangeWithTruncation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	limits := WebFetchLimits{
-		MaxBodySize: 50,
-		Timeout:     DefaultWebFetchLimits().Timeout,
-	}
+	limits := DefaultWebFetchLimits()
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 

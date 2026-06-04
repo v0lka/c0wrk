@@ -133,7 +133,7 @@ toolLimits:
     ripgrep: { maxLines: 200 }
     glob: { maxLines: 200 }
     list_directory: { maxLines: 200 }
-    web_fetch: { maxBytes: 204800 }
+    web_fetch: { maxBytes: 2097152 }
     bash_exec: { maxLines: 500 }
 
 toolResultBudget:

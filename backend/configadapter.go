@@ -149,15 +149,9 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			MaxPlannerExploreSteps:    cfg.Orchestration.MaxPlannerExploreSteps,
 		},
 		ToolLimits: core.BuilderToolLimitsConfig{
-			ReadDefaultLines:     cfg.ToolLimits.ReadDefaultLines,
-			ReadMaxLineLength:    cfg.ToolLimits.ReadMaxLineLength,
-			ReadMaxBytes:         cfg.ToolLimits.ReadMaxBytes,
-			RipgrepMaxResults:    cfg.ToolLimits.RipgrepMaxResults,
-			RipgrepMaxLineLength: cfg.ToolLimits.RipgrepMaxLineLength,
-			GlobMaxResults:       cfg.ToolLimits.GlobMaxResults,
-			WebSearchMaxResults:  cfg.ToolLimits.WebSearchMaxResults,
-			WebFetchMaxBodySize:  cfg.ToolLimits.WebFetchMaxBodySize,
-			PerToolTruncation:    convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
+			ReadDefaultLines:    cfg.ToolLimits.ReadDefaultLines,
+			WebSearchMaxResults: cfg.ToolLimits.WebSearchMaxResults,
+			PerToolTruncation:   convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
 			BashMaxTimeout:   cfg.Timeouts.BashMaxTimeout,

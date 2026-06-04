@@ -90,6 +90,20 @@ func (t *ToolResultReadTool) Execute(ctx context.Context, input json.RawMessage)
 		params.NumLines = defaultResultReadLines
 	}
 
+	// Enforce num_lines upper bound from per-tool truncation config.
+	// The LLM is told in the nudge to keep num_lines <= MaxLines, but we enforce it server-side.
+	if perToolCfg := agent.PerToolTruncationFromContext(ctx); perToolCfg != nil {
+		if cfg, ok := perToolCfg[entry.ToolName]; ok && cfg.MaxLines > 0 {
+			if params.NumLines > cfg.MaxLines {
+				params.NumLines = cfg.MaxLines
+			}
+		}
+	}
+	// Fallback hard cap if no per-tool config is available.
+	if params.NumLines > defaultResultReadLines {
+		params.NumLines = defaultResultReadLines
+	}
+
 	allLines := strings.Split(entry.Content, "\n")
 	totalLines := len(allLines)
 

@@ -142,9 +142,8 @@ func TestGlobTool_MaxResults(t *testing.T) {
 	tool := NewGlobTool()
 
 	input, _ := json.Marshal(GlobInput{
-		Pattern:    "**/*.go",
-		Path:       base,
-		MaxResults: 1,
+		Pattern: "**/*.go",
+		Path:    base,
 	})
 
 	result, err := tool.Execute(context.Background(), input)

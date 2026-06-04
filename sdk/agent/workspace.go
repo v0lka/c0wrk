@@ -93,6 +93,23 @@ func ToolResultCacheFromContext(ctx context.Context) *ToolResultCache {
 }
 
 // ---------------------------------------------------------------------------
+// Per-tool truncation config — for tool_result_read num_lines enforcement
+// ---------------------------------------------------------------------------
+
+type perToolTruncationKey struct{}
+
+// WithPerToolTruncation returns a context carrying the per-tool truncation config.
+func WithPerToolTruncation(ctx context.Context, cfg map[string]ToolTruncationConfig) context.Context {
+	return context.WithValue(ctx, perToolTruncationKey{}, cfg)
+}
+
+// PerToolTruncationFromContext returns the per-tool truncation config from context, or nil.
+func PerToolTruncationFromContext(ctx context.Context) map[string]ToolTruncationConfig {
+	c, _ := ctx.Value(perToolTruncationKey{}).(map[string]ToolTruncationConfig)
+	return c
+}
+
+// ---------------------------------------------------------------------------
 // StepTodoUpdateFunc — callback for set_step_status tool to emit events
 // ---------------------------------------------------------------------------
 

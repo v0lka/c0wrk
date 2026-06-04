@@ -478,8 +478,7 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 // UpdateWebTools re-registers web_fetch and web_search tools with the current proxy client.
 func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
 	fetchLimits := tools.WebFetchLimits{
-		MaxBodySize: cfg.ToolLimits.WebFetchMaxBodySize,
-		Timeout:     time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
+		Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
 	}
 	tools.UpdateWebFetchTool(b.registry, fetchLimits, b.proxyClient)
 
@@ -1081,21 +1080,14 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 
 	return tools.BuiltinToolsConfig{
 		FileLimits: tools.FileLimits{
-			ReadDefaultLines:  cfg.ToolLimits.ReadDefaultLines,
-			ReadMaxLineLength: cfg.ToolLimits.ReadMaxLineLength,
-			ReadMaxBytes:      cfg.ToolLimits.ReadMaxBytes,
+			ReadDefaultLines: cfg.ToolLimits.ReadDefaultLines,
 		},
 		RipgrepLimits: tools.RipgrepLimits{
-			MaxResults:    cfg.ToolLimits.RipgrepMaxResults,
-			MaxLineLength: cfg.ToolLimits.RipgrepMaxLineLength,
-			Timeout:       time.Duration(cfg.Timeouts.RipgrepTimeout) * time.Second,
+			Timeout: time.Duration(cfg.Timeouts.RipgrepTimeout) * time.Second,
 		},
-		GlobLimits: tools.GlobLimits{
-			MaxResults: cfg.ToolLimits.GlobMaxResults,
-		},
+		GlobLimits: tools.GlobLimits{},
 		WebFetchLimits: tools.WebFetchLimits{
-			MaxBodySize: cfg.ToolLimits.WebFetchMaxBodySize,
-			Timeout:     time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
+			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
 		},
 		WebSearchLimits: tools.WebSearchLimits{
 			MaxResults: cfg.ToolLimits.WebSearchMaxResults,

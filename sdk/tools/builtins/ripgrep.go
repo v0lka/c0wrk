@@ -14,7 +14,7 @@ import (
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
-const toolRipgrepDescription = `Search file contents using regex or literal patterns. Returns matches in "file:line: content" format with optional surrounding context lines. Automatically respects .gitignore rules and skips binary files. Use this when you need to find code patterns, function definitions, or text within files. Returns up to 200 matches by default. For finding files by name or path pattern, use glob instead.`
+const toolRipgrepDescription = `Search file contents using regex or literal patterns. Returns matches in "file:line: content" format with optional surrounding context lines. Automatically respects .gitignore rules and skips binary files. Use this when you need to find code patterns, function definitions, or text within files. For finding files by name or path pattern, use glob instead.`
 
 // RipgrepTool searches file contents using regex patterns via the system
 // `rg` CLI (ripgrep). The binary is a declared runtime prerequisite (see
@@ -59,10 +59,6 @@ func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool {
 				"type": "integer",
 				"description": "Number of lines to show before and after each match. Default: 0."
 			},
-			"max_results": {
-				"type": "integer",
-				"description": "Maximum number of matches to return. Default: 200."
-			},
 			"include_hidden": {
 				"type": "boolean",
 				"description": "Include hidden files and directories in the search. Default: false."
@@ -84,7 +80,6 @@ type RipgrepInput struct {
 	FilePattern   string `json:"file_pattern"`
 	IgnoreCase    bool   `json:"ignore_case"`
 	ContextLines  int    `json:"context_lines"`
-	MaxResults    int    `json:"max_results"`
 	IncludeHidden bool   `json:"include_hidden"`
 }
 
@@ -144,10 +139,6 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		}
 	} else {
 		params.Path = resolvePath(ctx, params.Path)
-	}
-
-	if params.MaxResults <= 0 {
-		params.MaxResults = t.limits.MaxResults
 	}
 
 	// Build `rg --json` args. Ripgrep respects .gitignore by default.

@@ -127,7 +127,7 @@ Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). Wh
 
 ## Limits Configuration
 
-Per-tool output truncation is centralized in the executor's two-stage pipeline (see [executor.md](../orchestration/executor.md)). Per-tool limits that were formerly enforced inside individual tools (`ReadMaxBytes`, `ReadMaxLineLength`, `ReadDefaultLines`, `RipgrepMaxResults`, `RipgrepMaxLineLength`, `GlobMaxResults`, `WebFetchMaxBodySize`) are now applied as Stage 1 line/byte truncation in the executor, after the full result is cached.
+Per-tool output truncation is centralized in the executor's two-stage pipeline (see [executor.md](../orchestration/executor.md)). All truncation happens exclusively in the centralized truncation pipeline (Stage 1 → Stage 2), after the full result is cached. No individual tool performs per-tool output truncation.
 
 | Config                              | Affects                    | Default            |
 | ----------------------------------- | -------------------------- | ------------------ |
@@ -142,15 +142,15 @@ Default per-tool Stage 1 truncation:
 | `ripgrep`      | 200           | —               |
 | `glob`         | 200           | —               |
 | `list_directory`| 200          | —               |
-| `web_fetch`    | —             | 204800 (200 KB) |
+| `web_fetch`    | —             | 2097152 (2 MB)   |
 | `bash_exec`    | 500           | —               |
 
-Legacy per-tool limits (still in code for backward compatibility but no longer enforced as output truncation):
+Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 
 | Config                       | Affects                   | Default             |
 | ---------------------------- | ------------------------- | ------------------- |
 | `BashTimeouts.MaxTimeout`    | bash_exec                 | 120s                |
-| `BashTimeouts.WaitDelay`     | bash_exec                 | 100ms               |
+| `BashTimeouts.WaitDelay`     | bash_exec                 | 5s                  |
 | `BashBlacklist`              | bash_exec                 | [] (regex patterns) |
 | `WebSearchLimits.MaxResults` | web_search                | 5                   |
 

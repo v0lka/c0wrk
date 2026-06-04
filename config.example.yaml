@@ -249,17 +249,12 @@ search:
 toolLimits:
   # File read limits
   readDefaultLines: 2000 # Max lines returned per read call
-  readMaxLineLength: 2000 # Max characters per line
   readMaxBytes: 51200 # Total output cap in bytes (50 KB)
 
   # Search limits
-  ripgrepMaxResults: 200 # Max ripgrep matches
-  ripgrepMaxLineLength: 2000 # Max chars per ripgrep result line
-  globMaxResults: 200 # Max glob pattern results
   webSearchMaxResults: 5 # Max web search results
 
   # Web fetch
-  webFetchMaxBodySize: 2097152 # Max Markdown output size in bytes (after HTML conversion), default 2 MB
 
   # --- Per-tool Stage 1 truncation (applied before token budget) ------------
   # These values also serve as default page sizes for tool_result_read.

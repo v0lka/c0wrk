@@ -254,26 +254,8 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.ToolLimits.ReadDefaultLines == 0 {
 		cfg.ToolLimits.ReadDefaultLines = 2000
 	}
-	if cfg.ToolLimits.ReadMaxLineLength == 0 {
-		cfg.ToolLimits.ReadMaxLineLength = 2000
-	}
-	if cfg.ToolLimits.ReadMaxBytes == 0 {
-		cfg.ToolLimits.ReadMaxBytes = 51200 // 50KB
-	}
-	if cfg.ToolLimits.RipgrepMaxResults == 0 {
-		cfg.ToolLimits.RipgrepMaxResults = 200
-	}
-	if cfg.ToolLimits.RipgrepMaxLineLength == 0 {
-		cfg.ToolLimits.RipgrepMaxLineLength = 2000
-	}
-	if cfg.ToolLimits.GlobMaxResults == 0 {
-		cfg.ToolLimits.GlobMaxResults = 200
-	}
 	if cfg.ToolLimits.WebSearchMaxResults == 0 {
 		cfg.ToolLimits.WebSearchMaxResults = 5
-	}
-	if cfg.ToolLimits.WebFetchMaxBodySize == 0 {
-		cfg.ToolLimits.WebFetchMaxBodySize = 2097152 // 2MB
 	}
 
 	// Per-tool Stage 1 truncation defaults (applied before token budget).
@@ -284,7 +266,7 @@ func ApplyDefaults(cfg *Config) {
 			"ripgrep":        {MaxLines: 200, MaxBytes: 0},
 			"glob":           {MaxLines: 200, MaxBytes: 0},
 			"list_directory": {MaxLines: 200, MaxBytes: 0},
-			"web_fetch":      {MaxLines: 0, MaxBytes: 204800},
+			"web_fetch":      {MaxLines: 0, MaxBytes: 2097152},
 			"bash_exec":      {MaxLines: 500, MaxBytes: 0},
 		}
 	}

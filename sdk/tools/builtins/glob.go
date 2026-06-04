@@ -12,7 +12,7 @@ import (
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
-const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically. Returns up to 200 results by default.`
+const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically.`
 
 // GlobTool finds files and directories matching doublestar glob patterns.
 type GlobTool struct {
@@ -45,10 +45,6 @@ func NewGlobToolWithLimits(limits GlobLimits) *GlobTool {
 				"type": "string",
 				"enum": ["files", "dirs", "all"],
 				"description": "Filter results: \"files\" (default), \"dirs\", or \"all\""
-			},
-			"max_results": {
-				"type": "integer",
-				"description": "Maximum number of results to return. Default: 200."
 			}
 		},
 		"required": ["pattern"]
@@ -62,10 +58,9 @@ func NewGlobToolWithLimits(limits GlobLimits) *GlobTool {
 
 // GlobInput represents the input parameters for glob search.
 type GlobInput struct {
-	Pattern    string `json:"pattern"`
-	Path       string `json:"path"`
-	Type       string `json:"type"`
-	MaxResults int    `json:"max_results"`
+	Pattern string `json:"pattern"`
+	Path    string `json:"path"`
+	Type    string `json:"type"`
 }
 
 // Judge checks whether the glob targets a path within the workspace.
@@ -97,9 +92,6 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 	// Apply defaults
 	if params.Type == "" {
 		params.Type = "files"
-	}
-	if params.MaxResults <= 0 {
-		params.MaxResults = t.limits.MaxResults
 	}
 
 	// Validate path exists and is a directory

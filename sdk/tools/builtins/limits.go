@@ -4,9 +4,7 @@ import "time"
 
 // FileLimits holds configurable limits for file operation tools.
 type FileLimits struct {
-	ReadDefaultLines  int // max lines per read call
-	ReadMaxLineLength int // max characters per line
-	ReadMaxBytes      int // total output cap in bytes
+	ReadDefaultLines int // max lines per read call
 }
 
 // BashTimeouts holds configurable timeout values for the bash_exec tool.
@@ -26,51 +24,39 @@ func DefaultBashTimeouts() BashTimeouts {
 // DefaultFileLimits returns the default limits for file operation tools.
 func DefaultFileLimits() FileLimits {
 	return FileLimits{
-		ReadDefaultLines:  2000,
-		ReadMaxLineLength: 2000,
-		ReadMaxBytes:      51200, // 50KB
+		ReadDefaultLines: 2000,
 	}
 }
 
 // RipgrepLimits holds configurable limits for the ripgrep tool.
 type RipgrepLimits struct {
-	MaxResults    int           // max number of matches
-	MaxLineLength int           // max chars per line before truncation
-	Timeout       time.Duration // timeout for ripgrep search operations
+	Timeout time.Duration // timeout for ripgrep search operations
 }
 
 // DefaultRipgrepLimits returns the default limits for ripgrep.
 func DefaultRipgrepLimits() RipgrepLimits {
 	return RipgrepLimits{
-		MaxResults:    200,
-		MaxLineLength: 2000,
-		Timeout:       60 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 }
 
 // GlobLimits holds configurable limits for the glob tool.
-type GlobLimits struct {
-	MaxResults int // max number of results
-}
+type GlobLimits struct {}
 
 // DefaultGlobLimits returns the default limits for glob.
 func DefaultGlobLimits() GlobLimits {
-	return GlobLimits{
-		MaxResults: 200,
-	}
+	return GlobLimits{}
 }
 
 // WebFetchLimits holds configurable limits for the web_fetch tool.
 type WebFetchLimits struct {
-	MaxBodySize int           // max response body size in bytes
-	Timeout     time.Duration // timeout for HTTP requests
+	Timeout time.Duration // timeout for HTTP requests
 }
 
 // DefaultWebFetchLimits returns the default limits for web_fetch.
 func DefaultWebFetchLimits() WebFetchLimits {
 	return WebFetchLimits{
-		MaxBodySize: 2 * 1024 * 1024, // 2MB
-		Timeout:     30 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 }
 

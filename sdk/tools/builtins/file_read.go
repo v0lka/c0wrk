@@ -43,7 +43,7 @@ func NewReadFileToolWithLimits(limits FileLimits) *ReadFileTool {
 					},
 					"end_line": {
 						"type": "integer",
-						"description": "1-based line number to stop reading at (inclusive). Defaults to a fixed window starting from start_line. Values beyond the file length are clamped automatically. Individual lines exceeding the per-line character limit are truncated with a notice."
+						"description": "1-based line number to stop reading at (inclusive). Defaults to the end of file. Values beyond the file length are clamped automatically."
 					}
 				},
 				"required": ["path"]

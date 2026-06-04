@@ -283,17 +283,17 @@ type SearchConfig struct {
 type ToolLimitsConfig struct {
 	// File read limits
 	ReadDefaultLines  int `yaml:"readDefaultLines"`  // max lines per read call (default: 2000)
-	ReadMaxLineLength int `yaml:"readMaxLineLength"` // max characters per line (default: 2000)
-	ReadMaxBytes      int `yaml:"readMaxBytes"`      // total output cap in bytes (default: 51200)
+	ReadMaxLineLength int `yaml:"readMaxLineLength"` // DEPRECATED: no longer used (truncation is centralized)
+	ReadMaxBytes      int `yaml:"readMaxBytes"`      // DEPRECATED: no longer used (truncation is centralized)
 
 	// Search limits
-	RipgrepMaxResults    int `yaml:"ripgrepMaxResults"`    // max matches for ripgrep (default: 200)
-	RipgrepMaxLineLength int `yaml:"ripgrepMaxLineLength"` // max chars per ripgrep line (default: 2000)
-	GlobMaxResults       int `yaml:"globMaxResults"`       // max glob results (default: 200)
+	RipgrepMaxResults    int `yaml:"ripgrepMaxResults"`    // DEPRECATED: no longer used (truncation is centralized)
+	RipgrepMaxLineLength int `yaml:"ripgrepMaxLineLength"` // DEPRECATED: no longer used (truncation is centralized)
+	GlobMaxResults       int `yaml:"globMaxResults"`       // DEPRECATED: no longer used (truncation is centralized)
 	WebSearchMaxResults  int `yaml:"webSearchMaxResults"`  // max web search results (default: 5)
 
 	// Web fetch limit
-	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // max response body size in bytes (default: 102400)
+	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // DEPRECATED: no longer used (truncation is centralized)
 
 	// Per-tool Stage 1 truncation defaults (line/byte-based, applied before token budget).
 	// If omitted for a tool, no Stage 1 truncation is applied.

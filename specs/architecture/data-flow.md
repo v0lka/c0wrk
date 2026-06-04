@@ -170,7 +170,7 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
 sdk/agent/executor.go: cache + two-stage truncation
   │
   ├─ Skip if tool is non-cacheable (tool_result_read, finish, ask_user, etc.)
-  ├─ Store full result in ToolResultCache keyed by SHA256(content)
+  ├─ Store full result in ToolResultCache keyed by SHA256(toolName + content)
   │    └─ Metadata: file path+mtime+size (file tools) or TTL (MCP tools)
   ├─ Stage 1: Apply per-tool line/byte truncation (configurable per tool)
   │    └─ Append fragmentation nudge with hash: "[truncated... tool_result_read(hash=...)]"
