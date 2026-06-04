@@ -3,7 +3,6 @@ package builtins
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -69,9 +68,6 @@ type GlobInput struct {
 	MaxResults int    `json:"max_results"`
 }
 
-// errMaxResults is a sentinel error used to stop walking when max results is reached.
-var errMaxResults = errors.New("max results reached")
-
 // Judge checks whether the glob targets a path within the workspace.
 // Paths outside workspace require user confirmation.
 func (t *GlobTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
@@ -116,7 +112,6 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 	}
 
 	var results []string
-	truncated := false
 
 	walkErr := doublestar.GlobWalk(os.DirFS(params.Path), params.Pattern, func(p string, d fs.DirEntry) error {
 		// Filter by type
@@ -133,15 +128,10 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 		}
 
 		results = append(results, p)
-
-		if len(results) >= params.MaxResults {
-			truncated = true
-			return errMaxResults
-		}
 		return nil
 	})
 
-	if walkErr != nil && !errors.Is(walkErr, errMaxResults) {
+	if walkErr != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("glob error: %v", walkErr), IsError: true}, nil
 	}
 
@@ -150,9 +140,6 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 	}
 
 	output := strings.Join(results, "\n")
-	if truncated {
-		output += fmt.Sprintf("\n(results limited to %d)", params.MaxResults)
-	}
 
 	return tools.ToolResult{Content: output}, nil
 }

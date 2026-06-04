@@ -234,13 +234,12 @@ func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 	}
 
 	maxBody := DefaultWebFetchLimits().MaxBodySize
-	// The result includes the truncation notice appended after MaxBodySize bytes,
-	// so it will be slightly larger than MaxBodySize but not by much.
-	if len(result.Content) > maxBody+200 {
-		t.Errorf("expected content to be truncated near %d bytes, got %d bytes", maxBody, len(result.Content))
+	// No per-tool byte truncation; central layer handles it. Content should be large.
+	if len(result.Content) <= maxBody {
+		t.Errorf("expected content larger than MaxBodySize (%d) since truncation is removed, got %d bytes", maxBody, len(result.Content))
 	}
-	if !strings.Contains(result.Content, "...(content truncated to") {
-		t.Error("expected truncation notice in output")
+	if strings.Contains(result.Content, "...(content truncated to") {
+		t.Error("did not expect truncation notice in output")
 	}
 }
 
@@ -581,12 +580,9 @@ func TestWebFetchTool_TruncationShowsLineCount(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", result.Content)
 	}
 
-	// Should show line count in truncation message
-	if !strings.Contains(result.Content, "lines") {
-		t.Errorf("expected truncation message to include line count, got: %s", result.Content)
-	}
-	if !strings.Contains(result.Content, "start_line/end_line") {
-		t.Errorf("expected truncation message to mention start_line/end_line, got: %s", result.Content)
+	// No per-tool truncation; central layer handles it. Content returned fully.
+	if strings.Contains(result.Content, "content truncated") {
+		t.Errorf("did not expect truncation notice, got: %s", result.Content)
 	}
 }
 
@@ -622,9 +618,9 @@ func TestWebFetchTool_LineRangeWithTruncation(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", result.Content)
 	}
 
-	// Should have truncation notice within the line range
-	if !strings.Contains(result.Content, "truncated") {
-		t.Errorf("expected truncation notice in line range result, got: %s", result.Content)
+	// No per-tool truncation in line range; central layer handles it.
+	if strings.Contains(result.Content, "content truncated") {
+		t.Errorf("did not expect truncation notice in line range result, got: %s", result.Content)
 	}
 	// Should still have the header
 	if !strings.Contains(result.Content, "[Lines") {

@@ -58,6 +58,13 @@ type ToolResultBudget struct {
 	MaxFillFraction float64
 }
 
+// ToolTruncationConfig — per-tool truncation defaults for Stage 1 (line/byte-based).
+// Applied before the token-based ToolResultBudget (Stage 2).
+type ToolTruncationConfig struct {
+	MaxLines int // 0 = no line-based truncation
+	MaxBytes int // 0 = no byte-based truncation
+}
+
 // CircuitBreakerConfig — circuit breaker thresholds for executor protection.
 type CircuitBreakerConfig struct {
 	RepeatNudgeThreshold     int // consecutive identical tool calls before nudge

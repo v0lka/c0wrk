@@ -144,6 +144,7 @@ type BuilderCompactionThresholds struct {
 type BuilderToolResultBudget struct {
 	HardCapTokens   int
 	MaxFillFraction float64
+	CacheTTLSeconds int // TTL in seconds for MCP tool cache entries
 }
 
 // BuilderToolOutputPruning configures selective pruning of old tool outputs.
@@ -249,6 +250,15 @@ type BuilderToolLimitsConfig struct {
 
 	WebSearchMaxResults int
 	WebFetchMaxBodySize int
+
+	// Per-tool Stage 1 truncation (line/byte-based, applied before token budget).
+	PerToolTruncation map[string]BuilderToolTruncationConfig
+}
+
+// BuilderToolTruncationConfig — per-tool truncation settings.
+type BuilderToolTruncationConfig struct {
+	MaxLines int
+	MaxBytes int
 }
 
 // ---------------------------------------------------------------------------

@@ -170,6 +170,7 @@ executor:
   tool_result_budget:
     hard_cap_tokens: 4096 # Absolute max tokens per tool result
     max_fill_fraction: 0.3 # Max fraction of available context space
+    cacheTTLSeconds: 300 # TTL in seconds for MCP tool cache entries
 
   # --- Tool Output Pruning --------------------------------------------------
   toolOutputPruning:
@@ -259,6 +260,23 @@ toolLimits:
 
   # Web fetch
   webFetchMaxBodySize: 2097152 # Max Markdown output size in bytes (after HTML conversion), default 2 MB
+
+  # --- Per-tool Stage 1 truncation (applied before token budget) ------------
+  # These values also serve as default page sizes for tool_result_read.
+  # Omitted tools receive no Stage 1 truncation. Use 0 to disable a dimension.
+  perToolTruncation:
+    read_file:
+      maxLines: 2000
+    ripgrep:
+      maxLines: 200
+    glob:
+      maxLines: 200
+    list_directory:
+      maxLines: 200
+    web_fetch:
+      maxBytes: 204800  # 200 KB
+    bash_exec:
+      maxLines: 500
 
 # ---------------------------------------------------------------------------
 # Timeouts (in seconds)

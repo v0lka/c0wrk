@@ -116,7 +116,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		startLine = 1
 	}
 	if endLine <= 0 {
-		endLine = startLine + t.limits.ReadDefaultLines - 1
+		endLine = totalLines // return entire file; centralized truncation handles output size
 	}
 
 	// Clamp to file bounds
@@ -133,20 +133,8 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	// Extract the requested range (convert 1-based to 0-based indexing)
 	selectedLines := allLines[startLine-1 : endLine]
 
-	// Truncate individual lines that exceed max length
-	for i, line := range selectedLines {
-		if len(line) > t.limits.ReadMaxLineLength {
-			selectedLines[i] = fmt.Sprintf("%s...(line truncated, original: %d chars)", line[:t.limits.ReadMaxLineLength], len(line))
-		}
-	}
-
 	// Join lines
 	content := strings.Join(selectedLines, "\n")
-
-	// Check byte limit
-	if len(content) > t.limits.ReadMaxBytes {
-		content = content[:t.limits.ReadMaxBytes] + "\n[Byte limit reached]"
-	}
 
 	// Build metadata header
 	filename := filepath.Base(params.Path)

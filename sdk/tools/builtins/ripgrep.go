@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -151,10 +150,8 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		params.MaxResults = t.limits.MaxResults
 	}
 
-	// Build `rg --json` args. Ripgrep respects .gitignore by default;
-	// no flag needed. We deliberately do NOT pass --max-count because that
-	// caps per-file matches — the tool's MaxResults is a global cap, which
-	// we enforce by counting events and killing rg when it is reached.
+	// Build `rg --json` args. Ripgrep respects .gitignore by default.
+	// Output size is managed by the centralized caching+truncation layer.
 	args := []string{"--json", "--no-messages"}
 	if params.IgnoreCase {
 		args = append(args, "-i")
@@ -191,13 +188,8 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	var sb strings.Builder
 	fileSet := make(map[string]struct{})
 	matchCount := 0
-	truncated := false
 
 	for scanner.Scan() {
-		if matchCount >= params.MaxResults {
-			truncated = true
-			break
-		}
 		var ev rgEvent
 		if unmarshalErr := json.Unmarshal(scanner.Bytes(), &ev); unmarshalErr != nil {
 			continue
@@ -221,9 +213,6 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 			} else {
 				line = fmt.Sprintf("%s:%d: %s", path, m.LineNumber, content)
 			}
-			if len(line) > t.limits.MaxLineLength {
-				line = line[:t.limits.MaxLineLength] + "...(line truncated)"
-			}
 			sb.WriteString(line)
 			sb.WriteByte('\n')
 			matchCount++
@@ -237,15 +226,8 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		}
 	}
 
-	// When we hit max_results we kill rg and then drain stdout so Wait
-	// can return cleanly. Any scanner.Err() after kill is expected.
-	if truncated {
-		_ = cmd.Process.Kill()
-		_, _ = io.Copy(io.Discard, stdout)
-	}
-
 	waitErr := cmd.Wait()
-	if waitErr != nil && !truncated {
+	if waitErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			// rg exit codes: 0 = matches, 1 = no matches, 2+ = error.
@@ -268,9 +250,6 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	}
 
 	fmt.Fprintf(&sb, "\nFound %d matches in %d files", matchCount, len(fileSet))
-	if truncated {
-		sb.WriteString(" (truncated at max_results)")
-	}
 
 	return tools.ToolResult{Content: sb.String()}, nil
 }

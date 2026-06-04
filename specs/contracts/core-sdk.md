@@ -19,7 +19,10 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration (incl. IsUntrusted flag) |
 | `ExecutorResult`       | sdk/agent | core/types (alias)               | Executor output                       |
 | `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds            |
-| `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation                |
+| `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation (Stage 2)     |
+| `ToolResultCache`      | sdk/agent | core/orchestrator, core/builder   | Full result cache keyed by SHA256    |
+| `ToolTruncationConfig` | sdk/agent | core/orchestrator config          | Per-tool Stage 1 truncation limits   |
+| `ToolCacheMeta`        | sdk/agent | core/executor                     | Cache entry metadata (paths, mtime)  |
 | `TodoItem`             | sdk/agent | core/types (adapter)             | Step todo item                        |
 
 ### Consumed from `sdk/orchestration`
@@ -31,7 +34,7 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `Events`           | sdk/orchestration | core/types (adapted via emitterEventsAdapter) | Orchestration lifecycle    |
 | `Blackboard`       | sdk/orchestration | core/types (alias)                            | Shared task state          |
 | `Orchestrator`     | sdk/orchestration | core/orchestrator (as `engine`)               | DAG execution engine       |
-| `Config`           | sdk/orchestration | core/orchestrator (NewOrchestrator)           | Engine configuration       |
+| `Config`           | sdk/orchestration | core/orchestrator (NewOrchestrator)           | Engine configuration (incl. ToolCache, PerToolTruncation) |
 | `Plan`, `PlanStep` | sdk/orchestration | core/types (aliases)                          | Plan data structures       |
 | `CompletedStep`    | sdk/orchestration | core/types (alias)                            | Step result record         |
 | `Reflection`       | sdk/orchestration | core/types (alias)                            | Reflector output           |
@@ -83,6 +86,8 @@ type Step = agent.Step
 type Plan = orchestration.Plan
 type Blackboard = orchestration.Blackboard
 type Reflection = orchestration.Reflection
+type ToolResultCache = agent.ToolResultCache
+type ToolTruncationConfig = agent.ToolTruncationConfig
 // ... ~20 more aliases
 ```
 
@@ -95,8 +100,9 @@ Backend imports: `"github.com/v0lka/c0wrk/core"` → `core.Step`, `core.Plan`, e
 1. Creates `sdk/tools.ToolRegistry`
 2. Registers built-in tools from `sdk/tools/builtins`
 3. Starts MCP gateway (async)
-4. Creates `sdk/llm.Router` with providers (async)
-5. `Build()` creates per-session `Orchestrator` which internally creates `sdk/orchestration.Orchestrator`
+4. Creates `ToolResultCache` with TTL and passes per-tool truncation to orchestrator config
+5. Creates `sdk/llm.Router` with providers (async)
+6. `Build()` creates per-session `Orchestrator` which internally creates `sdk/orchestration.Orchestrator`
 
 ## Adapter Pattern
 
@@ -114,6 +120,8 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 | LLM response            | sdk → core | `llm.ChatResponse`                                  |
 | Tool execution request  | core → sdk | `tools.Tool.Execute()`                              |
 | Tool result             | sdk → core | `tools.ToolResult`                                  |
+| Tool cache store        | sdk → sdk | `ToolResultCache.Store(name, content, meta)` — SHA256 key |
+| Tool cache lookup       | sdk ← sdk | `tool_result_read(hash, start_line, num_lines)` — fragment |
 | File coherence state    | sdk ↔ core | `FileCoherenceChecker` (injected via context)       |
 | Compaction trigger      | core → sdk | `CompactionStrategy.Compact()`                      |
 | Compacted messages      | sdk → core | `[]llm.Message`                                     |

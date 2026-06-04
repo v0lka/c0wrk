@@ -174,6 +174,7 @@ type RouterConfig struct {
 type ToolResultBudgetConfig struct {
 	HardCapTokens   int     `yaml:"hard_cap_tokens"`   // absolute max tokens per tool result (default: 8192)
 	MaxFillFraction float64 `yaml:"max_fill_fraction"` // max fraction of available context space (default: 0.3)
+	CacheTTLSeconds int     `yaml:"cacheTTLSeconds"`   // TTL in seconds for MCP tool cache entries (default: 300)
 }
 
 // ToolOutputPruningConfig configures selective pruning of old tool outputs to save context.
@@ -293,6 +294,16 @@ type ToolLimitsConfig struct {
 
 	// Web fetch limit
 	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // max response body size in bytes (default: 102400)
+
+	// Per-tool Stage 1 truncation defaults (line/byte-based, applied before token budget).
+	// If omitted for a tool, no Stage 1 truncation is applied.
+	PerToolTruncation map[string]ToolTruncationConfig `yaml:"perToolTruncation"`
+}
+
+// ToolTruncationConfig — per-tool truncation settings for the universal caching layer.
+type ToolTruncationConfig struct {
+	MaxLines int `yaml:"maxLines"` // 0 = no line-based truncation
+	MaxBytes int `yaml:"maxBytes"` // 0 = no byte-based truncation
 }
 
 // TimeoutsConfig holds configurable timeout values for various operations.

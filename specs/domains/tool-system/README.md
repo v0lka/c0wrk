@@ -105,7 +105,7 @@ ToolRegistry.Execute(ctx, name, input)
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools (ask_user, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact) bypass all checks
+- Internal tools (ask_user, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact, tool_result_read) bypass all checks
 - The symlink gate runs before policy resolution for every non-internal tool call
 - Symlinks in workspace or temp dir that are OS-level infrastructure (e.g., macOS /tmp → /private/tmp) are filtered out and do not trigger confirmation
 - MCP tools are tagged with source `mcp`
@@ -128,14 +128,16 @@ security:
     write_file: { policy: "always_allow" }
 
 toolLimits:
-  readDefaultLines: 2000 # max lines per read call
-  readMaxLineLength: 2000 # max characters per line
-  readMaxBytes: 51200 # total output cap (50 KB)
-  ripgrepMaxResults: 200 # max matches for ripgrep
-  ripgrepMaxLineLength: 2000 # max chars per ripgrep line
-  globMaxResults: 200 # max glob results
-  webSearchMaxResults: 5 # max web search results
-  webFetchMaxBodySize: 2097152 # max response body size (2 MB)
+  perToolTruncation:
+    read_file: { maxLines: 2000 }
+    ripgrep: { maxLines: 200 }
+    glob: { maxLines: 200 }
+    list_directory: { maxLines: 200 }
+    web_fetch: { maxBytes: 204800 }
+    bash_exec: { maxLines: 500 }
+
+toolResultBudget:
+  cacheTTLSeconds: 300 # seconds before cache entries expire
 
 timeouts:
   bashMaxTimeout: 120 # seconds

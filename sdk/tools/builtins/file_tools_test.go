@@ -843,7 +843,7 @@ func TestReadFileTool_ReadFile_DefaultPagination(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	// Read with no start_line/end_line
+	// Read with no start_line/end_line — returns full file; truncation is handled centrally
 	input, _ := json.Marshal(map[string]string{
 		"path": testFile,
 	})
@@ -856,25 +856,17 @@ func TestReadFileTool_ReadFile_DefaultPagination(t *testing.T) {
 		t.Errorf("expected success, got error: %s", result.Content)
 	}
 
-	// Verify only first 2000 lines returned
+	// Verify all lines are returned (no per-tool truncation)
 	if !strings.Contains(result.Content, "Line 1") {
 		t.Errorf("expected 'Line 1' in content")
 	}
-	if !strings.Contains(result.Content, "Line 2000") {
-		t.Errorf("expected 'Line 2000' in content")
-	}
-	if strings.Contains(result.Content, "Line 2001") {
-		t.Errorf("did not expect 'Line 2001' in content (should be truncated)")
+	if !strings.Contains(result.Content, "Line 3000") {
+		t.Errorf("expected 'Line 3000' in content (full file should be returned)")
 	}
 
-	// Verify continuation hint present
-	if !strings.Contains(result.Content, "[Use start_line=2001 to continue reading]") {
-		t.Errorf("expected continuation hint, got: %s", result.Content)
-	}
-
-	// Verify metadata header
-	if !strings.Contains(result.Content, "[File: large.txt | Lines 1-2000 of 3000") {
-		t.Errorf("expected metadata header with correct line range, got: %s", result.Content)
+	// Verify metadata header shows full file
+	if !strings.Contains(result.Content, "[File: large.txt | Lines 1-3000 of 3000") {
+		t.Errorf("expected metadata header with full line range, got: %s", result.Content)
 	}
 }
 
@@ -952,14 +944,14 @@ func TestReadFileTool_ReadFile_LongLinesTruncated(t *testing.T) {
 		t.Errorf("expected success, got error: %s", result.Content)
 	}
 
-	// Verify line is truncated and contains truncation notice
-	if !strings.Contains(result.Content, "...(line truncated, original: 5000 chars)") {
-		t.Errorf("expected line truncation notice with original length, got: %s", result.Content)
+	// Verify the full line is returned (no per-tool truncation; central layer handles it)
+	if !strings.Contains(result.Content, longLine) {
+		t.Errorf("expected full 5000-char line without truncation, got: ...%s", result.Content[len(result.Content)-100:])
 	}
 
-	// Verify the truncated content is present (2000 chars + notice)
-	if !strings.Contains(result.Content, strings.Repeat("a", 2000)) {
-		t.Errorf("expected first 2000 chars of the line")
+	// Verify no truncation notice
+	if strings.Contains(result.Content, "...(line truncated") {
+		t.Errorf("did not expect line truncation notice")
 	}
 }
 

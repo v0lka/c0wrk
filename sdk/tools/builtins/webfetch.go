@@ -176,11 +176,6 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		selectedLines := allLines[startLine-1 : endLine]
 		content := strings.Join(selectedLines, "\n")
 
-		// Check byte limit
-		if t.limits.MaxBodySize > 0 && len(content) > t.limits.MaxBodySize {
-			content = content[:t.limits.MaxBodySize] + "\n\n...(content truncated to configured limit)"
-		}
-
 		// Build header
 		header := fmt.Sprintf("[Lines %d-%d of %d | %d bytes]\n", startLine, endLine, totalLines, len(content))
 
@@ -194,11 +189,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		return tools.ToolResult{Content: content, IsError: false}, nil
 	}
 
-	// No line range — default behavior with enhanced truncation message
-	if t.limits.MaxBodySize > 0 && len(markdown) > t.limits.MaxBodySize {
-		markdown = markdown[:t.limits.MaxBodySize] + fmt.Sprintf("\n\n...(content truncated to %d bytes; original content has %d lines — use start_line/end_line to read specific sections)", t.limits.MaxBodySize, totalLines)
-	}
-
+	// No line range — return full markdown; centralized caching+truncation layer handles output size
 	return tools.ToolResult{Content: markdown, IsError: false}, nil
 }
 
@@ -224,8 +215,8 @@ func (t *WebFetchTool) fetchPage(ctx context.Context, targetURL string) (string,
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Safety cap on raw HTML to protect memory; the real limit is enforced
-	// on the Markdown output after conversion.
+	// Safety cap on raw HTML to protect memory; output size is managed by
+	// the centralized caching+truncation layer.
 	safetyCap := int64(t.limits.MaxBodySize) * rawHTMLSafetyCapMultiplier
 	body, err := io.ReadAll(io.LimitReader(resp.Body, safetyCap))
 	if err != nil {

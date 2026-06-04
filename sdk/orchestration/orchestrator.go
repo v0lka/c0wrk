@@ -891,6 +891,12 @@ func (o *Orchestrator) configureExecutor(executor *agent.Executor, stepCfg StepC
 	if o.cfg.PreWarningPercent > 0 {
 		executor.SetPreWarningPercent(o.cfg.PreWarningPercent)
 	}
+	if o.cfg.ToolCache != nil {
+		executor.SetToolCache(o.cfg.ToolCache)
+	}
+	if o.cfg.PerToolTruncation != nil {
+		executor.SetPerToolTruncation(o.cfg.PerToolTruncation)
+	}
 	if o.cfg.ReasoningEffort != "" {
 		stepRole := stepCfg.AgentRole
 		if stepRole == "" {

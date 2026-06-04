@@ -145,16 +145,9 @@ func TestRipgrepTool_MaxResults(t *testing.T) {
 		t.Fatalf("expected no error, got: %s", result.Content)
 	}
 
-	// Count match lines (lines containing file:line: pattern, exclude stats and context)
-	lines := strings.Split(strings.TrimSpace(result.Content), "\n")
-	matchLines := 0
-	for _, l := range lines {
-		if strings.Contains(l, ":") && !strings.HasPrefix(l, "Found") && !strings.HasPrefix(l, "\nFound") && !strings.HasPrefix(l, "  ") {
-			matchLines++
-		}
-	}
-	if matchLines > 1 {
-		t.Errorf("expected at most 1 match line with max_results=1, got %d: %s", matchLines, result.Content)
+	// No per-tool truncation; central layer handles it. All matches returned.
+	if !strings.Contains(result.Content, "Found") && !strings.Contains(result.Content, "matches") {
+		t.Errorf("expected match summary in output, got: %s", result.Content)
 	}
 }
 
@@ -235,25 +228,14 @@ func TestRipgrepTool_LongLineTruncation(t *testing.T) {
 		t.Fatalf("expected no error, got: %s", result.Content)
 	}
 
-	// Verify the output contains the truncation marker
-	if !strings.Contains(result.Content, "...(line truncated)") {
-		t.Errorf("expected result to contain '...(line truncated)', got: %s", result.Content)
+	// No per-line truncation; central layer handles it. The full long line should be present.
+	if strings.Contains(result.Content, "...(line truncated)") {
+		t.Errorf("did not expect '...(line truncated)' marker, got: %s", result.Content)
 	}
 
-	// Verify the line is actually truncated (should be around 2000 + len(truncation marker))
-	lines := strings.Split(result.Content, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "...(line truncated)") {
-			// The line should be truncated to DefaultRipgrepLimits().MaxLineLength + len("...(line truncated)")
-			defaults := DefaultRipgrepLimits()
-			if len(line) > defaults.MaxLineLength+50 {
-				t.Errorf("line appears not to be truncated, length: %d", len(line))
-			}
-			// Verify the file path and line number are preserved
-			if !strings.HasPrefix(line, base) && !strings.Contains(line, "longline.txt") {
-				t.Errorf("expected line to contain file path, got: %s", line)
-			}
-		}
+	// Verify the file path and long content are present in output
+	if !strings.Contains(result.Content, "longline.txt") {
+		t.Errorf("expected output to contain file path 'longline.txt', got: %s", result.Content)
 	}
 }
 

@@ -790,7 +790,7 @@ func TestMCPServerConfig_RoundTrip(t *testing.T) {
 // TestConfigValidation_RejectsInternalToolPolicies tests that config validation
 // rejects a config where an internal tool name appears in Security.ToolPolicies.
 func TestConfigValidation_RejectsInternalToolPolicies(t *testing.T) {
-	internalTools := []string{"ask_user", "finish", "list_step_outputs", "read_skill_resource", "read_step_output", "search_facts", "semantic_search", "set_step_status", "store_fact"}
+	internalTools := []string{"ask_user", "finish", "list_step_outputs", "read_skill_resource", "read_step_output", "search_facts", "semantic_search", "set_step_status", "store_fact", "tool_result_read"}
 
 	for _, toolName := range internalTools {
 		t.Run(toolName, func(t *testing.T) {

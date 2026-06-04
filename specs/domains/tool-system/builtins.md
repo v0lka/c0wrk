@@ -8,6 +8,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 - `sdk/tools/builtins/*.go` — tool implementations
 - `sdk/tools/builtins/ripgrep.go` — wraps the `rg` CLI (`--json` event stream)
+- `sdk/tools/builtins/tool_result_read.go` — reads cached tool result fragments by hash
 - `sdk/tools/builtins/coherence_format.go` — conflict message formatting for cross-session coherence
 - `sdk/tools/builtins/web_search/` — web search provider abstraction (brave, duckduckgo, exa, tavily)
 - `sdk/tools/builtins/web_search/brave.go` — Brave Search API provider
@@ -26,7 +27,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 ### Tool Registration
 
-All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)`. Registration is ordered (earlier tools take precedence in case of name conflicts). Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`) always bypass policy checks during execution.
+All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)`. Registration is ordered (earlier tools take precedence in case of name conflicts). Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`) always bypass policy checks during execution.
 
 ### Policy Resolution
 
@@ -98,6 +99,7 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 | `store_fact`          | Agent     | always_allow   | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | always_allow   | no        | Search blackboard facts                            |
 | `read_skill_resource` | Agent     | always_allow   | no        | Read skill resource files                          |
+| `tool_result_read`    | Agent     | internal       | no        | Read cached tool result fragments by hash          |
 
 ## Registration Order
 
@@ -112,8 +114,9 @@ RegisterBuiltinTools(registry, cfg):
   7. read_step_output, list_step_outputs
   8. set_step_status
   9. store_fact, search_facts
-  10. semantic_search (optional: needs vector search func)
-  11. ask_user (optional: needs ask_user func)
+  10. tool_result_read
+  11. semantic_search (optional: needs vector search func)
+  12. ask_user (optional: needs ask_user func)
 ```
 
 Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder` (not in `RegisterBuiltinTools`).
@@ -124,16 +127,32 @@ Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). Wh
 
 ## Limits Configuration
 
+Per-tool output truncation is centralized in the executor's two-stage pipeline (see [executor.md](../orchestration/executor.md)). Per-tool limits that were formerly enforced inside individual tools (`ReadMaxBytes`, `ReadMaxLineLength`, `ReadDefaultLines`, `RipgrepMaxResults`, `RipgrepMaxLineLength`, `GlobMaxResults`, `WebFetchMaxBodySize`) are now applied as Stage 1 line/byte truncation in the executor, after the full result is cached.
+
+| Config                              | Affects                    | Default            |
+| ----------------------------------- | -------------------------- | ------------------ |
+| `toolLimits.perToolTruncation`      | All cacheable tools (map)  | per-tool (see below)|
+| `toolResultBudget.cacheTTLSeconds`  | ToolResultCache eviction   | 300                |
+
+Default per-tool Stage 1 truncation:
+
+| Tool           | MaxLines      | MaxBytes        |
+| -------------- | ------------- | --------------- |
+| `read_file`    | 2000          | —               |
+| `ripgrep`      | 200           | —               |
+| `glob`         | 200           | —               |
+| `list_directory`| 200          | —               |
+| `web_fetch`    | —             | 204800 (200 KB) |
+| `bash_exec`    | 500           | —               |
+
+Legacy per-tool limits (still in code for backward compatibility but no longer enforced as output truncation):
+
 | Config                       | Affects                   | Default             |
 | ---------------------------- | ------------------------- | ------------------- |
-| `FileLimits.ReadMaxBytes`    | read_file                 | 50KB                |
-| `RipgrepLimits.MaxResults`   | ripgrep                   | 200                 |
-| `GlobLimits.MaxResults`      | glob                      | 200                 |
-| `WebFetchLimits.MaxBodySize` | web_fetch                 | 2MB                 |
-| `WebSearchLimits.MaxResults` | web_search                | 5                   |
 | `BashTimeouts.MaxTimeout`    | bash_exec                 | 120s                |
 | `BashTimeouts.WaitDelay`     | bash_exec                 | 100ms               |
 | `BashBlacklist`              | bash_exec                 | [] (regex patterns) |
+| `WebSearchLimits.MaxResults` | web_search                | 5                   |
 
 ## Adding a New Built-in Tool — Checklist
 
@@ -152,7 +171,9 @@ Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). Wh
 
 - All built-in tools have static descriptors (name/description/schema don't change at runtime)
 - Tools with `PolicyUserConfirm` default ALWAYS require confirmation unless overridden by config
-- Limits are applied at tool creation time (immutable after registration)
+- Limits are applied at tool creation time (immutable after registration); output truncation limits are centralized in the executor, not in individual tools
+- `tool_result_read` is an internal tool that bypasses policy checks and the caching layer
+- Per-tool Stage 1 truncation produces a fragmentation nudge with the SHA256 hash of the full result; the LLM uses `tool_result_read(hash, start_line, num_lines)` to retrieve fragments
 - Optional tools (semantic_search, web_search, ask_user) are only registered if their dependency func/key is provided
 - `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a hard runtime dependency verified at startup by `desktop.verifyExternalDependencies`
 - `ripgrep` parses the `rg --json` event stream (match/context/end events); exit code 1 means "no matches" and is not an error, exit codes ≥ 2 surface as `IsError` with stderr content

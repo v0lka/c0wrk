@@ -155,19 +155,16 @@ func TestGlobTool_MaxResults(t *testing.T) {
 		t.Fatalf("expected no error, got: %s", result.Content)
 	}
 
-	if !strings.Contains(result.Content, "(results limited to 1)") {
-		t.Errorf("expected truncation message, got: %s", result.Content)
+	// No more per-tool truncation; central layer handles it.
+	// All matching files should be returned regardless of max_results.
+	if strings.Contains(result.Content, "(results limited to") {
+		t.Errorf("did not expect truncation message, got: %s", result.Content)
 	}
 
+	// Should have more than 1 match since truncation was removed.
 	lines := strings.Split(strings.TrimSpace(result.Content), "\n")
-	matchCount := 0
-	for _, l := range lines {
-		if !strings.HasPrefix(l, "(") {
-			matchCount++
-		}
-	}
-	if matchCount != 1 {
-		t.Errorf("expected 1 match line, got %d", matchCount)
+	if len(lines) <= 1 {
+		t.Errorf("expected more than 1 match since truncation is removed, got %d lines: %s", len(lines), result.Content)
 	}
 }
 
@@ -247,9 +244,9 @@ func TestGlobTool_DefaultMaxResults(t *testing.T) {
 		t.Fatalf("expected no error, got: %s", result.Content)
 	}
 
-	// Should be truncated to 200 results (the new default)
-	if !strings.Contains(result.Content, "(results limited to 200)") {
-		t.Errorf("expected truncation message for default max_results=200, got: %s", result.Content)
+	// No per-tool truncation; all 250 files should be returned.
+	if strings.Contains(result.Content, "(results limited to") {
+		t.Errorf("did not expect truncation message, got: %s", result.Content)
 	}
 }
 

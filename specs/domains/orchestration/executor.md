@@ -85,10 +85,14 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   ├─ 1. Call LLM with current messages
 │   │      → Response may contain: text, tool_calls, or finish
 │   │
-│   ├─ 2. If tool_call:
+│   │   ├─ 2. If tool_call:
+│   │      ├─ Inject ToolResultCache into context (for fragmentation reader)
 │   │      ├─ Execute tool via ToolExecutor.Execute(ctx, name, input)
 │   │      ├─ Set Step.IsUntrusted ← tool.IsUntrusted() || source starts with "mcp"
-│   │      ├─ Apply ToolResultBudget (truncate if too large)
+│   │      ├─ Stage 1: Per-tool line/byte truncation (configurable, cached)
+│   │      │   → Store full result in ToolResultCache keyed by SHA256 hash
+│   │      │   → Truncate to per-tool limits, append fragmentation nudge with hash
+│   │      ├─ Stage 2: Apply ToolResultBudget (token-based truncation)
 │   │      ├─ Add observation to messages (context.go wraps untrusted output in <untrusted-content>)
 │   │      └─ Check context fill → compact if needed
 │   │
@@ -138,17 +142,35 @@ These tools are always available regardless of step's AllowedTools filter:
 - `ask_user` — prompt user for information
 - `set_step_status` — update step status/checklist
 - `read_step_output` — read a specific step's output
+- `tool_result_read` — read cached tool result fragments by hash
 
 The set is enforced in `core/stepconfig.go` `criticalAlwaysAllowedTools` and unioned into the filtered list whenever `AllowedTools` is non-empty.
 
-### Tool Result Budget
+### Tool Result Caching & Two-Stage Truncation
 
-Large tool results are truncated to stay within context:
+Every non-infrastructure tool result is cached and truncated in two stages:
+
+**Stage 1 — Per-tool line/byte truncation (configurable per tool):**
+
+- Full result is stored in `ToolResultCache` keyed by SHA256(content)
+- Result is truncated to per-tool `MaxLines` / `MaxBytes` (from config `toolLimits.perToolTruncation`)
+- A fragmentation nudge is appended: `[This output was truncated. Read the rest with tool_result_read(hash="sha256...", start_line=N+1, num_lines=M)]`
+- Cache entries carry metadata for coherence checking (file tools: mtime+size; MCP tools: TTL)
+
+**Stage 2 — Token-based budget (existing, unchanged):**
 
 - `HardCapTokens` — absolute maximum tokens for a single result
 - `FillFraction` — max percentage of available context for tool results
 - Floor: 256 tokens minimum
 - Truncation notice appended when result exceeds budget
+
+**Cache coherence:**
+
+- File tools (`read_file`, `write_file`, `edit_file`, `delete_file`): cache entries tagged with file path + mtime + size. On `tool_result_read`, the executor checks current file metadata against cached signature. If changed, returns an error instructing the LLM to re-read.
+- MCP tools: cache entries carry a TTL. Expired entries are evicted on access.
+- Non-cacheable tools (`tool_result_read`, `finish`, `read_step_output`, `list_step_outputs`, `store_fact`, `search_facts`, `set_step_status`, `ask_user`): excluded from both caching and Stage 1 truncation.
+
+**Cache TTL:** `toolResultBudget.cacheTTLSeconds` (default: 300). Eviction runs on access.
 
 ## Error Handling
 
@@ -168,6 +190,8 @@ Large tool results are truncated to stay within context:
 - Step-local skill narrowing fires whenever `step.Profile.Skills` is non-empty; requested names resolve from the task-scope ActiveSkills pool first, falling back to the SkillManager only for names absent from the pool
 - Every `Step` carries `IsUntrusted`; set by executor after tool execution via `tool.IsUntrusted()` or MCP source check
 - Untrusted tool output is wrapped in `<untrusted-content>` XML tags in `context.go` `buildStepMessages()` before messages are sent to the LLM
+- Every tool result from a cacheable tool is stored in ToolResultCache before truncation; the cache entry key is SHA256(full content)
+- `tool_result_read` validates cache coherence on every read: for file tools, it compares current file mtime+size with the cached signature; for MCP tools, it checks TTL expiry
 
 ## Related Specs
 

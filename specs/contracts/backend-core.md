@@ -18,7 +18,7 @@
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
 | `Plan`, `PlanStep`    | core (aliases) | core → backend | Plan structure                        |
 | `ToolPolicy`          | core/tools     | backend → core | Security policy values                |
-| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config                    |
+| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation) |
 
 ## Config Adapter
 
@@ -88,7 +88,8 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Execution mode         | backend → core | `HandleOptions.ExecutionMode`            |
 | User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
-| Available tools config | backend → core | `BuiltinToolsConfig`                     |
+| Available tools config | backend → core | `BuiltinToolsConfig` (incl. perToolTruncation) |
+| Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies      | backend → core | `BuilderConfig.Security`                 |
 | Execution result       | core → backend | `*HandleResult`                          |
 | Lifecycle events       | core → backend | `Emitter` method calls                   |
@@ -103,6 +104,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 ## Breaking Change Checklist
 
 - Adding a field to `BuilderConfig` → update `backend/configadapter.go`
+- Adding a new per-tool truncation entry → update `backend/configadapter.go` `convertTruncationMap()`
 - Changing `HandleResult` fields → update session event emission in backend
 - Changing `Emitter` interface → update backend emitter implementation
 - Adding new `OrchestratorBuilder` method → update `backend/application.go` if exposed to frontend

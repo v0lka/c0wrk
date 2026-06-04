@@ -287,6 +287,19 @@ func (b *OrchestratorBuilder) Build(
 		InjectionDefenseEnabled:   cfg.Security.InjectionDefenseEnabled,
 	}
 
+	// Create tool result cache (per-session lifetime).
+	cacheTTL := time.Duration(cfg.Executor.ToolResultBudget.CacheTTLSeconds) * time.Second
+	toolCache := agent.NewToolResultCache(cacheTTL)
+
+	// Convert per-tool truncation config from builder to agent types.
+	perToolTruncation := make(map[string]agent.ToolTruncationConfig, len(cfg.ToolLimits.PerToolTruncation))
+	for name, tc := range cfg.ToolLimits.PerToolTruncation {
+		perToolTruncation[name] = agent.ToolTruncationConfig{
+			MaxLines: tc.MaxLines,
+			MaxBytes: tc.MaxBytes,
+		}
+	}
+
 	// Token counter, budgets, circuit breaker
 	toolResultBudget := ToolResultBudget{
 		HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
@@ -333,6 +346,8 @@ func (b *OrchestratorBuilder) Build(
 		VectorSearchFunc: b.vectorSearchFunc,
 		SkillManager:     sessionSkillMgr,
 		CoreToolRegistry: b.registry, // for skill policy overrides
+		ToolCache:        toolCache,
+		PerToolTruncation: perToolTruncation,
 	}), nil
 }
 

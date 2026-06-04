@@ -106,6 +106,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			ToolResultBudget: core.BuilderToolResultBudget{
 				HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
 				MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
+				CacheTTLSeconds: cfg.Executor.ToolResultBudget.CacheTTLSeconds,
 			},
 			ToolOutputPruning: core.BuilderToolOutputPruning{
 				KeepLastN:        cfg.Executor.ToolOutputPruning.KeepLastN,
@@ -156,6 +157,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			GlobMaxResults:       cfg.ToolLimits.GlobMaxResults,
 			WebSearchMaxResults:  cfg.ToolLimits.WebSearchMaxResults,
 			WebFetchMaxBodySize:  cfg.ToolLimits.WebFetchMaxBodySize,
+			PerToolTruncation:    convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
 			BashMaxTimeout:   cfg.Timeouts.BashMaxTimeout,
@@ -172,4 +174,19 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 		},
 		ExpandEnvVars: config.ExpandEnvVars,
 	}
+}
+
+// convertTruncationMap converts config-level ToolTruncationConfig to builder-level.
+func convertTruncationMap(src map[string]config.ToolTruncationConfig) map[string]core.BuilderToolTruncationConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]core.BuilderToolTruncationConfig, len(src))
+	for k, v := range src {
+		dst[k] = core.BuilderToolTruncationConfig{
+			MaxLines: v.MaxLines,
+			MaxBytes: v.MaxBytes,
+		}
+	}
+	return dst
 }

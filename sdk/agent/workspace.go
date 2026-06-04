@@ -76,6 +76,23 @@ func FactStoreFromContext(ctx context.Context) FactStore {
 }
 
 // ---------------------------------------------------------------------------
+// ToolResultCache — read access to cached tool results (for tool_result_read)
+// ---------------------------------------------------------------------------
+
+type toolResultCacheKey struct{}
+
+// WithToolResultCache returns a context carrying the given ToolResultCache.
+func WithToolResultCache(ctx context.Context, cache *ToolResultCache) context.Context {
+	return context.WithValue(ctx, toolResultCacheKey{}, cache)
+}
+
+// ToolResultCacheFromContext returns the ToolResultCache from context, or nil.
+func ToolResultCacheFromContext(ctx context.Context) *ToolResultCache {
+	c, _ := ctx.Value(toolResultCacheKey{}).(*ToolResultCache)
+	return c
+}
+
+// ---------------------------------------------------------------------------
 // StepTodoUpdateFunc — callback for set_step_status tool to emit events
 // ---------------------------------------------------------------------------
 

@@ -89,6 +89,9 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	registry.Register(builtins.NewGlobToolWithLimits(cfg.GlobLimits))
 	registry.Register(builtins.NewRipgrepToolWithLimits(cfg.RipgrepLimits))
 
+	// Tool result cache reader
+	registry.Register(builtins.NewToolResultReadTool())
+
 	// Step output tools
 	registry.Register(builtins.NewReadStepOutputTool())
 	registry.Register(builtins.NewListStepOutputsTool())

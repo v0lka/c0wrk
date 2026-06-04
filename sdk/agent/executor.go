@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +16,19 @@ import (
 )
 
 const executorNudge = "[System] You have tools available that can help answer this request. Before finishing, try using relevant tools to discover the answer. Do NOT say you cannot determine something without first attempting to use your tools."
+
+// nonCacheableTools is the set of tool names whose results are NOT cached.
+// These are internal meta-tools or produce tiny outputs where caching adds overhead.
+var nonCacheableTools = map[string]struct{}{
+	"tool_result_read":  {},
+	"finish":            {},
+	"read_step_output":  {},
+	"list_step_outputs": {},
+	"store_fact":        {},
+	"search_facts":      {},
+	"set_step_status":   {},
+	"ask_user":          {},
+}
 
 const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Wrap up your work NOW: summarize your findings and finish. Do not start new explorations."
 
@@ -57,6 +71,10 @@ type Executor struct {
 	toolResultBudget        ToolResultBudget
 	circuitBreaker          CircuitBreakerConfig
 	stepLimitFunc           StepLimitFunc // callback when step limit is reached
+
+	// Tool result caching and per-tool truncation (Stage 1).
+	toolCache          *ToolResultCache
+	perToolTruncation  map[string]ToolTruncationConfig
 
 	// Circuit breaker: detect repeated identical tool calls
 	consecutiveRepeatCount int
@@ -153,6 +171,17 @@ func (e *Executor) SetStepLimitFunc(fn StepLimitFunc) {
 	e.stepLimitFunc = fn
 }
 
+// SetToolCache sets the shared tool result cache for this executor.
+// All tool results will be stored in this cache before truncation.
+func (e *Executor) SetToolCache(cache *ToolResultCache) {
+	e.toolCache = cache
+}
+
+// SetPerToolTruncation sets per-tool truncation defaults for Stage 1 (line/byte-based).
+func (e *Executor) SetPerToolTruncation(cfg map[string]ToolTruncationConfig) {
+	e.perToolTruncation = cfg
+}
+
 // applyToolResultBudget truncates a tool result if it exceeds the budget.
 // The budget is min(HardCapTokens, AvailableTokens * MaxFillFraction) with a 256-token floor.
 // When truncated, a notice is appended to inform the model.
@@ -211,6 +240,78 @@ func getTruncationHint(toolName string) string {
 	default:
 		return "Break into smaller operations or use targeted queries."
 	}
+}
+
+// applyPerToolTruncation applies Stage 1 line/byte-based truncation from per-tool config.
+// Returns the (possibly truncated) content and a boolean indicating whether truncation occurred.
+func (e *Executor) applyPerToolTruncation(content string, toolName string) (string, bool) {
+	if e.perToolTruncation == nil {
+		return content, false
+	}
+	cfg, ok := e.perToolTruncation[toolName]
+	if !ok {
+		return content, false
+	}
+	truncated := false
+
+	// Line-based truncation
+	if cfg.MaxLines > 0 {
+		lines := strings.Split(content, "\n")
+		if len(lines) > cfg.MaxLines {
+			content = strings.Join(lines[:cfg.MaxLines], "\n")
+			truncated = true
+		}
+	}
+
+	// Byte-based truncation
+	if cfg.MaxBytes > 0 && len(content) > cfg.MaxBytes {
+		content = content[:cfg.MaxBytes]
+		truncated = true
+	}
+
+	return content, truncated
+}
+
+// formatFragmentationNudge returns a message instructing the LLM how to read
+// truncated output in fragments via tool_result_read.
+func formatFragmentationNudge(hash string, toolName string) string {
+	return fmt.Sprintf(
+		"\n\n[This output was truncated to the default page size for '%s'. "+
+			"The full result is cached with hash: %s. "+
+			"Use tool_result_read(hash=\"%s\", start_line=1, num_lines=N) to read fragments. "+
+			"num_lines must not exceed the default page size.]",
+		toolName, hash, hash,
+	)
+}
+
+// buildCacheMeta extracts file metadata from tool input for file-based tools.
+// Returns ToolCacheMeta with FilePath/FileMtime/FileSize set for file tools,
+// and IsMCP set for MCP-sourced tools.
+func (e *Executor) buildCacheMeta(toolName string, input json.RawMessage) ToolCacheMeta {
+	var meta ToolCacheMeta
+
+	// Detect MCP tools via source.
+	if source := e.tools.GetToolSource(toolName); source != "" && source != "core" {
+		meta.IsMCP = true
+		return meta // MCP tools don't get file coherence metadata
+	}
+
+	// Extract file path for file-based tools.
+	switch toolName {
+	case "read_file", "write_file", "edit_file":
+		var params struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(input, &params); err == nil && params.Path != "" {
+			if info, err := os.Stat(params.Path); err == nil {
+				meta.FilePath = params.Path
+				meta.FileMtime = info.ModTime().UnixNano()
+				meta.FileSize = info.Size()
+			}
+		}
+	}
+
+	return meta
 }
 
 // Run executes the ReAct loop for the given task tools and context manager.
@@ -643,7 +744,12 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 			}
 
 			// Execute the tool (task context should already be set by the caller)
-			result, err := e.tools.Execute(ctx, action.Name, action.Input)
+			// Inject tool result cache into context so tool_result_read can access it.
+			execCtx := ctx
+			if e.toolCache != nil {
+				execCtx = WithToolResultCache(ctx, e.toolCache)
+			}
+			result, err := e.tools.Execute(execCtx, action.Name, action.Input)
 			if err != nil {
 				// Infrastructure error
 				return nil, err
@@ -880,6 +986,21 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 				e.consecutiveParseErrorCount = 0
 			}
 			// --- End parse error tracker ---
+
+			// --- Stage 1: Cache full result and apply per-tool truncation ---
+			if e.toolCache != nil {
+				if _, isNonCacheable := nonCacheableTools[action.Name]; !isNonCacheable {
+					meta := e.buildCacheMeta(action.Name, action.Input)
+					hash := e.toolCache.Store(action.Name, result.Content, meta)
+
+					// Apply per-tool line/byte truncation (Stage 1).
+					truncated, wasTruncated := e.applyPerToolTruncation(observation, action.Name)
+					if wasTruncated {
+						observation = truncated + formatFragmentationNudge(hash, action.Name)
+					}
+				}
+			}
+			// --- End Stage 1 caching / truncation ---
 
 			// Apply tool result budget
 			observation = e.applyToolResultBudget(observation, cw, action.Name)

@@ -49,7 +49,7 @@ var rolePruningDefaults = map[string]struct {
 // agent-infrastructure tools that the executor needs to function regardless of
 // the planner's step profile. The set is unioned into the filtered list
 // regardless of what the planner emitted.
-var criticalAlwaysAllowedTools = []string{"finish", "store_fact", "search_facts", "ask_user", "set_step_status", "read_step_output"}
+var criticalAlwaysAllowedTools = []string{"finish", "store_fact", "search_facts", "ask_user", "set_step_status", "read_step_output", "tool_result_read"}
 
 // SystemPromptBuilder is the callback signature shared between the SDK (for
 // default per-step prompts) and coreStepConfigurator (to synthesize a

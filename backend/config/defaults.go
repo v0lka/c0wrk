@@ -116,6 +116,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.ToolResultBudget.MaxFillFraction == 0 {
 		cfg.Executor.ToolResultBudget.MaxFillFraction = 0.3
 	}
+	if cfg.Executor.ToolResultBudget.CacheTTLSeconds == 0 {
+		cfg.Executor.ToolResultBudget.CacheTTLSeconds = 300 // 5 minutes for MCP tools
+	}
 
 	// Tool output pruning defaults
 	if cfg.Executor.ToolOutputPruning.KeepLastN == 0 {
@@ -271,6 +274,19 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.ToolLimits.WebFetchMaxBodySize == 0 {
 		cfg.ToolLimits.WebFetchMaxBodySize = 2097152 // 2MB
+	}
+
+	// Per-tool Stage 1 truncation defaults (applied before token budget).
+	// These values serve as default page sizes for tool_result_read.
+	if cfg.ToolLimits.PerToolTruncation == nil {
+		cfg.ToolLimits.PerToolTruncation = map[string]ToolTruncationConfig{
+			"read_file":      {MaxLines: 2000, MaxBytes: 0},
+			"ripgrep":        {MaxLines: 200, MaxBytes: 0},
+			"glob":           {MaxLines: 200, MaxBytes: 0},
+			"list_directory": {MaxLines: 200, MaxBytes: 0},
+			"web_fetch":      {MaxLines: 0, MaxBytes: 204800},
+			"bash_exec":      {MaxLines: 500, MaxBytes: 0},
+		}
 	}
 
 	// Timeouts defaults

@@ -113,6 +113,8 @@ backend/configadapter.go: ToBuilderConfig(cfg)
          ▼
 core/builder.go: NewOrchestratorBuilder(builderCfg)
   ├─ Synchronous: tool registry, built-in tools, security policies
+  ├─  Creates ToolResultCache with cacheTTLSeconds
+  ├─  Converts perToolTruncation map to per-tool truncation config
   └─ Async (goroutine): MCP gateway, LLM router, model registry
          │
          ▼
@@ -138,6 +140,9 @@ desktop/startup.go (background goroutine, after EventBackendReady):
 Executor decides to call a tool
          │
          ▼
+sdk/agent/executor.go: injects ToolResultCache into context
+         │
+         ▼
 sdk/agent/executor.go: calls ToolExecutor.Execute(ctx, name, input)
          │
          ▼
@@ -160,6 +165,16 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
                 │
                 ▼
          ToolResult {Content, IsError}
+                │
+                ▼ (back in executor)
+sdk/agent/executor.go: cache + two-stage truncation
+  │
+  ├─ Skip if tool is non-cacheable (tool_result_read, finish, ask_user, etc.)
+  ├─ Store full result in ToolResultCache keyed by SHA256(content)
+  │    └─ Metadata: file path+mtime+size (file tools) or TTL (MCP tools)
+  ├─ Stage 1: Apply per-tool line/byte truncation (configurable per tool)
+  │    └─ Append fragmentation nudge with hash: "[truncated... tool_result_read(hash=...)]"
+  └─ Stage 2: Apply ToolResultBudget (token-based hard cap)
 ```
 
 ## Blackboard Flow

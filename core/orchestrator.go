@@ -135,6 +135,10 @@ type OrchestratorDeps struct {
 	VectorSearchFunc tools.VectorSearchFunc // optional, for auto-RAG hint generation
 	SkillManager     *skills.SkillManager   // optional, for skill discovery and activation
 	CoreToolRegistry *tools.ToolRegistry    // core tool registry for skill policy overrides
+
+	// Tool result caching and per-tool truncation.
+	ToolCache         *agent.ToolResultCache
+	PerToolTruncation map[string]agent.ToolTruncationConfig
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -231,6 +235,8 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		ToolResultBudget:          deps.ToolResultBudget,
 		CircuitBreaker:            deps.CircuitBreaker,
 		PreWarningPercent:         cfg.PreWarningPercent,
+		ToolCache:                 deps.ToolCache,
+		PerToolTruncation:         deps.PerToolTruncation,
 		ReasoningEffort:           cfg.ReasoningEffort,
 		RoleOverrides:             cfg.RoleOverrides,
 		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger, buildSystemPrompt, taskCtxProvider, deps.SkillManager),

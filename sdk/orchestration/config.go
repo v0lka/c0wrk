@@ -54,6 +54,10 @@ type Config struct {
 	CircuitBreaker            agent.CircuitBreakerConfig
 	PreWarningPercent         int // context fill % for pre-compaction store_fact nudge (0 = disabled)
 
+	// Tool result caching and per-tool Stage 1 truncation.
+	ToolCache         *agent.ToolResultCache
+	PerToolTruncation map[string]agent.ToolTruncationConfig
+
 	// ReasoningEffort is the base reasoning effort for step executors.
 	// When set, each executor gets AgentReasoningMode(stepRole, effort),
 	// where stepRole comes from StepConfig.AgentRole (e.g. "researcher", "coder", "tester").
