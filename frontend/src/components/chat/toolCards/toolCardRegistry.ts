@@ -134,9 +134,16 @@ const TOOL_CONFIGS: Record<string, CardConfig> = {
   list_step_outputs: LIST_DIR_CONFIG,
 }
 
+const CACHED_SUFFIX = ' (cached)'
+
 export function resolveCardConfig(toolName: string, source?: string): CardConfig {
   if (source && source !== '' && source !== 'core') {
     return { ...MCP_CONFIG, extractTitle: () => toolName }
+  }
+  // Handle cached tool results: strip " (cached)" suffix and look up original config.
+  if (toolName.endsWith(CACHED_SUFFIX)) {
+    const originalName = toolName.slice(0, -CACHED_SUFFIX.length)
+    return TOOL_CONFIGS[originalName] ?? { ...FALLBACK_CONFIG, extractTitle: () => originalName }
   }
   return TOOL_CONFIGS[toolName] ?? { ...FALLBACK_CONFIG, extractTitle: () => toolName }
 }

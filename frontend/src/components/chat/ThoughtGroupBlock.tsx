@@ -1,5 +1,6 @@
 import { BrainCircuit } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { Markdown } from '@/lib/markdownConfig'
 import type { DisplayItem } from '@/types/messages'
 
 type ThoughtGroupItem = Extract<DisplayItem, { kind: 'thought_group' }>
@@ -20,10 +21,12 @@ export function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
           return (
             <div key={`thought-${idx}`}>
               {hasReasoning && (
-                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.reasoning}</p>
+                <Markdown content={t.reasoning!} compact />
               )}
               {t.content && t.content.trim() !== '' && (
-                <p className={`text-muted-foreground text-sm whitespace-pre-wrap${hasReasoning ? ' mt-1.5' : ''}`}>{t.content}</p>
+                <div className={hasReasoning ? 'mt-1.5' : ''}>
+                  <Markdown content={t.content} compact />
+                </div>
               )}
             </div>
           )

@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { BrainCircuit } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { Markdown } from '@/lib/markdownConfig'
 import type { DisplayItem } from '@/types/messages'
 
 type ThoughtItem = Extract<DisplayItem, { kind: 'thought' }>
@@ -24,7 +25,7 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: T
           label="Reasoning"
         >
           <div className="mt-2 pl-3 border-l-2 border-muted min-w-0">
-            <p className="text-sm text-muted-foreground whitespace-pre-wrap">{displayReasoning}</p>
+            <Markdown content={displayReasoning} compact />
             {isLong && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowFull(!showFull) }}
@@ -37,7 +38,9 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: T
         </CollapsibleBlock>
       )}
       {item.content && item.content.trim() !== '' && (
-        <p className={`text-muted-foreground text-sm whitespace-pre-wrap${hasReasoning ? ' mt-3' : ''}`}>{item.content}</p>
+        <div className={hasReasoning ? 'mt-3' : ''}>
+          <Markdown content={item.content} compact />
+        </div>
       )}
     </div>
   )

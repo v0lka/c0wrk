@@ -643,7 +643,17 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		for callIdx, action := range toolCalls {
 			// Emit tool call
-			e.emitter.ToolCall(stepNum, callIdx, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
+			toolDisplayName := action.Name
+			// For tool_result_read: display as "original_tool (cached)" in chat UI
+			if action.Name == "tool_result_read" && e.toolCache != nil {
+				var trParams struct{ Hash string `json:"hash"` }
+				if json.Unmarshal(action.Input, &trParams) == nil && trParams.Hash != "" {
+					if entry, ok := e.toolCache.Get(trParams.Hash); ok {
+						toolDisplayName = entry.ToolName + " (cached)"
+					}
+				}
+			}
+			e.emitter.ToolCall(stepNum, callIdx, toolDisplayName, string(action.Input), e.tools.GetToolSource(action.Name))
 
 			// --- Circuit breaker: detect repeated identical tool calls ---
 			toolKey := action.Name + ":" + compactJSON(action.Input)
