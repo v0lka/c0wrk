@@ -257,21 +257,25 @@ toolLimits:
   # Web fetch
 
   # --- Per-tool Stage 1 truncation (applied before token budget) ------------
+  # Safety valves against memory exhaustion attacks — NOT token optimization.
+  # Values are deliberately generous: normal usage on an average project should
+  # never trigger truncation. If you see truncation notices at these limits,
+  # the output is likely anomalous or malicious.
   # These values also serve as default page sizes for tool_result_read.
   # Omitted tools receive no Stage 1 truncation. Use 0 to disable a dimension.
   perToolTruncation:
     read_file:
-      maxLines: 2000
+      maxLines: 50000
     ripgrep:
-      maxLines: 200
+      maxLines: 5000
     glob:
-      maxLines: 200
+      maxLines: 5000
     list_directory:
-      maxLines: 200
+      maxLines: 5000
     web_fetch:
-      maxBytes: 204800  # 200 KB
+      maxBytes: 2097152  # 2 MiB
     bash_exec:
-      maxLines: 500
+      maxLines: 10000
 
 # ---------------------------------------------------------------------------
 # Timeouts (in seconds)

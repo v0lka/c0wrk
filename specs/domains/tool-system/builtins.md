@@ -134,16 +134,18 @@ Per-tool output truncation is centralized in the executor's two-stage pipeline (
 | `toolLimits.perToolTruncation`      | All cacheable tools (map)  | per-tool (see below)|
 | `toolResultBudget.cacheTTLSeconds`  | ToolResultCache eviction   | 300                |
 
+> Stage 1 is a memory-exhaustion prevention layer, not a token optimizer. Values are deliberately generous — normal usage on an average project should never trigger truncation.
+
 Default per-tool Stage 1 truncation:
 
 | Tool           | MaxLines      | MaxBytes        |
 | -------------- | ------------- | --------------- |
-| `read_file`    | 2000          | —               |
-| `ripgrep`      | 200           | —               |
-| `glob`         | 200           | —               |
-| `list_directory`| 200          | —               |
-| `web_fetch`    | —             | 2097152 (2 MB)   |
-| `bash_exec`    | 500           | —               |
+| `read_file`    | 50000         | —               |
+| `ripgrep`      | 5000          | —               |
+| `glob`         | 5000          | —               |
+| `list_directory`| 5000         | —               |
+| `web_fetch`    | —             | 2097152 (2 MiB)  |
+| `bash_exec`    | 10000         | —               |
 
 Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 

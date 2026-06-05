@@ -129,12 +129,12 @@ security:
 
 toolLimits:
   perToolTruncation:
-    read_file: { maxLines: 2000 }
-    ripgrep: { maxLines: 200 }
-    glob: { maxLines: 200 }
-    list_directory: { maxLines: 200 }
+    read_file: { maxLines: 50000 }
+    ripgrep: { maxLines: 5000 }
+    glob: { maxLines: 5000 }
+    list_directory: { maxLines: 5000 }
     web_fetch: { maxBytes: 2097152 }
-    bash_exec: { maxLines: 500 }
+    bash_exec: { maxLines: 10000 }
 
 toolResultBudget:
   cacheTTLSeconds: 300 # seconds before cache entries expire
