@@ -186,6 +186,23 @@ func (f *FrontendAPI) ResumeTask(id string) error {
 	return f.app.Manager().ResumeTask(f.ctx(), id)
 }
 
+// GetSessionTokens returns persisted token counts for a session.
+func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
+	var result SessionTokensResponse
+	if f.store == nil || sessionID == "" {
+		return result
+	}
+	info, err := f.store.LoadSession(f.ctx(), sessionID)
+	if err != nil || info == nil {
+		return result
+	}
+	result.TotalInputTokens = info.TotalInputTokens
+	result.TotalOutputTokens = info.TotalOutputTokens
+	result.Model = info.Model
+	result.Family = info.Family
+	return result
+}
+
 // CancelUnfinishedTask discards an unfinished task in the given session,
 // preventing future resume prompts. Safe to call when no unfinished task
 // exists; in that case it is a no-op.
@@ -292,6 +309,9 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 // fileRefPattern matches @path references (with optional backslash-escaped spaces and #LN or #LN-M suffix).
 var fileRefPattern = regexp.MustCompile(`(?:^|\s)@((?:[^\s\\]|\\.)+(?:#\d+(?:-\d+)?)?)`)
 
+// multiSpaceRe collapses runs of 2+ spaces into one.
+var multiSpaceRe = regexp.MustCompile(`  +`)
+
 // preprocessMessageText transforms a user message for the orchestrator:
 // 1. Strips /skill-name references for each skill in activeSkills.
 // 2. Converts @file-path references to fileref:// URIs.
@@ -330,6 +350,6 @@ func preprocessMessageText(text string, activeSkills []string) string {
 	})
 
 	// Collapse multiple spaces into one.
-	result = regexp.MustCompile(`  +`).ReplaceAllString(result, " ")
+	result = multiSpaceRe.ReplaceAllString(result, " ")
 	return strings.TrimSpace(result)
 }

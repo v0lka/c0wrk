@@ -17,7 +17,10 @@ export function useLatestAsync(): LatestAsync {
 
   const wrap = useCallback(<T>(promise: Promise<T>): Promise<T | undefined> => {
     const id = ++counterRef.current
-    return promise.then((value) => (counterRef.current === id ? value : undefined))
+    return promise.then(
+      (value) => (counterRef.current === id ? value : undefined),
+      (err) => { if (counterRef.current === id) throw err; return undefined },
+    )
   }, [])
 
   return { wrap }

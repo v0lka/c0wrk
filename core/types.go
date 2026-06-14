@@ -144,6 +144,8 @@ type Emitter interface {
 	SkillsActivated(skillNames []string)
 	// StepTodoUpdate emits a to-do list update for a plan step.
 	StepTodoUpdate(stepID string, items []TodoItem)
+	// MemoryRead emits an event when the agent reads from its persistent memory (facts, reflections, etc.).
+	MemoryRead(stepNum int, content string)
 }
 
 // TodoItem represents a single checklist item in a step's to-do list.
@@ -185,6 +187,7 @@ func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)               
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
 func (n *noopEmitter) StepTodoUpdate(_ string, _ []TodoItem)                        {}
+func (n *noopEmitter) MemoryRead(_ int, _ string)                                    {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -305,6 +308,11 @@ type AgentProfile struct {
 	KeepLastN      int      `json:"keep_last_n,omitempty"`     // per-step KeepLastN override (0 = use role default)
 	ProtectedTools []string `json:"protected_tools,omitempty"` // per-step ProtectedTools override (nil = use role default)
 }
+
+// isStepProfile is a marker method to satisfy orchestration.StepProfile.
+//
+//nolint:unused // marker method, consumed by interface satisfaction at type-assertion boundary
+func (AgentProfile) isStepProfile() {}
 
 // HandleResult — result of Orchestrator.Handle (Phase 2).
 // Provides rich output for CLI display including routing and plan info.

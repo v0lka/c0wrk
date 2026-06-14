@@ -17,16 +17,10 @@ const toolGlobDescription = `Find files and directories by name using glob patte
 // GlobTool finds files and directories matching doublestar glob patterns.
 type GlobTool struct {
 	*tools.BaseTool
-	limits GlobLimits
 }
 
-// NewGlobTool creates a new GlobTool instance with default limits.
+// NewGlobTool creates a new GlobTool instance.
 func NewGlobTool() *GlobTool {
-	return NewGlobToolWithLimits(DefaultGlobLimits())
-}
-
-// NewGlobToolWithLimits creates a new GlobTool instance with specified limits.
-func NewGlobToolWithLimits(limits GlobLimits) *GlobTool {
 	return &GlobTool{BaseTool: &tools.BaseTool{
 		ToolName:        "glob",
 		ToolDescription: toolGlobDescription,
@@ -51,9 +45,7 @@ func NewGlobToolWithLimits(limits GlobLimits) *GlobTool {
 	}`),
 		Policy:    tools.PolicyAlwaysAllow,
 		Untrusted: true,
-	},
-		limits: limits,
-	}
+	}}
 }
 
 // GlobInput represents the input parameters for glob search.

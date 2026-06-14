@@ -26,19 +26,19 @@ var rolePruningDefaults = map[string]struct {
 }{
 	"researcher": {
 		KeepLastN:      10,
-		ProtectedTools: []string{"store_fact", "search_facts", "read_file", "ripgrep", "semantic_search"},
+		ProtectedTools: []string{ToolStoreFact, ToolSearchFacts, ToolReadFile, ToolRipgrep, ToolSemanticSearch},
 	},
 	"coder": {
 		KeepLastN:      5,
-		ProtectedTools: []string{"store_fact", "search_facts"},
+		ProtectedTools: []string{ToolStoreFact, ToolSearchFacts},
 	},
 	"tester": {
 		KeepLastN:      5,
-		ProtectedTools: []string{"store_fact", "search_facts", "bash_exec"},
+		ProtectedTools: []string{ToolStoreFact, ToolSearchFacts, ToolBashExec},
 	},
 	"executor": {
 		KeepLastN:      5,
-		ProtectedTools: []string{"store_fact", "search_facts"},
+		ProtectedTools: []string{ToolStoreFact, ToolSearchFacts},
 	},
 }
 
@@ -49,7 +49,7 @@ var rolePruningDefaults = map[string]struct {
 // agent-infrastructure tools that the executor needs to function regardless of
 // the planner's step profile. The set is unioned into the filtered list
 // regardless of what the planner emitted.
-var criticalAlwaysAllowedTools = []string{"finish", "store_fact", "search_facts", "ask_user", "set_step_status", "read_step_output", "tool_result_read"}
+var criticalAlwaysAllowedTools = []string{ToolFinish, ToolStoreFact, ToolSearchFacts, ToolAskUser, ToolSetStepStatus, ToolReadStepOutput, ToolToolResultRead}
 
 // SystemPromptBuilder is the callback signature shared between the SDK (for
 // default per-step prompts) and coreStepConfigurator (to synthesize a
@@ -176,12 +176,30 @@ func coreStepConfigurator(
 			AllowedTools:       allowed,
 			SystemPrompt:       stepSystemPrompt,
 			SystemPromptSuffix: suffix,
-			CompactionStrategy: applyCompactionStrategy(profile.Domain, 3),
+			CompactionStrategy: applyCompactionStrategy(profile.Domain, complexityForStep(taskCtxProvider)),
 			KeepLastN:          keepLastN,
 			ProtectedTools:     protectedTools,
 			AgentRole:          profile.Role,
 		}
 	}
+}
+
+// complexityForStep extracts the routing complexity from the task context
+// (set by HandleMessage via WithComplexity). Defaults to 3 — the previous
+// hardcoded value — when the context is unavailable so step configurators
+// running outside a normal request flow keep their existing behavior.
+func complexityForStep(taskCtxProvider func() context.Context) int {
+	if taskCtxProvider == nil {
+		return 3
+	}
+	ctx := taskCtxProvider()
+	if ctx == nil {
+		return 3
+	}
+	if c := ComplexityFromContext(ctx); c > 0 {
+		return c
+	}
+	return 3
 }
 
 // narrowActiveSkills returns an *ActiveSkills containing only the skills listed

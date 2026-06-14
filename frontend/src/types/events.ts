@@ -1,4 +1,8 @@
 import type { ProjectInfo, VectorIndexStatus } from '@/types/models'
+import { isObj, has } from '@/types/guards'
+
+// Re-export isObj/has from guards for backward compatibility
+export { isObj, has }
 
 // Typed event system — session-scoped and global event payloads and maps
 
@@ -30,7 +34,7 @@ export interface PlanData {
 }
 
 export interface PlanStepStartData { step_id: string; description: string; summary?: string }
-export interface PlanStepCompleteData { step_id: string; success: boolean; duration: number; error?: string }
+export interface PlanStepCompleteData { step_id: string; success: boolean; duration: number; error?: string; progress?: number; current_step_index?: number; completed_count?: number; total_count?: number }
 
 export interface ToolConfirmData { confirm_id: string; tool: string; args: string; reasoning?: string }
 
@@ -57,8 +61,20 @@ export interface SubAgentCompleteData { step_id: string; success: boolean; durat
 export interface RetryData { attempt: number; max_attempts: number }
 export interface StepRetryData { step_id: string; attempt: number; max_attempts: number }
 export interface ServiceData { content: string; phase?: string }
-export interface SessionRenamedData { new_name: string }
+export interface SessionRenamedData { new_name: string; old_name?: string; id?: string }
 export interface TaskFailedResumableData { message?: string }
+export interface ReflectionData {
+  summary: string
+  insights?: string[]
+  suggested_action?: string
+  root_cause?: string
+  failure_analysis?: string
+  action_plan?: string
+  reasoning?: string
+  attempt: number
+  max_attempts: number
+}
+
 export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string; error?: string }
 export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
@@ -75,41 +91,41 @@ export interface StepTodoUpdateData {
 // --- Session event map ---
 
 export interface SessionEventMap {
-  routing: RoutingData
-  step_start: StepData
-  step_complete: StepData
-  thought: ThoughtData
-  tool_call: ToolCallData
-  tool_result: ToolResultData
-  tool_confirm: ToolConfirmData
-  ask_user: AskUserData
-  step_limit: StepLimitData
-  plan_generated: PlanData
-  plan_step_start: PlanStepStartData
-  plan_step_complete: PlanStepCompleteData
-  assistant_chunk: AssistantChunkData
-  assistant_done: { content: string; input_tokens: number; output_tokens: number }
-  error: ErrorData
-  task_complete: TaskCompleteData
-  task_cancelled: void
-  retry: RetryData
-  step_retry: StepRetryData
-  service: ServiceData
-  subagent_launch: SubAgentLaunchData
-  subagent_complete: SubAgentCompleteData
-  context_fill: ContextFillData
-  context_compaction: ContextCompactionData
-  session_tokens: SessionTokensData
-  task_failed_resumable: TaskFailedResumableData
-  task_resumed: void
-  tool_judge_response: ToolJudgeResponseData
-  finishing: void
-  reflection: void
-  session_renamed: SessionRenamedData
-  terminal_output: TerminalOutputData
-  skills_activated: SkillsActivatedData
-  blackboard_updated: BlackboardUpdatedData
-  step_todo_update: StepTodoUpdateData
+  readonly routing: RoutingData
+  readonly step_start: StepData
+  readonly step_complete: StepData
+  readonly thought: ThoughtData
+  readonly tool_call: ToolCallData
+  readonly tool_result: ToolResultData
+  readonly tool_confirm: ToolConfirmData
+  readonly ask_user: AskUserData
+  readonly step_limit: StepLimitData
+  readonly plan_generated: PlanData
+  readonly plan_step_start: PlanStepStartData
+  readonly plan_step_complete: PlanStepCompleteData
+  readonly assistant_chunk: AssistantChunkData
+  readonly assistant_done: { readonly content: string; readonly input_tokens: number; readonly output_tokens: number }
+  readonly error: ErrorData
+  readonly task_complete: TaskCompleteData
+  readonly task_cancelled: void
+  readonly retry: RetryData
+  readonly step_retry: StepRetryData
+  readonly service: ServiceData
+  readonly subagent_launch: SubAgentLaunchData
+  readonly subagent_complete: SubAgentCompleteData
+  readonly context_fill: ContextFillData
+  readonly context_compaction: ContextCompactionData
+  readonly session_tokens: SessionTokensData
+  readonly task_failed_resumable: TaskFailedResumableData
+  readonly task_resumed: void
+  readonly tool_judge_response: ToolJudgeResponseData
+  readonly finishing: void
+  readonly reflection: ReflectionData
+  readonly session_renamed: SessionRenamedData
+  readonly terminal_output: TerminalOutputData
+  readonly skills_activated: SkillsActivatedData
+  readonly blackboard_updated: BlackboardUpdatedData
+  readonly step_todo_update: StepTodoUpdateData
 }
 
 export type SessionEventKey = keyof SessionEventMap
@@ -117,28 +133,24 @@ export type SessionEventKey = keyof SessionEventMap
 // --- Global event map ---
 
 export interface GlobalEventMap {
-  'startup_error': { message: string; error: string }
-  'backend:ready': void
-  'projects:loaded': void
-  'sessions:loaded': void
-  'workspace:tree_changed': void
-  'vector_index:status': VectorIndexStatus
-  'project:created': ProjectInfo
-  'project:deleted': string
-  'project:renamed': { id: string; name: string }
-  'project:switched': ProjectInfo
+  readonly 'startup_error': { readonly message: string; readonly error: string }
+  readonly 'backend:ready': void
+  readonly 'projects:loaded': void
+  readonly 'sessions:loaded': void
+  readonly 'workspace:tree_changed': void
+  readonly 'vector_index:status': VectorIndexStatus
+  readonly 'project:created': ProjectInfo
+  readonly 'project:deleted': string
+  readonly 'project:renamed': { readonly id: string; readonly name: string }
+  readonly 'project:switched': ProjectInfo
 }
 
 export type GlobalEventKey = keyof GlobalEventMap
 
 // --- Type guard helpers ---
 
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null
-}
-
-function has<K extends string>(v: Record<string, unknown>, ...keys: K[]): boolean {
-  return keys.every(k => k in v)
+function isObjLocal(v: unknown): v is Record<string, unknown> {
+  return isObj(v)
 }
 
 export function isRoutingData(d: unknown): d is RoutingData { return isObj(d) && has(d, 'domain', 'complexity') }
@@ -151,15 +163,35 @@ export function isAskUserData(d: unknown): d is AskUserData { return isObj(d) &&
 export function isStepLimitData(d: unknown): d is StepLimitData { return isObj(d) && has(d, 'request_id', 'current_step', 'max_steps') }
 export function isPlanData(d: unknown): d is PlanData { return isObj(d) && has(d, 'step_count') }
 export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return isObj(d) && has(d, 'step_id') }
-export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData { return isObj(d) && has(d, 'step_id', 'success') }
-export function isAssistantChunkData(d: unknown): d is AssistantChunkData { return isObj(d) && (has(d, 'content') || has(d, 'accumulated_content')) }
+export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {
+  if (!isObj(d) || !has(d, 'step_id', 'success')) return false
+  // Validate optional progress fields when present.
+  if ('progress' in d && d.progress !== undefined && typeof d.progress !== 'number') return false
+  if ('current_step_index' in d && d.current_step_index !== undefined && typeof d.current_step_index !== 'number') return false
+  if ('completed_count' in d && d.completed_count !== undefined && typeof d.completed_count !== 'number') return false
+  if ('total_count' in d && d.total_count !== undefined && typeof d.total_count !== 'number') return false
+  return true
+}
+export function isAssistantChunkData(d: unknown): d is AssistantChunkData {
+  if (!isObjLocal(d)) return false
+  const hasContent = 'content' in d && typeof d.content === 'string'
+  const hasAccumulated = 'accumulated_content' in d && typeof d.accumulated_content === 'string'
+  return hasContent || hasAccumulated
+}
 export function isErrorData(d: unknown): d is ErrorData { return isObj(d) && has(d, 'error') }
 export function isTaskCompleteData(d: unknown): d is TaskCompleteData {
-  if (!isObj(d)) return false
-  const hasOutput = 'output' in d && (d.output === undefined || typeof d.output === 'string')
-  const hasAttempt = 'attempt_count' in d && typeof d.attempt_count === 'number'
-  const hasRouting = 'routing_decision' in d && isObj(d.routing_decision)
-  return hasOutput || hasAttempt || hasRouting
+  if (!isObjLocal(d)) return false
+  const hasValidOutput = typeof d.output === 'string'
+  const hasValidAttempt = typeof d.attempt_count === 'number'
+  const hasValidRouting = isObj(d.routing_decision)
+  // Accept any valid field as sufficient evidence of a task_complete event;
+  // a missing output field (e.g. Wails serialization edge case) is tolerable
+  // as long as attempt_count or routing_decision validates.
+  if (!(hasValidOutput || hasValidAttempt || hasValidRouting)) return false
+  if ('session_id' in d && d.session_id !== undefined && typeof d.session_id !== 'string') return false
+  // Allow missing output when other validators pass (defensive fallback).
+  if ('output' in d && d.output !== undefined && typeof d.output !== 'string') return false
+  return true
 }
 export function isRetryData(d: unknown): d is RetryData { return isObj(d) && has(d, 'attempt', 'max_attempts') }
 export function isStepRetryData(d: unknown): d is StepRetryData { return isObj(d) && has(d, 'step_id', 'attempt', 'max_attempts') }
@@ -170,9 +202,14 @@ export function isContextFillData(d: unknown): d is ContextFillData { return isO
 export function isContextCompactionData(d: unknown): d is ContextCompactionData { return isObj(d) && has(d, 'before_percent', 'after_percent') }
 export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
-export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData { return isObj(d) }
+export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {
+  if (!isObjLocal(d)) return false
+  return !('message' in d) || typeof d.message === 'string'
+}
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
+export function isReflectionData(d: unknown): d is ReflectionData { return isObj(d) && has(d, 'summary', 'attempt') }
+export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData { return isObj(d) && has(d, 'confirm_id') }
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }
 export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
   return isObj(d) && has(d, 'step_id', 'items') && Array.isArray(d.items)
@@ -186,6 +223,13 @@ export function isStartupError(d: unknown): d is StartupError {
   return isObj(d) && typeof d.message === 'string' && typeof d.error === 'string'
 }
 
+const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable'])
+
 export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
-  return isObj(d) && typeof d.state === 'string'
+  if (!isObjLocal(d)) return false
+  if (typeof d.state !== 'string' || !VALID_VECTOR_STATES.has(d.state)) return false
+  if (typeof d.progress !== 'number') return false
+  if (typeof d.files_indexed !== 'number') return false
+  if (typeof d.total_files !== 'number') return false
+  return true
 }

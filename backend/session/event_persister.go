@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -12,6 +13,7 @@ import (
 // Wails events separately.
 type EventPersister struct {
 	store  SessionStore
+	mu     sync.RWMutex
 	logger *slog.Logger
 }
 
@@ -23,6 +25,8 @@ func NewEventPersister(store SessionStore) *EventPersister {
 
 // log returns the persister's logger, falling back to slog.Default().
 func (p *EventPersister) log() *slog.Logger {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if p.logger != nil {
 		return p.logger
 	}
@@ -31,6 +35,8 @@ func (p *EventPersister) log() *slog.Logger {
 
 // SetLogger sets the logger for the event persister.
 func (p *EventPersister) SetLogger(l *slog.Logger) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.logger = l
 }
 

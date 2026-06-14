@@ -10,12 +10,13 @@ import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ActivityIndicator } from './ActivityIndicator'
 import { ChatScrollManager } from './ChatScrollManager'
-import { ChatMessageRenderer } from './ChatMessageRenderer'
+import { ChatMessageRenderer, CompactErrorFallback } from './ChatMessageRenderer'
 import { ExecutionPanels } from './ExecutionPanels'
 import { BlackboardPanel } from './BlackboardPanel'
 import { PendingActionsBar } from './PendingActionsBar'
 import { ChatInput } from './ChatInput'
 import { ScrollProvider } from './ScrollContext'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MessageCircle } from 'lucide-react'
 import { logger } from '@/lib/logger'
 
@@ -115,10 +116,14 @@ export function ChatArea() {
             <p>Send a message to start the conversation</p>
           </div>
         </div>
-        <ExecutionPanels />
-        <BlackboardPanel />
-        <PendingActionsBar />
-        <ChatInput />
+        <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>
+          <ExecutionPanels />
+          <BlackboardPanel />
+          <PendingActionsBar />
+        </ErrorBoundary>
+        <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
+          <ChatInput />
+        </ErrorBoundary>
       </div>
     )
   }
@@ -135,14 +140,22 @@ export function ChatArea() {
         <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
           <div className="p-4 space-y-4 min-w-0">
             <ChatMessageRenderer items={filteredItems} />
-            {streamingText && <AssistantMessage content={streamingText} isStreaming />}
+            {streamingText && (
+              <ErrorBoundary fallback={<CompactErrorFallback />}>
+                <AssistantMessage content={streamingText} isStreaming />
+              </ErrorBoundary>
+            )}
             <ActivityIndicator />
           </div>
         </ChatScrollManager>
-        <ExecutionPanels />
-        <BlackboardPanel />
-        <PendingActionsBar />
-        <ChatInput />
+        <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>
+          <ExecutionPanels />
+          <BlackboardPanel />
+          <PendingActionsBar />
+        </ErrorBoundary>
+        <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
+          <ChatInput />
+        </ErrorBoundary>
       </div>
     </ScrollProvider>
   )

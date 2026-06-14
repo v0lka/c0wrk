@@ -51,13 +51,13 @@ type failureCall struct {
 type mockTaskPersistence struct {
 	mu sync.Mutex
 
-	newTaskCalls         []newTaskCall
-	planCalls            []planCall
-	routingCalls         []routingCall
-	stepResultCalls      []stepResultCall
-	reflectionCalls      []reflectionCall
-	completionCalls     []completionCall
-	failureCalls        []failureCall
+	newTaskCalls    []newTaskCall
+	planCalls       []planCall
+	routingCalls    []routingCall
+	stepResultCalls []stepResultCall
+	reflectionCalls []reflectionCall
+	completionCalls []completionCall
+	failureCalls    []failureCall
 
 	// Control error behavior
 	persistError error

@@ -30,9 +30,10 @@ export async function getSessionHistory(sessionId: string): Promise<ChatMessage[
     const app = getApp()
     const result = await app.GetSessionHistory(sessionId)
     if (!isArrayOf(result, isChatMessage)) {
-      logger.warn('getSessionHistory: unexpected response shape', result)
+      logger.error('getSessionHistory: unexpected response shape, returning []', result)
+      return []
     }
-    return result as ChatMessage[]
+    return result
   } catch (err) {
     logger.error('Failed to get session history:', err)
     throw err
@@ -44,9 +45,9 @@ export async function getSessionTokens(sessionId: string): Promise<TokenInfo> {
     const app = getApp()
     const result = await app.GetSessionTokens(sessionId)
     if (!isTokenInfo(result)) {
-      logger.warn('getSessionTokens: unexpected response shape', result)
+      throw new Error('getSessionTokens: backend returned invalid data')
     }
-    return result as TokenInfo
+    return result
   } catch (err) {
     logger.error('Failed to get session tokens:', err)
     throw err

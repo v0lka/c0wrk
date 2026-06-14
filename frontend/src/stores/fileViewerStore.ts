@@ -234,6 +234,9 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
     }),
     {
       name: 'c0wrk-file-viewer',
+      version: 1,
+      // Bump version and implement migration when adding/removing/renaming persisted fields.
+      migrate: (persistedState, _version) => persistedState,
       partialize: (state) => ({
         openTabs: state.openTabs,
         activeFile: state.activeFile,

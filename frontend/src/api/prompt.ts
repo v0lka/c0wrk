@@ -12,7 +12,11 @@ export interface OptimizePromptResponse {
 export async function optimizePrompt(text: string): Promise<OptimizePromptResponse> {
   try {
     const app = getApp()
-    return await app.OptimizePrompt(text) as OptimizePromptResponse
+    const result = await app.OptimizePrompt(text)
+    if (typeof result !== 'object' || result === null || typeof (result as Record<string, unknown>).optimized_prompt !== 'string') {
+      throw new Error('optimizePrompt: backend returned invalid data')
+    }
+    return result as OptimizePromptResponse
   } catch (err) {
     logger.error('Failed to optimize prompt:', err)
     throw err

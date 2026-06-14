@@ -21,7 +21,7 @@ func setDefault[T any](ptr *[]T, val []T) {
 
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
-	// Log level defaults
+	// Log level defaults to DEBUG for maximum diagnostic visibility.
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "DEBUG"
 	}
@@ -171,17 +171,6 @@ func ApplyDefaults(cfg *Config) {
 	// Reasoning defaults
 	if cfg.Reasoning.BaseEffort == "" {
 		cfg.Reasoning.BaseEffort = "high"
-	}
-
-	// LLM retry defaults
-	if cfg.LLM.Retry.MaxRetries == 0 {
-		cfg.LLM.Retry.MaxRetries = 3
-	}
-	if cfg.LLM.Retry.InitialBackoff == "" {
-		cfg.LLM.Retry.InitialBackoff = "1s"
-	}
-	if cfg.LLM.Retry.MaxBackoff == "" {
-		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
 	// LMStudio default base URL
@@ -339,5 +328,11 @@ func ApplyDefaults(cfg *Config) {
 	// Proxy defaults
 	if cfg.Proxy.BypassList == nil {
 		cfg.Proxy.BypassList = []string{"localhost", "127.0.0.1"}
+	}
+	// Default: export proxy env vars for subprocesses (backward compat).
+	// Explicit `set_global_env: false` in YAML disables this.
+	if cfg.Proxy.Enabled && cfg.Proxy.SetGlobalEnv == nil {
+		trueVal := true
+		cfg.Proxy.SetGlobalEnv = &trueVal
 	}
 }

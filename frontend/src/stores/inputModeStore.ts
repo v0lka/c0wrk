@@ -61,6 +61,9 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
     }),
     {
       name: 'c0wrk-input-mode',
+      version: 1,
+      // Bump version and implement migration when adding/removing/renaming persisted fields.
+      migrate: (persistedState, _version) => persistedState,
       partialize: (state) => ({
         mode: state.mode,
         height: state.height,

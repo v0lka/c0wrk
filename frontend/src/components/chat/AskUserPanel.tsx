@@ -48,7 +48,7 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
     const parts = questions.map(q => {
       const sel = selections.get(q.id) ?? new Set<string>()
       const custom = customTexts.get(q.id) ?? ''
-      const labels = q.options.filter(o => sel.has(o.value)).map(o => o.label)
+      const labels = q.options.filter((o: { label: string; value: string }) => sel.has(o.value)).map((o: { label: string; value: string }) => o.label)
       return [...labels, custom.trim() ? `Custom: ${custom.trim()}` : ''].filter(Boolean).join('; ')
     }).filter(Boolean)
     const answer = parts.join(' | ')
@@ -82,7 +82,7 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
             <p className="text-base font-medium mb-3">{q.question}</p>
             {q.options.length > 0 && (
               <div className="space-y-2 mb-4">
-                {q.options.map(opt => (
+                {q.options.map((opt: { label: string; value: string }) => (
                   <button key={opt.value} type="button" onClick={() => toggleOption(q.id, opt.value)}
                     className={`w-full flex items-center gap-3 p-2.5 rounded-md border text-left transition-colors ${sel.has(opt.value) ? 'bg-primary/10 border-primary/50' : 'border-border hover:bg-accent/50'}`}
                   >

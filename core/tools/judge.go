@@ -12,13 +12,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/v0lka/c0wrk/core/internal/strutil"
 	"github.com/v0lka/c0wrk/core/tools/prompts"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // pathRegex matches absolute path-like substrings in command strings.
-var pathRegex = regexp.MustCompile(`/[a-zA-Z0-9/_.\-~]+`)
+// Matches POSIX-style absolute paths and Windows drive-letter paths
+// (e.g. C:\foo\bar or D:/baz).
+var pathRegex = regexp.MustCompile(`(?:/[a-zA-Z0-9/_.\-~]+|[A-Za-z]:[\\/][A-Za-z0-9\\/_.\-~]*)`)
 
 // JudgeVerdict represents the safety assessment of a tool call.
 type JudgeVerdict int
@@ -169,9 +172,9 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	verdict, reasoning := parseJudgeResponse(content)
 
 	if log != nil {
-		abbrevReasoning := reasoning
-		if len(abbrevReasoning) > 120 {
-			abbrevReasoning = abbrevReasoning[:120] + "..."
+		abbrevReasoning := strutil.TruncateUTF8(reasoning, 120)
+		if len(reasoning) > 120 {
+			abbrevReasoning += "..."
 		}
 		log.Debug("judge: LLM verdict", "tool", toolName, "verdict", verdictString(verdict), "reasoning", abbrevReasoning)
 	}

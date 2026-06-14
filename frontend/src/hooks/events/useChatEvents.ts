@@ -3,7 +3,7 @@
 
 import { useEffect } from 'react'
 import { onSessionEvent } from '@/api/runtime'
-import { isAssistantChunkData, isThoughtData, isErrorData, isTaskCompleteData } from '@/types/events'
+import { isAssistantChunkData, isThoughtData, isErrorData, isTaskCompleteData, isReflectionData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { generateMessageId } from '@/lib/ids'
 
@@ -123,8 +123,27 @@ export function useChatEvents(sessionId: string | null): void {
 
     // --- reflection ---
     cleanups.push(
-      onSessionEvent(sessionId, 'reflection', () => {
+      onSessionEvent(sessionId, 'reflection', (data) => {
+        if (!isReflectionData(data)) return
         useChatStore.getState().setActivityStatus('Reflecting on results...')
+        useChatStore.getState().addMessage(sessionId, {
+          id: generateMessageId(),
+          sessionId,
+          type: 'reflection',
+          content: data.summary,
+          metadata: {
+            summary: data.summary,
+            insights: data.insights,
+            suggested_action: data.suggested_action,
+            root_cause: data.root_cause,
+            failure_analysis: data.failure_analysis,
+            action_plan: data.action_plan,
+            reasoning: data.reasoning,
+            attempt: data.attempt,
+            max_attempts: data.max_attempts,
+          },
+          timestamp: Date.now(),
+        })
       }),
     )
 

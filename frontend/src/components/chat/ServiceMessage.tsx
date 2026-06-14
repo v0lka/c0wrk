@@ -25,9 +25,9 @@ function formatRoutingContent(metadata?: Record<string, unknown>): ReactNode {
 
   return (
     <>
-      <span className="text-muted-foreground">Domain:</span>{' '}
+      <span className="text-muted-foreground">{'Domain:'}</span>{' '}
       <span className="text-foreground/80">{domainLabels[domain] || domain || 'Unknown'}</span>
-      <span className="text-muted-foreground"> | Complexity: </span>
+      <span className="text-muted-foreground">{' | Complexity: '}</span>
       <span className="text-foreground/80">{complexityStars[complexity] || '☆☆☆☆☆'}</span>
     </>
   )

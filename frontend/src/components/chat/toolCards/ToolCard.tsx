@@ -38,14 +38,18 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   const Icon = config.icon
   const Body = config.Body
 
-  const mcpBadge = item.source && item.source !== '' && item.source !== 'core'
-    ? <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded">MCP</span>
-    : undefined
+  const mcpBadge = useMemo(() =>
+    item.source && item.source !== '' && item.source !== 'core'
+      ? <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded">MCP</span>
+      : null
+  , [item.source])
 
   // Cached badge
-  const cachedBadge = isCached
-    ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded">cached</span>
-    : undefined
+  const cachedBadge = useMemo(() =>
+    isCached
+      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded">cached</span>
+      : null
+  , [isCached])
 
   // Determine if title references a file path (for clickable navigation)
   // Cached tools never get file links — we don't have the original path.
@@ -53,7 +57,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
     'create_directory', 'delete_file', 'delete_directory', 'list_directory'].includes(item.toolName)
   const filePath = hint && isFileTool ? hint : undefined
 
-  const titleNode = (
+  const titleNode = useMemo(() => (
     <span className="text-sm min-w-0 overflow-hidden">
       <span className="text-muted-foreground">{config.verb}: </span>
       {filePath ? (
@@ -62,14 +66,14 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
         <span title={hint}>{title}</span>
       )}
     </span>
-  )
+  ), [config.verb, filePath, title, hint])
 
-  // Range info line shown for cached results after the result arrives.
-  const cacheRangeNode = cacheRange ? (
+  const cacheRangeNode = useMemo(() => cacheRange ? (
     <span className="text-xs text-hljs-comment">
       fragment: lines {cacheRange.start}–{cacheRange.end} of {cacheRange.total}
     </span>
-  ) : undefined
+  ) : null
+  , [cacheRange])
 
   // Body-less cards: single-line flat display
   if (!Body) {

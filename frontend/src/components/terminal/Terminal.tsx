@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { terminalInput, terminalResize, startTerminal, stopTerminal } from '@/api/terminal'
-import { onSessionEvent } from '@/api/runtime'
+import { useTerminalEvents } from '@/hooks/events/useTerminalEvents'
 import { useXTermTheme } from '@/hooks/useXTermTheme'
 import { logger } from '@/lib/logger'
 
@@ -16,8 +16,14 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
     const containerRef = useRef<HTMLDivElement>(null)
     const termRef = useRef<XTerm | null>(null)
     const fitAddonRef = useRef<FitAddon | null>(null)
-    const unsubscribeRef = useRef<(() => void) | null>(null)
     const theme = useXTermTheme()
+
+    // Subscribe to terminal output at the top level; the callback safely accesses
+    // termRef.current (set in useEffect below, but events only flow after startTerminal).
+    useTerminalEvents({
+        sessionId,
+        onOutput: (bytes: Uint8Array) => { termRef.current?.write(bytes) },
+    })
 
     useEffect(() => {
         const container = containerRef.current
@@ -47,20 +53,6 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
 
         termRef.current = term
         fitAddonRef.current = fitAddon
-
-        const unsubscribe = onSessionEvent(sessionId, 'terminal_output', (data) => {
-            // Data is base64-encoded to preserve raw PTY bytes through JSON serialization.
-            // Without base64, invalid UTF-8 (e.g. split multi-byte sequences across read
-            // boundaries) gets replaced with U+FFFD by Go's json.Marshal, corrupting
-            // escape sequences used by shell completion, autosuggestions, and cursor movement.
-            const decoded = atob(data.data)
-            const bytes = new Uint8Array(decoded.length)
-            for (let i = 0; i < decoded.length; i++) {
-                bytes[i] = decoded.charCodeAt(i)
-            }
-            term.write(bytes)
-        })
-        unsubscribeRef.current = unsubscribe
 
         startTerminal(sessionId).then(() => {
             onReady?.()
@@ -95,14 +87,12 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
         return () => {
             clearTimeout(resizeTimeout)
             ro.disconnect()
-            unsubscribe()
             stopTerminal(sessionId).catch((err) => {
                 logger.error('Failed to stop terminal:', err)
             })
             term.dispose()
             termRef.current = null
             fitAddonRef.current = null
-            unsubscribeRef.current = null
         }
     }, [sessionId, onReady, theme])
 

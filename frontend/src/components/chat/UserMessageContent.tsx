@@ -85,10 +85,11 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
     return (
         <span className="whitespace-pre-wrap break-words text-sm">
             {segments.map((seg, i) => {
+                const segKey = seg.type === 'text' ? `text-${i}-${seg.content.slice(0, 20)}` : `${seg.type}-${seg.content}-${i}`
                 if (seg.type === 'skill') {
                     return (
                         <span
-                            key={i}
+                            key={segKey}
                             className="inline-flex items-center bg-background text-foreground rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
                         >
                             /{seg.content}
@@ -100,7 +101,7 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
                     const display = filePath + (seg.startLine !== undefined ? `#L${seg.startLine}` : '')
                     return (
                         <span
-                            key={i}
+                            key={segKey}
                             className="text-info hover:underline cursor-pointer font-mono text-xs mx-0.5"
                             onClick={() => handleFileClick(filePath, seg.startLine)}
                             role="link"
@@ -112,7 +113,7 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
                     )
                 }
                 // Plain text — render inline (no markdown for mixed content).
-                return <span key={i}>{seg.content}</span>
+                return <span key={segKey}>{seg.content}</span>
             })}
         </span>
     )

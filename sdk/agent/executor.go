@@ -36,6 +36,10 @@ const executorWrapUpNudge = "[System] You are running low on tool call iteration
 
 const executorFinishNudge = "[System] You must call the finish tool to complete your task. Simply responding with text does not count as completion. Call the finish tool now with your final answer."
 
+// Circuit-breaker nudge messages. These are kept as Go constants (rather than
+// embedded .md templates) because several use fmt.Sprintf interpolation with
+// runtime values (tool name, iteration count). Moving them to markdown would
+// require a template engine for a marginal readability gain.
 const (
 	repeatNudgeMessage = "[System] You have called the same tool with the same arguments " +
 		"multiple times in a row and it keeps failing. Try a different approach: " +
@@ -63,6 +67,10 @@ const (
 )
 
 // Executor runs the ReAct loop: Thought → Action → Observation.
+//
+// Concurrency: Executor.Run must NOT be called concurrently on the same instance.
+// Each Executor handles a single execution at a time. The orchestrator creates
+// a fresh Executor per step to enforce this.
 type Executor struct {
 	llm                     LLMCaller
 	tools                   ToolExecutor
@@ -75,8 +83,8 @@ type Executor struct {
 	stepLimitFunc           StepLimitFunc // callback when step limit is reached
 
 	// Tool result caching and per-tool truncation (Stage 1).
-	toolCache          *ToolResultCache
-	perToolTruncation  map[string]ToolTruncationConfig
+	toolCache         *ToolResultCache
+	perToolTruncation map[string]ToolTruncationConfig
 
 	// Circuit breaker: detect repeated identical tool calls
 	consecutiveRepeatCount int
@@ -152,12 +160,12 @@ func (e *Executor) SetReasoningEffort(effort llm.ReasoningEffort) { e.reasoningE
 // a warning listing vulnerable tool outputs is appended to the observation.
 func (e *Executor) SetPreWarningPercent(percent int) { e.preWarningPercent = percent }
 
-// log returns the executor's logger or slog.Default() if none was set.
+// log returns the executor's logger or a discard logger if none was set.
 func (e *Executor) log() *slog.Logger {
 	if e.logger != nil {
 		return e.logger
 	}
-	return slog.Default()
+	return slog.New(slog.DiscardHandler)
 }
 
 // SetPlanContext sets plan-step metadata for structured logging.
@@ -231,13 +239,13 @@ func (e *Executor) applyToolResultBudget(observation string, cw ContextManager, 
 // getTruncationHint returns a context-aware hint based on the tool name.
 func getTruncationHint(toolName string) string {
 	switch toolName {
-	case "read_file":
+	case tools.ToolReadFile:
 		return "Re-read the file with start_line/end_line to see specific sections, or use ripgrep to search for specific content."
-	case "ripgrep", "grep":
+	case tools.ToolRipgrep, tools.ToolGrep:
 		return "Narrow your search pattern or add path filters to reduce results."
-	case "glob":
+	case tools.ToolGlob:
 		return "Use a more specific glob pattern to reduce results."
-	case "web_fetch":
+	case tools.ToolWebFetch:
 		return "The page content was truncated. Ask the user to open the URL directly, or try fetching a more specific page."
 	default:
 		return "Break into smaller operations or use targeted queries."
@@ -304,7 +312,7 @@ func (e *Executor) buildCacheMeta(ctx context.Context, toolName string, input js
 
 	// Extract file path for file-based tools.
 	switch toolName {
-	case "read_file", "write_file", "edit_file":
+	case tools.ToolReadFile, tools.ToolWriteFile, tools.ToolEditFile:
 		var params struct {
 			Path string `json:"path"`
 		}
@@ -354,95 +362,32 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 	// Track if we have meaningful tools (beyond just finish)
 	hasTools := len(taskTools) > 0
 
-	var allSteps []Step
-	nudgeAttempted := false
-	wrapUpNudgeAttempted := false
-	reactiveCompactAttempted := false
-	preCompactionNudgeEmitted := false
-	unlimitedSteps := false
-	effectiveMaxSteps := e.maxSteps // local copy to avoid mutating struct field
+	state := &runState{effectiveMaxSteps: e.maxSteps}
 
-	for stepNum := 1; unlimitedSteps || stepNum <= effectiveMaxSteps+1; stepNum++ {
-		// At the boundary: when we've just exceeded effectiveMaxSteps
-		if !unlimitedSteps && stepNum > effectiveMaxSteps {
-			if e.stepLimitFunc == nil {
-				break // no callback configured: exit silently at step limit
-			}
-			resp, err := e.stepLimitFunc(ctx, stepNum, effectiveMaxSteps, "")
-			if err != nil {
-				// Treat callback errors as deny - exit cleanly without propagating the error
-				return &ExecutorResult{ //nolint:nilerr // intentional: callback error means stop, not fatal
-					Output:   "",
-					Steps:    allSteps,
-					Finished: false,
-				}, nil
-			}
-			switch resp {
-			case StepLimitAllowOnce:
-				effectiveMaxSteps++ // allow exactly one more
-				// Inject nudge for LLM
-				nudgeStep := Step{
-					UserNudge: "[System] The user granted you exactly ONE additional tool call iteration. " +
-						"Use it wisely to wrap up your work. The user may deny further extensions.",
-				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-			case StepLimitAllowAlways:
-				unlimitedSteps = true
-				// Inject nudge for LLM
-				nudgeStep := Step{
-					UserNudge: "[System] The user granted you unlimited tool call iterations for this step. " +
-						"You have the freedom to make as many tool calls as needed to complete your work.",
-				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-			case StepLimitDeny:
-				break // will fall through to the post-loop return
-			default:
-				break
-			}
-			// If deny, we need to actually exit the loop
-			if resp == StepLimitDeny || resp == "" {
-				break
-			}
+	for state.stepNum = 1; state.unlimitedSteps || state.stepNum <= state.effectiveMaxSteps+1; state.stepNum++ {
+		// Handle step-limit boundary
+		if action := e.handleStepLimitBoundary(ctx, state, cw); action == actionReturn {
+			return state.finishResult, nil //nolint:nilerr // intentional: callback error means stop, not fatal
+		} else if action == actionBreak {
+			break
 		}
 
 		// Emit step start
-		e.emitter.StepStart(stepNum)
-		stepStartTime := time.Now()
+		e.emitter.StepStart(state.stepNum)
+		state.stepStartTime = time.Now()
 
 		// Check context cancellation
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 
-		// Build messages from context window
-		messages := cw.BuildPrompt()
-
-		// Create chat request
-		req := llm.ChatRequest{
-			Messages:        messages,
-			Tools:           toolDefs,
-			MaxTokens:       cw.OutputLimit(),
-			ReasoningEffort: e.reasoningEffort,
-		}
-
-		// Call LLM
-		resp, err := e.llm.Call(ctx, req)
+		// Call LLM with reactive compaction on context-exceeded
+		resp, action, err := e.callLLMWithReactiveCompaction(ctx, state, cw, toolDefs)
 		if err != nil {
-			if isContextExceededError(err) && !reactiveCompactAttempted {
-				reactiveCompactAttempted = true
-				if result := cw.Compact(ctx); result != nil {
-					e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
-				}
-				e.emitter.ExecutorDiagnostic(stepNum, "reactive_compaction_api_error", map[string]any{"error": err.Error()})
-				continue
-			}
 			return nil, err
 		}
-
-		if resp == nil {
-			return nil, fmt.Errorf("llm returned empty response at step %d", stepNum)
+		if action == actionContinue {
+			continue
 		}
 
 		// Parse response
@@ -450,729 +395,60 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 
 		// Emit thought event
 		if thought != "" || resp.Reasoning != "" {
-			e.emitter.Thought(stepNum, thought, resp.Reasoning)
+			e.emitter.Thought(state.stepNum, thought, resp.Reasoning)
 		}
 
-		// Check for implicit finish (no tool calls with end_turn)
-		if len(resp.Message.ToolCalls) == 0 && resp.StopReason == "end_turn" {
-			// Nudge mechanism: if this is early in execution and tools are available,
-			// give the LLM a second chance to use tools before accepting implicit finish
-			if hasTools && !nudgeAttempted {
-				nudgeAttempted = true
-				// Create a nudge step to encourage tool usage
-				nudgeStep := Step{
-					Thought:     thought,
-					Observation: executorNudge,
-					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-				e.emitter.ExecutorDiagnostic(stepNum, "executor_nudge", map[string]any{"reason": "no_tools_used_on_step_1"})
-				continue // retry with nudge in context
-			}
-
-			// Finish nudge: require explicit finish tool call before accepting completion
-			// Only needed in plan-step execution where output needs structured capture
-			if e.suppressAssistantEvents && !e.finishNudgeAttempted {
-				e.finishNudgeAttempted = true
-				nudgeStep := Step{
-					Thought:     thought,
-					Observation: executorFinishNudge,
-					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-				e.emitter.ExecutorDiagnostic(stepNum, "executor_finish_nudge", map[string]any{"reason": "implicit_finish_without_tool"})
-				continue // retry — LLM should now call finish explicitly
-			}
-
-			step := Step{
-				Thought:          thought,
-				ReasoningContent: resp.Message.ReasoningContent,
-				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			}
-			allSteps = append(allSteps, step)
-
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-
-			// Emit assistant response events (unless suppressed)
-			if !e.suppressAssistantEvents {
-				e.emitter.AssistantChunk(thought)
-				e.emitter.AssistantDone(thought, resp.Usage.InputTokens, resp.Usage.OutputTokens)
-			}
-
-			return &ExecutorResult{
-				Output:   thought,
-				Steps:    allSteps,
-				Finished: true,
-			}, nil
-		}
-
-		// Take the first tool call
+		// No tool calls path
 		if len(resp.Message.ToolCalls) == 0 {
-			// No tool calls but not end_turn — apply nudge if not attempted
-			if hasTools && !nudgeAttempted {
-				nudgeAttempted = true
-				nudgeStep := Step{
-					Thought:     thought,
-					Observation: executorNudge,
-					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-				e.emitter.ExecutorDiagnostic(stepNum, "executor_nudge", map[string]any{"reason": "no_tools_no_end_turn_on_step_1"})
+			if result, act := e.handleImplicitFinish(resp, thought, state, cw, hasTools); result != nil {
+				return result, nil
+			} else if act == actionContinue {
 				continue
 			}
-
-			// Finish nudge: require explicit finish tool call before accepting completion
-			// Only needed in plan-step execution where output needs structured capture
-			if e.suppressAssistantEvents && !e.finishNudgeAttempted {
-				e.finishNudgeAttempted = true
-				nudgeStep := Step{
-					Thought:     thought,
-					Observation: executorFinishNudge,
-					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-				e.emitter.ExecutorDiagnostic(stepNum, "executor_finish_nudge", map[string]any{"reason": "implicit_finish_without_tool"})
-				continue // retry — LLM should now call finish explicitly
-			}
-
-			// No tool calls but not end_turn — treat as implicit finish anyway
-			step := Step{
-				Thought:          thought,
-				ReasoningContent: resp.Message.ReasoningContent,
-				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			}
-			allSteps = append(allSteps, step)
-
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-
-			// Emit assistant response events (unless suppressed)
-			if !e.suppressAssistantEvents {
-				e.emitter.AssistantChunk(thought)
-				e.emitter.AssistantDone(thought, resp.Usage.InputTokens, resp.Usage.OutputTokens)
-			}
-
-			return &ExecutorResult{
-				Output:   thought,
-				Steps:    allSteps,
-				Finished: true,
-			}, nil
 		}
 
-		// --- Truncation detection: max_tokens with tool calls ---
+		// Truncation detection: max_tokens with tool calls
 		if resp.StopReason == "max_tokens" && len(resp.Message.ToolCalls) > 0 {
-			truncAction := resp.Message.ToolCalls[0]
-			e.emitter.ToolCall(stepNum, 0, truncAction.Name, string(truncAction.Input), e.tools.GetToolSource(truncAction.Name))
-
-			e.consecutiveTruncationCount++
-			if e.consecutiveTruncationCount >= e.circuitBreaker.TruncationAbortThreshold {
-				e.emitter.ExecutorDiagnostic(stepNum, "truncation_abort", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
-				abortReason := fmt.Sprintf("Tool '%s' output was truncated %d times consecutively by max output token limit", truncAction.Name, e.consecutiveTruncationCount)
-				if e.stepLimitFunc != nil {
-					slResp, slErr := e.stepLimitFunc(ctx, stepNum, effectiveMaxSteps, abortReason)
-					if slErr == nil {
-						switch slResp {
-						case StepLimitAllowOnce:
-							e.consecutiveTruncationCount = 0
-							nudgeStep := Step{
-								UserNudge: "[System] The user acknowledged the truncation circuit breaker and granted you ONE more chance. " +
-									"You MUST use smaller operations to avoid hitting the output token limit.",
-							}
-							allSteps = append(allSteps, nudgeStep)
-							cw.AddStep(nudgeStep)
-							e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-							continue
-						case StepLimitAllowAlways:
-							e.consecutiveTruncationCount = 0
-							e.circuitBreaker.TruncationAbortThreshold = 1 << 30 // disable
-							nudgeStep := Step{
-								UserNudge: "[System] The user has overridden the truncation circuit breaker. " +
-									"You may continue, but try to produce smaller outputs.",
-							}
-							allSteps = append(allSteps, nudgeStep)
-							cw.AddStep(nudgeStep)
-							e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-							continue
-						default:
-							// StepLimitDeny or empty — fall through to abort
-						}
-					}
-				}
-				return &ExecutorResult{
-					Output:   fmt.Sprintf("Aborted: tool '%s' output was truncated %d times consecutively by max output token limit", truncAction.Name, e.consecutiveTruncationCount),
-					Steps:    allSteps,
-					Finished: false,
-				}, nil
+			if result, act := e.handleTruncationStopReason(ctx, resp, thought, state, cw); result != nil {
+				return result, nil
+			} else if act == actionContinue {
+				continue
 			}
-
-			truncObs := fmt.Sprintf(truncationMessage, truncAction.Name)
-			e.emitter.ExecutorDiagnostic(stepNum, "truncation_detected", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
-
-			step := Step{
-				Thought:          thought,
-				ReasoningContent: resp.Message.ReasoningContent,
-				Action:           truncAction,
-				Observation:      truncObs,
-				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			}
-			allSteps = append(allSteps, step)
-			cw.AddStep(step)
-			e.emitter.ToolResult(stepNum, 0, len(truncObs), truncObs)
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-			continue
 		}
 
 		// Reset truncation counter on any non-truncated response
 		e.consecutiveTruncationCount = 0
 
-		// --- Process ALL tool calls from the response ---
-		toolCalls := resp.Message.ToolCalls
-
-		// Generate ResponseGroup ID for multi-call responses
-		var responseGroup int64
-		if len(toolCalls) > 1 {
-			e.responseGroupCounter++
-			responseGroup = e.responseGroupCounter
-		}
-
-		var finishResult *ExecutorResult
-		circuitBreakerTriggered := false
-
-		for callIdx, action := range toolCalls {
-			// Emit tool call
-			toolDisplayName := action.Name
-			// For tool_result_read: display as "original_tool (cached)" in chat UI
-			if action.Name == "tool_result_read" && e.toolCache != nil {
-				var trParams struct{ Hash string `json:"hash"` }
-				if json.Unmarshal(action.Input, &trParams) == nil && trParams.Hash != "" {
-					if entry, ok := e.toolCache.Get(trParams.Hash); ok {
-						toolDisplayName = entry.ToolName + " (cached)"
-					}
-				}
-			}
-			e.emitter.ToolCall(stepNum, callIdx, toolDisplayName, string(action.Input), e.tools.GetToolSource(action.Name))
-
-			// --- Circuit breaker: detect repeated identical tool calls ---
-			toolKey := action.Name + ":" + compactJSON(action.Input)
-			if toolKey == e.lastToolKey {
-				e.consecutiveRepeatCount++
-			} else {
-				e.consecutiveRepeatCount = 1
-				e.lastToolKey = toolKey
-				e.lastToolResultIsError = false
-			}
-
-			// Use lower thresholds when the previous identical call produced an error
-			nudgeThreshold := e.circuitBreaker.RepeatNudgeThreshold
-			abortThreshold := e.circuitBreaker.RepeatAbortThreshold
-			if e.lastToolResultIsError {
-				nudgeThreshold = e.circuitBreaker.RepeatNudgeThreshold - 1
-				abortThreshold = e.circuitBreaker.RepeatAbortThreshold - 1
-			}
-
-			if e.consecutiveRepeatCount >= abortThreshold {
-				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
-				abortReason := fmt.Sprintf("Tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount)
-				if e.stepLimitFunc != nil {
-					slResp, slErr := e.stepLimitFunc(ctx, stepNum, effectiveMaxSteps, abortReason)
-					if slErr == nil {
-						switch slResp {
-						case StepLimitAllowOnce:
-							e.consecutiveRepeatCount = 0
-							nudgeStep := Step{
-								UserNudge: "[System] The user acknowledged the circuit breaker and granted you ONE more chance. " +
-									"You MUST change your approach immediately — do NOT repeat the same tool call.",
-							}
-							allSteps = append(allSteps, nudgeStep)
-							cw.AddStep(nudgeStep)
-							circuitBreakerTriggered = true
-						case StepLimitAllowAlways:
-							e.consecutiveRepeatCount = 0
-							e.circuitBreaker.RepeatAbortThreshold = 1 << 30 // disable
-							nudgeStep := Step{
-								UserNudge: "[System] The user has overridden the circuit breaker. You may continue, " +
-									"but try to vary your approach to avoid repeating the same failing pattern.",
-							}
-							allSteps = append(allSteps, nudgeStep)
-							cw.AddStep(nudgeStep)
-							circuitBreakerTriggered = true
-						default:
-							// StepLimitDeny or empty — fall through to abort
-						}
-					}
-				}
-				if circuitBreakerTriggered {
-					break
-				}
-				abortMsg := fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount)
-				e.emitter.ToolResult(stepNum, callIdx, len(abortMsg), abortMsg)
-				return &ExecutorResult{
-					Output:   abortMsg,
-					Steps:    allSteps,
-					Finished: false,
-				}, nil
-			}
-
-			if e.consecutiveRepeatCount >= nudgeThreshold {
-				nudgeMsg := repeatNudgeMessage
-				if e.lastToolResultIsError {
-					nudgeMsg = repeatErrorNudgeMessage
-				}
-				e.emitter.ExecutorDiagnostic(stepNum, "repeated_tool_call_nudge", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
-				e.emitter.ToolResult(stepNum, callIdx, len(nudgeMsg), nudgeMsg)
-				stepThought := ""
-				stepReasoning := ""
-				if callIdx == 0 {
-					stepThought = thought
-					stepReasoning = resp.Message.ReasoningContent
-				}
-				step := Step{
-					Thought:          stepThought,
-					ReasoningContent: stepReasoning,
-					Action:           action,
-					Observation:      nudgeMsg,
-					TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
-					ResponseGroup:    responseGroup,
-				}
-				allSteps = append(allSteps, step)
-				cw.AddStep(step)
-				circuitBreakerTriggered = true
-				break
-			}
-			// --- End circuit breaker ---
-
-			// Check for finish tool
-			if action.Name == "finish" {
-				// Parse answer from input
-				var params struct {
-					Answer string `json:"answer"`
-				}
-				if err := json.Unmarshal(action.Input, &params); err != nil {
-					params.Answer = string(action.Input) // fallback
-				}
-
-				// Emit finishing event so the frontend can show "Finishing..." status
-				// instead of "Running tool: finish".
-				e.emitter.Finishing(stepNum, params.Answer)
-
-				stepThought := ""
-				stepReasoning := ""
-				if callIdx == 0 {
-					stepThought = thought
-					stepReasoning = resp.Message.ReasoningContent
-				}
-				step := Step{
-					Thought:          stepThought,
-					ReasoningContent: stepReasoning,
-					Action:           action,
-					TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
-					ResponseGroup:    responseGroup,
-				}
-				allSteps = append(allSteps, step)
-
-				e.emitter.ToolResult(stepNum, callIdx, len(params.Answer), params.Answer)
-
-				finishResult = &ExecutorResult{
-					Output:   params.Answer,
-					Steps:    allSteps,
-					Finished: true,
-				}
-				break // stop processing further tool calls
-			}
-
-			// Execute the tool (task context should already be set by the caller)
-			// Inject tool result cache into context so tool_result_read can access it.
-			// Also inject per-tool truncation config for num_lines enforcement.
-			execCtx := ctx
-			if e.toolCache != nil {
-				execCtx = WithToolResultCache(ctx, e.toolCache)
-				execCtx = WithPerToolTruncation(execCtx, e.perToolTruncation)
-			}
-			result, err := e.tools.Execute(execCtx, action.Name, action.Input)
-			if err != nil {
-				// Infrastructure error
-				return nil, err
-			}
-
-			observation := result.Content
-			e.lastToolResultIsError = result.IsError
-
-			// Determine if the tool output is from an untrusted external source
-			// for prompt injection defense wrapping in BuildPrompt().
-			isUntrusted := e.tools.IsToolUntrusted(action.Name)
-
-			// --- Fruitless result detector: consecutive minimal-result calls ---
-			// A result is "fruitless" if it's small AND not an error (errors have their own tracking)
-			fruitlessMaxLen := e.circuitBreaker.FruitlessMaxResultLen
-			if fruitlessMaxLen == 0 {
-				fruitlessMaxLen = 32 // default
-			}
-			isFruitless := !result.IsError && len(result.Content) <= fruitlessMaxLen
-			if isFruitless {
-				e.consecutiveFruitlessCount++
-			} else if !result.IsError {
-				// Reset on non-fruitless, non-error result
-				e.consecutiveFruitlessCount = 0
-			}
-
-			// Check fruitless thresholds (skip if threshold is 0 = disabled)
-			if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
-				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
-				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-				abortReason := fmt.Sprintf("%d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount)
-				if e.stepLimitFunc != nil {
-					slResp, slErr := e.stepLimitFunc(ctx, stepNum, effectiveMaxSteps, abortReason)
-					if slErr == nil {
-						switch slResp {
-						case StepLimitAllowOnce:
-							e.consecutiveFruitlessCount = 0
-							e.fruitlessNudgeAttempted = false
-							nudgeStep := Step{
-								UserNudge: "[System] The user acknowledged the fruitless-results circuit breaker and granted you ONE more chance. " +
-									"Try a fundamentally different approach to find the information you need.",
-							}
-							allSteps = append(allSteps, nudgeStep)
-							cw.AddStep(nudgeStep)
-							circuitBreakerTriggered = true
-						case StepLimitAllowAlways:
-							e.consecutiveFruitlessCount = 0
-							e.fruitlessNudgeAttempted = false
-							e.circuitBreaker.FruitlessAbortThreshold = 0 // disable
-							nudgeStep := Step{
-								UserNudge: "[System] The user has overridden the fruitless-results circuit breaker. " +
-									"You may continue searching, but consider varying your approach.",
-							}
-							allSteps = append(allSteps, nudgeStep)
-							cw.AddStep(nudgeStep)
-							circuitBreakerTriggered = true
-						default:
-							// StepLimitDeny or empty — fall through to abort
-						}
-					}
-				}
-				if circuitBreakerTriggered {
-					break
-				}
-				return &ExecutorResult{
-					Output:   fmt.Sprintf("Aborted: %d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount),
-					Steps:    allSteps,
-					Finished: false,
-				}, nil
-			}
-
-			if e.circuitBreaker.FruitlessNudgeThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessNudgeThreshold && !e.fruitlessNudgeAttempted {
-				e.fruitlessNudgeAttempted = true
-				e.emitter.ExecutorDiagnostic(stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
-				e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-				nudgeStep := Step{
-					Observation: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
-				}
-				allSteps = append(allSteps, nudgeStep)
-				cw.AddStep(nudgeStep)
-				circuitBreakerTriggered = true
-				break
-			}
-			// --- End fruitless result detector ---
-
-			// --- Same-tool repetition detector: same tool, varied args, similar results ---
-			// Skip for store_fact: it's legitimate to store many facts in a row with similar-sized confirmations.
-			if action.Name != "store_fact" {
-				resultLen := len(result.Content)
-				sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
-				if sizeDelta == 0 {
-					sizeDelta = 64 // default
-				}
-				// Calculate absolute difference without importing math
-				lenDiff := resultLen - e.sameToolLastResultLen
-				if lenDiff < 0 {
-					lenDiff = -lenDiff
-				}
-
-				if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
-					e.sameToolConsecutiveCount++
-					e.sameToolLastResultLen = resultLen
-				} else {
-					e.sameToolConsecutiveCount = 1
-					e.sameToolLastName = action.Name
-					e.sameToolLastResultLen = resultLen
-				}
-
-				// Check same-tool thresholds (skip if threshold is 0 = disabled)
-				if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
-					e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-					e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-					abortReason := fmt.Sprintf("Tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount)
-					if e.stepLimitFunc != nil {
-						slResp, slErr := e.stepLimitFunc(ctx, stepNum, effectiveMaxSteps, abortReason)
-						if slErr == nil {
-							switch slResp {
-							case StepLimitAllowOnce:
-								e.sameToolConsecutiveCount = 0
-								e.sameToolNudgeAttempted = false
-								nudgeStep := Step{
-									UserNudge: "[System] The user acknowledged the same-tool circuit breaker and granted you ONE more chance. " +
-										"Try a completely different tool or approach instead of repeating the same tool.",
-								}
-								allSteps = append(allSteps, nudgeStep)
-								cw.AddStep(nudgeStep)
-								circuitBreakerTriggered = true
-							case StepLimitAllowAlways:
-								e.sameToolConsecutiveCount = 0
-								e.sameToolNudgeAttempted = false
-								e.circuitBreaker.SameToolRepeatAbortThreshold = 0 // disable
-								nudgeStep := Step{
-									UserNudge: "[System] The user has overridden the same-tool circuit breaker. " +
-										"You may continue, but consider using different tools or approaches.",
-								}
-								allSteps = append(allSteps, nudgeStep)
-								cw.AddStep(nudgeStep)
-								circuitBreakerTriggered = true
-							default:
-								// StepLimitDeny or empty — fall through to abort
-							}
-						}
-					}
-					if circuitBreakerTriggered {
-						break
-					}
-					return &ExecutorResult{
-						Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
-						Steps:    allSteps,
-						Finished: false,
-					}, nil
-				}
-
-				if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
-					e.sameToolNudgeAttempted = true
-					e.emitter.ExecutorDiagnostic(stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-					e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-					nudgeStep := Step{
-						Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
-					}
-					allSteps = append(allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					circuitBreakerTriggered = true
-					break
-				}
-			} else {
-				// Reset tracker when store_fact is used so the next non-store_fact tool starts fresh
-				e.sameToolConsecutiveCount = 0
-				e.sameToolLastName = ""
-				e.sameToolLastResultLen = 0
-			}
-			// --- End same-tool repetition detector ---
-
-			// Ensure non-empty observation for tool messages (OpenAI API requirement)
-			if observation == "" {
-				observation = "(no output)"
-			}
-
-			// --- Parse error tracker ---
-			if result.IsError && isParseError(observation) {
-				if action.Name == e.consecutiveParseErrorTool {
-					e.consecutiveParseErrorCount++
-				} else {
-					e.consecutiveParseErrorTool = action.Name
-					e.consecutiveParseErrorCount = 1
-				}
-
-				if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
-					e.emitter.ExecutorDiagnostic(stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
-					e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-					abortReason := fmt.Sprintf("Tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount)
-					if e.stepLimitFunc != nil {
-						slResp, slErr := e.stepLimitFunc(ctx, stepNum, effectiveMaxSteps, abortReason)
-						if slErr == nil {
-							switch slResp {
-							case StepLimitAllowOnce:
-								e.consecutiveParseErrorCount = 0
-								nudgeStep := Step{
-									UserNudge: "[System] The user acknowledged the parse-error circuit breaker and granted you ONE more chance. " +
-										"You MUST fix your tool call arguments — they are malformed. Try a simpler approach.",
-								}
-								allSteps = append(allSteps, nudgeStep)
-								cw.AddStep(nudgeStep)
-								circuitBreakerTriggered = true
-							case StepLimitAllowAlways:
-								e.consecutiveParseErrorCount = 0
-								e.circuitBreaker.ParseErrorAbortThreshold = 1 << 30 // disable
-								nudgeStep := Step{
-									UserNudge: "[System] The user has overridden the parse-error circuit breaker. " +
-										"You may continue, but fix your tool call argument formatting.",
-								}
-								allSteps = append(allSteps, nudgeStep)
-								cw.AddStep(nudgeStep)
-								circuitBreakerTriggered = true
-							default:
-								// StepLimitDeny or empty — fall through to abort
-							}
-						}
-					}
-					if circuitBreakerTriggered {
-						break
-					}
-					return &ExecutorResult{
-						Output:   fmt.Sprintf("Aborted: tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount),
-						Steps:    allSteps,
-						Finished: false,
-					}, nil
-				}
-
-				observation += "\n\n" + fmt.Sprintf(parseErrorNudgeMessage, e.consecutiveParseErrorCount)
-			} else if !result.IsError {
-				// Reset parse error tracker on successful execution
-				e.consecutiveParseErrorTool = ""
-				e.consecutiveParseErrorCount = 0
-			}
-			// --- End parse error tracker ---
-
-			// --- Stage 1: Cache full result and apply per-tool truncation ---
-			if e.toolCache != nil {
-				if _, isNonCacheable := nonCacheableTools[action.Name]; !isNonCacheable {
-					meta := e.buildCacheMeta(execCtx, action.Name, action.Input)
-					hash := e.toolCache.Store(action.Name, result.Content, meta)
-
-					// Apply per-tool line/byte truncation (Stage 1).
-					truncated, wasTruncated := e.applyPerToolTruncation(observation, action.Name)
-					if wasTruncated {
-						maxLines := 0
-						if e.perToolTruncation != nil {
-							if cfg, ok := e.perToolTruncation[action.Name]; ok {
-								maxLines = cfg.MaxLines
-							}
-						}
-						nudge := formatFragmentationNudge(hash, action.Name, maxLines)
-						observation = truncated + nudge
-					}
-				}
-			}
-			// --- End Stage 1 caching / truncation ---
-
-			// --- Stage 2: Token-budget truncation (preserve Stage 1 nudge) ---
-			// Extract any Stage 1 nudge so it isn't stripped by token-budget truncation.
-			const stage1NudgePrefix = "\n\n[This output was truncated to"
-			var stage1Nudge string
-			if idx := strings.Index(observation, stage1NudgePrefix); idx >= 0 {
-				stage1Nudge = observation[idx:]
-				observation = observation[:idx]
-			}
-			observation = e.applyToolResultBudget(observation, cw, action.Name)
-			observation += stage1Nudge
-			// --- End Stage 2 ---
-
-			// Emit tool result
-			e.emitter.ToolResult(stepNum, callIdx, len(observation), observation)
-
-			// Pre-compaction nudge: warn LLM when context pressure enters danger zone.
-			// NOTE: The nudge is appended AFTER ToolResult emission intentionally — it is
-			// only for LLM context (stored in Step.Observation), not for frontend display.
-			// Only on the last tool call in the response, so the nudge appears once at the end.
-			if callIdx == len(toolCalls)-1 && e.preWarningPercent > 0 && !preCompactionNudgeEmitted {
-				fill := cw.CheckFill()
-				if fill.Status == "ok" && fill.Percent >= float64(e.preWarningPercent) {
-					if vulnerable := cw.VulnerableOutputs(); len(vulnerable) > 0 {
-						observation += "\n\n" + formatPreCompactionNudge(fill.Percent, vulnerable)
-						preCompactionNudgeEmitted = true
-						e.emitter.ExecutorDiagnostic(stepNum, "pre_compaction_nudge", map[string]any{
-							"fill_percent":     fill.Percent,
-							"vulnerable_count": len(vulnerable),
-						})
-					}
-				}
-			}
-
-			// Create step - only first tool call in the group carries the Thought
-			stepThought := ""
-			stepReasoning := ""
-			if callIdx == 0 {
-				stepThought = thought
-				stepReasoning = resp.Message.ReasoningContent
-			}
-			step := Step{
-				Thought:          stepThought,
-				ReasoningContent: stepReasoning,
-				Action:           action,
-				Observation:      observation,
-				IsUntrusted:      isUntrusted,
-				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
-				ResponseGroup:    responseGroup,
-			}
-			allSteps = append(allSteps, step)
-
-			// Add step to context window
-			cw.AddStep(step)
-		} // end tool call loop
-
-		// If finish was encountered, return
-		if finishResult != nil {
-			e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-			return finishResult, nil
-		}
-
-		e.emitter.StepComplete(stepNum, time.Since(stepStartTime))
-
-		// If circuit breaker triggered, continue to next LLM call
-		if circuitBreakerTriggered {
+		// Process tool calls
+		if result, act, toolErr := e.processToolCalls(ctx, resp, thought, state, cw); toolErr != nil {
+			return nil, toolErr
+		} else if result != nil {
+			return result, nil
+		} else if act == actionContinue {
 			continue
 		}
 
-		// Wrap-up nudge: warn LLM when approaching budget limit
-		// Only applies when the budget is large enough for the nudge to be meaningful.
-		if effectiveMaxSteps > 3 && stepNum >= effectiveMaxSteps-3 && !wrapUpNudgeAttempted {
-			wrapUpNudgeAttempted = true
-			wrapUpMsg := fmt.Sprintf(executorWrapUpNudge, effectiveMaxSteps-stepNum)
-			wrapUpStep := Step{
-				Thought:     "",
-				Observation: wrapUpMsg,
-				TokensUsed:  0,
-			}
-			allSteps = append(allSteps, wrapUpStep)
-			cw.AddStep(wrapUpStep)
-			e.emitter.ExecutorDiagnostic(stepNum, "executor_wrapup_nudge", map[string]any{"remaining": effectiveMaxSteps - stepNum})
+		e.emitter.StepComplete(state.stepNum, time.Since(state.stepStartTime))
+
+		// If circuit breaker triggered, continue to next LLM call
+		if state.circuitBreakerTriggered {
+			state.circuitBreakerTriggered = false
+			continue
 		}
 
-		// Check for compaction using threshold-based logic
-		fill := cw.CheckFill()
+		e.handleWrapUpNudge(state, cw)
 
-		// Emit context fill status
-		e.emitter.ContextFill(fill.Percent, fill.Used, fill.Max, fill.Status, e.planStepID)
-
-		switch fill.Status {
-		case "compact", "warning":
-			if result := cw.Compact(ctx); result != nil {
-				e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
-			}
-			reactiveCompactAttempted = false
-			preCompactionNudgeEmitted = false
-		case "emergency":
-			if result := cw.Compact(ctx); result != nil {
-				e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
-			}
-			reactiveCompactAttempted = false
-			preCompactionNudgeEmitted = false
-		case "reject":
-			if !reactiveCompactAttempted {
-				reactiveCompactAttempted = true
-				if result := cw.Compact(ctx); result != nil {
-					e.emitter.ContextCompaction(result.BeforePercent, result.AfterPercent, e.planStepID)
-				}
-				preCompactionNudgeEmitted = false
-				continue
-			}
-			return nil, fmt.Errorf("context window full after reactive compaction (%.1f%% of %d tokens)", fill.Percent, fill.Max)
-		default:
-			// Reset the flag on successful step completion so future steps can attempt reactive compaction
-			reactiveCompactAttempted = false
+		if compactAction, compactErr := e.handleCompactionAfterStep(ctx, cw, state); compactErr != nil {
+			return nil, compactErr
+		} else if compactAction == actionContinue {
+			continue
 		}
 	}
 
 	// Max steps reached without finish
 	return &ExecutorResult{
 		Output:   "",
-		Steps:    allSteps,
+		Steps:    state.allSteps,
 		Finished: false,
 	}, nil
 }
@@ -1256,6 +532,16 @@ func isParseError(content string) bool {
 
 // isContextExceededError checks if an error indicates the context window was exceeded.
 // This can happen when our token estimation is inaccurate and the API rejects the request.
+//
+// Pattern-to-provider mapping (maintained as providers evolve their error messages):
+//
+//	"context length exceeded"       — Anthropic
+//	"maximum context length"        — Anthropic (variant)
+//	"context_length_exceeded"       — Anthropic API error code
+//	"too many tokens"               — OpenAI
+//	"request too large"             — OpenAI (variant)
+//	"input is too long"             — OpenAI / generic
+//	"prompt is too long"            — OpenAI / generic
 func isContextExceededError(err error) bool {
 	if err == nil {
 		return false

@@ -1,6 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Info } from 'lucide-react'
-import { useUIStore } from '@/stores/uiStore'
 import { Button } from '@/components/ui/button'
 import { getLogLevel, setLogLevel as apiSetLogLevel } from '@/api/config'
 import { logger } from '@/lib/logger'
@@ -20,8 +19,7 @@ const logLevelOptions: LogLevelOption[] = [
 ]
 
 export function LogLevelSelector() {
-  const logLevel = useUIStore((s) => s.logLevel)
-  const setLogLevel = useUIStore((s) => s.setLogLevel)
+  const [logLevel, setLogLevel] = useState<LogLevel>('DEBUG')
 
   useEffect(() => {
     getLogLevel()
@@ -31,16 +29,16 @@ export function LogLevelSelector() {
         }
       })
       .catch((err) => logger.error('Failed to load log level:', err))
-  }, [setLogLevel])
+  }, [])
 
-  const handleLogLevelChange = async (level: LogLevel) => {
+  const handleLogLevelChange = useCallback(async (level: LogLevel) => {
     try {
       await apiSetLogLevel(level)
       setLogLevel(level)
     } catch (error) {
       logger.error('Failed to set log level:', error)
     }
-  }
+  }, [])
 
   return (
     <div className="flex flex-col gap-3">

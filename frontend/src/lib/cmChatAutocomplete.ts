@@ -47,8 +47,12 @@ function ensureRootSubscription() {
 
 async function getSkills(): Promise<SkillDescriptor[]> {
   if (skillsLoaded) return skillsCache
-  skillsCache = await listSkills()
-  skillsLoaded = true
+  try {
+    skillsCache = await listSkills()
+    skillsLoaded = true
+  } catch {
+    skillsCache = []
+  }
   return skillsCache
 }
 
@@ -56,9 +60,13 @@ async function getFiles(): Promise<FileEntry[]> {
   const rootPath = useFileTreeStore.getState().rootPath
   if (!rootPath) return []
   if (filesLoaded && filesCacheRoot === rootPath) return filesCache
-  filesCache = await listDirectory(rootPath, true)
-  filesLoaded = true
-  filesCacheRoot = rootPath
+  try {
+    filesCache = await listDirectory(rootPath, true)
+    filesLoaded = true
+    filesCacheRoot = rootPath
+  } catch {
+    filesCache = []
+  }
   return filesCache
 }
 

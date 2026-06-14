@@ -9,8 +9,20 @@ import {
 
 export { collapseThoughts } from './chatUtilsHelpers'
 
-// Role-to-type mapping for history conversion
-export const roleToType: Record<string, MessageType> = {
+// Role-to-type mapping for history conversion.
+// The key type is narrowed to known backend roles for compile-time safety (S-35).
+type ChatRole = 'user' | 'assistant' | 'tool_call' | 'tool_result'
+  | 'routing' | 'reflection' | 'plan' | 'error'
+  | 'thought' | 'thinking' | 'step_done'
+  | 'plan_step_start' | 'plan_step_complete'
+  | 'retry' | 'step_retry'
+  | 'subagent_launch' | 'subagent_complete'
+  | 'tool_confirm' | 'ask_user' | 'task_cancelled'
+  | 'status' | 'task_resumed'
+  | 'task_failed_resumable' | 'step_limit' | 'context_compaction'
+  | 'step_todo_update' | 'memory_read'
+
+export const roleToType: Record<ChatRole, MessageType> = {
   user: 'user', assistant: 'assistant', tool_call: 'tool_call', tool_result: 'tool_result',
   routing: 'routing', reflection: 'reflection', plan: 'plan', error: 'error',
   thought: 'thought', thinking: 'thinking', step_done: 'step_done',
@@ -21,17 +33,28 @@ export const roleToType: Record<string, MessageType> = {
   status: 'status', task_resumed: 'task_resumed',
   task_failed_resumable: 'error', step_limit: 'assistant', context_compaction: 'assistant',
   step_todo_update: 'step_todo_update',
+  memory_read: 'memory_read',
 }
 
 /** Convert a persisted ChatMessage to ChatMessageUI, matching live event shape. */
 export function chatMessageToUI(msg: ChatMessage): ChatMessageUI {
   let metadata: Record<string, unknown> | undefined
+  // metadata field comes from the backend as number[] (Go json.RawMessage → Wails byte array).
+  // Deserialize to a structured object; also handles string metadata for test compatibility.
   if (msg.metadata) {
     try {
-      metadata = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata
+      if (Array.isArray(msg.metadata) && msg.metadata.length > 0) {
+        const str = String.fromCharCode(...msg.metadata)
+        metadata = JSON.parse(str)
+      } else if (typeof msg.metadata === 'string') {
+        metadata = JSON.parse(msg.metadata)
+      } else {
+        // Already a plain object (test-only path)
+        metadata = msg.metadata as unknown as Record<string, unknown>
+      }
     } catch { metadata = undefined }
   }
-  const msgType = roleToType[msg.role] || 'assistant'
+  const msgType = roleToType[msg.role as ChatRole] || 'assistant'
   const timestamp = msg.created_at ? new Date(msg.created_at).getTime() : 0
   const content = reconstructContent(msg.role, msg.content, metadata)
   const id = buildHistoryId(msg.id, msg.role, metadata, timestamp)
@@ -84,6 +107,9 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         pushItem({ kind: 'context_compaction', id: msg.id, beforePercent: Math.round(bp), afterPercent: Math.round(ap) }, planStepId)
         break
       }
+      case 'memory_read':
+        pushItem({ kind: 'memory_read', id: msg.id, content: msg.content, stepNum: meta?.step_num as number | undefined }, planStepId)
+        break
       case 'error': pushItem({ kind: 'error', message: msg }, planStepId); break
       case 'routing': case 'retry': case 'step_retry':
         pushItem({ kind: 'service', id: msg.id, variant: msg.type as 'routing' | 'retry' | 'step_retry', content: msg.content, metadata: meta }, planStepId); break

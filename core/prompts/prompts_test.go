@@ -47,6 +47,18 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"PlannerMistral", PlannerMistral},
 		{"PlannerKimi", PlannerKimi},
 		{"PlannerOpenAICodex", PlannerOpenAICodex},
+		// Planner mode-specific composable prompt sections
+		{"PlannerPlanPreamble", PlannerPlanPreamble},
+		{"PlannerSingleStepPreamble", PlannerSingleStepPreamble},
+		{"PlannerMultiStepToT", PlannerMultiStepToT},
+		{"PlannerSingleStepToT", PlannerSingleStepToT},
+		{"PlannerMultiStepGuidance", PlannerMultiStepGuidance},
+		{"PlannerSingleStepGuidance", PlannerSingleStepGuidance},
+		{"PlannerDomainAssignment", PlannerDomainAssignment},
+		{"PlannerAgentProfiles", PlannerAgentProfiles},
+		{"PlannerExtraSections", PlannerExtraSections},
+		{"PlannerContinuationPreamble", PlannerContinuationPreamble},
+		{"PlannerContinuationSingleStep", PlannerContinuationSingleStep},
 	}
 
 	for _, tt := range tests {

@@ -257,10 +257,13 @@ toolLimits:
   # Web fetch
 
   # --- Per-tool Stage 1 truncation (applied before token budget) ------------
-  # Safety valves against memory exhaustion attacks — NOT token optimization.
-  # Values are deliberately generous: normal usage on an average project should
-  # never trigger truncation. If you see truncation notices at these limits,
-  # the output is likely anomalous or malicious.
+  # WARNING: These are SAFETY limits, not performance settings. Changing
+  # these values can expose the system to memory exhaustion attacks from
+  # malicious or runaway tool output. The defaults are deliberately generous
+  # so that normal usage on an average project never triggers truncation.
+  # If you see truncation notices at these limits, the output is likely
+  # anomalous or malicious — REDUCE THE LIMIT to tighten protection.
+  #
   # These values also serve as default page sizes for tool_result_read.
   # Omitted tools receive no Stage 1 truncation. Use 0 to disable a dimension.
   perToolTruncation:
@@ -327,4 +330,9 @@ orchestration:
 #     - localhost
 #     - 127.0.0.1
 #   tls_cert_dir: ""  # /path/to/custom/ca-certs
+#   set_global_env: true  # Export HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
+#                         # for subprocesses (bash_exec, MCP stdio servers).
+#                         # Default: true. Set to false to prevent proxy state
+#                         # from leaking into third-party libraries that read
+#                         # env vars at init time.
 

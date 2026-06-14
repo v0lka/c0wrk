@@ -49,12 +49,13 @@ function PlanStepItem({ item, isExpanded, onToggle, onClick }: PlanStepItemProps
   const hasTodos = !!item.todoItems && item.todoItems.length > 0
 
   return (
-    <div
+    <button
       className={cn(
-        'px-1 -mx-1 rounded transition-colors',
+        'w-full text-left px-1 -mx-1 rounded transition-colors border-0 bg-transparent',
         onClick && 'hover:bg-muted/50 cursor-pointer',
       )}
       onClick={onClick}
+      type="button"
     >
       <div className="flex items-center gap-1 h-[24px] w-full text-left">
         {hasTodos ? (
@@ -81,7 +82,7 @@ function PlanStepItem({ item, isExpanded, onToggle, onClick }: PlanStepItemProps
         )}
       </div>
       {hasTodos && isExpanded && <TodoChecklist items={item.todoItems} />}
-    </div>
+    </button>
   )
 }
 

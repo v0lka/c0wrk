@@ -33,7 +33,7 @@ func (h *HierarchicalStrategy) log() *slog.Logger {
 	if h.logger != nil {
 		return h.logger
 	}
-	return slog.Default()
+	return slog.New(slog.DiscardHandler)
 }
 
 // NewHierarchicalStrategy creates a new HierarchicalStrategy.

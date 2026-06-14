@@ -23,7 +23,6 @@ const reflectorAnalyzeFooter = "Please analyze this execution and provide a stru
 // structured self-correction insights per AD 4.6.
 type Reflector struct {
 	llm                 LLMCaller
-	modelRegistry       *llm.ModelRegistry
 	baseReasoningEffort llm.ReasoningEffort
 	roleOverrides       map[string]string
 }
@@ -31,11 +30,6 @@ type Reflector struct {
 // NewReflector creates a new Reflector with the given LLM caller.
 func NewReflector(caller LLMCaller) *Reflector {
 	return &Reflector{llm: caller}
-}
-
-// SetModelRegistry sets the model registry for model metadata resolution.
-func (r *Reflector) SetModelRegistry(registry *llm.ModelRegistry) {
-	r.modelRegistry = registry
 }
 
 // SetBaseReasoningEffort sets the base reasoning effort for the reflector.

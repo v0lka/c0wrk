@@ -1,37 +1,67 @@
 package backend
 
+// Event constant organization:
+// - Global/lifecycle events: defined here in backend/events.go
+// - Session-scoped orchestration events: defined in backend/session/events.go
+//
+// Frontend subscribes to global events via their string name and to session
+// events via the `session:${id}:${type}` convention (see frontend/src/api/runtime.ts).
+
 // ---------------------------------------------------------------------------
 // Wails event names emitted TO the frontend
 // ---------------------------------------------------------------------------
 
-const (
-	// Startup/lifecycle events
-	EventStartupError = "startup_error"
-	EventBackendReady = "backend:ready"
+// EventStartupError is emitted when the desktop application fails to start.
+const EventStartupError = "startup_error"
 
-	// Project events
-	EventProjectsLoaded       = "projects:loaded"
-	EventProjectCreated       = "project:created"
-	EventProjectDeleted       = "project:deleted"
-	EventProjectRenamed       = "project:renamed"
-	EventProjectSwitched      = "project:switched"
-	EventWorkspaceTreeChanged = "workspace:tree_changed"
+// EventBackendReady is emitted when the Go backend finishes initialization.
+const EventBackendReady = "backend:ready"
 
-	// Session events
-	EventSessionsLoaded = "sessions:loaded"
-	EventSessionEvent   = "session:event"
+// EventProjectsLoaded is emitted when all projects have been loaded from disk.
+const EventProjectsLoaded = "projects:loaded"
 
-	// Vector index events
-	EventVectorIndexStatus = "vector_index:status"
-)
+// EventProjectCreated is emitted when a new project is created.
+const EventProjectCreated = "project:created"
+
+// EventProjectDeleted is emitted when a project is deleted.
+const EventProjectDeleted = "project:deleted"
+
+// EventProjectRenamed is emitted when a project is renamed.
+const EventProjectRenamed = "project:renamed"
+
+// EventProjectSwitched is emitted when the active project changes.
+const EventProjectSwitched = "project:switched"
+
+// EventWorkspaceTreeChanged is emitted when filesystem changes are detected
+// in the active workspace.
+const EventWorkspaceTreeChanged = "workspace:tree_changed"
+
+// EventSessionsLoaded is emitted when all sessions have been loaded from disk.
+const EventSessionsLoaded = "sessions:loaded"
+
+// EventSessionEvent is the prefix for session-scoped orchestration events.
+// Actual events use the pattern session:{id}:{type}.
+const EventSessionEvent = "session:event"
+
+// EventVectorIndexStatus is emitted when the vector index state or progress changes.
+const EventVectorIndexStatus = "vector_index:status"
 
 // ---------------------------------------------------------------------------
 // Wails event names received FROM the frontend
 // ---------------------------------------------------------------------------
 
-const (
-	EventToolConfirmResponse = "tool_confirm_response"
-	EventToolJudgeRequest    = "tool_judge_request"
-	EventAskUserResponse     = "ask_user_response"
-	EventStepLimitResponse   = "step_limit_response"
-)
+// EventToolConfirmResponse is received from the frontend when the user
+// approves or denies a tool execution confirmation.
+const EventToolConfirmResponse = "tool_confirm_response"
+
+// EventToolJudgeRequest is received from the frontend when the user
+// submits a judge-the-output evaluation.
+const EventToolJudgeRequest = "tool_judge_request"
+
+// EventAskUserResponse is received from the frontend when the user
+// responds to a multi-question prompt.
+const EventAskUserResponse = "ask_user_response"
+
+// EventStepLimitResponse is received from the frontend when the user
+// decides to continue, cancel, or adjust after hitting the step limit.
+const EventStepLimitResponse = "step_limit_response"

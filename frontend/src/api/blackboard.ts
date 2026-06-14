@@ -9,10 +9,13 @@ export async function getBlackboardState(sessionId: string): Promise<BlackboardS
   try {
     const app = getApp()
     const result = await app.GetBlackboardState(sessionId)
-    if (result != null && !isBlackboardState(result)) {
-      logger.warn('getBlackboardState: unexpected response shape', result)
+    if (result === null || result === undefined) {
+      return null
     }
-    return result as BlackboardState | null
+    if (!isBlackboardState(result)) {
+      throw new Error('getBlackboardState: backend returned invalid data')
+    }
+    return result
   } catch (err) {
     logger.error('Failed to get blackboard state:', err)
     throw err

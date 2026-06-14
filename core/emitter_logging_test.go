@@ -67,6 +67,9 @@ func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family stri
 func (s *spyEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
 	s.record("StepTodoUpdate", stepID, items)
 }
+func (s *spyEmitter) MemoryRead(stepNum int, content string) {
+	s.record("MemoryRead", stepNum, content)
+}
 
 // scopableSpyEmitter extends spyEmitter with scoping support.
 type scopableSpyEmitter struct {

@@ -25,8 +25,9 @@ export interface SessionAPI {
 }
 
 export interface ChatAPI {
-  sendMessage(sessionId: string, text: string): Promise<void>
+  sendMessage(sessionId: string, text: string, mode: string, activeSkills?: string[]): Promise<void>
   cancelTask(sessionId: string): Promise<void>
+  cancelUnfinishedTask(sessionId: string): Promise<void>
   getSessionHistory(sessionId: string): Promise<ChatMessage[]>
   getSessionTokens(sessionId: string): Promise<TokenInfo>
   resumeTask(sessionId: string): Promise<void>

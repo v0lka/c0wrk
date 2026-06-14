@@ -70,3 +70,45 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 
 	return out, nil
 }
+
+// GetVectorIndexStatus returns the current state and progress of the
+// vector index for the active project.
+func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
+	result := VectorIndexStatus{}
+
+	vm := f.getVectorManager()
+	if vm == nil {
+		result.State = "unavailable"
+		return result
+	}
+
+	st := vm.GetIndexStatus()
+	result.State = string(st.State)
+	result.Phase = string(st.Phase)
+	result.FilesIndexed = st.FilesIndexed
+	result.TotalFiles = st.TotalFiles
+	result.CurrentFile = st.CurrentFile
+	result.Branch = st.Branch
+
+	// Compute progress as a fraction.
+	if st.TotalFiles > 0 {
+		result.Progress = float64(st.FilesIndexed) / float64(st.TotalFiles)
+	}
+
+	// Determine which indices are active.
+	svc := vm.Service()
+	indices := make([]string, 0, 2)
+	if svc == nil {
+		result.Indices = indices
+		return result
+	}
+	if svc.GetCollection() != nil {
+		indices = append(indices, "vector")
+	}
+	if svc.GetLexical() != nil {
+		indices = append(indices, "lexical")
+	}
+	result.Indices = indices
+
+	return result
+}

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState, useCallback } from 'react'
 import { AlertTriangle, Check, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { emit, onSessionEvent } from '@/api/runtime'
+import { emit } from '@/api/runtime'
 import { useChatStore } from '@/stores/chatStore'
+import { useToolJudgeEvents } from '@/hooks/events/useToolJudgeEvents'
 import type { DisplayItem } from '@/types/messages'
 import { getToolConfirmResolution, toolConfirmResolved } from '@/types/messages'
 
@@ -28,22 +29,16 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
   const toolMsgId = typeof metadata?.tool_msg_id === 'string' ? metadata.tool_msg_id : undefined
   const judgeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
-    if (!confirmId || !sessionId) return
-    const unsub = onSessionEvent(sessionId, 'tool_judge_response', (data) => {
-      if (data.confirm_id !== confirmId) return
+  useToolJudgeEvents(sessionId, confirmId, {
+    onResponse: (reasoning, error) => {
       if (judgeTimeoutRef.current) { clearTimeout(judgeTimeoutRef.current); judgeTimeoutRef.current = null }
       setJudgeLoading(false)
-      if (data.error) setJudgeError(data.error)
-      if (data.reasoning) setJudgeReasoning(data.reasoning)
-    })
-    return () => {
-      unsub()
-      if (judgeTimeoutRef.current) { clearTimeout(judgeTimeoutRef.current); judgeTimeoutRef.current = null }
-    }
-  }, [sessionId, confirmId])
+      if (error) setJudgeError(error)
+      if (reasoning) setJudgeReasoning(reasoning)
+    },
+  })
 
-  const handleResponse = (decision: 'allow_once' | 'deny') => {
+  const handleResponse = useCallback((decision: 'allow_once' | 'deny') => {
     const isConfirm = decision === 'allow_once'
     emit('tool_confirm_response', { confirm_id: confirmId, decision })
     if (toolMsgId) {
@@ -51,7 +46,7 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
     }
     updateMessage(sessionId, item.message.id, { metadata: toolConfirmResolved(isConfirm ? 'confirmed' : 'denied') })
     setActivityStatus(isConfirm ? `Running tool: ${tool}...` : null)
-  }
+  }, [confirmId, toolMsgId, sessionId, updateMessage, setActivityStatus, item.message.id, tool])
 
   const handleAskAgent = () => {
     if (!confirmId) return
@@ -65,6 +60,9 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
     }, 30_000)
     emit('tool_judge_request', { confirm_id: confirmId })
   }
+
+  const handleResponseAllowOnce = useCallback(() => handleResponse('allow_once'), [handleResponse])
+  const handleResponseDeny = useCallback(() => handleResponse('deny'), [handleResponse])
 
   if (resolved === 'confirmed') {
     return (
@@ -120,11 +118,11 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
         )}
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => handleResponse('allow_once')} className="text-xs">Allow Once</Button>
+        <Button size="sm" onClick={handleResponseAllowOnce} className="text-xs">Allow Once</Button>
         <Button size="sm" variant="secondary" onClick={handleAskAgent} disabled={judgeLoading || judgeReasoning !== null} className="text-xs">
           {judgeLoading ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Evaluating...</> : judgeReasoning !== null ? 'Evaluated' : 'Ask Agent'}
         </Button>
-        <Button size="sm" variant="outline" onClick={() => handleResponse('deny')} className="text-xs">Deny</Button>
+        <Button size="sm" variant="outline" onClick={handleResponseDeny} className="text-xs">Deny</Button>
       </div>
     </div>
   )

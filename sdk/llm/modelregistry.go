@@ -50,19 +50,21 @@ type ModelRegistry struct {
 }
 
 // NewModelRegistry creates a new registry with built-in data and optional user overrides.
+//
+// The overrides map is defensively copied at construction time so that callers
+// (e.g. config reloads) can mutate their own map without racing the registry's
+// concurrent readers.
 func NewModelRegistry(overrides map[string]ModelMetadata) *ModelRegistry {
-	registry := &ModelRegistry{
-		builtIn:    makeBuiltInRegistry(),
-		overrides:  overrides,
+	copied := make(map[string]ModelMetadata, len(overrides))
+	for k, v := range overrides {
+		copied[k] = v
+	}
+	return &ModelRegistry{
+		builtIn:    getBuiltInRegistry(),
+		overrides:  copied,
 		cache:      make(map[string]ModelMetadata),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
-
-	if registry.overrides == nil {
-		registry.overrides = make(map[string]ModelMetadata)
-	}
-
-	return registry
 }
 
 // SetHTTPClient replaces the HTTP client used for metadata lookups (e.g., HuggingFace).
@@ -589,10 +591,23 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 	}
 }
 
+// builtInRegistryOnce guards lazy initialization of the cached built-in registry.
+var builtInRegistryOnce sync.Once
+var builtInRegistryCache map[string]ModelMetadata
+
+// getBuiltInRegistry returns the cached built-in model registry, initializing it
+// on first call. The registry is immutable data so sharing is safe.
+func getBuiltInRegistry() map[string]ModelMetadata {
+	builtInRegistryOnce.Do(func() {
+		builtInRegistryCache = makeBuiltInRegistry()
+	})
+	return builtInRegistryCache
+}
+
 // BuiltInModelNames returns model names from the built-in registry filtered by tokenizer type.
 // If tokenizerType is empty, returns all model names.
 func BuiltInModelNames(tokenizerType string) []string {
-	registry := makeBuiltInRegistry()
+	registry := getBuiltInRegistry()
 	names := []string{}
 	for name, meta := range registry {
 		if tokenizerType == "" || meta.TokenizerType == tokenizerType {
@@ -605,7 +620,7 @@ func BuiltInModelNames(tokenizerType string) []string {
 
 // BuiltInModelNamesByPrefix returns model names that start with the given prefix.
 func BuiltInModelNamesByPrefix(prefix string) []string {
-	registry := makeBuiltInRegistry()
+	registry := getBuiltInRegistry()
 	names := []string{}
 	for name := range registry {
 		if strings.HasPrefix(name, prefix) {

@@ -96,7 +96,12 @@ func parseFrontmatter(content string) (*SkillMetadata, string, error) {
 func findFrontmatterDelim(s string) int {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '-' {
-			if i+2 < len(s) && s[i] == '-' && s[i+1] == '-' && s[i+2] == '-' {
+			// Require --- to be at the start of a line (or start of string)
+			// to avoid matching --- inside YAML string values.
+			if i > 0 && s[i-1] != '\n' {
+				continue
+			}
+			if i+2 < len(s) && s[i+1] == '-' && s[i+2] == '-' {
 				// Found ---, skip past it and any trailing whitespace/newline
 				j := i + 3
 				for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\r') {
@@ -107,9 +112,6 @@ func findFrontmatterDelim(s string) int {
 				}
 				return j
 			}
-		}
-		if s[i] == '\n' {
-			continue
 		}
 	}
 	return -1

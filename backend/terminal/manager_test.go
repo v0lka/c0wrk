@@ -4,6 +4,7 @@ package terminal
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"sync"
@@ -23,7 +24,7 @@ func testManager(t *testing.T) (mgr *Manager, output chan []byte) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewManager(logger, emitFunc), outputChan
+	return NewManager(context.Background(), logger, emitFunc), outputChan
 }
 
 func TestManager_StartStop(t *testing.T) {

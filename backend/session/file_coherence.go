@@ -22,6 +22,10 @@ type writeRecord struct {
 // FileCoherenceTracker detects cross-session file conflicts by tracking
 // per-session file signatures and comparing them before read/write operations.
 // It implements tools.FileCoherenceChecker.
+//
+// Lock ordering: t.mu must be acquired BEFORE t.fileMu to avoid deadlocks.
+// pruneOrphanFileMutexesLocked follows this ordering (caller holds t.mu,
+// then it acquires t.fileMu internally).
 type FileCoherenceTracker struct {
 	mu           sync.RWMutex
 	snapshots    map[string]map[string]tools.FileSig // sessionID -> path -> sig
@@ -215,6 +219,35 @@ func (t *FileCoherenceTracker) PurgeSession(sessionID string) {
 		}
 	}
 	t.activity = filtered
+
+	// Drop per-path mutex entries that no surviving session references. Keeps
+	// fileMutexes from growing without bound across long-lived runs (W-25).
+	t.pruneOrphanFileMutexesLocked()
+}
+
+// pruneOrphanFileMutexesLocked removes per-path mutexes for paths that are
+// no longer referenced by any session's snapshot map and have no remaining
+// entries in the activity log. The caller must hold t.mu.
+func (t *FileCoherenceTracker) pruneOrphanFileMutexesLocked() {
+	t.fileMu.Lock()
+	defer t.fileMu.Unlock()
+	if len(t.fileMutexes) == 0 {
+		return
+	}
+	referenced := make(map[string]struct{}, len(t.fileMutexes))
+	for _, snap := range t.snapshots {
+		for path := range snap {
+			referenced[path] = struct{}{}
+		}
+	}
+	for _, r := range t.activity {
+		referenced[r.Path] = struct{}{}
+	}
+	for path := range t.fileMutexes {
+		if _, ok := referenced[path]; !ok {
+			delete(t.fileMutexes, path)
+		}
+	}
 }
 
 // --- internal helpers ---

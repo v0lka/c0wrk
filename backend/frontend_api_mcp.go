@@ -152,8 +152,8 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 	}
 
 	// Reconfigure MCP gateway via the backend builder.
-	if f.app != nil {
-		if err := f.app.Builder().ReconfigureMCP(context.Background(), ToBuilderConfig(f.config)); err != nil {
+	if b := f.builder(); b != nil {
+		if err := b.ReconfigureMCP(context.Background(), ToBuilderConfig(f.config)); err != nil {
 			return fmt.Errorf("failed to reconfigure MCP gateway: %w", err)
 		}
 	}

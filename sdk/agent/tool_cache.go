@@ -94,23 +94,38 @@ func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) st
 }
 
 // Get returns a cache entry by hash. Returns nil, false if not found or expired.
-// Uses a write-lock so that expired entries can be deleted inline.
+// Uses RLock for the common (non-expired) path; only upgrades to Lock when
+// an expired entry needs deletion.
 func (c *ToolResultCache) Get(hash string) (*ToolResultCacheEntry, bool) {
+	c.mu.RLock()
+	entry, ok := c.entries[hash]
+	if !ok {
+		c.mu.RUnlock()
+		return nil, false
+	}
+
+	// Fast path: check TTL under read lock for non-expired entries.
+	if entry.TTL == 0 || time.Since(entry.CreatedAt) <= entry.TTL {
+		defer c.mu.RUnlock()
+		return entry, true
+	}
+
+	// Slow path: entry expired — upgrade to write lock for deletion.
+	c.mu.RUnlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry, ok := c.entries[hash]
+	// Re-check after acquiring write lock (entry may have been refreshed).
+	entry, ok = c.entries[hash]
 	if !ok {
 		return nil, false
 	}
-
-	// Check TTL expiry for MCP entries — delete inline if expired.
-	if entry.TTL > 0 && time.Since(entry.CreatedAt) > entry.TTL {
-		delete(c.entries, hash)
-		return nil, false
+	if entry.TTL == 0 || time.Since(entry.CreatedAt) <= entry.TTL {
+		return entry, true
 	}
 
-	return entry, true
+	delete(c.entries, hash)
+	return nil, false
 }
 
 // CheckCoherence verifies that a cached file-tool result is still valid.

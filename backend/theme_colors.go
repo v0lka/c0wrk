@@ -78,19 +78,27 @@ func parseHex(s string) rgb {
 
 	switch len(s) {
 	case 3:
-		r, err := strconv.ParseUint(string(s[0])+string(s[0]), 16, 8)
+		// Build strings via a small builder to avoid per-char allocations.
+		var b [3]strings.Builder
+		b[0].WriteByte(s[0])
+		b[0].WriteByte(s[0])
+		b[1].WriteByte(s[1])
+		b[1].WriteByte(s[1])
+		b[2].WriteByte(s[2])
+		b[2].WriteByte(s[2])
+		r, err := strconv.ParseUint(b[0].String(), 16, 8)
 		if err != nil {
 			return rgb{-1, -1, -1}
 		}
-		g, err := strconv.ParseUint(string(s[1])+string(s[1]), 16, 8)
+		g, err := strconv.ParseUint(b[1].String(), 16, 8)
 		if err != nil {
 			return rgb{-1, -1, -1}
 		}
-		b, err := strconv.ParseUint(string(s[2])+string(s[2]), 16, 8)
+		bb, err := strconv.ParseUint(b[2].String(), 16, 8)
 		if err != nil {
 			return rgb{-1, -1, -1}
 		}
-		return rgb{int(r), int(g), int(b)}
+		return rgb{int(r), int(g), int(bb)}
 	case 6:
 		r, err := strconv.ParseUint(s[0:2], 16, 8)
 		if err != nil {
@@ -109,4 +117,3 @@ func parseHex(s string) rgb {
 		return rgb{-1, -1, -1}
 	}
 }
-

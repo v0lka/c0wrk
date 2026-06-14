@@ -761,11 +761,13 @@ func TestPolicyAlwaysAllow_WithToolJudgerEmptyReasoning(t *testing.T) {
 	}
 }
 
-// TestAutoApproval_WorkspacePath tests that PolicyUserConfirm is bypassed when
-// all paths in the input are within the workspace directory.
+// TestAutoApproval_WorkspacePath verifies that PolicyUserConfirm is NOT bypassed
+// even when all paths in the input are within the workspace directory.
+// (Per C-2 in the 2026-06-05 review: workspace-locality MUST NOT silently
+// downgrade an explicit user_confirm policy.)
 func TestAutoApproval_WorkspacePath(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockTool("mutating", "A mutating tool")
+	tool := newMockTool("mutating", "A mutating tool") // defaultPolicy: PolicyUserConfirm
 	registry.Register(tool)
 
 	confirmCalled := false
@@ -785,16 +787,16 @@ func TestAutoApproval_WorkspacePath(t *testing.T) {
 	if result.IsError {
 		t.Error("expected IsError to be false")
 	}
-	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called when all paths are in workspace")
+	if !confirmCalled {
+		t.Error("expected confirmFunc to be called: workspace-locality must not bypass PolicyUserConfirm")
 	}
 }
 
-// TestAutoApproval_TempDir tests that PolicyUserConfirm is bypassed when
-// all paths in the input are within the session temp directory.
+// TestAutoApproval_TempDir verifies that PolicyUserConfirm is NOT bypassed
+// even when all paths in the input are within the session temp directory.
 func TestAutoApproval_TempDir(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockTool("mutating", "A mutating tool")
+	tool := newMockTool("mutating", "A mutating tool") // defaultPolicy: PolicyUserConfirm
 	registry.Register(tool)
 
 	confirmCalled := false
@@ -814,8 +816,35 @@ func TestAutoApproval_TempDir(t *testing.T) {
 	if result.IsError {
 		t.Error("expected IsError to be false")
 	}
+	if !confirmCalled {
+		t.Error("expected confirmFunc to be called: temp-dir locality must not bypass PolicyUserConfirm")
+	}
+}
+
+// TestAutoApproval_AlwaysAllow_WorkspacePath verifies that PolicyAlwaysAllow
+// tools still execute without confirmation when paths are inside the workspace
+// (the auto-approval optimization remains for explicitly-allow policies).
+func TestAutoApproval_AlwaysAllow_WorkspacePath(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("readonly", "A read-only tool") // defaultPolicy: PolicyAlwaysAllow
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = WithWorkspacePath(ctx, "/workspace")
+	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
+
+	_, err := registry.Execute(ctx, "readonly", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called when all paths are in temp dir")
+		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysAllow tools")
 	}
 }
 

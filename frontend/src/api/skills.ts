@@ -8,9 +8,13 @@ export async function listSkills(): Promise<SkillDescriptor[]> {
   try {
     const app = getApp()
     const result = await app.ListSkills()
-    return (result ?? []) as SkillDescriptor[]
+    if (!Array.isArray(result)) {
+      logger.warn('listSkills: unexpected response shape', result)
+      return []
+    }
+    return result as SkillDescriptor[]
   } catch (err) {
     logger.error('Failed to list skills:', err)
-    return []
+    throw err
   }
 }

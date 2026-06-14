@@ -13,10 +13,19 @@ import (
 // and must close it when done. Pragma failures are logged as warnings but do
 // not cause the function to return an error.
 func OpenDatabase(dbPath string, logger *slog.Logger) (*sql.DB, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
 	}
+
+	// Write-serialized SQLite: single connection prevents "database is locked"
+	// errors from concurrent writes while still allowing concurrent reads.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
 		logger.Warn("failed to enable WAL mode", "error", err)

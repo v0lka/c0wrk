@@ -61,6 +61,6 @@ type TaskState struct {
 	StepResults     map[string]StepResult
 	Reflections     []Reflection
 	FinalOutput     string
-	Facts           []Fact  // keyword-tagged facts
-	Status          string  // "in_progress", "completed", "failed"
+	Facts           []Fact // keyword-tagged facts
+	Status          string // "in_progress", "completed", "failed"
 }

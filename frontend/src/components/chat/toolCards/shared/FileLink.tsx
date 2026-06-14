@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 
 interface FileLinkProps {
@@ -10,7 +11,7 @@ interface FileLinkProps {
 export function FileLink({ path, line, label, className }: FileLinkProps) {
   const displayName = label ?? path.split('/').pop() ?? path
 
-  function handleClick(e: React.MouseEvent) {
+  const handleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     const store = useFileViewerStore.getState()
     if (line !== undefined) {
@@ -18,7 +19,7 @@ export function FileLink({ path, line, label, className }: FileLinkProps) {
     } else {
       store.openFile(path)
     }
-  }
+  }, [path, line])
 
   return (
     <span

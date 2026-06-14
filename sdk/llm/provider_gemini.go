@@ -73,7 +73,7 @@ func (p *GeminiProvider) log() *slog.Logger {
 	if p.logger != nil {
 		return p.logger
 	}
-	return slog.Default()
+	return slog.New(slog.DiscardHandler)
 }
 
 // Name returns the provider name.

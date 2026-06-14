@@ -12,6 +12,13 @@ type Plan struct {
 	ExplorationContext string     `json:"exploration_context,omitempty"`
 }
 
+// StepProfile is a marker interface for step-level configuration profiles.
+// Implementations define step-specific behavior such as tool sets, domain
+// routing, compaction parameters, and step budgets.
+type StepProfile interface {
+	isStepProfile()
+}
+
 // PlanStep is a single step in the execution plan.
 type PlanStep struct {
 	ID             string   `json:"id"`
@@ -20,8 +27,9 @@ type PlanStep struct {
 	DependsOn      []string `json:"depends_on"`
 	Parallelizable bool     `json:"parallelizable"`
 	EstimatedTools []string `json:"estimated_tools"`
-	// Profile holds optional step-level configuration as an opaque value.
-	// Consumers can type-assert to their domain-specific profile type.
+	// Profile holds optional step-level configuration.
+	// During JSON deserialization this is map[string]any; consumers should
+	// convert to a domain-specific StepProfile implementation (e.g. *AgentProfile).
 	Profile any `json:"profile,omitempty"`
 }
 

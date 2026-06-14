@@ -1,12 +1,16 @@
 // All message and display item types for the chat system
 
+import { isObj } from '@/types/guards'
+import type { AskUserQuestion } from '@/types/events'
+export type { AskUserQuestion }
+
 export type MessageType =
   | 'user' | 'assistant' | 'thinking' | 'step_done' | 'tool_call' | 'tool_result'
   | 'tool_confirm' | 'ask_user' | 'routing' | 'reflection' | 'plan' | 'error' | 'thought'
   | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry'
   | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable' | 'task_resumed' | 'step_limit' | 'context_compaction'
-  | 'step_todo_update'
+  | 'step_todo_update' | 'memory_read'
 
 export interface ChatMessageUI {
   id: string
@@ -21,7 +25,7 @@ export type DisplayItemKind =
   | 'user' | 'assistant' | 'thought' | 'thought_group' | 'tool' | 'tool_confirm'
   | 'ask_user' | 'step_limit' | 'resume_action' | 'error' | 'service' | 'plan_step'
   | 'reflection' | 'step_finish' | 'action_placeholder'
-  | 'context_compaction'
+  | 'context_compaction' | 'memory_read'
 
 export type DisplayItem =
   | { kind: 'user'; message: ChatMessageUI }
@@ -40,6 +44,7 @@ export type DisplayItem =
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }
+  | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
 
 export interface GroupedMessages {
   items: DisplayItem[]
@@ -48,9 +53,7 @@ export interface GroupedMessages {
 
 // --- Metadata type helpers for action components ---
 
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null
-}
+// isObj imported from @/types/guards
 
 // -- Typed resolution metadata (write side) --
 
@@ -105,14 +108,6 @@ export function getAskUserResolution(metadata: Record<string, unknown> | undefin
 
 export function isResolved(metadata: Record<string, unknown> | undefined): boolean {
   return isObj(metadata) && metadata.resolved === true
-}
-
-export interface AskUserQuestion {
-  id: string
-  question: string
-  options: Array<{ label: string; value: string }>
-  multi_select?: boolean
-  recommended?: string[]
 }
 
 export function parseAskUserQuestions(metadata: Record<string, unknown> | undefined): AskUserQuestion[] {

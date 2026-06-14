@@ -169,7 +169,11 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 	if err := app.builder.WaitReady(ctx); err != nil {
 		return VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
 	}
-	judge := app.builder.ToolRegistry().GetJudge()
+	registry := app.builder.ToolRegistry()
+	if registry == nil {
+		return VerdictConfirm, "", ErrJudgeNotAvailable
+	}
+	judge := registry.GetJudge()
 	if judge == nil {
 		return VerdictConfirm, "", ErrJudgeNotAvailable
 	}

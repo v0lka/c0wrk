@@ -35,7 +35,9 @@ type FrontendAPI struct {
 	logLevel      string
 
 	// Workspace
-	watcher *workspace.Watcher
+	watcher        *workspace.Watcher
+	gitRepoCache   map[string]gitRepoCacheEntry
+	gitRepoCacheMu sync.Mutex
 
 	// Project
 	projectManager    *project.Manager
@@ -43,6 +45,13 @@ type FrontendAPI struct {
 	activeProjectID   string
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
+
+	// Skill cache (invalidated on project switch)
+	skillCache            []SkillDescriptorDTO
+	skillCacheGen         uint64 // atomic — bumped to invalidate
+	skillCacheGenSnapshot uint64
+	skillCacheProjectDir  string
+	skillCacheMu          sync.Mutex
 
 	// Vector search
 	vectorManager   *vectorindex.Manager
@@ -54,6 +63,11 @@ type FrontendAPI struct {
 	// Injected Wails callbacks (set by desktop during construction).
 	emitEvent func(string, ...any)
 	appCtx    func() context.Context
+
+	// builderOverride, when non-nil, replaces f.app.Builder() in the builder()
+	// accessor. Used by tests to substitute a fake appBuilder so config/MCP
+	// mutations can be verified without the real LLM router or MCP gateway.
+	builderOverride appBuilder
 }
 
 // TerminalManager is the interface for the terminal subsystem.
@@ -151,6 +165,10 @@ func (f *FrontendAPI) Cleanup() {
 			f.log().Error("failed to close session logger", "error", err)
 		}
 	}
+	// Free gitRepoCache on shutdown.
+	f.gitRepoCacheMu.Lock()
+	f.gitRepoCache = nil
+	f.gitRepoCacheMu.Unlock()
 }
 
 // log returns the instance logger, falling back to slog.Default() when nil.

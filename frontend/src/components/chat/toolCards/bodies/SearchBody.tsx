@@ -25,8 +25,8 @@ export const SearchBody = React.memo(function SearchBody({ result, status, parse
 
   return (
     <div className="mt-2 border-l-2 border-border bg-muted/30 rounded p-3 min-w-0 space-y-0.5">
-      {visible.map((entry, i) => (
-        <div key={i} className="text-xs truncate">
+      {visible.map((entry) => (
+        <div key={entry.display} className="text-xs truncate">
           {entry.path ? (
             <FileLink path={entry.path} line={entry.line} label={entry.display} />
           ) : (

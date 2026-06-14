@@ -588,29 +588,47 @@ func (s *SQLiteSessionStore) SaveTaskStep(ctx context.Context, taskID string, st
 
 // AddTaskReflection appends a reflection JSON object to the task's reflections array.
 func (s *SQLiteSessionStore) AddTaskReflection(ctx context.Context, taskID string, reflectionJSON json.RawMessage) error {
+	// BEGIN IMMEDIATE prevents SQLITE_BUSY from deferred->write upgrade in WAL mode.
+	_, err := s.db.ExecContext(ctx, "BEGIN IMMEDIATE")
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	//nolint:errcheck // Rollback on error is best-effort.
+	defer func() {
+		if err != nil {
+			s.db.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
 	// Read current reflections, append, write back.
 	var current string
-	err := s.db.QueryRowContext(ctx, `SELECT reflections FROM tasks WHERE id = ?`, taskID).Scan(&current)
+	err = s.db.QueryRowContext(ctx, `SELECT reflections FROM tasks WHERE id = ?`, taskID).Scan(&current)
 	if err != nil {
 		return fmt.Errorf("failed to read task reflections: %w", err)
 	}
 
 	var arr []json.RawMessage //nolint:prealloc // dynamic append from JSON unmarshal
 	if current != "" && current != "[]" {
-		if err := json.Unmarshal([]byte(current), &arr); err != nil {
+		if err = json.Unmarshal([]byte(current), &arr); err != nil {
 			return fmt.Errorf("failed to unmarshal task reflections: %w", err)
 		}
 	}
 	arr = append(arr, reflectionJSON)
 
-	updated, err := json.Marshal(arr)
-	if err != nil {
-		return fmt.Errorf("failed to marshal task reflections: %w", err)
+	updated, mErr := json.Marshal(arr)
+	if mErr != nil {
+		err = fmt.Errorf("failed to marshal task reflections: %w", mErr)
+		return err
 	}
 
 	_, err = s.db.ExecContext(ctx, `UPDATE tasks SET reflections = ? WHERE id = ?`, string(updated), taskID)
 	if err != nil {
 		return fmt.Errorf("failed to update task reflections: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, "COMMIT")
+	if err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	return nil
 }

@@ -250,6 +250,16 @@ func (s *Service) lexicalOnlySearch(
 	return out, nil
 }
 
+// fusedEntry holds intermediate per-document data during Reciprocal Rank Fusion.
+type fusedEntry struct {
+	result       chromem.Result
+	vectorScore  float32
+	lexicalScore float32
+	vectorRank   int
+	lexicalRank  int
+	score        float64
+}
+
 // hybridSearchRRF runs vector and lexical queries in parallel, fuses
 // their ranked lists with Reciprocal Rank Fusion (k=60), and returns
 // the top-K results after applying post-filters.
@@ -302,54 +312,10 @@ func (s *Service) hybridSearchRRF(
 	// Apply per-side filters BEFORE fusing so the rank spaces are
 	// comparable. The plan requires per-side MustMatch and glob filters
 	// applied pre-fusion (see "Design invariants").
-	type fused struct {
-		result       chromem.Result
-		vectorScore  float32
-		lexicalScore float32
-		vectorRank   int
-		lexicalRank  int
-		score        float64
-	}
-	agg := make(map[string]*fused, len(vecResults)+len(lexHits))
+	agg := make(map[string]*fusedEntry, len(vecResults)+len(lexHits))
 
-	vecRank := 0
-	for _, r := range vecResults {
-		if !passesFilters(r, filePattern, mustMatch, s.logger) {
-			continue
-		}
-		vecRank++
-		entry := agg[r.ID]
-		if entry == nil {
-			entry = &fused{result: r}
-			agg[r.ID] = entry
-		}
-		entry.vectorScore = r.Similarity
-		entry.vectorRank = vecRank
-		entry.score += 1.0 / float64(rrfK+vecRank)
-	}
-
-	lexRank := 0
-	for _, h := range lexHits {
-		entry := agg[h.ID]
-		var r chromem.Result
-		if entry == nil {
-			doc, getErr := col.GetByID(ctx, h.ID)
-			if getErr != nil {
-				s.logger.Debug("lexical hit missing in chromem", "id", h.ID, "error", getErr)
-				continue
-			}
-			r = chromem.Result{ID: doc.ID, Metadata: doc.Metadata, Content: doc.Content}
-			if !passesFilters(r, filePattern, mustMatch, s.logger) {
-				continue
-			}
-			entry = &fused{result: r}
-			agg[h.ID] = entry
-		}
-		lexRank++
-		entry.lexicalScore = h.Score
-		entry.lexicalRank = lexRank
-		entry.score += 1.0 / float64(rrfK+lexRank)
-	}
+	aggregateVectorHits(agg, vecResults, filePattern, mustMatch, s.logger)
+	aggregateLexicalHits(ctx, col, agg, lexHits, filePattern, mustMatch, s.logger)
 
 	out := make([]SearchResult, 0, len(agg))
 	for _, e := range agg {
@@ -370,6 +336,68 @@ func (s *Service) hybridSearchRRF(
 		out = out[:topK]
 	}
 	return out, nil
+}
+
+// aggregateVectorHits adds vector results into the RRF aggregation map.
+// Filtered results are skipped; each contributing entry gets a vector
+// rank and the corresponding RRF score component.
+func aggregateVectorHits(
+	agg map[string]*fusedEntry,
+	vecResults []chromem.Result,
+	filePattern string,
+	mustMatch []string,
+	logger *slog.Logger,
+) {
+	vecRank := 0
+	for _, r := range vecResults {
+		if !passesFilters(r, filePattern, mustMatch, logger) {
+			continue
+		}
+		vecRank++
+		entry := agg[r.ID]
+		if entry == nil {
+			entry = &fusedEntry{result: r}
+			agg[r.ID] = entry
+		}
+		entry.vectorScore = r.Similarity
+		entry.vectorRank = vecRank
+		entry.score += 1.0 / float64(rrfK+vecRank)
+	}
+}
+
+// aggregateLexicalHits adds lexical results into the RRF aggregation map.
+// Hits missing from chromem are looked up via GetByID; hits that cannot be
+// found or that fail post-filters are skipped.
+func aggregateLexicalHits(
+	ctx context.Context,
+	col *chromem.Collection,
+	agg map[string]*fusedEntry,
+	lexHits []lexical.Hit,
+	filePattern string,
+	mustMatch []string,
+	logger *slog.Logger,
+) {
+	lexRank := 0
+	for _, h := range lexHits {
+		entry := agg[h.ID]
+		if entry == nil {
+			doc, getErr := col.GetByID(ctx, h.ID)
+			if getErr != nil {
+				logger.Debug("lexical hit missing in chromem", "id", h.ID, "error", getErr)
+				continue
+			}
+			r := chromem.Result{ID: doc.ID, Metadata: doc.Metadata, Content: doc.Content}
+			if !passesFilters(r, filePattern, mustMatch, logger) {
+				continue
+			}
+			entry = &fusedEntry{result: r}
+			agg[h.ID] = entry
+		}
+		lexRank++
+		entry.lexicalScore = h.Score
+		entry.lexicalRank = lexRank
+		entry.score += 1.0 / float64(rrfK+lexRank)
+	}
 }
 
 // hybridFanout returns the per-side fanout for RRF. Using a larger

@@ -77,12 +77,18 @@ func extractAllPathsFromJSON(input json.RawMessage, workspace string) []string {
 }
 
 // looksLikePath returns true if a string resembles a filesystem path
-// (contains "/" and is not a URL).
+// (contains a path separator and is not a URL). Recognizes both POSIX-style
+// ("/") and Windows-style paths (drive letters like "C:\" or "D:/", and
+// UNC paths starting with "\\\\").
 func looksLikePath(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false
 	}
-	if !strings.Contains(s, "/") {
+	hasSeparator := strings.Contains(s, "/") ||
+		strings.ContainsRune(s, filepath.Separator) ||
+		looksLikeWindowsDriveLetter(s) ||
+		strings.HasPrefix(s, `\\`)
+	if !hasSeparator {
 		return false
 	}
 	lower := strings.ToLower(s)
@@ -92,6 +98,23 @@ func looksLikePath(s string) bool {
 		}
 	}
 	return true
+}
+
+// looksLikeWindowsDriveLetter reports whether s starts with a drive-letter
+// prefix like "C:\" or "D:/".
+func looksLikeWindowsDriveLetter(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	c := s[0]
+	isLetter := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	if !isLetter {
+		return false
+	}
+	if s[1] != ':' {
+		return false
+	}
+	return s[2] == '\\' || s[2] == '/'
 }
 
 // resolvePathCandidate resolves a potential path to an absolute form.

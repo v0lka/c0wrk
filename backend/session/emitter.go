@@ -48,6 +48,10 @@ func (g *toolCallIDGen) next() string {
 }
 
 // EventEmitter implements core.Emitter and routes events to a callback function.
+//
+// Lock ordering: tokens.mu must be acquired BEFORE e.mu to avoid deadlocks.
+// Methods that need both (e.g. AssistantDone, EmitSessionTokens, ContextFill)
+// always lock tokens.mu first, then e.mu.
 type EventEmitter struct {
 	sessionID    string
 	emit         func(Event)
@@ -144,14 +148,11 @@ var (
 // emitEvent is a helper that emits an event, injecting plan_step_id and retry_attempt if set.
 func (e *EventEmitter) emitEvent(evt Event) {
 	e.log().Debug("emitter: dispatching event", "type", evt.Type, "sessionID", e.sessionID, "planStepID", e.planStepID)
-	if e.planStepID != "" {
-		// Inject plan_step_id into Data if it's a map[string]any
-		if data, ok := evt.Data.(map[string]any); ok {
+	if data, ok := evt.Data.(map[string]any); ok {
+		if e.planStepID != "" {
 			data["plan_step_id"] = e.planStepID
 		}
-	}
-	if e.retryAttempt > 0 {
-		if data, ok := evt.Data.(map[string]any); ok {
+		if e.retryAttempt > 0 {
 			data["retry_attempt"] = e.retryAttempt
 		}
 	}
@@ -481,7 +482,7 @@ func (e *EventEmitter) AssistantChunk(content string) {
 		SessionID: e.sessionID,
 		Type:      "assistant_chunk",
 		Data: map[string]any{
-			"content":            content,
+			"content":             content,
 			"accumulated_content": e.streamAccumulated.String(),
 		},
 	})
@@ -693,6 +694,20 @@ func (e *EventEmitter) StepTodoUpdate(stepID string, items []core.TodoItem) {
 			"items":           itemData,
 			"completed_count": completedCount,
 			"total_count":     len(items),
+		},
+	})
+}
+
+// MemoryRead emits a memory_read event when the agent reads from its persistent memory.
+func (e *EventEmitter) MemoryRead(stepNum int, content string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "memory_read",
+		Data: map[string]any{
+			"step_num": stepNum,
+			"content":  content,
 		},
 	})
 }

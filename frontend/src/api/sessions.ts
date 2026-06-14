@@ -10,9 +10,9 @@ export async function createSession(): Promise<SessionInfo> {
     const app = getApp()
     const result = await app.CreateSession()
     if (!isSessionInfo(result)) {
-      logger.warn('createSession: unexpected response shape', result)
+      throw new Error('createSession: backend returned invalid data')
     }
-    return result as SessionInfo
+    return result
   } catch (err) {
     logger.error('Failed to create session:', err)
     throw err
@@ -34,9 +34,10 @@ export async function listSessions(): Promise<SessionInfo[]> {
     const app = getApp()
     const result = await app.ListSessions()
     if (!isArrayOf(result, isSessionInfo)) {
-      logger.warn('listSessions: unexpected response shape', result)
+      logger.error('listSessions: unexpected response shape, returning []', result)
+      return []
     }
-    return result as SessionInfo[]
+    return result
   } catch (err) {
     logger.error('Failed to list sessions:', err)
     throw err

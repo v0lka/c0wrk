@@ -13,9 +13,9 @@ export async function getConfig(): Promise<ConfigResponse> {
     const app = getApp()
     const result = await app.GetConfig()
     if (!isConfigResponse(result)) {
-      logger.warn('getConfig: unexpected response shape', result)
+      throw new Error('getConfig: backend returned invalid data')
     }
-    return result as ConfigResponse
+    return result
   } catch (err) {
     logger.error('Failed to get config:', err)
     throw err
@@ -27,9 +27,9 @@ export async function getSecuritySettings(): Promise<SecuritySettingsResponse> {
     const app = getApp()
     const result = await app.GetSecuritySettings()
     if (!isSecuritySettingsResponse(result)) {
-      logger.warn('getSecuritySettings: unexpected response shape', result)
+      throw new Error('getSecuritySettings: backend returned invalid data')
     }
-    return result as SecuritySettingsResponse
+    return result
   } catch (err) {
     logger.error('Failed to get security settings:', err)
     throw err
@@ -69,7 +69,11 @@ export async function updateSearchSettings(settings: SearchSettingsRequest): Pro
 export async function getLogLevel(): Promise<string> {
   try {
     const app = getApp()
-    return await app.GetLogLevel() as string
+    const result = await app.GetLogLevel()
+    if (typeof result !== 'string') {
+      throw new Error('getLogLevel: backend returned non-string data')
+    }
+    return result
   } catch (err) {
     logger.error('Failed to get log level:', err)
     throw err
@@ -91,9 +95,9 @@ export async function getProxySettings(): Promise<ProxySettingsResponse> {
     const app = getApp()
     const result = await app.GetProxySettings()
     if (!isProxySettingsResponse(result)) {
-      logger.warn('getProxySettings: unexpected response shape', result)
+      throw new Error('getProxySettings: backend returned invalid data')
     }
-    return result as ProxySettingsResponse
+    return result
   } catch (err) {
     logger.error('Failed to get proxy settings:', err)
     throw err

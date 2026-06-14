@@ -112,7 +112,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 
 		retryResp, retryErr := r.llm.Call(ctx, llm.ChatRequest{Messages: repairMessages, ReasoningEffort: reasoningEffort})
 		if retryErr != nil {
-			return nil, fmt.Errorf("failed to parse routing decision: %w", err)
+			return nil, fmt.Errorf("failed to parse routing decision: %w", retryErr)
 		}
 
 		retryJSON := extractJSON(retryResp.Message.Content)
@@ -173,10 +173,10 @@ func extractJSON(content string) string {
 func validateRoutingDecision(d *RoutingDecision) {
 	// Validate domain
 	switch d.Domain {
-	case "code", "research", "general", "mixed":
+	case DomainCode, DomainResearch, DomainGeneral, DomainMixed:
 		// valid
 	default:
-		d.Domain = "general"
+		d.Domain = DomainGeneral
 	}
 
 	// Clamp complexity to [1, 5]
@@ -204,11 +204,11 @@ func validateRoutingDecision(d *RoutingDecision) {
 // applyCompactionStrategy applies the domain-based compaction strategy rule.
 func applyCompactionStrategy(domain string, complexity int) string {
 	switch domain {
-	case "code":
+	case DomainCode:
 		return "sliding_window"
-	case "research":
+	case DomainResearch:
 		return "summarization"
-	case "mixed", "general":
+	case DomainMixed, DomainGeneral:
 		if complexity >= 4 {
 			return "hierarchical"
 		}

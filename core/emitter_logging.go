@@ -189,6 +189,11 @@ func (l *loggingEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
 	l.inner.StepTodoUpdate(stepID, items)
 }
 
+func (l *loggingEmitter) MemoryRead(stepNum int, content string) {
+	l.logger.Debug("memory read", "stepNum", stepNum)
+	l.inner.MemoryRead(stepNum, content)
+}
+
 // EmitSessionTokens forwards session token totals to the inner emitter if it supports it.
 // This enables the UsageTracker observer (registered via builder.go type assertion) to
 // propagate accumulated tokens through the logging wrapper.

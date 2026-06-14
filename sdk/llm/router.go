@@ -15,6 +15,14 @@ type SamplingFunc func(family string) *float64
 
 // RouterConfig configures the LLM router.
 // All values must be pre-resolved by the caller (env vars expanded, durations parsed).
+//
+// MaxRetries defaults to 3 when unset or zero. This means transient errors (HTTP 429,
+// 502, 503, 529, network blips) recover automatically with exponential backoff
+// (1s → 2s → 4s, capped at MaxBackoff). This adds up to ~7s of latency on the
+// worst-case retry path and may partially consume streaming tokens on retried requests.
+// Callers that rely on error propagation for compaction timing, circuit-breaker resets,
+// or budget control should account for this default. To disable retries entirely,
+// set MaxRetries to a negative value (e.g. -1).
 type RouterConfig struct {
 	ActiveProvider      string        // Logical name of the active provider (e.g. "openai", "lmstudio")
 	ProviderType        string        // Provider type: "openai", "lmstudio", "anthropic", "gemini"
@@ -31,6 +39,10 @@ type RouterConfig struct {
 }
 
 // Router routes LLM calls to the active provider.
+//
+// Concurrency: Router is NOT safe for concurrent use from multiple goroutines.
+// Each Router instance handles one request at a time. The orchestrator enforces
+// this via its single-active-request contract.
 type Router struct {
 	providers          map[string]Provider
 	activeProvider     Provider
@@ -171,6 +183,10 @@ func retryBackoff(ctx context.Context, backoff time.Duration) bool {
 // within the model's context window minus output reserve. Returns nil when
 // validation passes or should be skipped (unknown model, zero context window,
 // nil registry).
+//
+// NOTE: This is a pre-submission guard to reject obviously oversized requests.
+// It differs from ContextWindow.EffectiveMax() (which tracks ongoing fill during
+// the agent loop). The two calculations are intentionally independent.
 func (r *Router) validateContextWindow(ctx context.Context, model string, msgs []Message) error {
 	if r.registry == nil || r.tokenCounter == nil {
 		return nil
@@ -229,18 +245,19 @@ func (r *Router) applyDefaultTemperature(ctx context.Context, req *ChatRequest) 
 	req.Temperature = &temp
 }
 
-// Call sends a chat request to the active provider.
-func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	// Set model if not specified
+// prepareRequest fills defaults (model, temperature) and validates the context window.
+// Returns an error if the request would exceed the context window.
+func (r *Router) prepareRequest(ctx context.Context, req *ChatRequest) error {
 	if req.Model == "" {
 		req.Model = r.activeModel
 	}
+	r.applyDefaultTemperature(ctx, req)
+	return r.validateContextWindow(ctx, req.Model, req.Messages)
+}
 
-	// Apply family-aware temperature default when not explicitly set
-	r.applyDefaultTemperature(ctx, &req)
-
-	// Pre-call context window validation
-	if err := r.validateContextWindow(ctx, req.Model, req.Messages); err != nil {
+// Call sends a chat request to the active provider.
+func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	if err := r.prepareRequest(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -269,8 +286,6 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		if !IsRetryable(err) || attempt == r.maxRetries {
 			return nil, err
 		}
-
-		// Wait before retrying
 
 		// Sleep with jitter, respecting context cancellation
 		if !retryBackoff(ctx, backoff) {
@@ -310,16 +325,7 @@ func (r *Router) ActiveModel() string {
 
 // Stream sends a streaming chat request to the active provider.
 func (r *Router) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
-	// Set model if not specified
-	if req.Model == "" {
-		req.Model = r.activeModel
-	}
-
-	// Apply family-aware temperature default when not explicitly set
-	r.applyDefaultTemperature(ctx, &req)
-
-	// Pre-call context window validation
-	if err := r.validateContextWindow(ctx, req.Model, req.Messages); err != nil {
+	if err := r.prepareRequest(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -338,7 +344,7 @@ func (r *Router) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk,
 			return nil, err
 		}
 
-		// Wait before retrying stream
+		// Sleep with jitter, respecting context cancellation
 		if !retryBackoff(ctx, backoff) {
 			return nil, lastErr
 		}

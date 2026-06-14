@@ -29,7 +29,7 @@ func (s *SummarizationStrategy) log() *slog.Logger {
 	if s.logger != nil {
 		return s.logger
 	}
-	return slog.Default()
+	return slog.New(slog.DiscardHandler)
 }
 
 // NewSummarizationStrategy creates a new SummarizationStrategy.

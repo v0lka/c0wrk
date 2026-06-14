@@ -47,9 +47,10 @@ export function DAGGraph({ items, expandedItems }: DAGGraphProps) {
       {layout.connectors.map((c, i) => {
         const x1 = laneX(c.fromLane), y1 = rowY(c.fromRow)
         const x2 = laneX(c.toLane), y2 = rowY(c.toRow)
+        const connKey = `conn-${c.type}-${c.fromLane}-${c.fromRow}-${c.toLane}-${c.toRow}-${i}`
 
         if (c.type === 'vertical') {
-          return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={STROKE_COLOR} strokeWidth={STROKE_WIDTH} strokeLinecap="round" fill="none" />
+          return <line key={connKey} x1={x1} y1={y1} x2={x2} y2={y2} stroke={STROKE_COLOR} strokeWidth={STROKE_WIDTH} strokeLinecap="round" fill="none" />
         }
         if (c.type === 'fork' || c.type === 'merge') {
           const r = LANE_WIDTH / 2
@@ -57,12 +58,12 @@ export function DAGGraph({ items, expandedItems }: DAGGraphProps) {
           const d = c.type === 'fork'
             ? `M ${x1} ${y1} L ${x2 - dx * r} ${y1} Q ${x2} ${y1} ${x2} ${y1 + r} L ${x2} ${y2}`
             : `M ${x1} ${y1} L ${x1} ${y2 - r} Q ${x1} ${y2} ${x1 + dx * r} ${y2} L ${x2} ${y2}`
-          return <path key={i} d={d} stroke={STROKE_COLOR} strokeWidth={STROKE_WIDTH} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          return <path key={connKey} d={d} stroke={STROKE_COLOR} strokeWidth={STROKE_WIDTH} strokeLinecap="round" strokeLinejoin="round" fill="none" />
         }
         return null
       })}
       {layout.nodes.map((node, i) => (
-        <circle key={`node-${i}`} cx={laneX(node.lane)} cy={rowY(i)} r={2} fill={STROKE_COLOR} stroke="none" />
+        <circle key={`node-${node.lane}-${i}`} cx={laneX(node.lane)} cy={rowY(i)} r={2} fill={STROKE_COLOR} stroke="none" />
       ))}
     </svg>
   )

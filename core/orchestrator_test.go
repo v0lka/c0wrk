@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -358,7 +359,10 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 	})
 
 	_, err := orchestrator.HandleMessage(context.Background(), "Run two steps", "", HandleOptions{ExecutionMode: "advanced"})
-	if err != nil {
+	// ErrExecutionIncomplete is the expected outcome here — step 1 failing
+	// blocks step 2, so the plan does not fully execute. The sentinel is the
+	// signal we now propagate; treat it as success for this test (C-5).
+	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		t.Fatalf("Handle failed: %v", err)
 	}
 
@@ -801,7 +805,7 @@ func (m *mockTaskStore) PersistReflection(taskID string, r Reflection) error { r
 func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }
-func (m *mockTaskStore) PersistFailure(taskID string) error { return nil }
+func (m *mockTaskStore) PersistFailure(taskID string) error             { return nil }
 func (m *mockTaskStore) PersistFacts(taskID string, facts []Fact) error { return nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
@@ -1406,7 +1410,7 @@ func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r Reflect
 func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error             { return nil }
 func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []Fact) error { return nil }
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
@@ -2332,4 +2336,89 @@ func TestCoreStepConfigurator_UnknownSkillDropped(t *testing.T) {
 			t.Errorf("expected empty SystemPrompt when intersection is empty (SDK fall-through), got %q", stepCfg.SystemPrompt)
 		}
 	})
+}
+
+// TestOrchestrator_NormalModeSingleStep verifies that ExecutionModeNormal
+// produces exactly one plan step via the single-step planner code path.
+func TestOrchestrator_NormalModeSingleStep(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": ["bash_exec", "write_file"], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Planner (singleStep=true → one step)
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant",
+						Content: `{"steps": [
+							{"id": "step_1", "description": "Implement the feature", "depends_on": [], "parallelizable": false, "estimated_tools": ["bash_exec", "write_file"]}
+						]}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 3: // Executor for step_1 - finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Feature implemented",
+						ToolCalls: []llm.ToolCall{
+							{
+								ID:    "call_1",
+								Name:  "finish",
+								Input: json.RawMessage(`{"answer": "Feature implemented successfully"}`),
+							},
+						},
+					},
+					StopReason: "tool_use",
+				}, nil
+			default:
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: ""},
+					StopReason: "end_turn",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	router := NewRouter(mockLLM, 5)
+	planner := NewPlanner(mockLLM)
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         router,
+		Planner:        planner,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	result, err := orchestrator.HandleMessage(context.Background(), "Implement a feature", "", HandleOptions{ExecutionMode: "normal"})
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if result.Plan == nil {
+		t.Fatal("normal mode should have a plan")
+	}
+
+	if len(result.Plan.Steps) != 1 {
+		t.Errorf("normal mode should produce single-step plan, got %d steps", len(result.Plan.Steps))
+	}
+
+	if result.Plan.Steps[0].ID != "step_1" {
+		t.Errorf("expected step_1, got %s", result.Plan.Steps[0].ID)
+	}
 }

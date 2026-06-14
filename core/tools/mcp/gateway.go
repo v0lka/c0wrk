@@ -15,8 +15,13 @@ import (
 // Gateway manages connections to multiple MCP servers and provides
 // their tools to the agent through the ToolRegistry.
 type Gateway struct {
-	servers         map[string]*Server
-	config          GatewayConfig
+	servers map[string]*Server
+	config  GatewayConfig
+	// expandedConfigs holds the env-expanded ServerConfig for each connected
+	// server, keyed by name. configChanged compares against this to avoid
+	// false positives when raw ${VAR} placeholders in g.config.Servers were
+	// already substituted before connection.
+	expandedConfigs map[string]ServerConfig
 	defaultWorkDir  string
 	schemaSanitizer SchemaSanitizer
 	logger          *slog.Logger
@@ -26,7 +31,8 @@ type Gateway struct {
 // newGateway creates a new Gateway instance.
 func newGateway() *Gateway {
 	return &Gateway{
-		servers: make(map[string]*Server),
+		servers:         make(map[string]*Server),
+		expandedConfigs: make(map[string]ServerConfig),
 	}
 }
 
@@ -84,6 +90,7 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 		}
 
 		g.servers[name] = server
+		g.expandedConfigs[name] = cfg // store the expanded config used to connect
 		g.log().Debug("MCP server started", "server", name, "tools", len(server.Tools()))
 	}
 
@@ -134,6 +141,7 @@ func (g *Gateway) Stop() error {
 	}
 
 	g.servers = make(map[string]*Server)
+	g.expandedConfigs = make(map[string]ServerConfig)
 
 	if len(errs) > 0 {
 		return &StopError{Errors: errs}
@@ -179,6 +187,7 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 		}
 
 		delete(g.servers, name)
+		delete(g.expandedConfigs, name)
 		if logger != nil {
 			logger.Debug("MCP server removed", "server", name)
 		}
@@ -251,6 +260,9 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 		}
 
 		g.servers[name] = server
+		// Track the expanded config so the next Reconfigure compares against
+		// post-expansion values (W-7).
+		g.expandedConfigs[name] = newCfg
 
 		// Register new tools
 		for _, toolInfo := range server.Tools() {
@@ -280,45 +292,50 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 	return nil
 }
 
-// configChanged compares the new config with the stored config for a given server.
+// configChanged compares the new (env-expanded) config with the previously-
+// expanded config for a given server. Comparing against g.config.Servers
+// (raw ${VAR} placeholders) would produce false positives every time
+// Reconfigure runs and bounce all servers. We persist the expanded copy in
+// expandedConfigs at end of Reconfigure for the next comparison.
 func (g *Gateway) configChanged(name string, newCfg ServerConfig) bool {
-	oldEntry, exists := g.config.Servers[name]
+	oldCfg, exists := g.expandedConfigs[name]
 	if !exists {
 		return true // New server
 	}
 
 	// Compare relevant fields
-	if oldEntry.Transport != newCfg.Transport ||
-		oldEntry.Command != newCfg.Command ||
-		oldEntry.URL != newCfg.URL {
+	if oldCfg.Transport != newCfg.Transport ||
+		oldCfg.Command != newCfg.Command ||
+		oldCfg.URL != newCfg.URL ||
+		oldCfg.WorkDir != newCfg.WorkDir {
 		return true
 	}
 
 	// Compare args
-	if len(oldEntry.Args) != len(newCfg.Args) {
+	if len(oldCfg.Args) != len(newCfg.Args) {
 		return true
 	}
-	for i, arg := range oldEntry.Args {
+	for i, arg := range oldCfg.Args {
 		if arg != newCfg.Args[i] {
 			return true
 		}
 	}
 
-	// Compare env (we compare the expanded values)
-	if len(oldEntry.Env) != len(newCfg.Env) {
+	// Compare env (both sides are post-expansion)
+	if len(oldCfg.Env) != len(newCfg.Env) {
 		return true
 	}
-	for k, v := range oldEntry.Env {
+	for k, v := range oldCfg.Env {
 		if newCfg.Env[k] != v {
 			return true
 		}
 	}
 
-	// Compare headers (we compare the expanded values)
-	if len(oldEntry.Headers) != len(newCfg.Headers) {
+	// Compare headers (both sides are post-expansion)
+	if len(oldCfg.Headers) != len(newCfg.Headers) {
 		return true
 	}
-	for k, v := range oldEntry.Headers {
+	for k, v := range oldCfg.Headers {
 		if newCfg.Headers[k] != v {
 			return true
 		}

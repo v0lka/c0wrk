@@ -135,6 +135,9 @@ export const useVectorIndexStore = create<VectorIndexState & VectorIndexActions>
     }),
     {
       name: 'c0wrk-vector-index',
+      version: 1,
+      // Bump version and implement migration when adding/removing/renaming persisted fields.
+      migrate: (persistedState, _version) => persistedState,
       partialize: (state) => ({ mode: state.mode }),
       storage: createJSONStorage(resolveStorage),
     },

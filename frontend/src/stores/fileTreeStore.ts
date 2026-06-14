@@ -5,14 +5,19 @@ import type { FileEntry, GitStatusEntry } from '@/types/models'
 
 interface FileTreeState {
   tree: Record<string, FileEntry[]> // directory path -> children
-  expandedDirs: Set<string>
+  expandedDirs: Record<string, true>
   searchEntries: FileEntry[]
   gitStatus: Record<string, GitStatusEntry>
   rootPath: string | null
   filterText: string
   filterMode: 'glob' | 'regex'
   isSearching: boolean
-  loadingDirs: Set<string>
+  loadingDirs: Record<string, true>
+  // Recursive flat listing of every entry under rootPath, cached for the
+  // search input so debounced keystrokes do not trigger a fresh listDirectory
+  // RPC each time. Invalidated on workspace:tree_changed and project switch.
+  flatEntries: FileEntry[]
+  flatEntriesRoot: string | null
 }
 
 interface FileTreeActions {
@@ -25,6 +30,8 @@ interface FileTreeActions {
   setFilterText: (text: string) => void
   setFilterMode: (mode: 'glob' | 'regex') => void
   setIsSearching: (searching: boolean) => void
+  setFlatEntries: (rootPath: string, entries: FileEntry[]) => void
+  clearFlatEntries: () => void
   clearTree: () => void
 }
 
@@ -32,14 +39,16 @@ interface FileTreeActions {
 
 export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, get) => ({
   tree: {},
-  expandedDirs: new Set<string>(),
+  expandedDirs: {},
   searchEntries: [],
   gitStatus: {},
   rootPath: null,
   filterText: '',
   filterMode: 'glob',
   isSearching: false,
-  loadingDirs: new Set<string>(),
+  loadingDirs: {},
+  flatEntries: [],
+  flatEntriesRoot: null,
 
   setRootPath: (path) => set({ rootPath: path }),
 
@@ -49,18 +58,18 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
 
   toggleDir: (path) => {
     const { expandedDirs } = get()
-    const next = new Set(expandedDirs)
-    if (next.has(path)) {
-      next.delete(path)
+    const next = { ...expandedDirs }
+    if (next[path]) {
+      delete next[path]
     } else {
-      next.add(path)
+      next[path] = true
     }
     set({ expandedDirs: next })
   },
 
   setLoading: (path, loading) => set((s) => {
-    const next = new Set(s.loadingDirs)
-    if (loading) next.add(path); else next.delete(path)
+    const next = { ...s.loadingDirs }
+    if (loading) { next[path] = true } else { delete next[path] }
     return { loadingDirs: next }
   }),
 
@@ -74,14 +83,20 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
 
   setIsSearching: (searching) => set({ isSearching: searching }),
 
+  setFlatEntries: (rootPath, entries) => set({ flatEntries: entries, flatEntriesRoot: rootPath }),
+
+  clearFlatEntries: () => set({ flatEntries: [], flatEntriesRoot: null }),
+
   clearTree: () => set({
     tree: {},
-    expandedDirs: new Set<string>(),
+    expandedDirs: {},
     searchEntries: [],
     gitStatus: {},
     rootPath: null,
     filterText: '',
     isSearching: false,
-    loadingDirs: new Set<string>(),
+    loadingDirs: {},
+    flatEntries: [],
+    flatEntriesRoot: null,
   }),
 }))

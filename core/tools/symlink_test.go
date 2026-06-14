@@ -828,7 +828,14 @@ func TestCheckSymlinksAndConfirm_EmptyInput(t *testing.T) {
 func TestCheckSymlinksAndConfirm_TempDirOSLevelSymlink(t *testing.T) {
 	// Create a temp dir under /tmp, which is an OS-level symlink to /private/tmp
 	// on macOS. Verify that the symlink gate skips this OS-level infrastructure
-	// rather than forcing a user confirmation.
+	// rather than forcing a symlink-specific confirmation.
+	//
+	// Note: bash_exec defaults to PolicyUserConfirm, so the registry will still
+	// require user confirmation for the call — but the confirmation must come
+	// from the regular policy path with no symlink reasoning attached, NOT the
+	// symlink gate. The test asserts that distinction by allowing the
+	// confirmation to fire only when JudgeReasoning is empty (= regular policy
+	// confirm), and failing when JudgeReasoning mentions "symlink".
 	tmpDir, err := os.MkdirTemp("/tmp", "c0wrk-symlink-test-*")
 	if err != nil {
 		t.Skipf("cannot create temp dir under /tmp: %v", err)
@@ -846,8 +853,10 @@ func TestCheckSymlinksAndConfirm_TempDirOSLevelSymlink(t *testing.T) {
 
 	r := newRegistryForSymlinkTest(t)
 	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
-		t.Fatal("confirmFunc should NOT be called for OS-level temp dir symlink")
-		return ConfirmDeny, nil
+		if stringsContains(req.JudgeReasoning, "symlink") {
+			t.Fatalf("symlink gate should NOT have intercepted OS-level temp dir symlink; JudgeReasoning=%q", req.JudgeReasoning)
+		}
+		return ConfirmAllowOnce, nil
 	})
 
 	command := "cat " + testFile

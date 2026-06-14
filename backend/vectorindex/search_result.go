@@ -1,5 +1,15 @@
 package vectorindex
 
+import "context"
+
+// VectorSearcher is the narrow interface for search-only operations.
+// External consumers that don't need full Service access should use this (S-24).
+type VectorSearcher interface {
+	HybridSearch(ctx context.Context, opts SearchOptions) ([]SearchResult, error)
+	BrowseWithFilter(ctx context.Context, topK int, fileFilter string) ([]SearchResult, error)
+	WaitReady(ctx context.Context) error
+}
+
 // SearchResult represents a single result from a vector similarity search.
 //
 // For hybrid (RRF-fused) results the Score field carries the fused RRF

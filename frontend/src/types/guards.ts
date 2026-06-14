@@ -15,19 +15,28 @@ import type {
     ProxySettingsResponse,
 } from './models'
 
-function isObj(v: unknown): v is Record<string, unknown> {
+export function isObj(v: unknown): v is Record<string, unknown> {
     return typeof v === 'object' && v !== null
 }
 
-function has(v: Record<string, unknown>, ...keys: string[]): boolean {
+export function has(v: Record<string, unknown>, ...keys: string[]): boolean {
     return keys.every(k => k in v)
 }
 
-/** Validates that value is an array, optionally checking the first element with a guard. */
+/**
+ * Validates that value is an array and every element passes the guard.
+ *
+ * DESIGN NOTE: Previously validated only the first element (O(1)), now validates
+ * every element (O(n)). This is a deliberate correctness improvement: a single
+ * malformed element from a Wails serialization edge case would previously pass
+ * validation and cause runtime errors during iteration. All upstream callers
+ * in api/ catch validation failures and return [] (empty array), so a rejected
+ * array is handled gracefully. For very large arrays (session history, directory
+ * listings), the O(n) cost is acceptable given typical sizes.
+ */
 export function isArrayOf<T>(v: unknown, guard: (item: unknown) => item is T): v is T[] {
     if (!Array.isArray(v)) return false
-    if (v.length === 0) return true
-    return guard(v[0])
+    return v.every(item => guard(item))
 }
 
 export function isSessionInfo(v: unknown): v is SessionInfo {

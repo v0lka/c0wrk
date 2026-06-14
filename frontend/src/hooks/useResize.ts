@@ -24,6 +24,8 @@ export function useResize({ initialWidth, min, max, direction = 1, onChange }: U
   const startWidth = useRef(initialWidth)
   const moveRef = useRef<((ev: globalThis.MouseEvent) => void) | null>(null)
   const upRef = useRef<(() => void) | null>(null)
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
 
   // Cleanup on unmount
   useEffect(() => {
@@ -44,7 +46,7 @@ export function useResize({ initialWidth, min, max, direction = 1, onChange }: U
     const onMouseMove = (ev: MouseEvent) => {
       if (!dragging.current) return
       const delta = (ev.clientX - startX.current) * direction
-      onChange(clamp(startWidth.current + delta, min, max))
+      onChangeRef.current(clamp(startWidth.current + delta, min, max))
     }
 
     const onMouseUp = () => {
@@ -65,18 +67,18 @@ export function useResize({ initialWidth, min, max, direction = 1, onChange }: U
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
     document.body.classList.add('resize-dragging')
-  }, [initialWidth, min, max, direction, onChange])
+  }, [initialWidth, min, max, direction])
 
   const handleKeyDown = useCallback((e: ReactKeyboardEvent) => {
     const step = e.shiftKey ? 50 : 10
     if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
       e.preventDefault()
-      onChange(clamp(initialWidth - step * direction, min, max))
+      onChangeRef.current(clamp(initialWidth - step * direction, min, max))
     } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
       e.preventDefault()
-      onChange(clamp(initialWidth + step * direction, min, max))
+      onChangeRef.current(clamp(initialWidth + step * direction, min, max))
     }
-  }, [initialWidth, min, max, direction, onChange])
+  }, [initialWidth, min, max, direction])
 
   return { handleMouseDown, handleKeyDown }
 }

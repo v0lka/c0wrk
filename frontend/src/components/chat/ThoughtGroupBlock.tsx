@@ -19,7 +19,7 @@ export function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
         {item.thoughts.map((t, idx) => {
           const hasReasoning = !!t.reasoning && t.reasoning.trim() !== ''
           return (
-            <div key={`thought-${idx}`}>
+            <div key={t.reasoning || t.content ? `thought-${t.reasoning?.slice(0, 16) ?? t.content?.slice(0, 16)}-${idx}` : `thought-${idx}`}>
               {hasReasoning && (
                 <Markdown content={t.reasoning!} compact />
               )}

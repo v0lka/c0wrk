@@ -36,6 +36,13 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
     if (isOverflowing) setExpanded(prev => !prev)
   }, [isOverflowing])
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      handleClick()
+    }
+  }, [handleClick])
+
   if (!isPinned) {
     return (
       <div className="flex flex-col items-end gap-1 max-w-[80%] ml-auto">
@@ -53,7 +60,9 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
       className={`relative transition-all duration-200 ${isOverflowing ? 'cursor-pointer' : ''}`}
       style={{ maxHeight: shouldClip ? maxHeight : undefined, overflow: shouldClip ? 'hidden' : undefined }}
       onClick={handleClick}
+      onKeyDown={isOverflowing ? handleKeyDown : undefined}
       role={isOverflowing ? 'button' : undefined}
+      tabIndex={isOverflowing ? 0 : undefined}
       aria-expanded={isOverflowing ? effectiveExpanded : undefined}
     >
       <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto">

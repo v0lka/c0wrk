@@ -26,6 +26,13 @@ export const BashBody = React.memo(function BashBody({ result, status }: ToolBod
   if (lines.length <= 20) {
     return (
       <div className="mt-2 border-l-2 border-border bg-muted/30 rounded p-3 min-w-0">
+        {/*
+         * Safety contract for dangerouslySetInnerHTML:
+         * 1. `result` originates from backend terminal stdout/stderr (not user HTML input)
+         * 2. `ansi_up` is an allowlist-based converter that only produces <span style="...">
+         *    elements — no arbitrary HTML tags, attributes, or scripts can appear in output
+         * 3. No XSS injection vector exists because the transformation is ANSI→CSS-span only
+         */}
         <pre
           className="font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all"
           dangerouslySetInnerHTML={{ __html: html }}

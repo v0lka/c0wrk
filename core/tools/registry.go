@@ -41,6 +41,12 @@ type ParamInjector func(toolName, source string, input json.RawMessage) json.Raw
 // ToolRegistry stores all available tools and provides them to Executor.
 // It embeds the SDK ToolRegistry for basic operations and adds policy enforcement on top.
 // Thread-safe via sync.RWMutex.
+//
+// TODO(S-14): Replace embedding with composition — store *sdktools.ToolRegistry as a
+// private field and explicitly delegate only the methods the core layer intends to
+// expose. This gives full control over the public surface area and prevents
+// accidental exposure of SDK-internal methods to callers. The refactor requires
+// auditing all callers that access SDK methods through the embedded type.
 type ToolRegistry struct {
 	*sdktools.ToolRegistry
 	mu                   sync.RWMutex
@@ -66,6 +72,42 @@ func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		ToolRegistry: sdktools.NewToolRegistry(),
 	}
+}
+
+// Clone returns a copy of this ToolRegistry that shares the underlying SDK
+// ToolRegistry (tools themselves are stateless and shared) but has independent
+// policy state (policyOverrides, skillPolicyOverrides, defaultPolicy, judge,
+// confirmFunc, hooks). This is used to give each session/orchestrator its own
+// policy view so that runtime mutations — in particular skill-derived
+// SetSkillPolicyOverrides — do not leak across concurrent sessions.
+func (r *ToolRegistry) Clone() *ToolRegistry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	cloned := &ToolRegistry{
+		ToolRegistry:     r.ToolRegistry, // shared SDK registry (tool definitions)
+		confirmFunc:      r.confirmFunc,
+		judge:            r.judge,
+		defaultPolicy:    r.defaultPolicy,
+		hasDefaultPolicy: r.hasDefaultPolicy,
+		preExecuteHook:   r.preExecuteHook,
+		toolFilter:       r.toolFilter,
+		paramInjector:    r.paramInjector,
+		logger:           r.logger,
+	}
+	if r.policyOverrides != nil {
+		cloned.policyOverrides = make(map[string]ToolPolicy, len(r.policyOverrides))
+		for k, v := range r.policyOverrides {
+			cloned.policyOverrides[k] = v
+		}
+	}
+	if r.skillPolicyOverrides != nil {
+		cloned.skillPolicyOverrides = make(map[string]ToolPolicy, len(r.skillPolicyOverrides))
+		for k, v := range r.skillPolicyOverrides {
+			cloned.skillPolicyOverrides[k] = v
+		}
+	}
+	return cloned
 }
 
 // SetLogger sets the logger for the tool registry. If nil, slog.Default() is used.
@@ -225,10 +267,15 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	policy := r.resolvePolicy(name, tool)
 
-	// Workspace/temp auto-approval: if all paths in the input are within
-	// the session workspace or temp directory, execute without confirmation
-	// regardless of policy (except AlwaysDeny which is always respected).
-	if policy != PolicyAlwaysDeny {
+	// Workspace/temp auto-approval: if all paths in the input are within the
+	// session workspace or temp directory, execute without confirmation.
+	// Auto-approval ONLY applies to PolicyAlwaysAllow (or no explicit policy
+	// when the tool's own default permits it). PolicyUserConfirm and
+	// PolicyAlwaysDeny are NEVER weakened by path-locality heuristics — a
+	// user-controlled `working_directory` argument must not bypass an explicit
+	// confirm policy (e.g., bash_exec running ./scripts/x.sh inside the
+	// workspace).
+	if policy == PolicyAlwaysAllow {
 		if tempDir := sdktools.TempDirFrom(ctx); tempDir != "" && allPathsInDir(input, tempDir) {
 			r.log().Debug("auto-approved: all paths within session temp directory", "tool", name)
 			return tool.Execute(ctx, input)

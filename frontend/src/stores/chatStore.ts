@@ -57,7 +57,11 @@ function indexMessages(msgs: ChatMessageUI[]): Record<string, ChatMessageUI> {
 
 // --- Selectors ---
 
-/** Get ordered messages array for a session */
+/**
+ * Derives ordered session messages from raw store state.
+ * ⚠️ DO NOT use as a Zustand selector — always returns a new array.
+ * Use the {@link useSessionMessages} hook for reactive subscriptions instead.
+ */
 export function selectSessionMessages(state: ChatState & ChatActions, sessionId: string): ChatMessageUI[] {
   const order = state.messageOrder[sessionId]
   const index = state.messages[sessionId]

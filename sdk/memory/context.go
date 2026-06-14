@@ -83,6 +83,11 @@ func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker 
 
 // EffectiveMax returns the effective maximum token count for the context window,
 // accounting for output limit and safety margin.
+//
+// NOTE: This is the ongoing tracking formula used during the agent loop to manage
+// context growth. It differs from Router.validateContextWindow (which is a
+// last-chance guard before API submission) — the slight numeric divergence from
+// integer vs float rounding is intentional and acceptable.
 func (cw *ContextWindow) EffectiveMax() int {
 	safetyMargin := cw.modelMeta.ContextWindow * cw.safetyMargin / 100
 	return cw.modelMeta.ContextWindow - cw.modelMeta.OutputLimit - safetyMargin
@@ -158,6 +163,10 @@ func (cw *ContextWindow) SetPlan(planText string) {
 }
 
 // AddStep appends a step to the history and updates the token tracker.
+// The token estimate is approximate — it concatenates content strings without
+// accounting for LLM message framing overhead (~4 tokens/message). The
+// ContextTokenTracker.Correct() method compensates by adjusting delta based
+// on actual API-reported token usage, so estimates converge over time.
 func (cw *ContextWindow) AddStep(step sdkagent.Step) {
 	cw.steps = append(cw.steps, step)
 	// Clear compacted messages since we have new steps
@@ -251,120 +260,127 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 		step := cw.steps[i]
 
 		if step.ResponseGroup > 0 {
-			// Collect all consecutive steps with the same ResponseGroup
-			groupStart := i
-			groupEnd := i + 1
-			for groupEnd < len(cw.steps) && cw.steps[groupEnd].ResponseGroup == step.ResponseGroup {
-				groupEnd++
-			}
-			groupSteps := cw.steps[groupStart:groupEnd]
-
-			// Build ONE assistant message with all tool calls
-			assistantMsg := llm.Message{
-				Role:             "assistant",
-				Content:          strings.TrimRight(groupSteps[0].Thought, invisibleChars),
-				ReasoningContent: groupSteps[0].ReasoningContent,
-			}
-			for _, gs := range groupSteps {
-				if gs.Action.ID != "" {
-					assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, gs.Action)
-				}
-			}
-			if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
-				assistantMsg.Content = "(proceeding)"
-			}
-			messages = append(messages, assistantMsg)
-
-			// Add individual tool result messages
-			for gi, gs := range groupSteps {
-				idx := groupStart + gi
-				if gs.Action.ID != "" {
-					observation := strings.TrimRight(gs.Observation, invisibleChars)
-					if observation == "" {
-						observation = "(no output)"
-					}
-					// Apply pruning: use placeholder for non-protected tool outputs
-					if _, protected := protectedIndices[idx]; !protected && cw.pruning.KeepLastN > 0 {
-						observation = cw.pruning.PlaceholderText
-					}
-					// Apply prompt injection defense: wrap untrusted tool output
-					if cw.injectionDefenseEnabled && cw.steps[idx].IsUntrusted {
-						observation = security.WrapUntrustedContent(observation, gs.Action.Name, nil)
-					}
-					messages = append(messages, llm.Message{
-						Role:       "tool",
-						Content:    observation,
-						ToolCallID: gs.Action.ID,
-					})
-				}
-				// UserNudge only on last step of group
-				if gi == len(groupSteps)-1 {
-					nudgeContent := strings.TrimRight(gs.UserNudge, invisibleChars)
-					if nudgeContent != "" {
-						messages = append(messages, llm.Message{Role: "user", Content: nudgeContent})
-					}
-				}
-			}
-
-			i = groupEnd
+			messages = append(messages, cw.buildGroupedMessages(i, protectedIndices)...)
+			i += cw.groupSize(i)
 		} else {
-			// Handle standalone steps (ResponseGroup == 0)
-			assistantMsg := llm.Message{
-				Role:             "assistant",
-				Content:          strings.TrimRight(step.Thought, invisibleChars),
-				ReasoningContent: step.ReasoningContent,
-			}
-			if step.Action.ID != "" {
-				assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
-			}
-			// OpenAI API requires assistant messages to have either content or tool_calls.
-			// If both are empty, add a placeholder to prevent 400 errors.
-			if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 {
-				assistantMsg.Content = "(proceeding)"
-			}
-			messages = append(messages, assistantMsg)
-
-			// Tool response message with observation
-			if step.Action.ID != "" {
-				// OpenAI API requires non-empty content for tool-role messages.
-				// Use placeholder if observation is empty to prevent 400 errors.
-				observation := strings.TrimRight(step.Observation, invisibleChars)
-				if observation == "" {
-					observation = "(no output)"
-				}
-
-				// Apply pruning: use placeholder for non-protected tool outputs
-				if _, protected := protectedIndices[i]; !protected && cw.pruning.KeepLastN > 0 {
-					observation = cw.pruning.PlaceholderText
-				}
-
-				// Apply prompt injection defense: wrap untrusted tool output
-				if cw.injectionDefenseEnabled && step.IsUntrusted {
-					observation = security.WrapUntrustedContent(observation, step.Action.Name, nil)
-				}
-				
-				toolMsg := llm.Message{
-					Role:       "tool",
-					Content:    observation,
-					ToolCallID: step.Action.ID,
-				}
-				messages = append(messages, toolMsg)
-			}
-
-			// User nudge message (e.g., step limit extension notifications)
-			// Skip if content is empty or only contains whitespace/invisible characters.
-			nudgeContent := strings.TrimRight(step.UserNudge, invisibleChars)
-			if nudgeContent != "" {
-				messages = append(messages, llm.Message{
-					Role:    "user",
-					Content: nudgeContent,
-				})
-			}
-
+			messages = append(messages, cw.buildStandaloneMessages(step, i, protectedIndices)...)
 			i++
 		}
 	}
 	return messages
+}
+
+// groupSize returns the number of consecutive steps with the same ResponseGroup
+// starting at index start.
+func (cw *ContextWindow) groupSize(start int) int {
+	group := cw.steps[start].ResponseGroup
+	end := start + 1
+	for end < len(cw.steps) && cw.steps[end].ResponseGroup == group {
+		end++
+	}
+	return end - start
+}
+
+// buildGroupedMessages builds assistant+tool+nudge messages for a ResponseGroup.
+func (cw *ContextWindow) buildGroupedMessages(groupStart int, protectedIndices map[int]struct{}) []llm.Message {
+	groupEnd := groupStart + cw.groupSize(groupStart)
+	groupSteps := cw.steps[groupStart:groupEnd]
+
+	// Build ONE assistant message with all tool calls
+	assistantMsg := cw.buildAssistantMsg(groupSteps[0].Thought, groupSteps[0].ReasoningContent)
+	for _, gs := range groupSteps {
+		if gs.Action.ID != "" {
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, gs.Action)
+		}
+	}
+
+	var out []llm.Message
+	out = append(out, assistantMsg)
+
+	// Add individual tool result messages
+	for gi, gs := range groupSteps {
+		idx := groupStart + gi
+		if gs.Action.ID != "" {
+			out = append(out, cw.buildToolMsg(gs, idx, protectedIndices))
+		}
+		// UserNudge only on last step of group
+		if gi == len(groupSteps)-1 {
+			if msg, ok := cw.buildNudgeMsg(gs.UserNudge); ok {
+				out = append(out, msg)
+			}
+		}
+	}
+
+	return out
+}
+
+// buildStandaloneMessages builds assistant+tool+nudge messages for a single step.
+func (cw *ContextWindow) buildStandaloneMessages(step sdkagent.Step, i int, protectedIndices map[int]struct{}) []llm.Message {
+	assistantMsg := cw.buildAssistantMsg(step.Thought, step.ReasoningContent)
+	if step.Action.ID != "" {
+		assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
+	}
+
+	var out []llm.Message
+	out = append(out, assistantMsg)
+
+	if step.Action.ID != "" {
+		out = append(out, cw.buildToolMsg(step, i, protectedIndices))
+	}
+
+	if msg, ok := cw.buildNudgeMsg(step.UserNudge); ok {
+		out = append(out, msg)
+	}
+
+	return out
+}
+
+// buildAssistantMsg creates a normalized assistant message from thought and reasoning.
+// Empty content is replaced with a placeholder to prevent API 400 errors.
+func (cw *ContextWindow) buildAssistantMsg(thought, reasoningContent string) llm.Message {
+	msg := llm.Message{
+		Role:             "assistant",
+		Content:          strings.TrimRight(thought, invisibleChars),
+		ReasoningContent: reasoningContent,
+	}
+	if msg.Content == "" {
+		msg.Content = "(proceeding)"
+	}
+	return msg
+}
+
+// buildToolMsg creates a tool-role message with pruning and injection defense applied.
+func (cw *ContextWindow) buildToolMsg(step sdkagent.Step, idx int, protectedIndices map[int]struct{}) llm.Message {
+	observation := strings.TrimRight(step.Observation, invisibleChars)
+	if observation == "" {
+		observation = "(no output)"
+	}
+
+	// Apply pruning: use placeholder for non-protected tool outputs
+	if _, protected := protectedIndices[idx]; !protected && cw.pruning.KeepLastN > 0 {
+		observation = cw.pruning.PlaceholderText
+	}
+
+	// Apply prompt injection defense: wrap untrusted tool output
+	if cw.injectionDefenseEnabled && step.IsUntrusted {
+		observation = security.WrapUntrustedContent(observation, step.Action.Name, nil)
+	}
+
+	return llm.Message{
+		Role:       "tool",
+		Content:    observation,
+		ToolCallID: step.Action.ID,
+	}
+}
+
+// buildNudgeMsg creates a user message for step-limit/retry nudges.
+// Returns the message and true if the nudge has non-empty content.
+func (cw *ContextWindow) buildNudgeMsg(nudge string) (llm.Message, bool) {
+	content := strings.TrimRight(nudge, invisibleChars)
+	if content == "" {
+		return llm.Message{}, false
+	}
+	return llm.Message{Role: "user", Content: content}, true
 }
 
 // computeProtectedIndices returns a set of step indices that should NOT be pruned.
@@ -528,9 +544,12 @@ func (cw *ContextWindow) Compact(ctx context.Context) *CompactionResult {
 	// Use effective max as the budget for compaction
 	budgetTokens := cw.EffectiveMax()
 
-	// Compact steps using the strategy
+	// Compact steps using the strategy.
+	// Steps are preserved after compaction so that diagnostics (VulnerableOutputs,
+	// computeProtectedIndices) remain functional. compactedMessages takes precedence
+	// in BuildPrompt when non-nil, so the original step history is effectively inert
+	// for prompt generation but still available for introspection.
 	cw.compactedMessages = cw.strategy.Compact(ctx, cw.steps, budgetTokens)
-	cw.steps = nil
 
 	// Estimate after-compaction fill
 	effectiveMax := cw.EffectiveMax()

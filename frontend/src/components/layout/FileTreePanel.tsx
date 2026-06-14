@@ -71,8 +71,8 @@ function gitColorClass(s: GitStatusEntry | undefined): string {
 }
 
 function TreeNode({ entry, depth, gitStatus, propagatedPaths }: TreeNodeProps) {
-  const expanded = useFileTreeStore((s) => s.expandedDirs.has(entry.path))
-  const loading = useFileTreeStore((s) => s.loadingDirs.has(entry.path))
+  const expanded = useFileTreeStore((s) => s.expandedDirs[entry.path] === true)
+  const loading = useFileTreeStore((s) => s.loadingDirs[entry.path] === true)
   const children = useFileTreeStore((s) => s.tree[entry.path])
   const toggleDir = useFileTreeStore((s) => s.toggleDir)
   const setEntries = useFileTreeStore((s) => s.setEntries)

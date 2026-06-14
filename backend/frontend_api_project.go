@@ -140,6 +140,12 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 }
 
 // SwitchProject activates a project, setting it as the current workspace.
+//
+// Design invariant: the application operates with a single active project at any
+// time. The file watcher, vector indexer, terminal manager, and session workspace
+// resolution all assume single-project context. Concurrent project access is not
+// supported — switching tears down the previous project's resources before
+// activating the new one.
 func (f *FrontendAPI) SwitchProject(id string) error {
 	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
@@ -162,11 +168,26 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return fmt.Errorf("project not found: %s", id)
 	}
 
-	// Persist current project's switch state before changing active project.
+	f.switchProjectTeardown(id)
+	f.switchProjectActivate(p)
+	f.switchProjectSetupWatcher(p)
+
+	if err := f.switchProjectSetupVector(p); err != nil {
+		return err
+	}
+
+	f.applySavedProjectSwitchState(p.ID)
+	f.emitEvent(EventProjectSwitched, p)
+
+	return nil
+}
+
+// switchProjectTeardown persists the previous project state and cancels in-flight work.
+func (f *FrontendAPI) switchProjectTeardown(newID string) {
 	f.activeProjectMu.RLock()
 	previousProjectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
-	if previousProjectID != "" && previousProjectID != id {
+	if previousProjectID != "" && previousProjectID != newID {
 		f.persistCurrentProjectSwitchState(previousProjectID)
 	}
 
@@ -174,23 +195,31 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	if vm := f.getVectorManager(); vm != nil {
 		vm.CancelIndexing()
 	}
+}
 
+// switchProjectActivate sets the new project as active and updates related state.
+func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	f.activeProjectMu.Lock()
 	f.activeProjectID = p.ID
 	f.activeProjectPath = p.WorkspacePath
 	f.activeProjectMu.Unlock()
 
+	// Invalidate cached skill list since project-local skills may differ.
+	f.invalidateSkillCache()
+
 	// Set MCP working directory to the new project workspace
-	if f.app != nil {
-		f.app.Builder().SetMCPWorkDir(p.WorkspacePath)
+	if b := f.builder(); b != nil {
+		b.SetMCPWorkDir(p.WorkspacePath)
 	}
 
 	// Update project activity timestamp.
 	if f.projStore != nil {
-		_ = f.projStore.UpdateProjectActivity(context.Background(), id) // Best-effort; error is non-critical.
+		_ = f.projStore.UpdateProjectActivity(context.Background(), p.ID) // Best-effort; error is non-critical.
 	}
+}
 
-	// Recreate file watcher for the new project workspace
+// switchProjectSetupWatcher creates a file watcher for the new project workspace.
+func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	if f.watcher != nil {
 		_ = f.watcher.Close() // Best-effort cleanup; error is non-critical.
 		f.watcher = nil
@@ -206,42 +235,41 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		}
 	})
 	if err != nil {
-		f.log().Warn("failed to start workspace file watcher", "project", id, "error", err)
+		f.log().Warn("failed to start workspace file watcher", "project", p.ID, "error", err)
 	} else {
 		f.watcher = watcher
 	}
+}
 
-	// --- Vector index wiring ---
-	// Git is a hard dependency (verified at startup), so any branch
-	// detection failure is a real error — not an excuse to silently fall
-	// back to DefaultBranch and potentially mis-partition the index.
-	if vm := f.getVectorManager(); vm != nil {
-		branch, branchErr := vectorindex.CurrentBranch(f.ctx(), p.WorkspacePath)
-		if branchErr != nil {
-			return fmt.Errorf("detecting git branch for project %s: %w", p.ID, branchErr)
-		}
-		capturedBranch := branch
-
-		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
-			OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
-				f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
-					State:        string(state),
-					Phase:        string(phase),
-					Indices:      []string{"vector", "lexical"},
-					Progress:     progressPercent(indexed, total),
-					FilesIndexed: indexed,
-					TotalFiles:   total,
-					CurrentFile:  file,
-					Branch:       capturedBranch,
-				})
-			},
-		}); switchErr != nil {
-			return fmt.Errorf("switching vector index project: %w", switchErr)
-		}
+// switchProjectSetupVector configures vector indexing for the new project.
+func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
+	vm := f.getVectorManager()
+	if vm == nil {
+		return nil
 	}
 
-	f.applySavedProjectSwitchState(p.ID)
-	f.emitEvent(EventProjectSwitched, p)
+	branch, branchErr := vectorindex.CurrentBranch(f.ctx(), p.WorkspacePath)
+	if branchErr != nil {
+		return fmt.Errorf("detecting git branch for project %s: %w", p.ID, branchErr)
+	}
+	capturedBranch := branch
+
+	if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
+		OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
+			f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
+				State:        string(state),
+				Phase:        string(phase),
+				Indices:      []string{"vector", "lexical"},
+				Progress:     progressPercent(indexed, total),
+				FilesIndexed: indexed,
+				TotalFiles:   total,
+				CurrentFile:  file,
+				Branch:       capturedBranch,
+			})
+		},
+	}); switchErr != nil {
+		return fmt.Errorf("switching vector index project: %w", switchErr)
+	}
 
 	return nil
 }

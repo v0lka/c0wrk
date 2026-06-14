@@ -1515,8 +1515,12 @@ func TestPlan_AgentsMD_InjectedInPrompt(t *testing.T) {
 	if !strings.Contains(systemPrompt, agentsContent) {
 		t.Error("system prompt should contain full AGENTS.md content")
 	}
-	if !strings.Contains(systemPrompt, "strictly follow") {
-		t.Error("system prompt should instruct planner to strictly follow AGENTS.md")
+	// AGENTS.md is now framed as advisory, not authoritative (C-1).
+	if !strings.Contains(systemPrompt, "advisory") {
+		t.Error("system prompt should frame AGENTS.md as advisory")
+	}
+	if !strings.Contains(systemPrompt, "untrusted") {
+		t.Error("system prompt should mark AGENTS.md content as untrusted")
 	}
 	if !strings.Contains(systemPrompt, "ask_user") {
 		t.Error("system prompt should mention ask_user for contradictions")
@@ -1549,8 +1553,8 @@ func TestPlan_AgentsMD_AbsentWhenNotInContext(t *testing.T) {
 	}
 
 	systemPrompt := capturedRequest.Messages[0].Content
-	if strings.Contains(systemPrompt, "<agents-md>") {
-		t.Error("system prompt should NOT contain <agents-md> section when AgentsMD is not in context")
+	if strings.Contains(systemPrompt, "<untrusted-content source=\"AGENTS.md\">") {
+		t.Error("system prompt should NOT contain AGENTS.md untrusted-content section when AgentsMD is not in context")
 	}
 }
 
@@ -1590,8 +1594,8 @@ func TestPlan_AgentsMD_InjectedInReplan(t *testing.T) {
 	}
 
 	systemPrompt := capturedRequest.Messages[0].Content
-	if !strings.Contains(systemPrompt, "<agents-md>") {
-		t.Error("replan system prompt should contain <agents-md> section")
+	if !strings.Contains(systemPrompt, "<untrusted-content source=\"AGENTS.md\">") {
+		t.Error("replan system prompt should contain AGENTS.md untrusted-content section")
 	}
 	if !strings.Contains(systemPrompt, agentsContent) {
 		t.Error("replan system prompt should contain full AGENTS.md content")
@@ -1636,8 +1640,8 @@ func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
 	}
 
 	systemPrompt := capturedRequest.Messages[0].Content
-	if !strings.Contains(systemPrompt, "<agents-md>") {
-		t.Error("continuation system prompt should contain <agents-md> section")
+	if !strings.Contains(systemPrompt, "<untrusted-content source=\"AGENTS.md\">") {
+		t.Error("continuation system prompt should contain AGENTS.md untrusted-content section")
 	}
 	if !strings.Contains(systemPrompt, agentsContent) {
 		t.Error("continuation system prompt should contain full AGENTS.md content")
@@ -1914,8 +1918,8 @@ func TestFormatAgentsMD(t *testing.T) {
 		if !strings.Contains(result, "AGENTS.md") {
 			t.Error("expected header")
 		}
-		if !strings.Contains(result, "<agents-md>") {
-			t.Error("expected agents-md tag")
+		if !strings.Contains(result, "<untrusted-content source=\"AGENTS.md\">") {
+			t.Error("expected AGENTS.md untrusted-content tag")
 		}
 		if !strings.Contains(result, "Use Go 1.26.") {
 			t.Error("expected content")
@@ -1969,8 +1973,8 @@ func TestAppendPlannerContextSections(t *testing.T) {
 		if strings.Contains(result, "semantic_search") {
 			t.Error("planner should not have vector hints footer")
 		}
-		if !strings.Contains(result, "<agents-md>") {
-			t.Error("expected AGENTS.md section")
+		if !strings.Contains(result, "<untrusted-content source=\"AGENTS.md\">") {
+			t.Error("expected AGENTS.md untrusted-content section")
 		}
 		if !strings.Contains(result, "Project rules here.") {
 			t.Error("expected AGENTS.md content")

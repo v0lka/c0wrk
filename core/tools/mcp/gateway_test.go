@@ -625,6 +625,7 @@ func TestGateway_Reconfigure_AddServer(t *testing.T) {
 			"server1": {Command: "cmd1"},
 		},
 	}
+	gateway.expandedConfigs["server1"] = ServerConfig{Command: "cmd1"}
 
 	// Register initial tools
 	_ = gateway.RegisterTools(registry)
@@ -687,6 +688,8 @@ func TestGateway_Reconfigure_RemoveServer(t *testing.T) {
 			"server2": {Command: "cmd2"},
 		},
 	}
+	gateway.expandedConfigs["server1"] = ServerConfig{Command: "cmd1"}
+	gateway.expandedConfigs["server2"] = ServerConfig{Command: "cmd2"}
 
 	// Register initial tools
 	_ = gateway.RegisterTools(registry)
@@ -743,6 +746,7 @@ func TestGateway_Reconfigure_UnchangedServer(t *testing.T) {
 			"server1": {Command: "cmd1", Args: []string{"arg1"}},
 		},
 	}
+	gateway.expandedConfigs["server1"] = ServerConfig{Command: "cmd1", Args: []string{"arg1"}}
 
 	// Register initial tools
 	_ = gateway.RegisterTools(registry)
@@ -836,6 +840,7 @@ func TestGateway_Reconfigure_ChangedConfig(t *testing.T) {
 			"server1": {Command: "cmd1"},
 		},
 	}
+	gateway.expandedConfigs["server1"] = ServerConfig{Command: "cmd1"}
 
 	// Register initial tools
 	_ = gateway.RegisterTools(registry)
@@ -866,75 +871,77 @@ func TestGateway_Reconfigure_ChangedConfig(t *testing.T) {
 }
 
 func TestGateway_ConfigChanged(t *testing.T) {
+	// configChanged compares against the previously-expanded ServerConfig stored
+	// in g.expandedConfigs (W-7), not the raw ServerEntry on g.config.Servers.
 	tests := []struct {
 		name     string
-		old      ServerEntry
+		old      ServerConfig
 		new      ServerConfig
 		expected bool
 	}{
 		{
 			name:     "identical command",
-			old:      ServerEntry{Command: "cmd", Args: []string{"arg1"}},
+			old:      ServerConfig{Command: "cmd", Args: []string{"arg1"}},
 			new:      ServerConfig{Command: "cmd", Args: []string{"arg1"}},
 			expected: false,
 		},
 		{
 			name:     "different command",
-			old:      ServerEntry{Command: "cmd1"},
+			old:      ServerConfig{Command: "cmd1"},
 			new:      ServerConfig{Command: "cmd2"},
 			expected: true,
 		},
 		{
 			name:     "different args",
-			old:      ServerEntry{Command: "cmd", Args: []string{"arg1"}},
+			old:      ServerConfig{Command: "cmd", Args: []string{"arg1"}},
 			new:      ServerConfig{Command: "cmd", Args: []string{"arg2"}},
 			expected: true,
 		},
 		{
 			name:     "different transport",
-			old:      ServerEntry{Transport: "stdio"},
+			old:      ServerConfig{Transport: "stdio"},
 			new:      ServerConfig{Transport: "http"},
 			expected: true,
 		},
 		{
 			name:     "different URL",
-			old:      ServerEntry{URL: "http://localhost:8080"},
+			old:      ServerConfig{URL: "http://localhost:8080"},
 			new:      ServerConfig{URL: "http://localhost:9090"},
 			expected: true,
 		},
 		{
 			name:     "same URL",
-			old:      ServerEntry{URL: "http://localhost:8080"},
+			old:      ServerConfig{URL: "http://localhost:8080"},
 			new:      ServerConfig{URL: "http://localhost:8080"},
 			expected: false,
 		},
 		{
 			name:     "different env count",
-			old:      ServerEntry{Env: map[string]string{"A": "1"}},
+			old:      ServerConfig{Env: map[string]string{"A": "1"}},
 			new:      ServerConfig{Env: map[string]string{"A": "1", "B": "2"}},
 			expected: true,
 		},
 		{
 			name:     "different env value",
-			old:      ServerEntry{Env: map[string]string{"A": "1"}},
+			old:      ServerConfig{Env: map[string]string{"A": "1"}},
 			new:      ServerConfig{Env: map[string]string{"A": "2"}},
 			expected: true,
 		},
 		{
 			name:     "same env",
-			old:      ServerEntry{Env: map[string]string{"A": "1", "B": "2"}},
+			old:      ServerConfig{Env: map[string]string{"A": "1", "B": "2"}},
 			new:      ServerConfig{Env: map[string]string{"A": "1", "B": "2"}},
 			expected: false,
 		},
 		{
 			name:     "different headers count",
-			old:      ServerEntry{Headers: map[string]string{"X-Auth": "token"}},
+			old:      ServerConfig{Headers: map[string]string{"X-Auth": "token"}},
 			new:      ServerConfig{Headers: map[string]string{"X-Auth": "token", "X-Other": "val"}},
 			expected: true,
 		},
 		{
 			name:     "same headers",
-			old:      ServerEntry{Headers: map[string]string{"X-Auth": "token"}},
+			old:      ServerConfig{Headers: map[string]string{"X-Auth": "token"}},
 			new:      ServerConfig{Headers: map[string]string{"X-Auth": "token"}},
 			expected: false,
 		},
@@ -943,10 +950,8 @@ func TestGateway_ConfigChanged(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gateway := &Gateway{
-				config: GatewayConfig{
-					Servers: map[string]ServerEntry{
-						"test": tt.old,
-					},
+				expandedConfigs: map[string]ServerConfig{
+					"test": tt.old,
 				},
 			}
 
@@ -960,9 +965,7 @@ func TestGateway_ConfigChanged(t *testing.T) {
 
 func TestGateway_ConfigChanged_NonExistent(t *testing.T) {
 	gateway := &Gateway{
-		config: GatewayConfig{
-			Servers: map[string]ServerEntry{},
-		},
+		expandedConfigs: map[string]ServerConfig{},
 	}
 
 	// Non-existent server should return true (it's new)

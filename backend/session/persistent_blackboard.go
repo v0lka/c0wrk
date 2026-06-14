@@ -24,7 +24,8 @@ var _ core.PersistableBlackboard = (*PersistentBlackboard)(nil)
 // PersistentBlackboard wraps a MapBlackboard and persists write operations to a TaskPersistence store.
 // Read methods delegate to the embedded MapBlackboard. Write methods delegate AND persist.
 // All persistence calls are best-effort: errors are logged but do not propagate to callers.
-// Persistence operations are guarded by a timeout and panic recovery to prevent hangs.
+// Persistence operations are executed by a single background worker goroutine with a timeout
+// and panic recovery to prevent hangs.
 type PersistentBlackboard struct {
 	// *core.MapBlackboard is embedded for in-memory read operations.
 	// Write operations are intercepted to persist changes to the database.
@@ -37,6 +38,14 @@ type PersistentBlackboard struct {
 	emitter            core.Emitter            // optional, nil-safe; used to surface persistence warnings to the user
 	persistenceTimeout time.Duration           // timeout for persistence operations
 	onChanged          func(changeType string) // optional callback for BB change notifications, nil-safe
+	persistCh          chan persistOp          // buffered channel for serializing DB writes
+}
+
+// persistOp is a single persistence operation sent to the worker goroutine.
+type persistOp struct {
+	operation string
+	fn        func() error
+	done      chan error
 }
 
 // NewPersistentBlackboard creates a PersistentBlackboard that wraps a fresh MapBlackboard.
@@ -48,14 +57,18 @@ func NewPersistentBlackboard(taskID, sessionID string, store core.TaskPersistenc
 // NewPersistentBlackboardWithTimeout creates a PersistentBlackboard that wraps a fresh MapBlackboard with a configurable timeout.
 // The logger is optional (nil-safe). If timeout is 0, defaultPersistenceTimeout is used.
 func NewPersistentBlackboardWithTimeout(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, timeout time.Duration, opts ...core.MapBlackboardOption) *PersistentBlackboard {
-	return &PersistentBlackboard{
+	ch := make(chan persistOp, 8)
+	pb := &PersistentBlackboard{
 		MapBlackboard:      core.NewMapBlackboard(opts...),
 		taskID:             taskID,
 		sessionID:          sessionID,
 		store:              store,
 		logger:             logger,
 		persistenceTimeout: timeout,
+		persistCh:          ch,
 	}
+	go pb.persistenceWorker(ch)
+	return pb
 }
 
 // SetEmitter sets the optional emitter for surfacing persistence warnings to the user.
@@ -83,25 +96,27 @@ func (pb *PersistentBlackboard) notifyChanged(changeType string) {
 // Persistence safety wrapper
 // ---------------------------------------------------------------------------
 
-// persistSafe runs a persistence operation with a timeout and panic recovery.
-// This ensures that persistence failures (including panics and blocking DB operations)
-// never halt the orchestration loop. Errors are logged and optionally emitted to the user.
+// persistSafe enqueues a persistence operation to the background worker.
+// The caller blocks until the operation completes or the timeout expires.
+// Errors are logged and optionally emitted to the user.
 func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
 	done := make(chan error, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				done <- fmt.Errorf("panic in persistence: %v", r)
-			}
-		}()
-		done <- fn()
-	}()
+	op := persistOp{operation: operation, fn: fn, done: done}
 
-	var err error
+	// Non-blocking send: if the channel is closed (shutting down) or full,
+	// we skip persistence gracefully.
+	select {
+	case pb.persistCh <- op:
+	default:
+		pb.logWarn("persistence worker unavaiable; skipping "+operation, "task_id", pb.taskID)
+		return
+	}
+
 	timeout := pb.persistenceTimeout
 	if timeout == 0 {
 		timeout = defaultPersistenceTimeout
 	}
+	var err error
 	select {
 	case err = <-done:
 	case <-time.After(timeout):
@@ -119,6 +134,30 @@ func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
 				map[string]any{"phase": "persistence", "error": err.Error()},
 			)
 		}
+	}
+}
+
+// persistenceWorker is the single goroutine that executes persist operations
+// serially, with panic recovery for each operation.
+func (pb *PersistentBlackboard) persistenceWorker(ch <-chan persistOp) {
+	for op := range ch {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					op.done <- fmt.Errorf("panic in persistence: %v", r)
+				}
+			}()
+			op.done <- op.fn()
+		}()
+	}
+}
+
+// shutdownPersister closes the persistence channel, causing the worker
+// goroutine to exit after draining any queued operations.
+func (pb *PersistentBlackboard) shutdownPersister() {
+	if pb.persistCh != nil {
+		close(pb.persistCh)
+		pb.persistCh = nil
 	}
 }
 
@@ -216,6 +255,7 @@ func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 		return pb.store.PersistCompletion(pb.taskID, finalOutput, attemptCount)
 	})
 	pb.notifyChanged("completed")
+	pb.shutdownPersister()
 }
 
 // FailTask marks the task as failed.
@@ -223,6 +263,7 @@ func (pb *PersistentBlackboard) FailTask() {
 	pb.persistSafe("task failure", func() error {
 		return pb.store.PersistFailure(pb.taskID)
 	})
+	pb.shutdownPersister()
 }
 
 // ReactivateTask reactivates a completed task back to in_progress.
@@ -274,14 +315,18 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 		mb.SetFinalResult(state.FinalOutput)
 	}
 
-	return &PersistentBlackboard{
+	ch := make(chan persistOp, 8)
+	pb := &PersistentBlackboard{
 		MapBlackboard:      mb,
 		taskID:             taskID,
 		sessionID:          sessionID,
 		store:              store,
 		logger:             logger,
 		persistenceTimeout: defaultPersistenceTimeout,
-	}, nil
+		persistCh:          ch,
+	}
+	go pb.persistenceWorker(ch)
+	return pb, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -46,10 +46,19 @@ export async function stopTerminal(sessionId: string): Promise<void> {
 export async function getTerminalHistory(sessionId: string): Promise<string[]> {
   try {
     const app = getApp()
-    const commands = await app.GetTerminalHistory(sessionId) as Array<{ command: string }>
-    return commands.map(c => c.command)
+    const result = await app.GetTerminalHistory(sessionId)
+    if (!Array.isArray(result)) {
+      logger.warn('getTerminalHistory: unexpected response shape', result)
+      return []
+    }
+    return result.map((c: unknown) => {
+      if (typeof c === 'object' && c !== null && 'command' in c && typeof (c as Record<string, unknown>).command === 'string') {
+        return (c as { command: string }).command
+      }
+      return ''
+    }).filter(Boolean)
   } catch (err) {
     logger.error('Failed to get terminal history:', err)
-    return []
+    throw err
   }
 }

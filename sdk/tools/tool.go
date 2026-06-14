@@ -47,11 +47,11 @@ const (
 
 // ToolDescriptor — describes a tool for Planner/Executor (metadata only, no execution).
 type ToolDescriptor struct {
-	Name           string              `json:"name"`
-	Description    string              `json:"description"`
-	InputSchema    json.RawMessage     `json:"input_schema"`
-	Source         string              `json:"source"` // "core" | "mcp:<server>"
-	SourceCategory ToolSourceCategory  `json:"-"`      // cached category for fast checks
+	Name           string             `json:"name"`
+	Description    string             `json:"description"`
+	InputSchema    json.RawMessage    `json:"input_schema"`
+	Source         string             `json:"source"` // "core" | "mcp:<server>"
+	SourceCategory ToolSourceCategory `json:"-"`      // cached category for fast checks
 }
 
 // ParseToolPolicy converts a policy string to a ToolPolicy constant.

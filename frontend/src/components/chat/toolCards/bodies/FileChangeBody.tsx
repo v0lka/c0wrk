@@ -46,7 +46,8 @@ export const FileChangeBody = React.memo(function FileChangeBody({ result, statu
           if (line.startsWith('+') && !line.startsWith('+++')) cls = 'text-success'
           else if (line.startsWith('-') && !line.startsWith('---')) cls = 'text-destructive'
           else if (line.startsWith('@@')) cls = 'text-info'
-          return <div key={i} className={cls}>{line}</div>
+          const key = `${line.slice(0, 60)}-${i}`
+          return <div key={key} className={cls}>{line}</div>
         })}
       </pre>
       {lines.length > 30 && (

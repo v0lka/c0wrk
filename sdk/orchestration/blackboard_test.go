@@ -358,8 +358,6 @@ func TestBlackboard_StepResult_StepsCopy(t *testing.T) {
 	}
 }
 
-
-
 func TestCopyPlanPreservesExplorationContext(t *testing.T) {
 	original := &Plan{
 		Steps: []PlanStep{

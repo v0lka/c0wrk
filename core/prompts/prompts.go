@@ -49,6 +49,44 @@ var PlannerGLM string
 //go:embed planner_openai_codex.md
 var PlannerOpenAICodex string
 
+// Planner mode-specific composable prompt sections used by core.Planner to
+// assemble plan/replan/continuation system prompts. Each piece is rendered as
+// a separate markdown file so the planning policy lives next to the other
+// prompt assets rather than as inline Go string literals.
+
+//go:embed planner_plan_preamble.md
+var PlannerPlanPreamble string
+
+//go:embed planner_single_step_preamble.md
+var PlannerSingleStepPreamble string
+
+//go:embed planner_multi_step_tot.md
+var PlannerMultiStepToT string
+
+//go:embed planner_single_step_tot.md
+var PlannerSingleStepToT string
+
+//go:embed planner_multi_step_guidance.md
+var PlannerMultiStepGuidance string
+
+//go:embed planner_single_step_guidance.md
+var PlannerSingleStepGuidance string
+
+//go:embed planner_domain_assignment.md
+var PlannerDomainAssignment string
+
+//go:embed planner_agent_profiles.md
+var PlannerAgentProfiles string
+
+//go:embed planner_extra_sections.md
+var PlannerExtraSections string
+
+//go:embed planner_continuation_preamble.md
+var PlannerContinuationPreamble string
+
+//go:embed planner_continuation_single_step.md
+var PlannerContinuationSingleStep string
+
 // Orchestrator prompts
 
 //go:embed orchestrator_system.md

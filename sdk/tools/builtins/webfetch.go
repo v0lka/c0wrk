@@ -17,7 +17,6 @@ import (
 
 const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. requests time out after 30 seconds, and up to 10 redirects are followed. Supports optional start_line/end_line parameters for paginated reading of large pages.`
 
-
 // WebFetchTool fetches web pages and converts HTML to markdown.
 type WebFetchTool struct {
 	*tools.BaseTool
@@ -92,7 +91,12 @@ func (t *WebFetchTool) Judge(ctx context.Context, input json.RawMessage) (allowe
 		return true, "web fetch"
 	}
 
-	addr, private := resolveHostIsPrivate(ctx, params.URL)
+	addr, private, initErr := resolveHostIsPrivate(ctx, params.URL)
+	if initErr != nil {
+		// CIDR list failed to initialize — SSRF protection is unavailable.
+		// Fail-safe: require user confirmation for all web fetches.
+		return false, fmt.Sprintf("SSRF protection degraded: %v", initErr)
+	}
 	if private {
 		return false, "URL resolves to private/reserved address " + addr
 	}

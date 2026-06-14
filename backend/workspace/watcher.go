@@ -20,13 +20,14 @@ const defaultDebounce = 200 * time.Millisecond
 
 // Watcher watches directories for file system changes and calls onChange when changes occur.
 type Watcher struct {
-	root     string
-	watcher  *fsnotify.Watcher
-	onChange func()
-	mu       sync.Mutex
-	watched  map[string]bool
-	done     chan struct{}
-	logger   *slog.Logger
+	root      string
+	watcher   *fsnotify.Watcher
+	onChange  func()
+	mu        sync.Mutex
+	watched   map[string]bool
+	done      chan struct{}
+	closeOnce sync.Once
+	logger    *slog.Logger
 }
 
 // log returns the logger, falling back to slog.Default() if nil.
@@ -155,16 +156,14 @@ func (w *Watcher) UnwatchDir(path string) error {
 	return nil
 }
 
-// Close stops watching and releases resources.
+// Close stops watching and releases resources. Safe to call multiple times.
 func (w *Watcher) Close() error {
-	select {
-	case <-w.done:
-		// already closed
-		return nil
-	default:
+	var err error
+	w.closeOnce.Do(func() {
 		close(w.done)
-	}
-	return w.watcher.Close()
+		err = w.watcher.Close()
+	})
+	return err
 }
 
 // isUnderRoot checks whether absPath is under (or equal to) the root directory.

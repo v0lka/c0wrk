@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useScrollContext } from './ScrollContext'
 import type { ChatMessageUI } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
@@ -21,6 +21,15 @@ export function ChatScrollManager({
   const viewportRef = useRef<HTMLElement | null>(null)
   const prevScrollState = useRef({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })
   const [hasNewActivity, setHasNewActivity] = useState(false)
+
+  const scrollToBottom = useCallback(() => {
+    const viewport = viewportRef.current
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight
+      isAtBottomRef.current = true
+      setHasNewActivity(false)
+    }
+  }, [])
 
   // Cache viewport element
   useEffect(() => {
@@ -98,10 +107,8 @@ export function ChatScrollManager({
     <div className="flex-1 min-w-0 overflow-auto custom-scrollbar" ref={scrollRef}>
       {children}
       <ChatNewActivityBanner
-        hasNewActivity={hasNewActivity}
-        isAtBottomRef={isAtBottomRef}
-        viewportRef={viewportRef}
-        setHasNewActivity={setHasNewActivity}
+        hasNewActivity={hasNewActivity && !isAtBottomRef.current}
+        scrollToBottom={scrollToBottom}
       />
     </div>
   )

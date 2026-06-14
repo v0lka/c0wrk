@@ -44,6 +44,7 @@ func buildTermEnv() []string {
 // Manager owns PTY instances keyed by session ID.
 type Manager struct {
 	mu       sync.Mutex
+	rootCtx  context.Context // app lifecycle context; cancelled on shutdown
 	sessions map[string]*Session
 	logger   *slog.Logger
 	emit     func(sessionID string, data []byte)
@@ -54,14 +55,18 @@ type Session struct {
 	cmd    *exec.Cmd
 	ptmx   *os.File
 	cancel context.CancelFunc
+	mu     sync.Mutex // per-session mutex for PTY I/O (avoids serializing writes across sessions)
 }
 
 // NewManager creates a new terminal manager.
-func NewManager(logger *slog.Logger, emit func(sessionID string, data []byte)) *Manager {
+// The rootCtx is the application lifecycle context — cancelling it triggers
+// cleanup of all active terminal sessions.
+func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionID string, data []byte)) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Manager{
+		rootCtx:  rootCtx,
 		sessions: make(map[string]*Session),
 		logger:   logger,
 		emit:     emit,
@@ -83,7 +88,7 @@ func (m *Manager) Start(sessionID, workDir string) error {
 		shell = "/bin/bash"
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.rootCtx)
 	cmd := exec.CommandContext(ctx, shell, "-l")
 	if workDir != "" {
 		cmd.Dir = workDir
@@ -115,32 +120,36 @@ func (m *Manager) Start(sessionID, workDir string) error {
 }
 
 // Write sends data to the PTY stdin of the given session.
+// Uses a per-session mutex so writes across different sessions don't serialize.
 func (m *Manager) Write(sessionID string, data []byte) error {
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
 	m.mu.Unlock()
-
 	if !exists {
 		return fmt.Errorf("no terminal for session %s", sessionID)
 	}
-
-	if _, err := sess.ptmx.Write(data); err != nil {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	_, err := sess.ptmx.Write(data)
+	if err != nil {
 		return fmt.Errorf("failed to write to pty: %w", err)
 	}
 	return nil
 }
 
 // Resize updates the PTY size for the given session.
+// Uses a per-session mutex so resizes across different sessions don't serialize.
 func (m *Manager) Resize(sessionID string, cols, rows int) error {
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
 	m.mu.Unlock()
-
 	if !exists {
 		return fmt.Errorf("no terminal for session %s", sessionID)
 	}
-
-	if err := pty.Setsize(sess.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	err := pty.Setsize(sess.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if err != nil {
 		return fmt.Errorf("failed to resize pty: %w", err)
 	}
 	return nil

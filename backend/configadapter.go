@@ -131,6 +131,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			InjectionDefenseEnabled: derefBool(cfg.Security.InjectionDefense.Enabled),
 			ToolPolicies:            toolPolicies,
 			DefaultPolicy:           cfg.Security.DefaultPolicy,
+			AgentsMDMaxBytes:        cfg.Security.AgentsMDMaxBytes,
 		},
 		Skills: core.BuilderSkillsConfig{
 			Dirs: cfg.Skills.Dirs,
@@ -161,10 +162,11 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			WebSearchTimeout: cfg.Timeouts.WebSearchTimeout,
 		},
 		Proxy: core.BuilderProxyConfig{
-			Enabled:    cfg.Proxy.Enabled,
-			URL:        config.ExpandEnvVars(cfg.Proxy.URL),
-			BypassList: cfg.Proxy.BypassList,
-			TLSCertDir: config.ExpandEnvVars(cfg.Proxy.TLSCertDir),
+			Enabled:      cfg.Proxy.Enabled,
+			URL:          config.ExpandEnvVars(cfg.Proxy.URL),
+			BypassList:   cfg.Proxy.BypassList,
+			TLSCertDir:   config.ExpandEnvVars(cfg.Proxy.TLSCertDir),
+			SetGlobalEnv: derefBool(cfg.Proxy.SetGlobalEnv),
 		},
 		ExpandEnvVars: config.ExpandEnvVars,
 	}

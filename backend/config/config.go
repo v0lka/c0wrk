@@ -42,6 +42,14 @@ type ProxyConfig struct {
 	URL        string   `yaml:"url"`          // scheme://user:password@host:port
 	BypassList []string `yaml:"bypass_list"`  // hostnames/IPs to skip proxy
 	TLSCertDir string   `yaml:"tls_cert_dir"` // directory with .pem/.crt CA certs
+
+	// SetGlobalEnv, when true, exports HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
+	// into the process environment so subprocesses (bash_exec children, MCP
+	// stdio servers) inherit the proxy. Default: true when proxy is enabled
+	// (backward compat). Set to false to prevent proxy state from leaking into
+	// third-party Go libraries that read env vars at init time.
+	// Pointer-bool so callers can distinguish "unset" from "explicitly false".
+	SetGlobalEnv *bool `yaml:"set_global_env"`
 }
 
 // WorkspaceConfig holds workspace file/index ignore pattern configuration.
@@ -255,10 +263,17 @@ type InjectionDefenseConfig struct {
 
 // SecurityConfig holds security settings.
 type SecurityConfig struct {
-	Judge            JudgeConfig               `yaml:"judge"`
-	InjectionDefense InjectionDefenseConfig    `yaml:"injection_defense"`
+	Judge            JudgeConfig                 `yaml:"judge"`
+	InjectionDefense InjectionDefenseConfig      `yaml:"injection_defense"`
 	ToolPolicies     map[string]ToolPolicyConfig `yaml:"tool_policies"`
-	DefaultPolicy    string                    `yaml:"default_policy"`
+	DefaultPolicy    string                      `yaml:"default_policy"`
+
+	// AgentsMDMaxBytes caps the AGENTS.md content size injected into prompts.
+	// AGENTS.md is workspace-controlled untrusted input; without a cap a large or
+	// malicious file could flood the context window.
+	//   0  = use default (65536)
+	//  -1  = no cap (unlimited — USE WITH CAUTION)
+	AgentsMDMaxBytes int `yaml:"agents_md_max_bytes"`
 }
 
 // ToolPolicyConfig holds per-tool security policy configuration.

@@ -3,10 +3,7 @@ package skills
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -77,7 +74,7 @@ func (t *ReadSkillResourceTool) Execute(ctx context.Context, input json.RawMessa
 	}
 
 	// Resolve the resource path safely (prevent path traversal)
-	absPath, err := resolveResourcePath(skillDir, parsed.Path)
+	absPath, err := SafeResolvePath(skillDir, parsed.Path)
 	if err != nil {
 		return sdktools.ErrorResult("invalid resource path: %v", err), nil
 	}
@@ -92,21 +89,4 @@ func (t *ReadSkillResourceTool) Execute(ctx context.Context, input json.RawMessa
 	}
 
 	return sdktools.ToolResult{Content: string(data)}, nil
-}
-
-// resolveResourcePath resolves a relative path within a skill directory,
-// preventing path traversal attacks.
-func resolveResourcePath(skillDir, relPath string) (string, error) {
-	absPath := filepath.Clean(filepath.Join(skillDir, relPath))
-	cleanSkillDir := filepath.Clean(skillDir)
-
-	rel, err := filepath.Rel(cleanSkillDir, absPath)
-	if err != nil {
-		return "", fmt.Errorf("path %q escapes skill directory", relPath)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes skill directory", relPath)
-	}
-	// rel == "." means absPath equals skillDir itself, which is acceptable
-	return absPath, nil
 }

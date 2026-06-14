@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { AlertOctagon, Check, X, Infinity as InfinityIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { emit } from '@/api/runtime'
@@ -19,11 +20,15 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
   const reason = typeof metadata?.reason === 'string' ? metadata.reason : ''
   const resolved = getStepLimitResolution(metadata)
 
-  const handleResponse = (response: StepLimitDecision) => {
+  const handleResponse = useCallback((response: StepLimitDecision) => {
     emit('step_limit_response', { request_id: requestId, response })
     updateMessage(sessionId, item.message.id, { metadata: stepLimitResolved(response) })
     setActivityStatus(response === 'deny' ? null : 'Continuing execution...')
-  }
+  }, [requestId, sessionId, updateMessage, setActivityStatus, item.message.id])
+
+  const handleAllowOnce = useCallback(() => handleResponse('allow_once'), [handleResponse])
+  const handleAllowAlways = useCallback(() => handleResponse('allow_always'), [handleResponse])
+  const handleDeny = useCallback(() => handleResponse('deny'), [handleResponse])
 
   if (resolved === 'allow_once') {
     return (
@@ -63,9 +68,9 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
         {reason && <p className="text-sm text-muted-foreground mt-1">Allow the agent to continue?</p>}
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => handleResponse('allow_once')} className="text-xs">Allow Once</Button>
-        <Button size="sm" variant="secondary" onClick={() => handleResponse('allow_always')} className="text-xs">Allow Always</Button>
-        <Button size="sm" variant="outline" onClick={() => handleResponse('deny')} className="text-xs">Deny</Button>
+        <Button size="sm" onClick={handleAllowOnce} className="text-xs">Allow Once</Button>
+        <Button size="sm" variant="secondary" onClick={handleAllowAlways} className="text-xs">Allow Always</Button>
+        <Button size="sm" variant="outline" onClick={handleDeny} className="text-xs">Deny</Button>
       </div>
     </div>
   )

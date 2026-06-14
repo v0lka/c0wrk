@@ -18,6 +18,9 @@ export function useLifecycleEvents(sessionId: string | null): void {
 
     const cleanups: Array<() => void> = []
 
+    // Track step-start message IDs so step_complete can update the correct one.
+    const stepIdMap = new Map<number, string>()
+
     // --- routing ---
     cleanups.push(
       onSessionEvent(sessionId, 'routing', (data) => {
@@ -42,8 +45,10 @@ export function useLifecycleEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'step_start', (data) => {
         if (!isStepData(data)) return
         useChatStore.getState().setActivityStatus('Thinking...')
+        const id = generateMessageId()
+        stepIdMap.set(data.step_num, id)
         useChatStore.getState().addMessage(sessionId, {
-          id: `step-${data.step_num}`,
+          id,
           sessionId,
           type: 'thinking',
           content: `Step ${data.step_num || ''}...`,
@@ -56,9 +61,13 @@ export function useLifecycleEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'step_complete', (data) => {
         if (!isStepData(data)) return
-        useChatStore.getState().updateMessage(sessionId, `step-${data.step_num}`, {
-          type: 'step_done',
-        })
+        const msgId = stepIdMap.get(data.step_num)
+        if (msgId) {
+          useChatStore.getState().updateMessage(sessionId, msgId, {
+            type: 'step_done',
+          })
+          stepIdMap.delete(data.step_num)
+        }
       }),
     )
 

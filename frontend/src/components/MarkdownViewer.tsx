@@ -21,6 +21,7 @@ export function MarkdownViewer({ content, className }: MarkdownViewerProps) {
             onClick={() => setShowSource(false)}
             className="float-right ml-3 mb-3"
             title="Preview"
+            aria-label="Switch to preview"
           >
             <Eye className="size-4" />
           </Button>
@@ -34,6 +35,7 @@ export function MarkdownViewer({ content, className }: MarkdownViewerProps) {
             onClick={() => setShowSource(true)}
             className="float-right ml-3 mb-3"
             title="Source"
+            aria-label="View source"
           >
             <Code className="size-4" />
           </Button>

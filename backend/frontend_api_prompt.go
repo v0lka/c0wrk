@@ -11,7 +11,8 @@ import (
 // for the AI coding agent, optionally enriched with codebase context from the
 // vector index.
 func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, error) {
-	if f.app == nil || f.app.Builder() == nil {
+	b := f.builder()
+	if b == nil {
 		return nil, errors.New("application not initialized")
 	}
 
@@ -23,7 +24,7 @@ func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, er
 	ctx, cancel := context.WithTimeout(f.ctx(), 2*time.Minute)
 	defer cancel()
 
-	result, err := f.app.Builder().OptimizePrompt(ctx, trimmed)
+	result, err := b.OptimizePrompt(ctx, trimmed)
 	if err != nil {
 		return nil, err
 	}

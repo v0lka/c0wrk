@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 )
 
 // LLMTitleCaller is the interface for making LLM calls for title generation.
@@ -15,6 +16,7 @@ type LLMTitleCaller interface {
 // TitleGenerator generates concise session titles from user messages.
 type TitleGenerator struct {
 	caller LLMTitleCaller
+	mu     sync.RWMutex
 	logger *slog.Logger
 }
 
@@ -26,6 +28,8 @@ func NewTitleGenerator(caller LLMTitleCaller) *TitleGenerator {
 
 // log returns the generator's logger, falling back to slog.Default().
 func (g *TitleGenerator) log() *slog.Logger {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	if g.logger != nil {
 		return g.logger
 	}
@@ -34,6 +38,8 @@ func (g *TitleGenerator) log() *slog.Logger {
 
 // SetLogger sets the logger for the title generator.
 func (g *TitleGenerator) SetLogger(l *slog.Logger) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.logger = l
 }
 

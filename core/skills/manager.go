@@ -135,26 +135,28 @@ func (m *SkillManager) ResolveResourcePath(skillName, relPath string) (string, e
 	if !ok {
 		return "", fmt.Errorf("skill %q not found", skillName)
 	}
-
-	absPath := filepath.Join(skillDir, relPath)
-
-	// Security: ensure the resolved path stays within the skill directory
-	// to prevent path traversal attacks.
-	cleanSkillDir := filepath.Clean(skillDir)
-	cleanAbsPath := filepath.Clean(absPath)
-	if cleanAbsPath != cleanSkillDir && !isSubPath(cleanSkillDir, cleanAbsPath) {
-		return "", fmt.Errorf("path %q escapes skill directory", relPath)
-	}
-
-	return cleanAbsPath, nil
+	return SafeResolvePath(skillDir, relPath)
 }
 
-// isSubPath returns true if sub is a descendant of parent.
+// SafeResolvePath resolves a relative path within a base directory, preventing
+// path traversal attacks. Returns the cleaned absolute path or an error if the
+// resolved path escapes the base directory. Used by both SkillManager and
+// ReadSkillResourceTool to eliminate duplication (S-19).
+func SafeResolvePath(baseDir, relPath string) (string, error) {
+	cleanBase := filepath.Clean(baseDir)
+	cleanAbs := filepath.Clean(filepath.Join(baseDir, relPath))
+	if cleanAbs != cleanBase && !isSubPath(cleanBase, cleanAbs) {
+		return "", fmt.Errorf("path %q escapes skill directory", relPath)
+	}
+	return cleanAbs, nil
+}
+
+// isSubPath returns true if sub is a descendant of parent or the same directory.
 func isSubPath(parent, sub string) bool {
 	rel, err := filepath.Rel(parent, sub)
 	if err != nil {
 		return false
 	}
-	// rel is "." for same dir, ".." or "../*" for escapes, anything else is a descendant
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	// rel is "." for same dir, ".." or "../*" for escapes, anything else is a descendant.
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

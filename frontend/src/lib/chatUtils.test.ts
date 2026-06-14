@@ -354,8 +354,7 @@ describe('chatMessageToUI end-to-end', () => {
   })
 
   it('missing created_at → timestamp is 0', () => {
-    const msg = makeMsg({})
-    msg.created_at = ''
+    const msg = makeMsg({ created_at: '' })
     const result = chatMessageToUI(msg)
     expect(result.timestamp).toBe(0)
   })

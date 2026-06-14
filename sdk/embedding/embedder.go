@@ -55,6 +55,12 @@ type Embedder struct {
 
 // NewEmbedder creates a new Embedder by loading the tokenizer and initializing
 // the ONNX Runtime environment.
+//
+// DESIGN NOTE: The ONNX Runtime is a process-global singleton — only one Embedder
+// can exist at a time and it lives for the process lifetime. There is no reference
+// counting; desktop.App is the single owner responsible for calling Close() at
+// shutdown. This is a known limitation for library-reuse scenarios but sufficient
+// for the single-process desktop app architecture.
 func NewEmbedder(cfg EmbedderConfig) (*Embedder, error) {
 	if cfg.ModelPath == "" {
 		return nil, errors.New("ModelPath is required")

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Loader2, CheckCircle2, XCircle, RefreshCw, Square, CheckSquare } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { Loader2, CheckCircle2, XCircle, RefreshCw, Square, CheckSquare, Circle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
@@ -33,17 +33,21 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
   // Reset user override when status changes
   useEffect(() => { setUserOverride(null) }, [status])
 
-  const borderColor = status === 'running' ? 'border-info'
-    : status === 'completed' ? 'border-success'
-      : 'border-destructive'
+  const statusConfig = {
+    running:   { border: 'border-info',         Icon: Loader2,      iconClass: 'text-info animate-spin' },
+    completed: { border: 'border-success',      Icon: CheckCircle2, iconClass: 'text-success' },
+    failed:    { border: 'border-destructive',  Icon: XCircle,      iconClass: 'text-destructive' },
+    pending:   { border: 'border-border',       Icon: Circle,       iconClass: 'text-muted-foreground' },
+  } as const
 
-  const StatusIcon = status === 'running' ? Loader2 : status === 'completed' ? CheckCircle2 : XCircle
-  const iconClass = status === 'running' ? 'text-info animate-spin'
-    : status === 'completed' ? 'text-success' : 'text-destructive'
+  const cfg = statusConfig[status] ?? statusConfig.pending
+  const borderColor = cfg.border
+  const StatusIcon = cfg.Icon
+  const iconClass = cfg.iconClass
 
   const fullDesc = description || title
 
-  const headerExtra = (
+  const headerExtra = useMemo(() => (
     <>
       {isRetry && <RefreshCw className="h-3 w-3 text-warning" />}
       {status === 'failed' && error && (
@@ -58,19 +62,25 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
         </span>
       )}
     </>
-  )
+  ), [isRetry, status, error, stepContextFill, duration])
+
+  const icon = useMemo(() => (
+    <StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />
+  ), [StatusIcon, iconClass])
+
+  const label = useMemo(() => (
+    <StepTooltip description={fullDesc} enabled={!!description}>
+      <span className={cn('text-sm truncate', description && 'cursor-default')}>
+        Step {stepNum}: {title}
+      </span>
+    </StepTooltip>
+  ), [fullDesc, description, stepNum, title])
 
   return (
     <div data-step-id={stepId}>
       <CollapsibleBlock
-        icon={<StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />}
-        label={
-          <StepTooltip description={fullDesc} enabled={!!description}>
-            <span className={cn('text-sm truncate', description && 'cursor-default')}>
-              Step {stepNum}: {title}
-            </span>
-          </StepTooltip>
-        }
+        icon={icon}
+        label={label}
         open={isOpen}
         onOpenChange={(open) => setUserOverride(open)}
         headerExtra={headerExtra}
@@ -78,8 +88,8 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
         <div className={cn('mt-2 border-l-2 rounded pl-3 py-2 space-y-3 min-w-0', borderColor)}>
           {todoItems && todoItems.length > 0 && (
             <ul className="space-y-1">
-              {todoItems.map((todo, i) => (
-                <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+              {todoItems.map((todo) => (
+                <li key={todo.text} className="flex items-center gap-2 text-xs text-muted-foreground">
                   {todo.checked ? (
                     <CheckSquare className="h-3.5 w-3.5 text-success shrink-0" />
                   ) : (

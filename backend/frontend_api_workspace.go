@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/epilande/go-devicons"
 )
@@ -29,12 +30,45 @@ func errNotGitRepo(err error, stderr string) bool {
 	return strings.Contains(s, "not a git repository")
 }
 
-// isGitRepo reports whether dir is inside a git work tree.
-func isGitRepo(ctx context.Context, dir string) bool {
+// gitRepoCacheEntry is a cached result of isGitRepo.
+type gitRepoCacheEntry struct {
+	isRepo  bool
+	expires time.Time
+}
+
+// isGitRepo reports whether dir is inside a git work tree. Results are
+// cached per path for 30 seconds to avoid repeated git invocations.
+// Expired entries are swept lazily when the cache exceeds 100 entries.
+func (f *FrontendAPI) isGitRepo(ctx context.Context, dir string) bool {
+	f.gitRepoCacheMu.Lock()
+	if e, ok := f.gitRepoCache[dir]; ok && time.Now().Before(e.expires) {
+		f.gitRepoCacheMu.Unlock()
+		return e.isRepo
+	}
+	// Lazy sweep: if cache grows beyond 100 entries, purge all expired ones.
+	if len(f.gitRepoCache) > 100 {
+		now := time.Now()
+		for k, e := range f.gitRepoCache {
+			if now.After(e.expires) {
+				delete(f.gitRepoCache, k)
+			}
+		}
+	}
+	f.gitRepoCacheMu.Unlock()
+
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	return cmd.Run() == nil
+	result := cmd.Run() == nil
+
+	f.gitRepoCacheMu.Lock()
+	if f.gitRepoCache == nil {
+		f.gitRepoCache = make(map[string]gitRepoCacheEntry)
+	}
+	f.gitRepoCache[dir] = gitRepoCacheEntry{isRepo: result, expires: time.Now().Add(30 * time.Second)}
+	f.gitRepoCacheMu.Unlock()
+
+	return result
 }
 
 // GetGitStatus returns a map of absolute file paths to their git status for the active project.
@@ -158,7 +192,7 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 
 	// Non-git workspaces short-circuit directly to --no-index, which
 	// produces a full-file diff showing every line as added.
-	if !isGitRepo(f.ctx(), absRoot) {
+	if !f.isGitRepo(f.ctx(), absRoot) {
 		diff, noIndexErr := f.runGitDiffNoIndex(absRoot, relPath)
 		if noIndexErr != nil {
 			return "", fmt.Errorf("git diff --no-index: %w", noIndexErr)
@@ -288,15 +322,33 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 }
 
 // GetSessionWorkspace returns the workspace directory path for a given session.
+// When the session is known to the session manager, its specific WorkspacePath
+// is returned ONLY if it matches the active project — this guards against
+// returning a stale workspace from a session that belongs to a different
+// project the user switched away from.
+// Falls back to the active project workspace path if the session is not yet
+// registered, the manager is unavailable, or the session's workspace does not
+// match the active project.
 func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	f.activeProjectMu.RLock()
-	projectPath := f.activeProjectPath
+	activeProject := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
 
-	if projectPath == "" {
+	if sessionID != "" && f.app != nil {
+		if mgr := f.app.Manager(); mgr != nil {
+			if wsPath, ok := mgr.GetSessionWorkspacePath(sessionID); ok && wsPath != "" {
+				// Only return the session workspace if it belongs to the active project.
+				if wsPath == activeProject || activeProject == "" {
+					return wsPath, nil
+				}
+			}
+		}
+	}
+
+	if activeProject == "" {
 		return "", errors.New("no active project")
 	}
-	return projectPath, nil
+	return activeProject, nil
 }
 
 // GetFileIcon returns the Nerd Font icon and hex color for a file path.
@@ -518,21 +570,4 @@ func (f *FrontendAPI) UnwatchDirectory(dirPath string) error {
 		return errors.New("no active file watcher")
 	}
 	return f.watcher.UnwatchDir(dirPath)
-}
-
-// GetSessionTokens returns persisted token counts for a session.
-func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
-	var result SessionTokensResponse
-	if f.store == nil || sessionID == "" {
-		return result
-	}
-	info, err := f.store.LoadSession(f.ctx(), sessionID)
-	if err != nil || info == nil {
-		return result
-	}
-	result.TotalInputTokens = info.TotalInputTokens
-	result.TotalOutputTokens = info.TotalOutputTokens
-	result.Model = info.Model
-	result.Family = info.Family
-	return result
 }

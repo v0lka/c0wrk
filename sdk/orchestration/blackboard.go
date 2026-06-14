@@ -20,8 +20,8 @@ type MapBlackboard struct {
 	stepResults      map[string]StepResult
 	reflections      []Reflection
 	finalResult      string
-	maxSummaryTokens int  // token-based limit for summaries (0 = use char-based default)
-	maxSummaryLen    int  // char-based limit for summaries (0 = use default 500)
+	maxSummaryTokens int    // token-based limit for summaries (0 = use char-based default)
+	maxSummaryLen    int    // char-based limit for summaries (0 = use default 500)
 	facts            []Fact // keyword-tagged facts for inter-step communication
 }
 
@@ -320,10 +320,27 @@ func (b *MapBlackboard) GetFacts() []Fact {
 }
 
 // SetFacts replaces the facts slice. Used by persistence restoration.
+//
+// Defensively deep-copies the input slice (and each Fact's Keywords slice) so
+// the caller can mutate its own slice afterwards without racing with reads
+// against the blackboard. Mirrors the read-side defensive copy in GetFacts.
 func (b *MapBlackboard) SetFacts(facts []Fact) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.facts = facts
+	if facts == nil {
+		b.facts = nil
+		return
+	}
+	copied := make([]Fact, len(facts))
+	for i, f := range facts {
+		var kwCopy []string
+		if f.Keywords != nil {
+			kwCopy = make([]string, len(f.Keywords))
+			copy(kwCopy, f.Keywords)
+		}
+		copied[i] = Fact{Keywords: kwCopy, Content: f.Content, Author: f.Author}
+	}
+	b.facts = copied
 }
 
 // ---------------------------------------------------------------------------

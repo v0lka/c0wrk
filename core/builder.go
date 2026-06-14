@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,7 +42,7 @@ type OrchestratorBuilder struct {
 	modelRegistry    *llm.ModelRegistry
 	logger           *slog.Logger
 	vectorSearchFunc tools.VectorSearchFunc
-	baseSkillDirs    []string // resolved skill directories shared across sessions (highest priority first)
+	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 
 	// Cached reasoning config from config; updated by runAsyncInit/RebuildRouter.
@@ -73,6 +72,14 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 // this function returns immediately. Callers that need those components
 // (Build, GenerateTitle, etc.) block until the background init finishes.
 func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
+	// Defensive default: if the caller did not provide an env-var expander,
+	// fall back to a no-op so that downstream callers (proxy/MCP/LLM config)
+	// don't panic on a nil function pointer. The real expander is supplied by
+	// the backend layer via configadapter.
+	if cfg.ExpandEnvVars == nil {
+		cfg.ExpandEnvVars = func(s string) string { return s }
+	}
+
 	b := &OrchestratorBuilder{
 		logger:   logger,
 		initDone: make(chan struct{}),
@@ -85,12 +92,10 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 			logger.Warn("failed to build proxy client, proceeding without proxy", "error", err)
 		} else {
 			b.proxyClient = proxyClient
-			SetProxyEnvVars(cfg.Proxy)
-			if proxyClient != nil {
-				// Mutate DefaultTransport as safety net for any code using http.DefaultClient
-				if t, tErr := BuildProxyTransport(cfg.Proxy, logger); tErr == nil && t != nil {
-					http.DefaultTransport = t
-				}
+			// Opt-in global env mutation (W-12). SetGlobalEnv defaults to false;
+			// only set when the user explicitly opts in via config.
+			if cfg.Proxy.SetGlobalEnv {
+				SetProxyEnvVars(cfg.Proxy)
 			}
 		}
 	}
@@ -142,6 +147,11 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	b.gateway = gw
 	b.gatewayErr = err
 	b.mu.Unlock()
+
+	// Wire schema sanitizer on successful gateway startup (S-17).
+	if gw != nil {
+		gw.SetSchemaSanitizer(defaultSchemaSanitizer())
+	}
 
 	// LLM Router
 	router, modelReg, err := b.buildRouter(ctx, cfg)
@@ -285,6 +295,7 @@ func (b *OrchestratorBuilder) Build(
 		StepLimitFunc:             stepLimitFunc,
 		PreWarningPercent:         cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 		InjectionDefenseEnabled:   cfg.Security.InjectionDefenseEnabled,
+		AgentsMDMaxBytes:          cfg.Security.AgentsMDMaxBytes,
 	}
 
 	// Create tool result cache (per-session lifetime).
@@ -327,26 +338,32 @@ func (b *OrchestratorBuilder) Build(
 	// because the workspace path differs between concurrent sessions.
 	sessionSkillMgr := b.buildSessionSkillManager(workspacePath, logger)
 
+	// Per-session ToolRegistry clone: skill-derived policy overrides set during
+	// HandleMessage must NOT leak to other concurrent sessions. The clone shares
+	// the underlying SDK ToolRegistry (tools themselves are stateless), but each
+	// session has its own policyOverrides/skillPolicyOverrides view.
+	sessionRegistry := b.registry.Clone()
+
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
-		Router:           coreRouter,
-		Planner:          planner,
-		LLM:              loggedLLM,
-		ToolExec:         b.registry,              // ToolExecutor (shared)
-		ToolRegistry:     b.registry.ToolRegistry, // SDK ToolRegistry (shared)
-		TokenCounter:     tokenCounter,
-		ContextFactory:   contextFactory,
-		Reflector:        reflector,
-		Logger:           logger,
-		Emitter:          emitter,
-		ModelRegistry:    modelReg,
-		ToolResultBudget: toolResultBudget,
-		CircuitBreaker:   circuitBreaker,
-		BBFactory:        bbFactory,
-		TrackingCaller:   trackingCaller,
-		VectorSearchFunc: b.vectorSearchFunc,
-		SkillManager:     sessionSkillMgr,
-		CoreToolRegistry: b.registry, // for skill policy overrides
-		ToolCache:        toolCache,
+		Router:            coreRouter,
+		Planner:           planner,
+		LLM:               loggedLLM,
+		ToolExec:          sessionRegistry,         // ToolExecutor (per-session policy view)
+		ToolRegistry:      b.registry.ToolRegistry, // SDK ToolRegistry (shared)
+		TokenCounter:      tokenCounter,
+		ContextFactory:    contextFactory,
+		Reflector:         reflector,
+		Logger:            logger,
+		Emitter:           emitter,
+		ModelRegistry:     modelReg,
+		ToolResultBudget:  toolResultBudget,
+		CircuitBreaker:    circuitBreaker,
+		BBFactory:         bbFactory,
+		TrackingCaller:    trackingCaller,
+		VectorSearchFunc:  b.vectorSearchFunc,
+		SkillManager:      sessionSkillMgr,
+		CoreToolRegistry:  sessionRegistry, // for skill policy overrides (per-session)
+		ToolCache:         toolCache,
 		PerToolTruncation: perToolTruncation,
 	}), nil
 }
@@ -387,30 +404,9 @@ func (b *OrchestratorBuilder) RebuildJudge(cfg *BuilderConfig) {
 	b.rebuildJudgeInternal(cfg, router)
 }
 
-// ReconfigureMCP reconfigures the MCP gateway with the given config.
-// If no gateway exists, starts a new one.
-func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderConfig) error {
-	if err := b.waitReady(ctx); err != nil {
-		return err
-	}
-
-	mcpCfg := configToGatewayConfig(cfg)
-	mcpCfg.HTTPClient = b.proxyClient
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.gateway != nil {
-		return b.gateway.Reconfigure(ctx, mcpCfg, b.registry, cfg.ExpandEnvVars, b.logger)
-	}
-
-	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry, cfg.ExpandEnvVars, b.logger)
-	if err != nil {
-		return err
-	}
-	b.gateway = gw
-	return nil
-}
+// ReconfigureMCP, StopGateway, SetMCPWorkDir, and configToGatewayConfig live
+// in builder_mcp.go to keep MCP gateway lifecycle code adjacent to its
+// configuration helpers (W-16 file split).
 
 // UpdateSecurityPolicies applies security policy overrides from config.
 func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
@@ -424,7 +420,10 @@ func (b *OrchestratorBuilder) UpdateSearchTool(cfg *BuilderConfig) {
 		MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 		Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 	}
-	tools.UpdateSearchToolWithClient(b.registry, cfg.Search.Provider, apiKey, limits, b.proxyClient)
+	b.mu.RLock()
+	pc := b.proxyClient
+	b.mu.RUnlock()
+	tools.UpdateSearchToolWithClient(b.registry, cfg.Search.Provider, apiKey, limits, pc)
 }
 
 // RebuildProxy rebuilds the proxy HTTP client from the given config and propagates
@@ -438,10 +437,10 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		b.mu.Lock()
 		b.proxyClient = nil
 		b.mu.Unlock()
+		// Always clear global env on disable so a previously-set HTTP_PROXY does
+		// not linger after the user turns the proxy off, regardless of
+		// SetGlobalEnv (the user has explicitly switched proxy off).
 		ClearProxyEnvVars()
-		http.DefaultTransport = &http.Transport{
-			ForceAttemptHTTP2: true,
-		}
 	} else {
 		proxyClient, err := BuildProxyClient(cfg.Proxy, 30*time.Second, b.logger)
 		if err != nil {
@@ -450,9 +449,11 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		b.mu.Lock()
 		b.proxyClient = proxyClient
 		b.mu.Unlock()
-		SetProxyEnvVars(cfg.Proxy)
-		if t, tErr := BuildProxyTransport(cfg.Proxy, b.logger); tErr == nil && t != nil {
-			http.DefaultTransport = t
+		// Opt-in global env mutation (W-12). SetGlobalEnv defaults to false;
+		// only set when the user explicitly opts in via config. Never clear
+		// when proxy is enabled — the user may have set proxy env vars externally.
+		if cfg.Proxy.SetGlobalEnv {
+			SetProxyEnvVars(cfg.Proxy)
 		}
 	}
 
@@ -480,14 +481,17 @@ func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
 	fetchLimits := tools.WebFetchLimits{
 		Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
 	}
-	tools.UpdateWebFetchTool(b.registry, fetchLimits, b.proxyClient)
+	b.mu.RLock()
+	pc := b.proxyClient
+	b.mu.RUnlock()
+	tools.UpdateWebFetchTool(b.registry, fetchLimits, pc)
 
 	searchLimits := tools.WebSearchLimits{
 		MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 		Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 	}
 	apiKey := cfg.ExpandEnvVars(cfg.Search.APIKey)
-	tools.UpdateSearchToolWithClient(b.registry, cfg.Search.Provider, apiKey, searchLimits, b.proxyClient)
+	tools.UpdateSearchToolWithClient(b.registry, cfg.Search.Provider, apiKey, searchLimits, pc)
 }
 
 // GenerateTitle generates a concise title for a conversation using the cached LLM router.
@@ -579,18 +583,6 @@ func filterKnownFamilyModels(models []string) []string {
 	return result
 }
 
-// StopGateway stops the MCP gateway. Called during app shutdown.
-// Does not wait for async init — if the gateway hasn't been created yet,
-// there is nothing to stop.
-func (b *OrchestratorBuilder) StopGateway() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.gateway != nil {
-		return b.gateway.Stop()
-	}
-	return nil
-}
-
 // RegisterVectorSearch adds the semantic_search tool to the shared registry.
 // This must be called after NewOrchestratorBuilder when the vector index backend
 // is available. The searchFunc and waitFunc are provided by the desktop layer.
@@ -598,24 +590,12 @@ func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc tools.VectorSearch
 	if searchFunc == nil {
 		return
 	}
+	b.mu.Lock()
 	b.vectorSearchFunc = searchFunc
+	b.mu.Unlock()
 	b.registry.Register(builtins.NewVectorSearchTool(searchFunc, waitFunc))
 	if b.logger != nil {
 		b.logger.Info("registered semantic_search tool")
-	}
-}
-
-// SetMCPWorkDir updates the default working directory for MCP stdio server processes.
-// New or restarted MCP servers will use this directory as their cwd.
-func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
-	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_ = b.waitReady(waitCtx)
-	b.mu.RLock()
-	gw := b.gateway
-	b.mu.RUnlock()
-	if gw != nil {
-		gw.SetDefaultWorkDir(path)
 	}
 }
 
@@ -636,6 +616,33 @@ func (b *OrchestratorBuilder) GetBaseSkillDirs() []string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return append([]string(nil), b.baseSkillDirs...)
+}
+
+// GetSkillDescriptors returns lightweight skill descriptors from the shared
+// base dirs and an optional project-local skill directory. This is used by
+// the frontend ListSkills API to avoid creating a full SkillManager per call.
+func (b *OrchestratorBuilder) GetSkillDescriptors(projectSkillDir string) []skills.SkillDescriptor {
+	b.mu.RLock()
+	baseDirs := append([]string(nil), b.baseSkillDirs...)
+	b.mu.RUnlock()
+
+	dirs := make([]string, 0, len(baseDirs)+1)
+	if projectSkillDir != "" {
+		dirs = append(dirs, projectSkillDir)
+	}
+	dirs = append(dirs, baseDirs...)
+
+	if len(dirs) == 0 {
+		return nil
+	}
+
+	// Cached: skill list changes only on config reload or project switch.
+	// We rebuild on-demand; the FrontendAPI layer caches between calls.
+	sm := skills.NewSkillManager(dirs, b.log())
+	if err := sm.Scan(); err != nil {
+		b.log().Warn("GetSkillDescriptors scan failed", "error", err, "dirs", dirs)
+	}
+	return sm.List()
 }
 
 // buildSessionSkillManager constructs a per-session SkillManager that always
@@ -686,130 +693,16 @@ func activeSkillPathResolver(ctx context.Context, skillName string) (string, boo
 }
 
 // ---------------------------------------------------------------------------
-// Prompt optimization
-// ---------------------------------------------------------------------------
-
-// OptimizePromptResult holds the output of the prompt optimization pipeline.
-type OptimizePromptResult struct {
-	OptimizedPrompt string
-	Keywords        []string
-	UsedContext     bool
-}
-
-// extractResult is the expected JSON structure from the extraction LLM call.
-type extractResult struct {
-	Translated string   `json:"translated"`
-	Keywords   []string `json:"keywords"`
-}
-
-// OptimizePrompt runs a 3-step prompt optimization pipeline:
-//  1. Translate the prompt to English and extract semantic keywords (LLM).
-//  2. Search the vector index for relevant codebase context (optional, skipped when unavailable).
-//  3. Rewrite the prompt using the translated text and codebase context (LLM).
-func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt string) (*OptimizePromptResult, error) {
-	b.mu.RLock()
-	router := b.llmRouter
-	searchFunc := b.vectorSearchFunc
-	baseEffort := b.baseReasoningEffort
-	roleOverrides := b.roleOverrides
-	b.mu.RUnlock()
-
-	if router == nil {
-		return nil, errors.New("llm router not available")
-	}
-
-	summaryEffort := llm.ResolveAgentReasoningMode("summary", baseEffort, roleOverrides)
-
-	// Step A: Translate + extract keywords
-	extractTemp := 0.3
-	extractReq := llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: "system", Content: coreprompts.PromptOptimizeExtract},
-			{Role: "user", Content: userPrompt},
-		},
-		MaxTokens:       500,
-		Temperature:     &extractTemp,
-		ReasoningEffort: summaryEffort,
-	}
-	extractResp, err := router.Call(ctx, extractReq)
-	if err != nil {
-		return nil, fmt.Errorf("optimize prompt: translate/extract: %w", err)
-	}
-
-	var extracted extractResult
-	translated := userPrompt
-	var keywords []string
-
-	if err := json.Unmarshal([]byte(extractResp.Message.Content), &extracted); err != nil {
-		b.log().Warn("optimize prompt: failed to parse extraction JSON, using original prompt",
-			"error", err, "content", extractResp.Message.Content)
-	} else {
-		if extracted.Translated != "" {
-			translated = extracted.Translated
-		}
-		keywords = extracted.Keywords
-	}
-
-	// Step B: Semantic search (optional — graceful skip)
-	var contextBlock string
-	usedContext := false
-
-	if searchFunc != nil && len(keywords) > 0 {
-		query := strings.Join(keywords, " ")
-		results, searchErr := searchFunc(ctx, builtins.VectorSearchOptions{Query: query, TopK: 5})
-		if searchErr != nil {
-			b.log().Warn("optimize prompt: vector search failed, proceeding without context", "error", searchErr)
-		} else if len(results) > 0 {
-			usedContext = true
-			var sb strings.Builder
-			for i, r := range results {
-				content := r.Content
-				if len(content) > 300 {
-					content = content[:300] + "..."
-				}
-				fmt.Fprintf(&sb, "%d. %s (lines %d-%d, %s)\n%s\n\n", i+1, r.FilePath, r.StartLine, r.EndLine, r.Language, content)
-			}
-			contextBlock = sb.String()
-		}
-	}
-
-	// Step C: Optimize prompt
-	var userMsg strings.Builder
-	userMsg.WriteString("## Original Prompt\n\n")
-	userMsg.WriteString(translated)
-	if contextBlock != "" {
-		userMsg.WriteString("\n\n## Codebase Context\n\n")
-		userMsg.WriteString(contextBlock)
-	}
-
-	rewriteTemp := 0.5
-	rewriteReq := llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: "system", Content: coreprompts.PromptOptimizeRewrite},
-			{Role: "user", Content: userMsg.String()},
-		},
-		MaxTokens:       2000,
-		Temperature:     &rewriteTemp,
-		ReasoningEffort: summaryEffort,
-	}
-	rewriteResp, err := router.Call(ctx, rewriteReq)
-	if err != nil {
-		return nil, fmt.Errorf("optimize prompt: rewrite: %w", err)
-	}
-
-	return &OptimizePromptResult{
-		OptimizedPrompt: rewriteResp.Message.Content,
-		Keywords:        keywords,
-		UsedContext:     usedContext,
-	}, nil
-}
-
-// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 // buildRouter creates a fresh LLM Router + ModelRegistry from config.
 func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
+	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
+	b.mu.RLock()
+	proxyClient := b.proxyClient
+	b.mu.RUnlock()
+
 	overrides := make(map[string]llm.ModelMetadata)
 	for name, override := range cfg.LLM.Models {
 		overrides[name] = llm.ModelMetadata{
@@ -819,8 +712,8 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		}
 	}
 	modelRegistry := llm.NewModelRegistry(overrides)
-	if b.proxyClient != nil {
-		modelRegistry.SetHTTPClient(b.proxyClient)
+	if proxyClient != nil {
+		modelRegistry.SetHTTPClient(proxyClient)
 	}
 
 	initialBackoff, err := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
@@ -842,7 +735,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		MaxBackoff:          maxBackoff,
 		SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
 		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
-		HTTPClient:          b.proxyClient,
+		HTTPClient:          proxyClient,
 		SamplingFunc: func(family string) *float64 {
 			return prompt.DefaultSampling(family).Temperature
 		},
@@ -896,7 +789,6 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	if modelRegistry != nil {
 		coreRouter.SetModelRegistry(modelRegistry)
 		planner.SetModelRegistry(modelRegistry)
-		reflector.SetModelRegistry(modelRegistry)
 	}
 
 	// Wire reasoning effort for all agents
@@ -1032,7 +924,7 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, router *l
 		newRouter, _, err := b.buildRouter(context.Background(), cfg)
 		if err == nil && newRouter != nil {
 			judgeProvider = newRouter.GetDefaultProvider()
-		} else if b.logger != nil {
+		} else if err != nil && b.logger != nil {
 			b.logger.Warn("rebuildJudge: failed to build LLM router for judge", "error", err)
 		}
 	}
@@ -1074,7 +966,7 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 // configToBuiltinToolsConfig converts BuilderConfig to BuiltinToolsConfig.
 func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 	var bashBlacklist []string
-	if bashCfg, ok := cfg.Security.ToolPolicies["bash_exec"]; ok {
+	if bashCfg, ok := cfg.Security.ToolPolicies[ToolBashExec]; ok {
 		bashBlacklist = bashCfg.Blacklist
 	}
 
@@ -1085,7 +977,6 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		RipgrepLimits: tools.RipgrepLimits{
 			Timeout: time.Duration(cfg.Timeouts.RipgrepTimeout) * time.Second,
 		},
-		GlobLimits: tools.GlobLimits{},
 		WebFetchLimits: tools.WebFetchLimits{
 			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
 		},
@@ -1101,26 +992,6 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
-	}
-}
-
-// configToGatewayConfig converts BuilderConfig to MCP GatewayConfig.
-func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
-	entries := make(map[string]mcp.ServerEntry, len(cfg.MCP.Servers))
-	for name, srv := range cfg.MCP.Servers {
-		entries[name] = mcp.ServerEntry{
-			Transport: srv.Transport,
-			Command:   srv.Command,
-			Args:      srv.Args,
-			Env:       srv.Env,
-			URL:       srv.URL,
-			Headers:   srv.Headers,
-			WorkDir:   srv.WorkDir,
-		}
-	}
-	return mcp.GatewayConfig{
-		Servers:        entries,
-		DefaultWorkDir: cfg.MCP.DefaultWorkDir,
 	}
 }
 

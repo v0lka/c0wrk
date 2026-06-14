@@ -7,11 +7,6 @@ import (
 	"github.com/v0lka/c0wrk/sdk/llm"
 )
 
-// CompactionStrategy defines an algorithm for compressing step history.
-type CompactionStrategy interface {
-	Compact(ctx context.Context, steps []sdkagent.Step, budgetTokens int) []llm.Message
-}
-
 // CompactionConfig holds configuration for compaction strategies.
 type CompactionConfig struct {
 	SlidingWindow struct {
@@ -42,7 +37,8 @@ type CompactionDeps struct {
 }
 
 // NewCompactionStrategy creates a CompactionStrategy by name.
-func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDeps) CompactionStrategy {
+// Returns an sdkagent.CompactionStrategy for use with ContextWindow.SetStrategy.
+func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDeps) sdkagent.CompactionStrategy {
 	// Default maxSummarizeTokens if not set
 	maxTokens := deps.MaxSummarizeTokens
 	if maxTokens <= 0 {

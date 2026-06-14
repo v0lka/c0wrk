@@ -178,6 +178,11 @@ type BuilderSecurityConfig struct {
 	InjectionDefenseEnabled bool
 	ToolPolicies            map[string]BuilderToolPolicy
 	DefaultPolicy           string
+
+	// AgentsMDMaxBytes caps the AGENTS.md content read from the workspace before
+	// it is injected into the system prompt. 0 means use the default (65536).
+	// A negative value disables the cap entirely.
+	AgentsMDMaxBytes int
 }
 
 // BuilderToolPolicy holds per-tool policy and optional blacklist.
@@ -277,4 +282,11 @@ type BuilderProxyConfig struct {
 	URL        string   // env-expanded proxy URL
 	BypassList []string // hostnames/IPs to skip proxy
 	TLSCertDir string   // env-expanded path to custom CA certs directory
+
+	// SetGlobalEnv, when true, mutates HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
+	// in the process environment so subprocesses (e.g. bash_exec children) inherit
+	// the proxy settings. Default false — most callers should use the explicitly
+	// threaded *http.Client returned by BuildProxyClient instead. Mutating global
+	// env affects every child process and other Go libraries that read these vars.
+	SetGlobalEnv bool
 }

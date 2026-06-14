@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { EditorView, placeholder } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { createChatExtensions } from '@/lib/cmChatExtensions'
@@ -121,5 +121,5 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
     view.focus()
   }, [])
 
-  return { containerRef, getText, setText, clear, focus, insertAtCursor }
+  return useMemo(() => ({ containerRef, getText, setText, clear, focus, insertAtCursor }), [getText, setText, clear, focus, insertAtCursor])
 }

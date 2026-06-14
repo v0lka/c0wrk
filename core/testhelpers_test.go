@@ -260,6 +260,7 @@ func (m *mockEmitter) SkillsActivated(_ []string)                           {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) Finishing(_ int, _ string)                            {}
 func (m *mockEmitter) StepTodoUpdate(_ string, _ []TodoItem)                {}
+func (m *mockEmitter) MemoryRead(_ int, _ string)                           {}
 
 // ---------------------------------------------------------------------------
 // testPersistableBlackboard — a minimal PersistableBlackboard for core tests

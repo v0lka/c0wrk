@@ -41,172 +41,12 @@ type planPromptMode struct {
 	maxSteps      string
 }
 
-// Plan mode template content.
+// Plan mode template content. The body of each prompt section lives in
+// core/prompts/planner_*.md and is loaded via go:embed in core/prompts/prompts.go.
+// Inlining the full text here would scatter the planning policy across Go and
+// markdown sources; centralizing it next to the other prompts keeps editing
+// the planner contract a one-file change.
 const (
-	planModePreamble = `You are a task planner. Decompose the user's task into a DAG (directed acyclic graph) of execution steps.
-
-Each step should be atomic and executable by a single agent with access to tools.
-Steps can depend on other steps (DependsOn) and can be parallelizable.
-
-## Granularity
-
-Match step granularity to task scope. Each step must be bounded so a single executor can complete it within its context window.
-
-- Simple tasks (complexity 1-2): 1-2 steps
-- Medium tasks (complexity 3): 2-4 steps
-- Complex tasks (complexity 4): 4-7 steps
-- Large tasks (complexity 5): 6-10 steps
-
-CRITICAL: A single step CANNOT read an entire large codebase and retain all findings. For tasks requiring broad codebase analysis, decompose research into multiple parallel steps, each covering a bounded area. Then add a synthesis step that depends on all research steps.
-
-Limit plans to MAX-STEPS steps maximum.
-`
-
-	// singleStepPreamble is used when ExecutionMode == "normal" — produces exactly 1 step.
-	singleStepPreamble = `You are a task structurer. Given the user's task, produce exactly ONE well-defined execution step.
-
-The step must be executable by a single agent with access to tools. Do NOT decompose the task into multiple steps. Instead, produce a single comprehensive step whose What/How/Where/Acceptance Criteria covers the full scope of work.
-
-The step must be bounded so a single executor can complete it within its context window. If the task is broad, the step's How section should outline a phased approach that the executor can follow sequentially.
-
-Limit plans to MAX-STEPS steps maximum.
-`
-
-	// multiStepToT is the Tree of Thoughts section for multi-step plan generation.
-	multiStepToT = `## Tree of Thoughts Reasoning Framework
-
-You reason using the Tree of Thoughts (ToT) framework. Do NOT skip or abbreviate the reasoning steps — explicit branching and evaluation improves your final output.
-
-### How ToT Applies to Planning
-
-- BRANCH: Generate 2-4 alternative task decompositions (different groupings, step boundaries, parallelization strategies)
-- EVALUATE: Score each decomposition on step independence, context fit, and coverage of acceptance criteria
-- SELECT: Pick the decomposition that best balances parallelism with correctness
-- DEEPEN: Flesh out each step's What/How/Where/Acceptance Criteria
-- BACKTRACK: If a step description reveals an implicit dependency or scope mismatch, return to the decomposition point and try an alternative grouping
-
-Reason through your plan design using the ToT loop above, then output ONLY the JSON plan object.
-`
-
-	// singleStepToT is the Tree of Thoughts section for single-step task structuring.
-	singleStepToT = `## Tree of Thoughts Reasoning Framework
-
-You reason using the Tree of Thoughts (ToT) framework. Do NOT skip or abbreviate the reasoning steps — explicit branching and evaluation improves your final output.
-
-### How ToT Applies to Task Structuring
-
-- BRANCH: Generate 2-3 alternative approaches to the task (different strategies, techniques, tool choices, starting points)
-- EVALUATE: Score each approach on feasibility, completeness within a single execution context, and verifiability of acceptance criteria
-- SELECT: Pick the approach that most reliably achieves the task's goals within the executor's context window
-- DEEPEN: Flesh out the selected approach into a precise What/How/Where/Acceptance Criteria specification
-- BACKTRACK: If deepening reveals the approach is infeasible or acceptance criteria are unverifiable, return and select an alternative
-
-Reason through your approach using the ToT loop above, then output ONLY the JSON plan object.
-`
-
-	// multiStepGuidance provides decomposition guidance for multi-step plans.
-	multiStepGuidance = `## Guidance — Balance
-
-Apply BRANCH/EVALUATE when decomposing:
-
-- BRANCH multiple decompositions; EVALUATE which keeps each step bounded and context-safe
-- Decompose research-heavy tasks into multiple bounded-area steps rather than one monolithic "read everything" step
-- Let the coder verify as they go rather than creating separate verify steps
-- Ensure each step produces concrete progress toward the goal
-- Merge related requirements only when a single executor can complete them without context overflow
-- If EVALUATE reveals an implicit dependency between supposedly parallel steps, BACKTRACK and restructure
-`
-
-	// singleStepGuidance provides guidance for single-step task structuring.
-	singleStepGuidance = `## Guidance — Quality
-
-Your plan MUST contain exactly 1 step. Focus on producing a comprehensive specification:
-
-- The What section must fully describe the deliverable — no ambiguity about scope
-- The How section must outline a concrete approach (algorithms, patterns, tool order) — not just "implement the feature"
-- The Where section must name specific files, functions, or modules to touch — use paths discovered during exploration when available
-- Acceptance Criteria must be concrete and verifiable by the executor using tool calls (read_file, bash_exec, ripgrep, etc.) — not subjective assessments
-- If the task involves multiple files or concerns, the How section should define the order of operations
-`
-
-	planModeDomainAssignment = `
-Domain controls how the agent's context window is compacted during long executions:
-
-- "code" → sliding window (keeps recent file edits visible)
-- "research" → summarization (condenses findings into key points)
-- "general" → sliding window; switches to hierarchical if plan complexity ≥ 4
-
-Choose the domain that matches the **primary activity** of the step, not its subject matter:
-
-- A step that _reads and analyzes_ source code to produce a report is "research" (primary activity: information gathering).
-- A step that _modifies_ source files or runs build/test commands is "code" (primary activity: file mutation).
-- Use "general" only when a step genuinely mixes activities and cannot be split further.
-
-**Wrong domain → wrong compaction → degraded context quality.** A research step with domain "code" will lose synthesized findings to sliding window eviction. A coding step with domain "research" will lose recent edits to summarization.
-
-For each step:
-1. Identify the primary activity (reading/analyzing vs modifying files vs mixed)
-2. Match to the domain that fits the primary activity
-3. Prefer a specific domain ("code" or "research") over "general" when the activity is clear
-`
-
-	planModeAgentProfiles = `
-Assign specialized profiles when it adds clear value. Omit profile for simple tasks. Even when a profile is assigned, ` + "`profile.allowed_tools`" + ` MUST still be set — the role name alone does NOT restrict tool access.
-
-Profiles:
-- "researcher": information gathering and analysis. Include ALL read-only tools (code exploration, search, file viewing) plus web_search/web_fetch if relevant. Do NOT include file-writing tools.
-- "coder": code implementation. Include all file operations (read_file, write_file, edit_file), code exploration/search tools, and bash_exec for build/run/test. Do NOT include web tools unless external API work is specified.
-- "tester": test execution and verification. Include bash_exec for test runs plus all discovery/read tools for examining code. Do NOT include file-writing tools (except test infrastructure if explicitly needed).
-- "executor": general purpose (default). Include ALL relevant tools for the step's specific activities — do not blindly include every tool.
-
-CRITICAL: ` + "`profile.allowed_tools`" + ` is the AUTHORITATIVE tool gate for each step. Scan the full Available Tools list and include EVERY tool (both built-in and MCP) that could be useful for the step's What/How/Where. Be generous — tool overlap is beneficial. Include MCP tools alongside their built-in equivalents. Only omit a tool if it is clearly irrelevant.
-
-## Per-step skills (optional)
-
-The available skills for this turn are listed in the AVAILABLE-SKILLS section below. Each step's ` + "`profile.skills`" + ` may specify a subset of those skill names whose instructions apply to that step. Only include a skill when it is directly relevant — unrelated skills add noise. Omit ` + "`profile.skills`" + ` (or leave it empty) to reuse the full task-scope pool for that step. Never invent skills that are not listed under AVAILABLE-SKILLS; unknown names are dropped.`
-
-	planModeExtraSections = `
-## Step Description Format
-
-Each step MUST include two text fields:
-
-- **summary**: A condensed label of 5-7 words STRICTLY. Used only for UI display. Must capture the essence of the step. MUST NOT be empty.
-- **description**: A detailed specification well-formatted with Markdown and following the "What-How-Where and Acceptance Criteria" structure:
-  - What: What needs to be done in this step.
-  - How: The approach, techniques, patterns, or algorithms to use.
-  - Where: Specific files, functions, modules, or components involved.
-  - Acceptance Criteria: Concrete, verifiable conditions that must be satisfied for this step to be considered complete. Each criterion should be testable.
-
-Example:
-  "summary": "Add JWT auth middleware",
-  "description": "## Add JWT auth middleware\n### What:\nImplement JWT-based authentication middleware for all protected API endpoints.\n### How:\nCreate a middleware function that extracts and validates JWT tokens from the Authorization header using the existing auth package. Use RS256 signature verification.\n### Where:\nbackend/middleware/auth.go (new file), backend/routes/api.go (wire middleware)\n### Acceptance Criteria:\n- All protected endpoints return 401 for missing or invalid tokens\n- Valid tokens allow request processing with user context\n- Token expiration is properly handled with appropriate error messages"
-
-## Output Expectations
-
-- "researcher" / "tester": Pass all results through the finish tool. Write files ONLY for final deliverables.
-- "coder": Write code/config files as needed. Summarize what was done through finish.
-- "executor": Files only when the file IS the deliverable.
-
-## Research Task Decomposition
-
-Separate research from writing — never combine reading many files with producing final deliverables in the same step. Use store_fact aggressively during research: earlier tool outputs are pruned from context, so persist findings immediately. The final synthesis step must depend on all research steps and use search_facts to retrieve results.
-
-## Parallelization
-
-Steps are parallelizable when they have NO data dependencies — step B can run in parallel with step A only if B does not need A's output. If B needs A's output, B MUST list A in depends_on.
-
-## Fields
-
-- ` + "`estimated_tools`" + `: Informational hint about likely tools. Not a constraint — the executor may use any available tool.
-- ` + "`profile.allowed_tools`" + `: REQUIRED for multi-step plans. An explicit list of tool names the executor is permitted to use for this step. When building this list:
-  * Scan ALL tools in the Available Tools section above — both built-in and MCP
-  * Include every tool potentially useful for the step's What/How/Where activities
-  * Be generous: tool overlap is beneficial (e.g., include both ` + "`semantic_search`" + ` and its MCP equivalents)
-  * Do NOT include ` + "`finish`" + `, ` + "`store_fact`" + `, ` + "`search_facts`" + `, ` + "`ask_user`" + `, ` + "`set_step_status`" + `, ` + "`read_step_output`" + `, or ` + "`tool_result_read`" + ` — these critical infrastructure tools are automatically added by the system
-  * Omit this field only when the step genuinely needs every available tool (rare; only for unbounded exploration tasks)
-Step executors follow MCP-first tool priority: prefer MCP tools over built-in equivalents. Built-in tools are fallback. ` + "`bash_exec`" + ` is last resort. When writing step descriptions, direct executors to use project-specific MCP tools first, then built-in code exploration, then targeted search, then file operations.
-`
-
 	planModeTail = "REFLECTIONS\n"
 
 	planModeJSONExample = `{"steps": [{"id": "step_1", "summary": "Implement auth middleware", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": [], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "skills": ["go-testing"], "domain": "code", "keep_last_n": 5, "protected_tools": ["store_fact", "search_facts"]}}]}`
@@ -217,107 +57,52 @@ Step executors follow MCP-first tool priority: prefer MCP tools over built-in eq
 
 // Continuation mode template content.
 const (
-	continuationModePreamble = `You are a planning agent that creates continuation plans for follow-up requests.
-
-A task was completed successfully, and the user has sent a follow-up message. Create a plan with ONLY new steps to address the follow-up.
-
-## Context
-
-Original request:
-ORIGINAL-REQUEST
-
-Completed plan (step summaries):
-COMPLETED-PLAN-SUMMARY
-
-## Instructions
-
-1. Analyze the new user message to understand what additional work is needed.
-2. Create ONLY new steps that address the follow-up request.
-3. New step IDs MUST be prefixed with ` + "`continuation_`" + ` (e.g., "continuation_1", "continuation_2").
-4. New steps MUST reference the terminal steps of the existing plan in their DependsOn field.
-5. Keep the same granularity and style as the original plan.
-6. Focus ONLY on new steps that address the follow-up request.
-
-## Terminal Steps
-
-The following steps are the terminal (final) steps of the completed plan. New steps should depend on these:
-TERMINAL-STEPS
-`
-
-	// continuationSingleStepPreamble is used for continuations in normal mode — produces exactly 1 step.
-	continuationSingleStepPreamble = `You are a planning agent that creates a single continuation step for a follow-up request.
-
-A task was completed successfully, and the user has sent a follow-up message. Create exactly ONE new step to address the follow-up.
-
-## Context
-
-Original request:
-ORIGINAL-REQUEST
-
-Completed plan (step summaries):
-COMPLETED-PLAN-SUMMARY
-
-## Instructions
-
-1. Analyze the new user message to understand what additional work is needed.
-2. Create exactly ONE step that addresses the follow-up request.
-3. The step ID MUST be prefixed with ` + "`continuation_`" + `.
-4. The step MUST reference the terminal steps of the existing plan in its DependsOn field.
-5. Do NOT decompose — produce one comprehensive step whose What/How/Where/Acceptance Criteria covers the full scope.
-
-## Terminal Steps
-
-The following steps are the terminal (final) steps of the completed plan. The new step should depend on these:
-TERMINAL-STEPS
-
-Limit plans to MAX-STEPS steps maximum.
-`
-
-	continuationModeExtraSections = planModeExtraSections
-	continuationModeTail          = ""
-	continuationModeJSONExample   = `{"steps": [{"id": "continuation_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "skills": ["go-testing"], "domain": "code"}}]}`
+	continuationModeTail        = ""
+	continuationModeJSONExample = `{"steps": [{"id": "continuation_1", "summary": "Short 5-7 word label", "description": "What: ...\nHow: ...\nWhere: ...\nAcceptance Criteria:\n- ...", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "coder", "allowed_tools": ["read_file", "write_file", "edit_file", "list_directory", "ripgrep", "glob", "bash_exec", "semantic_search", "search_graph"], "skills": ["go-testing"], "domain": "code"}}]}`
 
 	// continuationSingleStepJSONExample provides the JSON format for single-step continuations.
 	continuationSingleStepJSONExample = `{"steps": [{"id": "continuation_1", "summary": "5-7 word continuation label", "description": "## Continuation Title\n### What:\nFull description of what needs to be done.\n### How:\nConcrete approach building on completed work.\n### Where:\nSpecific files, functions, modules.\n### Acceptance Criteria:\n- Verifiable condition 1\n- Verifiable condition 2", "depends_on": ["TERMINAL-STEP-IDS"], "parallelizable": true, "estimated_tools": ["tool1"], "profile": {"role": "executor", "domain": "code"}}]}`
 )
 
-// Pre-built mode configurations used by the unified prompt builder.
+// Pre-built mode configurations used by the unified prompt builder. The
+// preamble/tot/guidance/extraSections fields read from embedded prompt vars
+// in core/prompts so the body is editable as plain markdown.
 var (
 	multiStepMode = planPromptMode{
-		preamble:      planModePreamble,
-		tot:           multiStepToT,
-		guidance:      multiStepGuidance,
-		extraSections: planModeExtraSections,
+		preamble:      prompts.PlannerPlanPreamble,
+		tot:           prompts.PlannerMultiStepToT,
+		guidance:      prompts.PlannerMultiStepGuidance,
+		extraSections: prompts.PlannerExtraSections,
 		tail:          planModeTail,
 		jsonExample:   planModeJSONExample,
 		maxSteps:      "10",
 	}
 
 	singleStepMode = planPromptMode{
-		preamble:      singleStepPreamble,
-		tot:           singleStepToT,
-		guidance:      singleStepGuidance,
-		extraSections: planModeExtraSections,
+		preamble:      prompts.PlannerSingleStepPreamble,
+		tot:           prompts.PlannerSingleStepToT,
+		guidance:      prompts.PlannerSingleStepGuidance,
+		extraSections: prompts.PlannerExtraSections,
 		tail:          planModeTail,
 		jsonExample:   singleStepJSONExample,
 		maxSteps:      "1",
 	}
 
 	continuationMultiMode = planPromptMode{
-		preamble:      continuationModePreamble,
-		tot:           multiStepToT,
-		guidance:      multiStepGuidance,
-		extraSections: continuationModeExtraSections,
+		preamble:      prompts.PlannerContinuationPreamble,
+		tot:           prompts.PlannerMultiStepToT,
+		guidance:      prompts.PlannerMultiStepGuidance,
+		extraSections: prompts.PlannerExtraSections,
 		tail:          continuationModeTail,
 		jsonExample:   continuationModeJSONExample,
 		maxSteps:      "10",
 	}
 
 	continuationSingleMode = planPromptMode{
-		preamble:      continuationSingleStepPreamble,
-		tot:           singleStepToT,
-		guidance:      singleStepGuidance,
-		extraSections: continuationModeExtraSections,
+		preamble:      prompts.PlannerContinuationSingleStep,
+		tot:           prompts.PlannerSingleStepToT,
+		guidance:      prompts.PlannerSingleStepGuidance,
+		extraSections: prompts.PlannerExtraSections,
 		tail:          continuationModeTail,
 		jsonExample:   continuationSingleStepJSONExample,
 		maxSteps:      "1",
@@ -426,11 +211,16 @@ func (p *Planner) SetMaxExploreSteps(n int) {
 }
 
 // getFamily resolves the model family, defaulting to "default" if not configured.
+// This intentionally resolves using the active planner model (p.model) so that
+// model-family-specific prompt overlays (planner_anthropic.md, planner_openai_flagship.md,
+// etc.) are applied correctly. The previous behavior of always calling Resolve(ctx, "")
+// was a bug: it ignored SetModel and always fell back to the registry's default family,
+// meaning model-specific prompt tuning was never activated for the planner.
 func (p *Planner) getFamily(ctx context.Context) string {
 	if p.modelRegistry == nil {
 		return "default"
 	}
-	meta, _ := p.modelRegistry.Resolve(ctx, "")
+	meta, _ := p.modelRegistry.Resolve(ctx, p.model)
 	if meta.Family == "" {
 		return "default"
 	}
@@ -641,11 +431,11 @@ func (p *Planner) planWithExploration(
 
 // fsToolNames is the set of well-known file-system tool names included for the planner.
 var fsToolNames = map[string]bool{
-	"list_directory":  true,
-	"glob":            true,
-	"ripgrep":         true,
-	"read_file":       true,
-	"semantic_search": true,
+	ToolListDirectory:  true,
+	ToolGlob:           true,
+	ToolRipgrep:        true,
+	ToolReadFile:       true,
+	ToolSemanticSearch: true,
 }
 
 // getPlannerTools assembles the two-tier tool set for the planner.
@@ -794,8 +584,8 @@ func (p *Planner) buildSystemPromptFromMode(
 		"MODE-PREAMBLE":       mode.preamble,
 		"MODE-TOT":            mode.tot,
 		"MODE-GUIDANCE":       mode.guidance,
-		"DOMAIN-ASSIGNMENT":   planModeDomainAssignment,
-		"AGENT-PROFILES":      planModeAgentProfiles,
+		"DOMAIN-ASSIGNMENT":   prompts.PlannerDomainAssignment,
+		"AGENT-PROFILES":      prompts.PlannerAgentProfiles,
 		"MODE-EXTRA-SECTIONS": mode.extraSections,
 		"MODE-TAIL":           resolvedTail,
 		"MODE-JSON-EXAMPLE":   mode.jsonExample,
@@ -1172,7 +962,13 @@ func summarizeExplorationSteps(steps []agent.Step) string {
 
 	result := b.String()
 	if len(result) > maxExplorationContextLen {
-		result = result[:maxExplorationContextLen]
+		// Truncate to maxExplorationContextLen bytes, but avoid splitting
+		// a multi-byte UTF-8 character.
+		truncIdx := maxExplorationContextLen
+		for truncIdx > 0 && result[truncIdx]&0xC0 == 0x80 {
+			truncIdx--
+		}
+		result = result[:truncIdx]
 		// Trim to last complete line to avoid broken output.
 		if idx := strings.LastIndex(result, "\n"); idx > 0 {
 			result = result[:idx+1]
@@ -1180,5 +976,3 @@ func summarizeExplorationSteps(steps []agent.Step) string {
 	}
 	return result
 }
-
-

@@ -1,3 +1,4 @@
-// Package agent provides core agent abstractions including workspace management,
-// file change tracking, and step-based execution for LLM-driven agents.
+// Package agent provides the ReAct executor loop, tool result caching,
+// finish-tool handling, sub-agent parallelism, and context propagation
+// for LLM-driven agent sessions.
 package agent

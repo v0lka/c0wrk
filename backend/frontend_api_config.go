@@ -140,10 +140,10 @@ func (f *FrontendAPI) UpdateLLMSettings(settings LLMSettingsRequest) error {
 
 	// Rebuild judge and LLM router via the backend builder so new sessions
 	// use the updated provider immediately.
-	if f.app != nil {
+	if b := f.builder(); b != nil {
 		bcfg := ToBuilderConfig(f.config)
-		f.app.Builder().RebuildJudge(bcfg)
-		if err := f.app.Builder().RebuildRouter(bcfg); err != nil {
+		b.RebuildJudge(bcfg)
+		if err := b.RebuildRouter(bcfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after settings update", "error", err)
 		}
 	}
@@ -171,8 +171,8 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 	}
 
 	// Rebuild web search tool via the backend builder.
-	if f.app != nil {
-		f.app.Builder().UpdateSearchTool(ToBuilderConfig(f.config))
+	if b := f.builder(); b != nil {
+		b.UpdateSearchTool(ToBuilderConfig(f.config))
 	}
 
 	return nil
@@ -220,9 +220,9 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	}
 
 	// Rebuild proxy transport and propagate to all subsystems.
-	if f.app != nil {
+	if b := f.builder(); b != nil {
 		bcfg := ToBuilderConfig(f.config)
-		if err := f.app.Builder().RebuildProxy(context.Background(), bcfg); err != nil {
+		if err := b.RebuildProxy(context.Background(), bcfg); err != nil {
 			f.log().Warn("failed to rebuild proxy after settings update", "error", err)
 			return fmt.Errorf("proxy rebuild failed: %w", err)
 		}
@@ -284,8 +284,8 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	f.config.Security.ToolPolicies = newPolicies
 
 	// Apply policies to the shared tool registry via the backend builder.
-	if f.app != nil {
-		f.app.Builder().UpdateSecurityPolicies(ToBuilderConfig(f.config))
+	if b := f.builder(); b != nil {
+		b.UpdateSecurityPolicies(ToBuilderConfig(f.config))
 	}
 
 	if err := f.persistConfig(); err != nil {
@@ -336,15 +336,15 @@ func (f *FrontendAPI) ListProviderModels(provider string) ([]string, error) {
 		f.configMu.RUnlock()
 		return nil, errors.New("config not initialized")
 	}
-	if f.app == nil {
+	b := f.builder()
+	if b == nil {
 		f.configMu.RUnlock()
 		return nil, errors.New("application not initialized")
 	}
 	cfg := ToBuilderConfig(f.config)
-	builder := f.app.Builder()
 	f.configMu.RUnlock()
 
-	return builder.ListProviderModels(context.Background(), provider, cfg)
+	return b.ListProviderModels(context.Background(), provider, cfg)
 }
 
 // persistConfig saves the current in-memory config to disk.

@@ -20,11 +20,11 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
         mermaid.initialize({ startOnLoad: false, theme: 'dark' })
         const { svg } = await mermaid.render(idRef.current, code.trim())
         if (cancelled) return
-        const temp = document.createElement('div')
-        temp.innerHTML = svg
-        const svgEl = temp.firstElementChild
+        const parser = new DOMParser()
+        const doc = parser.parseFromString(svg, 'image/svg+xml')
+        const svgEl = doc.documentElement
         containerRef.current.replaceChildren()
-        if (svgEl) containerRef.current.appendChild(svgEl)
+        if (svgEl && svgEl.tagName === 'svg') containerRef.current.appendChild(svgEl)
         setError(false)
       } catch {
         if (!cancelled) {

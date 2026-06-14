@@ -67,7 +67,7 @@ type SearchSettingsRequest struct {
 // ProxySettingsResponse holds proxy settings for the frontend.
 type ProxySettingsResponse struct {
 	Enabled    bool     `json:"enabled"`
-	URL        string   `json:"url"`          // password masked in response
+	URL        string   `json:"url"` // password masked in response
 	BypassList []string `json:"bypass_list"`
 	TLSCertDir string   `json:"tls_cert_dir"`
 }

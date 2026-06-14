@@ -491,9 +491,9 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 
 	const numOps = 100
 	var wg sync.WaitGroup
-	wg.Add(numOps * 3)
 
 	// Concurrent ListSessions
+	wg.Add(numOps)
 	for i := 0; i < numOps; i++ {
 		go func() {
 			defer wg.Done()
@@ -504,6 +504,7 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 	// Concurrent GetSession
 	sessions := manager.ListSessions()
 	if len(sessions) > 0 {
+		wg.Add(numOps)
 		for i := 0; i < numOps; i++ {
 			go func(idx int) {
 				defer wg.Done()
@@ -511,12 +512,11 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 				_, _ = manager.GetSession(sessionID)
 			}(i)
 		}
-	} else {
-		wg.Add(-numOps)
 	}
 
 	// Concurrent RenameSession
 	if len(sessions) > 0 {
+		wg.Add(numOps)
 		for i := 0; i < numOps; i++ {
 			go func(idx int) {
 				defer wg.Done()
@@ -524,8 +524,6 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 				_ = manager.RenameSession(sessionID, "NewName")
 			}(i)
 		}
-	} else {
-		wg.Add(-numOps)
 	}
 
 	wg.Wait()
@@ -623,6 +621,8 @@ func TestParseSlogLevel(t *testing.T) {
 func TestManager_SetLogLevel(t *testing.T) {
 	manager, _, _ := testManager(t)
 
+	// Default changed from DEBUG to INFO in 2026-06-05 review (W-27): DEBUG
+	// Default logLevel is DEBUG for maximum diagnostic visibility.
 	if manager.logLevel != "DEBUG" {
 		t.Errorf("default logLevel should be DEBUG, got %q", manager.logLevel)
 	}

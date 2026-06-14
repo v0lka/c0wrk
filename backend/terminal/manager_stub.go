@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 )
@@ -11,7 +12,7 @@ import (
 type Manager struct{}
 
 // NewManager creates a no-op manager on Windows.
-func NewManager(_ *slog.Logger, _ func(sessionID string, data []byte)) *Manager {
+func NewManager(_ context.Context, _ *slog.Logger, _ func(sessionID string, data []byte)) *Manager {
 	return &Manager{}
 }
 

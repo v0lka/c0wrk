@@ -18,8 +18,8 @@ describe('isTaskCompleteData', () => {
         expect(isTaskCompleteData({ output: 'ok', attempt_count: 1, routing_decision: {} })).toBe(true)
     })
 
-    it('accepts data with undefined output (field present but undefined)', () => {
-        expect(isTaskCompleteData({ output: undefined })).toBe(true)
+    it('rejects data with undefined output (field present but undefined)', () => {
+        expect(isTaskCompleteData({ output: undefined })).toBe(false)
     })
 
     it('rejects output with wrong type (number)', () => {

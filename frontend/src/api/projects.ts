@@ -10,9 +10,9 @@ export async function createProject(name: string, externalPath?: string): Promis
     const app = getApp()
     const result = await app.CreateProject(name, externalPath ?? '')
     if (!isProjectInfo(result)) {
-      logger.warn('createProject: unexpected response shape', result)
+      throw new Error('createProject: backend returned invalid data')
     }
-    return result as ProjectInfo
+    return result
   } catch (err) {
     logger.error('Failed to create project:', err)
     throw err
@@ -44,9 +44,10 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     const app = getApp()
     const result = await app.ListProjects()
     if (!isArrayOf(result, isProjectInfo)) {
-      logger.warn('listProjects: unexpected response shape', result)
+      logger.error('listProjects: unexpected response shape, returning []', result)
+      return []
     }
-    return result as ProjectInfo[]
+    return result
   } catch (err) {
     logger.error('Failed to list projects:', err)
     throw err
@@ -77,7 +78,7 @@ function pickProjectStateGetRPC(app: Record<string, (...args: unknown[]) => Prom
 
 export async function saveProjectSwitchState(payload: ProjectSwitchStatePayload): Promise<void> {
   try {
-    const app = getApp() as Record<string, (...args: unknown[]) => Promise<unknown>>
+    const app = getApp()
     const rpc = pickProjectStateSaveRPC(app)
     if (typeof rpc !== 'function') {
       logger.debug('saveProjectSwitchState: backend method unavailable, skipping')
@@ -92,7 +93,7 @@ export async function saveProjectSwitchState(payload: ProjectSwitchStatePayload)
 
 export async function getProjectSwitchState(projectId: string): Promise<ProjectSwitchState | null> {
   try {
-    const app = getApp() as Record<string, (...args: unknown[]) => Promise<unknown>>
+    const app = getApp()
     const rpc = pickProjectStateGetRPC(app)
     if (typeof rpc !== 'function') {
       logger.debug('getProjectSwitchState: backend method unavailable, skipping')
@@ -128,7 +129,11 @@ export async function getProjectSwitchState(projectId: string): Promise<ProjectS
 export async function pickDirectory(): Promise<string> {
   try {
     const app = getApp()
-    return await app.PickDirectory() as string
+    const result = await app.PickDirectory()
+    if (typeof result !== 'string') {
+      throw new Error('pickDirectory: backend returned non-string data')
+    }
+    return result
   } catch (err) {
     logger.error('Failed to pick directory:', err)
     throw err

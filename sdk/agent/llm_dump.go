@@ -35,7 +35,7 @@ func NewDumpCaller(inner LLMCaller, w io.Writer, logger *slog.Logger) LLMCaller 
 		return inner
 	}
 	if logger == nil {
-		logger = slog.Default()
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &dumpCaller{
 		inner:  inner,

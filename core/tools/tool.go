@@ -89,3 +89,8 @@ type AskUserAnswer = sdktools.AskUserAnswer
 // AskUserFunc is called when the ask_user tool needs to display a question to the user.
 // If nil, ask_user is not available (CLI mode).
 type AskUserFunc = sdktools.AskUserFunc
+
+// AutoInjectedParamProject is the parameter name auto-injected by param injectors
+// (e.g. project path). Schema sanitizers strip this parameter from tool schemas so
+// the LLM never sees it, while the injector adds it at execution time.
+const AutoInjectedParamProject = "project"

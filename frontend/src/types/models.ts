@@ -1,12 +1,12 @@
 // Backend model types — mirrors Go structs exposed via Wails
 
 export interface ProjectInfo {
-  id: string
-  name: string
-  workspace_path: string
-  is_external: boolean
-  created_at: string
-  last_active_at: string
+  readonly id: string
+  readonly name: string
+  readonly workspace_path: string
+  readonly is_external: boolean
+  readonly created_at: string
+  readonly last_active_at: string
 }
 
 export interface ProjectSwitchState {
@@ -25,36 +25,36 @@ export interface ProjectSwitchStatePayload {
 }
 
 export interface SessionInfo {
-  id: string
-  project_id: string
-  name: string
-  created_at: string
-  last_active_at: string
-  archived: boolean
-  active: boolean
-  total_input_tokens: number
-  total_output_tokens: number
-  model: string
-  family: string
+  readonly id: string
+  readonly project_id: string
+  readonly name: string
+  readonly created_at: string
+  readonly last_active_at: string
+  readonly archived: boolean
+  readonly active: boolean
+  readonly total_input_tokens: number
+  readonly total_output_tokens: number
+  readonly model: string
+  readonly family: string
 }
 
 export interface ChatMessage {
-  id: number
-  session_id: string
-  role: string
-  content: string
-  metadata: number[] | string
-  created_at: string
+  readonly id: number
+  readonly session_id: string
+  readonly role: string
+  readonly content: string
+  readonly metadata: number[]
+  readonly created_at: string
 }
 
 export interface FileEntry {
-  name: string
-  path: string
-  is_dir: boolean
-  icon?: string
-  icon_color?: string
-  hidden?: boolean
-  gitignored?: boolean
+  readonly name: string
+  readonly path: string
+  readonly is_dir: boolean
+  readonly icon?: string
+  readonly icon_color?: string
+  readonly hidden?: boolean
+  readonly gitignored?: boolean
 }
 
 export interface GitStatusEntry {
@@ -67,7 +67,7 @@ export type SearchMode = 'hybrid' | 'vector' | 'lexical'
 export type IndexPhase = 'both' | 'embedding' | 'lexical'
 
 export interface VectorIndexStatus {
-  state: 'idle' | 'indexing' | 'ready' | 'reindexing'
+  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable'
   progress: number
   files_indexed: number
   total_files: number

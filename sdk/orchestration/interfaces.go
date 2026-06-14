@@ -87,4 +87,5 @@ type Blackboard interface {
 	// Fact memory for inter-step communication
 	StoreFact(fact Fact)
 	SearchFacts(keywords []string) []Fact
+	GetFacts() []Fact
 }

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -71,28 +70,24 @@ func (s *SessionLogger) Logger() *slog.Logger {
 	return s.logger
 }
 
-// Close flushes and closes the log file.
+// Close flushes and closes the log file. Safe to call multiple times.
 func (s *SessionLogger) Close() error {
 	if s.file != nil {
-		return s.file.Close()
+		f := s.file
+		s.file = nil
+		return f.Close()
 	}
 	return nil
 }
 
 // parseLevel converts a string level to slog.Level.
-// It accepts "DEBUG", "INFO", "WARN", "ERROR" (case-insensitive).
+// Delegates to slog.Level.UnmarshalText which accepts "DEBUG", "INFO",
+// "WARN", "ERROR" (case-insensitive) and numeric levels.
 // Returns an error if the level is unrecognized.
 func parseLevel(level string) (slog.Level, error) {
-	switch strings.ToUpper(level) {
-	case "DEBUG":
-		return slog.LevelDebug, nil
-	case "INFO":
-		return slog.LevelInfo, nil
-	case "WARN":
-		return slog.LevelWarn, nil
-	case "ERROR":
-		return slog.LevelError, nil
-	default:
+	var l slog.Level
+	if err := l.UnmarshalText([]byte(level)); err != nil {
 		return slog.LevelInfo, fmt.Errorf("unrecognized log level: %s", level)
 	}
+	return l, nil
 }

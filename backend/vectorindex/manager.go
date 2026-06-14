@@ -2,6 +2,7 @@ package vectorindex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -49,10 +50,22 @@ type Manager struct {
 
 	logger *slog.Logger
 
+	// Index status tracking for the frontend GetVectorIndexStatus API.
+	statusMu     sync.RWMutex
+	currentState IndexState
+	currentPhase IndexPhase
+	filesIndexed int
+	totalFiles   int
+	currentFile  string
+	branch       string
+
 	// Ignore patterns for file filtering.
 	ignoreDirs       map[string]bool
 	ignoreExtensions map[string]bool
 	ignoreFileNames  map[string]bool
+
+	// WaitGroup for tracking in-flight reindex goroutines (vs Shutdown).
+	reindexWG sync.WaitGroup
 }
 
 // NewManager creates embedder and service from flattened config.
@@ -135,6 +148,12 @@ func (m *Manager) Service() *Service {
 	return m.service
 }
 
+// Searcher returns a narrow interface suitable for external consumers that only
+// need search capabilities without access to Service internals (S-24).
+func (m *Manager) Searcher() VectorSearcher {
+	return m.service
+}
+
 // DeleteProjectData removes the on-disk vector data for a project.
 func (m *Manager) DeleteProjectData(projectID string) error {
 	return m.service.DeleteProjectData(projectID)
@@ -192,12 +211,15 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 		return results, nil
 	}
 
-	// Create indexer.
+	// Create indexer with a wrapped progress callback that also updates
+	// the Manager's internal status for GetVectorIndexStatus.
+	userOnProgress := cbs.OnProgress
+	m.setStatus(map[string]any{"branch": branch})
 	indexer := NewIndexer(IndexerConfig{
 		Service:          m.service,
 		ChunkFn:          chunkFn,
 		HashFn:           core.ComputeFileHash,
-		OnProgress:       cbs.OnProgress,
+		OnProgress:       m.wrapProgress(userOnProgress),
 		Logger:           m.logger,
 		IgnoreDirs:       m.ignoreDirs,
 		IgnoreExtensions: m.ignoreExtensions,
@@ -326,6 +348,126 @@ func (m *Manager) stopDebounce() {
 	m.debounceMu.Unlock()
 }
 
+// wrapProgress returns a ProgressCallback that updates the Manager's
+// internal status and then calls the user-provided callback (if not nil).
+func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
+	return func(phase IndexPhase, state IndexState, filesIndexed, totalFiles int, currentFile string) {
+		m.statusMu.Lock()
+		m.currentPhase = phase
+		m.currentState = state
+		m.filesIndexed = filesIndexed
+		m.totalFiles = totalFiles
+		m.currentFile = currentFile
+		m.statusMu.Unlock()
+
+		if userFn != nil {
+			userFn(phase, state, filesIndexed, totalFiles, currentFile)
+		}
+	}
+}
+
+// setStatus updates the Manager's internal index status from a map.
+// Used for initial/reset values.
+func (m *Manager) setStatus(vals map[string]any) {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+
+	if s, ok := vals["state"].(IndexState); ok {
+		m.currentState = s
+	}
+	if p, ok := vals["phase"].(IndexPhase); ok {
+		m.currentPhase = p
+	}
+	if n, ok := vals["filesIndexed"].(int); ok {
+		m.filesIndexed = n
+	}
+	if n, ok := vals["totalFiles"].(int); ok {
+		m.totalFiles = n
+	}
+	if f, ok := vals["currentFile"].(string); ok {
+		m.currentFile = f
+	}
+	if b, ok := vals["branch"].(string); ok {
+		m.branch = b
+	}
+}
+
+// IndexStatus is a snapshot of the current indexing status.
+type IndexStatus struct {
+	State        IndexState
+	Phase        IndexPhase
+	FilesIndexed int
+	TotalFiles   int
+	CurrentFile  string
+	Branch       string
+}
+
+// GetIndexStatus returns the current indexing status for the frontend.
+func (m *Manager) GetIndexStatus() IndexStatus {
+	m.statusMu.RLock()
+	defer m.statusMu.RUnlock()
+	return IndexStatus{
+		State:        m.currentState,
+		Phase:        m.currentPhase,
+		FilesIndexed: m.filesIndexed,
+		TotalFiles:   m.totalFiles,
+		CurrentFile:  m.currentFile,
+		Branch:       m.branch,
+	}
+}
+
+// Reindex triggers a full rebuild of the vector index for the given
+// workspace. The caller is responsible for passing the active workspace
+// path. Returns an error if no indexer is currently configured.
+func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
+	m.mu.RLock()
+	idx := m.indexer
+	m.mu.RUnlock()
+
+	if idx == nil {
+		return errors.New("no indexer configured; open a project first")
+	}
+
+	// Cancel any in-flight indexing.
+	m.mu.Lock()
+	if m.indexCancel != nil {
+		m.indexCancel()
+		m.indexCancel = nil
+	}
+	m.mu.Unlock()
+
+	m.stopDebounce()
+
+	// Reset the collection and run a full index.
+	indexCtx, indexCancel := context.WithCancel(ctx)
+	m.mu.Lock()
+	m.indexCancel = indexCancel
+	m.mu.Unlock()
+
+	m.reindexWG.Add(1)
+	go func() {
+		defer m.reindexWG.Done()
+		col := m.service.GetCollection()
+		var idxErr error
+		if col == nil || col.Count() == 0 {
+			m.logger.Info("empty collection, running full index")
+			idxErr = idx.IndexFull(indexCtx, workspacePath)
+		} else {
+			m.logger.Info("existing collection found, running incremental index")
+			idxErr = idx.IndexIncremental(indexCtx, workspacePath)
+		}
+		if idxErr != nil {
+			if context.Cause(indexCtx) != nil {
+				m.logger.Info("vector indexing cancelled")
+			} else {
+				m.logger.Warn("vector indexing failed", "error", idxErr)
+			}
+		}
+	}()
+
+	return nil
+}
+
 // Shutdown performs orderly cleanup: cancel indexing, stop monitor,
 // close service, close embedder.
 func (m *Manager) Shutdown() {
@@ -354,4 +496,7 @@ func (m *Manager) Shutdown() {
 			m.logger.Error("failed to close embedder", "error", err)
 		}
 	}
+
+	// Wait for in-flight reindex goroutine to finish before closing resources.
+	m.reindexWG.Wait()
 }

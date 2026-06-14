@@ -15,7 +15,7 @@ import { ReflectionBlock } from './ReflectionBlock'
 import { ActionPlaceholder } from './ActionPlaceholder'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { CheckCircle2, Minimize2 } from 'lucide-react'
+import { CheckCircle2, Minimize2, BookOpen } from 'lucide-react'
 
 // --- Inline small components ---
 
@@ -33,6 +33,15 @@ function ContextCompactionBlock({ item }: { item: Extract<DisplayItem, { kind: '
     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
       <Minimize2 className="h-3.5 w-3.5 text-info" />
       <span>Context compacted from {item.beforePercent}% to {item.afterPercent}%</span>
+    </div>
+  )
+}
+
+function MemoryReadBlock({ item }: { item: Extract<DisplayItem, { kind: 'memory_read' }> }) {
+  return (
+    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+      <BookOpen className="h-3.5 w-3.5 text-info" />
+      <span>{item.content}</span>
     </div>
   )
 }
@@ -58,11 +67,14 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   step_finish: StepFinishMarker as ItemRenderer,
   action_placeholder: ActionPlaceholder as ItemRenderer,
   context_compaction: ContextCompactionBlock as ItemRenderer,
+  memory_read: MemoryReadBlock as ItemRenderer,
 }
 
-function CompactErrorFallback() {
+export function CompactErrorFallback() {
   return <div className="text-xs text-destructive p-2">Failed to render message</div>
 }
+
+const compactErrorFallback = <CompactErrorFallback />
 
 function getItemKey(item: DisplayItem): string {
   if ('message' in item) return item.message.id
@@ -76,7 +88,7 @@ export function ChatMessageRenderer({ items }: { items: DisplayItem[] }) {
         const Component = renderers[item.kind]
         if (!Component) return null
         return (
-          <ErrorBoundary key={getItemKey(item)} fallback={<CompactErrorFallback />}>
+          <ErrorBoundary key={getItemKey(item)} fallback={compactErrorFallback}>
             <Component item={item} />
           </ErrorBoundary>
         )

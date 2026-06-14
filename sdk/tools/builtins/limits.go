@@ -40,14 +40,6 @@ func DefaultRipgrepLimits() RipgrepLimits {
 	}
 }
 
-// GlobLimits holds configurable limits for the glob tool.
-type GlobLimits struct {}
-
-// DefaultGlobLimits returns the default limits for glob.
-func DefaultGlobLimits() GlobLimits {
-	return GlobLimits{}
-}
-
 // WebFetchLimits holds configurable limits for the web_fetch tool.
 type WebFetchLimits struct {
 	Timeout time.Duration // timeout for HTTP requests

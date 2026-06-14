@@ -123,3 +123,55 @@ func joinSections(sections []section) string {
 	}
 	return strings.Join(included, "\n\n")
 }
+
+// SystemPromptBuilder wraps Builder for constructing system prompts with
+// cache-break support. It is intended for use by orchestrator SystemPromptFactory
+// implementations to build stable (cacheable) + dynamic prompt parts.
+type SystemPromptBuilder struct {
+	b *Builder
+}
+
+// NewSystemPromptBuilder creates a new SystemPromptBuilder.
+func NewSystemPromptBuilder() *SystemPromptBuilder {
+	return &SystemPromptBuilder{b: NewBuilder()}
+}
+
+// Core adds a section that is always included in the system prompt.
+func (s *SystemPromptBuilder) Core(content string) *SystemPromptBuilder {
+	s.b.Core(content)
+	return s
+}
+
+// Replace registers a placeholder substitution.
+func (s *SystemPromptBuilder) Replace(placeholder, value string) *SystemPromptBuilder {
+	s.b.Replace(placeholder, value)
+	return s
+}
+
+// Dynamic adds a section that appears after the cache-break boundary
+// (i.e., not cached by providers). Must be called after CacheBreak().
+func (s *SystemPromptBuilder) Dynamic(content string) *SystemPromptBuilder {
+	s.b.Core(content)
+	return s
+}
+
+// CacheBreak marks the boundary between stable (cacheable) and dynamic content.
+func (s *SystemPromptBuilder) CacheBreak() *SystemPromptBuilder {
+	s.b.CacheBreak()
+	return s
+}
+
+// Build returns the full system prompt string with CacheBreakMarker between
+// stable and dynamic parts (when CacheBreak was called), enabling downstream
+// splitting via SplitCacheBreak.
+func (s *SystemPromptBuilder) Build() string {
+	return s.b.Build()
+}
+
+// BuildForStep is a convenience method that assembles a system prompt for a
+// plan step. It appends the step description as dynamic content (after the
+// cache break, if one was set).
+func (s *SystemPromptBuilder) BuildForStep(stepDescription string) string {
+	s.b.Core(stepDescription)
+	return s.b.Build()
+}

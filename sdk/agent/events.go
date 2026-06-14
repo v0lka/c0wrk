@@ -4,6 +4,11 @@ import "time"
 
 // AgentEvents defines universal agent lifecycle events.
 // Any agent system (not just c0wrk) can implement this interface.
+//
+// BREAKING CHANGE (v0.x): Finishing(stepNum int, summary string) was added.
+// All implementations of AgentEvents (and orchestration.Events, which embeds it)
+// MUST implement this method or fail to compile. A no-op stub is provided by
+// NoopEvents for struct embedding convenience.
 type AgentEvents interface {
 	StepStart(stepNum int)
 	Thought(stepNum int, content, reasoning string)

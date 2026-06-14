@@ -13,10 +13,10 @@ export interface DerivedStatus {
 }
 
 export function deriveDotStatus(
-  state: 'idle' | 'indexing' | 'ready' | 'reindexing',
+  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable',
   phase: IndexPhase | undefined,
 ): DerivedStatus {
-  if (state === 'idle') {
+  if (state === 'idle' || state === 'unavailable') {
     return { vectorDot: 'idle', lexicalDot: 'idle', bothReady: false }
   }
   if (state === 'ready') {

@@ -8,22 +8,17 @@ export function useFileIcon(filePath: string) {
   const cached = useFileViewerStore((s) => s.fileIcons[filePath])
   const setFileIcon = useFileViewerStore((s) => s.setFileIcon)
 
-  const [result, setResult] = useState<IconEntry | null>(
-    cached ? { icon: cached.icon, icon_color: cached.iconColor } : null,
-  )
+  const [fetched, setFetched] = useState<IconEntry | null>(null)
 
   useEffect(() => {
-    if (cached) {
-      setResult({ icon: cached.icon, icon_color: cached.iconColor })
-      return
-    }
+    if (cached) return
 
     let cancelled = false
     getFileIcon(filePath)
       .then((res) => {
         if (cancelled) return
         setFileIcon(filePath, res.icon, res.icon_color)
-        setResult(res)
+        setFetched(res)
       })
       .catch(() => {
         // ignore
@@ -34,5 +29,8 @@ export function useFileIcon(filePath: string) {
     }
   }, [filePath, cached, setFileIcon])
 
-  return result
+  // Derive synchronously from cache or from async fetch result
+  return cached
+    ? { icon: cached.icon, icon_color: cached.iconColor }
+    : fetched
 }

@@ -23,10 +23,10 @@ export const ListDirBody = React.memo(function ListDirBody({ result, status }: T
 
   return (
     <div className="mt-2 border-l-2 border-border bg-muted/30 rounded p-3 min-w-0 space-y-0.5">
-      {visible.map((entry, i) => {
+      {visible.map((entry) => {
         const isDir = entry.endsWith('/')
         return (
-          <div key={i} className="text-xs truncate">
+          <div key={entry} className="text-xs truncate">
             {isDir ? (
               <span className="text-muted-foreground font-mono">{entry}</span>
             ) : (
