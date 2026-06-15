@@ -45,7 +45,7 @@ func (s *spyEmitter) ExecutorDiagnostic(n int, e string, d map[string]any) {
 	s.record("ExecutorDiagnostic", n, e, d)
 }
 func (s *spyEmitter) Routing(m, d, c string)                     { s.record("Routing", m, d, c) }
-func (s *spyEmitter) PlanGenerated(n int, steps []PlanStepEvent) { s.record("PlanGenerated", n, steps) }
+func (s *spyEmitter) PlanGenerated(n int, steps []orchestration.PlanStepEvent) { s.record("PlanGenerated", n, steps) }
 func (s *spyEmitter) PlanStepStart(id, desc, summary string) {
 	s.record("PlanStepStart", id, desc, summary)
 }
@@ -96,7 +96,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 	dur := 42 * time.Millisecond
 	meta := map[string]any{"k": "v"}
 	details := map[string]any{"d": 1}
-	steps := []PlanStepEvent{{ID: "s1"}}
+	steps := []orchestration.PlanStepEvent{{ID: "s1"}}
 
 	tests := []struct {
 		name   string

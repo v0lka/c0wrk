@@ -233,7 +233,7 @@ func (b *OrchestratorBuilder) Build(
 	logger *slog.Logger,
 	workspacePath string,
 	bbFactory BlackboardFactory,
-	stepLimitFunc StepLimitFunc,
+	stepLimitFunc agent.StepLimitFunc,
 	dumpWriter io.Writer,
 ) (*Orchestrator, error) {
 	// Wait for async initialization to complete before building an orchestrator.
@@ -312,11 +312,11 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// Token counter, budgets, circuit breaker
-	toolResultBudget := ToolResultBudget{
+	toolResultBudget := agent.ToolResultBudget{
 		HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
 		MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
 	}
-	circuitBreaker := CircuitBreakerConfig{
+	circuitBreaker := agent.CircuitBreakerConfig{
 		RepeatNudgeThreshold:         cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,
 		RepeatAbortThreshold:         cfg.Executor.CircuitBreaker.RepeatAbortThreshold,
 		TruncationAbortThreshold:     cfg.Executor.CircuitBreaker.TruncationAbortThreshold,

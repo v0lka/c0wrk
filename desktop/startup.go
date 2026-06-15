@@ -20,12 +20,14 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/backend/terminal"
 	"github.com/v0lka/c0wrk/backend/vectorindex"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // pendingConfirmData holds the state for a pending tool confirmation,
 // including metadata needed for on-demand judge evaluation.
 type pendingConfirmData struct {
-	ch          chan backend.ConfirmationResponse
+	ch          chan tools.ConfirmationResponse
 	taskContext string
 	toolName    string
 	input       json.RawMessage
@@ -192,7 +194,7 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.pendingConfirmations.Range(func(key, value any) bool {
 		if pd, ok := value.(*pendingConfirmData); ok {
 			select {
-			case pd.ch <- backend.ConfirmDenyAndStop:
+			case pd.ch <- tools.ConfirmDenyAndStop:
 			default:
 			}
 		}
@@ -200,9 +202,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 	a.pendingAskUser.Range(func(key, value any) bool {
-		if ch, ok := value.(chan backend.AskUserResponse); ok {
+		if ch, ok := value.(chan tools.AskUserResponse); ok {
 			select {
-			case ch <- backend.AskUserResponse{}:
+			case ch <- tools.AskUserResponse{}:
 			default:
 			}
 		}
@@ -210,9 +212,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 	a.pendingStepLimit.Range(func(key, value any) bool {
-		if ch, ok := value.(chan backend.StepLimitResponse); ok {
+		if ch, ok := value.(chan agent.StepLimitResponse); ok {
 			select {
-			case ch <- backend.StepLimitDeny:
+			case ch <- agent.StepLimitDeny:
 			default:
 			}
 		}

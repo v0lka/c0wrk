@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // TestEventEmitterImplementsInterface verifies EventEmitter satisfies core.Emitter at compile time.
@@ -53,7 +54,7 @@ func TestEventEmitterPlanGenerated(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.PlanGenerated(5, []core.PlanStepEvent{
+	emitter.PlanGenerated(5, []orchestration.PlanStepEvent{
 		{Description: "Step 1", Status: "pending"},
 	})
 
@@ -275,7 +276,7 @@ func TestEventEmitterReflection(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.Reflection(&core.Reflection{Summary: "Test failed due to missing dependency", Hypotheses: []string{"Missing import"}}, 1, 3)
+	emitter.Reflection(&orchestration.Reflection{Summary: "Test failed due to missing dependency", Hypotheses: []string{"Missing import"}}, 1, 3)
 
 	if received.Type != "reflection" {
 		t.Errorf("expected type 'reflection', got %q", received.Type)
@@ -399,7 +400,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 
 	// Call all methods
 	emitter.Routing("react", "code", "3")
-	emitter.PlanGenerated(5, []core.PlanStepEvent{{Description: "Step 1", Status: "pending"}})
+	emitter.PlanGenerated(5, []orchestration.PlanStepEvent{{Description: "Step 1", Status: "pending"}})
 	emitter.StepStart(1)
 	emitter.Thought(1, "I need to think about this", "")
 	emitter.ToolCall(1, 0, "bash", "ls", "core")
@@ -407,7 +408,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.StepComplete(1, time.Second)
 	emitter.SubAgentLaunch("step_1", "Do something")
 	emitter.SubAgentComplete("step_1", true, time.Second)
-	emitter.Reflection(&core.Reflection{Summary: "Something went wrong", Hypotheses: []string{"Issue found"}}, 1, 3)
+	emitter.Reflection(&orchestration.Reflection{Summary: "Something went wrong", Hypotheses: []string{"Issue found"}}, 1, 3)
 	emitter.Retry(2, 3)
 	emitter.ContextFill(75.5, 75500, 100000, "compact", "step_1")
 
@@ -464,7 +465,7 @@ func TestEventEmitterWithPlanStepID(t *testing.T) {
 	}
 
 	// PlanGenerated emits map[string]any so plan_step_id should be injected
-	scopedEmitter.PlanGenerated(2, []core.PlanStepEvent{
+	scopedEmitter.PlanGenerated(2, []orchestration.PlanStepEvent{
 		{Description: "Do stuff", Status: "pending"},
 	})
 

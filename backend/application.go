@@ -14,6 +14,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/tools/mcp"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // ApplicationConfig holds all parameters needed to construct an Application.
@@ -30,10 +32,10 @@ type ApplicationConfig struct {
 	TaskStore    session.TaskStore
 
 	// UI callbacks provided by the desktop adapter.
-	UIEmitFunc    func(session.Event) // Wails event emission
-	AskUserFunc   AskUserFunc         // ask_user tool callback
-	ConfirmFunc   ConfirmFunc         // tool confirmation callback
-	StepLimitFunc StepLimitFunc       // step limit callback
+	UIEmitFunc    func(session.Event)     // Wails event emission
+	AskUserFunc   tools.AskUserFunc       // ask_user tool callback
+	ConfirmFunc   tools.ConfirmFunc       // tool confirmation callback
+	StepLimitFunc agent.StepLimitFunc     // step limit callback
 
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     tools.VectorSearchFunc
@@ -47,11 +49,11 @@ type Application struct {
 	manager   *session.Manager
 	persister *session.EventPersister
 	titleGen  *session.TitleGenerator
-	envInfo   *EnvInfo
+	envInfo   *tools.EnvInfo
 	logger    *slog.Logger
 
 	// stepLimitFunc is captured for the orchestrator factory closure.
-	stepLimitFunc StepLimitFunc
+	stepLimitFunc agent.StepLimitFunc
 }
 
 func (app *Application) log() *slog.Logger {
@@ -71,7 +73,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// Collect environment info once for all sessions.
-	envInfo := CollectEnvInfo()
+	envInfo := tools.CollectEnvInfo()
 	app.envInfo = envInfo
 
 	// 1. Event persister (SQLite persistence, separate from UI emission).
@@ -154,7 +156,7 @@ func (app *Application) Builder() *core.OrchestratorBuilder {
 }
 
 // EnvInfo returns the collected environment info.
-func (app *Application) EnvInfo() *EnvInfo {
+func (app *Application) EnvInfo() *tools.EnvInfo {
 	return app.envInfo
 }
 
@@ -165,24 +167,24 @@ func (app *Application) TitleGenerator() *session.TitleGenerator {
 
 // EvaluateJudge performs an on-demand judge evaluation for a pending tool confirmation.
 // Returns the verdict, reasoning (prefixed with "SAFE: " when allowed), and any error.
-func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict JudgeVerdict, reasoning string, err error) {
+func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict tools.JudgeVerdict, reasoning string, err error) {
 	if err := app.builder.WaitReady(ctx); err != nil {
-		return VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
+		return tools.VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
 	}
 	registry := app.builder.ToolRegistry()
 	if registry == nil {
-		return VerdictConfirm, "", ErrJudgeNotAvailable
+		return tools.VerdictConfirm, "", ErrJudgeNotAvailable
 	}
 	judge := registry.GetJudge()
 	if judge == nil {
-		return VerdictConfirm, "", ErrJudgeNotAvailable
+		return tools.VerdictConfirm, "", ErrJudgeNotAvailable
 	}
 	verdict, reasoning, err = judge.Judge(ctx, toolName, input, taskContext)
 	if err != nil {
 		return verdict, reasoning, err
 	}
 	// Prefix reasoning for safe verdicts so the UI can display contextual info.
-	if verdict == VerdictAllow {
+	if verdict == tools.VerdictAllow {
 		reasoning = "SAFE: " + reasoning
 	}
 	return verdict, reasoning, nil
@@ -190,22 +192,22 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 
 // GetMCPStatus returns the status of all MCP servers.
 // If the gateway failed to start, returns a placeholder entry surfacing the error.
-func (app *Application) GetMCPStatus() []MCPServerStatus {
+func (app *Application) GetMCPStatus() []mcp.ServerStatus {
 	gw := app.builder.MCPGateway()
 	if gw == nil {
 		if errMsg := app.builder.MCPGatewayError(); errMsg != "" {
-			return []MCPServerStatus{{
+			return []mcp.ServerStatus{{
 				Name:  "_gateway",
 				Error: errMsg,
 			}}
 		}
-		return []MCPServerStatus{}
+		return []mcp.ServerStatus{}
 	}
 	return gw.Status()
 }
 
 // ListTools returns descriptors for all registered tools.
-func (app *Application) ListTools() []ToolDescriptor {
+func (app *Application) ListTools() []tools.ToolDescriptor {
 	return app.builder.ToolRegistry().List()
 }
 

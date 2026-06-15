@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
@@ -22,8 +24,8 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 	}
 
 	// 2. PersistPlan
-	plan := &core.Plan{
-		Steps: []core.PlanStep{
+	plan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
 			{ID: "step_1", Description: "write code"},
 			{ID: "step_2", Description: "run tests", DependsOn: []string{"step_1"}},
 		},
@@ -42,13 +44,13 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 	}
 
 	// 4. PersistStepResult
-	steps := []core.Step{{Thought: "thinking about code"}}
+	steps := []agent.Step{{Thought: "thinking about code"}}
 	if err := adapter.PersistStepResult(taskID, "step_1", "wrote code", "full output of step 1", "", steps); err != nil {
 		t.Fatalf("PersistStepResult failed: %v", err)
 	}
 
 	// 5. PersistReflection
-	reflection := core.Reflection{
+	reflection := orchestration.Reflection{
 		Summary:         "first attempt analysis",
 		SuggestedAction: "retry",
 		Timestamp:       time.Now().Truncate(time.Second),

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/core/tools"
 )
 
@@ -279,10 +280,10 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		adapter = NewTaskStoreAdapter(ts)
 		sessionID := id // capture for closure
 		emitFunc := m.emitFunc
-		bbFactory = func(taskID string) core.Blackboard {
+		bbFactory = func(taskID string) orchestration.Blackboard {
 			var pbb *PersistentBlackboard
 			if maxSumLen > 0 {
-				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger, orchestration.WithMaxSummaryLen(maxSumLen))
 			} else {
 				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 			}
@@ -325,7 +326,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		orchestrator.SetTaskStore(adapter)
 		emitFn := m.emitFunc
 		capturedSessionID := id
-		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...core.MapBlackboardOption) (core.PersistableBlackboard, error) {
+		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (core.PersistableBlackboard, error) {
 			pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
 			if pbb != nil {
 				pbb.SetOnChanged(func(changeType string) {
@@ -461,10 +462,10 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		adapter = NewTaskStoreAdapter(ts)
 		sessionID := id // capture for closure
 		emitFunc := m.emitFunc
-		bbFactory = func(taskID string) core.Blackboard {
+		bbFactory = func(taskID string) orchestration.Blackboard {
 			var pbb *PersistentBlackboard
 			if maxSumLen > 0 {
-				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger, core.WithMaxSummaryLen(maxSumLen))
+				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger, orchestration.WithMaxSummaryLen(maxSumLen))
 			} else {
 				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 			}
@@ -508,7 +509,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		orchestrator.SetTaskStore(adapter)
 		emitFn := m.emitFunc
 		capturedSessionID := id
-		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...core.MapBlackboardOption) (core.PersistableBlackboard, error) {
+		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (core.PersistableBlackboard, error) {
 			pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
 			if pbb != nil {
 				pbb.SetOnChanged(func(changeType string) {

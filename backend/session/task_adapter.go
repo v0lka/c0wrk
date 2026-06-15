@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // TaskStoreAdapter adapts a TaskStore to the core.TaskPersistence interface.
@@ -44,7 +46,7 @@ func (a *TaskStoreAdapter) PersistNewTask(taskID, sessionID, originalRequest str
 }
 
 // PersistPlan JSON-marshals the plan and updates the task record.
-func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *core.Plan) error {
+func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *orchestration.Plan) error {
 	data, err := json.Marshal(plan)
 	if err != nil {
 		return fmt.Errorf("marshal plan: %w", err)
@@ -62,7 +64,7 @@ func (a *TaskStoreAdapter) PersistRouting(taskID string, routing *core.RoutingDe
 }
 
 // PersistStepResult creates a TaskStepRecord with JSON-marshaled steps.
-func (a *TaskStoreAdapter) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []core.Step) error {
+func (a *TaskStoreAdapter) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
 	stepsData, err := json.Marshal(steps)
 	if err != nil {
 		return fmt.Errorf("marshal steps: %w", err)
@@ -79,7 +81,7 @@ func (a *TaskStoreAdapter) PersistStepResult(taskID, stepID, summary, fullOutput
 }
 
 // PersistReflection JSON-marshals the reflection and appends it to the task record.
-func (a *TaskStoreAdapter) PersistReflection(taskID string, r core.Reflection) error {
+func (a *TaskStoreAdapter) PersistReflection(taskID string, r orchestration.Reflection) error {
 	data, err := json.Marshal(r)
 	if err != nil {
 		return fmt.Errorf("marshal reflection: %w", err)
@@ -103,7 +105,7 @@ func (a *TaskStoreAdapter) ReactivateTask(taskID string) error {
 }
 
 // PersistFacts JSON-marshals facts and stores them for a task.
-func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []core.Fact) error {
+func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []orchestration.Fact) error {
 	data, err := json.Marshal(facts)
 	if err != nil {
 		return fmt.Errorf("marshal facts: %w", err)
@@ -142,7 +144,7 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 
 	// Unmarshal plan
 	if len(rec.Plan) > 0 && string(rec.Plan) != "{}" {
-		var plan core.Plan
+		var plan orchestration.Plan
 		if err := json.Unmarshal(rec.Plan, &plan); err != nil {
 			return nil, fmt.Errorf("unmarshal plan: %w", err)
 		}
@@ -162,14 +164,14 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		return nil, fmt.Errorf("load task steps: %w", err)
 	}
 
-	state.StepResults = make(map[string]core.StepResult, len(stepRecords))
+	state.StepResults = make(map[string]orchestration.StepResult, len(stepRecords))
 	for _, sr := range stepRecords {
 		var errVal error
 		if sr.ErrorText != "" {
 			errVal = errors.New(sr.ErrorText)
 		}
 
-		result := core.StepResult{
+		result := orchestration.StepResult{
 			StepID:     sr.StepID,
 			Summary:    sr.Summary,
 			FullOutput: sr.FullOutput,

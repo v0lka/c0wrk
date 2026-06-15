@@ -1,8 +1,10 @@
 # Contract: Core <-> SDK
 
+> **Status**: Boundary rule superseded by [ADR-008](../decisions/008-backend-sdk-direct-import.md). The interface tables below remain valid — `core/`, `backend/`, and `desktop/` all consume these SDK types directly (no aliases).
+
 ## Boundary Rule
 
-Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk packages directly. Backend accesses sdk types through type aliases defined in `core/types.go`.
+`core/`, `backend/`, and `desktop/` all import `sdk/` packages directly. No convenience re-export layers exist. See ADR-008.
 
 ## Interfaces
 
@@ -16,8 +18,8 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `AgentEvents`          | sdk/agent | core/types (embedded in Emitter) | Lifecycle event hooks                 |
 | `ContextManager`       | sdk/agent | core/types (extended)            | Context window management             |
 | `StepLimitFunc`        | sdk/agent | core/orchestrator config         | Step limit / circuit breaker callback |
-| `Step`                 | sdk/agent | core/types (alias)               | Single ReAct iteration (incl. IsUntrusted flag) |
-| `ExecutorResult`       | sdk/agent | core/types (alias)               | Executor output                       |
+| `Step`                 | sdk/agent | core/types (direct)              | Single ReAct iteration (incl. IsUntrusted flag) |
+| `ExecutorResult`       | sdk/agent | core/types (direct)              | Executor output                       |
 | `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds            |
 | `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation (Stage 2)     |
 | `ToolResultCache`      | sdk/agent | core/orchestrator, core/builder   | Full result cache keyed by SHA256    |
@@ -32,12 +34,12 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `Planner`          | sdk/orchestration | core (adapted via plannerSDKAdapter)          | Plan generation interface  |
 | `Reflector`        | sdk/orchestration | core/reflector                                | Failure analysis interface |
 | `Events`           | sdk/orchestration | core/types (adapted via emitterEventsAdapter) | Orchestration lifecycle    |
-| `Blackboard`       | sdk/orchestration | core/types (alias)                            | Shared task state          |
+| `Blackboard`       | sdk/orchestration | core/types (direct)                            | Shared task state          |
 | `Orchestrator`     | sdk/orchestration | core/orchestrator (as `engine`)               | DAG execution engine       |
 | `Config`           | sdk/orchestration | core/orchestrator (NewOrchestrator)           | Engine configuration (incl. ToolCache, PerToolTruncation) |
-| `Plan`, `PlanStep` | sdk/orchestration | core/types (aliases)                          | Plan data structures       |
-| `CompletedStep`    | sdk/orchestration | core/types (alias)                            | Step result record         |
-| `Reflection`       | sdk/orchestration | core/types (alias)                            | Reflector output           |
+| `Plan`, `PlanStep` | sdk/orchestration | core/types (direct use)                        | Plan data structures       |
+| `CompletedStep`    | sdk/orchestration | core/types (direct)                            | Step result record         |
+| `Reflection`       | sdk/orchestration | core/types (direct)                            | Reflector output           |
 | `PruningOverride`  | sdk/orchestration | core/stepconfig                               | Per-step pruning config    |
 
 ### Consumed from `sdk/llm`
@@ -76,22 +78,20 @@ Only `core/` imports `sdk/`. No other layer (backend, desktop) may import sdk pa
 | `ContextWindow`  | sdk/memory | core (via ContextManagerFactory) | Token tracking + compaction    |
 | Strategy impls   | sdk/memory | core/builder (wired in factory)  | Sliding, summary, hierarchical |
 
-## Type Aliasing Bridge
+## Imports Pattern
 
-`core/types.go` re-exports sdk types so backend can reference them:
+All layers above sdk import source packages directly, e.g.:
 
 ```go
-// core/types.go
-type Step = agent.Step
-type Plan = orchestration.Plan
-type Blackboard = orchestration.Blackboard
-type Reflection = orchestration.Reflection
-type ToolResultCache = agent.ToolResultCache
-type ToolTruncationConfig = agent.ToolTruncationConfig
-// ... ~20 more aliases
-```
+// desktop/startup_phases.go
+import "github.com/v0lka/c0wrk/core/tools"  // → tools.ConfirmFunc, tools.AskUserFunc, ...
+import "github.com/v0lka/c0wrk/sdk/agent"    // → agent.StepLimitFunc, agent.StepLimitDeny, ...
 
-Backend imports: `"github.com/v0lka/c0wrk/core"` → `core.Step`, `core.Plan`, etc.
+// backend/application.go
+import "github.com/v0lka/c0wrk/core/tools"      // → tools.ConfirmFunc, tools.EnvInfo, ...
+import "github.com/v0lka/c0wrk/core/tools/mcp"  // → mcp.ServerStatus
+import "github.com/v0lka/c0wrk/sdk/agent"       // → agent.StepLimitFunc
+```
 
 ## Initialization
 
@@ -126,9 +126,9 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 | Compaction trigger      | core → sdk | `CompactionStrategy.Compact()`                      |
 | Compacted messages      | sdk → core | `[]llm.Message`                                     |
 | Plan generation request | core → sdk | `Planner.Plan()` via adapter                        |
-| Plan structure          | sdk → core | `orchestration.Plan` (aliased)                      |
+| Plan structure          | sdk → core | `orchestration.Plan` (direct)                       |
 | Orchestration lifecycle | core → sdk | `orchestration.Events` (adapted Emitter)            |
-| Blackboard state        | sdk ↔ core | `orchestration.Blackboard` (aliased, shared)        |
+| Blackboard state        | sdk ↔ core | `orchestration.Blackboard` (direct, shared)         |
 | Context window status   | sdk → core | `ContextManager.State()`                            |
 | CompactionResult        | sdk → core | `CompactionResult{BeforeFill, AfterFill, Strategy}` |
 
@@ -140,10 +140,10 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 
 ## Breaking Change Checklist
 
-- If you modify an `sdk/orchestration` interface → update `core/types.go` alias AND adapter in `core/orchestrator.go`
+- If you modify an `sdk/orchestration` interface → update adapter in `core/orchestrator.go`
 - If you add a field to `sdk/orchestration.Config` → update `NewOrchestrator` in `core/orchestrator.go`
 - If you modify `sdk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
 - If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
-- If you add a new sdk type that backend needs → add alias in `core/types.go`
+- If you add a new sdk type that backend or desktop needs → import directly from the source package
 - If you modify `sdk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation AND `core/tools/tool.go` re-export
 - If you change `IsUntrusted()` semantics → update ALL built-in tool registrations (`sdk/tools/builtins/*.go`) AND `sdk/security/wrap.go`

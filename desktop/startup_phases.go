@@ -21,6 +21,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/backend/terminal"
 	"github.com/v0lka/c0wrk/backend/vectorindex"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // initLogger initializes the session logger with a temporary INFO level so any
@@ -180,18 +182,18 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 // into Wails events and waits for the frontend response. Errors out cleanly
 // when no UI context or session is available so the tool reports the
 // unavailability instead of blocking forever.
-func (a *App) buildAskUserCallback(uiEmit func(session.Event)) backend.AskUserFunc {
-	return func(ctx context.Context, req backend.AskUserRequest) (backend.AskUserResponse, error) {
+func (a *App) buildAskUserCallback(uiEmit func(session.Event)) tools.AskUserFunc {
+	return func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
 		if a.ctx == nil {
-			return backend.AskUserResponse{}, errors.New("ask_user not available: no UI context")
+			return tools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
 		}
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
-			return backend.AskUserResponse{}, errors.New("ask_user not available: no session context")
+			return tools.AskUserResponse{}, errors.New("ask_user not available: no session context")
 		}
 
 		requestID := uuid.New().String()
-		ch := make(chan backend.AskUserResponse, 1)
+		ch := make(chan tools.AskUserResponse, 1)
 		a.pendingAskUser.Store(requestID, ch)
 
 		payload := session.AskUserPayload{RequestID: requestID, Questions: req.Questions}
@@ -202,10 +204,10 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) backend.AskUserFu
 			return resp, nil
 		case <-ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return backend.AskUserResponse{}, ctx.Err()
+			return tools.AskUserResponse{}, ctx.Err()
 		case <-a.ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return backend.AskUserResponse{}, a.ctx.Err()
+			return tools.AskUserResponse{}, a.ctx.Err()
 		}
 	}
 }
@@ -214,26 +216,26 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) backend.AskUserFu
 // when no UI context is available we return ConfirmDenyAndStop and log a
 // warning rather than auto-approving — silently allowing in this path would
 // let any tool execute without user oversight.
-func (a *App) buildConfirmCallback(uiEmit func(session.Event)) backend.ConfirmFunc {
-	return func(ctx context.Context, req backend.ConfirmationRequest) (backend.ConfirmationResponse, error) {
+func (a *App) buildConfirmCallback(uiEmit func(session.Event)) tools.ConfirmFunc {
+	return func(ctx context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
 		if a.ctx == nil {
 			slog.Warn("confirmation callback denied: app context unavailable",
 				"tool", req.ToolName, "reason", "ctx_nil")
-			return backend.ConfirmDenyAndStop, nil
+			return tools.ConfirmDenyAndStop, nil
 		}
 
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
 			slog.Warn("confirmation callback denied: no session ID in context",
 				"tool", req.ToolName, "reason", "session_id_missing")
-			return backend.ConfirmDenyAndStop, nil
+			return tools.ConfirmDenyAndStop, nil
 		}
 
 		requestID := uuid.New().String()
-		ch := make(chan backend.ConfirmationResponse, 1)
+		ch := make(chan tools.ConfirmationResponse, 1)
 		a.pendingConfirmations.Store(requestID, &pendingConfirmData{
 			ch:          ch,
-			taskContext: backend.TaskContextFrom(ctx),
+			taskContext: tools.TaskContextFrom(ctx),
 			toolName:    req.ToolName,
 			input:       req.Input,
 			sessionID:   sessionID,
@@ -252,27 +254,27 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) backend.ConfirmFu
 			return resp, nil
 		case <-ctx.Done():
 			a.pendingConfirmations.Delete(requestID)
-			return backend.ConfirmDenyAndStop, ctx.Err()
+			return tools.ConfirmDenyAndStop, ctx.Err()
 		case <-a.ctx.Done():
 			a.pendingConfirmations.Delete(requestID)
-			return backend.ConfirmDenyAndStop, a.ctx.Err()
+			return tools.ConfirmDenyAndStop, a.ctx.Err()
 		}
 	}
 }
 
 // buildStepLimitCallback returns the step-limit prompt closure.
-func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) backend.StepLimitFunc {
-	return func(ctx context.Context, currentStep int, maxSteps int, reason string) (backend.StepLimitResponse, error) {
+func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) agent.StepLimitFunc {
+	return func(ctx context.Context, currentStep int, maxSteps int, reason string) (agent.StepLimitResponse, error) {
 		if a.ctx == nil {
-			return backend.StepLimitDeny, nil
+			return agent.StepLimitDeny, nil
 		}
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
-			return backend.StepLimitDeny, nil
+			return agent.StepLimitDeny, nil
 		}
 
 		requestID := uuid.New().String()
-		ch := make(chan backend.StepLimitResponse, 1)
+		ch := make(chan agent.StepLimitResponse, 1)
 		a.pendingStepLimit.Store(requestID, ch)
 
 		payload := session.StepLimitPayload{
@@ -288,10 +290,10 @@ func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) backend.StepLim
 			return resp, nil
 		case <-ctx.Done():
 			a.pendingStepLimit.Delete(requestID)
-			return backend.StepLimitDeny, ctx.Err()
+			return agent.StepLimitDeny, ctx.Err()
 		case <-a.ctx.Done():
 			a.pendingStepLimit.Delete(requestID)
-			return backend.StepLimitDeny, a.ctx.Err()
+			return agent.StepLimitDeny, a.ctx.Err()
 		}
 	}
 }
@@ -299,8 +301,8 @@ func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) backend.StepLim
 // buildVectorCallbacks returns the lazy vector-search callbacks that gate on
 // background ONNX initialization. They block until vectorReady is closed (or
 // ctx cancels) before delegating to the manager service.
-func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Manager], vectorReady <-chan struct{}) (backend.VectorSearchFunc, backend.VectorSearchWaitFunc) { //nolint:gocritic // unnamedResult is acceptable for tuple returns with distinct types
-	searchFunc := backend.VectorSearchFunc(func(ctx context.Context, opts backend.VectorSearchOptions) ([]backend.VectorSearchResult, error) {
+func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Manager], vectorReady <-chan struct{}) (tools.VectorSearchFunc, tools.VectorSearchWaitFunc) { //nolint:gocritic // unnamedResult is acceptable for tuple returns with distinct types
+	searchFunc := tools.VectorSearchFunc(func(ctx context.Context, opts tools.VectorSearchOptions) ([]tools.VectorSearchResult, error) {
 		select {
 		case <-vectorReady:
 		case <-ctx.Done():
@@ -320,9 +322,9 @@ func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Mana
 		if err != nil {
 			return nil, err
 		}
-		out := make([]backend.VectorSearchResult, len(results))
+		out := make([]tools.VectorSearchResult, len(results))
 		for i, r := range results {
-			out[i] = backend.VectorSearchResult{
+			out[i] = tools.VectorSearchResult{
 				FilePath:    r.FilePath,
 				FileName:    r.FileName,
 				Content:     r.Content,
@@ -337,7 +339,7 @@ func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Mana
 		return out, nil
 	})
 
-	waitFunc := backend.VectorSearchWaitFunc(func(ctx context.Context) error {
+	waitFunc := tools.VectorSearchWaitFunc(func(ctx context.Context) error {
 		select {
 		case <-vectorReady:
 			mgr := vectorMgrPtr.Load()

@@ -93,7 +93,7 @@ type ContextManagerFactory func(systemPrompt string, modelMeta llm.ModelMetadata
 
 // BlackboardFactory creates a Blackboard for a new task.
 // The taskID is a unique identifier for the orchestration request.
-type BlackboardFactory func(taskID string) Blackboard
+type BlackboardFactory func(taskID string) orchestration.Blackboard
 
 // Orchestrator coordinates the agent's reasoning cycle.
 // It handles c0wrk-specific concerns (routing, PersistentBlackboard,
@@ -109,7 +109,7 @@ type Orchestrator struct {
 	engine              *orchestration.Orchestrator // SDK P&E engine
 	planner             *Planner                    // for PlanContinuation in P&E continuations
 	router              *Router
-	llm                 LLMCaller
+	llm                 agent.LLMCaller
 	toolRegistry        *sdktools.ToolRegistry
 	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
 	config              OrchestratorConfig
@@ -162,8 +162,8 @@ var ErrRequestInFlight = errors.New("orchestrator: request already in flight")
 type OrchestratorDeps struct {
 	Router           *Router
 	Planner          *Planner
-	LLM              LLMCaller
-	ToolExec         ToolExecutor
+	LLM              agent.LLMCaller
+	ToolExec         agent.ToolExecutor
 	ToolRegistry     *sdktools.ToolRegistry
 	TokenCounter     llm.TokenCounter
 	ContextFactory   ContextManagerFactory
@@ -171,8 +171,8 @@ type OrchestratorDeps struct {
 	Logger           *slog.Logger       // optional, nil-safe
 	Emitter          Emitter            // optional, uses noopEmitter if nil
 	ModelRegistry    *llm.ModelRegistry // optional, nil-safe
-	ToolResultBudget ToolResultBudget
-	CircuitBreaker   CircuitBreakerConfig
+	ToolResultBudget agent.ToolResultBudget
+	CircuitBreaker   agent.CircuitBreakerConfig
 	BBFactory        BlackboardFactory      // optional, nil = default MapBlackboard
 	TrackingCaller   *llm.TrackingCaller    // optional, for per-step context tracker wiring
 	VectorSearchFunc tools.VectorSearchFunc // optional, for auto-RAG hint generation
@@ -402,7 +402,7 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
 // and use the returned HandleResult for partial output, plan state, and blackboard.
 // All other errors indicate complete failure; the task is marked failed and nil is returned.
-func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *RoutingDecision) (*HandleResult, error) {
+func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *RoutingDecision) (*HandleResult, error) {
 	o.logDebug("orchestrator: resume started")
 
 	// Generate RAG hints from vector index using the original request.
@@ -470,7 +470,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard, routing *Routi
 // blackboard's step results. This is needed so that assistant messages echoed
 // back to reasoning models (e.g. DeepSeek) include the reasoning_content field
 // those models require.
-func lastReasoningContent(bb Blackboard) string {
+func lastReasoningContent(bb orchestration.Blackboard) string {
 	var last string
 	for _, sr := range bb.GetAllStepResults() {
 		for _, step := range sr.Steps {

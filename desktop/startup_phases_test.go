@@ -16,6 +16,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/backend/vectorindex"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // testLogger returns a logger that drops everything to a buffer for inspection.
@@ -208,7 +210,7 @@ func TestBuildAskUserCallback_NoAppContext(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildAskUserCallback(uiEmit)
 
-	_, err := cb(context.Background(), backend.AskUserRequest{})
+	_, err := cb(context.Background(), tools.AskUserRequest{})
 	if err == nil {
 		t.Fatal("expected error when a.ctx is nil")
 	}
@@ -219,7 +221,7 @@ func TestBuildAskUserCallback_NoSessionInContext(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildAskUserCallback(uiEmit)
 
-	_, err := cb(context.Background(), backend.AskUserRequest{})
+	_, err := cb(context.Background(), tools.AskUserRequest{})
 	if err == nil {
 		t.Fatal("expected error when ctx has no session ID")
 	}
@@ -232,11 +234,11 @@ func TestBuildConfirmCallback_NoAppContext_DenyAndStop(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildConfirmCallback(uiEmit)
 
-	resp, err := cb(context.Background(), backend.ConfirmationRequest{ToolName: "bash_exec"})
+	resp, err := cb(context.Background(), tools.ConfirmationRequest{ToolName: "bash_exec"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if resp != backend.ConfirmDenyAndStop {
+	if resp != tools.ConfirmDenyAndStop {
 		t.Errorf("got %v, want ConfirmDenyAndStop (C-4)", resp)
 	}
 }
@@ -247,11 +249,11 @@ func TestBuildConfirmCallback_NoSessionID_DenyAndStop(t *testing.T) {
 	cb := a.buildConfirmCallback(uiEmit)
 
 	// ctx WITHOUT a session ID
-	resp, err := cb(context.Background(), backend.ConfirmationRequest{ToolName: "edit_file"})
+	resp, err := cb(context.Background(), tools.ConfirmationRequest{ToolName: "edit_file"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if resp != backend.ConfirmDenyAndStop {
+	if resp != tools.ConfirmDenyAndStop {
 		t.Errorf("got %v, want ConfirmDenyAndStop (C-4)", resp)
 	}
 }
@@ -269,9 +271,9 @@ func TestBuildConfirmCallback_HappyPath(t *testing.T) {
 
 	ctx := session.ContextWithSessionID(context.Background(), "sess-xyz")
 	done := make(chan struct{})
-	var resp backend.ConfirmationResponse
+	var resp tools.ConfirmationResponse
 	go func() {
-		resp, _ = cb(ctx, backend.ConfirmationRequest{
+		resp, _ = cb(ctx, tools.ConfirmationRequest{
 			ToolName: "bash_exec",
 			Input:    []byte(`{"command":"ls"}`),
 		})
@@ -315,14 +317,14 @@ func TestBuildConfirmCallback_HappyPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("pending entry has wrong type: %T", val)
 	}
-	pd.ch <- backend.ConfirmAllowOnce
+	pd.ch <- tools.ConfirmAllowOnce
 
 	select {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("callback did not return after channel send")
 	}
-	if resp != backend.ConfirmAllowOnce {
+	if resp != tools.ConfirmAllowOnce {
 		t.Errorf("got %v, want ConfirmAllowOnce", resp)
 	}
 }
@@ -337,7 +339,7 @@ func TestBuildStepLimitCallback_NoAppContext(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if resp != backend.StepLimitDeny {
+	if resp != agent.StepLimitDeny {
 		t.Errorf("got %v, want StepLimitDeny", resp)
 	}
 }
@@ -350,7 +352,7 @@ func TestBuildStepLimitCallback_NoSessionID(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if resp != backend.StepLimitDeny {
+	if resp != agent.StepLimitDeny {
 		t.Errorf("got %v, want StepLimitDeny", resp)
 	}
 }
@@ -366,7 +368,7 @@ func TestBuildVectorCallbacks_CtxCanceledBeforeReady(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	_, err := searchFunc(ctx, backend.VectorSearchOptions{Query: "x"})
+	_, err := searchFunc(ctx, tools.VectorSearchOptions{Query: "x"})
 	if err == nil {
 		t.Fatal("expected error when ctx expires before vector ready")
 	}
@@ -386,7 +388,7 @@ func TestBuildVectorCallbacks_ReadyButNoManager(t *testing.T) {
 	close(ready)
 	searchFunc, waitFunc := a.buildVectorCallbacks(&ptr, ready)
 
-	_, err := searchFunc(context.Background(), backend.VectorSearchOptions{Query: "x"})
+	_, err := searchFunc(context.Background(), tools.VectorSearchOptions{Query: "x"})
 	if err == nil {
 		t.Fatal("expected 'unavailable' error when manager is nil after ready")
 	}

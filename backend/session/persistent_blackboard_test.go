@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,7 +23,7 @@ type newTaskCall struct {
 
 type planCall struct {
 	taskID string
-	plan   *core.Plan
+	plan   *orchestration.Plan
 }
 
 type routingCall struct {
@@ -31,12 +33,12 @@ type routingCall struct {
 
 type stepResultCall struct {
 	taskID, stepID, summary, fullOutput, errorText string
-	steps                                          []core.Step
+	steps                                          []agent.Step
 }
 
 type reflectionCall struct {
 	taskID     string
-	reflection core.Reflection
+	reflection orchestration.Reflection
 }
 
 type completionCall struct {
@@ -74,7 +76,7 @@ func (m *mockTaskPersistence) PersistNewTask(taskID, sessionID, originalRequest 
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistPlan(taskID string, plan *core.Plan) error {
+func (m *mockTaskPersistence) PersistPlan(taskID string, plan *orchestration.Plan) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.planCalls = append(m.planCalls, planCall{taskID, plan})
@@ -88,14 +90,14 @@ func (m *mockTaskPersistence) PersistRouting(taskID string, routing *core.Routin
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []core.Step) error {
+func (m *mockTaskPersistence) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stepResultCalls = append(m.stepResultCalls, stepResultCall{taskID, stepID, summary, fullOutput, errorText, steps})
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistReflection(taskID string, r core.Reflection) error {
+func (m *mockTaskPersistence) PersistReflection(taskID string, r orchestration.Reflection) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reflectionCalls = append(m.reflectionCalls, reflectionCall{taskID, r})
@@ -116,7 +118,7 @@ func (m *mockTaskPersistence) PersistFailure(taskID string) error {
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistFacts(taskID string, facts []core.Fact) error {
+func (m *mockTaskPersistence) PersistFacts(taskID string, facts []orchestration.Fact) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.persistError
@@ -173,7 +175,7 @@ func TestPersistentBlackboard_SetPlan(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	plan := &core.Plan{Steps: []core.PlanStep{{ID: "step_1", Description: "write code"}}}
+	plan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Description: "write code"}}}
 	pb.SetPlan(plan)
 
 	// Verify delegation
@@ -195,7 +197,7 @@ func TestPersistentBlackboard_SetStepResult(t *testing.T) {
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
 	testErr := errors.New("step failed")
-	steps := []core.Step{{Thought: "thinking"}}
+	steps := []agent.Step{{Thought: "thinking"}}
 	pb.SetStepResult("step_1", "output text", testErr, steps)
 
 	// Verify delegation
@@ -229,7 +231,7 @@ func TestPersistentBlackboard_AddReflection(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	r := core.Reflection{Summary: "things went wrong", SuggestedAction: "retry"}
+	r := orchestration.Reflection{Summary: "things went wrong", SuggestedAction: "retry"}
 	pb.AddReflection(r)
 
 	// Verify delegation
@@ -314,9 +316,9 @@ func TestPersistentBlackboard_ReadDelegation(t *testing.T) {
 
 	// Populate via MapBlackboard-level writes
 	pb.SetOriginalRequest("req")
-	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1"}}})
+	pb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1"}}})
 	pb.SetStepResult("s1", "output", nil, nil)
-	pb.AddReflection(core.Reflection{Summary: "r1"})
+	pb.AddReflection(orchestration.Reflection{Summary: "r1"})
 	pb.SetFinalResult("done")
 
 	// All reads should delegate to MapBlackboard
@@ -349,9 +351,9 @@ func TestPersistentBlackboard_BestEffortErrors(t *testing.T) {
 
 	// All write methods should NOT panic even though persistence fails
 	pb.SetOriginalRequest("req")
-	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1"}}})
+	pb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1"}}})
 	pb.SetStepResult("s1", "output", nil, nil)
-	pb.AddReflection(core.Reflection{Summary: "r"})
+	pb.AddReflection(orchestration.Reflection{Summary: "r"})
 	pb.SetRouting(&core.RoutingDecision{Domain: "code"})
 	pb.CompleteTask(1)
 	pb.FailTask()
@@ -370,7 +372,7 @@ func TestPersistentBlackboard_NilLogger(t *testing.T) {
 	pb.SetOriginalRequest("req")
 	pb.SetPlan(nil)
 	pb.SetStepResult("s1", "out", nil, nil)
-	pb.AddReflection(core.Reflection{})
+	pb.AddReflection(orchestration.Reflection{})
 	pb.SetRouting(&core.RoutingDecision{})
 	pb.CompleteTask(0)
 	pb.FailTask()
@@ -408,11 +410,11 @@ func TestRestoreBlackboard(t *testing.T) {
 			TaskID:          "t1",
 			SessionID:       "s1",
 			OriginalRequest: "build CLI",
-			Plan:            &core.Plan{Steps: []core.PlanStep{{ID: "step_1", Description: "write code"}}},
-			StepResults: map[string]core.StepResult{
+			Plan:            &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Description: "write code"}}},
+			StepResults: map[string]orchestration.StepResult{
 				"step_1": {StepID: "step_1", Summary: "wrote code", FullOutput: "full output"},
 			},
-			Reflections: []core.Reflection{{Summary: "attempt 1 failed", Timestamp: time.Now()}},
+			Reflections: []orchestration.Reflection{{Summary: "attempt 1 failed", Timestamp: time.Now()}},
 			FinalOutput: "completed output",
 			Status:      "in_progress",
 		},
@@ -485,10 +487,10 @@ func TestPersistentBlackboard_NotifyChanged(t *testing.T) {
 	})
 
 	// Each write method should trigger a notifyChanged call.
-	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1", Description: "d"}}})
+	pb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1", Description: "d"}}})
 	pb.SetStepResult("step_1", "output", nil, nil)
-	pb.AddReflection(core.Reflection{Summary: "r1"})
-	pb.StoreFact(core.Fact{Keywords: []string{"k"}, Content: "c"})
+	pb.AddReflection(orchestration.Reflection{Summary: "r1"})
+	pb.StoreFact(orchestration.Fact{Keywords: []string{"k"}, Content: "c"})
 	pb.CompleteTask(1)
 
 	// Wait briefly for async persistence goroutines to finish.
@@ -514,7 +516,7 @@ func TestPersistentBlackboard_NotifyChanged_NilSafe(t *testing.T) {
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
 	// No callback set — should not panic.
-	pb.SetPlan(&core.Plan{Steps: []core.PlanStep{{ID: "s1", Description: "d"}}})
-	pb.StoreFact(core.Fact{Keywords: []string{"k"}, Content: "c"})
+	pb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1", Description: "d"}}})
+	pb.StoreFact(orchestration.Fact{Keywords: []string{"k"}, Content: "c"})
 	pb.CompleteTask(0)
 }

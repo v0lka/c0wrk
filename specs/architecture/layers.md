@@ -31,7 +31,7 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 │                     Router, Planner, Reflector, Orchestrator,       │
 │                     tool registry (policy), MCP gateway, skills     │
 └────────────────────────────────┬────────────────────────────────────┘
-                                 │ Go imports (ONLY layer that imports sdk)
+                                 │ Go imports
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  sdk/               Reusable agent execution engine                 │
@@ -45,8 +45,8 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 | Layer       | May Import                           | Must NOT Import              |
 | ----------- | ------------------------------------ | ---------------------------- |
 | `frontend/` | Nothing (communicates via Wails IPC) | Go packages                  |
-| `desktop/`  | `backend`                            | `core`, `sdk`                |
-| `backend/`  | `core`                               | `sdk`                        |
+| `desktop/`  | `backend`, `core`, `sdk`             | —                            |
+| `backend/`  | `core`, `sdk`                         | —                            |
 | `core/`     | `sdk`                                | `backend`, `desktop`         |
 | `sdk/`      | External libs only                   | `core`, `backend`, `desktop` |
 
@@ -58,11 +58,11 @@ The lowest layer. Contains the generic building blocks for an LLM agent applicat
 
 ### `core/` — c0wrk Orchestration
 
-The brain of c0wrk. Implements the specific orchestration cycle: Router (classifies requests), Planner (generates DAG plans), Reflector (analyzes failures), and the top-level Orchestrator that ties them together. Wraps the sdk tool registry with policy enforcement, confirmation flow, and the LLM judge. Manages the MCP gateway and skill system. Contains all prompt templates (embedded markdown). This is the sole layer that imports `sdk`.
+The brain of c0wrk. Implements the specific orchestration cycle: Router (classifies requests), Planner (generates DAG plans), Reflector (analyzes failures), and the top-level Orchestrator that ties them together. Wraps the sdk tool registry with policy enforcement, confirmation flow, and the LLM judge. Manages the MCP gateway and skill system. Contains all prompt templates (embedded markdown).
 
 ### `backend/` — Application ViewModel
 
-The "app layer" that the desktop UI interacts with. Owns the `Application` struct, configuration loading/resolution, session lifecycle management (create, handle message, persist, resume), SQLite persistence, workspace watching, vector indexing, and terminal management. Exposes `FrontendAPI` methods split by concern area (`frontend_api_*.go`). Wraps `core.OrchestratorBuilder` without touching sdk directly.
+The "app layer" that the desktop UI interacts with. Owns the `Application` struct, configuration loading/resolution, session lifecycle management (create, handle message, persist, resume), SQLite persistence, workspace watching, vector indexing, and terminal management. Exposes `FrontendAPI` methods split by concern area (`frontend_api_*.go`). Wraps `core.OrchestratorBuilder` and imports `sdk/` directly for type definitions.
 
 ### `desktop/` — Wails Bindings & Lifecycle
 
@@ -77,25 +77,11 @@ TypeScript/React application. Communicates with Go exclusively through:
 
 No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/App.{js,d.ts}`.
 
-## Type Re-Export Pattern
-
-`backend` cannot import `sdk`, but needs to reference sdk types (e.g., `agent.Step`, `orchestration.Plan`). Solution: `core/types.go` defines type aliases:
-
-```go
-// core/types.go
-type Step = agent.Step
-type Plan = orchestration.Plan
-type Blackboard = orchestration.Blackboard
-```
-
-Backend imports these types from `core`, never from `sdk` directly.
-
 ## Key Boundary Files
 
 | Boundary           | Gateway File                           | Role                            |
 | ------------------ | -------------------------------------- | ------------------------------- |
 | sdk → core         | `core/builder.go`                      | Wires all sdk components        |
-| sdk → core         | `core/types.go`                        | Re-exports sdk types            |
 | core → backend     | `backend/configadapter.go`             | Converts config → BuilderConfig |
 | core → backend     | `backend/application.go`               | Wraps OrchestratorBuilder       |
 | backend → desktop  | `desktop/app.go`                       | Embeds FrontendAPI              |
@@ -103,15 +89,14 @@ Backend imports these types from `core`, never from `sdk` directly.
 
 ## Invariants
 
-- `backend` never imports any package under `sdk/`
+- `backend` may import `sdk/` packages directly for type definitions
 - `core` never imports `backend` or `desktop`
 - `sdk` has zero knowledge of c0wrk-specific concepts
 - All inter-layer communication between frontend and Go goes through Wails
-- Type aliases in `core/types.go` are the ONLY mechanism for backend to access sdk types
 
 ## Anti-Patterns
 
-- Importing `sdk/llm` or `sdk/agent` from `backend/` — use core type aliases instead
+- Importing `core/` or `sdk/` packages from `desktop/` without necessity — prefer keeping desktop thin; import only when the types are genuinely needed at the UI boundary (e.g., type aliases, callback signatures)
 - Putting business logic (routing, planning, tool policy) in `desktop/`
 - Hand-editing files in `frontend/wailsjs/` — they are regenerated by `wails build`
 - Adding backend-specific state to `core/` types (keep core reusable)

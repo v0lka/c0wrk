@@ -33,15 +33,15 @@ func (o *Orchestrator) prepareRequestContext(ctx context.Context, message string
 
 // setupBlackboard creates a fresh Blackboard (first message) or restores an
 // existing one from persistence (continuation).
-func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string) (Blackboard, error) {
+func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string) (orchestration.Blackboard, error) {
 	if taskID == "" {
 		// First message: create clean BB
 		id := uuid.New().String()
-		var bb Blackboard
+		var bb orchestration.Blackboard
 		if o.bbFactory != nil {
 			bb = o.bbFactory(id)
 		} else {
-			bb = NewMapBlackboard()
+			bb = orchestration.NewMapBlackboard()
 		}
 		bb.SetOriginalRequest(message)
 
@@ -88,7 +88,7 @@ func (o *Orchestrator) routeAndActivateSkills(
 	ctx context.Context,
 	message string,
 	opts HandleOptions,
-	bb Blackboard,
+	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
 ) (context.Context, *RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
 	o.logDebug("orchestrator: starting routing")
@@ -185,7 +185,7 @@ func (o *Orchestrator) routeAndActivateSkills(
 func (o *Orchestrator) executeFirstMessage(
 	ctx context.Context,
 	message string,
-	bb Blackboard,
+	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
 	activeSkills []skills.SkillDescriptor,
 	opts HandleOptions,
@@ -236,7 +236,7 @@ func (o *Orchestrator) executeFirstMessage(
 func (o *Orchestrator) executeContinuation(
 	ctx context.Context,
 	message string,
-	bb Blackboard,
+	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
 	activeSkills []skills.SkillDescriptor,
 	opts HandleOptions,
@@ -302,7 +302,7 @@ func (o *Orchestrator) executeContinuation(
 // finalizeResult persists the routing decision, builds the HandleResult, and
 // updates conversationHistory for future routing context.
 // execResult must never be nil; callers must guard with a zero-value fallback.
-func (o *Orchestrator) finalizeResult(bb Blackboard, routing *RoutingDecision, execResult *orchestration.ExecutionResult, message string) *HandleResult {
+func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *RoutingDecision, execResult *orchestration.ExecutionResult, message string) *HandleResult {
 	// Persist routing decision on PersistentBlackboard (post-execution)
 	o.logDebug("orchestrator: persisting routing decision")
 	if pbb, ok := bb.(PersistableBlackboard); ok {

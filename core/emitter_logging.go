@@ -134,7 +134,7 @@ func (l *loggingEmitter) Routing(mode, domain, complexity string) {
 	l.inner.Routing(mode, domain, complexity)
 }
 
-func (l *loggingEmitter) PlanGenerated(stepCount int, steps []PlanStepEvent) {
+func (l *loggingEmitter) PlanGenerated(stepCount int, steps []orchestration.PlanStepEvent) {
 	l.logger.Info("plan generated", "stepCount", stepCount)
 	l.inner.PlanGenerated(stepCount, steps)
 }

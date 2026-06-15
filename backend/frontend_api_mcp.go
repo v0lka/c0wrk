@@ -6,13 +6,15 @@ import (
 	"fmt"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/tools/mcp"
 )
 
 // GetMCPStatus returns current MCP server connection statuses.
 // Returns an empty slice if the backend application is not initialized.
-func (f *FrontendAPI) GetMCPStatus() []MCPServerStatus {
+func (f *FrontendAPI) GetMCPStatus() []mcp.ServerStatus {
 	if f.app == nil {
-		return []MCPServerStatus{}
+		return []mcp.ServerStatus{}
 	}
 	return f.app.GetMCPStatus()
 }
@@ -69,7 +71,7 @@ func (f *FrontendAPI) GetToolList() []ToolInfo {
 	toolInfos := make([]ToolInfo, 0, len(descriptors))
 	for _, desc := range descriptors {
 		// Filter out internal tools
-		if IsInternalTool(desc.Name) {
+		if tools.IsInternalTool(desc.Name) {
 			continue
 		}
 

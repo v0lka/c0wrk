@@ -2,7 +2,7 @@
 
 ## Boundary Rule
 
-`backend` imports `core`. `backend` NEVER imports `sdk`. Desktop imports backend (not core directly for business logic).
+`backend` imports `core` and `sdk` directly. Desktop imports `backend`, `core`, and `sdk` directly (see ADR-008).
 
 ## Interfaces
 
@@ -14,9 +14,9 @@
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
 | `HandleOptions`       | core           | backend → core | Execution mode + user skill overrides |
 | `Emitter`             | core           | backend → core | Event emission interface              |
-| `Blackboard`          | core (alias)   | core → backend | Task state (for persistence)          |
+| `Blackboard`          | sdk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
-| `Plan`, `PlanStep`    | core (aliases) | core → backend | Plan structure                        |
+| `Plan`, `PlanStep`    | sdk/orchestration (direct) | core → backend | Plan structure                        |
 | `ToolPolicy`          | core/tools     | backend → core | Security policy values                |
 | `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation) |
 

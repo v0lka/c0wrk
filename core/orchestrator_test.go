@@ -794,19 +794,19 @@ func (m *mockTaskStore) PersistNewTask(taskID, sessionID, originalRequest string
 	return nil
 }
 
-func (m *mockTaskStore) PersistPlan(taskID string, plan *Plan) error { return nil }
+func (m *mockTaskStore) PersistPlan(taskID string, plan *orchestration.Plan) error { return nil }
 func (m *mockTaskStore) PersistRouting(taskID string, routing *RoutingDecision) error {
 	return nil
 }
-func (m *mockTaskStore) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []Step) error {
+func (m *mockTaskStore) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
 	return nil
 }
-func (m *mockTaskStore) PersistReflection(taskID string, r Reflection) error { return nil }
+func (m *mockTaskStore) PersistReflection(taskID string, r orchestration.Reflection) error { return nil }
 func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }
 func (m *mockTaskStore) PersistFailure(taskID string) error             { return nil }
-func (m *mockTaskStore) PersistFacts(taskID string, facts []Fact) error { return nil }
+func (m *mockTaskStore) PersistFacts(taskID string, facts []orchestration.Fact) error { return nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -882,7 +882,7 @@ func TestHandleMessage_Continuation(t *testing.T) {
 			SessionID:       "session-456",
 			OriginalRequest: "original task",
 			Status:          "completed",
-			Plan: &Plan{
+			Plan: &orchestration.Plan{
 				Steps: []orchestration.PlanStep{
 					{ID: "step_1", Description: "First step"},
 					{ID: "step_2", Description: "Second step", DependsOn: []string{"step_1"}},
@@ -977,7 +977,7 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 			SessionID:       "session-456",
 			OriginalRequest: "original task",
 			Status:          "completed",
-			Plan: &Plan{
+			Plan: &orchestration.Plan{
 				Steps: []orchestration.PlanStep{
 					{ID: "step_1", Description: "First step"},
 				},
@@ -1247,7 +1247,7 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 			SessionID:       "session-456",
 			OriginalRequest: "original task",
 			Status:          "completed",
-			Plan: &Plan{
+			Plan: &orchestration.Plan{
 				Steps: []orchestration.PlanStep{
 					{ID: "step_1", Description: "First step"},
 				},
@@ -1360,7 +1360,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 			SessionID:       "session-456",
 			OriginalRequest: "original task",
 			Status:          "completed",
-			Plan: &Plan{
+			Plan: &orchestration.Plan{
 				Steps: []orchestration.PlanStep{
 					{ID: "step_1", Description: "First step"},
 				},
@@ -1397,21 +1397,21 @@ type mockTaskStoreWithReactivate struct {
 func (m *mockTaskStoreWithReactivate) PersistNewTask(taskID, sessionID, originalRequest string) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistPlan(taskID string, plan *Plan) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistPlan(taskID string, plan *orchestration.Plan) error { return nil }
 func (m *mockTaskStoreWithReactivate) PersistRouting(taskID string, routing *RoutingDecision) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []Step) error {
+func (m *mockTaskStoreWithReactivate) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r Reflection) error {
+func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r orchestration.Reflection) error {
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error             { return nil }
-func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []Fact) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []orchestration.Fact) error { return nil }
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -2143,7 +2143,7 @@ func TestCoreStepConfigurator_NormalMode_KeepsFullToolPool(t *testing.T) {
 	// Simulate a single-step plan: AgentProfile emitted as value type, so the
 	// *AgentProfile type assertion in resolveAgentProfile fails and the default
 	// executor profile (empty AllowedTools, empty Skills) is used.
-	singleStepPlan := &Plan{Steps: []PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
+	singleStepPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
 	step := orchestration.PlanStep{
 		ID:          singleStepPlan.Steps[0].ID,
 		Description: singleStepPlan.Steps[0].Description,
@@ -2179,7 +2179,7 @@ func TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills(t *testing.T) 
 
 	configurator := coreStepConfigurator(cfg, nil, nil, builder, taskCtxProvider, nil)
 
-	singleStepPlan := &Plan{Steps: []PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
+	singleStepPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
 	step := orchestration.PlanStep{
 		ID:          singleStepPlan.Steps[0].ID,
 		Description: singleStepPlan.Steps[0].Description,

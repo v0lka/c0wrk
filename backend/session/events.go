@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/core/tools"
 )
 
@@ -53,9 +54,9 @@ type TaskCompleteData struct {
 	SessionID       string                `json:"session_id"`
 	Output          string                `json:"output"`
 	RoutingDecision *core.RoutingDecision `json:"routing_decision"`
-	Plan            *core.Plan            `json:"plan,omitempty"`
+	Plan            *orchestration.Plan            `json:"plan,omitempty"`
 	AttemptCount    int                   `json:"attempt_count,omitempty"`
-	Reflections     []core.Reflection     `json:"reflections,omitempty"`
+	Reflections     []orchestration.Reflection     `json:"reflections,omitempty"`
 }
 
 // TaskCancelledData is the payload for "task_cancelled" events.

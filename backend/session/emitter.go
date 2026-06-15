@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // Event represents a structured event emitted during agent execution.
@@ -175,7 +176,7 @@ func (e *EventEmitter) Routing(mode, domain, complexity string) {
 }
 
 // PlanGenerated emits a plan generation event with initial progress info.
-func (e *EventEmitter) PlanGenerated(stepCount int, steps []core.PlanStepEvent) {
+func (e *EventEmitter) PlanGenerated(stepCount int, steps []orchestration.PlanStepEvent) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	// Initialize plan progress tracking
@@ -413,7 +414,7 @@ func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration ti
 }
 
 // Reflection emits a reflection event.
-func (e *EventEmitter) Reflection(reflection *core.Reflection, attempt, maxAttempts int) {
+func (e *EventEmitter) Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int) {
 	e.log().Info("emitter: reflection completed",
 		"sessionID", e.sessionID,
 		"summary", reflection.Summary,

@@ -13,6 +13,7 @@ import (
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/sdk/prompt"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -127,7 +128,7 @@ const (
 
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {
-	llm                 LLMCaller
+	llm                 agent.LLMCaller
 	logger              *slog.Logger
 	modelRegistry       *llm.ModelRegistry
 	model               string                                        // active model name for Resolve()
@@ -142,7 +143,7 @@ type Planner struct {
 }
 
 // NewPlanner creates a new Planner with the given LLM caller.
-func NewPlanner(caller LLMCaller) *Planner {
+func NewPlanner(caller agent.LLMCaller) *Planner {
 	return &Planner{
 		llm:             caller,
 		maxExploreSteps: defaultMaxExploreSteps,
@@ -238,10 +239,10 @@ func (p *Planner) Plan(
 	ctx context.Context,
 	task string,
 	availableTools []tools.ToolDescriptor,
-	reflections []Reflection,
+	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
-) (*Plan, error) {
+) (*orchestration.Plan, error) {
 	mode := multiStepMode
 	if singleStep {
 		mode = singleStepMode
@@ -267,10 +268,10 @@ func (p *Planner) planDirect(
 	task string,
 	mode planPromptMode,
 	availableTools []tools.ToolDescriptor,
-	reflections []Reflection,
+	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
-) (*Plan, error) {
+) (*orchestration.Plan, error) {
 	systemPrompt := p.buildPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills)
 
 	messages := systemMessagesFromPrompt(systemPrompt)
@@ -315,11 +316,11 @@ func (p *Planner) planWithExploration(
 	task string,
 	mode planPromptMode,
 	availableTools []tools.ToolDescriptor,
-	reflections []Reflection,
+	reflections []orchestration.Reflection,
 	plannerTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
-) (*Plan, error) {
+) (*orchestration.Plan, error) {
 	// Build the informed planner system prompt
 	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills)
 
@@ -375,8 +376,8 @@ func (p *Planner) planWithExploration(
 		p.maxExploreSteps,
 		executorEmitter,
 		true, // suppressAssistantEvents — no streaming to frontend
-		ToolResultBudget{HardCapTokens: 30000, MaxFillFraction: 0.4},
-		CircuitBreakerConfig{
+		agent.ToolResultBudget{HardCapTokens: 30000, MaxFillFraction: 0.4},
+		agent.CircuitBreakerConfig{
 			RepeatNudgeThreshold:     defaultRepeatNudgeThreshold,
 			RepeatAbortThreshold:     defaultRepeatAbortThreshold,
 			TruncationAbortThreshold: defaultTruncationAbortThreshold,
@@ -467,20 +468,20 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 	ctx context.Context,
 	mode planPromptMode,
 	availableTools []tools.ToolDescriptor,
-	reflections []Reflection,
+	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
 ) string {
 	return p.buildSystemPromptFromMode(ctx, mode, prompts.PlannerInformed, availableTools, reflections, availableSkills, nil)
 }
 func (p *Planner) Replan(
 	ctx context.Context,
-	originalPlan *Plan,
-	completedSteps []CompletedStep,
-	failedStep CompletedStep,
-	reflection *Reflection,
-	sessionReflections []Reflection,
+	originalPlan *orchestration.Plan,
+	completedSteps []orchestration.CompletedStep,
+	failedStep orchestration.CompletedStep,
+	reflection *orchestration.Reflection,
+	sessionReflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
-) (*Plan, error) {
+) (*orchestration.Plan, error) {
 	p.emitService("Refining plan...", map[string]any{"phase": "planning"})
 	systemPrompt := p.buildReplanSystemPrompt(ctx, replanContext{
 		originalPlan:       originalPlan,
@@ -517,13 +518,13 @@ func (p *Planner) Replan(
 func (p *Planner) PlanContinuation(
 	ctx context.Context,
 	originalRequest string,
-	existingPlan *Plan,
-	completedSteps []CompletedStep,
+	existingPlan *orchestration.Plan,
+	completedSteps []orchestration.CompletedStep,
 	newMessage string,
 	availableTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
-) (*Plan, error) {
+) (*orchestration.Plan, error) {
 	mode := continuationMultiMode
 	if singleStep {
 		mode = continuationSingleMode
@@ -566,7 +567,7 @@ func (p *Planner) buildSystemPromptFromMode(
 	mode planPromptMode,
 	baseTemplate string,
 	availableTools []tools.ToolDescriptor,
-	reflections []Reflection,
+	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
 	extraSubstitutions map[string]string,
 ) string {
@@ -616,7 +617,7 @@ func (p *Planner) buildPlanSystemPrompt(
 	ctx context.Context,
 	mode planPromptMode,
 	availableTools []tools.ToolDescriptor,
-	reflections []Reflection,
+	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
 ) string {
 	return p.buildSystemPromptFromMode(ctx, mode, prompts.PlannerBase, availableTools, reflections, availableSkills, nil)
@@ -624,11 +625,11 @@ func (p *Planner) buildPlanSystemPrompt(
 
 // replanContext groups the parameters needed for replan prompt construction.
 type replanContext struct {
-	originalPlan       *Plan
-	completedSteps     []CompletedStep
-	failedStep         CompletedStep
-	reflection         *Reflection
-	sessionReflections []Reflection
+	originalPlan       *orchestration.Plan
+	completedSteps     []orchestration.CompletedStep
+	failedStep         orchestration.CompletedStep
+	reflection         *orchestration.Reflection
+	sessionReflections []orchestration.Reflection
 	availableSkills    []skills.SkillDescriptor
 }
 
@@ -704,8 +705,8 @@ func (p *Planner) buildContinuationSystemPrompt(
 	ctx context.Context,
 	mode planPromptMode,
 	originalRequest string,
-	existingPlan *Plan,
-	completedSteps []CompletedStep,
+	existingPlan *orchestration.Plan,
+	completedSteps []orchestration.CompletedStep,
 	availableTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
 ) string {
@@ -744,7 +745,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 }
 
 // FindTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
-func FindTerminalSteps(plan *Plan) []string {
+func FindTerminalSteps(plan *orchestration.Plan) []string {
 	// Track which steps are depended on
 	dependedOn := make(map[string]bool)
 	for _, step := range plan.Steps {
@@ -766,7 +767,7 @@ func FindTerminalSteps(plan *Plan) []string {
 // formatPlanReflections formats plan-attempt reflections as a numbered list
 // using failure analysis, root cause, and action plan fields.
 // Returns "" for nil/empty input.
-func formatPlanReflections(reflections []Reflection) string {
+func formatPlanReflections(reflections []orchestration.Reflection) string {
 	if len(reflections) == 0 {
 		return ""
 	}
@@ -782,7 +783,7 @@ func formatPlanReflections(reflections []Reflection) string {
 // formatSessionReflections formats cross-attempt session reflections as a numbered list
 // using summary, root cause, action plan, and suggested action fields.
 // Returns "" for nil/empty input.
-func formatSessionReflections(reflections []Reflection) string {
+func formatSessionReflections(reflections []orchestration.Reflection) string {
 	if len(reflections) == 0 {
 		return ""
 	}
@@ -847,7 +848,7 @@ func formatSkillListForPlanner(ctx context.Context, availableSkills []skills.Ski
 // parsePlanResponse extracts a Plan from the LLM response content.
 // availableSkills is the router-matched pool used to validate per-step profile.skills;
 // unknown skill names are dropped (with a debug log). Pass nil to skip validation.
-func (p *Planner) parsePlanResponse(content string, availableSkills []skills.SkillDescriptor) (*Plan, error) {
+func (p *Planner) parsePlanResponse(content string, availableSkills []skills.SkillDescriptor) (*orchestration.Plan, error) {
 	// Try to find JSON in the response
 	content = strings.TrimSpace(content)
 
@@ -876,7 +877,7 @@ func (p *Planner) parsePlanResponse(content string, availableSkills []skills.Ski
 
 	jsonContent := content[startIdx : endIdx+1]
 
-	var plan Plan
+	var plan orchestration.Plan
 	if err := json.Unmarshal([]byte(jsonContent), &plan); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal plan JSON: %w", err)
 	}

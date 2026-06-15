@@ -8,6 +8,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
@@ -246,7 +247,7 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 	}
 	for name, cfg := range f.config.Security.ToolPolicies {
 		// Filter out internal tools
-		if IsInternalTool(name) {
+		if tools.IsInternalTool(name) {
 			continue
 		}
 		resp.ToolPolicies[name] = ToolPolicyResponse{
@@ -273,7 +274,7 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	newPolicies := make(map[string]config.ToolPolicyConfig, len(settings.ToolPolicies))
 	for name, policyCfg := range settings.ToolPolicies {
 		// Silently skip internal tools
-		if IsInternalTool(name) {
+		if tools.IsInternalTool(name) {
 			continue
 		}
 		newPolicies[name] = config.ToolPolicyConfig{

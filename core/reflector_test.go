@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
@@ -33,7 +34,7 @@ func TestReflector_Reflect_Success(t *testing.T) {
 
 	reflector := NewReflector(mockLLM)
 
-	trajectory := []Step{
+	trajectory := []agent.Step{
 		{
 			Thought:     "I need to run the tests",
 			Action:      llm.ToolCall{ID: "call_1", Name: "bash_exec", Input: json.RawMessage(`{"command": "go test"}`)},
@@ -285,7 +286,7 @@ func TestReflector_Reflect_WithTrajectory(t *testing.T) {
 
 	reflector := NewReflector(mockLLM)
 
-	trajectory := []Step{
+	trajectory := []agent.Step{
 		{
 			Thought:     "I need to test the code",
 			Action:      llm.ToolCall{ID: "call_1", Name: "bash_exec", Input: json.RawMessage(`{"command": "go test"}`)},
@@ -318,7 +319,7 @@ func TestReflector_Reflect_EmptyTrajectory(t *testing.T) {
 
 	reflector := NewReflector(mockLLM)
 
-	_, err := reflector.Reflect(context.Background(), []Step{}, nil, nil)
+	_, err := reflector.Reflect(context.Background(), []agent.Step{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Reflect failed: %v", err)
 	}

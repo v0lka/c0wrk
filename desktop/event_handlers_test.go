@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // silentLogger returns a logger that discards all output. Tests assert behavior
@@ -67,17 +68,17 @@ func TestParseConfirmDecision(t *testing.T) {
 	tests := []struct {
 		name    string
 		payload map[string]any
-		want    backend.ConfirmationResponse
+		want    tools.ConfirmationResponse
 		wantOK  bool
 	}{
 		{name: "missing field", payload: map[string]any{}, wantOK: false},
-		{name: "string allow_once", payload: map[string]any{"decision": "allow_once"}, want: backend.ConfirmAllowOnce, wantOK: true},
-		{name: "string deny", payload: map[string]any{"decision": "deny"}, want: backend.ConfirmDeny, wantOK: true},
-		{name: "string stop", payload: map[string]any{"decision": "stop"}, want: backend.ConfirmDenyAndStop, wantOK: true},
-		{name: "string deny_and_stop", payload: map[string]any{"decision": "deny_and_stop"}, want: backend.ConfirmDenyAndStop, wantOK: true},
+		{name: "string allow_once", payload: map[string]any{"decision": "allow_once"}, want: tools.ConfirmAllowOnce, wantOK: true},
+		{name: "string deny", payload: map[string]any{"decision": "deny"}, want: tools.ConfirmDeny, wantOK: true},
+		{name: "string stop", payload: map[string]any{"decision": "stop"}, want: tools.ConfirmDenyAndStop, wantOK: true},
+		{name: "string deny_and_stop", payload: map[string]any{"decision": "deny_and_stop"}, want: tools.ConfirmDenyAndStop, wantOK: true},
 		{name: "unknown string", payload: map[string]any{"decision": "approve_forever"}, wantOK: false},
-		{name: "float64 (JSON number)", payload: map[string]any{"decision": float64(int(backend.ConfirmAllowOnce))}, want: backend.ConfirmAllowOnce, wantOK: true},
-		{name: "int", payload: map[string]any{"decision": int(backend.ConfirmDeny)}, want: backend.ConfirmDeny, wantOK: true},
+		{name: "float64 (JSON number)", payload: map[string]any{"decision": float64(int(tools.ConfirmAllowOnce))}, want: tools.ConfirmAllowOnce, wantOK: true},
+		{name: "int", payload: map[string]any{"decision": int(tools.ConfirmDeny)}, want: tools.ConfirmDeny, wantOK: true},
 		{name: "unsupported type bool", payload: map[string]any{"decision": true}, wantOK: false},
 		{name: "unsupported type nil", payload: map[string]any{"decision": nil}, wantOK: false},
 	}
@@ -98,7 +99,7 @@ func TestParseConfirmDecision(t *testing.T) {
 
 func TestHandleToolConfirmResponse_HappyPath(t *testing.T) {
 	a := &App{}
-	ch := make(chan backend.ConfirmationResponse, 1)
+	ch := make(chan tools.ConfirmationResponse, 1)
 	a.pendingConfirmations.Store("rid-1", &pendingConfirmData{ch: ch, toolName: "bash_exec"})
 
 	a.handleToolConfirmResponse(map[string]any{
@@ -108,7 +109,7 @@ func TestHandleToolConfirmResponse_HappyPath(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != backend.ConfirmAllowOnce {
+		if got != tools.ConfirmAllowOnce {
 			t.Errorf("got %v, want ConfirmAllowOnce", got)
 		}
 	case <-time.After(100 * time.Millisecond):
@@ -164,7 +165,7 @@ func TestHandleToolConfirmResponse_WrongChannelType(t *testing.T) {
 func TestHandleToolConfirmResponse_ChannelFull(t *testing.T) {
 	a := &App{}
 	// Unbuffered channel with no receiver simulates "channel full"
-	ch := make(chan backend.ConfirmationResponse)
+	ch := make(chan tools.ConfirmationResponse)
 	a.pendingConfirmations.Store("rid-full", &pendingConfirmData{ch: ch, toolName: "edit_file"})
 
 	log, buf := captureLogger()
@@ -185,7 +186,7 @@ func TestHandleToolConfirmResponse_ChannelFull(t *testing.T) {
 
 func TestHandleAskUserResponse_HappyPath(t *testing.T) {
 	a := &App{}
-	ch := make(chan backend.AskUserResponse, 1)
+	ch := make(chan tools.AskUserResponse, 1)
 	a.pendingAskUser.Store("au-1", ch)
 
 	a.handleAskUserResponse(map[string]any{
@@ -215,7 +216,7 @@ func TestHandleAskUserResponse_HappyPath(t *testing.T) {
 
 func TestHandleAskUserResponse_NoAnswersField(t *testing.T) {
 	a := &App{}
-	ch := make(chan backend.AskUserResponse, 1)
+	ch := make(chan tools.AskUserResponse, 1)
 	a.pendingAskUser.Store("au-2", ch)
 
 	a.handleAskUserResponse(map[string]any{"request_id": "au-2"}, silentLogger())
@@ -241,7 +242,7 @@ func TestHandleAskUserResponse_MissingRequestID(t *testing.T) {
 
 func TestHandleAskUserResponse_MalformedAnswers(t *testing.T) {
 	a := &App{}
-	ch := make(chan backend.AskUserResponse, 1)
+	ch := make(chan tools.AskUserResponse, 1)
 	a.pendingAskUser.Store("au-3", ch)
 
 	// Each branch malformed in a different way; all should be silently skipped.
@@ -276,7 +277,7 @@ func TestHandleAskUserResponse_MalformedAnswers(t *testing.T) {
 
 func TestHandleStepLimitResponse_HappyPath(t *testing.T) {
 	a := &App{}
-	ch := make(chan backend.StepLimitResponse, 1)
+	ch := make(chan agent.StepLimitResponse, 1)
 	a.pendingStepLimit.Store("sl-1", ch)
 
 	a.handleStepLimitResponse(map[string]any{
@@ -286,7 +287,7 @@ func TestHandleStepLimitResponse_HappyPath(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != backend.StepLimitResponse("allow_always") {
+		if got != agent.StepLimitResponse("allow_always") {
 			t.Errorf("got %v, want allow_always", got)
 		}
 	case <-time.After(100 * time.Millisecond):
@@ -320,7 +321,7 @@ func TestHandleStepLimitResponse_NoAppContext(t *testing.T) {
 	// This covers the edge case where a step_limit response arrives before
 	// the application is fully initialized.
 	a := &App{} // a.app == nil
-	ch := make(chan backend.StepLimitResponse, 1)
+	ch := make(chan agent.StepLimitResponse, 1)
 	a.pendingStepLimit.Store("sl-noapp", ch)
 
 	a.handleStepLimitResponse(map[string]any{
@@ -330,7 +331,7 @@ func TestHandleStepLimitResponse_NoAppContext(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != backend.StepLimitResponse("deny") {
+		if got != agent.StepLimitResponse("deny") {
 			t.Errorf("got %q, want deny", got)
 		}
 	default:
@@ -360,7 +361,7 @@ func TestHandleToolJudgeRequest_NoApplication(t *testing.T) {
 	// runJudgeEvaluation guards against a.app == nil and emits an error.
 	a := &App{}
 	a.pendingConfirmations.Store("cid-1", &pendingConfirmData{
-		ch:        make(chan backend.ConfirmationResponse, 1),
+		ch:        make(chan tools.ConfirmationResponse, 1),
 		toolName:  "bash_exec",
 		input:     json.RawMessage(`{"command":"ls"}`),
 		sessionID: "sess-1",

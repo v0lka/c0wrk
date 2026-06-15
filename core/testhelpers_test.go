@@ -8,12 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
-// mockLLMCaller is a unified mock implementation of LLMCaller for testing.
+// mockLLMCaller is a unified mock implementation of agent.LLMCaller for testing.
 // It supports multiple configurations:
 //   - responses slice: returns responses in order, cycling through callIdx
 //   - callFn: custom function for more complex behavior (takes precedence if set)
@@ -76,7 +77,7 @@ func (m *mockLLMCaller) lastCall() llm.ChatRequest {
 	return m.calls[len(m.calls)-1]
 }
 
-// mockToolExecutor is a unified mock implementation of ToolExecutor for testing.
+// mockToolExecutor is a unified mock implementation of agent.ToolExecutor for testing.
 type mockToolExecutor struct {
 	// results maps tool names to their results
 	results map[string]tools.ToolResult
@@ -124,10 +125,10 @@ func (m *mockToolExecutor) IsToolUntrusted(name string) bool {
 // mockContextManager is a mock implementation of ContextManager for testing.
 type mockContextManager struct {
 	// steps records all steps added
-	steps []Step
+	steps []agent.Step
 
 	// strategy set via SetStrategy
-	strategy CompactionStrategy
+	strategy agent.CompactionStrategy
 
 	// configuration flags
 	needsCompaction bool
@@ -141,7 +142,7 @@ type mockContextManager struct {
 	buildPromptFn func() []llm.Message
 
 	// optional custom CheckFill function
-	checkFillFn func() FillCheck
+	checkFillFn func() agent.FillCheck
 }
 
 func (m *mockContextManager) BuildPrompt() []llm.Message {
@@ -159,11 +160,11 @@ func (m *mockContextManager) BuildPrompt() []llm.Message {
 	return messages
 }
 
-func (m *mockContextManager) AddStep(step Step) {
+func (m *mockContextManager) AddStep(step agent.Step) {
 	m.steps = append(m.steps, step)
 }
 
-func (m *mockContextManager) Compact(ctx context.Context) *CompactionResult {
+func (m *mockContextManager) Compact(ctx context.Context) *agent.CompactionResult {
 	m.compactCalled = true
 	return nil
 }
@@ -172,18 +173,18 @@ func (m *mockContextManager) SetTask(task string) {
 	m.taskDefinition = task
 }
 
-func (m *mockContextManager) SetStrategy(s CompactionStrategy) {
+func (m *mockContextManager) SetStrategy(s agent.CompactionStrategy) {
 	m.strategy = s
 }
 
-func (m *mockContextManager) CheckFill() FillCheck {
+func (m *mockContextManager) CheckFill() agent.FillCheck {
 	if m.checkFillFn != nil {
 		return m.checkFillFn()
 	}
 	if m.needsCompaction {
-		return FillCheck{Percent: 85, Status: "compact", Used: 85000, Max: 100000}
+		return agent.FillCheck{Percent: 85, Status: "compact", Used: 85000, Max: 100000}
 	}
-	return FillCheck{Percent: 0, Status: "ok", Used: 0, Max: 100000}
+	return agent.FillCheck{Percent: 0, Status: "ok", Used: 0, Max: 100000}
 }
 
 func (m *mockContextManager) CorrectTokenCount(apiInputTokens int) {}
@@ -198,7 +199,7 @@ func (m *mockContextManager) OutputLimit() int {
 	return 8192
 }
 
-func (m *mockContextManager) VulnerableOutputs() []VulnerableOutput {
+func (m *mockContextManager) VulnerableOutputs() []agent.VulnerableOutput {
 	return nil
 }
 
@@ -219,7 +220,7 @@ type mockEmitter struct {
 }
 
 func (m *mockEmitter) Routing(_, _, _ string)                 {}
-func (m *mockEmitter) PlanGenerated(_ int, _ []PlanStepEvent) {}
+func (m *mockEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent) {}
 func (m *mockEmitter) PlanStepStart(stepID, description, summary string) {
 	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description, summary string }{stepID, description, summary})
 }
@@ -269,7 +270,7 @@ func (m *mockEmitter) MemoryRead(_ int, _ string)                           {}
 // testPersistableBlackboard wraps a MapBlackboard and records persistence calls.
 // Used by orchestrator tests that exercise continuation/restore flows.
 type testPersistableBlackboard struct {
-	*MapBlackboard
+	*orchestration.MapBlackboard
 	taskID string
 	store  TaskPersistence
 
@@ -309,7 +310,7 @@ func (t *testPersistableBlackboard) TaskID() string { return t.taskID }
 // testBlackboardRestoreFunc returns a BlackboardRestoreFunc that creates
 // a testPersistableBlackboard from the mock store.
 func testBlackboardRestoreFunc() BlackboardRestoreFunc {
-	return func(taskID, sessionID string, store TaskPersistence, _ *slog.Logger, opts ...MapBlackboardOption) (PersistableBlackboard, error) {
+	return func(taskID, sessionID string, store TaskPersistence, _ *slog.Logger, opts ...orchestration.MapBlackboardOption) (PersistableBlackboard, error) {
 		state, err := store.LoadTaskState(taskID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load task state: %w", err)
@@ -318,7 +319,7 @@ func testBlackboardRestoreFunc() BlackboardRestoreFunc {
 			return nil, nil
 		}
 
-		mb := NewMapBlackboard(opts...)
+		mb := orchestration.NewMapBlackboard(opts...)
 		mb.SetOriginalRequest(state.OriginalRequest)
 		if state.Plan != nil {
 			mb.SetPlan(state.Plan)

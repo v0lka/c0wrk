@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core/tools"
 )
 
 // --- UpdateMCPServers ---
@@ -148,13 +149,13 @@ func TestGetToolList_FiltersInternal(t *testing.T) {
 	// full Application with registered tools requires heavyweight builder infra.
 	internalTools := []string{"finish", "tool_result_read", "set_step_status", "read_step_output"}
 	for _, tool := range internalTools {
-		if !IsInternalTool(tool) {
+		if !tools.IsInternalTool(tool) {
 			t.Errorf("IsInternalTool(%q) = false, want true", tool)
 		}
 	}
 	externalTools := []string{"bash_exec", "read_file", "write_file", "web_search"}
 	for _, tool := range externalTools {
-		if IsInternalTool(tool) {
+		if tools.IsInternalTool(tool) {
 			t.Errorf("IsInternalTool(%q) = true, want false", tool)
 		}
 	}

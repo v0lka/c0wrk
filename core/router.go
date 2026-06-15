@@ -16,7 +16,7 @@ import (
 
 // Router classifies user requests by complexity and determines execution strategy.
 type Router struct {
-	llm                 LLMCaller
+	llm                 agent.LLMCaller
 	historyWindow       int // number of recent messages to include
 	modelRegistry       *llm.ModelRegistry
 	baseReasoningEffort llm.ReasoningEffort
@@ -24,7 +24,7 @@ type Router struct {
 }
 
 // NewRouter creates a new Router.
-func NewRouter(caller LLMCaller, historyWindow int) *Router {
+func NewRouter(caller agent.LLMCaller, historyWindow int) *Router {
 	if historyWindow <= 0 {
 		historyWindow = 10
 	}

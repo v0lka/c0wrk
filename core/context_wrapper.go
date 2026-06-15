@@ -7,6 +7,7 @@ import (
 
 	"github.com/v0lka/c0wrk/sdk/llm"
 	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
 // domainKey is the context key for the routing domain.
@@ -83,7 +84,7 @@ func (c *CoreContextManager) ContextTracker() *llm.ContextTokenTracker {
 }
 
 // SetPlanFromPlan sets the plan, formatting it into a system message.
-func (c *CoreContextManager) SetPlanFromPlan(plan *Plan) {
+func (c *CoreContextManager) SetPlanFromPlan(plan *orchestration.Plan) {
 	if plan == nil || len(plan.Steps) == 0 {
 		return
 	}

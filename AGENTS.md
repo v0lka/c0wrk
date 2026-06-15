@@ -28,7 +28,7 @@ sdk/       Reusable engine: agent executor, llm providers, memory compaction, or
 frontend/  React UI; talks to Go via `frontend/wailsjs/go/desktop/App` (generated)
 ```
 
-Rule enforced by layout: **all SDK imports are confined to `core/`**. `backend/` wraps `core` without importing `sdk` directly (see comment in `core/builder.go`). Keep it that way.
+Rule enforced by layout: `backend/` and `desktop/` import `core` and `sdk/` directly. `core/` remains the primary consumer of `sdk`. No convenience re-export layers exist — all types are imported from their source packages. See ADR-008.
 
 ## Commands
 

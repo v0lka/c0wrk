@@ -151,25 +151,25 @@ func TestReplan_ReturnsUpdatedPlan(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	originalPlan := &Plan{
-		Steps: []PlanStep{
+	originalPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
 			{ID: "step_1", Description: "Initialize project", DependsOn: []string{}},
 			{ID: "step_2", Description: "Create main module", DependsOn: []string{"step_1"}},
 			{ID: "step_3", Description: "Create tests", DependsOn: []string{"step_2"}},
 		},
 	}
 
-	completedSteps := []CompletedStep{
+	completedSteps := []orchestration.CompletedStep{
 		{StepID: "step_1", Output: "Project initialized successfully"},
 	}
 
-	failedStep := CompletedStep{
+	failedStep := orchestration.CompletedStep{
 		StepID: "step_2",
 		Output: "Failed to create module",
 		Error:  nil,
 	}
 
-	reflection := &Reflection{
+	reflection := &orchestration.Reflection{
 		FailureAnalysis: "Module creation failed due to missing import",
 		RootCause:       "Import path was incorrect",
 		ActionPlan:      "Fix the import path and retry",
@@ -214,7 +214,7 @@ func TestPlan_WithReflections(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	reflections := []Reflection{
+	reflections := []orchestration.Reflection{
 		{
 			FailureAnalysis: "Previous attempt failed due to timeout",
 			RootCause:       "Network latency was too high",
@@ -302,22 +302,22 @@ func TestReplan_IncludesOriginalPlanAndFailureDetails(t *testing.T) {
 
 	planner := NewPlanner(mock)
 
-	originalPlan := &Plan{
-		Steps: []PlanStep{
+	originalPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
 			{ID: "step_1", Description: "First step"},
 		},
 	}
 
-	completedSteps := []CompletedStep{
+	completedSteps := []orchestration.CompletedStep{
 		{StepID: "step_1", Output: "Step 1 completed"},
 	}
 
-	failedStep := CompletedStep{
+	failedStep := orchestration.CompletedStep{
 		StepID: "step_2",
 		Output: "Failure output",
 	}
 
-	reflection := &Reflection{
+	reflection := &orchestration.Reflection{
 		FailureAnalysis: "Test failure analysis",
 		RootCause:       "Test root cause",
 		ActionPlan:      "Test action plan",
@@ -535,8 +535,8 @@ func TestReplan_WorkspacePathSubstitution(t *testing.T) {
 	}
 
 	planner := NewPlanner(mock)
-	originalPlan := &Plan{Steps: []PlanStep{{ID: "step_1", Description: "First step"}}}
-	failedStep := CompletedStep{StepID: "step_1", Output: "Failed"}
+	originalPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Description: "First step"}}}
+	failedStep := orchestration.CompletedStep{StepID: "step_1", Output: "Failed"}
 
 	ctx := tools.WithWorkspacePath(context.Background(), "/replan/workspace")
 	_, _ = planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil, nil)
@@ -641,20 +641,20 @@ func TestReplanWithSessionReflections(t *testing.T) {
 
 	planner := NewPlanner(mockLLM)
 
-	originalPlan := &Plan{
-		Steps: []PlanStep{
+	originalPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
 			{ID: "step_1", Description: "Do something"},
 		},
 	}
-	completedSteps := []CompletedStep{
+	completedSteps := []orchestration.CompletedStep{
 		{StepID: "step_1", Output: "partial result"},
 	}
-	failedStep := CompletedStep{StepID: "step_1", Output: "partial result"}
-	reflection := &Reflection{
+	failedStep := orchestration.CompletedStep{StepID: "step_1", Output: "partial result"}
+	reflection := &orchestration.Reflection{
 		Summary:   "Step failed due to timeout",
 		RootCause: "API rate limiting",
 	}
-	sessionReflections := []Reflection{
+	sessionReflections := []orchestration.Reflection{
 		{
 			Summary:         "First attempt failed",
 			RootCause:       "Wrong API endpoint",
@@ -1447,13 +1447,13 @@ func TestPlanContinuation(t *testing.T) {
 	planner := NewPlanner(mock)
 
 	originalRequest := "Build a CLI tool"
-	existingPlan := &Plan{
-		Steps: []PlanStep{
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
 			{ID: "step_1", Description: "Create main.go"},
 			{ID: "step_2", Description: "Add tests"},
 		},
 	}
-	completedSteps := []CompletedStep{
+	completedSteps := []orchestration.CompletedStep{
 		{StepID: "step_1", Output: "Created main.go with basic CLI structure"},
 		{StepID: "step_2", Output: "Added unit tests for all functions"},
 	}
@@ -1581,12 +1581,12 @@ func TestPlan_AgentsMD_InjectedInReplan(t *testing.T) {
 	agentsContent := "# Project Rules\nDo not modify vendor directory."
 	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
 
-	originalPlan := &Plan{
-		Steps: []PlanStep{
+	originalPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
 			{ID: "step_1", Summary: "Do something", Description: "Do something", DependsOn: []string{}},
 		},
 	}
-	failedStep := CompletedStep{StepID: "step_1", Output: "failed", Error: errors.New("build error")}
+	failedStep := orchestration.CompletedStep{StepID: "step_1", Output: "failed", Error: errors.New("build error")}
 
 	_, err := planner.Replan(ctx, originalPlan, nil, failedStep, nil, nil, nil)
 	if err != nil {
@@ -1625,12 +1625,12 @@ func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
 	agentsContent := "# Project Rules\nAlways use idiomatic Go."
 	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
 
-	existingPlan := &Plan{
-		Steps: []PlanStep{
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
 			{ID: "step_1", Summary: "Original step", Description: "Original step", DependsOn: []string{}},
 		},
 	}
-	completedSteps := []CompletedStep{
+	completedSteps := []orchestration.CompletedStep{
 		{StepID: "step_1", Output: "done"},
 	}
 
@@ -1755,14 +1755,14 @@ func TestFormatPlanReflections(t *testing.T) {
 	})
 
 	t.Run("empty slice", func(t *testing.T) {
-		result := formatPlanReflections([]Reflection{})
+		result := formatPlanReflections([]orchestration.Reflection{})
 		if result != "" {
 			t.Errorf("expected empty string for empty slice, got %q", result)
 		}
 	})
 
 	t.Run("single reflection", func(t *testing.T) {
-		result := formatPlanReflections([]Reflection{
+		result := formatPlanReflections([]orchestration.Reflection{
 			{
 				FailureAnalysis: "test failed",
 				RootCause:       "missing import",
@@ -1784,7 +1784,7 @@ func TestFormatPlanReflections(t *testing.T) {
 	})
 
 	t.Run("multiple reflections", func(t *testing.T) {
-		result := formatPlanReflections([]Reflection{
+		result := formatPlanReflections([]orchestration.Reflection{
 			{FailureAnalysis: "first failure", RootCause: "cause-1", ActionPlan: "plan-1"},
 			{FailureAnalysis: "second failure", RootCause: "cause-2", ActionPlan: "plan-2"},
 		})
@@ -1808,14 +1808,14 @@ func TestFormatSessionReflections(t *testing.T) {
 	})
 
 	t.Run("empty slice", func(t *testing.T) {
-		result := formatSessionReflections([]Reflection{})
+		result := formatSessionReflections([]orchestration.Reflection{})
 		if result != "" {
 			t.Errorf("expected empty string for empty slice, got %q", result)
 		}
 	})
 
 	t.Run("single reflection", func(t *testing.T) {
-		result := formatSessionReflections([]Reflection{
+		result := formatSessionReflections([]orchestration.Reflection{
 			{
 				Summary:         "attempt summary",
 				RootCause:       "root cause here",
@@ -1841,7 +1841,7 @@ func TestFormatSessionReflections(t *testing.T) {
 	})
 
 	t.Run("multiple reflections", func(t *testing.T) {
-		result := formatSessionReflections([]Reflection{
+		result := formatSessionReflections([]orchestration.Reflection{
 			{Summary: "first", RootCause: "c1", ActionPlan: "p1", SuggestedAction: "retry"},
 			{Summary: "second", RootCause: "c2", ActionPlan: "p2", SuggestedAction: "replan"},
 		})

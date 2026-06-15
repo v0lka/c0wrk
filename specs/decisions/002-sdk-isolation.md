@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-008](008-backend-sdk-direct-import.md)
 
 ## Context
 

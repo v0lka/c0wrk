@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/prompts"
+	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/sdk/prompt"
@@ -22,13 +23,13 @@ const reflectorAnalyzeFooter = "Please analyze this execution and provide a stru
 // Reflector analyzes execution trajectory to produce
 // structured self-correction insights per AD 4.6.
 type Reflector struct {
-	llm                 LLMCaller
+	llm                 agent.LLMCaller
 	baseReasoningEffort llm.ReasoningEffort
 	roleOverrides       map[string]string
 }
 
 // NewReflector creates a new Reflector with the given LLM caller.
-func NewReflector(caller LLMCaller) *Reflector {
+func NewReflector(caller agent.LLMCaller) *Reflector {
 	return &Reflector{llm: caller}
 }
 
@@ -47,10 +48,10 @@ func (r *Reflector) SetRoleOverrides(overrides map[string]string) {
 // plan = the plan (if plan_execute mode), prevReflections = past reflections for this task
 func (r *Reflector) Reflect(
 	ctx context.Context,
-	trajectory []Step,
-	plan *Plan,
-	prevReflections []Reflection,
-) (reflection *Reflection, err error) {
+	trajectory []agent.Step,
+	plan *orchestration.Plan,
+	prevReflections []orchestration.Reflection,
+) (reflection *orchestration.Reflection, err error) {
 	systemPrompt := r.buildSystemPrompt()
 
 	// Append compact environment context for reflection analysis.
@@ -95,9 +96,9 @@ func (r *Reflector) buildSystemPrompt() string {
 
 // buildUserMessage constructs the user message containing all context for reflection.
 func (r *Reflector) buildUserMessage(
-	trajectory []Step,
-	plan *Plan,
-	prevReflections []Reflection,
+	trajectory []agent.Step,
+	plan *orchestration.Plan,
+	prevReflections []orchestration.Reflection,
 ) string {
 	var sb strings.Builder
 
@@ -154,11 +155,11 @@ func (r *Reflector) buildUserMessage(
 }
 
 // parseReflectionResponse extracts a Reflection from the LLM response content.
-func (r *Reflector) parseReflectionResponse(content string) (*Reflection, error) {
+func (r *Reflector) parseReflectionResponse(content string) (*orchestration.Reflection, error) {
 	// Use the same extractJSON pattern as router.go
 	jsonStr := extractJSON(content)
 
-	var reflection Reflection
+	var reflection orchestration.Reflection
 	if err := json.Unmarshal([]byte(jsonStr), &reflection); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal reflection JSON: %w", err)
 	}

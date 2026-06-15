@@ -42,7 +42,7 @@
 └──────────┘    └──────────┘    └──────────┘    └─────┘
 ```
 
-Import rule: each arrow is one-way. `backend` NEVER imports `sdk`. `core` is the sole consumer of `sdk`.
+Import rule: each arrow is one-way. `backend` imports `core` AND `sdk`. `core` remains the primary sdk consumer. See ADR-008.
 
 ## Spec Workflow and Format Reference
 
@@ -98,7 +98,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 ### decisions/
 
 - [001-single-module.md](decisions/001-single-module.md) - Single Go module design
-- [002-sdk-isolation.md](decisions/002-sdk-isolation.md) - SDK imports confined to core
+- [002-sdk-isolation.md](decisions/002-sdk-isolation.md) - SDK imports confined to core → Superseded by ADR-008
 - [003-cgo-free-sqlite.md](decisions/003-cgo-free-sqlite.md) - CGO-free SQLite choice
 - [004-external-binary-dependencies.md](decisions/004-external-binary-dependencies.md) - git and rg as hard runtime dependencies
 - [005-bleve-rrf-hybrid-search.md](decisions/005-bleve-rrf-hybrid-search.md) - Bleve BM25 + Reciprocal Rank Fusion hybrid search

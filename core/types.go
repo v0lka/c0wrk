@@ -7,101 +7,10 @@ import (
 
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	tools "github.com/v0lka/c0wrk/sdk/tools" // alias: avoids collision with core/tools subpackage
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
-// ---------------------------------------------------------------------------
-// Type aliases for types that moved to sdk/agent
-// ---------------------------------------------------------------------------
 
-// Step — single iteration of the ReAct loop.
-type Step = agent.Step
-
-// ExecutorResult — result of Executor.Run.
-type ExecutorResult = agent.ExecutorResult
-
-// SubAgentResult — result from a SubAgent.
-type SubAgentResult = agent.SubAgentResult
-
-// FillCheck represents the result of a context window fill check.
-type FillCheck = agent.FillCheck
-
-// StepOutputStore provides read access to completed step outputs.
-type StepOutputStore = agent.StepOutputStore
-
-// StepOutputEntry describes a completed step's output for listing.
-type StepOutputEntry = agent.StepOutputEntry
-
-// ToolResultBudget — tool result truncation config.
-type ToolResultBudget = agent.ToolResultBudget
-
-// CircuitBreakerConfig — circuit breaker thresholds for executor protection.
-type CircuitBreakerConfig = agent.CircuitBreakerConfig
-
-// LLMCaller is the interface Executor needs from the LLM layer.
-type LLMCaller = agent.LLMCaller
-
-// ToolExecutor is the interface Executor needs from the tools layer.
-type ToolExecutor = agent.ToolExecutor
-
-// CompactionStrategy defines an algorithm for compressing step history.
-type CompactionStrategy = agent.CompactionStrategy
-
-// CompactionResult holds before/after fill percentages from a compaction operation.
-type CompactionResult = agent.CompactionResult
-
-// StepLimitFunc is called when an executor reaches its step limit.
-type StepLimitFunc = agent.StepLimitFunc
-
-// StepLimitResponse represents the user's decision when the step limit is reached.
-type StepLimitResponse = agent.StepLimitResponse
-
-// VulnerableOutput describes a tool output that will be pruned on the next pruning cycle.
-type VulnerableOutput = agent.VulnerableOutput
-
-// Step limit response constants.
-var (
-	StepLimitAllowOnce   = agent.StepLimitAllowOnce
-	StepLimitAllowAlways = agent.StepLimitAllowAlways
-	StepLimitDeny        = agent.StepLimitDeny
-)
-
-// ---------------------------------------------------------------------------
-// Type aliases for types that moved to sdk/orchestration
-// ---------------------------------------------------------------------------
-
-// CompletedStep — result of an executed plan step (AD 4.7).
-type CompletedStep = orchestration.CompletedStep
-
-// PlanStepEvent represents a single step in a plan for event emission.
-type PlanStepEvent = orchestration.PlanStepEvent
-
-// Re-export blackboard types from sdk/orchestration.
-
-// StepResult holds the output of a single executed step.
-type StepResult = orchestration.StepResult
-
-// BlackboardEntry is a key-value entry on the blackboard.
-type BlackboardEntry = orchestration.BlackboardEntry
-
-// Blackboard is the shared state store for the Plan&Execute loop.
-type Blackboard = orchestration.Blackboard
-
-// MapBlackboard is the default in-memory Blackboard implementation.
-type MapBlackboard = orchestration.MapBlackboard
-
-// MapBlackboardOption configures a MapBlackboard.
-type MapBlackboardOption = orchestration.MapBlackboardOption
-
-// Fact represents a derived insight stored on the blackboard.
-type Fact = orchestration.Fact
-
-var (
-	NewMapBlackboard     = orchestration.NewMapBlackboard
-	WithMaxSummaryTokens = orchestration.WithMaxSummaryTokens
-	WithMaxSummaryLen    = orchestration.WithMaxSummaryLen
-	GenerateSummary      = orchestration.GenerateSummary
-)
 
 // ---------------------------------------------------------------------------
 // ContextManager — extends sdk/agent.ContextManager with c0wrk-specific SetTask
@@ -127,7 +36,7 @@ type Emitter interface {
 
 	// c0wrk-specific orchestration events
 	Routing(mode, domain, complexity string)
-	PlanGenerated(stepCount int, steps []PlanStepEvent)
+	PlanGenerated(stepCount int, steps []orchestration.PlanStepEvent)
 	PlanStepStart(stepID string, description, summary string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string)
 	Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int)
@@ -176,7 +85,7 @@ type noopEmitter struct {
 var _ Emitter = (*noopEmitter)(nil)
 
 func (n *noopEmitter) Routing(_, _, _ string)                                       {}
-func (n *noopEmitter) PlanGenerated(_ int, _ []PlanStepEvent)                       {}
+func (n *noopEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent)                       {}
 func (n *noopEmitter) PlanStepStart(_, _, _ string)                                 {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
 func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}
@@ -207,7 +116,7 @@ func (a *emitterEventsAdapter) log() *slog.Logger {
 
 var _ orchestration.Events = (*emitterEventsAdapter)(nil)
 
-func (a *emitterEventsAdapter) OnPlanGenerated(n int, steps []PlanStepEvent) {
+func (a *emitterEventsAdapter) OnPlanGenerated(n int, steps []orchestration.PlanStepEvent) {
 	a.PlanGenerated(n, steps)
 }
 func (a *emitterEventsAdapter) OnStepStarted(id, desc, summary string) {
@@ -271,30 +180,18 @@ type RoutingDecision struct {
 	MatchedSkills      []string `json:"matched_skills,omitempty"` // skills selected by the router
 }
 
-// Plan — DAG of execution steps (AD 4.3).
-// Type alias for sdk/orchestration.Plan.
-type Plan = orchestration.Plan
-
-// PlanStep — single step in the plan (AD 4.3).
-// Type alias for sdk/orchestration.PlanStep.
-type PlanStep = orchestration.PlanStep
-
 // ExecutorConfig — configuration for the Executor (AD 4.4).
 type ExecutorConfig struct {
 	MaxSteps           int
 	CompactionStrategy string // will be resolved to actual strategy by memory package
-	Tools              []tools.ToolDescriptor
+	Tools              []sdktools.ToolDescriptor
 }
 
 // TaskDefinition — defines a task for the Executor.
 type TaskDefinition struct {
-	Task  string                 `json:"task"`
-	Tools []tools.ToolDescriptor `json:"tools"`
+	Task  string                   `json:"task"`
+	Tools []sdktools.ToolDescriptor `json:"tools"`
 }
-
-// Reflection — result of Reflector analysis (AD 4.6).
-// Type alias for sdk/orchestration.Reflection.
-type Reflection = orchestration.Reflection
 
 // AgentProfile defines a specialized agent role for plan step execution.
 type AgentProfile struct {
@@ -319,11 +216,11 @@ func (AgentProfile) isStepProfile() {}
 type HandleResult struct {
 	Output          string           `json:"output"`
 	RoutingDecision *RoutingDecision `json:"routing_decision"`
-	Plan            *Plan            `json:"plan,omitempty"`
-	Blackboard      Blackboard       `json:"-"` // shared state for downstream consumers (not serialized)
+	Plan            *orchestration.Plan            `json:"plan,omitempty"`
+	Blackboard      orchestration.Blackboard       `json:"-"` // shared state for downstream consumers (not serialized)
 	// Retry-loop fields (Phase 3)
-	AttemptCount int          `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
-	Reflections  []Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
+	AttemptCount int                    `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
+	Reflections  []orchestration.Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
 }
 
 // HandleOptions controls how a message is processed by HandleMessage.

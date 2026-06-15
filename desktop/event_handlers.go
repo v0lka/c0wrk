@@ -6,8 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 // extractPayload performs the standard data[0].(map[string]any) shape check
@@ -27,9 +28,9 @@ func extractPayload(eventName string, data []any, log *slog.Logger) (map[string]
 }
 
 // parseConfirmDecision converts the JSON decision field (which may arrive as a
-// JSON number → float64, an int, or a string) into a backend.ConfirmationResponse.
+// JSON number → float64, an int, or a string) into a tools.ConfirmationResponse.
 // Returns ok=false on missing/unrecognized values and logs a warning.
-func parseConfirmDecision(payload map[string]any, log *slog.Logger) (backend.ConfirmationResponse, bool) {
+func parseConfirmDecision(payload map[string]any, log *slog.Logger) (tools.ConfirmationResponse, bool) {
 	decisionVal, ok := payload["decision"]
 	if !ok {
 		log.Warn("tool confirmation response missing decision field")
@@ -38,17 +39,17 @@ func parseConfirmDecision(payload map[string]any, log *slog.Logger) (backend.Con
 
 	switch v := decisionVal.(type) {
 	case float64:
-		return backend.ConfirmationResponse(int(v)), true
+		return tools.ConfirmationResponse(int(v)), true
 	case int:
-		return backend.ConfirmationResponse(v), true
+		return tools.ConfirmationResponse(v), true
 	case string:
 		switch v {
 		case "allow_once":
-			return backend.ConfirmAllowOnce, true
+			return tools.ConfirmAllowOnce, true
 		case "deny":
-			return backend.ConfirmDeny, true
+			return tools.ConfirmDeny, true
 		case "stop", "deny_and_stop":
-			return backend.ConfirmDenyAndStop, true
+			return tools.ConfirmDenyAndStop, true
 		default:
 			log.Warn("unknown string confirmation decision", "decision", v)
 			return 0, false
@@ -211,7 +212,7 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 		log.Warn("no pending ask_user for request_id", "request_id", requestID)
 		return
 	}
-	ch, ok := chVal.(chan backend.AskUserResponse)
+	ch, ok := chVal.(chan tools.AskUserResponse)
 	if !ok {
 		log.Warn("pending ask_user channel has wrong type", "request_id", requestID)
 		a.pendingAskUser.Delete(requestID)
@@ -231,8 +232,8 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 // payload. Missing or malformed entries are silently skipped — the question
 // IDs are owned by the orchestrator and unrecognized IDs would be rejected
 // upstream anyway.
-func parseAskUserAnswers(payload map[string]any) backend.AskUserResponse {
-	var resp backend.AskUserResponse
+func parseAskUserAnswers(payload map[string]any) tools.AskUserResponse {
+	var resp tools.AskUserResponse
 
 	answersVal, ok := payload["answers"]
 	if !ok {
@@ -248,7 +249,7 @@ func parseAskUserAnswers(payload map[string]any) backend.AskUserResponse {
 		if !ok {
 			continue
 		}
-		var answer backend.AskUserAnswer
+		var answer tools.AskUserAnswer
 		if id, ok := answerMap["id"].(string); ok {
 			answer.ID = id
 		}
@@ -287,14 +288,14 @@ func (a *App) handleStepLimitResponse(payload map[string]any, log *slog.Logger) 
 		log.Warn("step_limit response has unsupported type", "type", fmt.Sprintf("%T", responseVal))
 		return
 	}
-	resp := backend.StepLimitResponse(respStr)
+	resp := agent.StepLimitResponse(respStr)
 
 	chVal, ok := a.pendingStepLimit.Load(requestID)
 	if !ok {
 		log.Warn("no pending step_limit for request_id", "request_id", requestID)
 		return
 	}
-	ch, ok := chVal.(chan backend.StepLimitResponse)
+	ch, ok := chVal.(chan agent.StepLimitResponse)
 	if !ok {
 		log.Warn("pending step_limit channel has wrong type", "request_id", requestID)
 		a.pendingStepLimit.Delete(requestID)
