@@ -8,6 +8,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // Compile-time check that Tool implements tools.ToolJudger.
@@ -124,8 +125,8 @@ func (t *Tool) InputSchema() json.RawMessage {
 }
 
 // DefaultPolicy returns PolicyUserConfirm as a conservative default for MCP tools.
-func (t *Tool) DefaultPolicy() tools.ToolPolicy {
-	return tools.PolicyUserConfirm
+func (t *Tool) DefaultPolicy() sdktools.ToolPolicy {
+	return sdktools.PolicyUserConfirm
 }
 
 // IsUntrusted always returns true for MCP tools because their output
@@ -133,19 +134,19 @@ func (t *Tool) DefaultPolicy() tools.ToolPolicy {
 func (t *Tool) IsUntrusted() bool { return t.untrusted }
 
 // Execute calls the MCP server's tools/call endpoint with the provided input.
-func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (sdktools.ToolResult, error) {
 	// Parse input JSON into a map for the MCP call
 	var arguments map[string]any
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &arguments); err != nil {
-			return tools.ParseInputError(err)
+			return sdktools.ParseInputError(err)
 		}
 	}
 
 	// Call the tool on the MCP server
 	result, err := t.server.CallTool(ctx, t.name, arguments)
 	if err != nil {
-		return tools.ToolResult{
+		return sdktools.ToolResult{
 			Content: fmt.Sprintf("MCP tool call failed: %v", err),
 			IsError: true,
 		}, nil
@@ -156,9 +157,9 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolRe
 }
 
 // convertMCPResult converts an MCP CallToolResult to our ToolResult format.
-func convertMCPResult(result *mcp.CallToolResult) tools.ToolResult {
+func convertMCPResult(result *mcp.CallToolResult) sdktools.ToolResult {
 	if result == nil {
-		return tools.ToolResult{
+		return sdktools.ToolResult{
 			Content: "",
 			IsError: false,
 		}
@@ -185,7 +186,7 @@ func convertMCPResult(result *mcp.CallToolResult) tools.ToolResult {
 		}
 	}
 
-	return tools.ToolResult{
+	return sdktools.ToolResult{
 		Content: content,
 		IsError: result.IsError,
 	}

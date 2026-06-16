@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
-
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -240,7 +240,7 @@ func (pb *PersistentBlackboard) SetFinalResult(result string) {
 }
 
 // SetRouting persists the routing decision for the task.
-func (pb *PersistentBlackboard) SetRouting(routing *core.RoutingDecision) {
+func (pb *PersistentBlackboard) SetRouting(routing *router.RoutingDecision) {
 	pb.persistSafe("routing", func() error {
 		return pb.store.PersistRouting(pb.taskID, routing)
 	})

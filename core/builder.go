@@ -17,15 +17,19 @@ import (
 	"github.com/openai/openai-go/option"
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
+	"github.com/v0lka/c0wrk/sdk/agent/reflector"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/planner"
 	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/sdk/prompt"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // OrchestratorBuilder owns the shared tool registry, MCP gateway, and cached
@@ -41,7 +45,7 @@ type OrchestratorBuilder struct {
 	llmRouter        *llm.Router
 	modelRegistry    *llm.ModelRegistry
 	logger           *slog.Logger
-	vectorSearchFunc tools.VectorSearchFunc
+	vectorSearchFunc builtins.VectorSearchFunc
 	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 
@@ -71,7 +75,7 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 // MCP gateway and LLM router initialization happens asynchronously so that
 // this function returns immediately. Callers that need those components
 // (Build, GenerateTitle, etc.) block until the background init finishes.
-func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
+func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc sdktools.AskUserFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
 	// Defensive default: if the caller did not provide an env-var expander,
 	// fall back to a no-op so that downstream callers (proxy/MCP/LLM config)
 	// don't panic on a nil function pointer. The real expander is supplied by
@@ -154,13 +158,13 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	}
 
 	// LLM Router
-	router, modelReg, err := b.buildRouter(ctx, cfg)
+	llmRouter, modelReg, err := b.buildRouter(ctx, cfg)
 	if err != nil {
 		b.log().Warn("failed to initialize LLM router at startup", "error", err)
 		b.initErr = err
 	} else {
 		b.mu.Lock()
-		b.llmRouter = router
+		b.llmRouter = llmRouter
 		b.modelRegistry = modelReg
 		b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
 		b.roleOverrides = cfg.Reasoning.RoleOverrides
@@ -247,7 +251,7 @@ func (b *OrchestratorBuilder) Build(
 	emitter = NewLoggingEmitter(emitter, logger)
 
 	// Build per-session LLM router + model registry
-	router, modelReg, err := b.buildRouter(context.Background(), cfg)
+	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
@@ -257,7 +261,7 @@ func (b *OrchestratorBuilder) Build(
 
 	// Create session-level UsageTracker and TrackingCaller
 	usageTracker := llm.NewUsageTracker()
-	trackingCaller := llm.NewTrackingCaller(router, usageTracker)
+	trackingCaller := llm.NewTrackingCaller(llmRouter, usageTracker)
 
 	// Register emitter as observer for session token events and persistence
 	if te, ok := emitter.(interface {
@@ -273,9 +277,9 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, planner, reflector := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter)
-	if coreRouter == nil || planner == nil {
-		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or planner is nil")
+	coreRouter, corePlanner, coreReflector := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter)
+	if coreRouter == nil || corePlanner == nil {
+		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or corePlanner is nil")
 	}
 
 	// Resolve base reasoning effort for step executors
@@ -346,13 +350,13 @@ func (b *OrchestratorBuilder) Build(
 
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:            coreRouter,
-		Planner:           planner,
+		Planner:           corePlanner,
 		LLM:               loggedLLM,
 		ToolExec:          sessionRegistry,         // ToolExecutor (per-session policy view)
 		ToolRegistry:      b.registry.ToolRegistry, // SDK ToolRegistry (shared)
 		TokenCounter:      tokenCounter,
 		ContextFactory:    contextFactory,
-		Reflector:         reflector,
+		Reflector:         coreReflector,
 		Logger:            logger,
 		Emitter:           emitter,
 		ModelRegistry:     modelReg,
@@ -376,12 +380,12 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	if err := b.waitReady(waitCtx); err != nil {
 		return err
 	}
-	router, modelReg, err := b.buildRouter(context.Background(), cfg)
+	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
 	b.mu.Lock()
-	b.llmRouter = router
+	b.llmRouter = llmRouter
 	b.modelRegistry = modelReg
 	b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
 	b.roleOverrides = cfg.Reasoning.RoleOverrides
@@ -399,9 +403,9 @@ func (b *OrchestratorBuilder) RebuildJudge(cfg *BuilderConfig) {
 		return
 	}
 	b.mu.RLock()
-	router := b.llmRouter
+	llmRouter := b.llmRouter
 	b.mu.RUnlock()
-	b.rebuildJudgeInternal(cfg, router)
+	b.rebuildJudgeInternal(cfg, llmRouter)
 }
 
 // ReconfigureMCP, StopGateway, SetMCPWorkDir, and configToGatewayConfig live
@@ -416,7 +420,7 @@ func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 // UpdateSearchTool replaces or removes the web_search tool in the registry.
 func (b *OrchestratorBuilder) UpdateSearchTool(cfg *BuilderConfig) {
 	apiKey := cfg.ExpandEnvVars(cfg.Search.APIKey)
-	limits := tools.WebSearchLimits{
+	limits := builtins.WebSearchLimits{
 		MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 		Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 	}
@@ -478,7 +482,7 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 
 // UpdateWebTools re-registers web_fetch and web_search tools with the current proxy client.
 func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
-	fetchLimits := tools.WebFetchLimits{
+	fetchLimits := builtins.WebFetchLimits{
 		Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
 	}
 	b.mu.RLock()
@@ -486,7 +490,7 @@ func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
 	b.mu.RUnlock()
 	tools.UpdateWebFetchTool(b.registry, fetchLimits, pc)
 
-	searchLimits := tools.WebSearchLimits{
+	searchLimits := builtins.WebSearchLimits{
 		MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 		Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 	}
@@ -501,12 +505,12 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 	}
 
 	b.mu.RLock()
-	router := b.llmRouter
+	llmRouter := b.llmRouter
 	baseEffort := b.baseReasoningEffort
 	roleOverrides := b.roleOverrides
 	b.mu.RUnlock()
 
-	if router == nil {
+	if llmRouter == nil {
 		return "", errors.New("llm router not available")
 	}
 
@@ -526,7 +530,7 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		Temperature:     &temp,
 		ReasoningEffort: titleEffort,
 	}
-	resp, err := router.Call(ctx, req)
+	resp, err := llmRouter.Call(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -586,7 +590,7 @@ func filterKnownFamilyModels(models []string) []string {
 // RegisterVectorSearch adds the semantic_search tool to the shared registry.
 // This must be called after NewOrchestratorBuilder when the vector index backend
 // is available. The searchFunc and waitFunc are provided by the desktop layer.
-func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc tools.VectorSearchFunc, waitFunc tools.VectorSearchWaitFunc) {
+func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc builtins.VectorSearchFunc, waitFunc builtins.VectorSearchWaitFunc) {
 	if searchFunc == nil {
 		return
 	}
@@ -740,11 +744,11 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 			return prompt.DefaultSampling(family).Temperature
 		},
 	}
-	router, err := llm.NewRouter(ctx, routerCfg, modelRegistry)
+	llmRouter, err := llm.NewRouter(ctx, routerCfg, modelRegistry)
 	if err != nil {
 		return nil, nil, err
 	}
-	return router, modelRegistry, nil
+	return llmRouter, modelRegistry, nil
 }
 
 // resolveBaseEffort determines the base reasoning effort from the active model
@@ -776,52 +780,63 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	contextFactory ContextManagerFactory,
 	tokenCounter llm.TokenCounter,
 	dumpWriter io.Writer,
-) (*Router, *Planner, *Reflector) {
+) (*router.Router, *planner.Planner, *reflector.Reflector) {
 	if caller == nil {
 		return nil, nil, nil
 	}
 	loggedCaller := agent.NewLoggingLLMCaller(caller, cfg.LLM.ActiveProvider, logger)
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
-	coreRouter := NewRouter(loggedCaller, cfg.Router.HistoryWindow)
-	planner := NewPlanner(loggedCaller)
-	reflector := NewReflector(loggedCaller)
+	coreRouter := newCoreRouter(loggedCaller, cfg.Router.HistoryWindow)
+	corePlanner := newCorePlanner(loggedCaller, b.registry)
+	coreReflector := newCoreReflector(loggedCaller)
 
 	if modelRegistry != nil {
 		coreRouter.SetModelRegistry(modelRegistry)
-		planner.SetModelRegistry(modelRegistry)
+		corePlanner.Cfg.ModelRegistry = modelRegistry
 	}
 
 	// Wire reasoning effort for all agents
 	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.Model, modelRegistry, cfg)
 	coreRouter.SetBaseReasoningEffort(baseEffort)
 	coreRouter.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
-	reflector.SetBaseReasoningEffort(baseEffort)
-	reflector.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
-	planner.SetBaseReasoningEffort(baseEffort)
-	planner.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
+	coreReflector.SetBaseReasoningEffort(baseEffort)
+	coreReflector.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
+	corePlanner.Cfg.BaseReasoningEffort = baseEffort
+	corePlanner.Cfg.RoleOverrides = cfg.Reasoning.RoleOverrides
 
 	// Wire planner exploration dependencies
-	planner.SetLogger(logger)
-	planner.SetModel(cfg.LLM.Model)
-	planner.SetToolRegistry(b.registry)
-	planner.SetTokenCounter(tokenCounter)
-	planner.SetContextFactory(contextFactory)
-	planner.SetEmitter(emitter)
-	planner.SetMaxExploreSteps(cfg.Orchestration.MaxPlannerExploreSteps)
+	corePlanner.Cfg.Logger = logger
+	corePlanner.Cfg.Model = cfg.LLM.Model
+	corePlanner.Cfg.TokenCounter = tokenCounter
+	corePlanner.Cfg.ContextFactory = plannerContextFactoryAdapter(contextFactory)
+	corePlanner.Cfg.Emitter = emitter
+	corePlanner.Cfg.MaxExploreSteps = cfg.Orchestration.MaxPlannerExploreSteps
 
 	// Wire CallerForStep so exploration's ContextTokenTracker gets corrected by API responses
 	if tc, ok := caller.(*llm.TrackingCaller); ok {
-		planner.SetCallerForStep(func(cm agent.ContextManager) agent.LLMCaller {
+		corePlanner.Cfg.CallerForStep = func(cm agent.ContextManager) agent.LLMCaller {
 			if ctm, ok := cm.(interface {
 				ContextTracker() *llm.ContextTokenTracker
 			}); ok {
 				return tc.WithContextTracker(ctm.ContextTracker())
 			}
 			return tc
-		})
+		}
 	}
 
-	return coreRouter, planner, reflector
+	return coreRouter, corePlanner, coreReflector
+}
+
+// plannerContextFactoryAdapter adapts a core ContextManagerFactory to the planner's
+// ContextManagerFactory signature by dropping the variadic PruningOverride parameter
+// (the planner never uses pruning overrides during exploration).
+func plannerContextFactoryAdapter(cf ContextManagerFactory) planner.ContextManagerFactory {
+	if cf == nil {
+		return nil
+	}
+	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) agent.ContextManager {
+		return cf(systemPrompt, modelMeta, compactionStrategy)
+	}
 }
 
 // buildContextFactory creates a ContextManagerFactory using the tracking caller for
@@ -909,7 +924,7 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 }
 
 // rebuildJudgeInternal recreates the ToolJudge and sets it on the registry.
-func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, router *llm.Router) {
+func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter *llm.Router) {
 	if b.registry == nil {
 		return
 	}
@@ -917,8 +932,8 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, router *l
 	defaultModel := cfg.LLM.Model
 
 	var judgeProvider llm.Provider
-	if router != nil {
-		judgeProvider = router.GetDefaultProvider()
+	if llmRouter != nil {
+		judgeProvider = llmRouter.GetDefaultProvider()
 	} else {
 		// Try building a fresh router
 		newRouter, _, err := b.buildRouter(context.Background(), cfg)
@@ -929,7 +944,7 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, router *l
 		}
 	}
 
-	judge := tools.NewToolJudgeFromConfig(tools.JudgeConfig{
+	judge := sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
 		Model:        cfg.Security.JudgeModel,
 		DefaultModel: defaultModel,
 		Provider:     judgeProvider,
@@ -948,14 +963,14 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, router *l
 
 // applySecurityPolicies applies per-tool policy overrides and default policy.
 func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
-	policyOverrides := make(map[string]tools.ToolPolicy)
+	policyOverrides := make(map[string]sdktools.ToolPolicy)
 	for toolName, policyCfg := range cfg.Security.ToolPolicies {
-		policyOverrides[toolName] = tools.ParseToolPolicy(policyCfg.Policy)
+		policyOverrides[toolName] = sdktools.ParseToolPolicy(policyCfg.Policy)
 	}
 	b.registry.SetPolicyOverrides(policyOverrides)
 
 	if cfg.Security.DefaultPolicy != "" {
-		b.registry.SetDefaultPolicy(tools.ParseToolPolicy(cfg.Security.DefaultPolicy))
+		b.registry.SetDefaultPolicy(sdktools.ParseToolPolicy(cfg.Security.DefaultPolicy))
 	}
 }
 
@@ -971,20 +986,20 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 	}
 
 	return tools.BuiltinToolsConfig{
-		FileLimits: tools.FileLimits{
+		FileLimits: builtins.FileLimits{
 			ReadDefaultLines: cfg.ToolLimits.ReadDefaultLines,
 		},
-		RipgrepLimits: tools.RipgrepLimits{
+		RipgrepLimits: builtins.RipgrepLimits{
 			Timeout: time.Duration(cfg.Timeouts.RipgrepTimeout) * time.Second,
 		},
-		WebFetchLimits: tools.WebFetchLimits{
+		WebFetchLimits: builtins.WebFetchLimits{
 			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
 		},
-		WebSearchLimits: tools.WebSearchLimits{
+		WebSearchLimits: builtins.WebSearchLimits{
 			MaxResults: cfg.ToolLimits.WebSearchMaxResults,
 			Timeout:    time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 		},
-		BashTimeouts: tools.BashTimeouts{
+		BashTimeouts: builtins.BashTimeouts{
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},

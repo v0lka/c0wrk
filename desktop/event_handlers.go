@@ -9,6 +9,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // extractPayload performs the standard data[0].(map[string]any) shape check
@@ -212,7 +213,7 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 		log.Warn("no pending ask_user for request_id", "request_id", requestID)
 		return
 	}
-	ch, ok := chVal.(chan tools.AskUserResponse)
+	ch, ok := chVal.(chan sdktools.AskUserResponse)
 	if !ok {
 		log.Warn("pending ask_user channel has wrong type", "request_id", requestID)
 		a.pendingAskUser.Delete(requestID)
@@ -232,8 +233,8 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 // payload. Missing or malformed entries are silently skipped — the question
 // IDs are owned by the orchestrator and unrecognized IDs would be rejected
 // upstream anyway.
-func parseAskUserAnswers(payload map[string]any) tools.AskUserResponse {
-	var resp tools.AskUserResponse
+func parseAskUserAnswers(payload map[string]any) sdktools.AskUserResponse {
+	var resp sdktools.AskUserResponse
 
 	answersVal, ok := payload["answers"]
 	if !ok {
@@ -249,7 +250,7 @@ func parseAskUserAnswers(payload map[string]any) tools.AskUserResponse {
 		if !ok {
 			continue
 		}
-		var answer tools.AskUserAnswer
+		var answer sdktools.AskUserAnswer
 		if id, ok := answerMap["id"].(string); ok {
 			answer.ID = id
 		}

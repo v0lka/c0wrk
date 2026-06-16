@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/core/vectorindex"
+	"github.com/v0lka/c0wrk/sdk/vectorindex"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
@@ -138,6 +139,8 @@ func (f *FrontendAPI) ctx() context.Context {
 
 const gitRepoCacheTTL = 30 * time.Second
 
+const gitRepoCacheMaxSize = 100
+
 // gitRepoCacheEntry holds a cached IsGitRepo result with expiry.
 type gitRepoCacheEntry struct {
 	isRepo bool
@@ -149,10 +152,29 @@ type gitRepoCacheEntry struct {
 // rapid file-tree refresh cycles. The cache is a ViewModel concern — the
 // underlying workspace.IsGitRepo is stateless per ADR-009.
 func (f *FrontendAPI) isGitRepo(dir string) bool {
+	now := time.Now()
+
 	f.gitRepoCacheMu.Lock()
-	if e, ok := f.gitRepoCache[dir]; ok && time.Now().Before(e.expiry) {
+	if e, ok := f.gitRepoCache[dir]; ok && now.Before(e.expiry) {
 		f.gitRepoCacheMu.Unlock()
 		return e.isRepo
+	}
+	// Lightweight sweep: remove expired entries when the cache grows large.
+	// If all entries are still valid (within TTL), evict the oldest to bound memory.
+	if len(f.gitRepoCache) > gitRepoCacheMaxSize {
+		type cacheEntry struct {
+			key    string
+			expiry time.Time
+		}
+		entries := make([]cacheEntry, 0, len(f.gitRepoCache))
+		for k, e := range f.gitRepoCache {
+			entries = append(entries, cacheEntry{key: k, expiry: e.expiry})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].expiry.Before(entries[j].expiry) })
+		toDelete := len(f.gitRepoCache) - gitRepoCacheMaxSize
+		for i := 0; i < toDelete; i++ {
+			delete(f.gitRepoCache, entries[i].key)
+		}
 	}
 	f.gitRepoCacheMu.Unlock()
 
@@ -162,7 +184,7 @@ func (f *FrontendAPI) isGitRepo(dir string) bool {
 	if f.gitRepoCache == nil {
 		f.gitRepoCache = make(map[string]gitRepoCacheEntry)
 	}
-	f.gitRepoCache[dir] = gitRepoCacheEntry{isRepo: isRepo, expiry: time.Now().Add(gitRepoCacheTTL)}
+	f.gitRepoCache[dir] = gitRepoCacheEntry{isRepo: isRepo, expiry: now.Add(gitRepoCacheTTL)}
 	f.gitRepoCacheMu.Unlock()
 
 	return isRepo

@@ -9,12 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/planner"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 )
 
 // mockTool implements tools.Tool for testing.
@@ -77,12 +80,12 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -184,12 +187,12 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -254,8 +257,8 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         NewRouter(mockLLM, 5),
-		Planner:        NewPlanner(mockLLM),
+		Router:         newCoreRouter(mockLLM, 5),
+		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -348,8 +351,8 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10, MaxRetries: 0}, OrchestratorDeps{
-		Router:         NewRouter(mockLLM, 5),
-		Planner:        NewPlanner(mockLLM),
+		Router:         newCoreRouter(mockLLM, 5),
+		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
 		LLM:            mockLLM,
 		ToolExec:       reg,
 		ToolRegistry:   reg,
@@ -422,8 +425,8 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         NewRouter(mockLLM, 5),
-		Planner:        NewPlanner(mockLLM),
+		Router:         newCoreRouter(mockLLM, 5),
+		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -565,8 +568,8 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         NewRouter(mockLLM, 5),
-		Planner:        NewPlanner(mockLLM),
+		Router:         newCoreRouter(mockLLM, 5),
+		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -621,51 +624,51 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 func TestCoreStepConfigurator_RoleSuffixInjection(t *testing.T) {
 	tests := []struct {
 		name           string
-		profile        AgentProfile
+		profile        planner.AgentProfile
 		wantSuffix     bool
 		suffixContains string // substring to check in suffix
 	}{
 		{
 			name:           "researcher role gets researcher suffix",
-			profile:        AgentProfile{Role: "researcher"},
+			profile:        planner.AgentProfile{Role: "researcher"},
 			wantSuffix:     true,
 			suffixContains: "Role: Researcher",
 		},
 		{
 			name:           "coder role gets coder suffix",
-			profile:        AgentProfile{Role: "coder"},
+			profile:        planner.AgentProfile{Role: "coder"},
 			wantSuffix:     true,
 			suffixContains: "Role: Coder",
 		},
 		{
 			name:           "tester role gets tester suffix",
-			profile:        AgentProfile{Role: "tester"},
+			profile:        planner.AgentProfile{Role: "tester"},
 			wantSuffix:     true,
 			suffixContains: "Role: Tester",
 		},
 		{
 			name:       "executor role gets no suffix",
-			profile:    AgentProfile{Role: "executor"},
+			profile:    planner.AgentProfile{Role: "executor"},
 			wantSuffix: false,
 		},
 		{
 			name:       "unknown role gets no suffix",
-			profile:    AgentProfile{Role: "unknown"},
+			profile:    planner.AgentProfile{Role: "unknown"},
 			wantSuffix: false,
 		},
 		{
 			name:       "empty role gets no suffix",
-			profile:    AgentProfile{Role: ""},
+			profile:    planner.AgentProfile{Role: ""},
 			wantSuffix: false,
 		},
 		{
 			name:       "researcher with explicit SystemPrompt gets no suffix",
-			profile:    AgentProfile{Role: "researcher", SystemPrompt: "custom prompt"},
+			profile:    planner.AgentProfile{Role: "researcher", SystemPrompt: "custom prompt"},
 			wantSuffix: false,
 		},
 		{
 			name:       "coder with explicit SystemPrompt gets no suffix",
-			profile:    AgentProfile{Role: "coder", SystemPrompt: "custom prompt"},
+			profile:    planner.AgentProfile{Role: "coder", SystemPrompt: "custom prompt"},
 			wantSuffix: false,
 		},
 	}
@@ -750,7 +753,7 @@ func TestCoreStepConfigurator_RoleSuffixes(t *testing.T) {
 			cfg := OrchestratorConfig{MaxSteps: 30}
 			configurator := coreStepConfigurator(cfg, tt.registry, nil, nil, nil, nil)
 
-			profile := AgentProfile{Role: tt.role}
+			profile := planner.AgentProfile{Role: tt.role}
 			step := orchestration.PlanStep{
 				ID:          "test_step",
 				Description: "Test step",
@@ -795,7 +798,7 @@ func (m *mockTaskStore) PersistNewTask(taskID, sessionID, originalRequest string
 }
 
 func (m *mockTaskStore) PersistPlan(taskID string, plan *orchestration.Plan) error { return nil }
-func (m *mockTaskStore) PersistRouting(taskID string, routing *RoutingDecision) error {
+func (m *mockTaskStore) PersistRouting(taskID string, routing *router.RoutingDecision) error {
 	return nil
 }
 func (m *mockTaskStore) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
@@ -862,12 +865,12 @@ func TestHandleMessage_Continuation(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -957,12 +960,12 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1022,8 +1025,8 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         NewRouter(&mockLLMCaller{}, 5),
-		Planner:        NewPlanner(&mockLLMCaller{}),
+		Router:         newCoreRouter(&mockLLMCaller{}, 5),
+		Planner:        newCorePlanner(&mockLLMCaller{}, coretools.NewToolRegistry()),
 		LLM:            &mockLLMCaller{},
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1061,12 +1064,12 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 		},
 	}
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1135,12 +1138,12 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1227,12 +1230,12 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1340,12 +1343,12 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1398,7 +1401,7 @@ func (m *mockTaskStoreWithReactivate) PersistNewTask(taskID, sessionID, original
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) PersistPlan(taskID string, plan *orchestration.Plan) error { return nil }
-func (m *mockTaskStoreWithReactivate) PersistRouting(taskID string, routing *RoutingDecision) error {
+func (m *mockTaskStoreWithReactivate) PersistRouting(taskID string, routing *router.RoutingDecision) error {
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
@@ -1446,12 +1449,12 @@ func TestHandleMessage_Clarification(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1560,12 +1563,12 @@ func TestHandleMessage_ClarificationSuppressedWithUserSkills(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1840,8 +1843,8 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         NewRouter(mockLLM, 5),
-		Planner:        NewPlanner(mockLLM),
+		Router:         newCoreRouter(mockLLM, 5),
+		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -2143,7 +2146,7 @@ func TestCoreStepConfigurator_NormalMode_KeepsFullToolPool(t *testing.T) {
 	// Simulate a single-step plan: AgentProfile emitted as value type, so the
 	// *AgentProfile type assertion in resolveAgentProfile fails and the default
 	// executor profile (empty AllowedTools, empty Skills) is used.
-	singleStepPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
+	singleStepPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: planner.AgentProfile{Role: "executor", Domain: "general"}}}}
 	step := orchestration.PlanStep{
 		ID:          singleStepPlan.Steps[0].ID,
 		Description: singleStepPlan.Steps[0].Description,
@@ -2179,7 +2182,7 @@ func TestCoreStepConfigurator_NormalMode_KeepsRouterMatchedSkills(t *testing.T) 
 
 	configurator := coreStepConfigurator(cfg, nil, nil, builder, taskCtxProvider, nil)
 
-	singleStepPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: AgentProfile{Role: "executor", Domain: "general"}}}}
+	singleStepPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "run task", Description: "run task", DependsOn: []string{}, Parallelizable: true, Profile: planner.AgentProfile{Role: "executor", Domain: "general"}}}}
 	step := orchestration.PlanStep{
 		ID:          singleStepPlan.Steps[0].ID,
 		Description: singleStepPlan.Steps[0].Description,
@@ -2224,7 +2227,7 @@ func TestCoreStepConfigurator_StepSkillNarrowing(t *testing.T) {
 	step := orchestration.PlanStep{
 		ID:          "step_1",
 		Description: "narrow to alpha only",
-		Profile:     &AgentProfile{Role: "executor", Skills: []string{"alpha"}},
+		Profile:     &planner.AgentProfile{Role: "executor", Skills: []string{"alpha"}},
 	}
 
 	stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
@@ -2254,7 +2257,7 @@ func TestCoreStepConfigurator_StepToolNarrowing_UnionsCriticalTools(t *testing.T
 	step := orchestration.PlanStep{
 		ID:          "step_1",
 		Description: "narrow tools to read_file only",
-		Profile:     &AgentProfile{Role: "researcher", AllowedTools: []string{"read_file"}},
+		Profile:     &planner.AgentProfile{Role: "researcher", AllowedTools: []string{"read_file"}},
 	}
 
 	stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
@@ -2305,7 +2308,7 @@ func TestCoreStepConfigurator_UnknownSkillDropped(t *testing.T) {
 		step := orchestration.PlanStep{
 			ID:          "step_1",
 			Description: "alpha plus unknown",
-			Profile:     &AgentProfile{Role: "executor", Skills: []string{"alpha", "does_not_exist"}},
+			Profile:     &planner.AgentProfile{Role: "executor", Skills: []string{"alpha", "does_not_exist"}},
 		}
 		stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
 
@@ -2325,7 +2328,7 @@ func TestCoreStepConfigurator_UnknownSkillDropped(t *testing.T) {
 		step := orchestration.PlanStep{
 			ID:          "step_2",
 			Description: "all unknown",
-			Profile:     &AgentProfile{Role: "executor", Skills: []string{"does_not_exist"}},
+			Profile:     &planner.AgentProfile{Role: "executor", Skills: []string{"does_not_exist"}},
 		}
 		stepCfg := configurator(step, orchestration.StepDefaults{MaxSteps: 10, AllTools: mockAllTools()})
 
@@ -2391,12 +2394,12 @@ func TestOrchestrator_NormalModeSingleStep(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	router := NewRouter(mockLLM, 5)
-	planner := NewPlanner(mockLLM)
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
-		Router:         router,
-		Planner:        planner,
+		Router:         r,
+		Planner:        p,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,

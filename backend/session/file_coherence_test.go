@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 func testTracker() *FileCoherenceTracker {
@@ -377,7 +377,7 @@ func TestFileCoherenceTracker_CheckWrite_FileDeletedExternally(t *testing.T) {
 	if conflict == nil {
 		t.Fatal("expected conflict when file deleted externally, got nil")
 	}
-	if conflict.CurrentSig != (tools.FileSig{}) {
+	if conflict.CurrentSig != (sdktools.FileSig{}) {
 		t.Errorf("expected zero CurrentSig for deleted file, got: %+v", conflict.CurrentSig)
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 func TestTool_DefaultPolicy(t *testing.T) {
@@ -19,14 +19,14 @@ func TestTool_DefaultPolicy(t *testing.T) {
 		InputSchema: []byte(`{"type": "object"}`),
 	})
 
-	if tool.DefaultPolicy() != tools.PolicyUserConfirm {
+	if tool.DefaultPolicy() != sdktools.PolicyUserConfirm {
 		t.Errorf("expected DefaultPolicy() to return PolicyUserConfirm, got %v", tool.DefaultPolicy())
 	}
 }
 
 func TestTool_ImplementsToolInterface(t *testing.T) {
 	// Compile-time check that Tool implements tools.Tool interface
-	var _ tools.Tool = (*Tool)(nil)
+	var _ sdktools.Tool = (*Tool)(nil)
 }
 
 func TestTool_Execute_InvalidJSON(t *testing.T) {

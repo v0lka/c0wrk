@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -35,9 +35,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	session.done = doneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
 	// Enrich context with session workspace path for tool security heuristics
-	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
-	taskCtx = tools.WithTempDir(taskCtx, session.TempDir)
-	taskCtx = tools.WithCoherence(taskCtx, m.fileTracker)
+	taskCtx = sdktools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
+	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	session.cancel = cancel
 	session.mu.Unlock()
 
@@ -46,7 +46,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	envInfo := m.envInfo
 	m.mu.RUnlock()
 	if envInfo != nil {
-		taskCtx = tools.WithEnvInfo(taskCtx, envInfo)
+		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
 
 	// Emit message received event
@@ -288,9 +288,9 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	resumeDoneCh := make(chan struct{})
 	session.done = resumeDoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
-	taskCtx = tools.WithWorkspacePath(taskCtx, session.WorkspacePath)
-	taskCtx = tools.WithTempDir(taskCtx, session.TempDir)
-	taskCtx = tools.WithCoherence(taskCtx, m.fileTracker)
+	taskCtx = sdktools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
+	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	session.cancel = cancel
 	session.mu.Unlock()
 
@@ -299,7 +299,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	envInfo := m.envInfo
 	m.mu.RUnlock()
 	if envInfo != nil {
-		taskCtx = tools.WithEnvInfo(taskCtx, envInfo)
+		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
 
 	// Emit resume event so the frontend knows a task is resuming.

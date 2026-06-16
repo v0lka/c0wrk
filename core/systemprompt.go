@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/v0lka/c0wrk/core/prompts"
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/prompt"
 	"github.com/v0lka/c0wrk/sdk/tools"

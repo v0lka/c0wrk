@@ -12,10 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/internal/strutil"
-	"github.com/v0lka/c0wrk/core/tools/prompts"
 	"github.com/v0lka/c0wrk/sdk/llm"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/strutil"
+	"github.com/v0lka/c0wrk/sdk/tools/judge_prompts"
 )
 
 // pathRegex matches absolute path-like substrings in command strings.
@@ -42,12 +41,14 @@ type judgeResult struct {
 // ToolJudge evaluates whether a mutating tool call is safe to auto-approve.
 // It maintains an LRU-style cache keyed by tool+input to avoid redundant LLM calls.
 type ToolJudge struct {
-	provider     llm.Provider
-	model        string
-	cache        map[string]judgeResult
-	mu           sync.RWMutex
-	maxCacheSize int // max cached results before cache is cleared (default: 1000)
-	logger       *slog.Logger
+	provider       llm.Provider
+	model          string
+	systemPrompt   string           // judge system prompt (defaults to judge_prompts.JudgeSystem)
+	isInternalFn   func(string) bool // returns true for internal tools that bypass the judge
+	cache          map[string]judgeResult
+	mu             sync.RWMutex
+	maxCacheSize   int // max cached results before cache is cleared (default: 1000)
+	logger         *slog.Logger
 }
 
 // NewToolJudge creates a new ToolJudge with the given LLM provider and model.
@@ -59,10 +60,31 @@ func NewToolJudge(provider llm.Provider, model string, maxCacheSize int, logger 
 	return &ToolJudge{
 		provider:     provider,
 		model:        model,
+		systemPrompt: judge_prompts.JudgeSystem,
+		isInternalFn: func(string) bool { return false }, // default: no internal tools
 		cache:        make(map[string]judgeResult),
 		maxCacheSize: maxCacheSize,
 		logger:       logger,
 	}
+}
+
+// SetSystemPrompt sets the system prompt for the judge. If empty, uses the default.
+func (j *ToolJudge) SetSystemPrompt(prompt string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if prompt != "" {
+		j.systemPrompt = prompt
+	} else {
+		j.systemPrompt = judge_prompts.JudgeSystem
+	}
+}
+
+// SetIsInternalFn sets the function that determines if a tool name is internal
+// (always allowed, bypasses judge). Defaults to a function that always returns false.
+func (j *ToolJudge) SetIsInternalFn(fn func(string) bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.isInternalFn = fn
 }
 
 // judgeCacheKey generates a cache key from tool name and input.
@@ -83,7 +105,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	}
 
 	// Internal tools are always allowed (defense-in-depth)
-	if IsInternalTool(toolName) {
+	if j.isInternalFn != nil && j.isInternalFn(toolName) {
 		if log != nil {
 			log.Debug("judge: fast-path internal tool", "tool", toolName, "verdict", "ALLOW")
 		}
@@ -96,7 +118,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	}
 
 	// Unconditionally allow operations inside session temp directory
-	if tempDir := tools.TempDirFrom(ctx); tempDir != "" && allPathsInDir(input, tempDir) {
+	if tempDir := TempDirFrom(ctx); tempDir != "" && AllPathsInDir(input, tempDir) {
 		if log != nil {
 			log.Debug("judge: fast-path temp dir", "tool", toolName, "verdict", "ALLOW")
 		}
@@ -104,7 +126,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	}
 
 	// Short-circuit for workspace-internal operations
-	if allPathsInWorkspace(ctx, input) {
+	if AllPathsInWorkspace(ctx, input) {
 		if log != nil {
 			log.Debug("judge: fast-path workspace", "tool", toolName, "verdict", "ALLOW")
 		}
@@ -128,7 +150,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	// Build LLM request
 	inputStr := string(input)
 
-	systemPrompt := prompts.JudgeSystem
+	systemPrompt := j.systemPrompt
 
 	userPrompt := "Task: " + taskContext + "\n\nTool: " + toolName + "\n\nInput: " + inputStr
 
@@ -205,32 +227,32 @@ func isPathInWorkspace(absPath, workspacePath string) bool {
 	return strings.HasPrefix(absPathClean+string(filepath.Separator), workspaceAbs) || absPathClean == filepath.Clean(workspacePath)
 }
 
-// extractJSONStrings recursively extracts all string values from a JSON structure.
-func extractJSONStrings(data any) []string {
+// ExtractJSONStrings recursively extracts all string values from a JSON structure.
+func ExtractJSONStrings(data any) []string {
 	var results []string
 	switch v := data.(type) {
 	case string:
 		results = append(results, v)
 	case map[string]any:
 		for _, val := range v {
-			results = append(results, extractJSONStrings(val)...)
+			results = append(results, ExtractJSONStrings(val)...)
 		}
 	case []any:
 		for _, val := range v {
-			results = append(results, extractJSONStrings(val)...)
+			results = append(results, ExtractJSONStrings(val)...)
 		}
 	}
 	return results
 }
 
-// extractPaths extracts absolute path-like substrings from a string value.
-func extractPaths(s string) []string {
+// ExtractPaths extracts absolute path-like substrings from a string value.
+func ExtractPaths(s string) []string {
 	return pathRegex.FindAllString(s, -1)
 }
 
 // allPathsInDir returns true if the JSON input contains at least one absolute
 // path and every such path is within the specified directory.
-func allPathsInDir(input json.RawMessage, dir string) bool {
+func AllPathsInDir(input json.RawMessage, dir string) bool {
 	if dir == "" {
 		return false
 	}
@@ -240,10 +262,10 @@ func allPathsInDir(input json.RawMessage, dir string) bool {
 		return false
 	}
 
-	strValues := extractJSONStrings(parsed)
+	strValues := ExtractJSONStrings(parsed)
 	var allPaths []string
 	for _, s := range strValues {
-		allPaths = append(allPaths, extractPaths(s)...)
+		allPaths = append(allPaths, ExtractPaths(s)...)
 	}
 
 	if len(allPaths) == 0 {
@@ -261,12 +283,12 @@ func allPathsInDir(input json.RawMessage, dir string) bool {
 
 // allPathsInWorkspace returns true if the JSON input contains at least one absolute
 // path and every such path is within the workspace directory.
-func allPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
+func AllPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
 	workspacePath := WorkspacePathFrom(ctx)
 	if workspacePath == "" {
 		return false
 	}
-	return allPathsInDir(input, workspacePath)
+	return AllPathsInDir(input, workspacePath)
 }
 
 // ResetCache clears all cached verdicts.
@@ -312,10 +334,12 @@ func parseJudgeResponse(content string) (verdict JudgeVerdict, reasoning string)
 
 // JudgeConfig holds the settings needed to create a ToolJudge.
 type JudgeConfig struct {
-	Model        string // specific model for judge; if empty, uses DefaultModel
-	DefaultModel string // fallback model from active provider
+	Model        string        // specific model for judge; if empty, uses DefaultModel
+	DefaultModel string        // fallback model from active provider
 	Provider     llm.Provider
-	MaxCacheSize int // max cached results before cache is cleared (default: 1000)
+	MaxCacheSize int           // max cached results before cache is cleared (default: 1000)
+	SystemPrompt string        // judge system prompt; if empty, uses judge_prompts.JudgeSystem
+	IsInternalFn func(string) bool // returns true for internal tools that bypass the judge
 }
 
 // NewToolJudgeFromConfig creates a ToolJudge if properly configured.
@@ -338,6 +362,12 @@ func NewToolJudgeFromConfig(cfg JudgeConfig, logger *slog.Logger) *ToolJudge {
 	}
 
 	judge := NewToolJudge(cfg.Provider, model, cfg.MaxCacheSize, logger)
+	if cfg.SystemPrompt != "" {
+		judge.SetSystemPrompt(cfg.SystemPrompt)
+	}
+	if cfg.IsInternalFn != nil {
+		judge.SetIsInternalFn(cfg.IsInternalFn)
+	}
 	if logger != nil {
 		logger.Info("tool judge initialized", "model", model)
 	}

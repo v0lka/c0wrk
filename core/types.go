@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -171,15 +172,6 @@ func (a *emitterEventsAdapter) WithRetryAttempt(attempt int) orchestration.Event
 // ---------------------------------------------------------------------------
 // c0wrk-specific types
 // ---------------------------------------------------------------------------
-
-// RoutingDecision — result of Router classification (AD 4.1).
-type RoutingDecision struct {
-	Domain             string   `json:"domain"`     // "code" | "research" | "general" | "mixed"
-	Complexity         int      `json:"complexity"` // 1-5
-	NeedsClarification bool     `json:"needs_clarification"`
-	MatchedSkills      []string `json:"matched_skills,omitempty"` // skills selected by the router
-}
-
 // ExecutorConfig — configuration for the Executor (AD 4.4).
 type ExecutorConfig struct {
 	MaxSteps           int
@@ -193,29 +185,11 @@ type TaskDefinition struct {
 	Tools []sdktools.ToolDescriptor `json:"tools"`
 }
 
-// AgentProfile defines a specialized agent role for plan step execution.
-type AgentProfile struct {
-	// Role controls system prompt customization; tool filtering uses AllowedTools; strategy uses Domain.
-	Role           string   `json:"role"`                      // "researcher", "coder", "tester", "executor" (default)
-	SystemPrompt   string   `json:"system_prompt,omitempty"`   // role-specific prompt override (optional)
-	AllowedTools   []string `json:"allowed_tools,omitempty"`   // subset of available tools (empty = all)
-	Skills         []string `json:"skills,omitempty"`          // subset of router-matched skills (empty = use full task-scope pool)
-	MaxSteps       int      `json:"max_steps,omitempty"`       // budget per agent (0 = use default)
-	Domain         string   `json:"domain,omitempty"`          // "code" | "research" | "general" - affects compaction strategy
-	KeepLastN      int      `json:"keep_last_n,omitempty"`     // per-step KeepLastN override (0 = use role default)
-	ProtectedTools []string `json:"protected_tools,omitempty"` // per-step ProtectedTools override (nil = use role default)
-}
-
-// isStepProfile is a marker method to satisfy orchestration.StepProfile.
-//
-//nolint:unused // marker method, consumed by interface satisfaction at type-assertion boundary
-func (AgentProfile) isStepProfile() {}
-
 // HandleResult — result of Orchestrator.Handle (Phase 2).
 // Provides rich output for CLI display including routing and plan info.
 type HandleResult struct {
-	Output          string           `json:"output"`
-	RoutingDecision *RoutingDecision `json:"routing_decision"`
+	Output          string                       `json:"output"`
+	RoutingDecision *router.RoutingDecision       `json:"routing_decision"`
 	Plan            *orchestration.Plan            `json:"plan,omitempty"`
 	Blackboard      orchestration.Blackboard       `json:"-"` // shared state for downstream consumers (not serialized)
 	// Retry-loop fields (Phase 3)

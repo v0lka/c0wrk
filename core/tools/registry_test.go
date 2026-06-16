@@ -17,7 +17,7 @@ type mockTool struct {
 	name          string
 	description   string
 	inputSchema   json.RawMessage
-	defaultPolicy ToolPolicy
+	defaultPolicy sdktools.ToolPolicy
 }
 
 func newMockTool(name, description string) *mockTool {
@@ -25,7 +25,7 @@ func newMockTool(name, description string) *mockTool {
 		name:          name,
 		description:   description,
 		inputSchema:   json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`),
-		defaultPolicy: PolicyUserConfirm,
+		defaultPolicy: sdktools.PolicyUserConfirm,
 	}
 }
 
@@ -34,7 +34,7 @@ func newMockReadOnlyTool(name, description string) *mockTool {
 		name:          name,
 		description:   description,
 		inputSchema:   json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`),
-		defaultPolicy: PolicyAlwaysAllow,
+		defaultPolicy: sdktools.PolicyAlwaysAllow,
 	}
 }
 
@@ -50,15 +50,15 @@ func (m *mockTool) InputSchema() json.RawMessage {
 	return m.inputSchema
 }
 
-func (m *mockTool) DefaultPolicy() ToolPolicy {
+func (m *mockTool) DefaultPolicy() sdktools.ToolPolicy {
 	return m.defaultPolicy
 }
 
 func (m *mockTool) IsUntrusted() bool { return false }
 
-func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
+func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (sdktools.ToolResult, error) {
 	// Simple echo: return the input as content
-	return ToolResult{
+	return sdktools.ToolResult{
 		Content: string(input),
 		IsError: false,
 	}, nil
@@ -375,7 +375,7 @@ func TestPolicyAlwaysDeny_BlocksExecution(t *testing.T) {
 		name:          "always_deny",
 		description:   "A tool with PolicyAlwaysDeny",
 		inputSchema:   json.RawMessage(`{"type":"object"}`),
-		defaultPolicy: PolicyAlwaysDeny,
+		defaultPolicy: sdktools.PolicyAlwaysDeny,
 	}
 	registry.Register(tool)
 
@@ -439,7 +439,7 @@ func TestToolRegistry_RegisterWithSource(t *testing.T) {
 	}
 
 	// Build a map for easier lookup
-	descMap := make(map[string]ToolDescriptor)
+	descMap := make(map[string]sdktools.ToolDescriptor)
 	for _, desc := range descriptors {
 		descMap[desc.Name] = desc
 	}
@@ -505,8 +505,8 @@ func TestPolicyOverrideFromConfig(t *testing.T) {
 	registry.Register(tool)
 
 	// Override to PolicyAlwaysAllow
-	registry.SetPolicyOverrides(map[string]ToolPolicy{
-		"overridden_tool": PolicyAlwaysAllow,
+	registry.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
+		"overridden_tool": sdktools.PolicyAlwaysAllow,
 	})
 
 	confirmCalled := false
@@ -530,7 +530,7 @@ func TestPolicyOverrideFromConfig(t *testing.T) {
 	}
 }
 
-func TestWithWorkspacePath_AndWorkspacePathFrom(t *testing.T) {
+func TestWithWorkspacePath_AndWorkspacePathFrom_Wrapper(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     string
@@ -544,8 +544,8 @@ func TestWithWorkspacePath_AndWorkspacePathFrom(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			ctx = WithWorkspacePath(ctx, tt.path)
-			got := WorkspacePathFrom(ctx)
+			ctx = sdktools.WithWorkspacePath(ctx, tt.path)
+			got := sdktools.WorkspacePathFrom(ctx)
 			if got != tt.expected {
 				t.Errorf("WorkspacePathFrom() = %q, want %q", got, tt.expected)
 			}
@@ -555,7 +555,7 @@ func TestWithWorkspacePath_AndWorkspacePathFrom(t *testing.T) {
 
 func TestWorkspacePathFrom_EmptyContext(t *testing.T) {
 	ctx := context.Background()
-	got := WorkspacePathFrom(ctx)
+	got := sdktools.WorkspacePathFrom(ctx)
 	if got != "" {
 		t.Errorf("WorkspacePathFrom() on empty context = %q, want empty", got)
 	}
@@ -576,7 +576,7 @@ func TestSetDefaultPolicy(t *testing.T) {
 	}
 
 	// Set global default to AlwaysDeny
-	reg.SetDefaultPolicy(PolicyAlwaysDeny)
+	reg.SetDefaultPolicy(sdktools.PolicyAlwaysDeny)
 	result, err = reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -595,11 +595,11 @@ func TestSetDefaultPolicy_OverriddenByPerTool(t *testing.T) {
 	reg.Register(tool)
 
 	// Set global default to deny
-	reg.SetDefaultPolicy(PolicyAlwaysDeny)
+	reg.SetDefaultPolicy(sdktools.PolicyAlwaysDeny)
 
 	// But per-tool override to allow
-	reg.SetPolicyOverrides(map[string]ToolPolicy{
-		"test_tool": PolicyAlwaysAllow,
+	reg.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
+		"test_tool": sdktools.PolicyAlwaysAllow,
 	})
 
 	result, err := reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
@@ -624,7 +624,7 @@ func newMockJudgerTool(name string, allow bool, reasoning string) *mockJudgerToo
 			name:          name,
 			description:   "A tool with ToolJudger",
 			inputSchema:   json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`),
-			defaultPolicy: PolicyAlwaysAllow,
+			defaultPolicy: sdktools.PolicyAlwaysAllow,
 		},
 		judgeResult:    allow,
 		judgeReasoning: reasoning,
@@ -777,7 +777,7 @@ func TestAutoApproval_WorkspacePath(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	ctx = WithWorkspacePath(ctx, "/workspace")
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
 	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
 
 	result, err := registry.Execute(ctx, "mutating", input)
@@ -836,7 +836,7 @@ func TestAutoApproval_AlwaysAllow_WorkspacePath(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	ctx = WithWorkspacePath(ctx, "/workspace")
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
 	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
 
 	_, err := registry.Execute(ctx, "readonly", input)
@@ -862,7 +862,7 @@ func TestAutoApproval_OutsideWorkspace(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	ctx = WithWorkspacePath(ctx, "/workspace")
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
 	input := json.RawMessage(`{"path": "/etc/passwd"}`)
 
 	result, err := registry.Execute(ctx, "mutating", input)
@@ -914,12 +914,12 @@ func TestInternalTool_BypassesPolicyAlwaysDeny(t *testing.T) {
 		name:          "finish",
 		description:   "Finish the task",
 		inputSchema:   json.RawMessage(`{"type":"object"}`),
-		defaultPolicy: PolicyAlwaysDeny, // Even with AlwaysDeny as tool's default
+		defaultPolicy: sdktools.PolicyAlwaysDeny, // Even with AlwaysDeny as tool's default
 	}
 	registry.Register(tool)
 
 	// Set global default policy to AlwaysDeny
-	registry.SetDefaultPolicy(PolicyAlwaysDeny)
+	registry.SetDefaultPolicy(sdktools.PolicyAlwaysDeny)
 
 	// Set up a confirm func that should NOT be called for internal tools
 	confirmCalled := false
@@ -996,7 +996,7 @@ func TestPreExecuteHook_BlocksUntilReleased(t *testing.T) {
 	ctx := context.Background()
 	input := json.RawMessage(`{"data":"hello"}`)
 
-	var result ToolResult
+	var result sdktools.ToolResult
 	var execErr error
 	done := make(chan struct{})
 	go func() {
@@ -1293,7 +1293,7 @@ func TestAutoApproval_AlwaysDenyRespected(t *testing.T) {
 		name:          "always_deny",
 		description:   "A tool with PolicyAlwaysDeny",
 		inputSchema:   json.RawMessage(`{"type":"object"}`),
-		defaultPolicy: PolicyAlwaysDeny,
+		defaultPolicy: sdktools.PolicyAlwaysDeny,
 	}
 	registry.Register(tool)
 
@@ -1304,7 +1304,7 @@ func TestAutoApproval_AlwaysDenyRespected(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	ctx = WithWorkspacePath(ctx, "/workspace")
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
 	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
 
 	result, err := registry.Execute(ctx, "always_deny", input)

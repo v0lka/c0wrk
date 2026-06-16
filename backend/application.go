@@ -16,6 +16,8 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // ApplicationConfig holds all parameters needed to construct an Application.
@@ -33,13 +35,13 @@ type ApplicationConfig struct {
 
 	// UI callbacks provided by the desktop adapter.
 	UIEmitFunc    func(session.Event)     // Wails event emission
-	AskUserFunc   tools.AskUserFunc       // ask_user tool callback
+	AskUserFunc   sdktools.AskUserFunc       // ask_user tool callback
 	ConfirmFunc   tools.ConfirmFunc       // tool confirmation callback
 	StepLimitFunc agent.StepLimitFunc     // step limit callback
 
 	// Vector search callbacks (optional — nil disables semantic_search tool).
-	VectorSearchFunc     tools.VectorSearchFunc
-	VectorSearchWaitFunc tools.VectorSearchWaitFunc
+	VectorSearchFunc     builtins.VectorSearchFunc
+	VectorSearchWaitFunc builtins.VectorSearchWaitFunc
 }
 
 // Application is the central ViewModel that ties together the OrchestratorBuilder,
@@ -49,7 +51,7 @@ type Application struct {
 	manager   *session.Manager
 	persister *session.EventPersister
 	titleGen  *session.TitleGenerator
-	envInfo   *tools.EnvInfo
+	envInfo   *sdktools.EnvInfo
 	logger    *slog.Logger
 
 	// stepLimitFunc is captured for the orchestrator factory closure.
@@ -73,7 +75,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// Collect environment info once for all sessions.
-	envInfo := tools.CollectEnvInfo()
+	envInfo := sdktools.CollectEnvInfo()
 	app.envInfo = envInfo
 
 	// 1. Event persister (SQLite persistence, separate from UI emission).
@@ -156,7 +158,7 @@ func (app *Application) Builder() *core.OrchestratorBuilder {
 }
 
 // EnvInfo returns the collected environment info.
-func (app *Application) EnvInfo() *tools.EnvInfo {
+func (app *Application) EnvInfo() *sdktools.EnvInfo {
 	return app.envInfo
 }
 
@@ -167,24 +169,24 @@ func (app *Application) TitleGenerator() *session.TitleGenerator {
 
 // EvaluateJudge performs an on-demand judge evaluation for a pending tool confirmation.
 // Returns the verdict, reasoning (prefixed with "SAFE: " when allowed), and any error.
-func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict tools.JudgeVerdict, reasoning string, err error) {
+func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
 	if err := app.builder.WaitReady(ctx); err != nil {
-		return tools.VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
+		return sdktools.VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
 	}
 	registry := app.builder.ToolRegistry()
 	if registry == nil {
-		return tools.VerdictConfirm, "", ErrJudgeNotAvailable
+		return sdktools.VerdictConfirm, "", ErrJudgeNotAvailable
 	}
 	judge := registry.GetJudge()
 	if judge == nil {
-		return tools.VerdictConfirm, "", ErrJudgeNotAvailable
+		return sdktools.VerdictConfirm, "", ErrJudgeNotAvailable
 	}
 	verdict, reasoning, err = judge.Judge(ctx, toolName, input, taskContext)
 	if err != nil {
 		return verdict, reasoning, err
 	}
 	// Prefix reasoning for safe verdicts so the UI can display contextual info.
-	if verdict == tools.VerdictAllow {
+	if verdict == sdktools.VerdictAllow {
 		reasoning = "SAFE: " + reasoning
 	}
 	return verdict, reasoning, nil
@@ -207,7 +209,7 @@ func (app *Application) GetMCPStatus() []mcp.ServerStatus {
 }
 
 // ListTools returns descriptors for all registered tools.
-func (app *Application) ListTools() []tools.ToolDescriptor {
+func (app *Application) ListTools() []sdktools.ToolDescriptor {
 	return app.builder.ToolRegistry().List()
 }
 

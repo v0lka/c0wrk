@@ -11,7 +11,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/logger"
-	"github.com/v0lka/c0wrk/core/vectorindex"
+	"github.com/v0lka/c0wrk/sdk/vectorindex"
 )
 
 // App holds the Wails application state and exposes methods to the frontend.

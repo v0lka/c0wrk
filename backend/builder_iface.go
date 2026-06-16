@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/skills"
 )
 
 // appBuilder captures the subset of *core.OrchestratorBuilder used by

@@ -1,4 +1,4 @@
-package core
+package router
 
 import (
 	"context"
@@ -6,31 +6,41 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/core/prompts"
-	"github.com/v0lka/c0wrk/core/skills"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/prompt"
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
-// Router classifies user requests by complexity and determines execution strategy.
+// Config holds the configuration for a Router.
+type Config struct {
+	// SystemPrompt is the routing system prompt template.
+	// It must contain AVAILABLE-TOOLS and AVAILABLE-SKILLS placeholders.
+	SystemPrompt string
+	// HistoryWindow is the number of recent messages to include. Default: 10.
+	HistoryWindow int
+}
+
+// Router classifies user requests by domain and complexity.
 type Router struct {
 	llm                 agent.LLMCaller
-	historyWindow       int // number of recent messages to include
+	systemPrompt        string
+	historyWindow       int
 	modelRegistry       *llm.ModelRegistry
 	baseReasoningEffort llm.ReasoningEffort
 	roleOverrides       map[string]string
 }
 
-// NewRouter creates a new Router.
-func NewRouter(caller agent.LLMCaller, historyWindow int) *Router {
-	if historyWindow <= 0 {
-		historyWindow = 10
+// NewRouter creates a new Router with the given caller and config.
+func NewRouter(caller agent.LLMCaller, cfg Config) *Router {
+	hw := cfg.HistoryWindow
+	if hw <= 0 {
+		hw = 10
 	}
 	return &Router{
 		llm:           caller,
-		historyWindow: historyWindow,
+		systemPrompt:  cfg.SystemPrompt,
+		historyWindow: hw,
 	}
 }
 
@@ -50,8 +60,7 @@ func (r *Router) SetRoleOverrides(overrides map[string]string) {
 }
 
 // Route analyzes the user's request and determines the best execution strategy.
-// availableSkills are included in the routing prompt so the LLM can match relevant skills.
-func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message, availableSkills []skills.SkillDescriptor) (decision *RoutingDecision, err error) {
+func (r *Router) Route(ctx context.Context, userMessage string, availableTools []tools.ToolDescriptor, history []llm.Message, availableSkills []SkillDescriptor) (decision *RoutingDecision, err error) {
 	// Build tool list for the prompt (grouped by priority tier)
 	toolListStr := agent.BuildGroupedToolList(availableTools)
 
@@ -60,7 +69,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 
 	// Build system prompt
 	systemPrompt := prompt.NewBuilder().
-		Core(prompts.RouterSystem).
+		Core(r.systemPrompt).
 		Replace("AVAILABLE-TOOLS", toolListStr).
 		Replace("AVAILABLE-SKILLS", skillListStr).
 		Build()
@@ -96,7 +105,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	}
 
 	// Extract JSON from response (handle markdown code blocks)
-	jsonStr := extractJSON(resp.Message.Content)
+	jsonStr := llm.ExtractJSON(resp.Message.Content)
 
 	// Unmarshal into RoutingDecision
 	var routingDecision RoutingDecision
@@ -115,62 +124,19 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 			return nil, fmt.Errorf("failed to parse routing decision: %w", retryErr)
 		}
 
-		retryJSON := extractJSON(retryResp.Message.Content)
+		retryJSON := llm.ExtractJSON(retryResp.Message.Content)
 		if retryErr := json.Unmarshal([]byte(retryJSON), &routingDecision); retryErr != nil {
 			return nil, fmt.Errorf("failed to parse routing decision after retry: %w", retryErr)
 		}
 	}
 
-	validateRoutingDecision(&routingDecision)
+	ValidateRoutingDecision(&routingDecision)
 
 	return &routingDecision, nil
 }
 
-// extractJSON extracts JSON from the response content, handling markdown code blocks.
-// Uses json.Valid to find the longest valid JSON object starting from each '{'.
-func extractJSON(content string) string {
-	content = strings.TrimSpace(content)
-
-	// Try to extract from markdown code block first.
-	// Look for ```json ... ``` or ``` ... ``` blocks.
-	if idx := strings.Index(content, "```"); idx >= 0 {
-		after := content[idx+3:]
-		// Skip optional language tag (e.g., "json")
-		if nl := strings.IndexByte(after, '\n'); nl >= 0 {
-			after = after[nl+1:]
-		}
-		if end := strings.Index(after, "```"); end >= 0 {
-			block := strings.TrimSpace(after[:end])
-			if json.Valid([]byte(block)) {
-				return block
-			}
-		}
-	}
-
-	// Find the longest valid JSON object by scanning for '{' and testing
-	// progressively larger substrings until json.Valid succeeds.
-	for i := 0; i < len(content); i++ {
-		if content[i] != '{' {
-			continue
-		}
-		// Scan from the end backwards to find the longest valid JSON.
-		for j := len(content); j > i; j-- {
-			if content[j-1] != '}' {
-				continue
-			}
-			candidate := content[i:j]
-			if json.Valid([]byte(candidate)) {
-				return candidate
-			}
-		}
-	}
-
-	// Return as-is if nothing found
-	return content
-}
-
-// validateRoutingDecision sanitizes and corrects a routing decision from LLM output.
-func validateRoutingDecision(d *RoutingDecision) {
+// ValidateRoutingDecision sanitizes and corrects a routing decision from LLM output.
+func ValidateRoutingDecision(d *RoutingDecision) {
 	// Validate domain
 	switch d.Domain {
 	case DomainCode, DomainResearch, DomainGeneral, DomainMixed:
@@ -201,26 +167,9 @@ func validateRoutingDecision(d *RoutingDecision) {
 	}
 }
 
-// applyCompactionStrategy applies the domain-based compaction strategy rule.
-func applyCompactionStrategy(domain string, complexity int) string {
-	switch domain {
-	case DomainCode:
-		return "sliding_window"
-	case DomainResearch:
-		return "summarization"
-	case DomainMixed, DomainGeneral:
-		if complexity >= 4 {
-			return "hierarchical"
-		}
-		return "sliding_window"
-	default:
-		return "sliding_window"
-	}
-}
-
 // formatSkillList formats available skill descriptors for the router prompt.
 // Returns "None" if no skills are available.
-func formatSkillList(availableSkills []skills.SkillDescriptor) string {
+func formatSkillList(availableSkills []SkillDescriptor) string {
 	if len(availableSkills) == 0 {
 		return "None"
 	}

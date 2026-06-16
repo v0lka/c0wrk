@@ -20,9 +20,12 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
-	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/embedding"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/c0wrk/sdk/vectorindex"
 )
 
 // initLogger initializes the session logger with a temporary INFO level so any
@@ -182,18 +185,18 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 // into Wails events and waits for the frontend response. Errors out cleanly
 // when no UI context or session is available so the tool reports the
 // unavailability instead of blocking forever.
-func (a *App) buildAskUserCallback(uiEmit func(session.Event)) tools.AskUserFunc {
-	return func(ctx context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
+func (a *App) buildAskUserCallback(uiEmit func(session.Event)) sdktools.AskUserFunc {
+	return func(ctx context.Context, req sdktools.AskUserRequest) (sdktools.AskUserResponse, error) {
 		if a.ctx == nil {
-			return tools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
+			return sdktools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
 		}
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
-			return tools.AskUserResponse{}, errors.New("ask_user not available: no session context")
+			return sdktools.AskUserResponse{}, errors.New("ask_user not available: no session context")
 		}
 
 		requestID := uuid.New().String()
-		ch := make(chan tools.AskUserResponse, 1)
+		ch := make(chan sdktools.AskUserResponse, 1)
 		a.pendingAskUser.Store(requestID, ch)
 
 		payload := session.AskUserPayload{RequestID: requestID, Questions: req.Questions}
@@ -204,10 +207,10 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) tools.AskUserFunc
 			return resp, nil
 		case <-ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return tools.AskUserResponse{}, ctx.Err()
+			return sdktools.AskUserResponse{}, ctx.Err()
 		case <-a.ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return tools.AskUserResponse{}, a.ctx.Err()
+			return sdktools.AskUserResponse{}, a.ctx.Err()
 		}
 	}
 }
@@ -235,7 +238,7 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) tools.ConfirmFunc
 		ch := make(chan tools.ConfirmationResponse, 1)
 		a.pendingConfirmations.Store(requestID, &pendingConfirmData{
 			ch:          ch,
-			taskContext: tools.TaskContextFrom(ctx),
+			taskContext: sdktools.TaskContextFrom(ctx),
 			toolName:    req.ToolName,
 			input:       req.Input,
 			sessionID:   sessionID,
@@ -301,8 +304,8 @@ func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) agent.StepLimit
 // buildVectorCallbacks returns the lazy vector-search callbacks that gate on
 // background ONNX initialization. They block until vectorReady is closed (or
 // ctx cancels) before delegating to the manager service.
-func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Manager], vectorReady <-chan struct{}) (tools.VectorSearchFunc, tools.VectorSearchWaitFunc) { //nolint:gocritic // unnamedResult is acceptable for tuple returns with distinct types
-	searchFunc := tools.VectorSearchFunc(func(ctx context.Context, opts tools.VectorSearchOptions) ([]tools.VectorSearchResult, error) {
+func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Manager], vectorReady <-chan struct{}) (builtins.VectorSearchFunc, builtins.VectorSearchWaitFunc) { //nolint:gocritic // unnamedResult is acceptable for tuple returns with distinct types
+	searchFunc := builtins.VectorSearchFunc(func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
 		select {
 		case <-vectorReady:
 		case <-ctx.Done():
@@ -322,9 +325,9 @@ func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Mana
 		if err != nil {
 			return nil, err
 		}
-		out := make([]tools.VectorSearchResult, len(results))
+		out := make([]builtins.VectorSearchResult, len(results))
 		for i, r := range results {
-			out[i] = tools.VectorSearchResult{
+			out[i] = builtins.VectorSearchResult{
 				FilePath:    r.FilePath,
 				FileName:    r.FileName,
 				Content:     r.Content,
@@ -339,7 +342,7 @@ func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Mana
 		return out, nil
 	})
 
-	waitFunc := tools.VectorSearchWaitFunc(func(ctx context.Context) error {
+	waitFunc := builtins.VectorSearchWaitFunc(func(ctx context.Context) error {
 		select {
 		case <-vectorReady:
 			mgr := vectorMgrPtr.Load()
@@ -457,12 +460,27 @@ func (a *App) startVectorIndexBackground(
 		tokenizerPath := resolveModelPath("jina-v2-small-tokenizer.json", agentDir)
 		libraryPath := resolveONNXLibPath()
 
+		// Create embedder directly via sdk/embedding.
+		if modelPath == "" || tokenizerPath == "" || libraryPath == "" {
+			log.Info("vector search disabled (model files not found)")
+			return
+		}
+		emb, embErr := embedding.NewEmbedder(embedding.EmbedderConfig{
+			ModelPath:     modelPath,
+			TokenizerPath: tokenizerPath,
+			LibraryPath:   libraryPath,
+			MaxSeqLength:  512,
+			HiddenDim:    512,
+			Logger:       log,
+		})
+		if embErr != nil {
+			log.Warn("vector search unavailable", "error", embErr)
+			return
+		}
+
 		vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
-			ModelPath:        modelPath,
-			TokenizerPath:    tokenizerPath,
-			LibraryPath:      libraryPath,
-			MaxSeqLength:     512,
-			HiddenDim:        512,
+			EmbeddingFunc:    emb.EmbeddingFunc(),
+			CloseFn:          emb.Close,
 			PersistPath:      filepath.Join(agentDir, "vector_index"),
 			IgnoreDirs:       cfg.Workspace.IgnoreDirs,
 			IgnoreExtensions: cfg.Workspace.IgnoreExtensions,

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // TestToolRegistry_Clone_Independent verifies that the per-session clone
@@ -14,15 +15,15 @@ import (
 // sessions).
 func TestToolRegistry_Clone_Independent(t *testing.T) {
 	parent := tools.NewToolRegistry()
-	parent.SetPolicyOverrides(map[string]tools.ToolPolicy{
-		ToolBashExec: tools.PolicyAlwaysDeny,
+	parent.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
+		ToolBashExec: sdktools.PolicyAlwaysDeny,
 	})
 
 	child := parent.Clone()
 
 	// Mutate the child: skill policy override should NOT propagate to parent.
-	child.SetSkillPolicyOverrides(map[string]tools.ToolPolicy{
-		ToolWriteFile: tools.PolicyAlwaysAllow,
+	child.SetSkillPolicyOverrides(map[string]sdktools.ToolPolicy{
+		ToolWriteFile: sdktools.PolicyAlwaysAllow,
 	})
 
 	// Reset the parent's policy so we can detect leakage.
@@ -35,8 +36,8 @@ func TestToolRegistry_Clone_Independent(t *testing.T) {
 	_ = other
 
 	// Independent SetPolicyOverrides on parent should not show up on child.
-	parent.SetPolicyOverrides(map[string]tools.ToolPolicy{
-		ToolReadFile: tools.PolicyAlwaysDeny,
+	parent.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
+		ToolReadFile: sdktools.PolicyAlwaysDeny,
 	})
 
 	// Best-effort smoke: ensure both registries can independently set policy

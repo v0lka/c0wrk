@@ -51,10 +51,10 @@ type ToolRegistry struct {
 	*sdktools.ToolRegistry
 	mu                   sync.RWMutex
 	confirmFunc          ConfirmFunc
-	judge                *ToolJudge
-	policyOverrides      map[string]ToolPolicy
-	skillPolicyOverrides map[string]ToolPolicy
-	defaultPolicy        ToolPolicy
+	judge                *sdktools.ToolJudge
+	policyOverrides      map[string]sdktools.ToolPolicy
+	skillPolicyOverrides map[string]sdktools.ToolPolicy
+	defaultPolicy        sdktools.ToolPolicy
 	hasDefaultPolicy     bool
 	preExecuteHook       PreExecuteHook
 	toolFilter           ToolFilter
@@ -96,13 +96,13 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		logger:           r.logger,
 	}
 	if r.policyOverrides != nil {
-		cloned.policyOverrides = make(map[string]ToolPolicy, len(r.policyOverrides))
+		cloned.policyOverrides = make(map[string]sdktools.ToolPolicy, len(r.policyOverrides))
 		for k, v := range r.policyOverrides {
 			cloned.policyOverrides[k] = v
 		}
 	}
 	if r.skillPolicyOverrides != nil {
-		cloned.skillPolicyOverrides = make(map[string]ToolPolicy, len(r.skillPolicyOverrides))
+		cloned.skillPolicyOverrides = make(map[string]sdktools.ToolPolicy, len(r.skillPolicyOverrides))
 		for k, v := range r.skillPolicyOverrides {
 			cloned.skillPolicyOverrides[k] = v
 		}
@@ -133,28 +133,28 @@ func (r *ToolRegistry) SetConfirmFunc(fn ConfirmFunc) {
 }
 
 // SetJudge sets the tool judge for evaluating mutating tool calls.
-func (r *ToolRegistry) SetJudge(j *ToolJudge) {
+func (r *ToolRegistry) SetJudge(j *sdktools.ToolJudge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.judge = j
 }
 
 // GetJudge returns the current tool judge, or nil if not set.
-func (r *ToolRegistry) GetJudge() *ToolJudge {
+func (r *ToolRegistry) GetJudge() *sdktools.ToolJudge {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.judge
 }
 
 // SetPolicyOverrides sets per-tool policy overrides from configuration.
-func (r *ToolRegistry) SetPolicyOverrides(overrides map[string]ToolPolicy) {
+func (r *ToolRegistry) SetPolicyOverrides(overrides map[string]sdktools.ToolPolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.policyOverrides = overrides
 }
 
 // SetDefaultPolicy sets the default policy for tools without explicit overrides.
-func (r *ToolRegistry) SetDefaultPolicy(p ToolPolicy) {
+func (r *ToolRegistry) SetDefaultPolicy(p sdktools.ToolPolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.defaultPolicy = p
@@ -185,7 +185,7 @@ func (r *ToolRegistry) SetParamInjector(fn ParamInjector) {
 
 // RegisterWithSource registers a tool with the given source, subject to the tool filter.
 // If the filter rejects the tool, it is silently dropped.
-func (r *ToolRegistry) RegisterWithSource(tool Tool, source string) {
+func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 	r.mu.RLock()
 	filter := r.toolFilter
 	r.mu.RUnlock()
@@ -198,7 +198,7 @@ func (r *ToolRegistry) RegisterWithSource(tool Tool, source string) {
 
 // resolvePolicy returns the effective policy for a tool.
 // Resolution order: per-tool override > skill override > registry default > tool's own default.
-func (r *ToolRegistry) resolvePolicy(name string, tool Tool) ToolPolicy {
+func (r *ToolRegistry) resolvePolicy(name string, tool sdktools.Tool) sdktools.ToolPolicy {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p, ok := r.policyOverrides[name]; ok {
@@ -215,7 +215,7 @@ func (r *ToolRegistry) resolvePolicy(name string, tool Tool) ToolPolicy {
 
 // SetSkillPolicyOverrides sets per-tool policy overrides derived from active skills.
 // These have lower priority than config-sourced policyOverrides but higher than default.
-func (r *ToolRegistry) SetSkillPolicyOverrides(overrides map[string]ToolPolicy) {
+func (r *ToolRegistry) SetSkillPolicyOverrides(overrides map[string]sdktools.ToolPolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.skillPolicyOverrides = overrides
@@ -225,10 +225,10 @@ func (r *ToolRegistry) SetSkillPolicyOverrides(overrides map[string]ToolPolicy) 
 // Returns an error if the tool is not found.
 // Security policy is resolved via resolvePolicy() and applied accordingly.
 // Internal tools bypass all policy and judge checks.
-func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (ToolResult, error) {
+func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
 	tool, ok := r.Get(name)
 	if !ok {
-		return ToolResult{Content: "tool not found: " + name, IsError: true}, nil
+		return sdktools.ToolResult{Content: "tool not found: " + name, IsError: true}, nil
 	}
 
 	// Internal tools bypass all policy/judge checks
@@ -245,7 +245,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	r.mu.RUnlock()
 	if hook != nil {
 		if err := hook(ctx, name, source); err != nil {
-			return ToolResult{Content: fmt.Sprintf("pre-execute hook: %v", err), IsError: true}, nil
+			return sdktools.ToolResult{Content: fmt.Sprintf("pre-execute hook: %v", err), IsError: true}, nil
 		}
 	}
 
@@ -260,7 +260,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// Symlink detection gate: force-confirm when any tool input contains paths
 	// that traverse symlinks, regardless of policy. Shows resolved paths in the
 	// confirmation dialog so the user can make an informed decision.
-	// PolicyAlwaysDeny is still respected — symlinks don't bypass explicit denies.
+	// sdktools.PolicyAlwaysDeny is still respected — symlinks don't bypass explicit denies.
 	if intercepted, result, err := r.checkSymlinksAndConfirm(ctx, tool, name, input); intercepted {
 		return result, err
 	}
@@ -269,42 +269,42 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	// Workspace/temp auto-approval: if all paths in the input are within the
 	// session workspace or temp directory, execute without confirmation.
-	// Auto-approval ONLY applies to PolicyAlwaysAllow (or no explicit policy
-	// when the tool's own default permits it). PolicyUserConfirm and
-	// PolicyAlwaysDeny are NEVER weakened by path-locality heuristics — a
+	// Auto-approval ONLY applies to sdktools.PolicyAlwaysAllow (or no explicit policy
+	// when the tool's own default permits it). sdktools.PolicyUserConfirm and
+	// sdktools.PolicyAlwaysDeny are NEVER weakened by path-locality heuristics — a
 	// user-controlled `working_directory` argument must not bypass an explicit
 	// confirm policy (e.g., bash_exec running ./scripts/x.sh inside the
 	// workspace).
-	if policy == PolicyAlwaysAllow {
-		if tempDir := sdktools.TempDirFrom(ctx); tempDir != "" && allPathsInDir(input, tempDir) {
+	if policy == sdktools.PolicyAlwaysAllow {
+		if tempDir := sdktools.TempDirFrom(ctx); tempDir != "" && sdktools.AllPathsInDir(input, tempDir) {
 			r.log().Debug("auto-approved: all paths within session temp directory", "tool", name)
 			return tool.Execute(ctx, input)
 		}
-		if allPathsInWorkspace(ctx, input) {
+		if sdktools.AllPathsInWorkspace(ctx, input) {
 			r.log().Debug("auto-approved: all paths within workspace", "tool", name)
 			return tool.Execute(ctx, input)
 		}
 	}
 
 	switch policy {
-	case PolicyAlwaysAllow:
+	case sdktools.PolicyAlwaysAllow:
 		// Safety filter: if the tool implements ToolJudger and flags the call, escalate to user confirmation.
 		if judger, ok := tool.(ToolJudger); ok {
 			allow, reasoning := judger.Judge(ctx, input)
 			if !allow && reasoning != "" {
-				r.log().Debug("PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
+				r.log().Debug("sdktools.PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
 				return r.confirmAndExecute(ctx, tool, name, input, reasoning)
 			}
 		}
 		return tool.Execute(ctx, input)
 
-	case PolicyAlwaysDeny:
-		return ToolResult{
+	case sdktools.PolicyAlwaysDeny:
+		return sdktools.ToolResult{
 			Content: fmt.Sprintf("tool %q blocked by security policy", name),
 			IsError: true,
 		}, nil
 
-	case PolicyUserConfirm:
+	case sdktools.PolicyUserConfirm:
 		return r.confirmAndExecute(ctx, tool, name, input, "")
 
 	default:
@@ -314,7 +314,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 // confirmAndExecute requests user confirmation before executing a tool.
 // If confirmFunc is nil (CLI mode), executes without confirmation.
-func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool Tool, name string, input json.RawMessage, reasoning string) (ToolResult, error) {
+func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage, reasoning string) (sdktools.ToolResult, error) {
 	r.mu.RLock()
 	confirmFunc := r.confirmFunc
 	r.mu.RUnlock()
@@ -329,7 +329,7 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool Tool, name st
 		JudgeReasoning: reasoning,
 	})
 	if err != nil {
-		return ToolResult{}, err
+		return sdktools.ToolResult{}, err
 	}
 
 	switch resp {
@@ -340,10 +340,10 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool Tool, name st
 		if reasoning != "" {
 			msg += " LLM Judge reasoning for flagging this call: " + reasoning
 		}
-		return ToolResult{Content: msg, IsError: true}, nil
+		return sdktools.ToolResult{Content: msg, IsError: true}, nil
 	case ConfirmDenyAndStop:
-		return ToolResult{}, context.Canceled
+		return sdktools.ToolResult{}, context.Canceled
 	default:
-		return ToolResult{}, fmt.Errorf("unknown confirmation response: %d", resp)
+		return sdktools.ToolResult{}, fmt.Errorf("unknown confirmation response: %d", resp)
 	}
 }

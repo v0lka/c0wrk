@@ -16,7 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // contextKey is a type for context keys in the session package.
@@ -91,7 +91,7 @@ type Manager struct {
 	taskStore           TaskStore           // optional persistent task store
 	sessionStore        SessionStore        // optional persistent session store
 	titleGen            *TitleGenerator     // optional title generator for auto-naming
-	envInfo             *tools.EnvInfo      // environment info for context injection
+	envInfo             *sdktools.EnvInfo      // environment info for context injection
 	stopTimeout         time.Duration       // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                 // character limit for auto-generated step summaries
 	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
@@ -175,7 +175,7 @@ func (m *Manager) SetTaskStore(store TaskStore) {
 }
 
 // SetEnvInfo sets the environment info that will be injected into task contexts.
-func (m *Manager) SetEnvInfo(info *tools.EnvInfo) {
+func (m *Manager) SetEnvInfo(info *sdktools.EnvInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.envInfo = info

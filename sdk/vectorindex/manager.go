@@ -10,21 +10,21 @@ import (
 
 	chromem "github.com/philippgille/chromem-go"
 
-	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/embedding"
 )
 
 // ManagerConfig holds configuration for creating a Manager.
-// Fields are flattened so callers never need to import core/ or sdk/.
+// The caller creates the embedder and passes EmbeddingFunc; ManagerConfig no longer
+// depends on model paths, making the package usable with any embedding backend.
 type ManagerConfig struct {
-	ModelPath        string   // ONNX model path
-	TokenizerPath    string   // tokenizer.json path
-	LibraryPath      string   // libonnxruntime path
-	MaxSeqLength     int      // default 512
-	HiddenDim        int      // default 512 for jina-v2-small
-	PersistPath      string   // base path for vector storage
-	IgnoreDirs       []string // user-configured dirs to skip (merged with defaults)
-	IgnoreExtensions []string // user-configured extensions to skip
-	IgnoreFileNames  []string // user-configured file names to skip
+	EmbeddingFunc    chromem.EmbeddingFunc // Required: embedding function for vector storage
+	CloseFn          func() error         // Optional: called in Shutdown (e.g., embedder.Close)
+	ChunkFn          ChunkFunc            // Optional: defaults to adapter over embedding.ChunkFile
+	HashFn           HashFunc             // Optional: defaults to embedding.ComputeFileHash
+	PersistPath      string               // base path for vector storage
+	IgnoreDirs       []string             // user-configured dirs to skip (merged with defaults)
+	IgnoreExtensions []string             // user-configured extensions to skip
+	IgnoreFileNames  []string             // user-configured file names to skip
 	Logger           *slog.Logger
 }
 
@@ -34,11 +34,10 @@ type ProjectCallbacks struct {
 }
 
 // Manager owns the full lifecycle of vector indexing:
-// embedder creation, service management, per-project indexing,
-// git monitoring, and orderly shutdown.
+// service management, per-project indexing, git monitoring, and orderly shutdown.
+// The embedder lifecycle is managed by the caller via ManagerConfig.CloseFn.
 type Manager struct {
-	embedder core.Embedder
-	service  *Service
+	service *Service
 
 	indexer     *Indexer
 	gitMonitor  *GitMonitor
@@ -64,14 +63,21 @@ type Manager struct {
 	ignoreExtensions map[string]bool
 	ignoreFileNames  map[string]bool
 
+	// Chunk and hash functions for indexing.
+	chunkFn ChunkFunc
+	hashFn  HashFunc
+
 	// WaitGroup for tracking in-flight reindex goroutines (vs Shutdown).
 	reindexWG sync.WaitGroup
+
+	// closeFn is called during Shutdown to release the embedder (if provided).
+	closeFn func() error
 }
 
-// NewManager creates embedder and service from flattened config.
-// Returns nil, nil when all model paths are empty (vector search disabled).
+// NewManager creates a Manager from the provided EmbeddingFunc and config.
+// Returns nil, nil when EmbeddingFunc is nil (vector search disabled).
 func NewManager(cfg ManagerConfig) (*Manager, error) {
-	if cfg.ModelPath == "" || cfg.TokenizerPath == "" || cfg.LibraryPath == "" {
+	if cfg.EmbeddingFunc == nil {
 		return nil, nil //nolint:nilnil // intentional: vector search is optional
 	}
 
@@ -80,44 +86,41 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	emb, err := core.NewEmbedder(core.EmbedderConfig{
-		ModelPath:     cfg.ModelPath,
-		TokenizerPath: cfg.TokenizerPath,
-		LibraryPath:   cfg.LibraryPath,
-		MaxSeqLength:  cfg.MaxSeqLength,
-		HiddenDim:     cfg.HiddenDim,
-		Logger:        logger,
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	ignoreDirs := mergeMapWithSlice(defaultIgnoreDirs, cfg.IgnoreDirs)
 	ignoreExts := buildMap(cfg.IgnoreExtensions)
 	ignoreNames := buildMap(cfg.IgnoreFileNames)
 
 	svc, err := NewService(ServiceConfig{
 		PersistPath:      cfg.PersistPath,
-		EmbeddingFunc:    chromem.EmbeddingFunc(emb.EmbeddingFunc()),
+		EmbeddingFunc:    cfg.EmbeddingFunc,
 		Logger:           logger,
 		IgnoreDirs:       ignoreDirs,
 		IgnoreExtensions: ignoreExts,
 		IgnoreFileNames:  ignoreNames,
 	})
 	if err != nil {
-		if closeErr := emb.Close(); closeErr != nil {
-			logger.Warn("failed to close embedder after service init failure", "error", closeErr)
-		}
 		return nil, err
 	}
 
+	// Resolve chunk and hash functions with defaults.
+	chunkFn := cfg.ChunkFn
+	if chunkFn == nil {
+		chunkFn = defaultChunkFn
+	}
+	hashFn := cfg.HashFn
+	if hashFn == nil {
+		hashFn = embedding.ComputeFileHash
+	}
+
 	return &Manager{
-		embedder:         emb,
 		service:          svc,
 		logger:           logger,
 		ignoreDirs:       ignoreDirs,
 		ignoreExtensions: ignoreExts,
 		ignoreFileNames:  ignoreNames,
+		chunkFn:          chunkFn,
+		hashFn:           hashFn,
+		closeFn:          cfg.CloseFn,
 	}, nil
 }
 
@@ -193,23 +196,8 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 		return fmt.Errorf("detecting branch for vector index: %w", err)
 	}
 
-	// Create chunker adapter: bridges core.ChunkFile to vectorindex.ChunkFunc.
-	chunkFn := func(filePath string, content []byte, maxSize, overlap int) ([]ChunkResult, error) {
-		chunks, chunkErr := core.ChunkFile(filePath, content, maxSize, overlap)
-		if chunkErr != nil {
-			return nil, chunkErr
-		}
-		results := make([]ChunkResult, len(chunks))
-		for i, c := range chunks {
-			results[i] = ChunkResult{
-				Content:   c.Content,
-				StartLine: c.StartLine,
-				EndLine:   c.EndLine,
-				Language:  c.Language,
-			}
-		}
-		return results, nil
-	}
+	// Create chunker using the resolved chunk function.
+	chunkFn := m.chunkFn
 
 	// Create indexer with a wrapped progress callback that also updates
 	// the Manager's internal status for GetVectorIndexStatus.
@@ -218,7 +206,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 	indexer := NewIndexer(IndexerConfig{
 		Service:          m.service,
 		ChunkFn:          chunkFn,
-		HashFn:           core.ComputeFileHash,
+		HashFn:           m.hashFn,
 		OnProgress:       m.wrapProgress(userOnProgress),
 		Logger:           m.logger,
 		IgnoreDirs:       m.ignoreDirs,
@@ -469,7 +457,7 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 }
 
 // Shutdown performs orderly cleanup: cancel indexing, stop monitor,
-// close service, close embedder.
+// close service, and close the embedder via CloseFn (if provided).
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	if m.indexCancel != nil {
@@ -491,12 +479,33 @@ func (m *Manager) Shutdown() {
 			m.logger.Error("failed to close vector service", "error", err)
 		}
 	}
-	if m.embedder != nil {
-		if err := m.embedder.Close(); err != nil {
+	if m.closeFn != nil {
+		if err := m.closeFn(); err != nil {
 			m.logger.Error("failed to close embedder", "error", err)
 		}
 	}
 
 	// Wait for in-flight reindex goroutine to finish before closing resources.
 	m.reindexWG.Wait()
+}
+
+// defaultChunkFn adapts embedding.ChunkFile to the ChunkFunc signature.
+func defaultChunkFn(filePath string, content []byte, maxChunkSize, overlap int) ([]ChunkResult, error) {
+	chunks, err := embedding.ChunkFile(filePath, content, embedding.ChunkerConfig{
+		MaxChunkSize: maxChunkSize,
+		Overlap:      overlap,
+	})
+	if err != nil {
+		return nil, err
+	}
+	results := make([]ChunkResult, len(chunks))
+	for i, c := range chunks {
+		results[i] = ChunkResult{
+			Content:   c.Content,
+			StartLine: c.StartLine,
+			EndLine:   c.EndLine,
+			Language:  c.Language,
+		}
+	}
+	return results, nil
 }

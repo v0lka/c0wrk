@@ -55,7 +55,7 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 		if errNotGitRepo(err, stderr.String()) {
 			return map[string]GitStatusEntry{}, nil
 		}
-		return nil, fmt.Errorf("git status failed: %w (%s)", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("git status failed: %w", err)
 	}
 
 	result := make(map[string]GitStatusEntry)
@@ -99,6 +99,10 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 		result[path] = GitStatusEntry{Status: string(status), Staged: staged}
 	}
 
+	if scanErr := scanner.Err(); scanErr != nil {
+		return nil, fmt.Errorf("parsing git status output: %w", scanErr)
+	}
+
 	return result, nil
 }
 
@@ -106,15 +110,22 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 // within a git repository. For tracked files it concatenates staged and
 // unstaged diffs. For untracked files and non-git workspaces, it produces
 // a full-file diff via git diff --no-index.
+//
+// Callers that already know whether the path is in a git repository should
+// prefer the more specific GetFileDiffInRepo or GetFileDiffNoRepo variants
+// to avoid the redundant IsGitRepo check.
 func GetFileDiff(ctx context.Context, repoPath, relPath string) (string, error) {
 	if !IsGitRepo(ctx, repoPath) {
-		diff, err := runGitDiffNoIndex(ctx, repoPath, relPath)
-		if err != nil {
-			return "", fmt.Errorf("git diff --no-index: %w", err)
-		}
-		return diff, nil
+		return GetFileDiffNoRepo(ctx, repoPath, relPath)
 	}
+	return GetFileDiffInRepo(ctx, repoPath, relPath)
+}
 
+// GetFileDiffInRepo returns the unified diff of uncommitted changes for a
+// file within a git repository. The caller must ensure repoPath is a git
+// repository. For tracked files it concatenates staged and unstaged diffs.
+// For untracked files it produces a full-file diff via git diff --no-index.
+func GetFileDiffInRepo(ctx context.Context, repoPath, relPath string) (string, error) {
 	var result strings.Builder
 
 	staged, err := runGitDiff(ctx, repoPath, true, relPath)
@@ -140,6 +151,18 @@ func GetFileDiff(ctx context.Context, repoPath, relPath string) (string, error) 
 	return result.String(), nil
 }
 
+// GetFileDiffNoRepo produces a full-file diff via git diff --no-index for
+// workspaces that are known not to be git repositories. The caller is
+// responsible for determining that the path is not in a git repo (e.g. via
+// a cached check) — this function does not call IsGitRepo.
+func GetFileDiffNoRepo(ctx context.Context, repoPath, relPath string) (string, error) {
+	diff, err := runGitDiffNoIndex(ctx, repoPath, relPath)
+	if err != nil {
+		return "", fmt.Errorf("git diff --no-index: %w", err)
+	}
+	return diff, nil
+}
+
 // runGitDiff executes a git diff command and returns its output.
 func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (string, error) {
 	args := []string{"diff"}
@@ -155,7 +178,7 @@ func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (s
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%w (%s)", err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("git diff: %w", err)
 	}
 	return stdout.String(), nil
 }
@@ -177,7 +200,7 @@ func runGitDiffNoIndex(ctx context.Context, dir, relPath string) (string, error)
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return stdout.String(), nil
 		}
-		return "", err
+		return "", fmt.Errorf("git diff --no-index failed: %w", err)
 	}
 	return stdout.String(), nil
 }
@@ -196,7 +219,7 @@ func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 		if errNotGitRepo(err, stderr.String()) {
 			return nil, nil //nolint:nilnil // non-git workspace: no filtering
 		}
-		return nil, fmt.Errorf("git ls-files failed: %w (%s)", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("git ls-files failed: %w", err)
 	}
 
 	output := stdout.Bytes()

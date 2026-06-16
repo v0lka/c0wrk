@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
-
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // SymlinkTraversal describes a path that traverses a symlink.
@@ -22,11 +20,11 @@ type SymlinkTraversal struct {
 	OutsideWorkspace bool   // does the fully resolved path fall outside the workspace?
 }
 
-// detectSymlinksInToolInput extracts all path-like values from a tool input
+// DetectSymlinksInToolInput extracts all path-like values from a tool input
 // and checks each for symlinks. Returns traversals partitioned by whether
 // the resolved target is inside or outside the workspace, plus a suspicious
 // flag for bash_exec commands with unexpandable tokens.
-func detectSymlinksInToolInput(ctx context.Context, toolName string, input json.RawMessage) (
+func DetectSymlinksInToolInput(ctx context.Context, toolName string, input json.RawMessage) (
 	inside []SymlinkTraversal,
 	outside []SymlinkTraversal,
 	suspicious bool,
@@ -53,7 +51,7 @@ func extractAllPathsFromJSON(input json.RawMessage, workspace string) []string {
 		return nil
 	}
 
-	strValues := extractJSONStrings(parsed)
+	strValues := ExtractJSONStrings(parsed)
 	seen := make(map[string]struct{})
 	var paths []string
 
@@ -386,10 +384,10 @@ func isPathOutside(absPath, workspace string) bool {
 	return strings.HasPrefix(rel, "..")
 }
 
-// formatSymlinkReasoning formats symlink traversals into a human-readable
+// FormatSymlinkReasoning formats symlink traversals into a human-readable
 // message for the confirmation dialog. Outside-workspace traversals are
 // highlighted as more dangerous.
-func formatSymlinkReasoning(inside, outside []SymlinkTraversal, suspicious bool) string {
+func FormatSymlinkReasoning(inside, outside []SymlinkTraversal, suspicious bool) string {
 	var sb strings.Builder
 
 	if len(outside) > 0 {
@@ -429,81 +427,4 @@ func formatSymlinkReasoning(inside, outside []SymlinkTraversal, suspicious bool)
 	return strings.TrimSpace(sb.String())
 }
 
-// checkSymlinksAndConfirm is the integration method called from ToolRegistry.Execute().
-// It detects symlinks in the tool input and, if found, forces confirmation
-// (respecting PolicyAlwaysDeny). Returns intercepted=true if the call was handled.
-func (r *ToolRegistry) checkSymlinksAndConfirm(ctx context.Context, tool Tool, name string, input json.RawMessage) (intercepted bool, result ToolResult, err error) {
-	inside, outside, suspicious := detectSymlinksInToolInput(ctx, name, input)
-	if len(inside) == 0 && len(outside) == 0 && !suspicious {
-		return false, ToolResult{}, nil
-	}
 
-	// If all symlink traversals are OS-level infrastructure (symlink path
-	// is a prefix of workspace or temp dir, like macOS /tmp -> /private/tmp),
-	// skip interception. These are filesystem mapping details, not user-created
-	// security-relevant symlinks.
-	if len(outside) == 0 {
-		tempDir := sdktools.TempDirFrom(ctx)
-		workspace := WorkspacePathFrom(ctx)
-		allOSLevel := true
-		for _, t := range inside {
-			symlinkPrefix := filepath.Clean(t.SymlinkAt) + string(filepath.Separator)
-			osLevel := false
-			if workspace != "" {
-				wsPrefix := filepath.Clean(workspace) + string(filepath.Separator)
-				if strings.HasPrefix(wsPrefix, symlinkPrefix) {
-					osLevel = true
-				}
-			}
-			if !osLevel && tempDir != "" {
-				tempPrefix := filepath.Clean(tempDir) + string(filepath.Separator)
-				if strings.HasPrefix(tempPrefix, symlinkPrefix) {
-					osLevel = true
-				}
-			}
-			if !osLevel {
-				allOSLevel = false
-				break
-			}
-		}
-		if allOSLevel {
-			return false, ToolResult{}, nil
-		}
-	}
-
-	// Also skip outside traversals that are OS-level infrastructure relative
-	// to the session temp dir (e.g., macOS /tmp -> /private/tmp when the
-	// tool operates within /tmp/c0wrk-session-*/). If every outside traversal's
-	// symlink prefix is a prefix of the temp dir, the traversal is just the
-	// OS mapping the temp dir into the real filesystem — not user-created.
-	if len(outside) > 0 {
-		tempDir := sdktools.TempDirFrom(ctx)
-		if tempDir != "" {
-			allOSLevel := true
-			for _, t := range outside {
-				symlinkPrefix := filepath.Clean(t.SymlinkAt) + string(filepath.Separator)
-				tempPrefix := filepath.Clean(tempDir) + string(filepath.Separator)
-				if !strings.HasPrefix(tempPrefix, symlinkPrefix) {
-					allOSLevel = false
-					break
-				}
-			}
-			if allOSLevel {
-				return false, ToolResult{}, nil
-			}
-		}
-	}
-
-	// Resolve policy to check for AlwaysDeny before forcing confirmation
-	policy := r.resolvePolicy(name, tool)
-	if policy == PolicyAlwaysDeny {
-		return true, ToolResult{
-			Content: fmt.Sprintf("tool %q blocked by security policy", name),
-			IsError: true,
-		}, nil
-	}
-
-	reasoning := formatSymlinkReasoning(inside, outside, suspicious)
-	result, err = r.confirmAndExecute(ctx, tool, name, input, reasoning)
-	return true, result, err
-}

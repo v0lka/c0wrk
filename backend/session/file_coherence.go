@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const defaultActivityCap = 200
@@ -16,19 +16,19 @@ type writeRecord struct {
 	Path      string
 	SessionID string
 	At        time.Time
-	Sig       tools.FileSig
+	Sig       sdktools.FileSig
 }
 
 // FileCoherenceTracker detects cross-session file conflicts by tracking
 // per-session file signatures and comparing them before read/write operations.
-// It implements tools.FileCoherenceChecker.
+// It implements sdktools.FileCoherenceChecker.
 //
 // Lock ordering: t.mu must be acquired BEFORE t.fileMu to avoid deadlocks.
 // pruneOrphanFileMutexesLocked follows this ordering (caller holds t.mu,
 // then it acquires t.fileMu internally).
 type FileCoherenceTracker struct {
 	mu           sync.RWMutex
-	snapshots    map[string]map[string]tools.FileSig // sessionID -> path -> sig
+	snapshots    map[string]map[string]sdktools.FileSig // sessionID -> path -> sig
 	activity     []writeRecord                       // ring buffer of recent writes
 	activityCap  int
 	fileMutexes  map[string]*sync.Mutex
@@ -40,7 +40,7 @@ type FileCoherenceTracker struct {
 // nameResolver should return a human-readable session name given a session ID.
 func NewFileCoherenceTracker(nameResolver func(string) string) *FileCoherenceTracker {
 	return &FileCoherenceTracker{
-		snapshots:    make(map[string]map[string]tools.FileSig),
+		snapshots:    make(map[string]map[string]sdktools.FileSig),
 		activity:     make([]writeRecord, 0, defaultActivityCap),
 		activityCap:  defaultActivityCap,
 		fileMutexes:  make(map[string]*sync.Mutex),
@@ -73,7 +73,7 @@ func (t *FileCoherenceTracker) Unlock(path string) {
 // CheckRead checks if the file at path changed since this session last read it.
 // Always updates the session's snapshot to the current on-disk state.
 // Returns nil on first read or when the file has not changed.
-func (t *FileCoherenceTracker) CheckRead(ctx context.Context, path string) *tools.CoherenceConflict {
+func (t *FileCoherenceTracker) CheckRead(ctx context.Context, path string) *sdktools.CoherenceConflict {
 	sessionID := SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return nil
@@ -102,7 +102,7 @@ func (t *FileCoherenceTracker) CheckRead(ctx context.Context, path string) *tool
 	// File changed since last read — find who modified it
 	modifiedBy, modifiedAt := t.findLastWriter(path, sessionID)
 
-	return &tools.CoherenceConflict{
+	return &sdktools.CoherenceConflict{
 		Path:        path,
 		LastReadSig: prevSig,
 		CurrentSig:  currentSig,
@@ -113,7 +113,7 @@ func (t *FileCoherenceTracker) CheckRead(ctx context.Context, path string) *tool
 
 // CheckWrite checks if the file at path changed since this session last read it.
 // Does NOT update the snapshot. Returns nil if no prior read exists.
-func (t *FileCoherenceTracker) CheckWrite(ctx context.Context, path string) *tools.CoherenceConflict {
+func (t *FileCoherenceTracker) CheckWrite(ctx context.Context, path string) *sdktools.CoherenceConflict {
 	sessionID := SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return nil
@@ -132,10 +132,10 @@ func (t *FileCoherenceTracker) CheckWrite(ctx context.Context, path string) *too
 	if err != nil {
 		// File was deleted externally since session last read it.
 		modifiedBy, modifiedAt := t.findLastWriterLocked(path, sessionID)
-		return &tools.CoherenceConflict{
+		return &sdktools.CoherenceConflict{
 			Path:        path,
 			LastReadSig: prevSig,
-			CurrentSig:  tools.FileSig{},
+			CurrentSig:  sdktools.FileSig{},
 			ModifiedBy:  modifiedBy,
 			ModifiedAt:  modifiedAt,
 		}
@@ -146,7 +146,7 @@ func (t *FileCoherenceTracker) CheckWrite(ctx context.Context, path string) *too
 	}
 
 	modifiedBy, modifiedAt := t.findLastWriterLocked(path, sessionID)
-	return &tools.CoherenceConflict{
+	return &sdktools.CoherenceConflict{
 		Path:        path,
 		LastReadSig: prevSig,
 		CurrentSig:  currentSig,
@@ -252,19 +252,19 @@ func (t *FileCoherenceTracker) pruneOrphanFileMutexesLocked() {
 
 // --- internal helpers ---
 
-func (t *FileCoherenceTracker) getSnapshot(sessionID, path string) (tools.FileSig, bool) {
+func (t *FileCoherenceTracker) getSnapshot(sessionID, path string) (sdktools.FileSig, bool) {
 	m, ok := t.snapshots[sessionID]
 	if !ok {
-		return tools.FileSig{}, false
+		return sdktools.FileSig{}, false
 	}
 	sig, ok := m[path]
 	return sig, ok
 }
 
-func (t *FileCoherenceTracker) setSnapshot(sessionID, path string, sig tools.FileSig) {
+func (t *FileCoherenceTracker) setSnapshot(sessionID, path string, sig sdktools.FileSig) {
 	m, ok := t.snapshots[sessionID]
 	if !ok {
-		m = make(map[string]tools.FileSig)
+		m = make(map[string]sdktools.FileSig)
 		t.snapshots[sessionID] = m
 	}
 	m[path] = sig
@@ -308,17 +308,17 @@ func (t *FileCoherenceTracker) findLastWriterLocked(path, excludeID string) (str
 	return t.findLastWriter(path, excludeID)
 }
 
-func statFile(path string) (tools.FileSig, error) {
+func statFile(path string) (sdktools.FileSig, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return tools.FileSig{}, err
+		return sdktools.FileSig{}, err
 	}
-	return tools.FileSig{
+	return sdktools.FileSig{
 		ModTime: info.ModTime(),
 		Size:    info.Size(),
 	}, nil
 }
 
-func sigEqual(a, b tools.FileSig) bool {
+func sigEqual(a, b sdktools.FileSig) bool {
 	return a.Size == b.Size && a.ModTime.Equal(b.ModTime)
 }

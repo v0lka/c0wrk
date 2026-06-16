@@ -127,8 +127,9 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 }
 
 // GetFileDiff returns the unified diff of uncommitted changes for a single file
-// within the active project workspace. Delegates to core/workspace.GetFileDiff
-// after path validation.
+// within the active project workspace. Uses the cached isGitRepo check to
+// avoid redundant git rev-parse calls, then delegates to the appropriate
+// core/workspace variant.
 func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 	absPath, absRoot, err := f.resolveWorkspacePath(filePath)
 	if err != nil {
@@ -140,7 +141,10 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 		return "", fmt.Errorf("failed to compute relative path: %w", err)
 	}
 
-	return workspace.GetFileDiff(f.ctx(), absRoot, relPath)
+	if !f.isGitRepo(absRoot) {
+		return workspace.GetFileDiffNoRepo(f.ctx(), absRoot, relPath)
+	}
+	return workspace.GetFileDiffInRepo(f.ctx(), absRoot, relPath)
 }
 
 // ListDirectory returns the children of a directory. When recursive is false,

@@ -1,4 +1,4 @@
-// Package strutil provides shared string helpers for the core layer.
+// Package strutil provides shared string helpers.
 package strutil
 
 import "unicode/utf8"

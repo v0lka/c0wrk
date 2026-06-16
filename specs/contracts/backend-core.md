@@ -17,13 +17,30 @@
 | `Blackboard`          | sdk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
 | `Plan`, `PlanStep`    | sdk/orchestration (direct) | core → backend | Plan structure                        |
-| `ToolPolicy`          | core/tools     | backend → core | Security policy values                |
+| `ToolPolicy`          | sdk/tools      | backend → core | Security policy values                |
 | `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation) |
-| `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
+| `Manager`             | sdk/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
 | `PTYManager`          | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
 | `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |
 | `FileNode`            | core/workspace | core → backend | File tree node (type alias in backend) |
 | `GitStatusEntry`      | core/workspace | core → backend | Git porcelain status (type alias in backend) |
+
+## Workspace Services (core/workspace)
+
+Backend calls these stateless functions directly. Caching of `IsGitRepo` results
+is a backend ViewModel concern (see `FrontendAPI.isGitRepo`).
+
+| Function | Signature | Purpose |
+| -------- | --------- | ------- |
+| `IsGitRepo` | `(ctx context.Context, dir string) bool` | Check if dir is inside a git work tree |
+| `IsGitTracked` | `(ctx context.Context, dir, relPath string) bool` | Check if a file is tracked by git |
+| `GitStatus` | `(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error)` | Parse `git status --porcelain` output |
+| `GetFileDiff` | `(ctx context.Context, repoPath, relPath string) (string, error)` | Convenience wrapper: auto-detects repo and delegates |
+| `GetFileDiffInRepo` | `(ctx context.Context, repoPath, relPath string) (string, error)` | Diff for git repos (caller guarantees repo) |
+| `GetFileDiffNoRepo` | `(ctx context.Context, repoPath, relPath string) (string, error)` | Diff for non-repo workspaces (caller guarantees non-repo) |
+| `GitIgnoredPaths` | `(ctx context.Context, dir string) (map[string]bool, error)` | Set of git-ignored absolute paths |
+| `ListDirFlat` | `(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error)` | Immediate children listing |
+| `ListDirRecursive` | `(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error)` | Recursive flat listing |
 
 ## Config Adapter
 
@@ -114,3 +131,5 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Changing `Emitter` interface → update backend emitter implementation
 - Adding new `OrchestratorBuilder` method → update `backend/application.go` if exposed to frontend
 - Changing tool config types → update `BuiltinToolsConfig` re-exports in `core/tools/builtin_registration.go`
+- `vectorindex.ManagerConfig` no longer accepts model-path fields (`ModelPath`, `TokenizerPath`, `LibraryPath`, `MaxSeqLength`, `HiddenDim`); caller is now responsible for embedder lifecycle via `EmbeddingFunc` + `CloseFn`
+- `core/tools` AskUser* and builtins limit/vector type aliases removed per ADR-008; import directly from `sdk/tools` / `sdk/tools/builtins`

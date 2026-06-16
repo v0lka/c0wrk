@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/skills"
 )
 
 func TestFormatVectorSearchHints_Empty(t *testing.T) {

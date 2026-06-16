@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -18,7 +19,7 @@ import (
 type PersistableBlackboard interface {
 	orchestration.Blackboard
 	SetEmitter(emitter Emitter)
-	SetRouting(routing *RoutingDecision)
+	SetRouting(routing *router.RoutingDecision)
 	CompleteTask(attemptCount int)
 	FailTask()
 	ReactivateTask()
@@ -39,7 +40,7 @@ type BlackboardRestoreFunc func(taskID, sessionID string, store TaskPersistence,
 type TaskPersistence interface {
 	PersistNewTask(taskID, sessionID, originalRequest string) error
 	PersistPlan(taskID string, plan *orchestration.Plan) error
-	PersistRouting(taskID string, routing *RoutingDecision) error
+	PersistRouting(taskID string, routing *router.RoutingDecision) error
 	PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error
 	PersistReflection(taskID string, r orchestration.Reflection) error
 	PersistCompletion(taskID, finalOutput string, attemptCount int) error
@@ -61,7 +62,7 @@ type TaskState struct {
 	TaskID          string
 	SessionID       string
 	OriginalRequest string
-	RoutingDecision *RoutingDecision
+	RoutingDecision *router.RoutingDecision
 	Plan            *orchestration.Plan
 	StepResults     map[string]orchestration.StepResult
 	Reflections     []orchestration.Reflection

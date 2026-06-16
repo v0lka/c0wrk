@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/core/internal/strutil"
+	"github.com/v0lka/c0wrk/sdk/strutil"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 
 // OptimizePromptResult holds the output of the prompt optimization pipeline.
@@ -80,7 +80,7 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 
 	if searchFunc != nil && len(keywords) > 0 {
 		query := strings.Join(keywords, " ")
-		results, searchErr := searchFunc(ctx, tools.VectorSearchOptions{Query: query, TopK: 5})
+		results, searchErr := searchFunc(ctx, builtins.VectorSearchOptions{Query: query, TopK: 5})
 		if searchErr != nil {
 			b.log().Warn("optimize prompt: vector search failed, proceeding without context", "error", searchErr)
 		} else if len(results) > 0 {

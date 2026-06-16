@@ -4,9 +4,11 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/planner"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
@@ -176,7 +178,7 @@ func coreStepConfigurator(
 			AllowedTools:       allowed,
 			SystemPrompt:       stepSystemPrompt,
 			SystemPromptSuffix: suffix,
-			CompactionStrategy: applyCompactionStrategy(profile.Domain, complexityForStep(taskCtxProvider)),
+			CompactionStrategy: router.ApplyCompactionStrategy(profile.Domain, complexityForStep(taskCtxProvider)),
 			KeepLastN:          keepLastN,
 			ProtectedTools:     protectedTools,
 			AgentRole:          profile.Role,
@@ -264,9 +266,9 @@ func unionToolNames(primary, extra []string) []string {
 }
 
 // resolveAgentProfile returns the effective AgentProfile for a plan step.
-func resolveAgentProfile(step orchestration.PlanStep, defaultMaxSteps int) AgentProfile {
+func resolveAgentProfile(step orchestration.PlanStep, defaultMaxSteps int) planner.AgentProfile {
 	if step.Profile != nil {
-		if profile, ok := step.Profile.(*AgentProfile); ok {
+		if profile, ok := step.Profile.(*planner.AgentProfile); ok {
 			p := *profile
 			if p.MaxSteps == 0 {
 				p.MaxSteps = defaultMaxSteps
@@ -274,5 +276,5 @@ func resolveAgentProfile(step orchestration.PlanStep, defaultMaxSteps int) Agent
 			return p
 		}
 	}
-	return AgentProfile{Role: "executor", MaxSteps: defaultMaxSteps}
+	return planner.AgentProfile{Role: "executor", MaxSteps: defaultMaxSteps}
 }

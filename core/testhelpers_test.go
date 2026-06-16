@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
@@ -67,7 +68,9 @@ func (m *mockLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.Cha
 	return resp, nil
 }
 
-// lastCall returns the last recorded call request, or empty if none
+// lastCall returns the last recorded call request, or empty if none.
+//
+//nolint:unused // available for test assertions but not currently used
 func (m *mockLLMCaller) lastCall() llm.ChatRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -282,7 +285,7 @@ type testPersistableBlackboard struct {
 var _ PersistableBlackboard = (*testPersistableBlackboard)(nil)
 
 func (t *testPersistableBlackboard) SetEmitter(_ Emitter) {}
-func (t *testPersistableBlackboard) SetRouting(routing *RoutingDecision) {
+func (t *testPersistableBlackboard) SetRouting(routing *router.RoutingDecision) {
 	if t.store != nil {
 		_ = t.store.PersistRouting(t.taskID, routing)
 	}

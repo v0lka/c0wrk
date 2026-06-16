@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/sdk/llm"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // mockLLMProvider is a mock implementation of llm.Provider for testing.
@@ -287,18 +286,6 @@ func TestJudge_TaskContextParameter_TakesPrecedence(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected explicit parameter to be used in request")
-	}
-}
-
-func TestWithTaskContext(t *testing.T) {
-	ctx := context.Background()
-	desc := "test task description"
-
-	ctxWithTask := WithTaskContext(ctx, desc)
-	retrieved := TaskContextFrom(ctxWithTask)
-
-	if retrieved != desc {
-		t.Errorf("expected %q, got %q", desc, retrieved)
 	}
 }
 
@@ -696,7 +683,7 @@ func TestAllPathsInDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := allPathsInDir(json.RawMessage(tt.input), tt.dir)
+			got := AllPathsInDir(json.RawMessage(tt.input), tt.dir)
 			if got != tt.want {
 				t.Errorf("allPathsInDir() = %v, want %v", got, tt.want)
 			}
@@ -791,7 +778,7 @@ func TestAllPathsInWorkspace(t *testing.T) {
 			if tt.workspace != "" {
 				ctx = WithWorkspacePath(ctx, tt.workspace)
 			}
-			got := allPathsInWorkspace(ctx, json.RawMessage(tt.input))
+			got := AllPathsInWorkspace(ctx, json.RawMessage(tt.input))
 			if got != tt.want {
 				t.Errorf("allPathsInWorkspace() = %v, want %v", got, tt.want)
 			}
@@ -813,6 +800,9 @@ func TestJudge_InternalTools_ReturnsAllowImmediately(t *testing.T) {
 				},
 			}
 			judge := NewToolJudge(mockProvider, "test-model", 0, nil)
+			// Configure internal tool recognition for the test
+			internalSet := map[string]struct{}{"ask_user": {}, "finish": {}, "list_step_outputs": {}, "read_skill_resource": {}, "read_step_output": {}, "search_facts": {}, "semantic_search": {}, "set_step_status": {}, "store_fact": {}, "tool_result_read": {}}
+			judge.SetIsInternalFn(func(name string) bool { _, ok := internalSet[name]; return ok })
 
 			ctx := context.Background()
 			input := json.RawMessage(`{"data":"test"}`)
@@ -872,7 +862,7 @@ func TestJudge_TempDirPreCheck_AllowsInternalPaths(t *testing.T) {
 	}
 	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
 
-	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	ctx := WithTempDir(context.Background(), "/tmp/session-temp")
 	input := json.RawMessage(`{"path":"/tmp/session-temp/cache/data.json"}`)
 
 	verdict, reason, err := judge.Judge(ctx, "file_write", input, "write file")
@@ -898,7 +888,7 @@ func TestJudge_TempDirPreCheck_DeniesExternalPaths(t *testing.T) {
 	}
 	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
 
-	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	ctx := WithTempDir(context.Background(), "/tmp/session-temp")
 	input := json.RawMessage(`{"path":"/etc/passwd"}`)
 
 	verdict, _, err := judge.Judge(ctx, "file_read", input, "read file")
@@ -921,7 +911,7 @@ func TestJudge_TempDirPreCheck_MixedPaths(t *testing.T) {
 	}
 	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
 
-	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	ctx := WithTempDir(context.Background(), "/tmp/session-temp")
 	input := json.RawMessage(`{"src":"/tmp/session-temp/file.txt","dest":"/tmp/other/file.txt"}`)
 
 	verdict, _, err := judge.Judge(ctx, "file_copy", input, "copy file")
@@ -968,7 +958,7 @@ func TestJudge_TempDirPreCheck_TakesPrecedenceOverWorkspace(t *testing.T) {
 	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
 
 	// Both temp dir and workspace are set, but path is only in temp dir
-	ctx := tools.WithTempDir(context.Background(), "/tmp/session-temp")
+	ctx := WithTempDir(context.Background(), "/tmp/session-temp")
 	ctx = WithWorkspacePath(ctx, "/home/user/project")
 	input := json.RawMessage(`{"path":"/tmp/session-temp/cache/data.json"}`)
 

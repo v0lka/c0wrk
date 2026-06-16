@@ -1,4 +1,4 @@
-package core
+package reflector
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
@@ -18,19 +17,36 @@ import (
 // compile-time check: Reflector implements orchestration.Reflector.
 var _ orchestration.Reflector = (*Reflector)(nil)
 
-const reflectorAnalyzeFooter = "Please analyze this execution and provide a structured reflection."
+const defaultAnalyzeFooter = "Please analyze this execution and provide a structured reflection."
 
-// Reflector analyzes execution trajectory to produce
-// structured self-correction insights per AD 4.6.
+// Config holds the configuration for a Reflector.
+type Config struct {
+	// SystemPrompt is the reflection system prompt.
+	SystemPrompt string
+	// AnalyzeFooter is appended to the user message. Defaults to a standard analysis request.
+	AnalyzeFooter string
+}
+
+// Reflector analyzes execution trajectory to produce structured self-correction insights.
 type Reflector struct {
 	llm                 agent.LLMCaller
+	systemPrompt        string
+	analyzeFooter       string
 	baseReasoningEffort llm.ReasoningEffort
 	roleOverrides       map[string]string
 }
 
-// NewReflector creates a new Reflector with the given LLM caller.
-func NewReflector(caller agent.LLMCaller) *Reflector {
-	return &Reflector{llm: caller}
+// NewReflector creates a new Reflector with the given caller and config.
+func NewReflector(caller agent.LLMCaller, cfg Config) *Reflector {
+	footer := cfg.AnalyzeFooter
+	if footer == "" {
+		footer = defaultAnalyzeFooter
+	}
+	return &Reflector{
+		llm:           caller,
+		systemPrompt:  cfg.SystemPrompt,
+		analyzeFooter: footer,
+	}
 }
 
 // SetBaseReasoningEffort sets the base reasoning effort for the reflector.
@@ -44,15 +60,15 @@ func (r *Reflector) SetRoleOverrides(overrides map[string]string) {
 }
 
 // Reflect analyzes execution trajectory to produce structured self-correction insights.
-// trajectory = the steps executed,
-// plan = the plan (if plan_execute mode), prevReflections = past reflections for this task
 func (r *Reflector) Reflect(
 	ctx context.Context,
 	trajectory []agent.Step,
 	plan *orchestration.Plan,
 	prevReflections []orchestration.Reflection,
 ) (reflection *orchestration.Reflection, err error) {
-	systemPrompt := r.buildSystemPrompt()
+	systemPrompt := prompt.NewBuilder().
+		Core(r.systemPrompt).
+		Build()
 
 	// Append compact environment context for reflection analysis.
 	if envBlock := tools.FormatCompactEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
@@ -81,17 +97,9 @@ func (r *Reflector) Reflect(
 		return nil, fmt.Errorf("failed to parse reflection response: %w", err)
 	}
 
-	// Set timestamp
 	reflection.Timestamp = time.Now()
 
 	return reflection, nil
-}
-
-// buildSystemPrompt constructs the system prompt for the reflector role.
-func (r *Reflector) buildSystemPrompt() string {
-	return prompt.NewBuilder().
-		Core(prompts.ReflectorSystem).
-		Build()
 }
 
 // buildUserMessage constructs the user message containing all context for reflection.
@@ -102,7 +110,6 @@ func (r *Reflector) buildUserMessage(
 ) string {
 	var sb strings.Builder
 
-	// Add execution trajectory
 	sb.WriteString("## Execution Trajectory\n\n")
 	if len(trajectory) == 0 {
 		sb.WriteString("No steps executed.\n\n")
@@ -123,7 +130,6 @@ func (r *Reflector) buildUserMessage(
 		}
 	}
 
-	// Add plan if available
 	if plan != nil && len(plan.Steps) > 0 {
 		sb.WriteString("## Plan\n\n")
 		for _, step := range plan.Steps {
@@ -135,7 +141,6 @@ func (r *Reflector) buildUserMessage(
 		sb.WriteString("\n")
 	}
 
-	// Add previous reflections if any
 	if len(prevReflections) > 0 {
 		sb.WriteString("## Previous Reflections\n\n")
 		sb.WriteString("(Learn from these to avoid repeating the same mistakes)\n\n")
@@ -149,32 +154,29 @@ func (r *Reflector) buildUserMessage(
 		}
 	}
 
-	sb.WriteString(reflectorAnalyzeFooter)
+	sb.WriteString(r.analyzeFooter)
 
 	return sb.String()
 }
 
 // parseReflectionResponse extracts a Reflection from the LLM response content.
 func (r *Reflector) parseReflectionResponse(content string) (*orchestration.Reflection, error) {
-	// Use the same extractJSON pattern as router.go
-	jsonStr := extractJSON(content)
+	jsonStr := llm.ExtractJSON(content)
 
 	var reflection orchestration.Reflection
 	if err := json.Unmarshal([]byte(jsonStr), &reflection); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal reflection JSON: %w", err)
 	}
 
-	// Validate suggested action
 	switch reflection.SuggestedAction {
 	case "retry", "replan", "abort":
 		// Valid
 	case "":
-		reflection.SuggestedAction = "retry" // Default to retry if not specified
+		reflection.SuggestedAction = "retry"
 	default:
-		reflection.SuggestedAction = "retry" // Default to retry for unknown values
+		reflection.SuggestedAction = "retry"
 	}
 
-	// Set default summary if empty
 	if reflection.Summary == "" {
 		reflection.Summary = "Execution analysis unavailable"
 	}

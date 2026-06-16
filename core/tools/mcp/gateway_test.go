@@ -8,6 +8,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 func TestNewGateway(t *testing.T) {
@@ -100,7 +101,7 @@ func TestToolImplementsToolInterface(t *testing.T) {
 	mcpTool := NewTool(server, info)
 
 	// Verify Tool implements tools.Tool interface
-	var _ tools.Tool = mcpTool
+	var _ sdktools.Tool = mcpTool
 }
 
 func TestGatewayRegisterTools(t *testing.T) {
@@ -169,12 +170,12 @@ func TestConvertMCPResult(t *testing.T) {
 	tests := []struct {
 		name     string
 		result   *mcp.CallToolResult
-		expected tools.ToolResult
+		expected sdktools.ToolResult
 	}{
 		{
 			name:   "nil result",
 			result: nil,
-			expected: tools.ToolResult{
+			expected: sdktools.ToolResult{
 				Content: "",
 				IsError: false,
 			},
@@ -187,7 +188,7 @@ func TestConvertMCPResult(t *testing.T) {
 				},
 				IsError: false,
 			},
-			expected: tools.ToolResult{
+			expected: sdktools.ToolResult{
 				Content: "Hello, world!",
 				IsError: false,
 			},
@@ -200,7 +201,7 @@ func TestConvertMCPResult(t *testing.T) {
 				},
 				IsError: true,
 			},
-			expected: tools.ToolResult{
+			expected: sdktools.ToolResult{
 				Content: "Something went wrong",
 				IsError: true,
 			},
@@ -214,7 +215,7 @@ func TestConvertMCPResult(t *testing.T) {
 				},
 				IsError: false,
 			},
-			expected: tools.ToolResult{
+			expected: sdktools.ToolResult{
 				Content: "Line 1\nLine 2",
 				IsError: false,
 			},

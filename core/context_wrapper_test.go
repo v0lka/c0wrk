@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"testing"
+
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 )
 
 // TestWithDomain_RoundTrip verifies the domain context helper round-trips.
@@ -11,7 +13,7 @@ func TestWithDomain_RoundTrip(t *testing.T) {
 		t.Errorf("empty ctx: DomainFromContext = %q, want empty", got)
 	}
 
-	cases := []string{DomainCode, DomainResearch, DomainGeneral, DomainMixed, "custom"}
+	cases := []string{router.DomainCode, router.DomainResearch, router.DomainGeneral, router.DomainMixed, "custom"}
 	for _, want := range cases {
 		ctx := WithDomain(context.Background(), want)
 		if got := DomainFromContext(ctx); got != want {
@@ -22,14 +24,14 @@ func TestWithDomain_RoundTrip(t *testing.T) {
 
 // TestWithDomain_Immutable confirms parent ctx is not affected by child overlay.
 func TestWithDomain_Immutable(t *testing.T) {
-	parent := WithDomain(context.Background(), DomainCode)
-	child := WithDomain(parent, DomainResearch)
+	parent := WithDomain(context.Background(), router.DomainCode)
+	child := WithDomain(parent, router.DomainResearch)
 
-	if got := DomainFromContext(parent); got != DomainCode {
-		t.Errorf("parent mutated: got %q, want %q", got, DomainCode)
+	if got := DomainFromContext(parent); got != router.DomainCode {
+		t.Errorf("parent mutated: got %q, want %q", got, router.DomainCode)
 	}
-	if got := DomainFromContext(child); got != DomainResearch {
-		t.Errorf("child override failed: got %q, want %q", got, DomainResearch)
+	if got := DomainFromContext(child); got != router.DomainResearch {
+		t.Errorf("child override failed: got %q, want %q", got, router.DomainResearch)
 	}
 }
 

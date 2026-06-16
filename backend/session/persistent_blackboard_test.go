@@ -10,6 +10,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -28,7 +29,7 @@ type planCall struct {
 
 type routingCall struct {
 	taskID  string
-	routing *core.RoutingDecision
+	routing *router.RoutingDecision
 }
 
 type stepResultCall struct {
@@ -83,7 +84,7 @@ func (m *mockTaskPersistence) PersistPlan(taskID string, plan *orchestration.Pla
 	return m.persistError
 }
 
-func (m *mockTaskPersistence) PersistRouting(taskID string, routing *core.RoutingDecision) error {
+func (m *mockTaskPersistence) PersistRouting(taskID string, routing *router.RoutingDecision) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.routingCalls = append(m.routingCalls, routingCall{taskID, routing})
@@ -354,7 +355,7 @@ func TestPersistentBlackboard_BestEffortErrors(t *testing.T) {
 	pb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1"}}})
 	pb.SetStepResult("s1", "output", nil, nil)
 	pb.AddReflection(orchestration.Reflection{Summary: "r"})
-	pb.SetRouting(&core.RoutingDecision{Domain: "code"})
+	pb.SetRouting(&router.RoutingDecision{Domain: "code"})
 	pb.CompleteTask(1)
 	pb.FailTask()
 
@@ -373,7 +374,7 @@ func TestPersistentBlackboard_NilLogger(t *testing.T) {
 	pb.SetPlan(nil)
 	pb.SetStepResult("s1", "out", nil, nil)
 	pb.AddReflection(orchestration.Reflection{})
-	pb.SetRouting(&core.RoutingDecision{})
+	pb.SetRouting(&router.RoutingDecision{})
 	pb.CompleteTask(0)
 	pb.FailTask()
 }
@@ -382,7 +383,7 @@ func TestPersistentBlackboard_SetRouting(t *testing.T) {
 	mock := &mockTaskPersistence{}
 	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
 
-	routing := &core.RoutingDecision{Domain: "code", Complexity: 3}
+	routing := &router.RoutingDecision{Domain: "code", Complexity: 3}
 	pb.SetRouting(routing)
 
 	mock.mu.Lock()

@@ -15,9 +15,11 @@ import (
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/core/vectorindex"
+	"github.com/v0lka/c0wrk/sdk/vectorindex"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 
 // testLogger returns a logger that drops everything to a buffer for inspection.
@@ -210,7 +212,7 @@ func TestBuildAskUserCallback_NoAppContext(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildAskUserCallback(uiEmit)
 
-	_, err := cb(context.Background(), tools.AskUserRequest{})
+	_, err := cb(context.Background(), sdktools.AskUserRequest{})
 	if err == nil {
 		t.Fatal("expected error when a.ctx is nil")
 	}
@@ -221,7 +223,7 @@ func TestBuildAskUserCallback_NoSessionInContext(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildAskUserCallback(uiEmit)
 
-	_, err := cb(context.Background(), tools.AskUserRequest{})
+	_, err := cb(context.Background(), sdktools.AskUserRequest{})
 	if err == nil {
 		t.Fatal("expected error when ctx has no session ID")
 	}
@@ -368,7 +370,7 @@ func TestBuildVectorCallbacks_CtxCanceledBeforeReady(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	_, err := searchFunc(ctx, tools.VectorSearchOptions{Query: "x"})
+	_, err := searchFunc(ctx, builtins.VectorSearchOptions{Query: "x"})
 	if err == nil {
 		t.Fatal("expected error when ctx expires before vector ready")
 	}
@@ -388,7 +390,7 @@ func TestBuildVectorCallbacks_ReadyButNoManager(t *testing.T) {
 	close(ready)
 	searchFunc, waitFunc := a.buildVectorCallbacks(&ptr, ready)
 
-	_, err := searchFunc(context.Background(), tools.VectorSearchOptions{Query: "x"})
+	_, err := searchFunc(context.Background(), builtins.VectorSearchOptions{Query: "x"})
 	if err == nil {
 		t.Fatal("expected 'unavailable' error when manager is nil after ready")
 	}

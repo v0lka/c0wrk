@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // Event type constants for backend-to-frontend communication.
@@ -53,7 +53,7 @@ type MessageReceivedData struct {
 type TaskCompleteData struct {
 	SessionID       string                `json:"session_id"`
 	Output          string                `json:"output"`
-	RoutingDecision *core.RoutingDecision `json:"routing_decision"`
+	RoutingDecision *router.RoutingDecision `json:"routing_decision"`
 	Plan            *orchestration.Plan            `json:"plan,omitempty"`
 	AttemptCount    int                   `json:"attempt_count,omitempty"`
 	Reflections     []orchestration.Reflection     `json:"reflections,omitempty"`
@@ -103,7 +103,7 @@ type JudgeResponsePayload struct {
 // AskUserPayload is sent to the frontend when the agent asks the user questions.
 type AskUserPayload struct {
 	RequestID string                  `json:"request_id"`
-	Questions []tools.AskUserQuestion `json:"questions"`
+	Questions []sdktools.AskUserQuestion `json:"questions"`
 }
 
 // --- Step limit payloads ---

@@ -13,12 +13,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/internal/strutil"
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/c0wrk/sdk/strutil"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/reflector"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/planner"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
@@ -107,8 +111,8 @@ type BlackboardFactory func(taskID string) orchestration.Blackboard
 // same session are rejected before reaching HandleMessage.
 type Orchestrator struct {
 	engine              *orchestration.Orchestrator // SDK P&E engine
-	planner             *Planner                    // for PlanContinuation in P&E continuations
-	router              *Router
+	planner             *planner.Planner           // for PlanContinuation in P&E continuations
+	router              *router.Router
 	llm                 agent.LLMCaller
 	toolRegistry        *sdktools.ToolRegistry
 	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
@@ -122,7 +126,7 @@ type Orchestrator struct {
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
 	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
-	vectorSearchFunc    tools.VectorSearchFunc
+	vectorSearchFunc    builtins.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
 
 	// currentRequestCtx captures the ctx produced at the top of HandleMessage
@@ -160,14 +164,14 @@ var ErrRequestInFlight = errors.New("orchestrator: request already in flight")
 // Grouping them into a single struct improves readability when the constructor
 // is called (one struct literal instead of 19 positional arguments).
 type OrchestratorDeps struct {
-	Router           *Router
-	Planner          *Planner
+	Router           *router.Router
+	Planner          *planner.Planner
 	LLM              agent.LLMCaller
 	ToolExec         agent.ToolExecutor
 	ToolRegistry     *sdktools.ToolRegistry
 	TokenCounter     llm.TokenCounter
 	ContextFactory   ContextManagerFactory
-	Reflector        *Reflector         // optional, nil-safe
+	Reflector        *reflector.Reflector // optional, nil-safe
 	Logger           *slog.Logger       // optional, nil-safe
 	Emitter          Emitter            // optional, uses noopEmitter if nil
 	ModelRegistry    *llm.ModelRegistry // optional, nil-safe
@@ -175,7 +179,7 @@ type OrchestratorDeps struct {
 	CircuitBreaker   agent.CircuitBreakerConfig
 	BBFactory        BlackboardFactory      // optional, nil = default MapBlackboard
 	TrackingCaller   *llm.TrackingCaller    // optional, for per-step context tracker wiring
-	VectorSearchFunc tools.VectorSearchFunc // optional, for auto-RAG hint generation
+	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
 	SkillManager     *skills.SkillManager   // optional, for skill discovery and activation
 	CoreToolRegistry *tools.ToolRegistry    // core tool registry for skill policy overrides
 
@@ -314,7 +318,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 // interface. skillsFor returns the router-matched skill pool for the current
 // request (read from Orchestrator state captured in HandleMessage).
 type plannerSDKAdapter struct {
-	planner   *Planner
+	planner   *planner.Planner
 	skillsFor func() []skills.SkillDescriptor
 }
 
@@ -402,7 +406,7 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
 // and use the returned HandleResult for partial output, plan state, and blackboard.
 // All other errors indicate complete failure; the task is marked failed and nil is returned.
-func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *RoutingDecision) (*HandleResult, error) {
+func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision) (*HandleResult, error) {
 	o.logDebug("orchestrator: resume started")
 
 	// Generate RAG hints from vector index using the original request.
@@ -485,12 +489,12 @@ func lastReasoningContent(bb orchestration.Blackboard) string {
 // buildSkillPolicyOverrides creates tool policy overrides from active skills.
 // Tools listed in a skill's allowed-tools field get PolicyAlwaysAllow,
 // enabling the agent to use them without manual confirmation.
-func (o *Orchestrator) buildSkillPolicyOverrides(activeSkills []*skills.Skill) map[string]tools.ToolPolicy {
-	overrides := make(map[string]tools.ToolPolicy)
+func (o *Orchestrator) buildSkillPolicyOverrides(activeSkills []*skills.Skill) map[string]sdktools.ToolPolicy {
+	overrides := make(map[string]sdktools.ToolPolicy)
 	for _, s := range activeSkills {
 		for _, toolName := range s.Metadata.AllowedToolList() {
 			// Only set if not already overridden by config
-			overrides[toolName] = tools.PolicyAlwaysAllow
+			overrides[toolName] = sdktools.PolicyAlwaysAllow
 		}
 	}
 	return overrides
@@ -508,7 +512,7 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 	// Vector search (optional, non-blocking).
 	if o.vectorSearchFunc != nil {
 		ragCtx, ragCancel := context.WithTimeout(ctx, 2*time.Second)
-		results, err := o.vectorSearchFunc(ragCtx, tools.VectorSearchOptions{Query: query, TopK: 5})
+		results, err := o.vectorSearchFunc(ragCtx, builtins.VectorSearchOptions{Query: query, TopK: 5})
 		ragCancel()
 
 		if err != nil {

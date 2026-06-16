@@ -8,29 +8,18 @@ import (
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 	websearch "github.com/v0lka/c0wrk/sdk/tools/builtins/web_search"
-)
-
-// Limit type re-exports so backend can populate BuiltinToolsConfig
-// without importing sdk/tools/builtins.
-type (
-	FileLimits           = builtins.FileLimits
-	RipgrepLimits        = builtins.RipgrepLimits
-	WebFetchLimits       = builtins.WebFetchLimits
-	WebSearchLimits      = builtins.WebSearchLimits
-	BashTimeouts         = builtins.BashTimeouts
-	VectorSearchFunc     = builtins.VectorSearchFunc
-	VectorSearchWaitFunc = builtins.VectorSearchWaitFunc
-	VectorSearchResult   = builtins.VectorSearchResult
-	VectorSearchOptions  = builtins.VectorSearchOptions
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // BuiltinToolsConfig holds configuration for registering built-in tools.
+// All limit and callback types are imported directly from their source packages
+// per ADR-008 (no type re-exports).
 type BuiltinToolsConfig struct {
-	FileLimits      FileLimits
-	RipgrepLimits   RipgrepLimits
-	WebFetchLimits  WebFetchLimits
-	WebSearchLimits WebSearchLimits
-	BashTimeouts    BashTimeouts
+	FileLimits      builtins.FileLimits
+	RipgrepLimits   builtins.RipgrepLimits
+	WebFetchLimits  builtins.WebFetchLimits
+	WebSearchLimits builtins.WebSearchLimits
+	BashTimeouts    builtins.BashTimeouts
 	BashBlacklist   []string
 
 	// Search provider configuration.
@@ -44,14 +33,14 @@ type BuiltinToolsConfig struct {
 
 	// AskUserFunc is the callback for the ask_user tool.
 	// If nil, the ask_user tool is not registered.
-	AskUserFunc AskUserFunc
+	AskUserFunc sdktools.AskUserFunc
 
 	// VectorSearchFunc is the callback for the semantic_search tool.
 	// If nil, the semantic_search tool is not registered.
-	VectorSearchFunc VectorSearchFunc
+	VectorSearchFunc builtins.VectorSearchFunc
 
 	// VectorSearchWaitFunc blocks until the vector index is ready.
-	VectorSearchWaitFunc VectorSearchWaitFunc
+	VectorSearchWaitFunc builtins.VectorSearchWaitFunc
 }
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
@@ -146,13 +135,13 @@ func CreateSearchProviderWithClient(providerName, apiKey string, timeout time.Du
 
 // UpdateSearchTool replaces or removes the web_search tool in the registry
 // based on the given search configuration.
-func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limits WebSearchLimits) {
+func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limits builtins.WebSearchLimits) {
 	UpdateSearchToolWithClient(registry, providerName, apiKey, limits, nil)
 }
 
 // UpdateSearchToolWithClient replaces or removes the web_search tool in the registry
 // with an optional HTTP client for proxy support.
-func UpdateSearchToolWithClient(registry *ToolRegistry, providerName, apiKey string, limits WebSearchLimits, client *http.Client) {
+func UpdateSearchToolWithClient(registry *ToolRegistry, providerName, apiKey string, limits builtins.WebSearchLimits, client *http.Client) {
 	if provider := CreateSearchProviderWithClient(providerName, apiKey, limits.Timeout, client); provider != nil {
 		registry.Register(websearch.NewWebSearchTool(provider, limits))
 	} else {
@@ -161,6 +150,6 @@ func UpdateSearchToolWithClient(registry *ToolRegistry, providerName, apiKey str
 }
 
 // UpdateWebFetchTool replaces the web_fetch tool in the registry with an optional HTTP client.
-func UpdateWebFetchTool(registry *ToolRegistry, limits WebFetchLimits, client *http.Client) {
+func UpdateWebFetchTool(registry *ToolRegistry, limits builtins.WebFetchLimits, client *http.Client) {
 	registry.Register(builtins.NewWebFetchToolWithClient(limits, client))
 }

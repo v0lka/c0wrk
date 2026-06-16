@@ -7,7 +7,8 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/v0lka/c0wrk/core/skills"
+	"github.com/v0lka/c0wrk/sdk/skills"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -90,7 +91,7 @@ func (o *Orchestrator) routeAndActivateSkills(
 	opts HandleOptions,
 	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
-) (context.Context, *RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
+) (context.Context, *router.RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
 	o.logDebug("orchestrator: starting routing")
 	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "orchestration"})
 
@@ -107,7 +108,13 @@ func (o *Orchestrator) routeAndActivateSkills(
 		routingMessage = o.buildSkillAugmentedRoutingMessage(message, opts.UserSkills)
 	}
 
-	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.conversationHistory, skillDescriptors)
+	// Convert sdk/skills.SkillDescriptor to sdk/agent/router.SkillDescriptor
+	routerSkills := make([]router.SkillDescriptor, len(skillDescriptors))
+	for i, sd := range skillDescriptors {
+		routerSkills[i] = router.SkillDescriptor{Name: sd.Name, Description: sd.Description}
+	}
+
+	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.conversationHistory, routerSkills)
 	if err != nil {
 		o.logDebug("orchestrator: routing failed", "error", err)
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -302,7 +309,7 @@ func (o *Orchestrator) executeContinuation(
 // finalizeResult persists the routing decision, builds the HandleResult, and
 // updates conversationHistory for future routing context.
 // execResult must never be nil; callers must guard with a zero-value fallback.
-func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *RoutingDecision, execResult *orchestration.ExecutionResult, message string) *HandleResult {
+func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *router.RoutingDecision, execResult *orchestration.ExecutionResult, message string) *HandleResult {
 	// Persist routing decision on PersistentBlackboard (post-execution)
 	o.logDebug("orchestrator: persisting routing decision")
 	if pbb, ok := bb.(PersistableBlackboard); ok {

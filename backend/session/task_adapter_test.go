@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -35,7 +35,7 @@ func TestTaskStoreAdapter_RoundTrip(t *testing.T) {
 	}
 
 	// 3. PersistRouting
-	routing := &core.RoutingDecision{
+	routing := &router.RoutingDecision{
 		Domain:     "code",
 		Complexity: 3,
 	}

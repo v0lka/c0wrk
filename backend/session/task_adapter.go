@@ -9,6 +9,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -55,7 +56,7 @@ func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *orchestration.Plan) 
 }
 
 // PersistRouting JSON-marshals the routing decision and updates the task record.
-func (a *TaskStoreAdapter) PersistRouting(taskID string, routing *core.RoutingDecision) error {
+func (a *TaskStoreAdapter) PersistRouting(taskID string, routing *router.RoutingDecision) error {
 	data, err := json.Marshal(routing)
 	if err != nil {
 		return fmt.Errorf("marshal routing: %w", err)
@@ -135,7 +136,7 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 
 	// Unmarshal routing decision
 	if len(rec.RoutingDecision) > 0 && string(rec.RoutingDecision) != "{}" {
-		var routing core.RoutingDecision
+		var routing router.RoutingDecision
 		if err := json.Unmarshal(rec.RoutingDecision, &routing); err != nil {
 			return nil, fmt.Errorf("unmarshal routing decision: %w", err)
 		}

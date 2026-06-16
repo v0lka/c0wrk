@@ -8,21 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/embedding"
 )
-
-type fakeEmbedder struct{}
-
-func (f *fakeEmbedder) EmbeddingFunc() core.EmbedFunc {
-	return core.EmbedFunc(fakeEmbeddingFunc())
-}
-
-func (f *fakeEmbedder) Close() error { return nil }
 
 func TestManagerSwitchProject(t *testing.T) {
 	persistDir := t.TempDir()
 
-	emb := &fakeEmbedder{}
 	svc, err := NewService(ServiceConfig{
 		PersistPath:   persistDir,
 		EmbeddingFunc: fakeEmbeddingFunc(),
@@ -32,9 +23,10 @@ func TestManagerSwitchProject(t *testing.T) {
 	}
 
 	mgr := &Manager{
-		embedder: emb,
-		service:  svc,
-		logger:   slog.New(slog.DiscardHandler),
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
 	}
 
 	// Create two workspaces with distinct files.
@@ -91,7 +83,6 @@ func TestManagerSwitchProject(t *testing.T) {
 func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	persistDir := t.TempDir()
 
-	emb := &fakeEmbedder{}
 	svc, err := NewService(ServiceConfig{
 		PersistPath:   persistDir,
 		EmbeddingFunc: fakeEmbeddingFunc(),
@@ -101,9 +92,10 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	}
 
 	mgr := &Manager{
-		embedder: emb,
-		service:  svc,
-		logger:   slog.New(slog.DiscardHandler),
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
 	}
 
 	// Workspace A with one file.
@@ -170,7 +162,6 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 func TestManagerDeleteProjectData(t *testing.T) {
 	persistDir := t.TempDir()
 
-	emb := &fakeEmbedder{}
 	svc, err := NewService(ServiceConfig{
 		PersistPath:   persistDir,
 		EmbeddingFunc: fakeEmbeddingFunc(),
@@ -180,9 +171,10 @@ func TestManagerDeleteProjectData(t *testing.T) {
 	}
 
 	mgr := &Manager{
-		embedder: emb,
-		service:  svc,
-		logger:   slog.New(slog.DiscardHandler),
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
 	}
 
 	ws := t.TempDir()
