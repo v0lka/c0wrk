@@ -327,30 +327,6 @@ export namespace backend {
 	        this.icon_color = source["icon_color"];
 	    }
 	}
-	export class FileNode {
-	    name: string;
-	    path: string;
-	    is_dir: boolean;
-	    icon: string;
-	    icon_color: string;
-	    hidden: boolean;
-	    gitignored: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new FileNode(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.path = source["path"];
-	        this.is_dir = source["is_dir"];
-	        this.icon = source["icon"];
-	        this.icon_color = source["icon_color"];
-	        this.hidden = source["hidden"];
-	        this.gitignored = source["gitignored"];
-	    }
-	}
 	export class LLMSettingsRequest {
 	    active_provider: string;
 	    api_key: string;
@@ -383,6 +359,44 @@ export namespace backend {
 	        this.optimized_prompt = source["optimized_prompt"];
 	        this.keywords = source["keywords"];
 	        this.used_context = source["used_context"];
+	    }
+	}
+	export class ProjectUIStateRequest {
+	    project_id: string;
+	    saved_session_id: string;
+	    open_tabs: string[];
+	    active_file: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectUIStateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_id = source["project_id"];
+	        this.saved_session_id = source["saved_session_id"];
+	        this.open_tabs = source["open_tabs"];
+	        this.active_file = source["active_file"];
+	    }
+	}
+	export class ProjectUIStateResponse {
+	    project_id: string;
+	    saved_session_id: string;
+	    open_tabs: string[];
+	    active_file: string;
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectUIStateResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_id = source["project_id"];
+	        this.saved_session_id = source["saved_session_id"];
+	        this.open_tabs = source["open_tabs"];
+	        this.active_file = source["active_file"];
+	        this.updated_at = source["updated_at"];
 	    }
 	}
 	export class ProxySettingsRequest {
@@ -535,6 +549,32 @@ export namespace backend {
 	    }
 	}
 	
+	export class VectorIndexStatus {
+	    state: string;
+	    progress: number;
+	    files_indexed: number;
+	    total_files: number;
+	    current_file: string;
+	    branch: string;
+	    phase: string;
+	    indices: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new VectorIndexStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.progress = source["progress"];
+	        this.files_indexed = source["files_indexed"];
+	        this.total_files = source["total_files"];
+	        this.current_file = source["current_file"];
+	        this.branch = source["branch"];
+	        this.phase = source["phase"];
+	        this.indices = source["indices"];
+	    }
+	}
 	export class VectorStoreEntry {
 	    file_path: string;
 	    file_name: string;
@@ -713,6 +753,35 @@ export namespace vectorindex {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	
+	    }
+	}
+
+}
+
+export namespace workspace {
+	
+	export class FileNode {
+	    name: string;
+	    path: string;
+	    is_dir: boolean;
+	    icon: string;
+	    icon_color: string;
+	    hidden: boolean;
+	    gitignored: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileNode(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.is_dir = source["is_dir"];
+	        this.icon = source["icon"];
+	        this.icon_color = source["icon_color"];
+	        this.hidden = source["hidden"];
+	        this.gitignored = source["gitignored"];
 	    }
 	}
 

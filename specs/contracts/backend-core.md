@@ -19,6 +19,11 @@
 | `Plan`, `PlanStep`    | sdk/orchestration (direct) | core → backend | Plan structure                        |
 | `ToolPolicy`          | core/tools     | backend → core | Security policy values                |
 | `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation) |
+| `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
+| `PTYManager`          | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
+| `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |
+| `FileNode`            | core/workspace | core → backend | File tree node (type alias in backend) |
+| `GitStatusEntry`      | core/workspace | core → backend | Git porcelain status (type alias in backend) |
 
 ## Config Adapter
 

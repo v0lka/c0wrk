@@ -4,13 +4,14 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/backend/vectorindex"
-	"github.com/v0lka/c0wrk/backend/workspace"
+	"github.com/v0lka/c0wrk/core/vectorindex"
+	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 // FrontendAPI holds state and methods that are exposed to the Wails frontend.
@@ -35,9 +36,9 @@ type FrontendAPI struct {
 	logLevel      string
 
 	// Workspace
-	watcher        *workspace.Watcher
-	gitRepoCache   map[string]gitRepoCacheEntry
-	gitRepoCacheMu sync.Mutex
+	watcher         *workspace.Watcher
+	gitRepoCache    map[string]gitRepoCacheEntry
+	gitRepoCacheMu  sync.Mutex
 
 	// Project
 	projectManager    *project.Manager
@@ -135,6 +136,38 @@ func (f *FrontendAPI) ctx() context.Context {
 	return context.Background()
 }
 
+const gitRepoCacheTTL = 30 * time.Second
+
+// gitRepoCacheEntry holds a cached IsGitRepo result with expiry.
+type gitRepoCacheEntry struct {
+	isRepo bool
+	expiry time.Time
+}
+
+// isGitRepo reports whether dir is inside a git work tree. Results are
+// cached for gitRepoCacheTTL to avoid repeated git process spawning during
+// rapid file-tree refresh cycles. The cache is a ViewModel concern — the
+// underlying workspace.IsGitRepo is stateless per ADR-009.
+func (f *FrontendAPI) isGitRepo(dir string) bool {
+	f.gitRepoCacheMu.Lock()
+	if e, ok := f.gitRepoCache[dir]; ok && time.Now().Before(e.expiry) {
+		f.gitRepoCacheMu.Unlock()
+		return e.isRepo
+	}
+	f.gitRepoCacheMu.Unlock()
+
+	isRepo := workspace.IsGitRepo(f.ctx(), dir)
+
+	f.gitRepoCacheMu.Lock()
+	if f.gitRepoCache == nil {
+		f.gitRepoCache = make(map[string]gitRepoCacheEntry)
+	}
+	f.gitRepoCache[dir] = gitRepoCacheEntry{isRepo: isRepo, expiry: time.Now().Add(gitRepoCacheTTL)}
+	f.gitRepoCacheMu.Unlock()
+
+	return isRepo
+}
+
 // Cleanup releases resources owned by FrontendAPI.
 // Called from desktop.Shutdown.
 func (f *FrontendAPI) Cleanup() {
@@ -165,10 +198,6 @@ func (f *FrontendAPI) Cleanup() {
 			f.log().Error("failed to close session logger", "error", err)
 		}
 	}
-	// Free gitRepoCache on shutdown.
-	f.gitRepoCacheMu.Lock()
-	f.gitRepoCache = nil
-	f.gitRepoCacheMu.Unlock()
 }
 
 // log returns the instance logger, falling back to slog.Default() when nil.

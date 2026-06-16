@@ -22,14 +22,15 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 ┌─────────────────────────────────────────────────────────────────────┐
 │  backend/           Application ViewModel                           │
 │                     Config, session manager, persistence,           │
-│                     workspace watcher, vector index, terminal       │
+│                     project lifecycle, Wails API surface             │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │ Go imports
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  core/              Orchestration engine                            │
+│  core/              Orchestration engine + domain services          │
 │                     Router, Planner, Reflector, Orchestrator,       │
-│                     tool registry (policy), MCP gateway, skills     │
+│                     tool registry (policy), MCP gateway, skills,    │
+│                     vector index, workspace watcher, terminal       │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │ Go imports
                                  ▼
@@ -56,13 +57,18 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 
 The lowest layer. Contains the generic building blocks for an LLM agent application: executor (ReAct loop), LLM provider abstraction (OpenAI, Anthropic, Gemini, LM Studio), memory management (context window + compaction strategies), orchestration primitives (Plan&Execute DAG engine, Blackboard), tool interface and registry, prompt utilities, and embedding support. Nothing in sdk/ is c0wrk-specific.
 
-### `core/` — c0wrk Orchestration
+### `core/` — c0wrk Orchestration + Domain Services
 
 The brain of c0wrk. Implements the specific orchestration cycle: Router (classifies requests), Planner (generates DAG plans), Reflector (analyzes failures), and the top-level Orchestrator that ties them together. Wraps the sdk tool registry with policy enforcement, confirmation flow, and the LLM judge. Manages the MCP gateway and skill system. Contains all prompt templates (embedded markdown).
 
+Also houses domain services moved from `backend/` per ADR-009:
+- `core/vectorindex/` — embedding, BM25+chromem hybrid search, git branch monitoring for index freshness
+- `core/terminal/` — PTY lifecycle management, shell environment, I/O
+- `core/workspace/` — fsnotify watcher with debouncing, git status/diff operations, file tree walking
+
 ### `backend/` — Application ViewModel
 
-The "app layer" that the desktop UI interacts with. Owns the `Application` struct, configuration loading/resolution, session lifecycle management (create, handle message, persist, resume), SQLite persistence, workspace watching, vector indexing, and terminal management. Exposes `FrontendAPI` methods split by concern area (`frontend_api_*.go`). Wraps `core.OrchestratorBuilder` and imports `sdk/` directly for type definitions.
+The "app layer" that the desktop UI interacts with. Owns the `Application` struct, configuration loading/resolution, session lifecycle management (create, handle message, persist, resume), SQLite persistence, and project lifecycle management. Exposes `FrontendAPI` methods split by concern area (`frontend_api_*.go`). Wraps `core.OrchestratorBuilder` and imports `core/` and `sdk/` directly for domain types and orchestrator integration. Delegates workspace watching, vector indexing, terminal management, and git operations to `core/` domain services.
 
 ### `desktop/` — Wails Bindings & Lifecycle
 

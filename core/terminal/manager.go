@@ -65,6 +65,9 @@ func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionI
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if emit == nil {
+		emit = func(string, []byte) {} // no-op fallback
+	}
 	return &Manager{
 		rootCtx:  rootCtx,
 		sessions: make(map[string]*Session),

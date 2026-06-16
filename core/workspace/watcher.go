@@ -41,6 +41,10 @@ func (w *Watcher) log() *slog.Logger {
 // NewWatcher creates a Watcher that watches the root directory and calls onChange
 // (debounced at 200ms) on any change.
 func NewWatcher(root string, onChange func(), loggers ...*slog.Logger) (*Watcher, error) {
+	if onChange == nil {
+		return nil, errors.New("onChange callback must not be nil")
+	}
+
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve root path: %w", err)

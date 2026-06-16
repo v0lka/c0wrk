@@ -1,5 +1,7 @@
 package backend
 
+import "github.com/v0lka/c0wrk/core/workspace"
+
 // ---------------------------------------------------------------------------
 // DTO types exposed to the frontend via Wails bindings.
 // These types were previously defined in the desktop/ package.
@@ -93,15 +95,8 @@ type ToolPolicyResponse struct {
 }
 
 // FileNode represents a file or directory entry in the workspace tree.
-type FileNode struct {
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	IsDir      bool   `json:"is_dir"`
-	Icon       string `json:"icon"`
-	IconColor  string `json:"icon_color"`
-	Hidden     bool   `json:"hidden"`
-	GitIgnored bool   `json:"gitignored"`
-}
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type FileNode = workspace.FileNode
 
 // FileIconResponse holds the icon and color for a single file or directory.
 type FileIconResponse struct {
@@ -110,10 +105,8 @@ type FileIconResponse struct {
 }
 
 // GitStatusEntry describes the git status of a single file.
-type GitStatusEntry struct {
-	Status string `json:"status"` // "M", "A", "R", "C", or "U"
-	Staged bool   `json:"staged"`
-}
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type GitStatusEntry = workspace.GitStatusEntry
 
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {

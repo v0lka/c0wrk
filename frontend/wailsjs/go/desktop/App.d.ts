@@ -3,6 +3,7 @@
 import {project} from '../models';
 import {session} from '../models';
 import {backend} from '../models';
+import {workspace} from '../models';
 import {config} from '../models';
 import {mcp} from '../models';
 import {vectorindex} from '../models';
@@ -31,13 +32,17 @@ export function GetFileDiff(arg1:string):Promise<string>;
 
 export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
 
-export function GetGitStatus(arg1:string):Promise<Record<string, backend.GitStatusEntry>>;
+export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
 export function GetLogLevel():Promise<string>;
 
 export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
 
 export function GetMCPStatus():Promise<Array<mcp.ServerStatus>>;
+
+export function GetProjectSwitchState(arg1:string):Promise<backend.ProjectUIStateResponse>;
+
+export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateResponse>;
 
 export function GetProxySettings():Promise<backend.ProxySettingsResponse>;
 
@@ -53,7 +58,9 @@ export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCo
 
 export function GetToolList():Promise<Array<backend.ToolInfo>>;
 
-export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<backend.FileNode>>;
+export function GetVectorIndexStatus():Promise<backend.VectorIndexStatus>;
+
+export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<workspace.FileNode>>;
 
 export function ListProjects():Promise<Array<project.ProjectInfo>>;
 
@@ -74,6 +81,10 @@ export function RenameProject(arg1:string,arg2:string):Promise<void>;
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
 export function ResumeTask(arg1:string):Promise<void>;
+
+export function SaveProjectSwitchState(arg1:backend.ProjectUIStateRequest):Promise<void>;
+
+export function SaveProjectUIState(arg1:backend.ProjectUIStateRequest):Promise<void>;
 
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 

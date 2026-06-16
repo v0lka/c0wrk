@@ -66,6 +66,14 @@ export function GetMCPStatus() {
   return window['go']['desktop']['App']['GetMCPStatus']();
 }
 
+export function GetProjectSwitchState(arg1) {
+  return window['go']['desktop']['App']['GetProjectSwitchState'](arg1);
+}
+
+export function GetProjectUIState(arg1) {
+  return window['go']['desktop']['App']['GetProjectUIState'](arg1);
+}
+
 export function GetProxySettings() {
   return window['go']['desktop']['App']['GetProxySettings']();
 }
@@ -92,6 +100,10 @@ export function GetTerminalHistory(arg1) {
 
 export function GetToolList() {
   return window['go']['desktop']['App']['GetToolList']();
+}
+
+export function GetVectorIndexStatus() {
+  return window['go']['desktop']['App']['GetVectorIndexStatus']();
 }
 
 export function ListDirectory(arg1, arg2) {
@@ -136,6 +148,14 @@ export function RenameSession(arg1, arg2) {
 
 export function ResumeTask(arg1) {
   return window['go']['desktop']['App']['ResumeTask'](arg1);
+}
+
+export function SaveProjectSwitchState(arg1) {
+  return window['go']['desktop']['App']['SaveProjectSwitchState'](arg1);
+}
+
+export function SaveProjectUIState(arg1) {
+  return window['go']['desktop']['App']['SaveProjectUIState'](arg1);
 }
 
 export function SearchVectorStore(arg1) {

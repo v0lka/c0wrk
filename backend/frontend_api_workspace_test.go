@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 // --- resolveWorkspacePath tests ---
@@ -256,8 +258,8 @@ func TestIsHidden(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isHidden(tt.input); got != tt.expect {
-				t.Errorf("isHidden(%q) = %v, want %v", tt.input, got, tt.expect)
+			if got := workspace.IsHidden(tt.input); got != tt.expect {
+				t.Errorf("workspace.IsHidden(%q) = %v, want %v", tt.input, got, tt.expect)
 			}
 		})
 	}
@@ -267,7 +269,6 @@ func TestIsHidden(t *testing.T) {
 
 func TestListDirectoryFlat_HiddenAndGitIgnored(t *testing.T) {
 	tmpDir := t.TempDir()
-	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	// Create files and dirs
 	_ = os.Mkdir(filepath.Join(tmpDir, "visible_dir"), 0o755)
@@ -280,7 +281,11 @@ func TestListDirectoryFlat_HiddenAndGitIgnored(t *testing.T) {
 	gitInit(t, tmpDir)
 	_ = os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("ignored.txt\n"), 0o644)
 
-	nodes, err := f.listDirectoryFlat(tmpDir)
+	ignoredPaths, err := workspace.GitIgnoredPaths(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("GitIgnoredPaths: %v", err)
+	}
+	nodes, err := workspace.ListDirFlat(tmpDir, ignoredPaths)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -309,7 +314,6 @@ func TestListDirectoryFlat_HiddenAndGitIgnored(t *testing.T) {
 
 func TestListDirectoryWalk_HiddenAndGitIgnored(t *testing.T) {
 	tmpDir := t.TempDir()
-	f := &FrontendAPI{activeProjectPath: tmpDir}
 
 	// Create nested structure
 	_ = os.MkdirAll(filepath.Join(tmpDir, "sub", ".hidden_sub"), 0o755)
@@ -321,7 +325,11 @@ func TestListDirectoryWalk_HiddenAndGitIgnored(t *testing.T) {
 	gitInit(t, tmpDir)
 	_ = os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("sub/ignored.txt\nsub/.hidden.txt\n"), 0o644)
 
-	nodes, err := f.listDirectoryWalk(tmpDir)
+	ignoredPaths, err := workspace.GitIgnoredPaths(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("GitIgnoredPaths: %v", err)
+	}
+	nodes, err := workspace.ListDirRecursive(tmpDir, ignoredPaths)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -350,6 +358,69 @@ func TestListDirectoryWalk_HiddenAndGitIgnored(t *testing.T) {
 	ignoredFile := filepath.Join(tmpDir, "sub", "ignored.txt")
 	if n, ok := byPath[ignoredFile]; !ok || n.Hidden || !n.GitIgnored {
 		t.Errorf("sub/ignored.txt: expected hidden=false gitignored=true, got hidden=%v gitignored=%v", n.Hidden, n.GitIgnored)
+	}
+}
+
+// --- ListDirectory icon attachment test ---
+
+func TestListDirectory_IconsAttached(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	// Create test files with known extensions
+	goFile := filepath.Join(tmpDir, "main.go")
+	pngFile := filepath.Join(tmpDir, "image.png")
+	dirPath := filepath.Join(tmpDir, "subdir")
+	if err := os.WriteFile(goFile, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write go file: %v", err)
+	}
+	if err := os.WriteFile(pngFile, []byte("\x89PNG\x0d\x0a\x1a\x0a"), 0o644); err != nil {
+		t.Fatalf("write png file: %v", err)
+	}
+	if err := os.Mkdir(dirPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	nodes, err := f.ListDirectory(tmpDir, false)
+	if err != nil {
+		t.Fatalf("ListDirectory: %v", err)
+	}
+
+	byName := make(map[string]FileNode)
+	for _, n := range nodes {
+		byName[n.Name] = n
+	}
+
+	// Directories should have empty icon.
+	if d, ok := byName["subdir"]; ok {
+		if d.Icon != "" {
+			t.Errorf("subdir: expected empty icon, got %q", d.Icon)
+		}
+	} else {
+		t.Error("subdir missing from listing")
+	}
+
+	// Files should have non-empty icon and icon color.
+	if f, ok := byName["main.go"]; ok {
+		if f.Icon == "" {
+			t.Error("main.go: expected non-empty icon")
+		}
+		if f.IconColor == "" {
+			t.Error("main.go: expected non-empty icon color")
+		}
+	} else {
+		t.Error("main.go missing from listing")
+	}
+
+	if f, ok := byName["image.png"]; ok {
+		if f.Icon == "" {
+			t.Error("image.png: expected non-empty icon")
+		}
+		if f.IconColor == "" {
+			t.Error("image.png: expected non-empty icon color")
+		}
+	} else {
+		t.Error("image.png missing from listing")
 	}
 }
 

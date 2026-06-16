@@ -9,8 +9,8 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/backend/vectorindex"
-	"github.com/v0lka/c0wrk/backend/workspace"
+	"github.com/v0lka/c0wrk/core/vectorindex"
+	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 // CreateProject creates a new project. If externalPath is empty, an internal workspace is created.
