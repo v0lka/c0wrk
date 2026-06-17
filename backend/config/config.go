@@ -431,19 +431,19 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 }
 
 // ResolveDefaultModelProvider looks up the provider that owns DefaultModel.
-// Returns the provider name, Go type, API key, base URL, model name and an error
-// if DefaultModel is empty or not found in any provider's Models list.
-func (c *LLMConfig) ResolveDefaultModelProvider() (name, providerTypeStr, apiKey, baseURL, model string, err error) {
+// Returns the provider config and model name, or an error if DefaultModel
+// is empty or not found in any provider's Models list.
+func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, error) {
 	if c.DefaultModel == "" {
-		return "", "", "", "", "", errors.New("default_model is not set")
+		return ProviderWithModels{}, "", errors.New("default_model is not set")
 	}
 
 	providers := []struct {
-		name        string
-		provType    string
-		apiKey      string
-		baseURL     string
-		models      []string
+		name     string
+		provType string
+		apiKey   string
+		baseURL  string
+		models   []string
 	}{
 		{"anthropic", "anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
 		{"gemini", "gemini", c.Gemini.APIKey, "", c.Gemini.Models},
@@ -455,12 +455,18 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (name, providerTypeStr, apiKey
 	for _, p := range providers {
 		for _, m := range p.models {
 			if m == c.DefaultModel {
-				return p.name, p.provType, p.apiKey, p.baseURL, m, nil
+				return ProviderWithModels{
+					Name:         p.name,
+					ProviderType: p.provType,
+					APIKey:       p.apiKey,
+					BaseURL:      p.baseURL,
+					Models:       p.models,
+				}, m, nil
 			}
 		}
 	}
 
-	return "", "", "", "", "", fmt.Errorf("default_model %q not found in any provider's enabled models", c.DefaultModel)
+	return ProviderWithModels{}, "", fmt.Errorf("default_model %q not found in any provider's enabled models", c.DefaultModel)
 }
 
 // Load reads a configuration file, applies defaults, validates the configuration, and returns it.
@@ -544,7 +550,7 @@ func validate(cfg *Config) error {
 	}
 
 	// Validate default_model exists in some provider's models list
-	_, _, _, _, _, err := cfg.LLM.ResolveDefaultModelProvider()
+	_, _, err := cfg.LLM.ResolveDefaultModelProvider()
 	if err != nil {
 		return err
 	}

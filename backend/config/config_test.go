@@ -370,7 +370,7 @@ func TestResolveDefaultModelProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotName, gotProvType, gotAPIKey, _, gotModel, err := tt.config.ResolveDefaultModelProvider()
+			prov, gotModel, err := tt.config.ResolveDefaultModelProvider()
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("Expected error, got nil")
@@ -380,14 +380,14 @@ func TestResolveDefaultModelProvider(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ResolveDefaultModelProvider() error: %v", err)
 			}
-			if gotName != tt.wantName {
-				t.Errorf("name = %q, want %q", gotName, tt.wantName)
+			if prov.Name != tt.wantName {
+				t.Errorf("name = %q, want %q", prov.Name, tt.wantName)
 			}
-			if gotProvType != tt.wantProvType {
-				t.Errorf("providerType = %q, want %q", gotProvType, tt.wantProvType)
+			if prov.ProviderType != tt.wantProvType {
+				t.Errorf("providerType = %q, want %q", prov.ProviderType, tt.wantProvType)
 			}
-			if gotAPIKey != tt.wantAPIKey {
-				t.Errorf("apiKey = %q, want %q", gotAPIKey, tt.wantAPIKey)
+			if prov.APIKey != tt.wantAPIKey {
+				t.Errorf("apiKey = %q, want %q", prov.APIKey, tt.wantAPIKey)
 			}
 			if gotModel != tt.wantModel {
 				t.Errorf("model = %q, want %q", gotModel, tt.wantModel)
