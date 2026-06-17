@@ -1,4 +1,4 @@
-import { PanelRightOpen } from 'lucide-react'
+import { Folder, PanelRightOpen } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { Button } from '@/components/ui/button'
 import { FileViewerTabBar } from './FileViewerTabBar'
@@ -8,8 +8,6 @@ export function FileViewerPanel() {
   const openTabs = useFileViewerStore((s) => s.openTabs)
   const collapsed = useFileViewerStore((s) => s.collapsed)
   const setCollapsed = useFileViewerStore((s) => s.setCollapsed)
-
-  if (openTabs.length === 0) return null
 
   // Collapsed: narrow strip with expand button, vertically centered (mirrors Sidebar pattern)
   if (collapsed) {
@@ -23,6 +21,15 @@ export function FileViewerPanel() {
         >
           <PanelRightOpen className="size-4" />
         </Button>
+      </div>
+    )
+  }
+
+  // No open tabs: show placeholder with muted folder icon
+  if (openTabs.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full w-full">
+        <Folder className="size-12 text-muted-foreground/30" />
       </div>
     )
   }

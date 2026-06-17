@@ -28,12 +28,9 @@ export function AppLayout() {
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUIStore((s) => s.toggleSidebarCollapsed)
 
-  const openTabs = useFileViewerStore((s) => s.openTabs)
   const viewerWidth = useFileViewerStore((s) => s.width)
   const viewerCollapsed = useFileViewerStore((s) => s.collapsed)
   const setViewerWidth = useFileViewerStore((s) => s.setWidth)
-
-  const showFileViewer = openTabs.length > 0
 
   const [sidebarWidth, setSidebarWidth] = useState(getDefaultSidebarWidth)
 
@@ -76,7 +73,7 @@ export function AppLayout() {
       </div>
 
       {/* Resize handle between main and file viewer */}
-      {showFileViewer && !viewerCollapsed && (
+      {!viewerCollapsed && (
         <ResizeHandle
           onMouseDown={viewerResize.handleMouseDown}
           onKeyDown={viewerResize.handleKeyDown}
@@ -84,14 +81,12 @@ export function AppLayout() {
       )}
 
       {/* File viewer */}
-      {showFileViewer && (
-        <div
-          className="flex shrink-0 flex-col border-l border-border bg-background"
-          style={{ width: viewerCollapsed ? COLLAPSED_WIDTH : viewerWidth }}
-        >
-          <FileViewerPanel />
-        </div>
-      )}
+      <div
+        className="flex shrink-0 flex-col border-l border-border bg-background"
+        style={{ width: viewerCollapsed ? COLLAPSED_WIDTH : viewerWidth }}
+      >
+        <FileViewerPanel />
+      </div>
     </div>
   )
 }
