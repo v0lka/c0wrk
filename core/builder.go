@@ -166,7 +166,7 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 		b.mu.Lock()
 		b.llmRouter = llmRouter
 		b.modelRegistry = modelReg
-		b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
+		b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelReg, cfg)
 		b.roleOverrides = cfg.Reasoning.RoleOverrides
 		b.mu.Unlock()
 	}
@@ -255,7 +255,7 @@ func (b *OrchestratorBuilder) Build(
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
-	if cfg.LLM.ActiveProvider == "" {
+	if len(cfg.LLM.ProviderConfigs) == 0 {
 		return nil, errors.New("no active LLM provider configured - check your config.yaml")
 	}
 
@@ -283,7 +283,7 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// Resolve base reasoning effort for step executors
-	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
+	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelReg, cfg)
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
@@ -293,7 +293,7 @@ func (b *OrchestratorBuilder) Build(
 		MaxRetries:                cfg.Executor.MaxRetries,
 		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
-		Model:                     cfg.LLM.Model,
+		Model:                     cfg.LLM.DefaultModel,
 		ReasoningEffort:           baseEffort,
 		RoleOverrides:             cfg.Reasoning.RoleOverrides,
 		StepLimitFunc:             stepLimitFunc,
@@ -334,7 +334,7 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	// Logged LLM caller for step execution (wraps trackingCaller)
-	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.ActiveProvider, logger)
+	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.DefaultProviderName(), logger)
 	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter, logger)
 
 	// Per-session SkillManager: project-local `.agents/skills` is always prepended
@@ -387,7 +387,7 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.mu.Lock()
 	b.llmRouter = llmRouter
 	b.modelRegistry = modelReg
-	b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.Model, modelReg, cfg)
+	b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelReg, cfg)
 	b.roleOverrides = cfg.Reasoning.RoleOverrides
 	b.mu.Unlock()
 	return nil
@@ -548,7 +548,11 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 	case "gemini":
 		return llm.BuiltInModelNamesByPrefix("gemini-"), nil
 	case "chatgpt":
-		apiKey := cfg.ExpandEnvVars(cfg.LLM.ChatGPTAPIKey)
+		pc, ok := cfg.LLM.ProviderConfigs["chatgpt"]
+		if !ok {
+			return nil, errors.New("ChatGPT provider not configured")
+		}
+		apiKey := cfg.ExpandEnvVars(pc.APIKey)
 		if apiKey == "" {
 			return nil, errors.New("ChatGPT API key not configured")
 		}
@@ -558,18 +562,26 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 		}
 		return filterKnownFamilyModels(models), nil
 	case "openai_compatible":
-		baseURL := cfg.ExpandEnvVars(cfg.LLM.OpenAICompatBaseURL)
-		apiKey := cfg.ExpandEnvVars(cfg.LLM.OpenAICompatAPIKey)
+		pc, ok := cfg.LLM.ProviderConfigs["openai_compatible"]
+		if !ok {
+			return nil, errors.New("openAI compatible provider not configured")
+		}
+		baseURL := cfg.ExpandEnvVars(pc.BaseURL)
+		apiKey := cfg.ExpandEnvVars(pc.APIKey)
 		if baseURL == "" {
 			return nil, errors.New("openAI compatible base URL not configured")
 		}
 		return listOpenAIModels(ctx, baseURL, apiKey)
 	case "lmstudio":
-		baseURL := cfg.ExpandEnvVars(cfg.LLM.LMStudioBaseURL)
-		if baseURL == "" {
-			baseURL = "http://localhost:1234"
+		pc, ok := cfg.LLM.ProviderConfigs["lmstudio"]
+		baseURL := "http://localhost:1234"
+		apiKey := ""
+		if ok {
+			if u := cfg.ExpandEnvVars(pc.BaseURL); u != "" {
+				baseURL = u
+			}
+			apiKey = cfg.ExpandEnvVars(pc.APIKey)
 		}
-		apiKey := cfg.ExpandEnvVars(cfg.LLM.LMStudioAPIKey)
 		return listLMStudioModels(ctx, baseURL, apiKey)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
@@ -728,12 +740,23 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	if err != nil && cfg.LLM.Retry.MaxBackoff != "" {
 		b.log().Warn("invalid max_backoff, using default", "value", cfg.LLM.Retry.MaxBackoff, "error", err)
 	}
+
+	// Build provider entries from all enabled providers.
+	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
+	for name, pc := range cfg.LLM.ProviderConfigs {
+		if len(pc.Models) > 0 {
+			providers = append(providers, llm.ProviderEntry{
+				Name:         name,
+				ProviderType: pc.ProviderType,
+				APIKey:       cfg.ExpandEnvVars(pc.APIKey),
+				BaseURL:      cfg.ExpandEnvVars(pc.BaseURL),
+				Models:       pc.Models,
+			})
+		}
+	}
+
 	routerCfg := llm.RouterConfig{
-		ActiveProvider:      cfg.LLM.ActiveProvider,
-		ProviderType:        cfg.LLM.ProviderType,
-		APIKey:              cfg.ExpandEnvVars(cfg.LLM.APIKey),
-		BaseURL:             cfg.ExpandEnvVars(cfg.LLM.BaseURL),
-		Model:               cfg.LLM.Model,
+		Providers:           providers,
 		MaxRetries:          cfg.LLM.Retry.MaxRetries,
 		InitialBackoff:      initialBackoff,
 		MaxBackoff:          maxBackoff,
@@ -748,6 +771,14 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Initialize the router to the default model.
+	if cfg.LLM.DefaultModel != "" {
+		if err := llmRouter.SetModel(ctx, cfg.LLM.DefaultModel); err != nil {
+			return nil, nil, fmt.Errorf("default model %q: %w", cfg.LLM.DefaultModel, err)
+		}
+	}
+
 	return llmRouter, modelRegistry, nil
 }
 
@@ -784,7 +815,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	if caller == nil {
 		return nil, nil, nil
 	}
-	loggedCaller := agent.NewLoggingLLMCaller(caller, cfg.LLM.ActiveProvider, logger)
+	loggedCaller := agent.NewLoggingLLMCaller(caller, cfg.LLM.DefaultProviderName(), logger)
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
 	coreRouter := newCoreRouter(loggedCaller, cfg.Router.HistoryWindow)
 	corePlanner := newCorePlanner(loggedCaller, b.registry)
@@ -796,7 +827,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	}
 
 	// Wire reasoning effort for all agents
-	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.Model, modelRegistry, cfg)
+	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelRegistry, cfg)
 	coreRouter.SetBaseReasoningEffort(baseEffort)
 	coreRouter.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
 	coreReflector.SetBaseReasoningEffort(baseEffort)
@@ -806,7 +837,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 
 	// Wire planner exploration dependencies
 	corePlanner.Cfg.Logger = logger
-	corePlanner.Cfg.Model = cfg.LLM.Model
+	corePlanner.Cfg.Model = cfg.LLM.DefaultModel
 	corePlanner.Cfg.TokenCounter = tokenCounter
 	corePlanner.Cfg.ContextFactory = plannerContextFactoryAdapter(contextFactory)
 	corePlanner.Cfg.Emitter = emitter
@@ -844,7 +875,7 @@ func plannerContextFactoryAdapter(cf ContextManagerFactory) planner.ContextManag
 func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer) ContextManagerFactory {
 	var summarizeCaller agent.LLMCaller = caller
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
-	compactionEffort := llm.ResolveAgentReasoningMode("compaction", resolveBaseEffort(context.Background(), cfg.LLM.Model, modelRegistry, cfg), cfg.Reasoning.RoleOverrides)
+	compactionEffort := llm.ResolveAgentReasoningMode("compaction", resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelRegistry, cfg), cfg.Reasoning.RoleOverrides)
 
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...orchestration.PruningOverride) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
@@ -929,7 +960,7 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 		return
 	}
 
-	defaultModel := cfg.LLM.Model
+	defaultModel := cfg.LLM.DefaultModel
 
 	var judgeProvider llm.Provider
 	if llmRouter != nil {

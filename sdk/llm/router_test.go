@@ -496,10 +496,9 @@ func TestNewRouter(t *testing.T) {
 	// Test with lmstudio provider (doesn't require external services)
 	t.Run("lmstudio provider", func(t *testing.T) {
 		cfg := RouterConfig{
-			ActiveProvider: "lmstudio",
-			ProviderType:   "lmstudio",
-			BaseURL:        "http://localhost:9999",
-			Model:          "test-model",
+			Providers: []ProviderEntry{
+				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+			},
 			MaxRetries:     2,
 			InitialBackoff: 100 * time.Millisecond,
 			MaxBackoff:     1 * time.Second,
@@ -529,10 +528,9 @@ func TestNewRouter(t *testing.T) {
 	// Test with lmstudio provider and model registry
 	t.Run("lmstudio with registry", func(t *testing.T) {
 		cfg := RouterConfig{
-			ActiveProvider: "lmstudio",
-			ProviderType:   "lmstudio",
-			BaseURL:        "http://localhost:9999",
-			Model:          "test-model",
+			Providers: []ProviderEntry{
+				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+			},
 			MaxRetries:     1,
 			InitialBackoff: 50 * time.Millisecond,
 			MaxBackoff:     500 * time.Millisecond,
@@ -564,10 +562,9 @@ func TestNewRouter(t *testing.T) {
 	// Test with zero backoff durations (should use defaults)
 	t.Run("zero backoff durations use defaults", func(t *testing.T) {
 		cfg := RouterConfig{
-			ActiveProvider: "lmstudio",
-			ProviderType:   "lmstudio",
-			BaseURL:        "http://localhost:9999",
-			Model:          "test-model",
+			Providers: []ProviderEntry{
+				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+			},
 			InitialBackoff: 0,
 			MaxBackoff:     0,
 		}
@@ -590,10 +587,9 @@ func TestNewRouter(t *testing.T) {
 	// hasn't configured retries explicitly.
 	t.Run("zero max retries uses default", func(t *testing.T) {
 		cfg := RouterConfig{
-			ActiveProvider: "lmstudio",
-			ProviderType:   "lmstudio",
-			BaseURL:        "http://localhost:9999",
-			Model:          "test-model",
+			Providers: []ProviderEntry{
+				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+			},
 			MaxRetries:     0,
 		}
 
@@ -609,10 +605,9 @@ func TestNewRouter(t *testing.T) {
 	// Test with anthropic provider (no key = error)
 	t.Run("anthropic without key fails", func(t *testing.T) {
 		cfg := RouterConfig{
-			ActiveProvider: "anthropic",
-			ProviderType:   "anthropic",
-			APIKey:         "",
-			Model:          "claude-3-sonnet",
+			Providers: []ProviderEntry{
+				{Name: "anthropic", ProviderType: "anthropic", Models: []string{"claude-3-sonnet"}},
+			},
 		}
 
 		_, err := NewRouter(context.Background(), cfg, nil)

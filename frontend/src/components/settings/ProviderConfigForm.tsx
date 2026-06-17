@@ -6,7 +6,6 @@ import { Loader2 } from 'lucide-react'
 interface ProviderConfig {
   api_key: string
   base_url: string
-  model: string
 }
 
 interface ProviderConfigFormProps {

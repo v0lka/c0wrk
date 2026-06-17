@@ -75,7 +75,7 @@ type VectorIndexConfig struct {
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
 type LLMConfig struct {
-	ActiveProvider   string                   `yaml:"active_provider"` // "anthropic"|"gemini"|"lmstudio"|"openai_compatible"|"chatgpt"
+	DefaultModel    string                   `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
 	Anthropic        AnthropicConfig          `yaml:"anthropic"`
 	Gemini           GeminiConfig             `yaml:"gemini"`
 	LMStudio         LMStudioConfig           `yaml:"lmstudio"`
@@ -87,34 +87,34 @@ type LLMConfig struct {
 
 // AnthropicConfig holds Anthropic provider configuration.
 type AnthropicConfig struct {
-	APIKey string `yaml:"api_key"`
-	Model  string `yaml:"model"`
+	APIKey string   `yaml:"api_key"`
+	Models []string `yaml:"models"` // enabled models for this provider
 }
 
 // GeminiConfig holds Gemini provider configuration.
 type GeminiConfig struct {
-	APIKey string `yaml:"api_key"`
-	Model  string `yaml:"model"`
+	APIKey string   `yaml:"api_key"`
+	Models []string `yaml:"models"` // enabled models for this provider
 }
 
 // LMStudioConfig holds LM Studio provider configuration.
 type LMStudioConfig struct {
-	BaseURL string `yaml:"base_url"`
-	APIKey  string `yaml:"api_key"`
-	Model   string `yaml:"model"`
+	BaseURL string   `yaml:"base_url"`
+	APIKey  string   `yaml:"api_key"`
+	Models  []string `yaml:"models"` // enabled models for this provider
 }
 
 // OpenAICompatibleConfig holds OpenAI-compatible provider configuration.
 type OpenAICompatibleConfig struct {
-	BaseURL string `yaml:"base_url"`
-	APIKey  string `yaml:"api_key"`
-	Model   string `yaml:"model"`
+	BaseURL string   `yaml:"base_url"`
+	APIKey  string   `yaml:"api_key"`
+	Models  []string `yaml:"models"` // enabled models for this provider
 }
 
 // ChatGPTConfig holds ChatGPT (OpenAI) provider configuration.
 type ChatGPTConfig struct {
-	APIKey string `yaml:"api_key"`
-	Model  string `yaml:"model"`
+	APIKey string   `yaml:"api_key"`
+	Models []string `yaml:"models"` // enabled models for this provider
 }
 
 // ModelOverride allows overriding built-in model metadata.
@@ -375,23 +375,92 @@ type LoadResult struct {
 	LoadErrors []string // non-fatal errors/warnings encountered during load
 }
 
-// GetActiveProviderConfig returns (providerType, apiKey, baseURL, model) for the active provider.
-// providerType is the Go provider type to create: "anthropic", "gemini", "lmstudio", "openai" (for both openai_compatible and chatgpt).
-func (c *LLMConfig) GetActiveProviderConfig() (providerType, apiKey, baseURL, model string) {
-	switch c.ActiveProvider {
+// ProviderWithModels pairs a provider config key with its enabled models.
+type ProviderWithModels struct {
+	Name         string   // config key: "anthropic", "gemini", …
+	ProviderType string   // Go type constant
+	APIKey       string
+	BaseURL      string
+	Models       []string // enabled models for this one provider
+}
+
+// providerType maps a config-level provider name to the Go provider type.
+func providerType(name string) string {
+	switch name {
 	case "anthropic":
-		return "anthropic", c.Anthropic.APIKey, "", c.Anthropic.Model
+		return "anthropic"
 	case "gemini":
-		return "gemini", c.Gemini.APIKey, "", c.Gemini.Model
+		return "gemini"
 	case "lmstudio":
-		return "lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Model
-	case "openai_compatible":
-		return "openai", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Model
-	case "chatgpt":
-		return "openai", c.ChatGPT.APIKey, "", c.ChatGPT.Model
+		return "lmstudio"
+	case "openai_compatible", "chatgpt":
+		return "openai"
 	default:
-		return "", "", "", ""
+		return ""
 	}
+}
+
+// GetAllProviderConfigs returns all providers that have at least one model enabled.
+func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
+	providers := []struct {
+		name     string
+		apiKey   string
+		baseURL  string
+		models   []string
+	}{
+		{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
+		{"gemini", c.Gemini.APIKey, "", c.Gemini.Models},
+		{"lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Models},
+		{"openai_compatible", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Models},
+		{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
+	}
+
+	var result []ProviderWithModels
+	for _, p := range providers {
+		if len(p.models) > 0 {
+			result = append(result, ProviderWithModels{
+				Name:         p.name,
+				ProviderType: providerType(p.name),
+				APIKey:       p.apiKey,
+				BaseURL:      p.baseURL,
+				Models:       p.models,
+			})
+		}
+	}
+	return result
+}
+
+// ResolveDefaultModelProvider looks up the provider that owns DefaultModel.
+// Returns the provider name, Go type, API key, base URL, model name and an error
+// if DefaultModel is empty or not found in any provider's Models list.
+func (c *LLMConfig) ResolveDefaultModelProvider() (name, providerTypeStr, apiKey, baseURL, model string, err error) {
+	if c.DefaultModel == "" {
+		return "", "", "", "", "", errors.New("default_model is not set")
+	}
+
+	providers := []struct {
+		name        string
+		provType    string
+		apiKey      string
+		baseURL     string
+		models      []string
+	}{
+		{"anthropic", "anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
+		{"gemini", "gemini", c.Gemini.APIKey, "", c.Gemini.Models},
+		{"lmstudio", "lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Models},
+		{"openai_compatible", "openai", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Models},
+		{"chatgpt", "openai", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
+	}
+
+	for _, p := range providers {
+		for _, m := range p.models {
+			if m == c.DefaultModel {
+				return p.name, p.provType, p.apiKey, p.baseURL, m, nil
+			}
+		}
+	}
+
+	return "", "", "", "", "", fmt.Errorf("default_model %q not found in any provider's enabled models", c.DefaultModel)
 }
 
 // Load reads a configuration file, applies defaults, validates the configuration, and returns it.
@@ -459,25 +528,25 @@ func Save(cfg *Config, path string) error {
 
 // validate checks that the configuration is valid.
 func validate(cfg *Config) error {
-	// Validate active_provider is one of known values
-	if cfg.LLM.ActiveProvider == "" {
-		return errors.New("llm.active_provider must be specified")
-	}
-	if !ValidProviders[cfg.LLM.ActiveProvider] {
-		return fmt.Errorf("llm.active_provider %q is not a valid provider (must be anthropic, gemini, lmstudio, openai_compatible, or chatgpt)", cfg.LLM.ActiveProvider)
+	// Validate default_model
+	if cfg.LLM.DefaultModel == "" {
+		return errors.New("llm.default_model is not set")
 	}
 
-	// Validate active provider has model set
-	_, _, _, model := cfg.LLM.GetActiveProviderConfig()
-	if model == "" {
-		return fmt.Errorf("active provider %q must have a model specified", cfg.LLM.ActiveProvider)
+	// Validate at least one provider has models
+	hasModels := len(cfg.LLM.Anthropic.Models) > 0 ||
+		len(cfg.LLM.Gemini.Models) > 0 ||
+		len(cfg.LLM.LMStudio.Models) > 0 ||
+		len(cfg.LLM.OpenAICompatible.Models) > 0 ||
+		len(cfg.LLM.ChatGPT.Models) > 0
+	if !hasModels {
+		return errors.New("at least one provider must have enabled models")
 	}
 
-	// Validate base_url for providers that require it
-	if cfg.LLM.ActiveProvider == "openai_compatible" {
-		if cfg.LLM.OpenAICompatible.BaseURL == "" {
-			return errors.New("openai_compatible provider requires base_url")
-		}
+	// Validate default_model exists in some provider's models list
+	_, _, _, _, _, err := cfg.LLM.ResolveDefaultModelProvider()
+	if err != nil {
+		return err
 	}
 
 	// Validate that internal tools are not in tool_policies

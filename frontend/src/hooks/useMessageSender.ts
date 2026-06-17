@@ -5,6 +5,7 @@ import { useCallback, useState } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useExecutionModeStore } from '@/stores/executionModeStore'
+import { useInputModeStore } from '@/stores/inputModeStore'
 import { sendMessage, cancelTask } from '@/api/chat'
 import { createSession } from '@/api/sessions'
 import { generateMessageId } from '@/lib/ids'
@@ -54,7 +55,8 @@ export function useMessageSender(): UseMessageSenderResult {
     useChatStore.getState().setActivityStatus('Processing...')
 
     try {
-      await sendMessage(sessionId, messageText, executionMode, activeSkills ?? [])
+      const modelOverride = useInputModeStore.getState().selectedModel ?? ''
+      await sendMessage(sessionId, messageText, executionMode, activeSkills ?? [], modelOverride)
     } catch (error) {
       logger.error('Failed to send message:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)

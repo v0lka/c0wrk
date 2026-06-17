@@ -28,25 +28,38 @@ type BuilderConfig struct {
 
 // BuilderLLMConfig holds the LLM provider settings the builder needs.
 type BuilderLLMConfig struct {
-	ActiveProvider string // e.g. "anthropic", "gemini", "lmstudio", "openai_compatible", "chatgpt"
-
-	// Resolved active-provider fields (output of GetActiveProviderConfig).
-	ProviderType string // Go provider type: "anthropic", "gemini", "lmstudio", "openai"
-	APIKey       string // raw value (may contain ${ENV_VAR})
-	BaseURL      string // raw value
-	Model        string // active model name
+	DefaultModel    string                           // global, cross-provider default model
+	ProviderConfigs map[string]BuilderProviderConfig // key = provider name ("anthropic", "gemini", …)
 
 	Retry BuilderRetryConfig
 
 	// Model metadata overrides keyed by model name.
 	Models map[string]BuilderModelOverride
+}
 
-	// Per-provider raw configs used only by ListProviderModels.
-	ChatGPTAPIKey       string
-	OpenAICompatBaseURL string
-	OpenAICompatAPIKey  string
-	LMStudioBaseURL     string
-	LMStudioAPIKey      string
+// BuilderProviderConfig holds configuration for a single LLM provider.
+type BuilderProviderConfig struct {
+	ProviderType string   // Go provider type: "anthropic", "gemini", "lmstudio", "openai"
+	APIKey       string   // raw value (may contain ${ENV_VAR})
+	BaseURL      string   // raw value
+	Models       []string // enabled models for this one provider
+}
+
+// DefaultProviderName returns the logical name of the provider that owns DefaultModel.
+// Returns empty string if no provider configs exist or DefaultModel is not found.
+func (c BuilderLLMConfig) DefaultProviderName() string {
+	for name, pc := range c.ProviderConfigs {
+		for _, m := range pc.Models {
+			if m == c.DefaultModel {
+				return name
+			}
+		}
+	}
+	// Fallback: return first provider name
+	for name := range c.ProviderConfigs {
+		return name
+	}
+	return ""
 }
 
 // BuilderRetryConfig configures LLM retry behaviour.

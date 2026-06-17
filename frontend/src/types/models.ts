@@ -138,23 +138,18 @@ export interface SkillDescriptor {
 // --- Config types ---
 
 export interface ConfigProviderFull {
-  base_url: string
   api_key: string
-  model: string
-}
-
-export interface ConfigProviderKeyModel {
-  api_key: string
-  model: string
+  base_url?: string
+  models: string[]  // enabled models for THIS provider
 }
 
 export interface ConfigLLMResponse {
-  active_provider: string
-  anthropic: ConfigProviderKeyModel
-  gemini: ConfigProviderKeyModel
+  default_model: string  // single, global, cross-provider
+  anthropic: ConfigProviderFull
+  gemini: ConfigProviderFull
   lmstudio: ConfigProviderFull
   openai_compatible: ConfigProviderFull
-  chatgpt: ConfigProviderKeyModel
+  chatgpt: ConfigProviderFull
 }
 
 export interface ConfigMemResponse {
@@ -176,11 +171,19 @@ export interface ConfigResponse {
   proxy: ProxySettingsResponse
 }
 
-export interface LLMSettingsRequest {
-  active_provider: string
-  api_key: string
-  base_url: string
-  model: string
+export interface ProviderConfigRequest {
+  api_key?: string
+  base_url?: string
+  models?: string[]
+}
+
+export interface LLMFullConfigRequest {
+  default_model?: string
+  anthropic?: ProviderConfigRequest
+  gemini?: ProviderConfigRequest
+  lmstudio?: ProviderConfigRequest
+  openai_compatible?: ProviderConfigRequest
+  chatgpt?: ProviderConfigRequest
 }
 
 export interface SearchSettingsRequest {

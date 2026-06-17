@@ -109,6 +109,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | User message           | backend → core | `string` via `HandleMessage()`           |
 | Execution mode         | backend → core | `HandleOptions.ExecutionMode`            |
 | User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
+| Model override         | backend → core | `HandleOptions.ModelOverride`            |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. perToolTruncation) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |

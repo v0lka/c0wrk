@@ -20,25 +20,19 @@ type ConfigResponse struct {
 
 // ConfigLLMResponse holds sanitised LLM provider info.
 type ConfigLLMResponse struct {
-	ActiveProvider   string                 `json:"active_provider"`
-	Anthropic        ConfigProviderKeyModel `json:"anthropic"`
-	Gemini           ConfigProviderKeyModel `json:"gemini"`
-	LMStudio         ConfigProviderFull     `json:"lmstudio"`
-	OpenAICompatible ConfigProviderFull     `json:"openai_compatible"`
-	ChatGPT          ConfigProviderKeyModel `json:"chatgpt"`
+	DefaultModel    string                       `json:"default_model"` // global, cross-provider
+	Anthropic        ConfigProviderFull           `json:"anthropic"`
+	Gemini           ConfigProviderFull           `json:"gemini"`
+	LMStudio         ConfigProviderFull           `json:"lmstudio"`
+	OpenAICompatible ConfigProviderFull           `json:"openai_compatible"`
+	ChatGPT          ConfigProviderFull           `json:"chatgpt"`
 }
 
-// ConfigProviderKeyModel is a provider with api_key + model.
-type ConfigProviderKeyModel struct {
-	APIKey string `json:"api_key"`
-	Model  string `json:"model"`
-}
-
-// ConfigProviderFull is a provider with base_url + api_key + model.
+// ConfigProviderFull is a provider with api_key, optional base_url, and enabled models list.
 type ConfigProviderFull struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
-	Model   string `json:"model"`
+	APIKey  string   `json:"api_key"`
+	BaseURL string   `json:"base_url,omitempty"`
+	Models  []string `json:"models"` // enabled models for this provider
 }
 
 // ConfigMemResponse holds memory section of config response.
@@ -54,10 +48,25 @@ type ConfigSearchResp struct {
 
 // LLMSettingsRequest holds LLM settings from the frontend.
 type LLMSettingsRequest struct {
-	ActiveProvider string `json:"active_provider"`
-	APIKey         string `json:"api_key"`
-	BaseURL        string `json:"base_url"`
-	Model          string `json:"model"`
+	DefaultModel string   `json:"default_model"`
+	Models       []string `json:"models"` // enabled models for the current provider being edited
+}
+
+// LLMFullConfigRequest is the full LLM configuration payload for UpdateLLMConfig.
+type LLMFullConfigRequest struct {
+	DefaultModel     string                    `json:"default_model"`
+	Anthropic        *ProviderConfigRequest    `json:"anthropic,omitempty"`
+	Gemini           *ProviderConfigRequest    `json:"gemini,omitempty"`
+	LMStudio         *ProviderConfigRequest    `json:"lmstudio,omitempty"`
+	OpenAICompatible *ProviderConfigRequest    `json:"openai_compatible,omitempty"`
+	ChatGPT          *ProviderConfigRequest    `json:"chatgpt,omitempty"`
+}
+
+// ProviderConfigRequest holds a single provider's configuration.
+type ProviderConfigRequest struct {
+	APIKey  string   `json:"api_key,omitempty"`
+	BaseURL string   `json:"base_url,omitempty"`
+	Models  []string `json:"models,omitempty"`
 }
 
 // SearchSettingsRequest holds search settings from the frontend.

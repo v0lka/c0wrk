@@ -15,7 +15,7 @@ User types message in frontend
 Frontend: chatStore.sendMessage(text)
          │
          ▼
-RPC: window.go.desktop.App.SendMessage(sessionId, text, mode)
+RPC: window.go.desktop.App.SendMessage(sessionId, text, mode, skills, modelOverride)
          │
          ▼
 backend/frontend_api_session.go: FrontendAPI.SendMessage()
@@ -108,6 +108,8 @@ backend/config/: config.Load()
          ▼
 backend/configadapter.go: ToBuilderConfig(cfg)
   → Converts config.Config → core.BuilderConfig
+  → Builds ProviderConfigs map from all providers with non-empty Models
+  → Sets DefaultModel (cross-provider, resolves to owning provider)
   → Single conversion point (all config mapping here)
          │
          ▼

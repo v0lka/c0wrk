@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button'
 import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
+import { ModelCombobox } from './ModelCombobox'
 
 interface ChatInputToolbarProps {
   controller: ChatInputController
@@ -99,6 +100,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
         <span className="text-xs italic text-muted-foreground">{blockingMessage}</span>
       )}
       <div className="flex-1" />
+      {mode === 'chat' && <ModelCombobox />}
       {showCancel ? (
         <Button
           variant="outline"

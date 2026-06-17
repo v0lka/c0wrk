@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isConfigResponse, isSecuritySettingsResponse, isProxySettingsResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMSettingsRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest } from '@/types/models'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -46,12 +46,12 @@ export async function updateSecuritySettings(settings: SecuritySettingsResponse)
   }
 }
 
-export async function updateLLMSettings(settings: LLMSettingsRequest): Promise<void> {
+export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> {
   try {
     const app = getApp()
-    await app.UpdateLLMSettings(settings)
+    await app.UpdateLLMConfig(req)
   } catch (err) {
-    logger.error('Failed to update LLM settings:', err)
+    logger.error('Failed to update LLM config:', err)
     throw err
   }
 }

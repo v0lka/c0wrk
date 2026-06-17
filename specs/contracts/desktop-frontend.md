@@ -19,7 +19,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `MCPServerStatus`          | backend  | backend → frontend | MCP server state                    |
 | `ToolInfo`                 | backend  | backend → frontend | Tool descriptor for UI              |
 | `ConfigResponse`           | backend  | backend → frontend | Sanitized config view               |
-| `LLMSettingsRequest`       | frontend | frontend → backend | LLM provider config update          |
+| `LLMFullConfigRequest`    | frontend | frontend → backend | LLM multi-provider config update |
 | `SecuritySettingsResponse` | backend  | backend ↔ frontend | Security policy CRUD                |
 | `OptimizePromptResponse`   | backend  | backend → frontend | Prompt optimization result          |
 | `SkillDescriptorDTO`       | backend  | backend → frontend | Skill listing                       |
@@ -44,7 +44,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
-| `SendMessage`          | id, text, mode, activeSkills | error                     | Send user message (async execution)                   |
+| `SendMessage`          | id, text, mode, activeSkills, modelOverride | error                     | Send user message (async execution)                   |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
 | `ResumeTask`           | id                           | error                     | Resume failed task                                    |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
@@ -68,7 +68,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | Method                   | Parameters               | Returns                           | Description                    |
 | ------------------------ | ------------------------ | --------------------------------- | ------------------------------ |
 | `GetConfig`              | —                        | (ConfigResponse, error)           | Get current config (sanitized) |
-| `UpdateLLMSettings`      | LLMSettingsRequest       | error                             | Update LLM provider/model      |
+| `UpdateLLMConfig`       | LLMFullConfigRequest    | error                             | Update full LLM multi-provider config |
 | `UpdateSearchSettings`   | SearchSettingsRequest    | error                             | Update search config           |
 | `GetSecuritySettings`    | —                        | (SecuritySettingsResponse, error) | Get security policies          |
 | `UpdateSecuritySettings` | SecuritySettingsResponse | error                             | Update security policies       |

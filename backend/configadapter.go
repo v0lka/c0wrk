@@ -16,7 +16,17 @@ func derefBool(b *bool) bool {
 // ToBuilderConfig converts a *config.Config into a *core.BuilderConfig.
 // This is the single conversion point so that core never imports backend/config.
 func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
-	provType, apiKey, baseURL, model := cfg.LLM.GetActiveProviderConfig()
+	// Build provider configs map from all enabled providers.
+	allProviders := cfg.LLM.GetAllProviderConfigs()
+	providerConfigs := make(map[string]core.BuilderProviderConfig, len(allProviders))
+	for _, p := range allProviders {
+		providerConfigs[p.Name] = core.BuilderProviderConfig{
+			ProviderType: p.ProviderType,
+			APIKey:       p.APIKey,
+			BaseURL:      p.BaseURL,
+			Models:       p.Models,
+		}
+	}
 
 	// Convert model overrides.
 	models := make(map[string]core.BuilderModelOverride, len(cfg.LLM.Models))
@@ -51,22 +61,14 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 
 	return &core.BuilderConfig{
 		LLM: core.BuilderLLMConfig{
-			ActiveProvider: cfg.LLM.ActiveProvider,
-			ProviderType:   provType,
-			APIKey:         apiKey,
-			BaseURL:        baseURL,
-			Model:          model,
+			DefaultModel:    cfg.LLM.DefaultModel,
+			ProviderConfigs: providerConfigs,
 			Retry: core.BuilderRetryConfig{
 				MaxRetries:     cfg.LLM.Retry.MaxRetries,
 				InitialBackoff: cfg.LLM.Retry.InitialBackoff,
 				MaxBackoff:     cfg.LLM.Retry.MaxBackoff,
 			},
-			Models:              models,
-			ChatGPTAPIKey:       cfg.LLM.ChatGPT.APIKey,
-			OpenAICompatBaseURL: cfg.LLM.OpenAICompatible.BaseURL,
-			OpenAICompatAPIKey:  cfg.LLM.OpenAICompatible.APIKey,
-			LMStudioBaseURL:     cfg.LLM.LMStudio.BaseURL,
-			LMStudioAPIKey:      cfg.LLM.LMStudio.APIKey,
+			Models: models,
 		},
 		Reasoning: core.BuilderReasoningConfig{
 			BaseEffort:    cfg.Reasoning.BaseEffort,

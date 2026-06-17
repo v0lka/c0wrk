@@ -105,9 +105,9 @@ func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
-	cfg.LLM.ActiveProvider = "anthropic"
+	cfg.LLM.DefaultModel = "claude-3-opus"
 	cfg.LLM.Anthropic.APIKey = "sk-test-original"
-	cfg.LLM.Anthropic.Model = "claude-3-opus"
+	cfg.LLM.Anthropic.Models = []string{"claude-3-opus"}
 
 	mock := &mockBuilder{}
 	f := &FrontendAPI{
@@ -118,14 +118,14 @@ func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 	return f, mock, cfgPath
 }
 
-// --- UpdateLLMSettings ---
+// --- UpdateLLMConfig ---
 
-func TestUpdateLLMSettings_PersistsAndRebuilds(t *testing.T) {
+func TestUpdateLLMConfig_PersistsAndRebuilds(t *testing.T) {
 	f, mock, cfgPath := newTestAPI(t)
 
-	err := f.UpdateLLMSettings(LLMSettingsRequest{
-		ActiveProvider: "anthropic",
-		Model:          "claude-3-sonnet",
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-sonnet",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet", "claude-3-opus"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -145,33 +145,18 @@ func TestUpdateLLMSettings_PersistsAndRebuilds(t *testing.T) {
 	}
 
 	// Assert in-memory config updated.
-	if f.config.LLM.Anthropic.Model != "claude-3-sonnet" {
-		t.Errorf("model = %q, want claude-3-sonnet", f.config.LLM.Anthropic.Model)
+	if f.config.LLM.DefaultModel != "claude-3-sonnet" {
+		t.Errorf("default_model = %q, want claude-3-sonnet", f.config.LLM.DefaultModel)
 	}
 }
 
-func TestUpdateLLMSettings_InvalidProvider(t *testing.T) {
-	f, mock, _ := newTestAPI(t)
-
-	err := f.UpdateLLMSettings(LLMSettingsRequest{
-		ActiveProvider: "invalid_llm",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid provider")
-	}
-	if mock.rebuildJudgeCalls != 0 {
-		t.Error("RebuildJudge should not be called on invalid provider")
-	}
-}
-
-func TestUpdateLLMSettings_MaskedKeyNotOverwritten(t *testing.T) {
+func TestUpdateLLMConfig_MaskedKeyNotOverwritten(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 	original := f.config.LLM.Anthropic.APIKey
 
-	err := f.UpdateLLMSettings(LLMSettingsRequest{
-		ActiveProvider: "anthropic",
-		APIKey:         maskedAPIKey, // the placeholder
-		Model:          "claude-3-sonnet",
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-sonnet",
+		Anthropic:    &ProviderConfigRequest{APIKey: maskedAPIKey, Models: []string{"claude-3-sonnet"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -181,24 +166,20 @@ func TestUpdateLLMSettings_MaskedKeyNotOverwritten(t *testing.T) {
 	}
 }
 
-func TestUpdateLLMSettings_PerProviderFields(t *testing.T) {
+func TestUpdateLLMConfig_PerProviderFields(t *testing.T) {
 	tests := []struct {
 		provider string
-		setup    func(*config.Config)
+		req      LLMFullConfigRequest
 	}{
-		{"gemini", func(c *config.Config) { c.LLM.Gemini.APIKey = "g" }},
-		{"lmstudio", func(c *config.Config) { c.LLM.LMStudio.BaseURL = "http://x" }},
-		{"openai_compatible", func(c *config.Config) { c.LLM.OpenAICompatible.BaseURL = "http://y" }},
-		{"chatgpt", func(c *config.Config) { c.LLM.ChatGPT.APIKey = "c" }},
+		{"gemini", LLMFullConfigRequest{Gemini: &ProviderConfigRequest{Models: []string{"test-model"}}}},
+		{"lmstudio", LLMFullConfigRequest{LMStudio: &ProviderConfigRequest{Models: []string{"test-model"}}}},
+		{"openai_compatible", LLMFullConfigRequest{OpenAICompatible: &ProviderConfigRequest{Models: []string{"test-model"}}}},
+		{"chatgpt", LLMFullConfigRequest{ChatGPT: &ProviderConfigRequest{Models: []string{"test-model"}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
 			f, mock, _ := newTestAPI(t)
-			tt.setup(f.config)
-			err := f.UpdateLLMSettings(LLMSettingsRequest{
-				ActiveProvider: tt.provider,
-				Model:          "test-model",
-			})
+			err := f.UpdateLLMConfig(tt.req)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -209,9 +190,9 @@ func TestUpdateLLMSettings_PerProviderFields(t *testing.T) {
 	}
 }
 
-func TestUpdateLLMSettings_NilConfig(t *testing.T) {
+func TestUpdateLLMConfig_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
-	err := f.UpdateLLMSettings(LLMSettingsRequest{ActiveProvider: "anthropic"})
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-sonnet"})
 	if err == nil {
 		t.Fatal("expected error when config is nil")
 	}

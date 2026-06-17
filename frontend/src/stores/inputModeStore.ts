@@ -10,6 +10,8 @@ interface InputModeState {
   isExpanded: boolean
   /** Transient: set by insertTextIntoInput, consumed by ChatInput, cleared after dispatch. */
   pendingInsertion: string | null
+  /** Per-message model override. null = use global default_model. Persisted. */
+  selectedModel: string | null
 }
 
 interface InputModeActions {
@@ -20,6 +22,8 @@ interface InputModeActions {
   insertTextIntoInput: (text: string) => void
   /** Clear the pending insertion after it has been consumed. */
   clearPendingInsertion: () => void
+  /** Set the per-message model override. null = use global default. */
+  setSelectedModel: (model: string | null) => void
 }
 
 const DEFAULT_HEIGHT = 200
@@ -35,6 +39,7 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
       collapsedHeight: DEFAULT_HEIGHT,
       isExpanded: false,
       pendingInsertion: null,
+      selectedModel: null,
 
       setMode: (mode) => set({ mode }),
 
@@ -58,6 +63,7 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
 
       insertTextIntoInput: (text) => set({ pendingInsertion: text }),
       clearPendingInsertion: () => set({ pendingInsertion: null }),
+      setSelectedModel: (model) => set({ selectedModel: model }),
     }),
     {
       name: 'c0wrk-input-mode',
@@ -69,6 +75,7 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
         height: state.height,
         collapsedHeight: state.collapsedHeight,
         isExpanded: state.isExpanded,
+        selectedModel: state.selectedModel,
       }),
     }
   )

@@ -407,11 +407,11 @@ func (a *App) buildFrontendAPI(
 	}
 
 	// Validate LLM provider configuration at startup (fail-fast).
-	if cfg.Config != nil && cfg.Config.LLM.ActiveProvider == "" {
-		log.Error("no active LLM provider configured - check your config.yaml")
+	if cfg.Config != nil && cfg.Config.LLM.DefaultModel == "" {
+		log.Error("no default model configured - check your config.yaml")
 		a.emit(backend.EventStartupError, map[string]string{
-			"message": "no active LLM provider configured - check your config.yaml",
-			"error":   "config has no active_provider defined under llm",
+			"message": "no default model configured - check your config.yaml",
+			"error":   "config has no default_model defined under llm",
 		})
 	}
 }

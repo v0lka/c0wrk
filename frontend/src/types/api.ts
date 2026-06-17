@@ -3,7 +3,7 @@
 import type {
   ProjectInfo, SessionInfo, ChatMessage, TokenInfo,
   FileEntry, GitStatusEntry, ConfigResponse, SecuritySettingsResponse,
-  LLMSettingsRequest, SearchSettingsRequest,
+  LLMFullConfigRequest, SearchSettingsRequest,
   MCPServerStatus, MCPServerConfig, ToolInfo,
 } from './models'
 
@@ -25,7 +25,7 @@ export interface SessionAPI {
 }
 
 export interface ChatAPI {
-  sendMessage(sessionId: string, text: string, mode: string, activeSkills?: string[]): Promise<void>
+  sendMessage(sessionId: string, text: string, mode: string, activeSkills?: string[], modelOverride?: string): Promise<void>
   cancelTask(sessionId: string): Promise<void>
   cancelUnfinishedTask(sessionId: string): Promise<void>
   getSessionHistory(sessionId: string): Promise<ChatMessage[]>
@@ -48,7 +48,7 @@ export interface ConfigAPI {
   getConfig(): Promise<ConfigResponse>
   getSecuritySettings(): Promise<SecuritySettingsResponse>
   updateSecuritySettings(settings: SecuritySettingsResponse): Promise<void>
-  updateLLMSettings(settings: LLMSettingsRequest): Promise<void>
+  updateLLMConfig(req: LLMFullConfigRequest): Promise<void>
   updateSearchSettings(settings: SearchSettingsRequest): Promise<void>
   getLogLevel(): Promise<string>
   setLogLevel(level: string): Promise<void>

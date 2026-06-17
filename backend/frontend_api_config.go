@@ -28,28 +28,28 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		LogLevel:     f.config.LogLevel,
 		ConfigErrors: nonNilStringSlice(f.configLoadErrors),
 		LLM: ConfigLLMResponse{
-			ActiveProvider: f.config.LLM.ActiveProvider,
-			Anthropic: ConfigProviderKeyModel{
+			DefaultModel: f.config.LLM.DefaultModel,
+			Anthropic: ConfigProviderFull{
 				APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
-				Model:  f.config.LLM.Anthropic.Model,
+				Models: f.config.LLM.Anthropic.Models,
 			},
-			Gemini: ConfigProviderKeyModel{
+			Gemini: ConfigProviderFull{
 				APIKey: maskAPIKey(f.config.LLM.Gemini.APIKey),
-				Model:  f.config.LLM.Gemini.Model,
+				Models: f.config.LLM.Gemini.Models,
 			},
 			LMStudio: ConfigProviderFull{
-				BaseURL: f.config.LLM.LMStudio.BaseURL,
 				APIKey:  maskAPIKey(f.config.LLM.LMStudio.APIKey),
-				Model:   f.config.LLM.LMStudio.Model,
+				BaseURL: f.config.LLM.LMStudio.BaseURL,
+				Models:  f.config.LLM.LMStudio.Models,
 			},
 			OpenAICompatible: ConfigProviderFull{
-				BaseURL: f.config.LLM.OpenAICompatible.BaseURL,
 				APIKey:  maskAPIKey(f.config.LLM.OpenAICompatible.APIKey),
-				Model:   f.config.LLM.OpenAICompatible.Model,
+				BaseURL: f.config.LLM.OpenAICompatible.BaseURL,
+				Models:  f.config.LLM.OpenAICompatible.Models,
 			},
-			ChatGPT: ConfigProviderKeyModel{
+			ChatGPT: ConfigProviderFull{
 				APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
-				Model:  f.config.LLM.ChatGPT.Model,
+				Models: f.config.LLM.ChatGPT.Models,
 			},
 		},
 		Memory: ConfigMemResponse{
@@ -68,8 +68,9 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 	}
 }
 
-// UpdateLLMSettings updates LLM active provider and model settings.
-func (f *FrontendAPI) UpdateLLMSettings(settings LLMSettingsRequest) error {
+// UpdateLLMConfig updates the full LLM configuration atomically:
+// default model, each provider's models list, and API keys.
+func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
 
@@ -77,63 +78,61 @@ func (f *FrontendAPI) UpdateLLMSettings(settings LLMSettingsRequest) error {
 		return errors.New("config not initialized")
 	}
 
-	// Update active provider
-	if settings.ActiveProvider != "" {
-		if !config.ValidProviders[settings.ActiveProvider] {
-			return fmt.Errorf("active_provider %q is not a valid provider", settings.ActiveProvider)
-		}
-		f.config.LLM.ActiveProvider = settings.ActiveProvider
+	// Update default model
+	if req.DefaultModel != "" {
+		f.config.LLM.DefaultModel = req.DefaultModel
 	}
 
-	// Update model on the active provider
-	if f.config.LLM.ActiveProvider != "" {
-		switch f.config.LLM.ActiveProvider {
-		case "anthropic":
-			if settings.Model != "" {
-				f.config.LLM.Anthropic.Model = settings.Model
-			}
-			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
-				f.config.LLM.Anthropic.APIKey = settings.APIKey
-			}
-		case "gemini":
-			if settings.Model != "" {
-				f.config.LLM.Gemini.Model = settings.Model
-			}
-			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
-				f.config.LLM.Gemini.APIKey = settings.APIKey
-			}
-		case "lmstudio":
-			if settings.Model != "" {
-				f.config.LLM.LMStudio.Model = settings.Model
-			}
-			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
-				f.config.LLM.LMStudio.APIKey = settings.APIKey
-			}
-			if settings.BaseURL != "" {
-				f.config.LLM.LMStudio.BaseURL = settings.BaseURL
-			}
-		case "openai_compatible":
-			if settings.Model != "" {
-				f.config.LLM.OpenAICompatible.Model = settings.Model
-			}
-			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
-				f.config.LLM.OpenAICompatible.APIKey = settings.APIKey
-			}
-			if settings.BaseURL != "" {
-				f.config.LLM.OpenAICompatible.BaseURL = settings.BaseURL
-			}
-		case "chatgpt":
-			if settings.Model != "" {
-				f.config.LLM.ChatGPT.Model = settings.Model
-			}
-			if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
-				f.config.LLM.ChatGPT.APIKey = settings.APIKey
-			}
+	// Update each provider's models list and credentials
+	if req.Anthropic != nil {
+		if req.Anthropic.Models != nil {
+			f.config.LLM.Anthropic.Models = req.Anthropic.Models
+		}
+		if req.Anthropic.APIKey != "" && req.Anthropic.APIKey != maskedAPIKey {
+			f.config.LLM.Anthropic.APIKey = req.Anthropic.APIKey
+		}
+	}
+	if req.Gemini != nil {
+		if req.Gemini.Models != nil {
+			f.config.LLM.Gemini.Models = req.Gemini.Models
+		}
+		if req.Gemini.APIKey != "" && req.Gemini.APIKey != maskedAPIKey {
+			f.config.LLM.Gemini.APIKey = req.Gemini.APIKey
+		}
+	}
+	if req.LMStudio != nil {
+		if req.LMStudio.Models != nil {
+			f.config.LLM.LMStudio.Models = req.LMStudio.Models
+		}
+		if req.LMStudio.APIKey != "" && req.LMStudio.APIKey != maskedAPIKey {
+			f.config.LLM.LMStudio.APIKey = req.LMStudio.APIKey
+		}
+		if req.LMStudio.BaseURL != "" {
+			f.config.LLM.LMStudio.BaseURL = req.LMStudio.BaseURL
+		}
+	}
+	if req.OpenAICompatible != nil {
+		if req.OpenAICompatible.Models != nil {
+			f.config.LLM.OpenAICompatible.Models = req.OpenAICompatible.Models
+		}
+		if req.OpenAICompatible.APIKey != "" && req.OpenAICompatible.APIKey != maskedAPIKey {
+			f.config.LLM.OpenAICompatible.APIKey = req.OpenAICompatible.APIKey
+		}
+		if req.OpenAICompatible.BaseURL != "" {
+			f.config.LLM.OpenAICompatible.BaseURL = req.OpenAICompatible.BaseURL
+		}
+	}
+	if req.ChatGPT != nil {
+		if req.ChatGPT.Models != nil {
+			f.config.LLM.ChatGPT.Models = req.ChatGPT.Models
+		}
+		if req.ChatGPT.APIKey != "" && req.ChatGPT.APIKey != maskedAPIKey {
+			f.config.LLM.ChatGPT.APIKey = req.ChatGPT.APIKey
 		}
 	}
 
 	if err := f.persistConfig(); err != nil {
-		f.log().Warn("failed to persist LLM settings", "error", err)
+		f.log().Warn("failed to persist LLM config", "error", err)
 	}
 
 	// Clear any config load errors since settings are now valid
@@ -145,7 +144,7 @@ func (f *FrontendAPI) UpdateLLMSettings(settings LLMSettingsRequest) error {
 		bcfg := ToBuilderConfig(f.config)
 		b.RebuildJudge(bcfg)
 		if err := b.RebuildRouter(bcfg); err != nil {
-			f.log().Warn("failed to rebuild LLM router after settings update", "error", err)
+			f.log().Warn("failed to rebuild LLM router after config update", "error", err)
 		}
 	}
 

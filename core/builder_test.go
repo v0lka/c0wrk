@@ -103,10 +103,11 @@ func TestNewOrchestratorBuilder_NilExpandEnvVars(t *testing.T) {
 func TestBuilder_Build_FullPipeline(t *testing.T) {
 	cfg := &BuilderConfig{
 		LLM: BuilderLLMConfig{
-			ActiveProvider: "lmstudio",
-			ProviderType:   "lmstudio",
-			Model:          "local-model",
-			Retry:          BuilderRetryConfig{MaxRetries: 1, InitialBackoff: "1s", MaxBackoff: "10s"},
+			DefaultModel: "local-model",
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"lmstudio": {ProviderType: "lmstudio", Models: []string{"local-model"}},
+			},
+			Retry: BuilderRetryConfig{MaxRetries: 1, InitialBackoff: "1s", MaxBackoff: "10s"},
 		},
 		Security: BuilderSecurityConfig{DefaultPolicy: "user_confirm"},
 		Orchestration: BuilderOrchestrationConfig{

@@ -1,57 +1,65 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { getConfig, updateLLMSettings } from '@/api/config'
+import { getConfig, updateLLMConfig, MASKED_API_KEY } from '@/api/config'
 import { logger } from '@/lib/logger'
+import type { ConfigProviderFull, LLMFullConfigRequest } from '@/types/models'
 
 export interface ProviderConfig {
     api_key: string
     base_url: string
-    model: string
+    models: string[]
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = {
-    anthropic: { api_key: '', model: '', base_url: '' },
-    gemini: { api_key: '', model: '', base_url: '' },
-    lmstudio: { api_key: '', base_url: '', model: '' },
-    openai_compatible: { api_key: '', base_url: '', model: '' },
-    chatgpt: { api_key: '', model: '', base_url: '' },
+    anthropic: { api_key: '', base_url: '', models: [] },
+    gemini: { api_key: '', base_url: '', models: [] },
+    lmstudio: { api_key: '', base_url: '', models: [] },
+    openai_compatible: { api_key: '', base_url: '', models: [] },
+    chatgpt: { api_key: '', base_url: '', models: [] },
 }
 
 interface UseLLMConfigResult {
-    activeProvider: string
+    defaultModel: string
     providerConfigs: Record<string, ProviderConfig>
     isLoading: boolean
-    handleProviderChange: (provider: string) => void
-    updateProviderConfig: (updates: Partial<ProviderConfig>) => void
+    setDefaultModel: (model: string) => void
+    updateProviderConfig: (provider: string, updates: Partial<ProviderConfig>) => void
+    toggleModel: (provider: string, model: string) => void
+}
+
+function toProviderConfig(p: ConfigProviderFull): ProviderConfig {
+    return {
+        api_key: p.api_key,
+        base_url: p.base_url ?? '',
+        models: Array.isArray(p.models) ? [...p.models] : [],
+    }
 }
 
 export function useLLMConfig(onSettingsSaved?: () => void): UseLLMConfigResult {
-    const [activeProvider, setActiveProvider] = useState('')
+    const [defaultModel, setDefaultModelState] = useState('')
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
     const [isLoading, setIsLoading] = useState(true)
     const debounceRef = useRef<NodeJS.Timeout | null>(null)
-    const activeProviderRef = useRef(activeProvider)
-    activeProviderRef.current = activeProvider
 
     const loadConfig = useCallback(async () => {
         try {
             const result = await getConfig()
             const llm = result?.llm
             if (llm) {
-                setActiveProvider(llm.active_provider || 'anthropic')
+                setDefaultModelState(llm.default_model || '')
                 setProviderConfigs({
-                    anthropic: { api_key: llm.anthropic.api_key, model: llm.anthropic.model, base_url: '' },
-                    gemini: { api_key: llm.gemini.api_key, model: llm.gemini.model, base_url: '' },
-                    lmstudio: llm.lmstudio ?? { api_key: '', base_url: '', model: '' },
-                    openai_compatible: llm.openai_compatible ?? { api_key: '', base_url: '', model: '' },
-                    chatgpt: { api_key: llm.chatgpt.api_key, model: llm.chatgpt.model, base_url: '' },
+                    anthropic: toProviderConfig(llm.anthropic),
+                    gemini: toProviderConfig(llm.gemini),
+                    lmstudio: toProviderConfig(llm.lmstudio),
+                    openai_compatible: toProviderConfig(llm.openai_compatible),
+                    chatgpt: toProviderConfig(llm.chatgpt),
                 })
             } else {
-                setActiveProvider('anthropic')
+                setDefaultModelState('')
                 setProviderConfigs(defaultProviderConfigs)
             }
         } catch (error) {
             logger.error('Failed to load LLM config:', error)
-            setActiveProvider('anthropic')
+            setDefaultModelState('')
             setProviderConfigs(defaultProviderConfigs)
         } finally {
             setIsLoading(false)
@@ -60,47 +68,69 @@ export function useLLMConfig(onSettingsSaved?: () => void): UseLLMConfigResult {
 
     useEffect(() => { loadConfig() }, [loadConfig])
 
-    const saveSettings = useCallback(async (provider: string, config: ProviderConfig) => {
+    const saveFullConfig = useCallback(async (defModel: string, configs: Record<string, ProviderConfig>) => {
         try {
-            await updateLLMSettings({ active_provider: provider, api_key: config.api_key, base_url: config.base_url, model: config.model })
+            const req: LLMFullConfigRequest = {
+                default_model: defModel,
+                anthropic: { api_key: configs.anthropic!.api_key, models: configs.anthropic!.models },
+                gemini: { api_key: configs.gemini!.api_key, models: configs.gemini!.models },
+                lmstudio: { api_key: configs.lmstudio!.api_key, base_url: configs.lmstudio!.base_url, models: configs.lmstudio!.models },
+                openai_compatible: { api_key: configs.openai_compatible!.api_key, base_url: configs.openai_compatible!.base_url, models: configs.openai_compatible!.models },
+                chatgpt: { api_key: configs.chatgpt!.api_key, models: configs.chatgpt!.models },
+            }
+            await updateLLMConfig(req)
             onSettingsSaved?.()
         } catch (error) {
-            logger.error('Failed to save LLM settings:', error)
+            logger.error('Failed to save LLM config:', error)
         }
     }, [onSettingsSaved])
 
-    const debouncedSave = useCallback((provider: string, config: ProviderConfig) => {
+    const debouncedSave = useCallback((defModel: string, configs: Record<string, ProviderConfig>) => {
         if (debounceRef.current) clearTimeout(debounceRef.current)
-        debounceRef.current = setTimeout(() => saveSettings(provider, config), 300)
-    }, [saveSettings])
+        debounceRef.current = setTimeout(() => saveFullConfig(defModel, configs), 300)
+    }, [saveFullConfig])
 
     useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current) }, [])
 
-    const handleProviderChange = useCallback((provider: string) => {
-        setActiveProvider(provider)
-        setProviderConfigs((prev) => {
-            const config = prev[provider]
-            if (config) saveSettings(provider, config)
-            return prev
-        })
-    }, [saveSettings])
+    const setDefaultModel = useCallback((model: string) => {
+        setDefaultModelState(model)
+        debouncedSave(model, providerConfigs)
+    }, [providerConfigs, debouncedSave])
 
-    const updateProviderConfig = useCallback((updates: Partial<ProviderConfig>) => {
+    const updateProviderConfig = useCallback((provider: string, updates: Partial<ProviderConfig>) => {
         setProviderConfigs((prev) => {
-            const provider = activeProviderRef.current
             const existing = prev[provider]
             if (!existing) return prev
-            const updated = { ...existing, ...updates }
-            debouncedSave(provider, updated)
+            // If api_key equals the masked placeholder, keep the existing key
+            const safeUpdates = { ...updates }
+            if (safeUpdates.api_key === MASKED_API_KEY) {
+                delete safeUpdates.api_key
+            }
+            const updated = { ...existing, ...safeUpdates }
+            debouncedSave(defaultModel, { ...prev, [provider]: updated })
             return { ...prev, [provider]: updated }
         })
-    }, [debouncedSave])
+    }, [defaultModel, debouncedSave])
+
+    const toggleModel = useCallback((provider: string, model: string) => {
+        setProviderConfigs((prev) => {
+            const existing = prev[provider]
+            if (!existing) return prev
+            const models = existing.models.includes(model)
+                ? existing.models.filter(m => m !== model)
+                : [...existing.models, model]
+            const updated = { ...existing, models }
+            debouncedSave(defaultModel, { ...prev, [provider]: updated })
+            return { ...prev, [provider]: updated }
+        })
+    }, [defaultModel, debouncedSave])
 
     return {
-        activeProvider,
+        defaultModel,
         providerConfigs,
         isLoading,
-        handleProviderChange,
+        setDefaultModel,
         updateProviderConfig,
+        toggleModel,
     }
 }

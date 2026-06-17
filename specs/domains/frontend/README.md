@@ -158,14 +158,15 @@ Frontend configuration is derived from backend (no separate frontend config file
 
 | Source                          | Parameter          | Purpose                    |
 | ------------------------------- | ------------------ | -------------------------- |
-| `GetConfig()` RPC              | `active_provider`  | Provider badge in chat     |
-| `GetConfig()` RPC              | `model`            | Model name display         |
+| `GetConfig()` RPC              | `default_model`    | Default model display      |
+| `GetConfig()` RPC              | provider `.models` | Per-provider enabled models|
 | `GetLogLevel()` RPC            | log level          | Console/log verbosity      |
 | `GetSecuritySettings()` RPC    | `default_policy`   | Tool confirmation UI state |
 | `ListSkills()` RPC             | skills             | `/skill` autocomplete      |
 | `localStorage`                 | panel widths       | Persistent layout          |
 | `localStorage`                 | collapsed states   | Sidebar/file viewer state  |
 | `localStorage`                 | execution mode     | Normal/advanced toggle     |
+| `localStorage`                 | selected model     | Per-message model override |
 
 ## Extension Points
 

@@ -12,30 +12,32 @@ log_level: "DEBUG"
 # LLM Provider Configuration
 # ---------------------------------------------------------------------------
 llm:
-  # Active provider: "anthropic" | "gemini" | "lmstudio" | "openai_compatible" | "chatgpt"
-  active_provider: "anthropic"
+  # The single, cross-provider default model — must be enabled in the corresponding
+  # provider's models list below.
+  default_model: "claude-sonnet-4-20250514"
 
   anthropic:
     api_key: "${ANTHROPIC_API_KEY}"
-    model: "claude-sonnet-4-20250514"
+    models:
+      - "claude-sonnet-4-20250514"
 
   gemini:
     api_key: "${GEMINI_API_KEY}"
-    model: ""
+    models: []
 
   lmstudio:
     api_key: ""
     base_url: "http://localhost:1234"
-    model: ""
+    models: []
 
   openai_compatible:
     api_key: "${OPENAI_API_KEY}"
     base_url: ""
-    model: ""
+    models: []
 
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
-    model: ""
+    models: []
 
   # Override built-in model metadata (context window, output limit)
   models: {}

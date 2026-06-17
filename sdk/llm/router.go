@@ -24,11 +24,7 @@ type SamplingFunc func(family string) *float64
 // or budget control should account for this default. To disable retries entirely,
 // set MaxRetries to a negative value (e.g. -1).
 type RouterConfig struct {
-	ActiveProvider      string        // Logical name of the active provider (e.g. "openai", "lmstudio")
-	ProviderType        string        // Provider type: "openai", "lmstudio", "anthropic", "gemini"
-	APIKey              string        // Already-expanded API key
-	BaseURL             string        // Already-expanded base URL
-	Model               string        // Default model to use
+	Providers     []ProviderEntry // all enabled providers (at least one required)
 	MaxRetries          int           // Max retry attempts on retryable errors
 	InitialBackoff      time.Duration // Already parsed initial backoff duration
 	MaxBackoff          time.Duration // Already parsed max backoff duration
@@ -38,6 +34,15 @@ type RouterConfig struct {
 	SamplingFunc        SamplingFunc  // Optional family-aware temperature defaults; nil = no default (provider decides)
 }
 
+// ProviderEntry describes a single LLM provider with its enabled models.
+type ProviderEntry struct {
+	Name         string   // logical name ("anthropic", "gemini", …)
+	ProviderType string   // provider type: "openai", "lmstudio", "anthropic", "gemini"
+	APIKey       string   // already-expanded API key
+	BaseURL      string   // already-expanded base URL
+	Models       []string // enabled model names for this provider
+}
+
 // Router routes LLM calls to the active provider.
 //
 // Concurrency: Router is NOT safe for concurrent use from multiple goroutines.
@@ -45,6 +50,7 @@ type RouterConfig struct {
 // this via its single-active-request contract.
 type Router struct {
 	providers          map[string]Provider
+	modelToProvider    map[string]string // model name → provider name
 	activeProvider     Provider
 	activeModel        string
 	activeProviderName string
@@ -65,24 +71,47 @@ type Router struct {
 // and parsing durations before calling this function.
 // If registry is provided, LM Studio providers will register their metadata sources.
 func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (*Router, error) {
-	if cfg.ProviderType == "" {
-		return nil, errors.New("no active provider configured")
+	if len(cfg.Providers) == 0 {
+		return nil, errors.New("no providers configured")
 	}
 
-	// Create the active provider — values are already expanded by the caller
-	provider, err := createProviderFromConfig(ctx, cfg.ProviderType, cfg.APIKey, cfg.BaseURL, cfg.HTTPClient)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create provider %q: %w", cfg.ActiveProvider, err)
+	providers := make(map[string]Provider, len(cfg.Providers))
+	modelToProvider := make(map[string]string)
+
+	for _, entry := range cfg.Providers {
+		if entry.ProviderType == "" {
+			return nil, fmt.Errorf("provider %q has no type", entry.Name)
+		}
+		provider, err := createProviderFromConfig(ctx, entry.ProviderType, entry.APIKey, entry.BaseURL, cfg.HTTPClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create provider %q: %w", entry.Name, err)
+		}
+		providers[entry.Name] = provider
+
+		// Register LM Studio / Gemini providers as metadata sources
+		if registry != nil {
+			if lms, ok := provider.(*LMStudioProvider); ok {
+				registry.RegisterSource(lms.MetadataSource())
+			}
+			if gp, ok := provider.(*GeminiProvider); ok {
+				registry.RegisterSource(gp.MetadataSource())
+			}
+		}
+
+		// Build reverse index: model name → provider name
+		for _, m := range entry.Models {
+			modelToProvider[m] = entry.Name
+		}
 	}
 
-	// Register LM Studio provider as metadata source
-	if registry != nil {
-		if lms, ok := provider.(*LMStudioProvider); ok {
-			registry.RegisterSource(lms.MetadataSource())
-		}
-		if gp, ok := provider.(*GeminiProvider); ok {
-			registry.RegisterSource(gp.MetadataSource())
-		}
+	// Set initial active provider+model = first provider's first model
+	first := cfg.Providers[0]
+	if len(first.Models) == 0 {
+		return nil, fmt.Errorf("provider %q has no enabled models", first.Name)
+	}
+	activeProvider := providers[first.Name]
+	if activeProvider == nil {
+		return nil, fmt.Errorf("provider %q not found", first.Name)
 	}
 
 	maxRetries := cfg.MaxRetries
@@ -110,12 +139,11 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 	}
 
 	return &Router{
-		providers: map[string]Provider{
-			cfg.ActiveProvider: provider,
-		},
-		activeProvider:      provider,
-		activeModel:         cfg.Model,
-		activeProviderName:  cfg.ActiveProvider,
+		providers:           providers,
+		modelToProvider:     modelToProvider,
+		activeProvider:      activeProvider,
+		activeModel:         first.Models[0],
+		activeProviderName:  first.Name,
 		maxRetries:          maxRetries,
 		initialBackoff:      initialBackoff,
 		maxBackoff:          maxBackoff,
@@ -321,6 +349,28 @@ func (r *Router) GetDefaultProvider() Provider {
 // ActiveModel returns the active model name.
 func (r *Router) ActiveModel() string {
 	return r.activeModel
+}
+
+// ActiveProviderName returns the logical name of the active provider.
+func (r *Router) ActiveProviderName() string {
+	return r.activeProviderName
+}
+
+// SetModel switches the active provider and model to the given model name.
+// The model must be known to one of the configured providers.
+func (r *Router) SetModel(ctx context.Context, model string) error {
+	providerName, ok := r.modelToProvider[model]
+	if !ok {
+		return fmt.Errorf("model %q is not enabled in any provider", model)
+	}
+	provider, ok := r.providers[providerName]
+	if !ok {
+		return fmt.Errorf("provider %q not found", providerName)
+	}
+	r.activeProvider = provider
+	r.activeModel = model
+	r.activeProviderName = providerName
+	return nil
 }
 
 // Stream sends a streaming chat request to the active provider.
