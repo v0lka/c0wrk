@@ -162,8 +162,8 @@ export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }
 
-export function SendMessage(arg1, arg2, arg3, arg4) {
-  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4);
+export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function SetConfigLoadState(arg1) {
@@ -202,8 +202,8 @@ export function UnwatchDirectory(arg1) {
   return window['go']['desktop']['App']['UnwatchDirectory'](arg1);
 }
 
-export function UpdateLLMSettings(arg1) {
-  return window['go']['desktop']['App']['UpdateLLMSettings'](arg1);
+export function UpdateLLMConfig(arg1) {
+  return window['go']['desktop']['App']['UpdateLLMConfig'](arg1);
 }
 
 export function UpdateMCPServers(arg1) {

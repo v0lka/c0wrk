@@ -912,12 +912,13 @@ func (o *Orchestrator) configureExecutor(executor *agent.Executor, stepCfg StepC
 		executor.SetPerToolTruncation(o.cfg.PerToolTruncation)
 	}
 	if o.cfg.ReasoningEffort != "" {
-		stepRole := stepCfg.AgentRole
-		if stepRole == "" {
-			stepRole = "executor"
-		}
-		executor.SetReasoningEffort(llm.ResolveAgentReasoningMode(stepRole, o.cfg.ReasoningEffort, o.cfg.RoleOverrides))
+		executor.SetReasoningEffort(o.cfg.ReasoningEffort)
 	}
+}
+
+// SetReasoningEffort updates the reasoning effort used for all subsequent step executors.
+func (o *Orchestrator) SetReasoningEffort(effort string) {
+	o.cfg.ReasoningEffort = effort
 }
 
 // resolveStepConfig resolves step-specific configuration via StepConfigurator.

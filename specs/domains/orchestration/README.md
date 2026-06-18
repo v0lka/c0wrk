@@ -55,8 +55,7 @@ type OrchestratorConfig struct {
     MaxDependencyContextChars int    // default: 8000
     PreWarningPercent         int    // default: 75 (context-fill notification threshold)
     Model                     string
-    ReasoningEffort           llm.ReasoningEffort
-    RoleOverrides             map[string]string
+    ReasoningEffort           string
     StepLimitFunc             agent.StepLimitFunc
 }
 
@@ -72,8 +71,9 @@ type RoutingDecision struct {
 type HandleOptions struct {
     TaskID        string   // non-empty = continuation of existing task
     ExecutionMode string   // "normal" = single-step plan, "advanced" = full multi-step DAG
-    UserSkills    []string // explicitly requested by user via /skill refs (bypass router)
-    ModelOverride string   // non-empty = use this model for all LLM calls in this request (empty = router default)
+    UserSkills      []string // explicitly requested by user via /skill refs (bypass router)
+    ModelOverride   string   // non-empty = use this model for all LLM calls in this request (empty = router default)
+    ReasoningEffort string   // native reasoning effort value for the model family (e.g., "high", "On")
 }
 
 // Handle result
@@ -166,10 +166,8 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 | `executor.max_retries`                    | 2       | Max retry attempts (3 total)      |
 | `orchestration.maxHistoryMessages`        | 20      | Conversation history window       |
 | `orchestration.maxDependencyContextChars` | 8000    | Max chars from dependency outputs |
-| `reasoning.base_effort`                   | "high"  | Base reasoning effort             |
-| `reasoning.role_overrides`                | {}      | Per-role effort overrides         |
 
-Note: yaml key casing is mixed across config sections — `executor.*` and `reasoning.*` keys use `snake_case`, while `orchestration.*` and `toolLimits.*` keys use `camelCase`. This matches the struct tags in `backend/config/config.go`.
+Note: yaml key casing is mixed across config sections — `executor.*` keys use `snake_case`, while `orchestration.*` and `toolLimits.*` keys use `camelCase`. This matches the struct tags in `backend/config/config.go`.
 
 ## Extension Points
 

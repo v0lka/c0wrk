@@ -49,9 +49,8 @@ type OrchestratorBuilder struct {
 	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 
-	// Cached reasoning config from config; updated by runAsyncInit/RebuildRouter.
-	baseReasoningEffort llm.ReasoningEffort
-	roleOverrides       map[string]string
+	// Cached reasoning effort from config; updated by runAsyncInit/RebuildRouter.
+	reasoningEffort string
 
 	// Async initialization: MCP gateway and LLM router are initialized in the
 	// background so that NewOrchestratorBuilder returns immediately.
@@ -166,8 +165,6 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 		b.mu.Lock()
 		b.llmRouter = llmRouter
 		b.modelRegistry = modelReg
-		b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelReg, cfg)
-		b.roleOverrides = cfg.Reasoning.RoleOverrides
 		b.mu.Unlock()
 	}
 
@@ -222,6 +219,13 @@ func (b *OrchestratorBuilder) MCPGatewayError() string {
 		return b.gatewayErr.Error()
 	}
 	return ""
+}
+
+// ModelRegistry returns the shared model registry.
+func (b *OrchestratorBuilder) ModelRegistry() *llm.ModelRegistry {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.modelRegistry
 }
 
 // Build creates a new per-session Orchestrator from the current config.
@@ -282,8 +286,8 @@ func (b *OrchestratorBuilder) Build(
 		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or corePlanner is nil")
 	}
 
-	// Resolve base reasoning effort for step executors
-	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelReg, cfg)
+	// Resolve reasoning effort for step executors
+	reasoningEffort := b.reasoningEffort
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
@@ -294,8 +298,7 @@ func (b *OrchestratorBuilder) Build(
 		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		Model:                     cfg.LLM.DefaultModel,
-		ReasoningEffort:           baseEffort,
-		RoleOverrides:             cfg.Reasoning.RoleOverrides,
+		ReasoningEffort:           reasoningEffort,
 		StepLimitFunc:             stepLimitFunc,
 		PreWarningPercent:         cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 		InjectionDefenseEnabled:   cfg.Security.InjectionDefenseEnabled,
@@ -387,8 +390,6 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.mu.Lock()
 	b.llmRouter = llmRouter
 	b.modelRegistry = modelReg
-	b.baseReasoningEffort = resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelReg, cfg)
-	b.roleOverrides = cfg.Reasoning.RoleOverrides
 	b.mu.Unlock()
 	return nil
 }
@@ -506,8 +507,7 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 
 	b.mu.RLock()
 	llmRouter := b.llmRouter
-	baseEffort := b.baseReasoningEffort
-	roleOverrides := b.roleOverrides
+	reasoningEffort := b.reasoningEffort
 	b.mu.RUnlock()
 
 	if llmRouter == nil {
@@ -519,7 +519,6 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		systemPrompt += "\n\nThe user has explicitly activated the following skills: " + strings.Join(activeSkills, ", ") + ". Consider these when determining the topic."
 	}
 
-	titleEffort := llm.ResolveAgentReasoningMode("title", baseEffort, roleOverrides)
 	temp := 1.0
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
@@ -528,7 +527,7 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		},
 		MaxTokens:       30,
 		Temperature:     &temp,
-		ReasoningEffort: titleEffort,
+		ReasoningEffort: reasoningEffort,
 	}
 	resp, err := llmRouter.Call(ctx, req)
 	if err != nil {
@@ -782,24 +781,6 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	return llmRouter, modelRegistry, nil
 }
 
-// resolveBaseEffort determines the base reasoning effort from the active model
-// and the user-configured base effort. If the model doesn't support reasoning,
-// returns empty string (which disables reasoning). If the model supports reasoning
-// but no base effort is configured, defaults to ReasoningHigh.
-func resolveBaseEffort(ctx context.Context, model string, registry *llm.ModelRegistry, cfg *BuilderConfig) llm.ReasoningEffort {
-	if registry == nil {
-		return ""
-	}
-	meta, ok := registry.Resolve(ctx, model)
-	if !ok || !meta.Capabilities.Reasoning {
-		return ""
-	}
-	// Use configured base effort, or default to high
-	if cfg.Reasoning.BaseEffort != "" {
-		return llm.ReasoningEffort(cfg.Reasoning.BaseEffort)
-	}
-	return llm.ReasoningHigh
-}
 
 // buildCoreAgents creates the core Router, Planner, Reflector.
 func (b *OrchestratorBuilder) buildCoreAgents(
@@ -827,13 +808,9 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	}
 
 	// Wire reasoning effort for all agents
-	baseEffort := resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelRegistry, cfg)
-	coreRouter.SetBaseReasoningEffort(baseEffort)
-	coreRouter.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
-	coreReflector.SetBaseReasoningEffort(baseEffort)
-	coreReflector.SetRoleOverrides(cfg.Reasoning.RoleOverrides)
-	corePlanner.Cfg.BaseReasoningEffort = baseEffort
-	corePlanner.Cfg.RoleOverrides = cfg.Reasoning.RoleOverrides
+	coreRouter.SetReasoningEffort(b.reasoningEffort)
+	coreReflector.SetReasoningEffort(b.reasoningEffort)
+	corePlanner.Cfg.ReasoningEffort = b.reasoningEffort
 
 	// Wire planner exploration dependencies
 	corePlanner.Cfg.Logger = logger
@@ -875,7 +852,7 @@ func plannerContextFactoryAdapter(cf ContextManagerFactory) planner.ContextManag
 func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer) ContextManagerFactory {
 	var summarizeCaller agent.LLMCaller = caller
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
-	compactionEffort := llm.ResolveAgentReasoningMode("compaction", resolveBaseEffort(context.Background(), cfg.LLM.DefaultModel, modelRegistry, cfg), cfg.Reasoning.RoleOverrides)
+	compactionEffort := b.reasoningEffort
 
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...orchestration.PruningOverride) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)

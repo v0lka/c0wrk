@@ -58,16 +58,9 @@ type Config struct {
 	ToolCache         *agent.ToolResultCache
 	PerToolTruncation map[string]agent.ToolTruncationConfig
 
-	// ReasoningEffort is the base reasoning effort for step executors.
-	// When set, each executor gets AgentReasoningMode(stepRole, effort),
-	// where stepRole comes from StepConfig.AgentRole (e.g. "researcher", "coder", "tester").
-	ReasoningEffort llm.ReasoningEffort
-
-	// RoleOverrides allows overriding the reasoning effort for specific agent roles.
-	// Keys are role names, values are ReasoningEffort levels.
-	// When set, ResolveAgentReasoningMode checks this map before falling back
-	// to AgentReasoningMode's default role-based adaptation.
-	RoleOverrides map[string]string
+	// ReasoningEffort is the reasoning effort applied to step executors.
+	// When non-empty, each executor gets this value directly (no role adaptation).
+	ReasoningEffort string
 
 	// StepConfigurator resolves step-specific execution parameters from a PlanStep.
 	// If nil, default values are used (all tools, cfg.MaxSteps, no custom prompt).

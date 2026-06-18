@@ -205,23 +205,17 @@ func (p *GeminiProvider) buildConfig(req ChatRequest, systemInstruction *genai.C
 		config.Temperature = &temp
 	}
 
-	// Apply reasoning effort if set and not explicitly off
+	// Apply reasoning effort as native provider value
 	if req.ReasoningEffort != "" {
-		rc := ResolveReasoning(req.ReasoningEffort, "google")
-		if rc.Enabled {
-			tc := &genai.ThinkingConfig{
-				IncludeThoughts: true,
-				ThinkingLevel:   genai.ThinkingLevel(rc.GeminiThinkingLevel),
-			}
-			if rc.GeminiThinkingBudget > 0 {
-				budget := int32(rc.GeminiThinkingBudget)
-				tc.ThinkingBudget = &budget
-			}
-			config.ThinkingConfig = tc
-		} else if req.ReasoningEffort == ReasoningOff {
+		if req.ReasoningEffort == "Off" {
 			// Explicitly disable thinking for Gemini 2.5+ which defaults to adaptive
 			config.ThinkingConfig = &genai.ThinkingConfig{
 				ThinkingLevel: genai.ThinkingLevel("none"),
+			}
+		} else {
+			config.ThinkingConfig = &genai.ThinkingConfig{
+				IncludeThoughts: true,
+				ThinkingLevel:   genai.ThinkingLevel(req.ReasoningEffort),
 			}
 		}
 	}

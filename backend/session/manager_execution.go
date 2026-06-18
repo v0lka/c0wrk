@@ -13,7 +13,7 @@ import (
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, activeSkills []string) error {
+func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, activeSkills []string, modelOverride, reasoningEffort string) error {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to restore session: %w", err)
@@ -107,9 +107,11 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 		session.mu.Unlock()
 
 		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-			TaskID:        lastTaskID,
-			ExecutionMode: mode,
-			UserSkills:    skills,
+			TaskID:          lastTaskID,
+			ExecutionMode:   mode,
+			UserSkills:      skills,
+			ModelOverride:   modelOverride,
+			ReasoningEffort: reasoningEffort,
 		})
 
 		// Distinguish partial-success (incomplete plan) from total failure: the
@@ -130,9 +132,11 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 			session.lastCompletedTaskID = "" // clear to avoid repeated failures
 			session.mu.Unlock()
 			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-				TaskID:        "",
-				ExecutionMode: mode,
-				UserSkills:    skills,
+				TaskID:          "",
+				ExecutionMode:   mode,
+				UserSkills:      skills,
+				ModelOverride:   modelOverride,
+				ReasoningEffort: reasoningEffort,
 			})
 			if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
 				m.log().Warn("task completed with incomplete execution (after fallback)", "session_id", id, "error", err)

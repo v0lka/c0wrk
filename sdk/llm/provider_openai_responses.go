@@ -147,17 +147,10 @@ func buildResponsesParams(req ChatRequest) responses.ResponseNewParams {
 		params.Temperature = param.NewOpt(*req.Temperature)
 	}
 
-	if req.ReasoningEffort != "" && req.ReasoningEffort != ReasoningOff {
-		family := req.ModelFamily
-		if family == "" {
-			family = string(DetectFamily(req.Model))
-		}
-		rc := ResolveReasoning(req.ReasoningEffort, family)
-		if rc.Enabled && rc.OpenAIEffort != "" {
-			params.Reasoning = shared.ReasoningParam{
-				Effort:  shared.ReasoningEffort(rc.OpenAIEffort),
-				Summary: shared.ReasoningSummaryAuto,
-			}
+	if req.ReasoningEffort != "" {
+		params.Reasoning = shared.ReasoningParam{
+			Effort:  shared.ReasoningEffort(req.ReasoningEffort),
+			Summary: shared.ReasoningSummaryAuto,
 		}
 	}
 

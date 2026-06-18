@@ -154,10 +154,58 @@ export namespace backend {
 		}
 	}
 	
+	export class ReasoningInfo {
+	    options: string[];
+	    default: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReasoningInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.options = source["options"];
+	        this.default = source["default"];
+	    }
+	}
+	export class ModelInfo {
+	    name: string;
+	    family: string;
+	    reasoning?: ReasoningInfo;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.family = source["family"];
+	        this.reasoning = this.convertValues(source["reasoning"], ReasoningInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ConfigProviderFull {
-	    base_url: string;
 	    api_key: string;
-	    model: string;
+	    base_url?: string;
+	    models: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviderFull(source);
@@ -165,32 +213,19 @@ export namespace backend {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.api_key = source["api_key"];
 	        this.base_url = source["base_url"];
-	        this.api_key = source["api_key"];
-	        this.model = source["model"];
-	    }
-	}
-	export class ConfigProviderKeyModel {
-	    api_key: string;
-	    model: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ConfigProviderKeyModel(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.api_key = source["api_key"];
-	        this.model = source["model"];
+	        this.models = source["models"];
 	    }
 	}
 	export class ConfigLLMResponse {
-	    active_provider: string;
-	    anthropic: ConfigProviderKeyModel;
-	    gemini: ConfigProviderKeyModel;
+	    default_model: string;
+	    anthropic: ConfigProviderFull;
+	    gemini: ConfigProviderFull;
 	    lmstudio: ConfigProviderFull;
 	    openai_compatible: ConfigProviderFull;
-	    chatgpt: ConfigProviderKeyModel;
+	    chatgpt: ConfigProviderFull;
+	    all_models: ModelInfo[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigLLMResponse(source);
@@ -198,12 +233,13 @@ export namespace backend {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.active_provider = source["active_provider"];
-	        this.anthropic = this.convertValues(source["anthropic"], ConfigProviderKeyModel);
-	        this.gemini = this.convertValues(source["gemini"], ConfigProviderKeyModel);
+	        this.default_model = source["default_model"];
+	        this.anthropic = this.convertValues(source["anthropic"], ConfigProviderFull);
+	        this.gemini = this.convertValues(source["gemini"], ConfigProviderFull);
 	        this.lmstudio = this.convertValues(source["lmstudio"], ConfigProviderFull);
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ConfigProviderFull);
-	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderKeyModel);
+	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderFull);
+	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -236,7 +272,6 @@ export namespace backend {
 	        this.database = source["database"];
 	    }
 	}
-	
 	
 	export class ProxySettingsResponse {
 	    enabled: boolean;
@@ -327,24 +362,63 @@ export namespace backend {
 	        this.icon_color = source["icon_color"];
 	    }
 	}
-	export class LLMSettingsRequest {
-	    active_provider: string;
-	    api_key: string;
-	    base_url: string;
-	    model: string;
+	export class ProviderConfigRequest {
+	    api_key?: string;
+	    base_url?: string;
+	    models?: string[];
 	
 	    static createFrom(source: any = {}) {
-	        return new LLMSettingsRequest(source);
+	        return new ProviderConfigRequest(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.active_provider = source["active_provider"];
 	        this.api_key = source["api_key"];
 	        this.base_url = source["base_url"];
-	        this.model = source["model"];
+	        this.models = source["models"];
 	    }
 	}
+	export class LLMFullConfigRequest {
+	    default_model: string;
+	    anthropic?: ProviderConfigRequest;
+	    gemini?: ProviderConfigRequest;
+	    lmstudio?: ProviderConfigRequest;
+	    openai_compatible?: ProviderConfigRequest;
+	    chatgpt?: ProviderConfigRequest;
+	
+	    static createFrom(source: any = {}) {
+	        return new LLMFullConfigRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.default_model = source["default_model"];
+	        this.anthropic = this.convertValues(source["anthropic"], ProviderConfigRequest);
+	        this.gemini = this.convertValues(source["gemini"], ProviderConfigRequest);
+	        this.lmstudio = this.convertValues(source["lmstudio"], ProviderConfigRequest);
+	        this.openai_compatible = this.convertValues(source["openai_compatible"], ProviderConfigRequest);
+	        this.chatgpt = this.convertValues(source["chatgpt"], ProviderConfigRequest);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class OptimizePromptResponse {
 	    optimized_prompt: string;
 	    keywords: string[];
@@ -399,6 +473,7 @@ export namespace backend {
 	        this.updated_at = source["updated_at"];
 	    }
 	}
+	
 	export class ProxySettingsRequest {
 	    enabled: boolean;
 	    url: string;
@@ -417,6 +492,7 @@ export namespace backend {
 	        this.tls_cert_dir = source["tls_cert_dir"];
 	    }
 	}
+	
 	
 	export class SearchRequest {
 	    query: string;

@@ -53,8 +53,7 @@ type Config struct {
 	ContextFactory      ContextManagerFactory
 	CallerForStep       func(cm agent.ContextManager) agent.LLMCaller
 	MaxExploreSteps     int
-	BaseReasoningEffort llm.ReasoningEffort
-	RoleOverrides       map[string]string
+	ReasoningEffort     string
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.

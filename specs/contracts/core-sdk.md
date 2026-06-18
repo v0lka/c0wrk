@@ -53,7 +53,7 @@
 | `TrackingCaller`  | sdk/llm | core/orchestrator                   | Usage tracking wrapper |
 | `Message`         | sdk/llm | core/router, planner, orchestrator  | LLM message type       |
 | `ChatRequest`     | sdk/llm | core/router, planner                | LLM request            |
-| `ReasoningEffort` | sdk/llm | core/orchestrator config            | Reasoning level        |
+| `ReasoningEffort` | sdk/llm | core/orchestrator config            | Reasoning level (plain `string`, not a custom type) |
 | `ModelMetadata`   | sdk/llm | core/stepconfig, systemprompt       | Model capabilities     |
 
 ### Consumed from `sdk/tools`

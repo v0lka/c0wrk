@@ -52,45 +52,6 @@ llm:
     max_backoff: "30s" # Maximum backoff duration
 
 # ---------------------------------------------------------------------------
-# Reasoning / Extended Thinking
-# ---------------------------------------------------------------------------
-# Controls how LLM reasoning (extended thinking) is used across agent roles.
-# Each agent role automatically adapts the base effort:
-#   - Primary (orchestrator, planner, coder, tester, executor): uses base_effort directly
-#   - Analytical (router, reflector, researcher): reduced effort (low/minimal)
-#   - Mechanical (compaction, title, summary, judge): reasoning disabled
-#
-# Provider-specific behavior:
-#   Anthropic: budget_tokens parameter
-#   OpenAI: reasoning_effort parameter (low/medium/high)
-#   Gemini: thinking_level / thinking_budget parameters
-#   DeepSeek: explicit thinking toggle + reasoning_effort
-reasoning:
-  # Base reasoning effort for primary agents.
-  # Valid values: "off", "minimal", "low", "medium", "high", "maximum"
-  # Default: "high" (when the model supports reasoning)
-  base_effort: "high"
-
-  # Per-role overrides let you adjust reasoning for specific agent roles.
-  # Keys are role names: "orchestrator", "planner", "coder", "tester",
-  # "researcher", "router", "reflector", "compaction", "title", "summary", "judge".
-  # Values are effort levels (same as base_effort).
-  # Overrides bypass the automatic role-based adaptation — the override
-  # value is used verbatim without further role-based reduction.
-  #
-  # Default automatic adaptation (applied when no override is set):
-  #   Primary roles  → base_effort as-is
-  #   Analytical roles (router, reflector, researcher) → reduced (low/minimal)
-  #   Mechanical roles (compaction, title, summary, judge) → off
-  #
-  # Examples:
-  # role_overrides:
-  #   researcher: "medium"    # upgrade from reduced → medium
-  #   tester: "low"           # downgrade from full → low
-  #   judge: "high"           # enable reasoning for judge (off by default)
-  #   summary: "low"          # enable reasoning for prompt optimization (off by default)
-
-# ---------------------------------------------------------------------------
 # MCP (Model Context Protocol) Servers
 # ---------------------------------------------------------------------------
 mcp:

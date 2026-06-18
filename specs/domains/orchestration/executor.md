@@ -52,7 +52,7 @@ engine.Resume(ctx, bb)
 | CompactionStrategy | step.Profile.Domain mapping (code→sliding, research→summary)    |
 | AgentRole          | step.Profile.Role (affects prompt + pruning)                    |
 | AllowedTools       | step.Profile.AllowedTools (nil = all)                           |
-| ReasoningEffort    | ResolveAgentReasoningMode(role, base, overrides)                |
+| ReasoningEffort    | `config.ReasoningEffort` (native string, set via `SetReasoningEffort()`) |
 | KeepLastN          | step.Profile.KeepLastN > 0 ? use it : rolePruningDefaults[role] |
 | ProtectedTools     | step.Profile.ProtectedTools ?? rolePruningDefaults[role]        |
 

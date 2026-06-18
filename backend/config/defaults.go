@@ -168,11 +168,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Models = make(map[string]ModelOverride)
 	}
 
-	// Reasoning defaults
-	if cfg.Reasoning.BaseEffort == "" {
-		cfg.Reasoning.BaseEffort = "high"
-	}
-
 	// LMStudio default base URL
 	if cfg.LLM.LMStudio.BaseURL == "" {
 		cfg.LLM.LMStudio.BaseURL = "http://localhost:1234"

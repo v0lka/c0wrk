@@ -58,7 +58,7 @@ The router prompt includes the full list of available skills (name + description
    - Replace `AVAILABLE-TOOLS` with grouped tool list
    - Replace `AVAILABLE-SKILLS` with formatted skill list
 2. Construct messages: system + history (last `historyWindow`) + "Classify this request: {msg}"
-3. Resolve reasoning effort: `ResolveAgentReasoningMode("router", base, overrides)`
+3. Use reasoning effort set by orchestrator via `SetReasoningEffort()` (native string, passed directly to provider)
 4. Call LLM
 5. Extract JSON from response (handles markdown code blocks)
 6. Parse RoutingDecision

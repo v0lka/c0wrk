@@ -214,7 +214,7 @@ func (p *Planner) Replan(
 
 	req := llm.ChatRequest{
 		Messages:        messages,
-		ReasoningEffort: llm.ResolveAgentReasoningMode("planner", p.Cfg.BaseReasoningEffort, p.Cfg.RoleOverrides),
+		ReasoningEffort: p.Cfg.ReasoningEffort,
 	}
 
 	resp, err := p.llm.Call(ctx, req)
@@ -254,7 +254,7 @@ func (p *Planner) PlanContinuation(
 
 	req := llm.ChatRequest{
 		Messages:        messages,
-		ReasoningEffort: llm.ResolveAgentReasoningMode("planner", p.Cfg.BaseReasoningEffort, p.Cfg.RoleOverrides),
+		ReasoningEffort: p.Cfg.ReasoningEffort,
 	}
 
 	resp, err := p.llm.Call(ctx, req)
@@ -295,7 +295,7 @@ func (p *Planner) planDirect(
 
 	req := llm.ChatRequest{
 		Messages:        messages,
-		ReasoningEffort: llm.ResolveAgentReasoningMode("planner", p.Cfg.BaseReasoningEffort, p.Cfg.RoleOverrides),
+		ReasoningEffort: p.Cfg.ReasoningEffort,
 	}
 
 	resp, err := p.llm.Call(ctx, req)
@@ -415,7 +415,7 @@ func (p *Planner) planWithExploration(
 			ParseErrorAbortThreshold: defaultParseErrorAbortThreshold,
 		},
 	)
-	exec.SetReasoningEffort(llm.ResolveAgentReasoningMode("researcher", p.Cfg.BaseReasoningEffort, p.Cfg.RoleOverrides))
+	exec.SetReasoningEffort(p.Cfg.ReasoningEffort)
 
 	ctx = agent.WithStepID(ctx, "planner-exploration")
 	p.emitService("Exploring codebase...", map[string]any{"phase": "planning"})

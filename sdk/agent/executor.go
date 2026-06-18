@@ -120,7 +120,7 @@ type Executor struct {
 	planStepTotal int    // total steps in plan (0 if not plan mode)
 
 	// Reasoning effort for LLM calls (empty = no reasoning control)
-	reasoningEffort llm.ReasoningEffort
+	reasoningEffort string
 
 	// Pre-compaction nudge: context fill % that triggers store_fact warning (0 = disabled)
 	preWarningPercent int
@@ -153,7 +153,7 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 func (e *Executor) SetLogger(l *slog.Logger) { e.logger = l }
 
 // SetReasoningEffort sets the reasoning effort for LLM calls.
-func (e *Executor) SetReasoningEffort(effort llm.ReasoningEffort) { e.reasoningEffort = effort }
+func (e *Executor) SetReasoningEffort(effort string) { e.reasoningEffort = effort }
 
 // SetPreWarningPercent sets the context fill percentage that triggers the pre-compaction
 // store_fact nudge. When fill reaches this threshold (but is below the compaction trigger),

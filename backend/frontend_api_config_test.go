@@ -9,6 +9,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/skills"
 )
 
@@ -95,6 +96,9 @@ func (m *mockBuilder) GetBaseSkillDirs() []string {
 func (m *mockBuilder) GetSkillDescriptors(string) []skills.SkillDescriptor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return nil
+}
+func (m *mockBuilder) ModelRegistry() *llm.ModelRegistry {
 	return nil
 }
 

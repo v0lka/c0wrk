@@ -32,8 +32,7 @@ type Reflector struct {
 	llm                 agent.LLMCaller
 	systemPrompt        string
 	analyzeFooter       string
-	baseReasoningEffort llm.ReasoningEffort
-	roleOverrides       map[string]string
+	reasoningEffort     string
 }
 
 // NewReflector creates a new Reflector with the given caller and config.
@@ -49,14 +48,9 @@ func NewReflector(caller agent.LLMCaller, cfg Config) *Reflector {
 	}
 }
 
-// SetBaseReasoningEffort sets the base reasoning effort for the reflector.
-func (r *Reflector) SetBaseReasoningEffort(effort llm.ReasoningEffort) {
-	r.baseReasoningEffort = effort
-}
-
-// SetRoleOverrides sets the per-role reasoning effort overrides.
-func (r *Reflector) SetRoleOverrides(overrides map[string]string) {
-	r.roleOverrides = overrides
+// SetReasoningEffort sets the reasoning effort for the reflector.
+func (r *Reflector) SetReasoningEffort(effort string) {
+	r.reasoningEffort = effort
 }
 
 // Reflect analyzes execution trajectory to produce structured self-correction insights.
@@ -84,7 +78,7 @@ func (r *Reflector) Reflect(
 
 	req := llm.ChatRequest{
 		Messages:        messages,
-		ReasoningEffort: llm.ResolveAgentReasoningMode("reflector", r.baseReasoningEffort, r.roleOverrides),
+		ReasoningEffort: r.reasoningEffort,
 	}
 
 	resp, err := r.llm.Call(ctx, req)

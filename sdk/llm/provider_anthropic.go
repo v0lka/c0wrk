@@ -225,17 +225,14 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 		anthropicReq.Temperature = &temp
 	}
 
-	// Apply reasoning effort if set and not explicitly off
-	if req.ReasoningEffort != "" && req.ReasoningEffort != ReasoningOff {
-		rc := ResolveReasoning(req.ReasoningEffort, "anthropic")
-		if rc.Enabled && rc.BudgetTokens > 0 {
-			anthropicReq.Thinking = &anthropic.Thinking{
-				Type:         anthropic.ThinkingTypeEnabled,
-				BudgetTokens: rc.BudgetTokens,
-			}
-			// Anthropic requires temperature to be unset (or 1.0) when thinking is enabled
-			anthropicReq.Temperature = nil
+	// Apply reasoning effort: "On" enables thinking with budget 32000
+	if req.ReasoningEffort == "On" {
+		anthropicReq.Thinking = &anthropic.Thinking{
+			Type:         anthropic.ThinkingTypeEnabled,
+			BudgetTokens: 32000,
 		}
+		// Anthropic requires temperature to be unset (or 1.0) when thinking is enabled
+		anthropicReq.Temperature = nil
 	}
 
 	// Convert tools

@@ -18,6 +18,19 @@ type ConfigResponse struct {
 	Proxy        ProxySettingsResponse `json:"proxy"`
 }
 
+// ReasoningInfo holds native reasoning options for a model family.
+type ReasoningInfo struct {
+	Options []string `json:"options"` // native reasoning values (e.g. ["minimal", "low", "medium", "high"])
+	Default string   `json:"default"` // family default (e.g. "high")
+}
+
+// ModelInfo pairs a model name with its resolved family and reasoning metadata.
+type ModelInfo struct {
+	Name      string          `json:"name"`
+	Family    string          `json:"family"`
+	Reasoning *ReasoningInfo  `json:"reasoning,omitempty"` // nil = family doesn't support reasoning
+}
+
 // ConfigLLMResponse holds sanitised LLM provider info.
 type ConfigLLMResponse struct {
 	DefaultModel    string                       `json:"default_model"` // global, cross-provider
@@ -26,6 +39,7 @@ type ConfigLLMResponse struct {
 	LMStudio         ConfigProviderFull           `json:"lmstudio"`
 	OpenAICompatible ConfigProviderFull           `json:"openai_compatible"`
 	ChatGPT          ConfigProviderFull           `json:"chatgpt"`
+	AllModels        []ModelInfo                 `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
 }
 
 // ConfigProviderFull is a provider with api_key, optional base_url, and enabled models list.

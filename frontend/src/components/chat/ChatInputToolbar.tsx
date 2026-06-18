@@ -3,6 +3,7 @@ import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow
 import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { ModelCombobox } from './ModelCombobox'
+import { ReasoningCombobox } from './ReasoningCombobox'
 
 interface ChatInputToolbarProps {
   controller: ChatInputController
@@ -101,6 +102,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
       )}
       <div className="flex-1" />
       {mode === 'chat' && <ModelCombobox />}
+      {mode === 'chat' && <ReasoningCombobox />}
       {showCancel ? (
         <Button
           variant="outline"

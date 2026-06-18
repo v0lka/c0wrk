@@ -26,9 +26,8 @@ type Router struct {
 	llm                 agent.LLMCaller
 	systemPrompt        string
 	historyWindow       int
-	modelRegistry       *llm.ModelRegistry
-	baseReasoningEffort llm.ReasoningEffort
-	roleOverrides       map[string]string
+	modelRegistry    *llm.ModelRegistry
+	reasoningEffort  string
 }
 
 // NewRouter creates a new Router with the given caller and config.
@@ -49,14 +48,9 @@ func (r *Router) SetModelRegistry(registry *llm.ModelRegistry) {
 	r.modelRegistry = registry
 }
 
-// SetBaseReasoningEffort sets the base reasoning effort for the router.
-func (r *Router) SetBaseReasoningEffort(effort llm.ReasoningEffort) {
-	r.baseReasoningEffort = effort
-}
-
-// SetRoleOverrides sets the per-role reasoning effort overrides.
-func (r *Router) SetRoleOverrides(overrides map[string]string) {
-	r.roleOverrides = overrides
+// SetReasoningEffort sets the reasoning effort for the router.
+func (r *Router) SetReasoningEffort(effort string) {
+	r.reasoningEffort = effort
 }
 
 // Route analyzes the user's request and determines the best execution strategy.
@@ -92,10 +86,9 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	})
 
 	// Create chat request
-	reasoningEffort := llm.ResolveAgentReasoningMode("router", r.baseReasoningEffort, r.roleOverrides)
 	req := llm.ChatRequest{
 		Messages:        messages,
-		ReasoningEffort: reasoningEffort,
+		ReasoningEffort: r.reasoningEffort,
 	}
 
 	// Call LLM
@@ -119,7 +112,7 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 			Content: "Your previous response was not valid JSON. Respond with ONLY a JSON object in this exact format:\n{\"domain\":\"general\",\"complexity\":1,\"needs_clarification\":false}",
 		}
 
-		retryResp, retryErr := r.llm.Call(ctx, llm.ChatRequest{Messages: repairMessages, ReasoningEffort: reasoningEffort})
+		retryResp, retryErr := r.llm.Call(ctx, llm.ChatRequest{Messages: repairMessages, ReasoningEffort: r.reasoningEffort})
 		if retryErr != nil {
 			return nil, fmt.Errorf("failed to parse routing decision: %w", retryErr)
 		}

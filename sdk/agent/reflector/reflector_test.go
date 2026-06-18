@@ -327,7 +327,7 @@ func TestReflector_SetsReasoningEffort(t *testing.T) {
 	}
 
 	r := newTestReflector(mock)
-	r.SetBaseReasoningEffort(llm.ReasoningHigh)
+	r.SetReasoningEffort("high")
 
 	_, err := r.Reflect(context.Background(), nil, nil, nil)
 	if err != nil {
@@ -335,12 +335,12 @@ func TestReflector_SetsReasoningEffort(t *testing.T) {
 	}
 
 	got := mock.lastCall().ReasoningEffort
-	if got != llm.ReasoningLow {
-		t.Errorf("expected ReasoningEffort=%q, got %q", llm.ReasoningLow, got)
+	if got != "high" {
+		t.Errorf("expected ReasoningEffort=%q, got %q", "high", got)
 	}
 }
 
-func TestReflector_NoReasoningEffortWhenBaseEmpty(t *testing.T) {
+func TestReflector_NoReasoningEffortWhenEmpty(t *testing.T) {
 	mock := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return &llm.ChatResponse{
@@ -358,7 +358,7 @@ func TestReflector_NoReasoningEffortWhenBaseEmpty(t *testing.T) {
 	}
 
 	got := mock.lastCall().ReasoningEffort
-	if got != llm.ReasoningOff {
-		t.Errorf("expected ReasoningEffort=%q, got %q", llm.ReasoningOff, got)
+	if got != "" {
+		t.Errorf("expected empty ReasoningEffort, got %q", got)
 	}
 }

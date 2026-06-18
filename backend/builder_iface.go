@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/skills"
 )
 
@@ -26,6 +27,7 @@ type appBuilder interface {
 	OptimizePrompt(context.Context, string) (*core.OptimizePromptResult, error)
 	GetBaseSkillDirs() []string
 	GetSkillDescriptors(projectSkillDir string) []skills.SkillDescriptor
+	ModelRegistry() *llm.ModelRegistry
 }
 
 // builder returns the appBuilder used by FrontendAPI. Tests inject a fake by

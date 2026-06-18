@@ -182,32 +182,26 @@ func (p *OpenAIProvider) buildChatParams(req ChatRequest) oai.ChatCompletionNewP
 		params.Temperature = oai.Float(*req.Temperature)
 	}
 
-	// Apply reasoning effort if set and not explicitly off
-	if req.ReasoningEffort != "" && req.ReasoningEffort != ReasoningOff {
+	// Apply reasoning effort as native provider value
+	if req.ReasoningEffort != "" {
 		family := req.ModelFamily
 		if family == "" {
 			family = string(DetectFamily(req.Model))
 		}
-		rc := ResolveReasoning(req.ReasoningEffort, family)
-		if rc.Enabled && rc.OpenAIEffort != "" {
-			params.ReasoningEffort = oai.ReasoningEffort(rc.OpenAIEffort)
-		}
-		// DeepSeek V4 requires an explicit thinking toggle in extra_body
-		if rc.DeepSeekThinking != "" {
+		switch family {
+		case "openai_flagship", "openai_standard", "openai_codex":
+			params.ReasoningEffort = oai.ReasoningEffort(req.ReasoningEffort)
+		case "deepseek":
 			params.SetExtraFields(map[string]any{
-				"thinking": map[string]string{"type": rc.DeepSeekThinking},
+				"thinking": map[string]string{"type": req.ReasoningEffort},
 			})
-		}
-		// Qwen thinking models use enable_thinking in extra_body
-		if rc.QwenThinking != "" {
+		case "qwen":
 			params.SetExtraFields(map[string]any{
-				"enable_thinking": rc.QwenThinking == "enabled",
+				"enable_thinking": req.ReasoningEffort == "On",
 			})
-		}
-		// GLM thinking uses same format as DeepSeek
-		if rc.GLMThinking != "" {
+		case "glm":
 			params.SetExtraFields(map[string]any{
-				"thinking": map[string]string{"type": rc.GLMThinking},
+				"thinking": map[string]string{"type": req.ReasoningEffort},
 			})
 		}
 	}

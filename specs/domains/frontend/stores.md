@@ -29,7 +29,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `projectStore`       | Project list (sorted by last_active_at), active project ID         | No           |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search, git status      | No           |
 | `fileViewerStore`    | Open files (content/diff/language), tabs, panel width, project-switch file restore (`restoreProjectFiles`) | localStorage |
-| `inputModeStore`     | Chat/terminal input mode, panel height, expanded state, selected model override | localStorage |
+| `inputModeStore`     | Chat/terminal input mode, panel height, expanded state, selected model override, selected reasoning effort | localStorage |
 | `executionModeStore` | Normal/advanced execution mode toggle                              | localStorage |
 | `blackboardStore`    | Blackboard facts and metadata for current session                  | No           |
 | `settingsStore`      | Settings modal open/close, active tab                              | No           |

@@ -88,7 +88,7 @@ export function SaveProjectUIState(arg1:backend.ProjectUIStateRequest):Promise<v
 
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string,arg6:string):Promise<void>;
 
 export function SetConfigLoadState(arg1:Array<string>):Promise<void>;
 
@@ -108,7 +108,7 @@ export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void
 
 export function UnwatchDirectory(arg1:string):Promise<void>;
 
-export function UpdateLLMSettings(arg1:backend.LLMSettingsRequest):Promise<void>;
+export function UpdateLLMConfig(arg1:backend.LLMFullConfigRequest):Promise<void>;
 
 export function UpdateMCPServers(arg1:Record<string, config.MCPServerConfig>):Promise<void>;
 

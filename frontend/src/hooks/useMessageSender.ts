@@ -56,7 +56,8 @@ export function useMessageSender(): UseMessageSenderResult {
 
     try {
       const modelOverride = useInputModeStore.getState().selectedModel ?? ''
-      await sendMessage(sessionId, messageText, executionMode, activeSkills ?? [], modelOverride)
+      const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
+      await sendMessage(sessionId, messageText, executionMode, activeSkills ?? [], modelOverride, reasoningOverride)
     } catch (error) {
       logger.error('Failed to send message:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)

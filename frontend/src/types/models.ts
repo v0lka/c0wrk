@@ -143,6 +143,15 @@ export interface ConfigProviderFull {
   models: string[]  // enabled models for THIS provider
 }
 
+export interface ModelInfo {
+  name: string
+  family: string
+  reasoning?: {
+    options: string[]
+    default: string
+  } | null
+}
+
 export interface ConfigLLMResponse {
   default_model: string  // single, global, cross-provider
   anthropic: ConfigProviderFull
@@ -150,6 +159,7 @@ export interface ConfigLLMResponse {
   lmstudio: ConfigProviderFull
   openai_compatible: ConfigProviderFull
   chatgpt: ConfigProviderFull
+  all_models: ModelInfo[]
 }
 
 export interface ConfigMemResponse {

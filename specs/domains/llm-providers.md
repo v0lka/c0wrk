@@ -87,16 +87,10 @@ type ModelMetadata struct {
     CacheWriteCostPer1M float64 // USD per 1M cache-write tokens (Anthropic prompt caching)
 }
 
-// Reasoning effort levels
-type ReasoningEffort string
-const (
-    ReasoningOff     ReasoningEffort = "off"
-    ReasoningMinimal ReasoningEffort = "minimal"
-    ReasoningLow     ReasoningEffort = "low"
-    ReasoningMedium  ReasoningEffort = "medium"
-    ReasoningHigh    ReasoningEffort = "high"
-    ReasoningMaximum ReasoningEffort = "maximum"
-)
+// ReasoningEffort is a plain string — the native reasoning effort value
+// for the target model family (e.g., "high"/"low" for OpenAI, "On"/"Off" for Anthropic).
+// It is passed directly to the provider without translation.
+type ReasoningEffort = string
 ```
 
 ## Flow
@@ -127,20 +121,23 @@ llm.Router.Call(ctx, ChatRequest)
 
 ## Reasoning Effort
 
-Controls extended thinking (reasoning tokens) for supported models:
+Controls extended thinking (reasoning tokens) for supported models. Reasoning effort is a plain string — the native value for the model's family. No translation or role-based adaptation occurs.
 
 ```go
-// Base effort from config
-config.Reasoning.BaseEffort = "high"
+// Get available reasoning options and default for a model family
+func FamilyReasoningOptions(family string) (options []string, default_ string, ok bool)
+// e.g., FamilyReasoningOptions("anthropic") → (["On", "Off"], "On", true)
+//       FamilyReasoningOptions("openai_flagship") → (["minimal", "low", "medium", "high"], "medium", true)
+```
 
-// Per-role overrides
-config.Reasoning.RoleOverrides = {
-    "researcher": "high",
-    "router": "low",
-}
+The full flow:
 
-// Resolution at call time
-ResolveAgentReasoningMode(role, baseEffort, overrides) → effective effort
+```
+Frontend ReasoningCombobox (native values from GetConfig().AllModels.Reasoning.Options)
+  → SendMessage(sessionId, text, mode, skills, modelOverride, reasoningEffort)
+    → HandleOptions.ReasoningEffort (string)
+      → Orchestrator.SetReasoningEffort() passes to router, planner, engine
+        → Provider sets native API parameter directly (e.g., thinking.type, reasoning_effort)
 ```
 
 ## Model Registry
@@ -199,12 +196,6 @@ llm:
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
     models: []
-
-reasoning:
-  base_effort: "high" # default when model supports reasoning
-  role_overrides:
-    researcher: "high"
-    router: "low"
 ```
 
 Default-model validation: `default_model` must be non-empty and must appear in at least one provider's `models` list. Only providers with non-empty `models` are registered in the Router. There is no `active_provider` field — the Router resolves which provider to use by looking up the model name in its `modelToProvider` reverse index.
@@ -218,12 +209,13 @@ Default-model validation: `default_model` must be non-empty and must appear in a
 - Context window exceeded errors are returned to caller (not retried)
 - Token counting is best-effort (predictive until corrected by API response)
 - Provider initialization failure prevents Build() from completing
+- Reasoning effort is a native family-specific string (e.g., "high", "On", "Max") passed directly to the provider without role-based translation or resolution
 
 ## Extension Points
 
 - New provider: implement `Provider` interface, add to router factory
 - Custom model metadata: override in config `models` section
-- Custom reasoning resolution: modify `ResolveAgentReasoningMode`
+- Custom reasoning options: add a family mapping to `FamilyReasoningOptions()` in `sdk/llm/reasoning.go`
 
 ## Related Specs
 

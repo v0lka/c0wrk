@@ -34,15 +34,12 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 	b.mu.RLock()
 	router := b.llmRouter
 	searchFunc := b.vectorSearchFunc
-	baseEffort := b.baseReasoningEffort
-	roleOverrides := b.roleOverrides
+	reasoningEffort := b.reasoningEffort
 	b.mu.RUnlock()
 
 	if router == nil {
 		return nil, errors.New("llm router not available")
 	}
-
-	summaryEffort := llm.ResolveAgentReasoningMode("summary", baseEffort, roleOverrides)
 
 	// Step A: Translate + extract keywords
 	extractTemp := 0.3
@@ -53,7 +50,7 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 		},
 		MaxTokens:       500,
 		Temperature:     &extractTemp,
-		ReasoningEffort: summaryEffort,
+		ReasoningEffort: reasoningEffort,
 	}
 	extractResp, err := router.Call(ctx, extractReq)
 	if err != nil {
@@ -114,7 +111,7 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 		},
 		MaxTokens:       2000,
 		Temperature:     &rewriteTemp,
-		ReasoningEffort: summaryEffort,
+		ReasoningEffort: reasoningEffort,
 	}
 	rewriteResp, err := router.Call(ctx, rewriteReq)
 	if err != nil {

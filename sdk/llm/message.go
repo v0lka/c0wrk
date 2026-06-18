@@ -29,7 +29,7 @@ type ChatRequest struct {
 	Tools           []ToolDefinition `json:"tools,omitempty"`
 	MaxTokens       int              `json:"max_tokens"`
 	Temperature     *float64         `json:"temperature,omitempty"`      // nil = use provider default
-	ReasoningEffort ReasoningEffort  `json:"reasoning_effort,omitempty"` // user-facing reasoning level
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"` // native reasoning value (e.g. "On", "high", "HIGH")
 }
 
 // ChatResponse — LLM response.

@@ -165,8 +165,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		MaxTokens:       100,              // Need more tokens for verdict + reason
-		ReasoningEffort: llm.ReasoningOff, // Judge is a simple classification task — no extended thinking needed
+		MaxTokens:       100,       // Need more tokens for verdict + reason
 	}
 
 	// Create a dedicated context for the judge LLM call with its own timeout.

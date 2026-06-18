@@ -15,7 +15,7 @@ User types message in frontend
 Frontend: chatStore.sendMessage(text)
          │
          ▼
-RPC: window.go.desktop.App.SendMessage(sessionId, text, mode, skills, modelOverride)
+RPC: window.go.desktop.App.SendMessage(sessionId, text, mode, skills, modelOverride, reasoningEffort)
          │
          ▼
 backend/frontend_api_session.go: FrontendAPI.SendMessage()

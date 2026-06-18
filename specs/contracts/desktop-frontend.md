@@ -44,7 +44,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
-| `SendMessage`          | id, text, mode, activeSkills, modelOverride | error                     | Send user message (async execution)                   |
+| `SendMessage`          | id, text, mode, activeSkills, modelOverride, reasoningEffort | error                     | Send user message (async execution)                   |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
 | `ResumeTask`           | id                           | error                     | Resume failed task                                    |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |

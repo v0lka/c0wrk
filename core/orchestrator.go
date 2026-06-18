@@ -61,14 +61,9 @@ type OrchestratorConfig struct {
 	MaxDependencyContextChars int    // max chars for dependency context in step tasks (default: 8000)
 	Model                     string // active model name for ModelRegistry.Resolve()
 
-	// ReasoningEffort is the base reasoning effort for step executors.
-	// When set, each executor receives AgentReasoningMode(stepRole, effort),
-	// where stepRole comes from the step's AgentProfile.Role.
-	ReasoningEffort llm.ReasoningEffort
-
-	// RoleOverrides allows overriding the reasoning effort for specific agent roles.
-	// Keys are role names, values are ReasoningEffort levels.
-	RoleOverrides map[string]string
+	// ReasoningEffort is the reasoning effort applied to step executors.
+	// When non-empty, each executor gets this value directly (no role adaptation).
+	ReasoningEffort string
 
 	// StepLimitFunc is called when an executor reaches its step limit.
 	// If nil, the executor will stop with a budget exhausted error.
@@ -285,7 +280,6 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		ToolCache:                 deps.ToolCache,
 		PerToolTruncation:         deps.PerToolTruncation,
 		ReasoningEffort:           cfg.ReasoningEffort,
-		RoleOverrides:             cfg.RoleOverrides,
 		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger, buildSystemPrompt, taskCtxProvider, deps.SkillManager),
 		StepLimitFunc:             cfg.StepLimitFunc,
 	}
@@ -631,6 +625,15 @@ func (o *Orchestrator) emitInitialContextFill(ctx context.Context) {
 	o.emitter.ContextFill(0, 0, effectiveMax, "ok", "")
 }
 
+// SetReasoningEffort propagates the per-request reasoning effort to all components
+// that make LLM calls: router, planner, and the SDK P&E engine.
+func (o *Orchestrator) SetReasoningEffort(effort string) {
+	o.config.ReasoningEffort = effort
+	o.router.SetReasoningEffort(effort)
+	o.planner.Cfg.ReasoningEffort = effort
+	o.engine.SetReasoningEffort(effort)
+}
+
 // SetTaskStore sets the TaskPersistence store for blackboard restoration.
 // This is used by HandleMessage continuations to restore a completed task's blackboard.
 func (o *Orchestrator) SetTaskStore(store TaskPersistence) {
@@ -655,11 +658,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 	defer o.requestInFlight.Store(false)
 
-	// 0. Prepare context (plan-mode key, injection-defense, vector hints, initial context_fill).
+	// 0. Apply per-request overrides to all LLM-calling components.
+	o.SetReasoningEffort(opts.ReasoningEffort)
+
+	// 1. Prepare context (plan-mode key, injection-defense, vector hints, initial context_fill).
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
 	ctx = o.prepareRequestContext(ctx, message)
 
-	// 1. Setup blackboard (fresh or restored).
+	// 2. Setup blackboard (fresh or restored).
 	bb, err := o.setupBlackboard(message, sessionID, opts.TaskID)
 	if err != nil {
 		return nil, err

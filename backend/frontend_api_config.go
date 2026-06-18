@@ -9,6 +9,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/llm"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
@@ -23,7 +24,7 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		return ConfigResponse{Loaded: false}
 	}
 
-	return ConfigResponse{
+	resp := ConfigResponse{
 		Loaded:       true,
 		LogLevel:     f.config.LogLevel,
 		ConfigErrors: nonNilStringSlice(f.configLoadErrors),
@@ -66,6 +67,56 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 			TLSCertDir: f.config.Proxy.TLSCertDir,
 		},
 	}
+
+	// Populate AllModels: flat list of all enabled models with family + reasoning metadata.
+	if b := f.builder(); b != nil && b.ModelRegistry() != nil {
+		resp.LLM.AllModels = f.collectAllModels(b.ModelRegistry())
+	}
+
+	return resp
+}
+
+// collectAllModels iterates all enabled provider models, resolves their family,
+// and builds ModelInfo entries with reasoning metadata from FamilyReasoningOptions.
+func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
+	providers := []struct {
+		models []string
+	}{
+		{f.config.LLM.Anthropic.Models},
+		{f.config.LLM.Gemini.Models},
+		{f.config.LLM.LMStudio.Models},
+		{f.config.LLM.OpenAICompatible.Models},
+		{f.config.LLM.ChatGPT.Models},
+	}
+
+	seen := make(map[string]bool)
+	var result []ModelInfo
+	for _, p := range providers {
+		for _, modelName := range p.models {
+			if seen[modelName] {
+				continue
+			}
+			seen[modelName] = true
+
+			meta, _ := reg.Resolve(f.ctx(), modelName)
+			family := meta.Family
+
+			info := ModelInfo{
+				Name:   modelName,
+				Family: family,
+			}
+
+			if opts, def, ok := llm.FamilyReasoningOptions(family); ok {
+				info.Reasoning = &ReasoningInfo{
+					Options: opts,
+					Default: def,
+				}
+			}
+
+			result = append(result, info)
+		}
+	}
+	return result
 }
 
 // UpdateLLMConfig updates the full LLM configuration atomically:

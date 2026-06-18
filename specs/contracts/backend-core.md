@@ -12,7 +12,7 @@
 | `Orchestrator`        | core           | core → backend | Per-session orchestration engine      |
 | `BuilderConfig`       | core           | backend → core | Configuration transfer object         |
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
-| `HandleOptions`       | core           | backend → core | Execution mode + user skill overrides |
+| `HandleOptions`       | core           | backend → core | Execution mode, model override, reasoning effort, user skill overrides |
 | `Emitter`             | core           | backend → core | Event emission interface              |
 | `Blackboard`          | sdk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
@@ -110,6 +110,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Execution mode         | backend → core | `HandleOptions.ExecutionMode`            |
 | User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
 | Model override         | backend → core | `HandleOptions.ModelOverride`            |
+| Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. perToolTruncation) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
