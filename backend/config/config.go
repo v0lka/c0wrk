@@ -328,15 +328,6 @@ type SkillsConfig struct {
 	Dirs []string `yaml:"dirs"`
 }
 
-// ValidProviders is the canonical set of supported LLM provider names.
-var ValidProviders = map[string]bool{
-	"anthropic":         true,
-	"gemini":            true,
-	"lmstudio":          true,
-	"openai_compatible": true,
-	"chatgpt":           true,
-}
-
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
@@ -365,6 +356,27 @@ type ProviderWithModels struct {
 	Models       []string // enabled models for this one provider
 }
 
+// providerEntry is the canonical, single-source-of-truth provider list.
+type providerEntry struct {
+	name     string
+	apiKey   string
+	baseURL  string
+	models   []string
+}
+
+// allProviderEntries returns the flat list of all five known providers.
+// GetAllProviderConfigs and ResolveDefaultModelProvider both derive from this
+// single slice — adding a sixth provider only requires updating this one function.
+func (c *LLMConfig) allProviderEntries() []providerEntry {
+	return []providerEntry{
+		{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
+		{"gemini", c.Gemini.APIKey, "", c.Gemini.Models},
+		{"lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Models},
+		{"openai_compatible", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Models},
+		{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
+	}
+}
+
 // providerType maps a config-level provider name to the Go provider type.
 func providerType(name string) string {
 	switch name {
@@ -383,21 +395,8 @@ func providerType(name string) string {
 
 // GetAllProviderConfigs returns all providers that have at least one model enabled.
 func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
-	providers := []struct {
-		name     string
-		apiKey   string
-		baseURL  string
-		models   []string
-	}{
-		{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
-		{"gemini", c.Gemini.APIKey, "", c.Gemini.Models},
-		{"lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Models},
-		{"openai_compatible", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Models},
-		{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
-	}
-
 	var result []ProviderWithModels
-	for _, p := range providers {
+	for _, p := range c.allProviderEntries() {
 		if len(p.models) > 0 {
 			result = append(result, ProviderWithModels{
 				Name:         p.name,
@@ -419,26 +418,12 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 		return ProviderWithModels{}, "", errors.New("default_model is not set")
 	}
 
-	providers := []struct {
-		name     string
-		provType string
-		apiKey   string
-		baseURL  string
-		models   []string
-	}{
-		{"anthropic", "anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
-		{"gemini", "gemini", c.Gemini.APIKey, "", c.Gemini.Models},
-		{"lmstudio", "lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Models},
-		{"openai_compatible", "openai", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Models},
-		{"chatgpt", "openai", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
-	}
-
-	for _, p := range providers {
+	for _, p := range c.allProviderEntries() {
 		for _, m := range p.models {
 			if m == c.DefaultModel {
 				return ProviderWithModels{
 					Name:         p.name,
-					ProviderType: p.provType,
+					ProviderType: providerType(p.name),
 					APIKey:       p.apiKey,
 					BaseURL:      p.baseURL,
 					Models:       p.models,
@@ -521,11 +506,13 @@ func validate(cfg *Config) error {
 	}
 
 	// Validate at least one provider has models
-	hasModels := len(cfg.LLM.Anthropic.Models) > 0 ||
-		len(cfg.LLM.Gemini.Models) > 0 ||
-		len(cfg.LLM.LMStudio.Models) > 0 ||
-		len(cfg.LLM.OpenAICompatible.Models) > 0 ||
-		len(cfg.LLM.ChatGPT.Models) > 0
+	hasModels := false
+	for _, p := range cfg.LLM.allProviderEntries() {
+		if len(p.models) > 0 {
+			hasModels = true
+			break
+		}
+	}
 	if !hasModels {
 		return errors.New("at least one provider must have enabled models")
 	}

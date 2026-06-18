@@ -6,16 +6,18 @@ Manages the project workspace: file tree loading, filesystem watching for change
 
 ## Key Files
 
-- `backend/workspace/watcher.go` — filesystem watcher (fsnotify)
-- `backend/frontend_api_workspace.go` — FrontendAPI workspace methods + file tree loading + git CLI wrappers
-- `backend/vectorindex/git.go` — git CLI wrapper for branch detection and branch-change monitoring
-- `backend/vectorindex/manager.go` — vector index lifecycle (branch-partitioned collections)
-- `backend/vectorindex/service.go` — vector index indexing and search
-- `backend/vectorindex/collection.go` — collection data structure (per-branch document store)
-- `backend/vectorindex/indexer.go` — file-to-document indexing logic (dual-writes chromem + lexical)
-- `backend/vectorindex/search_result.go` — search result types and filtering
-- `backend/vectorindex/hybrid.go` — hybrid search (vector ∪ lexical) with RRF fusion, per-side filters
-- `backend/vectorindex/lexical/` — bleve/BM25 lexical index with `c0wrk_code` analyzer (camelCase split + lowercase + stop-en)
+- `core/workspace/watcher.go` — filesystem watcher (fsnotify)
+- `core/workspace/filetree.go` — file tree building logic (lazy listing with git ignores)
+- `core/workspace/git.go` — git CLI wrappers (status, diff, gitignore parsing, branch detection)
+- `backend/frontend_api_workspace.go` — FrontendAPI workspace methods (thin delegation to core/workspace)
+- `sdk/vectorindex/git.go` — git CLI wrapper for branch detection and branch-change monitoring
+- `sdk/vectorindex/manager.go` — vector index lifecycle (branch-partitioned collections)
+- `sdk/vectorindex/service.go` — vector index indexing and search
+- `sdk/vectorindex/collection.go` — collection data structure (per-branch document store)
+- `sdk/vectorindex/indexer.go` — file-to-document indexing logic (dual-writes chromem + lexical)
+- `sdk/vectorindex/search_result.go` — search result types and filtering
+- `sdk/vectorindex/hybrid.go` — hybrid search (vector ∪ lexical) with RRF fusion, per-side filters
+- `sdk/vectorindex/lexical/` — bleve/BM25 lexical index with `c0wrk_code` analyzer (camelCase split + lowercase + stop-en)
 - `sdk/embedding/` — embedding model interface
 - `backend/frontend_api_vector.go` — FrontendAPI vector methods + lazy manager access (SetVectorManager/getVectorManager with RWMutex)
 

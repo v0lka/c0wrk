@@ -463,6 +463,7 @@ func (a *App) startVectorIndexBackground(
 		// Create embedder directly via sdk/embedding.
 		if modelPath == "" || tokenizerPath == "" || libraryPath == "" {
 			log.Info("vector search disabled (model files not found)")
+			a.emit("vector_index:status", map[string]any{"available": false, "reason": "model files not found"})
 			return
 		}
 		emb, embErr := embedding.NewEmbedder(embedding.EmbedderConfig{
@@ -475,6 +476,7 @@ func (a *App) startVectorIndexBackground(
 		})
 		if embErr != nil {
 			log.Warn("vector search unavailable", "error", embErr)
+			a.emit("vector_index:status", map[string]any{"available": false, "reason": embErr.Error()})
 			return
 		}
 
@@ -489,10 +491,12 @@ func (a *App) startVectorIndexBackground(
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)
+			a.emit("vector_index:status", map[string]any{"available": false, "reason": err.Error()})
 			return
 		}
 		if vectorMgr == nil {
 			log.Info("vector search disabled (model files not found)")
+			a.emit("vector_index:status", map[string]any{"available": false, "reason": "model files not found"})
 			return
 		}
 

@@ -60,7 +60,7 @@ Important: `always_deny` is NEVER bypassed by auto-approval.
 
 ## Judge System
 
-The `ToolJudge` (`core/tools/judge.go`) provides LLM-based safety evaluation:
+The `ToolJudge` (`sdk/tools/judge.go`) provides LLM-based safety evaluation:
 
 - NOT automatic gating — it is invoked on-demand via the frontend "Ask agent" button
 - When a tool has `PolicyAlwaysAllow` but implements the `ToolJudger` interface, the tool-specific judge may flag suspicious calls and escalate to user confirmation
@@ -145,7 +145,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ### Source
 
-`core/tools/symlink.go` — detection, traversal, formatting, and integration method `checkSymlinksAndConfirm()`. Injected in `core/tools/registry.go` `Execute()` between ParamInjector and policy resolution.
+`core/tools/registry_symlink.go` — detection, traversal, formatting, and integration method `checkSymlinksAndConfirm()`. Injected in `core/tools/registry.go` `Execute()` between ParamInjector and policy resolution. The `SymlinkTraversal` type and `DetectSymlinksInToolInput` function live in `sdk/tools`.
 
 ## Bash Blacklist
 

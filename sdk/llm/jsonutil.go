@@ -31,18 +31,11 @@ func ExtractJSON(content string) string {
 		}
 	}
 
-	// Find the longest valid JSON object by scanning for '{' and testing
-	// progressively larger substrings until json.Valid succeeds.
-	for i := 0; i < len(content); i++ {
-		if content[i] != '{' {
-			continue
-		}
-		// Scan from the end backwards to find the longest valid JSON.
-		for j := len(content); j > i; j-- {
-			if content[j-1] != '}' {
-				continue
-			}
-			candidate := content[i:j]
+	// Fallback: find the last '}' and its matching '{' — a single
+	// pass rather than O(n²) scanning every brace pair.
+	if lastBrace := strings.LastIndex(content, "}"); lastBrace >= 0 {
+		if openBrace := strings.LastIndex(content[:lastBrace], "{"); openBrace >= 0 {
+			candidate := content[openBrace : lastBrace+1]
 			if json.Valid([]byte(candidate)) {
 				return candidate
 			}

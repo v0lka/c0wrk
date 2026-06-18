@@ -3,7 +3,7 @@ package llm
 // FamilyReasoningOptions returns the native reasoning/thinking options available
 // for a given model family. It also returns the recommended default (always the
 // maximum available effort) and whether the family supports reasoning at all.
-func FamilyReasoningOptions(family string) (options []string, default_ string, ok bool) {
+func FamilyReasoningOptions(family string) (options []string, preferred string, ok bool) {
 	switch family {
 	case "anthropic":
 		return []string{"On", "Off"}, "On", true

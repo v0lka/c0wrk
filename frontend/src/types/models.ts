@@ -160,6 +160,7 @@ export interface ConfigLLMResponse {
   openai_compatible: ConfigProviderFull
   chatgpt: ConfigProviderFull
   all_models: ModelInfo[]
+  models_ready: boolean
 }
 
 export interface ConfigMemResponse {

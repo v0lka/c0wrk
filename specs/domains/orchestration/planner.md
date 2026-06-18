@@ -6,7 +6,8 @@ Generates DAG execution plans from user tasks, assigns agent profiles to steps, 
 
 ## Key Files
 
-- `core/planner.go` — Planner struct (Plan, Replan, PlanContinuation), planPromptMode configs
+- `sdk/planner/planner.go` — Planner struct (Plan, Replan)
+- `core/planner_adapter.go` — core adapter (PlanContinuation, skill threading, replan callback)
 - `core/prompts/planner_base.md` — base planning prompt (MODE-TOT, MODE-GUIDANCE placeholders)
 - `core/prompts/planner_informed.md` — informed planning prompt (after exploration)
 - `core/prompts/planner_replan.md` — replanning prompt

@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { listProviderModels } from '@/api/mcp'
-import { MASKED_API_KEY } from '@/api/config'
 import type { ProviderConfig } from './useLLMConfig'
 
 interface UseModelFetchResult {
@@ -10,8 +9,6 @@ interface UseModelFetchResult {
     apiKeyDirty: boolean
     handleApply: () => Promise<void>
     hasRequiredCredentials: boolean
-    isModelDisabled: boolean
-    modelPlaceholder: string
 }
 
 export function useModelFetch(activeProvider: string, providerConfigs: Record<string, ProviderConfig>): UseModelFetchResult {
@@ -61,23 +58,6 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
         }
     }, [activeProvider])
 
-    const isModelDisabled = useMemo(() => {
-        const config = providerConfigs[activeProvider]
-        if (!config) return true
-        if (activeProvider === 'lmstudio') return !config.base_url
-        if (activeProvider === 'openai_compatible') return !config.base_url || (!config.api_key && config.api_key !== MASKED_API_KEY)
-        return !config.api_key && config.api_key !== MASKED_API_KEY
-    }, [activeProvider, providerConfigs])
-
-    const modelPlaceholder = useMemo(() => {
-        if (isModelDisabled) {
-            if (activeProvider === 'lmstudio') return 'Enter base URL first'
-            if (activeProvider === 'openai_compatible') return 'Enter base URL and API key first'
-            return 'Enter API key first'
-        }
-        return modelsLoading ? 'Loading models...' : 'Select or type model name'
-    }, [isModelDisabled, activeProvider, modelsLoading])
-
     return {
         models,
         modelsLoading,
@@ -85,7 +65,5 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
         apiKeyDirty,
         handleApply,
         hasRequiredCredentials,
-        isModelDisabled,
-        modelPlaceholder,
     }
 }

@@ -1,16 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useEffect } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
-import { getConfig } from '@/api/config'
-import { logger } from '@/lib/logger'
-
-interface ModelInfo {
-  name: string
-  family: string
-  reasoning?: {
-    options: string[]
-    default: string
-  } | null
-}
+import { useConfigData } from '@/hooks/useConfigData'
+import { useDropdown } from '@/hooks/useDropdown'
 
 /**
  * ReasoningCombobox renders a compact dropdown in the chat toolbar for selecting
@@ -24,24 +15,8 @@ export function ReasoningCombobox() {
   const selectedReasoning = useInputModeStore((s) => s.selectedReasoning)
   const setSelectedReasoning = useInputModeStore((s) => s.setSelectedReasoning)
 
-  const [allModels, setAllModels] = useState<ModelInfo[]>([])
-  const [defaultModel, setDefaultModel] = useState('')
-  const [isOpen, setIsOpen] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  // Load enabled models with reasoning metadata from config once.
-  useEffect(() => {
-    let cancelled = false
-    getConfig()
-      .then((cfg) => {
-        if (cancelled) return
-        const models: ModelInfo[] = cfg.llm?.all_models ?? []
-        setAllModels(models)
-        setDefaultModel(cfg.llm?.default_model ?? '')
-      })
-      .catch((err) => logger.error('ReasoningCombobox: failed to load config:', err))
-    return () => { cancelled = true }
-  }, [])
+  const { allModels, defaultModel } = useConfigData()
+  const { isOpen, setIsOpen, containerRef } = useDropdown()
 
   // When selectedModel changes, reset reasoning if the new model's family doesn't support it.
   useEffect(() => {
@@ -52,21 +27,6 @@ export function ReasoningCombobox() {
       setSelectedReasoning(null)
     }
   }, [selectedModel, defaultModel, allModels, selectedReasoning, setSelectedReasoning])
-
-  // Close on outside click.
-  const handleClickOutside = useCallback((e: MouseEvent) => {
-    if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-      setIsOpen(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside)
-      return () => document.removeEventListener('mousedown', handleClickOutside)
-    }
-    return
-  }, [isOpen, handleClickOutside])
 
   // Find reasoning info for the effective model.
   const effectiveModel = selectedModel ?? defaultModel
@@ -79,7 +39,7 @@ export function ReasoningCombobox() {
   const familyDefault = reasoning.default
   const options = reasoning.options
 
-  const displayLabel = selectedReasoning ?? `Default: ${familyDefault}`
+  const displayLabel = selectedReasoning ?? `Auto (${familyDefault})`
 
   return (
     <div className="relative shrink-0" ref={containerRef}>

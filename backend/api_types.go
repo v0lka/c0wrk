@@ -26,20 +26,21 @@ type ReasoningInfo struct {
 
 // ModelInfo pairs a model name with its resolved family and reasoning metadata.
 type ModelInfo struct {
-	Name      string          `json:"name"`
-	Family    string          `json:"family"`
-	Reasoning *ReasoningInfo  `json:"reasoning,omitempty"` // nil = family doesn't support reasoning
+	Name      string         `json:"name"`
+	Family    string         `json:"family"`
+	Reasoning *ReasoningInfo `json:"reasoning,omitempty"` // nil = family doesn't support reasoning
 }
 
 // ConfigLLMResponse holds sanitised LLM provider info.
 type ConfigLLMResponse struct {
-	DefaultModel    string                       `json:"default_model"` // global, cross-provider
-	Anthropic        ConfigProviderFull           `json:"anthropic"`
-	Gemini           ConfigProviderFull           `json:"gemini"`
-	LMStudio         ConfigProviderFull           `json:"lmstudio"`
-	OpenAICompatible ConfigProviderFull           `json:"openai_compatible"`
-	ChatGPT          ConfigProviderFull           `json:"chatgpt"`
-	AllModels        []ModelInfo                 `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
+	DefaultModel     string             `json:"default_model"` // global, cross-provider
+	Anthropic        ConfigProviderFull `json:"anthropic"`
+	Gemini           ConfigProviderFull `json:"gemini"`
+	LMStudio         ConfigProviderFull `json:"lmstudio"`
+	OpenAICompatible ConfigProviderFull `json:"openai_compatible"`
+	ChatGPT          ConfigProviderFull `json:"chatgpt"`
+	AllModels        []ModelInfo        `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
+	ModelsReady      bool               `json:"models_ready"` // false during async LLM init; true once registry is wired
 }
 
 // ConfigProviderFull is a provider with api_key, optional base_url, and enabled models list.
@@ -68,12 +69,12 @@ type LLMSettingsRequest struct {
 
 // LLMFullConfigRequest is the full LLM configuration payload for UpdateLLMConfig.
 type LLMFullConfigRequest struct {
-	DefaultModel     string                    `json:"default_model"`
-	Anthropic        *ProviderConfigRequest    `json:"anthropic,omitempty"`
-	Gemini           *ProviderConfigRequest    `json:"gemini,omitempty"`
-	LMStudio         *ProviderConfigRequest    `json:"lmstudio,omitempty"`
-	OpenAICompatible *ProviderConfigRequest    `json:"openai_compatible,omitempty"`
-	ChatGPT          *ProviderConfigRequest    `json:"chatgpt,omitempty"`
+	DefaultModel     string                 `json:"default_model"`
+	Anthropic        *ProviderConfigRequest `json:"anthropic,omitempty"`
+	Gemini           *ProviderConfigRequest `json:"gemini,omitempty"`
+	LMStudio         *ProviderConfigRequest `json:"lmstudio,omitempty"`
+	OpenAICompatible *ProviderConfigRequest `json:"openai_compatible,omitempty"`
+	ChatGPT          *ProviderConfigRequest `json:"chatgpt,omitempty"`
 }
 
 // ProviderConfigRequest holds a single provider's configuration.

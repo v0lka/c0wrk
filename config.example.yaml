@@ -262,7 +262,7 @@ orchestration:
   maxSummaryLength: 500 # Max summary length in characters
   maxHistoryMessages: 20 # Max history messages retained
   maxJudgeCacheSize: 1000 # Max entries in judge decision cache
-
+  # maxPlannerExploreSteps: 7 # Max exploration steps before falling back to direct planning
 
 # ---------------------------------------------------------------------------
 # Vector Index / Hybrid Search

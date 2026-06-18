@@ -49,7 +49,10 @@ type OrchestratorBuilder struct {
 	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 
-	// Cached reasoning effort from config; updated by runAsyncInit/RebuildRouter.
+	// Cached reasoning effort string. Always empty at builder level;
+	// per-request overrides flow through HandleOptions.ReasoningEffort
+	// → Orchestrator.SetReasoningEffort, which propagates to router,
+	// planner, reflector, and the SDK P&E engine.
 	reasoningEffort string
 
 	// Async initialization: MCP gateway and LLM router are initialized in the
@@ -355,6 +358,7 @@ func (b *OrchestratorBuilder) Build(
 		Router:            coreRouter,
 		Planner:           corePlanner,
 		LLM:               loggedLLM,
+		ModelSwitcher:     llmRouter,
 		ToolExec:          sessionRegistry,         // ToolExecutor (per-session policy view)
 		ToolRegistry:      b.registry.ToolRegistry, // SDK ToolRegistry (shared)
 		TokenCounter:      tokenCounter,

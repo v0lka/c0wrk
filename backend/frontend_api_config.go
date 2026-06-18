@@ -71,6 +71,7 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 	// Populate AllModels: flat list of all enabled models with family + reasoning metadata.
 	if b := f.builder(); b != nil && b.ModelRegistry() != nil {
 		resp.LLM.AllModels = f.collectAllModels(b.ModelRegistry())
+		resp.LLM.ModelsReady = true
 	}
 
 	return resp

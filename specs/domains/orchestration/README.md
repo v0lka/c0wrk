@@ -7,9 +7,12 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 ## Key Files
 
 - `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume)
-- `core/router.go` — request classification (Route)
-- `core/planner.go` — DAG plan generation (Plan, Replan, PlanContinuation)
-- `core/reflector.go` — failure analysis (Reflect)
+- `sdk/agent/router/router.go` — request classification (Route)
+- `core/router_adapter.go` — core adapter wrapping SDK router
+- `sdk/planner/planner.go` — DAG plan generation (Plan, Replan)
+- `core/planner_adapter.go` — core adapter wrapping SDK planner (adds skill threading, PlanContinuation)
+- `sdk/agent/reflector/reflector.go` — failure analysis (Reflect)
+- `core/reflector_adapter.go` — core adapter for SDK reflector
 - `core/stepconfig.go` — per-step configuration resolution
 - `core/systemprompt.go` — system prompt construction with skill context
 - `sdk/orchestration/orchestrator.go` — SDK Plan&Execute engine (Execute, Resume)
@@ -24,9 +27,10 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 // Top-level orchestrator (core layer)
 type Orchestrator struct {
     engine               *orchestration.Orchestrator  // SDK P&E engine
-    planner              *Planner
-    router               *Router
-    llm                  LLMCaller
+    planner              *planner.Planner              // from sdk/planner (Plan, Replan)
+    router               *router.Router                 // from sdk/agent/router
+    llm                  agent.LLMCaller                 // from sdk/agent
+    modelSwitcher        *llm.Router                    // raw LLM router for per-message model override
     toolRegistry         *sdktools.ToolRegistry       // SDK registry (basic store)
     coreToolRegistry     *tools.ToolRegistry          // core registry (policy/judge/hooks)
     config               OrchestratorConfig
@@ -39,7 +43,7 @@ type Orchestrator struct {
     taskStore            TaskPersistence              // optional, for ContinueTask BB restoration
     bbRestoreFunc        BlackboardRestoreFunc        // optional, restores BB from store
     trackingCaller       *llm.TrackingCaller          // per-step context tracker wiring
-    vectorSearchFunc     tools.VectorSearchFunc       // for vector search hints
+    vectorSearchFunc     builtins.VectorSearchFunc     // for vector search hints (from sdk/tools/builtins)
     skillManager         *skills.SkillManager         // skill discovery and activation
     currentRequestCtx    atomic.Pointer[context.Context]        // scoped to active HandleMessage
     currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor] // router-matched skills
@@ -56,7 +60,9 @@ type OrchestratorConfig struct {
     PreWarningPercent         int    // default: 75 (context-fill notification threshold)
     Model                     string
     ReasoningEffort           string
-    StepLimitFunc             agent.StepLimitFunc
+    StepLimitFunc             agent.StepLimitFunc          // from sdk/agent
+    InjectionDefenseEnabled   bool   // gates <untrusted-content> wrapping and prompt text
+    AgentsMDMaxBytes          int    // cap on AGENTS.md content; 0 = default (65536), negative = unlimited
 }
 
 // Routing result

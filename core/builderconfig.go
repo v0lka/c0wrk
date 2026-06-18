@@ -54,10 +54,6 @@ func (c BuilderLLMConfig) DefaultProviderName() string {
 			}
 		}
 	}
-	// Fallback: return first provider name
-	for name := range c.ProviderConfigs {
-		return name
-	}
 	return ""
 }
 

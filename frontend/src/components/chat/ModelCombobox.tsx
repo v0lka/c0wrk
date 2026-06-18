@@ -1,20 +1,13 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useMemo } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
-import { getConfig } from '@/api/config'
-import { logger } from '@/lib/logger'
+import { useConfigData } from '@/hooks/useConfigData'
+import { useDropdown } from '@/hooks/useDropdown'
+import { PROVIDER_LABELS, type ProviderKey } from '@/lib/llm-providers'
 
 interface ModelEntry {
   model: string
   provider: string
   providerLabel: string
-}
-
-const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: 'Anthropic',
-  gemini: 'Gemini',
-  lmstudio: 'LM Studio',
-  openai_compatible: 'OpenAI Compatible',
-  chatgpt: 'ChatGPT',
 }
 
 /**
@@ -26,48 +19,21 @@ export function ModelCombobox() {
   const selectedModel = useInputModeStore((s) => s.selectedModel)
   const setSelectedModel = useInputModeStore((s) => s.setSelectedModel)
 
-  const [allModels, setAllModels] = useState<ModelEntry[]>([])
-  const [defaultModel, setDefaultModel] = useState('')
-  const [isOpen, setIsOpen] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const { allModels: modelInfos, defaultModel } = useConfigData()
+  const { isOpen, setIsOpen, containerRef } = useDropdown()
 
-  // Load enabled models from config once.
-  useEffect(() => {
-    let cancelled = false
-    getConfig()
-      .then((cfg) => {
-        if (cancelled) return
-        const entries: ModelEntry[] = []
-        const providers = ['anthropic', 'gemini', 'lmstudio', 'openai_compatible', 'chatgpt'] as const
-        for (const p of providers) {
-          const pc = cfg.llm[p]
-          if (pc && Array.isArray(pc.models)) {
-            for (const m of pc.models) {
-              entries.push({ model: m, provider: p, providerLabel: PROVIDER_LABELS[p] || p })
-            }
-          }
-        }
-        setAllModels(entries)
-        setDefaultModel(cfg.llm.default_model || '')
+  // Convert ModelInfo[] → ModelEntry[] (flat list of enabled models per provider).
+  const allModels: ModelEntry[] = useMemo(() => {
+    const entries: ModelEntry[] = []
+    for (const info of modelInfos) {
+      entries.push({
+        model: info.name,
+        provider: info.family,
+        providerLabel: PROVIDER_LABELS[info.family as ProviderKey] || info.family,
       })
-      .catch((err) => logger.error('ModelCombobox: failed to load config:', err))
-    return () => { cancelled = true }
-  }, [])
-
-  // Close on outside click.
-  const handleClickOutside = useCallback((e: MouseEvent) => {
-    if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-      setIsOpen(false)
     }
-  }, [])
-
-  useEffect(() => {
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside)
-      return () => document.removeEventListener('mousedown', handleClickOutside)
-    }
-    return
-  }, [isOpen, handleClickOutside])
+    return entries
+  }, [modelInfos])
 
   // Build display label.
   const effectiveModel = selectedModel ?? defaultModel
@@ -80,12 +46,15 @@ export function ModelCombobox() {
   const effectiveEntry = allModels.find((e) => e.model === effectiveModel)
 
   // Group models by provider for the dropdown.
-  const grouped = new Map<string, ModelEntry[]>()
-  for (const entry of allModels) {
-    const list = grouped.get(entry.provider) || []
-    list.push(entry)
-    grouped.set(entry.provider, list)
-  }
+  const grouped = useMemo(() => {
+    const map = new Map<string, ModelEntry[]>()
+    for (const entry of allModels) {
+      const list = map.get(entry.provider) || []
+      list.push(entry)
+      map.set(entry.provider, list)
+    }
+    return map
+  }, [allModels])
 
   return (
     <div className="relative shrink-0" ref={containerRef}>
@@ -121,7 +90,7 @@ export function ModelCombobox() {
           {Array.from(grouped.entries()).map(([provider, models]) => (
             <div key={provider}>
               <div className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-                {PROVIDER_LABELS[provider] || provider}
+                {PROVIDER_LABELS[provider as ProviderKey] || provider}
               </div>
               {models.map((entry) => {
                 const isSelected = selectedModel === entry.model

@@ -6,7 +6,8 @@ Classifies user requests by domain, complexity, and matched skills to determine 
 
 ## Key Files
 
-- `core/router.go` — Router struct and Route method
+- `sdk/agent/router/router.go` — Router struct and Route method
+- `core/router_adapter.go` — core adapter wrapping SDK router
 - `core/prompts/router_system.md` — routing classification prompt
 
 ## Behavior

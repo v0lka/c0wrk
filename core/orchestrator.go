@@ -109,6 +109,7 @@ type Orchestrator struct {
 	planner             *planner.Planner           // for PlanContinuation in P&E continuations
 	router              *router.Router
 	llm                 agent.LLMCaller
+	modelSwitcher       *llm.Router // raw LLM router for per-message model override
 	toolRegistry        *sdktools.ToolRegistry
 	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
 	config              OrchestratorConfig
@@ -177,6 +178,7 @@ type OrchestratorDeps struct {
 	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
 	SkillManager     *skills.SkillManager   // optional, for skill discovery and activation
 	CoreToolRegistry *tools.ToolRegistry    // core tool registry for skill policy overrides
+	ModelSwitcher    *llm.Router            // raw LLM router for per-message model override
 
 	// Tool result caching and per-tool truncation.
 	ToolCache         *agent.ToolResultCache
@@ -209,6 +211,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		planner:          deps.Planner,
 		router:           deps.Router,
 		llm:              deps.LLM,
+		modelSwitcher:    deps.ModelSwitcher,
 		toolRegistry:     deps.ToolRegistry,
 		config:           cfg,
 		contextFactory:   deps.ContextFactory,
@@ -660,6 +663,11 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	// 0. Apply per-request overrides to all LLM-calling components.
 	o.SetReasoningEffort(opts.ReasoningEffort)
+	if opts.ModelOverride != "" && o.modelSwitcher != nil {
+		if err := o.modelSwitcher.SetModel(ctx, opts.ModelOverride); err != nil {
+			o.logger.Warn("failed to apply model override", "model", opts.ModelOverride, "error", err)
+		}
+	}
 
 	// 1. Prepare context (plan-mode key, injection-defense, vector hints, initial context_fill).
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)

@@ -22,7 +22,7 @@ Move all three packages and extract the git/filetree logic into `core/`:
 
 | Source | Destination |
 |--------|-------------|
-| `backend/vectorindex/` | `core/vectorindex/` |
+| `backend/vectorindex/` | `sdk/vectorindex/` |
 | `backend/terminal/` | `core/terminal/` |
 | `backend/workspace/` | `core/workspace/` |
 | `backend/frontend_api_workspace.go` (git logic) | `core/workspace/git.go` |
@@ -40,7 +40,7 @@ Backend ViewModel methods now delegate to core domain functions:
 - `GetFileDiff()` → `workspace.GetFileDiff()`
 - `ListDirectory()` → `workspace.ListDirFlat()` / `workspace.ListDirRecursive()`
 
-Desktop imports were updated from `backend/vectorindex` → `core/vectorindex` and `backend/terminal` → `core/terminal`. Per ADR-008, desktop may import `core/` directly — this is cleaner because desktop now imports domain logic from its proper layer.
+Desktop imports were updated from `backend/vectorindex` → `sdk/vectorindex` and `backend/terminal` → `core/terminal`. Per ADR-008, desktop may import `core/` directly — this is cleaner because desktop now imports domain logic from its proper layer.
 
 ## Consequences
 
@@ -54,7 +54,7 @@ Desktop imports were updated from `backend/vectorindex` → `core/vectorindex` a
 
 **Negative:**
 
-- Three additional packages in `core/` increase its surface area
+- Two additional packages in `core/` increase its surface area
 - Type aliases in `backend/api_types.go` add one level of indirection (mitigated by Go's transparent alias resolution)
 
 ## Related

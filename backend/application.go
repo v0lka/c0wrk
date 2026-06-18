@@ -16,8 +16,8 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 
 // ApplicationConfig holds all parameters needed to construct an Application.
@@ -34,10 +34,10 @@ type ApplicationConfig struct {
 	TaskStore    session.TaskStore
 
 	// UI callbacks provided by the desktop adapter.
-	UIEmitFunc    func(session.Event)     // Wails event emission
-	AskUserFunc   sdktools.AskUserFunc       // ask_user tool callback
-	ConfirmFunc   tools.ConfirmFunc       // tool confirmation callback
-	StepLimitFunc agent.StepLimitFunc     // step limit callback
+	UIEmitFunc    func(session.Event)  // Wails event emission
+	AskUserFunc   sdktools.AskUserFunc // ask_user tool callback
+	ConfirmFunc   tools.ConfirmFunc    // tool confirmation callback
+	StepLimitFunc agent.StepLimitFunc  // step limit callback
 
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     builtins.VectorSearchFunc

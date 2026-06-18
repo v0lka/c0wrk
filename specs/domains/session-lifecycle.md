@@ -62,7 +62,7 @@ Backend SwitchProject path
 
 ```
 User sends message
-  → Frontend: SendMessage(sessionId, text, mode, activeSkills)
+  → Frontend: SendMessage(sessionId, text, mode, activeSkills, modelOverride, reasoningEffort)
   → Backend: FrontendAPI.SendMessage()
       ├─ Persist original text to DB (preserves /skill and @file refs)
       ├─ Preprocess text for orchestrator:
@@ -74,7 +74,7 @@ User sends message
       │   ├─ WithWorkspacePath (project workspace)
       │   ├─ WithTempDir (session-specific temp directory)
       │   └─ WithCoherence (FileCoherenceTracker for cross-session conflict detection)
-      ├─ Determine opts: {TaskID, ExecutionMode, UserSkills: activeSkills}
+      ├─ Determine opts: {TaskID, ExecutionMode, UserSkills, ModelOverride, ReasoningEffort}
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
       ├─ Call orchestrator.HandleMessage(ctx, preprocessedText, sessionId, opts)
@@ -195,9 +195,11 @@ type SessionInfo struct {
 
 // HandleOptions — execution mode + user-specified skill overrides
 type HandleOptions struct {
-    TaskID        string
-    ExecutionMode string   // "normal" | "advanced"
-    UserSkills    []string
+    TaskID          string
+    ExecutionMode   string   // "normal" | "advanced"
+    UserSkills      []string
+    ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
+    ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
 }
 
 // HandleResult — orchestration output

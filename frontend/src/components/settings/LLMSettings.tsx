@@ -1,18 +1,9 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { ProviderConfigForm } from './ProviderConfigForm'
 import { useLLMConfig } from './useLLMConfig'
 import { useModelFetch } from './useModelFetch'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-
-const PROVIDERS = ['anthropic', 'gemini', 'lmstudio', 'openai_compatible', 'chatgpt'] as const
-
-const providerLabels: Record<string, string> = {
-  anthropic: 'Anthropic',
-  gemini: 'Gemini',
-  lmstudio: 'LM Studio',
-  openai_compatible: 'OpenAI Compatible',
-  chatgpt: 'ChatGPT',
-}
+import { PROVIDERS, PROVIDER_LABELS } from '@/lib/llm-providers'
 
 export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void }) {
   const {
@@ -35,23 +26,26 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
     })
   }
 
+  // Collect all enabled models across all providers for the global default dropdown.
+  const allEnabledModels = useMemo(() => {
+    const result: { model: string; provider: string }[] = []
+    for (const p of PROVIDERS) {
+      const cfg = providerConfigs[p]
+      if (cfg) {
+        for (const m of cfg.models) {
+          result.push({ model: m, provider: p })
+        }
+      }
+    }
+    return result
+  }, [providerConfigs])
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8">
         <span className="text-sm text-muted-foreground">Loading LLM settings...</span>
       </div>
     )
-  }
-
-  // Collect all enabled models across all providers for the global default dropdown
-  const allEnabledModels: { model: string; provider: string }[] = []
-  for (const p of PROVIDERS) {
-    const cfg = providerConfigs[p]
-    if (cfg) {
-      for (const m of cfg.models) {
-        allEnabledModels.push({ model: m, provider: p })
-      }
-    }
   }
 
   return (
@@ -65,8 +59,8 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
           onChange={(e) => setDefaultModel(e.target.value)}
         >
           <option value="">— Select a default model —</option>
-          {allEnabledModels.map(({ model }) => (
-            <option key={model} value={model}>{model}</option>
+          {allEnabledModels.map(({ model, provider }) => (
+            <option key={`${provider}:${model}`} value={model}>{model}</option>
           ))}
         </select>
         <p className="text-xs text-muted-foreground">
@@ -84,7 +78,7 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
           <ProviderAccordion
             key={provider}
             provider={provider}
-            label={providerLabels[provider] || provider}
+            label={PROVIDER_LABELS[provider] || provider}
             config={config}
             isExpanded={isExpanded}
             onToggle={() => toggleExpanded(provider)}
