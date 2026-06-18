@@ -249,6 +249,13 @@ type SecurityConfig struct {
 	ToolPolicies     map[string]ToolPolicyConfig `yaml:"tool_policies"`
 	DefaultPolicy    string                      `yaml:"default_policy"`
 
+	// AutoApproveWorkspaceWrites, when true, auto-executes file write tools
+	// (write_file, edit_file, delete_file, delete_directory, create_directory)
+	// without user confirmation when all paths are within the session workspace.
+	// Symlink traversals are still intercepted and forced to confirmation
+	// regardless of this setting. Default: false (always confirm writes).
+	AutoApproveWorkspaceWrites bool `yaml:"auto_approve_workspace_writes"`
+
 	// AgentsMDMaxBytes caps the AGENTS.md content size injected into prompts.
 	// AGENTS.md is workspace-controlled untrusted input; without a cap a large or
 	// malicious file could flood the context window.
@@ -397,7 +404,7 @@ func providerType(name string) string {
 // models enabled yet. Callers that require enabled models (e.g. the LLM router)
 // filter by len(Models) > 0 at the usage site.
 func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
-	var result []ProviderWithModels
+	result := make([]ProviderWithModels, 0, len(c.allProviderEntries()))
 	for _, p := range c.allProviderEntries() {
 		result = append(result, ProviderWithModels{
 			Name:         p.name,

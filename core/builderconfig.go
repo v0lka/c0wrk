@@ -171,6 +171,10 @@ type BuilderSecurityConfig struct {
 	ToolPolicies            map[string]BuilderToolPolicy
 	DefaultPolicy           string
 
+	// AutoApproveWorkspaceWrites, when true, auto-executes file write tools
+	// within the session workspace without user confirmation.
+	AutoApproveWorkspaceWrites bool
+
 	// AgentsMDMaxBytes caps the AGENTS.md content read from the workspace before
 	// it is injected into the system prompt. 0 means use the default (65536).
 	// A negative value disables the cap entirely.

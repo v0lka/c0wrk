@@ -635,6 +635,31 @@ func (m *mockJudgerTool) Judge(ctx context.Context, input json.RawMessage) (allo
 	return m.judgeResult, m.judgeReasoning
 }
 
+// mockConfirmJudgerTool is a tool with PolicyUserConfirm that implements ToolJudger.
+// Used to test workspace auto-approval for write tools.
+type mockConfirmJudgerTool struct {
+	mockTool
+	judgeResult    bool
+	judgeReasoning string
+}
+
+func newMockConfirmJudgerTool(name string, policy sdktools.ToolPolicy, allow bool, reasoning string) *mockConfirmJudgerTool {
+	return &mockConfirmJudgerTool{
+		mockTool: mockTool{
+			name:          name,
+			description:   "A confirm tool with ToolJudger",
+			inputSchema:   json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+			defaultPolicy: policy,
+		},
+		judgeResult:    allow,
+		judgeReasoning: reasoning,
+	}
+}
+
+func (m *mockConfirmJudgerTool) Judge(ctx context.Context, input json.RawMessage) (allow bool, reasoning string) {
+	return m.judgeResult, m.judgeReasoning
+}
+
 // TestPolicyAlwaysAllow_WithToolJudgerFlags tests that PolicyAlwaysAllow escalates to confirmation
 // when the tool implements ToolJudger and returns allow=false with non-empty reasoning.
 func TestPolicyAlwaysAllow_WithToolJudgerFlags(t *testing.T) {
@@ -789,6 +814,96 @@ func TestAutoApproval_WorkspacePath(t *testing.T) {
 	}
 	if !confirmCalled {
 		t.Error("expected confirmFunc to be called: workspace-locality must not bypass PolicyUserConfirm")
+	}
+}
+
+// TestAutoApproval_UserConfirmWithJudger_WorkspaceEnabled tests that when
+// autoApproveWorkspaceWrites is enabled and a PolicyUserConfirm tool's Judge
+// returns allow=true, the tool executes without confirmation for workspace paths.
+func TestAutoApproval_UserConfirmWithJudger_WorkspaceEnabled(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetAutoApproveWorkspaceWrites(true)
+
+	// Tool with PolicyUserConfirm + ToolJudger that allows workspace paths
+	tool := newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, true, "target is within session workspace")
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
+	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("expected confirmFunc NOT to be called when auto-approve is enabled and Judge allows")
+	}
+}
+
+// TestAutoApproval_UserConfirmWithJudger_WorkspaceDisabled tests that when
+// autoApproveWorkspaceWrites is disabled, a PolicyUserConfirm tool always
+// requires confirmation regardless of Judge result.
+func TestAutoApproval_UserConfirmWithJudger_WorkspaceDisabled(t *testing.T) {
+	registry := NewToolRegistry()
+	// autoApproveWorkspaceWrites defaults to false
+
+	tool := newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, true, "target is within session workspace")
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
+	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("expected confirmFunc to be called when auto-approve is disabled")
+	}
+}
+
+// TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace tests that even with
+// auto-approve enabled, a PolicyUserConfirm tool still requires confirmation
+// when the Judge returns allow=false (e.g., path outside workspace).
+func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetAutoApproveWorkspaceWrites(true)
+
+	// Tool with PolicyUserConfirm + ToolJudger that denies (returns allow=false)
+	// This simulates bash_exec's Judge or a write tool targeting outside workspace.
+	tool := newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, false, "")
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+		confirmCalled = true
+		return ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
+	input := json.RawMessage(`{"path": "/etc/passwd"}`)
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("expected confirmFunc to be called when Judge returns allow=false")
 	}
 }
 

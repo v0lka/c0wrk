@@ -50,19 +50,20 @@ type ParamInjector func(toolName, source string, input json.RawMessage) json.Raw
 // auditing all callers that access SDK methods through the embedded type.
 type ToolRegistry struct {
 	*sdktools.ToolRegistry
-	mu                   sync.RWMutex
-	confirmFunc          ConfirmFunc
-	judge                *sdktools.ToolJudge
-	policyOverrides      map[string]sdktools.ToolPolicy
-	skillPolicyOverrides map[string]sdktools.ToolPolicy
-	defaultPolicy        sdktools.ToolPolicy
-	hasDefaultPolicy     bool
-	preExecuteHook        PreExecuteHook
-	toolFilter            ToolFilter
-	paramInjector         ParamInjector
-	disabledTools         map[string]bool
-	extraBashBlacklist    []*regexp.Regexp
-	logger                *slog.Logger
+	mu                         sync.RWMutex
+	confirmFunc                ConfirmFunc
+	judge                      *sdktools.ToolJudge
+	policyOverrides            map[string]sdktools.ToolPolicy
+	skillPolicyOverrides       map[string]sdktools.ToolPolicy
+	defaultPolicy              sdktools.ToolPolicy
+	hasDefaultPolicy           bool
+	preExecuteHook              PreExecuteHook
+	toolFilter                  ToolFilter
+	paramInjector               ParamInjector
+	disabledTools               map[string]bool
+	extraBashBlacklist          []*regexp.Regexp
+	logger                      *slog.Logger
+	autoApproveWorkspaceWrites  bool
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -88,16 +89,17 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	defer r.mu.RUnlock()
 
 	cloned := &ToolRegistry{
-		ToolRegistry:        r.ToolRegistry, // shared SDK registry (tool definitions)
-		confirmFunc:         r.confirmFunc,
-		judge:               r.judge,
-		defaultPolicy:       r.defaultPolicy,
-		hasDefaultPolicy:    r.hasDefaultPolicy,
-		preExecuteHook:      r.preExecuteHook,
-		toolFilter:          r.toolFilter,
-		paramInjector:       r.paramInjector,
-		extraBashBlacklist:  r.extraBashBlacklist, // shared (compiled regexps are read-only)
-		logger:              r.logger,
+		ToolRegistry:              r.ToolRegistry, // shared SDK registry (tool definitions)
+		confirmFunc:               r.confirmFunc,
+		judge:                     r.judge,
+		defaultPolicy:             r.defaultPolicy,
+		hasDefaultPolicy:          r.hasDefaultPolicy,
+		preExecuteHook:            r.preExecuteHook,
+		toolFilter:                r.toolFilter,
+		paramInjector:             r.paramInjector,
+		extraBashBlacklist:        r.extraBashBlacklist, // shared (compiled regexps are read-only)
+		logger:                    r.logger,
+		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
 	}
 	if r.disabledTools != nil {
 		cloned.disabledTools = make(map[string]bool, len(r.disabledTools))
@@ -221,6 +223,16 @@ func (r *ToolRegistry) SetDefaultPolicy(p sdktools.ToolPolicy) {
 	defer r.mu.Unlock()
 	r.defaultPolicy = p
 	r.hasDefaultPolicy = true
+}
+
+// SetAutoApproveWorkspaceWrites enables or disables workspace-based auto-approval
+// for file write tools with PolicyUserConfirm. When enabled, write_file, edit_file,
+// delete_file, delete_directory, and create_directory auto-execute without confirmation
+// when all paths in their input are within the session workspace.
+func (r *ToolRegistry) SetAutoApproveWorkspaceWrites(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autoApproveWorkspaceWrites = enabled
 }
 
 // SetPreExecuteHook sets a hook that is called before every non-internal tool execution.
@@ -400,6 +412,22 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}, nil
 
 	case sdktools.PolicyUserConfirm:
+		// Workspace auto-approval: when enabled, allow file write tools to execute
+		// without confirmation if all paths are within the session workspace.
+		// Symlinks are already intercepted by checkSymlinksAndConfirm above,
+		// so any path that reached this point is a real (non-symlink) path.
+		r.mu.RLock()
+		autoApprove := r.autoApproveWorkspaceWrites
+		r.mu.RUnlock()
+		if autoApprove {
+			if judger, ok := tool.(ToolJudger); ok {
+				allow, reason := judger.Judge(ctx, input)
+				if allow {
+					r.log().Debug("workspace auto-approve: Judge allows", "tool", name, "reason", reason)
+					return tool.Execute(ctx, input)
+				}
+			}
+		}
 		return r.confirmAndExecute(ctx, tool, name, input, "")
 
 	default:

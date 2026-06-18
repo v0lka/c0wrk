@@ -12,6 +12,7 @@ type ToolPolicy = 'always_allow' | 'always_deny' | 'user_confirm'
 interface LocalSettings {
   default_policy: ToolPolicy
   tool_policies: Record<string, { policy: ToolPolicy; blacklist?: string[] }>
+  auto_approve_workspace_writes: boolean
 }
 
 const policyOptions: { value: ToolPolicy; label: string }[] = [
@@ -24,14 +25,20 @@ const BLACKLIST_TOOLS = ['bash_exec']
 const INTERNAL_TOOLS = new Set(['ask_user', 'finish', 'list_step_outputs', 'read_step_output'])
 
 export function SecuritySettings() {
-  const [settings, setSettings] = useState<LocalSettings>({ default_policy: 'user_confirm', tool_policies: {} })
+  const [settings, setSettings] = useState<LocalSettings>({ default_policy: 'user_confirm', tool_policies: {}, auto_approve_workspace_writes: false })
   const [tools, setTools] = useState<ToolInfo[]>([])
   const [newPattern, setNewPattern] = useState('')
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
     Promise.all([
-      getSecuritySettings().then((r) => setSettings(r as LocalSettings)),
+      getSecuritySettings().then((r) => {
+        const tp: Record<string, { policy: ToolPolicy; blacklist?: string[] }> = {}
+        for (const [name, data] of Object.entries(r.tool_policies || {})) {
+          tp[name] = { policy: (data.policy as ToolPolicy) || 'user_confirm', blacklist: data.blacklist }
+        }
+        setSettings({ default_policy: (r.default_policy as ToolPolicy) || 'user_confirm', tool_policies: tp, auto_approve_workspace_writes: r.auto_approve_workspace_writes || false })
+      }),
       getToolList().then((r) => setTools((r || []).filter((t) => !INTERNAL_TOOLS.has(t.name)))),
     ]).catch((err) => logger.error('Failed to load security settings:', err))
       .finally(() => setIsLoading(false))
@@ -44,7 +51,7 @@ export function SecuritySettings() {
       for (const [name, data] of Object.entries(next.tool_policies)) {
         tp[name] = { policy: data.policy, blacklist: data.blacklist }
       }
-      await updateSecuritySettings({ default_policy: next.default_policy, tool_policies: tp } as SecuritySettingsResponse)
+      await updateSecuritySettings({ default_policy: next.default_policy, tool_policies: tp, auto_approve_workspace_writes: next.auto_approve_workspace_writes } as SecuritySettingsResponse)
     } catch (err) { logger.error('Failed to update security settings:', err) }
   }
 
@@ -73,6 +80,10 @@ export function SecuritySettings() {
 
   const handleKey = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); addBlacklist() } }
 
+  const handleAutoApprove = (checked: boolean) => {
+    save({ ...settings, auto_approve_workspace_writes: checked })
+  }
+
   // Group tools by source, core first
   const grouped = tools.reduce<Record<string, ToolInfo[]>>((acc, t) => {
     const src = t.source || 'core'
@@ -91,6 +102,28 @@ export function SecuritySettings() {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Workspace auto-approve toggle */}
+      <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card/50">
+        <div className="flex items-center gap-3">
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings.auto_approve_workspace_writes}
+              onChange={(e) => handleAutoApprove(e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-9 h-5 bg-muted rounded-full peer peer-checked:bg-primary transition-colors after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-background after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+          </label>
+          <span className="text-sm font-medium">Auto-approve writes in workspace</span>
+        </div>
+        <p className="text-xs text-muted-foreground pl-12">
+          When enabled, file write tools (write_file, edit_file, delete_file,
+          delete_directory, create_directory) execute without confirmation
+          when all paths are within the session workspace. Symlink traversals
+          are still forced to confirmation.
+        </p>
+      </div>
+
       {sources.map((source) => (
         <div key={source} className="flex flex-col gap-4">
           <h3 className="text-sm font-semibold text-muted-foreground border-b border-border pb-1">

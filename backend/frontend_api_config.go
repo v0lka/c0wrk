@@ -293,8 +293,9 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 		return SecuritySettingsResponse{DefaultPolicy: "user_confirm"}
 	}
 	resp := SecuritySettingsResponse{
-		DefaultPolicy: f.config.Security.DefaultPolicy,
-		ToolPolicies:  make(map[string]ToolPolicyResponse),
+		DefaultPolicy:             f.config.Security.DefaultPolicy,
+		ToolPolicies:              make(map[string]ToolPolicyResponse),
+		AutoApproveWorkspaceWrites: f.config.Security.AutoApproveWorkspaceWrites,
 	}
 	for name, cfg := range f.config.Security.ToolPolicies {
 		// Filter out internal tools
@@ -322,6 +323,7 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	// Update config — replace the full policy set so config stays in sync
 	// with the registry (the frontend always sends the complete set).
 	f.config.Security.DefaultPolicy = settings.DefaultPolicy
+	f.config.Security.AutoApproveWorkspaceWrites = settings.AutoApproveWorkspaceWrites
 	newPolicies := make(map[string]config.ToolPolicyConfig, len(settings.ToolPolicies))
 	for name, policyCfg := range settings.ToolPolicies {
 		// Silently skip internal tools

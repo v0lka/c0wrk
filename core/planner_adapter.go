@@ -37,10 +37,16 @@ func c0wrkPromptSet() planner.PromptSet {
 
 // plannerPromptExcludedTools is the set of infrastructure tool names that
 // must NOT appear in the planner's prompt tool list. These are
-// executor-internal tools (finish, set_step_status, ask_user, etc.) that
-// the planner should never plan for executors. Listing them under
-// "Available Executor Tools" causes LLMs trained on tool calling to
-// output tool-call-like text instead of the expected plan JSON.
+// executor-internal lifecycle tools (finish, set_step_status, ask_user,
+// etc.) — they are never relevant to plan construction and cause LLMs
+// trained on tool calling to output tool-call-like text instead of the
+// expected plan JSON.
+//
+// Contract: Every name in this map MUST correspond to an executor-internal
+// tool (registered in core/tools/registry.go). No plan-level tool (e.g.
+// read_file, bash_exec, web_search) may be added here. This map and
+// filterPlannerPromptTools form the sole gate between the tool registry
+// and the planner prompt.
 var plannerPromptExcludedTools = map[string]bool{
 	ToolFinish:         true,
 	ToolAskUser:        true,

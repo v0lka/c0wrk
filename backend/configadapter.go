@@ -126,11 +126,12 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			},
 		},
 		Security: core.BuilderSecurityConfig{
-			JudgeModel:              cfg.Security.Judge.Model,
-			InjectionDefenseEnabled: derefBool(cfg.Security.InjectionDefense.Enabled),
-			ToolPolicies:            toolPolicies,
-			DefaultPolicy:           cfg.Security.DefaultPolicy,
-			AgentsMDMaxBytes:        cfg.Security.AgentsMDMaxBytes,
+			JudgeModel:                 cfg.Security.Judge.Model,
+			InjectionDefenseEnabled:    derefBool(cfg.Security.InjectionDefense.Enabled),
+			ToolPolicies:               toolPolicies,
+			DefaultPolicy:              cfg.Security.DefaultPolicy,
+			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
+			AgentsMDMaxBytes:           cfg.Security.AgentsMDMaxBytes,
 		},
 		Skills: core.BuilderSkillsConfig{
 			Dirs: cfg.Skills.Dirs,

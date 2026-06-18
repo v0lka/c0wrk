@@ -21,9 +21,11 @@ export function WorkspacePanel() {
   // explorer with file-name search. Git and Semantics are unavailable anyway.
   if (isNoProject) {
     return (
-      <div className="flex h-full flex-col overflow-hidden">
-        <FileTreePanel />
-      </div>
+      <TooltipProvider>
+        <div className="flex h-full flex-col overflow-hidden">
+          <FileTreePanel />
+        </div>
+      </TooltipProvider>
     )
   }
 

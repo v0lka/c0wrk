@@ -10,6 +10,10 @@ let cachedDefaultModel: string | null = null
 /** Cache version bump forces re-fetch in all mounted components. */
 let cacheVersion = 0
 
+/** Listeners notified on cache invalidation. Each mounted useConfigData
+ *  hook pushes a callback to bump its local setVersion. */
+const listeners: Array<() => void> = []
+
 interface ConfigData {
   /** All enabled models with reasoning metadata. */
   allModels: ModelInfo[]
@@ -27,6 +31,9 @@ export function invalidateConfigCache(): void {
   cachedModels = null
   cachedDefaultModel = null
   cacheVersion++
+  for (const fn of listeners) {
+    fn()
+  }
 }
 
 /**
@@ -38,6 +45,17 @@ export function useConfigData(): ConfigData {
   const [allModels, setAllModels] = useState<ModelInfo[]>(cachedModels ?? [])
   const [defaultModel, setDefaultModel] = useState<string>(cachedDefaultModel ?? '')
   const [version, setVersion] = useState(cacheVersion)
+
+  // Subscribe to cache invalidation so this hook re-fetches when
+  // invalidateConfigCache() is called from elsewhere (e.g. settings save).
+  useEffect(() => {
+    const onChange = () => setVersion((v) => v + 1)
+    listeners.push(onChange)
+    return () => {
+      const idx = listeners.indexOf(onChange)
+      if (idx !== -1) listeners.splice(idx, 1)
+    }
+  }, [])
 
   useEffect(() => {
     if (cachedModels !== null && version === cacheVersion) return

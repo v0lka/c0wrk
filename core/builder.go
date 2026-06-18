@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -262,7 +263,15 @@ func (b *OrchestratorBuilder) Build(
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
-	if len(cfg.LLM.ProviderConfigs) == 0 {
+	// Verify at least one provider has models enabled.
+	hasModels := false
+	for _, pc := range cfg.LLM.ProviderConfigs {
+		if len(pc.Models) > 0 {
+			hasModels = true
+			break
+		}
+	}
+	if !hasModels {
 		return nil, errors.New("no active LLM provider configured - check your config.yaml")
 	}
 
@@ -763,26 +772,24 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		})
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
+	// Collect unknown names and iterate in sorted order for determinism.
+	var unknown []string
 	for name, pc := range cfg.LLM.ProviderConfigs {
-		if len(pc.Models) == 0 {
+		if len(pc.Models) == 0 || slices.Contains(providerOrder, name) {
 			continue
 		}
-		found := false
-		for _, p := range providers {
-			if p.Name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			providers = append(providers, llm.ProviderEntry{
-				Name:         name,
-				ProviderType: pc.ProviderType,
-				APIKey:       cfg.ExpandEnvVars(pc.APIKey),
-				BaseURL:      cfg.ExpandEnvVars(pc.BaseURL),
-				Models:       pc.Models,
-			})
-		}
+		unknown = append(unknown, name)
+	}
+	sort.Strings(unknown)
+	for _, name := range unknown {
+		pc := cfg.LLM.ProviderConfigs[name]
+		providers = append(providers, llm.ProviderEntry{
+			Name:         name,
+			ProviderType: pc.ProviderType,
+			APIKey:       cfg.ExpandEnvVars(pc.APIKey),
+			BaseURL:      cfg.ExpandEnvVars(pc.BaseURL),
+			Models:       pc.Models,
+		})
 	}
 
 	routerCfg := llm.RouterConfig{
@@ -1011,6 +1018,8 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	if cfg.Security.DefaultPolicy != "" {
 		b.registry.SetDefaultPolicy(sdktools.ParseToolPolicy(cfg.Security.DefaultPolicy))
 	}
+
+	b.registry.SetAutoApproveWorkspaceWrites(cfg.Security.AutoApproveWorkspaceWrites)
 }
 
 // ---------------------------------------------------------------------------

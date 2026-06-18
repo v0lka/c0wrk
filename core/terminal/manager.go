@@ -15,29 +15,8 @@ import (
 	"sync"
 
 	"github.com/creack/pty"
+	"github.com/v0lka/c0wrk/internal/shellresolver"
 )
-
-// resolveShell finds an available shell binary. It checks the SHELL environment
-// variable first (validating the path exists), then searches PATH for common
-// shell names, and finally falls back to known absolute paths.
-func resolveShell() string {
-	if s := os.Getenv("SHELL"); s != "" {
-		if resolved, err := exec.LookPath(s); err == nil {
-			return resolved
-		}
-	}
-	for _, name := range []string{"zsh", "bash", "sh"} {
-		if resolved, err := exec.LookPath(name); err == nil {
-			return resolved
-		}
-	}
-	for _, path := range []string{"/bin/zsh", "/bin/bash", "/bin/sh"} {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	return "/bin/sh"
-}
 
 // buildTermEnv returns the current process environment with terminal-specific
 // variables injected. xterm.js is an xterm-compatible terminal with 256-color
@@ -108,7 +87,7 @@ func (m *Manager) Start(sessionID, workDir string) error {
 		return fmt.Errorf("terminal already active for session %s", sessionID)
 	}
 
-	shell := resolveShell()
+	shell := shellresolver.Resolve()
 
 	ctx, cancel := context.WithCancel(m.rootCtx)
 	cmd := exec.CommandContext(ctx, shell, "-l")

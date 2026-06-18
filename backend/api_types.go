@@ -108,8 +108,9 @@ type ProxySettingsRequest struct {
 
 // SecuritySettingsResponse holds security settings for the frontend.
 type SecuritySettingsResponse struct {
-	DefaultPolicy string                        `json:"default_policy"`
-	ToolPolicies  map[string]ToolPolicyResponse `json:"tool_policies"`
+	DefaultPolicy               string                        `json:"default_policy"`
+	ToolPolicies                 map[string]ToolPolicyResponse `json:"tool_policies"`
+	AutoApproveWorkspaceWrites   bool                          `json:"auto_approve_workspace_writes"`
 }
 
 // ToolPolicyResponse holds per-tool policy for the frontend.

@@ -72,7 +72,7 @@ export function isMCPServerStatus(v: unknown): v is MCPServerStatus {
 }
 
 export function isSecuritySettingsResponse(v: unknown): v is SecuritySettingsResponse {
-    return isObj(v) && has(v, 'default_policy', 'tool_policies')
+    return isObj(v) && has(v, 'default_policy', 'tool_policies', 'auto_approve_workspace_writes')
 }
 
 export function isBlackboardState(v: unknown): v is BlackboardState {

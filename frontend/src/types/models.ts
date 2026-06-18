@@ -225,6 +225,7 @@ export interface ToolPolicyResponse {
 export interface SecuritySettingsResponse {
   default_policy: string
   tool_policies: Record<string, ToolPolicyResponse>
+  auto_approve_workspace_writes: boolean
 }
 
 export interface ToolInfo {

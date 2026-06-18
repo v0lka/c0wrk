@@ -1,5 +1,7 @@
 A plan execution completed but some steps failed. Revise the plan to address the failures.
 
+CRITICAL: Do NOT attempt to execute steps yourself. You are only revising a plan. Never output anything other than the plan structure.
+
 Original plan:
 ORIGINAL-PLAN
 

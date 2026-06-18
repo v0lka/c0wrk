@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 // defaultProtectedTools is the default list of tools whose output is always preserved during pruning.
 var defaultProtectedTools = []string{"store_fact", "search_facts"}
 
@@ -233,6 +235,10 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Search.Provider == "" {
 		cfg.Search.Provider = "tavily"
 	}
+	// Normalize to lowercase for defense-in-depth. The search tool registration
+	// in core/tools/builtin_registration.go also lowercases at consumption time,
+	// but normalizing here ensures consistent values throughout the pipeline.
+	cfg.Search.Provider = strings.ToLower(cfg.Search.Provider)
 
 	// Tool limits defaults
 	if cfg.ToolLimits.ReadDefaultLines == 0 {

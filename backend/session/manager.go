@@ -261,6 +261,9 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		// a stable, fully qualified workspace directory.
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
 			workspacePath = absPath
+		} else {
+			m.log().Warn("failed to resolve absolute workspace path for restored session",
+				"session_id", id, "path", workspacePath, "error", absErr)
 		}
 		if mkErr := os.MkdirAll(workspacePath, 0o755); mkErr != nil {
 			m.log().Warn("failed to recreate per-session workspace on restore", "session_id", id, "error", mkErr)
@@ -461,6 +464,9 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		// a stable, fully qualified workspace directory.
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
 			workspacePath = absPath
+		} else {
+			m.log().Warn("failed to resolve absolute workspace path for new session",
+				"session_id", id, "path", workspacePath, "error", absErr)
 		}
 		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create per-session workspace: %w", err)

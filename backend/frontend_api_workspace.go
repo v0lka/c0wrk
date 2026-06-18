@@ -37,6 +37,12 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 	// (e.g. ~/.c0wrk/projects/__no_project__/) instead of the project
 	// workspace (e.g. .../__no_project__/Workspace) so that per-session
 	// workspaces (e.g. .../__no_project__/sessions/<id>/Workspace) pass.
+	//
+	// NOTE: resolveWorkspacePath does NOT enforce the structural
+	// sessions/<uuid>/Workspace constraint — that lives in ListDirectory,
+	// the user-facing entry point. ReadFile, GetFileIcon, and GetFileDiff
+	// receive paths returned by ListDirectory, so the trust boundary is
+	// maintained.
 	if projectID == project.NoProjectID {
 		absRoot = filepath.Dir(projectPath)
 		absRoot, err = filepath.Abs(absRoot)
@@ -226,6 +232,24 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	}
 	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(filepath.Separator)) {
 		return nil, errors.New("path outside project workspace")
+	}
+
+	// No Project: enforce that sessions/ paths follow the
+	// sessions/<uuid>/Workspace/... pattern. This prevents access to
+	// other sessions' workspaces and to non-workspace files like
+	// .session_index.json. Other paths under the No Project base
+	// directory (e.g. the shared Workspace placeholder) are allowed.
+	if projectID == project.NoProjectID {
+		rel, relErr := filepath.Rel(absRoot, absDir)
+		if relErr == nil {
+			parts := strings.Split(filepath.ToSlash(rel), "/")
+			if len(parts) >= 1 && parts[0] == "sessions" {
+				// Must be sessions/<uuid>/Workspace[/...]
+				if len(parts) < 3 || parts[2] != "Workspace" {
+					return nil, errors.New("access denied: path under sessions/ must be sessions/<id>/Workspace")
+				}
+			}
+		}
 	}
 
 	var ignoredPaths map[string]bool
