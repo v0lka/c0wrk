@@ -745,9 +745,36 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	}
 
 	// Build provider entries from all enabled providers.
+	// Iterate in a deterministic order (matching backend/config allProviderEntries)
+	// to ensure the first provider in the list is predictable.
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
+	providerOrder := []string{"anthropic", "gemini", "lmstudio", "openai_compatible", "chatgpt"}
+	for _, name := range providerOrder {
+		pc, ok := cfg.LLM.ProviderConfigs[name]
+		if !ok || len(pc.Models) == 0 {
+			continue
+		}
+		providers = append(providers, llm.ProviderEntry{
+			Name:         name,
+			ProviderType: pc.ProviderType,
+			APIKey:       cfg.ExpandEnvVars(pc.APIKey),
+			BaseURL:      cfg.ExpandEnvVars(pc.BaseURL),
+			Models:       pc.Models,
+		})
+	}
+	// Also include any providers not in the standard order (e.g. future additions).
 	for name, pc := range cfg.LLM.ProviderConfigs {
-		if len(pc.Models) > 0 {
+		if len(pc.Models) == 0 {
+			continue
+		}
+		found := false
+		for _, p := range providers {
+			if p.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
 			providers = append(providers, llm.ProviderEntry{
 				Name:         name,
 				ProviderType: pc.ProviderType,

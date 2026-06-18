@@ -13,7 +13,6 @@ export function BlackboardPanel() {
     const hasBB = useHasBlackboardState()
     const sidebarCollapsed = useUIStore(s => s.sidebarCollapsed)
     const viewerCollapsed = useFileViewerStore(s => s.collapsed)
-    const hasViewerTabs = useFileViewerStore(s => s.openTabs.length > 0)
 
     const [open, setOpen] = useState(false)
     const [search, setSearch] = useState('')
@@ -24,7 +23,7 @@ export function BlackboardPanel() {
         <div className={cn(
             'border-t border-x border-border bg-card',
             sidebarCollapsed && 'ml-1',
-            viewerCollapsed && hasViewerTabs && 'mr-1',
+            viewerCollapsed && 'mr-1',
         )}>
             <div className="group">
                 <button

@@ -100,9 +100,14 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
       {blockingMessage && mode === 'chat' && (
         <span className="text-xs italic text-muted-foreground">{blockingMessage}</span>
       )}
+      {mode === 'chat' && (
+        <>
+          <div className="w-px h-4 bg-border mx-1" />
+          <ModelCombobox />
+          <ReasoningCombobox />
+        </>
+      )}
       <div className="flex-1" />
-      {mode === 'chat' && <ModelCombobox />}
-      {mode === 'chat' && <ReasoningCombobox />}
       {showCancel ? (
         <Button
           variant="outline"

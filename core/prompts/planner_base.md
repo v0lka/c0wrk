@@ -12,7 +12,9 @@ MODE-GUIDANCE
 
 AGENT-PROFILES
 MODE-EXTRA-SECTIONS
-Available tools:
+### Available Executor Tools
+
+The step executors will have access to these tools:
 AVAILABLE-TOOLS
 
 Available skills:

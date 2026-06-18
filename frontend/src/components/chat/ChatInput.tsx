@@ -20,7 +20,6 @@ export function ChatInput() {
   const controller = useChatInputController()
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const viewerCollapsed = useFileViewerStore((s) => s.collapsed)
-  const hasViewerTabs = useFileViewerStore((s) => s.openTabs.length > 0)
   const { height, setHeight } = controller
 
   const cleanupRef = useRef<(() => void) | null>(null)
@@ -66,7 +65,7 @@ export function ChatInput() {
       className={cn(
         'flex flex-col flex-shrink-0 border-t border-x border-border bg-card overflow-hidden',
         sidebarCollapsed && 'ml-1',
-        viewerCollapsed && hasViewerTabs && 'mr-1',
+        viewerCollapsed && 'mr-1',
       )}
       style={{ height }}
     >

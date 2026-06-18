@@ -15,7 +15,6 @@ export function ExecutionPanels() {
   const planTotal = usePlanTotal()
   const sidebarCollapsed = useUIStore(s => s.sidebarCollapsed)
   const viewerCollapsed = useFileViewerStore(s => s.collapsed)
-  const hasViewerTabs = useFileViewerStore(s => s.openTabs.length > 0)
 
   const [planOpen, setPlanOpen] = useState(false)
   const [expandedItems, setExpandedItems] = useState<Set<string>>(() => new Set())
@@ -36,7 +35,7 @@ export function ExecutionPanels() {
     <div className={cn(
       'border-t border-x border-border bg-card',
       sidebarCollapsed && 'ml-1',
-      viewerCollapsed && hasViewerTabs && 'mr-1',
+      viewerCollapsed && 'mr-1',
     )}>
       <div className="group">
         <button

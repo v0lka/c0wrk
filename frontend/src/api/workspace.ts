@@ -5,6 +5,20 @@ import { logger } from '@/lib/logger'
 import { isFileEntry, isArrayOf } from '@/types/guards'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
+export async function getSessionWorkspace(sessionId: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.GetSessionWorkspace(sessionId)
+    if (typeof result !== 'string') {
+      throw new Error('getSessionWorkspace: backend returned non-string data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get session workspace:', err)
+    throw err
+  }
+}
+
 export async function listDirectory(path: string, recursive = false): Promise<FileEntry[]> {
   try {
     const app = getApp()

@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { switchProject } from '@/api/projects'
+import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import { cn } from '@/lib/utils'
 import { PanelLeftClose, PanelLeftOpen, Settings, MessageCircle, Code2 } from 'lucide-react'
 
@@ -16,13 +16,14 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
   const projects = useProjectStore((s) => s.projects)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const lastRealProjectId = useProjectStore((s) => s.lastRealProjectId)
+  const switchProjectWithState = useProjectSwitchState()
 
   const noProject = projects?.find((p) => p.is_no_project)
   const isChatMode = noProject ? activeProjectId === noProject.id : false
 
   const handleToggleMode = useCallback(async (mode: 'chat' | 'code') => {
     if (mode === 'chat' && noProject && activeProjectId !== noProject.id) {
-      await switchProject(noProject.id)
+      await switchProjectWithState(noProject.id)
     } else if (mode === 'code') {
       // Resolve target: lastRealProjectId if it still exists, otherwise first real project.
       const real = lastRealProjectId
@@ -30,10 +31,10 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
         : null
       const target = real ?? projects?.find((p) => !p.is_no_project)
       if (target && activeProjectId !== target.id) {
-        await switchProject(target.id)
+        await switchProjectWithState(target.id)
       }
     }
-  }, [noProject, activeProjectId, lastRealProjectId, projects])
+  }, [noProject, activeProjectId, lastRealProjectId, projects, switchProjectWithState])
 
   const hasRealProject = projects?.some((p) => !p.is_no_project)
 

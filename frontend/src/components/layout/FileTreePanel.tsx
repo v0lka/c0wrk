@@ -1,14 +1,15 @@
-import { useEffect, useCallback, useMemo } from 'react'
+import { useEffect, useCallback, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory } from '@/api/workspace'
+import { useSessionStore } from '@/stores/sessionStore'
+import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory, getSessionWorkspace } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FileIcon } from './FileIcon'
-import { ChevronRight, Loader2, Regex } from 'lucide-react'
+import { ChevronRight, Loader2, Regex, FolderTree } from 'lucide-react'
 import { useFileSearch } from '@/hooks/useFileSearch'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
@@ -150,6 +151,7 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths }: TreeNodeProps) {
 export function FileTreePanel() {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const projects = useProjectStore((s) => s.projects)
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const rootPath = useFileTreeStore((s) => s.rootPath)
   const rootEntries = useFileTreeStore((s) => (rootPath ? s.tree[rootPath] : undefined))
   const gitStatusRaw = useFileTreeStore((s) => s.gitStatus)
@@ -163,21 +165,45 @@ export function FileTreePanel() {
 
   const { status: gitStatus, propagated: propagatedPaths } = useMemo(() => propagateGitStatus(gitStatusRaw), [gitStatusRaw])
 
-  const workspacePath = activeProjectId && projects
+  const isNoProject = useMemo(() => {
+    return projects?.find((p) => p.id === activeProjectId)?.is_no_project === true
+  }, [activeProjectId, projects])
+
+  // Project-level workspace path (correct for regular projects;
+  // for No Project this is the empty placeholder directory).
+  const projectWorkspacePath = activeProjectId && projects
     ? projects.find((p) => p.id === activeProjectId)?.workspace_path ?? null
     : null
 
-  // Load root on project change
+  // For No Project, each session has its own isolated workspace that differs
+  // from the project workspace. Fetch it via GetSessionWorkspace RPC.
+  const [sessionWorkspacePath, setSessionWorkspacePath] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isNoProject || !activeSessionId) {
+      setSessionWorkspacePath(null)
+      return
+    }
+    let cancelled = false
+    getSessionWorkspace(activeSessionId).then((wsPath) => {
+      if (!cancelled) setSessionWorkspacePath(wsPath)
+    }).catch(() => {
+      // Keep previous value on error; fall back to project workspace.
+    })
+    return () => { cancelled = true }
+  }, [isNoProject, activeSessionId])
+
+  const workspacePath = isNoProject ? (sessionWorkspacePath ?? projectWorkspacePath) : projectWorkspacePath
+
+  // Load root on project or session change
   useEffect(() => {
     if (!workspacePath) { clearTree(); return }
     let cancelled = false
 
-    const activeProject = projects?.find((p) => p.id === activeProjectId)
-    const isNoProject = activeProject?.is_no_project === true
-
     setRootPath(workspacePath)
     const ops: Promise<unknown>[] = [
-      listDirectory(workspacePath).then((entries) => { if (!cancelled) setEntries(workspacePath, entries) }),
+      listDirectory(workspacePath)
+        .then((entries) => { if (!cancelled) setEntries(workspacePath, entries) })
+        .catch(() => { if (!cancelled) setEntries(workspacePath, []) }),
     ]
     // Skip file watching for No Project (back-end has no active watcher).
     if (!isNoProject) {
@@ -195,7 +221,7 @@ export function FileTreePanel() {
       cancelled = true
       unwatchDirectory(workspacePath).catch(() => { })
     }
-  }, [workspacePath, activeProjectId, projects, clearTree, setRootPath, setEntries, setGitStatus])
+  }, [workspacePath, isNoProject, activeProjectId, projects, clearTree, setRootPath, setEntries, setGitStatus])
 
   // Refresh on workspace:tree_changed
   useEffect(() => {
@@ -244,7 +270,9 @@ export function FileTreePanel() {
       ) : isFiltering ? (
         <p className="flex-1 p-4 text-center text-xs text-muted-foreground">No matching files</p>
       ) : rootEntries ? (
-        <p className="flex-1 p-4 text-center text-xs text-muted-foreground">Empty directory</p>
+        <div className="flex-1 flex items-center justify-center">
+          <FolderTree className="size-12 text-muted-foreground/30" />
+        </div>
       ) : (
         <p className="flex-1 p-4 text-center text-xs text-muted-foreground">
           {activeProjectId ? 'Loading workspace...' : 'Select a project to browse files'}

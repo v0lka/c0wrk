@@ -58,12 +58,12 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   const filePath = hint && isFileTool ? hint : undefined
 
   const titleNode = useMemo(() => (
-    <span className="text-sm min-w-0 overflow-hidden">
+    <span className="text-sm min-w-0 truncate" title={filePath ? undefined : (hint || title)}>
       <span className="text-muted-foreground">{config.verb}: </span>
       {filePath ? (
         <FileLink path={filePath} label={title} className="text-sm" />
       ) : (
-        <span title={hint}>{title}</span>
+        title
       )}
     </span>
   ), [config.verb, filePath, title, hint])

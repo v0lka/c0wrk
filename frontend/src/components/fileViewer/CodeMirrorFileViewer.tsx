@@ -5,7 +5,9 @@ import { EditorState, Compartment } from '@codemirror/state'
 import { lineNumbers } from '@codemirror/view'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { relativePath } from '@/lib/localFileLink'
+import { getSessionWorkspace } from '@/api/workspace'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
 import { Markdown } from '@/lib/markdownConfig'
 import { Button } from '@/components/ui/button'
@@ -85,9 +87,35 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   const activeFile = useFileViewerStore((s) => s.activeFile)
   const projects = useProjectStore((s) => s.projects)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
-  const workspacePath = activeProjectId && projects
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+
+  const isNoProject = useMemo(() => {
+    return projects?.find((p) => p.id === activeProjectId)?.is_no_project === true
+  }, [activeProjectId, projects])
+
+  // Project-level workspace path (correct for regular projects;
+  // for No Project this is the empty placeholder directory).
+  const projectWorkspacePath = activeProjectId && projects
     ? projects.find((p) => p.id === activeProjectId)?.workspace_path ?? null
     : null
+
+  // For No Project, each session has its own isolated workspace. Fetch it.
+  const [sessionWorkspacePath, setSessionWorkspacePath] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isNoProject || !activeSessionId) {
+      setSessionWorkspacePath(null)
+      return
+    }
+    let cancelled = false
+    getSessionWorkspace(activeSessionId).then((wsPath) => {
+      if (!cancelled) setSessionWorkspacePath(wsPath)
+    }).catch(() => {
+      // Keep previous value on error; fall back to project workspace.
+    })
+    return () => { cancelled = true }
+  }, [isNoProject, activeSessionId])
+
+  const workspacePath = isNoProject ? (sessionWorkspacePath ?? projectWorkspacePath) : projectWorkspacePath
 
   // Memoize the theme so it's only resolved once
   const theme = useMemo(() => createOneDarkCMTheme(), [])

@@ -46,7 +46,7 @@ export function ChatEditorPane({ controller }: ChatEditorPaneProps) {
         />
       </div>
       <div className={cn(
-        'absolute inset-0 px-3 py-1',
+        'absolute inset-0 px-3 pb-1',
         mode !== 'terminal' && 'opacity-0 pointer-events-none -z-10',
       )}>
         <TerminalPanel sessionId={activeSessionId} visible={mode === 'terminal'} />

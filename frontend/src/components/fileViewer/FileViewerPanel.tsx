@@ -1,4 +1,4 @@
-import { Folder, PanelRightOpen } from 'lucide-react'
+import { Folder, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { Button } from '@/components/ui/button'
 import { FileViewerTabBar } from './FileViewerTabBar'
@@ -25,11 +25,26 @@ export function FileViewerPanel() {
     )
   }
 
-  // No open tabs: show placeholder with muted folder icon
+  // No open tabs: top bar with collapse button (same position as tab bar) + placeholder
   if (openTabs.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full w-full">
-        <Folder className="size-12 text-muted-foreground/30" />
+      <div className="flex flex-col h-full">
+        {/* Top bar matching tab bar height — collapse button in the same pixel position as when tabs are open */}
+        <div className="flex items-center justify-end border-b border-border bg-secondary/50 flex-shrink-0 h-10 pr-2">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="flex-shrink-0"
+            onClick={() => setCollapsed(true)}
+            title="Collapse file viewer"
+          >
+            <PanelRightClose className="size-4" />
+          </Button>
+        </div>
+        {/* Placeholder body */}
+        <div className="flex items-center justify-center flex-1 w-full">
+          <Folder className="size-12 text-muted-foreground/30" />
+        </div>
       </div>
     )
   }

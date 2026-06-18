@@ -2,8 +2,11 @@ import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore, type SessionStats } from '@/stores/planStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useUIStore } from '@/stores/uiStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { domainLabels } from '@/constants/routingLabels'
 import { formatTokenCount } from '@/lib/formatters'
+import { cn } from '@/lib/utils'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
 import { IndexingStatus } from './IndexingStatus'
@@ -23,6 +26,8 @@ export function StatusBar() {
     const active = s.projects?.find((p) => p.id === s.activeProjectId)
     return active?.is_no_project === true
   })
+  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
+  const viewerCollapsed = useFileViewerStore((s) => s.collapsed)
 
   const session = sessions?.find((s) => s.id === activeSessionId)
   const tokens = activeSessionId ? sessionTokens[activeSessionId] : undefined
@@ -33,7 +38,13 @@ export function StatusBar() {
     : undefined
 
   return (
-    <div className="flex h-8 shrink-0 items-center gap-0.5 overflow-hidden border-t border-border bg-background px-3 text-xs text-muted-foreground">
+    <div
+      className={cn(
+        'flex h-8 shrink-0 items-center gap-0.5 overflow-hidden border-t border-border bg-background px-3 text-xs text-muted-foreground',
+        sidebarCollapsed && 'ml-1',
+        viewerCollapsed && 'mr-1',
+      )}
+    >
       {/* Thinking indicator */}
       {activityStatus && (
         <>

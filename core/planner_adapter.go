@@ -35,6 +35,34 @@ func c0wrkPromptSet() planner.PromptSet {
 	}
 }
 
+// plannerPromptExcludedTools is the set of infrastructure tool names that
+// must NOT appear in the planner's prompt tool list. These are
+// executor-internal tools (finish, set_step_status, ask_user, etc.) that
+// the planner should never plan for executors. Listing them under
+// "Available Executor Tools" causes LLMs trained on tool calling to
+// output tool-call-like text instead of the expected plan JSON.
+var plannerPromptExcludedTools = map[string]bool{
+	ToolFinish:         true,
+	ToolAskUser:        true,
+	ToolSetStepStatus:  true,
+	ToolReadStepOutput: true,
+	ToolListStepOutput: true,
+	ToolToolResultRead: true,
+	ToolReadSkillRes:   true,
+}
+
+// filterPlannerPromptTools removes executor-internal tools from the tool list
+// shown in the planner's prompt, keeping only tools relevant for step planning.
+func filterPlannerPromptTools(all []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
+	filtered := make([]sdktools.ToolDescriptor, 0, len(all))
+	for _, t := range all {
+		if !plannerPromptExcludedTools[t.Name] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 // plannerToolNames is the set of tool names available for planner exploration.
 var plannerToolNames = map[string]bool{
 	ToolListDirectory:  true,

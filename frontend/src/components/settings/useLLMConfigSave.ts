@@ -1,5 +1,6 @@
 import { useCallback, useRef, useEffect } from 'react'
 import { updateLLMConfig, MASKED_API_KEY } from '@/api/config'
+import { invalidateConfigCache } from '@/hooks/useConfigData'
 import { logger } from '@/lib/logger'
 import { PROVIDERS, PROVIDERS_WITH_BASE_URL } from '@/lib/llm-providers'
 import type { LLMFullConfigRequest } from '@/types/models'
@@ -44,7 +45,10 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
       }
 
       updateLLMConfig(req as LLMFullConfigRequest)
-        .then(() => onSavedRef.current?.())
+        .then(() => {
+          invalidateConfigCache()
+          onSavedRef.current?.()
+        })
         .catch((error) => logger.error('Failed to save LLM config:', error))
     },
     [], // stable — uses refs for external deps

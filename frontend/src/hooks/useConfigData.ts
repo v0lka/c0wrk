@@ -7,6 +7,9 @@ import type { ModelInfo } from '@/types/models'
 let cachedModels: ModelInfo[] | null = null
 let cachedDefaultModel: string | null = null
 
+/** Cache version bump forces re-fetch in all mounted components. */
+let cacheVersion = 0
+
 interface ConfigData {
   /** All enabled models with reasoning metadata. */
   allModels: ModelInfo[]
@@ -15,16 +18,29 @@ interface ConfigData {
 }
 
 /**
- * Fetch LLM config models once and cache at module level.
- * Multiple components calling this hook share the same single network request.
+ * Invalidate the cached model data so the next render of any useConfigData
+ * consumer triggers a fresh fetch from the backend. Call this after LLM
+ * config changes (e.g. in settings save flow) to keep model selectors and
+ * reasoning comboboxes in sync.
+ */
+export function invalidateConfigCache(): void {
+  cachedModels = null
+  cachedDefaultModel = null
+  cacheVersion++
+}
+
+/**
+ * Fetch LLM config models and cache at module level.
+ * Cache is invalidated when invalidateConfigCache() is called (e.g. after
+ * LLM settings save), forcing a re-fetch in all mounted components.
  */
 export function useConfigData(): ConfigData {
   const [allModels, setAllModels] = useState<ModelInfo[]>(cachedModels ?? [])
   const [defaultModel, setDefaultModel] = useState<string>(cachedDefaultModel ?? '')
+  const [version, setVersion] = useState(cacheVersion)
 
   useEffect(() => {
-    // Already cached — no fetch needed.
-    if (cachedModels !== null) return
+    if (cachedModels !== null && version === cacheVersion) return
 
     let cancelled = false
     getConfig()
@@ -34,6 +50,7 @@ export function useConfigData(): ConfigData {
         const def = cfg.llm?.default_model ?? ''
         cachedModels = models
         cachedDefaultModel = def
+        setVersion(cacheVersion)
         setAllModels(models)
         setDefaultModel(def)
       })
@@ -44,7 +61,7 @@ export function useConfigData(): ConfigData {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [version])
 
   return { allModels, defaultModel }
 }

@@ -24,6 +24,7 @@ export function SessionSelector() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const renameRef = useRef<HTMLInputElement>(null)
 
   const activeSessionsList = useMemo(
@@ -46,11 +47,16 @@ export function SessionSelector() {
   const activeSession = sessions?.find((s) => s.id === activeSessionId)
 
   const handleNewSession = useCallback(async () => {
+    setCreateError(null)
     try {
       const session = await createSession()
       addSession(session)
       setActiveSessionId(session.id)
-    } catch (error) { logger.error('Failed to create session:', error) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.error('Failed to create session:', error)
+      setCreateError(message)
+    }
   }, [addSession, setActiveSessionId])
 
   const handleDelete = useCallback(async (id: string) => {
@@ -102,8 +108,13 @@ export function SessionSelector() {
 
   return (
     <div className="border-b border-border px-2 py-1">
+      {createError && (
+        <div className="mb-1 rounded px-2 py-1 text-[11px] text-destructive bg-destructive/10">
+          {createError}
+        </div>
+      )}
       <div className="flex items-center gap-1">
-        <DropdownMenu open={dropdownOpen} onOpenChange={(o) => { setDropdownOpen(o); if (!o) setSearch('') }}>
+        <DropdownMenu open={dropdownOpen} onOpenChange={(o) => { setDropdownOpen(o); if (!o) setSearch(''); if (o) setCreateError(null) }}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
               <span className="truncate text-muted-foreground">

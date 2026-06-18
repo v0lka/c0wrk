@@ -54,7 +54,7 @@ export function CollapsibleBlock({
         </span>
         {statusIcon}
         {icon}
-        <span className="text-sm min-w-0 overflow-hidden">{label}</span>
+        <span className="text-sm min-w-0 truncate">{label}</span>
         {badge}
         {headerExtra}
       </CollapsibleTrigger>

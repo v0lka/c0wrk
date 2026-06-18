@@ -326,7 +326,7 @@ type plannerSDKAdapter struct {
 }
 
 func (a *plannerSDKAdapter) Plan(ctx context.Context, task string, availableTools []sdktools.ToolDescriptor, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	return a.planner.Plan(ctx, task, availableTools, reflections, a.skillsFor(), false)
+	return a.planner.Plan(ctx, task, filterPlannerPromptTools(availableTools), reflections, a.skillsFor(), false)
 }
 
 func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan, completed []orchestration.CompletedStep, failedStep orchestration.CompletedStep, reflection *orchestration.Reflection, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
@@ -334,7 +334,7 @@ func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan
 }
 
 func (a *plannerSDKAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []sdktools.ToolDescriptor) (*orchestration.Plan, error) {
-	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, a.skillsFor(), false)
+	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, filterPlannerPromptTools(availableTools), a.skillsFor(), false)
 }
 
 // logInfo logs an INFO level message if logger is not nil.

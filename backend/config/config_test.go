@@ -282,8 +282,8 @@ func TestGetAllProviderConfigs(t *testing.T) {
 	}
 
 	providers := cfg.GetAllProviderConfigs()
-	if len(providers) != 2 {
-		t.Fatalf("Expected 2 providers with models, got %d", len(providers))
+	if len(providers) != 5 {
+		t.Fatalf("Expected 5 providers (all known), got %d", len(providers))
 	}
 
 	// Check first provider

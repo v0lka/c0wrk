@@ -10,10 +10,6 @@ function basename(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max) + '...' : s
-}
-
 function safeParseArgs(args: Args, rawArgs: string): Record<string, unknown> {
   if (args) return args
   try {
@@ -27,7 +23,7 @@ function safeParseArgs(args: Args, rawArgs: string): Record<string, unknown> {
 
 export function extractBashTitle(args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
-  return truncate(str(parsed, 'command') || 'command', 60)
+  return str(parsed, 'command') || 'command'
 }
 
 export function extractFileTitle(args: Args, rawArgs: string): string {
@@ -51,15 +47,15 @@ export function extractDirTitle(args: Args, rawArgs: string): string {
 export function extractSearchTitle(args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
   const pattern = str(parsed, 'pattern') || str(parsed, 'query')
-  if (pattern) return truncate(pattern, 50)
+  if (pattern) return pattern
   const keywords = parsed.keywords
-  if (Array.isArray(keywords)) return truncate(keywords.join(', '), 50)
+  if (Array.isArray(keywords)) return keywords.join(', ')
   return 'query'
 }
 
 export function extractUrlTitle(args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
-  return truncate(str(parsed, 'url') || 'URL', 50)
+  return str(parsed, 'url') || 'URL'
 }
 
 export function extractMemoTitle(toolName: string, args: Args, rawArgs: string): string {
@@ -67,7 +63,7 @@ export function extractMemoTitle(toolName: string, args: Args, rawArgs: string):
   if (toolName === 'set_step_status') return 'step status'
   if (toolName === 'store_fact') {
     const keywords = parsed.keywords
-    if (Array.isArray(keywords) && keywords.length > 0) return `fact: ${truncate(keywords.join(', '), 40)}`
+    if (Array.isArray(keywords) && keywords.length > 0) return `fact: ${keywords.join(', ')}`
     return 'fact'
   }
   return toolName

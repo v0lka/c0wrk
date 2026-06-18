@@ -393,19 +393,19 @@ func providerType(name string) string {
 	}
 }
 
-// GetAllProviderConfigs returns all providers that have at least one model enabled.
+// GetAllProviderConfigs returns all known providers, including those with no
+// models enabled yet. Callers that require enabled models (e.g. the LLM router)
+// filter by len(Models) > 0 at the usage site.
 func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 	var result []ProviderWithModels
 	for _, p := range c.allProviderEntries() {
-		if len(p.models) > 0 {
-			result = append(result, ProviderWithModels{
-				Name:         p.name,
-				ProviderType: providerType(p.name),
-				APIKey:       p.apiKey,
-				BaseURL:      p.baseURL,
-				Models:       p.models,
-			})
-		}
+		result = append(result, ProviderWithModels{
+			Name:         p.name,
+			ProviderType: providerType(p.name),
+			APIKey:       p.apiKey,
+			BaseURL:      p.baseURL,
+			Models:       p.models,
+		})
 	}
 	return result
 }

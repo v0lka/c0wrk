@@ -11,6 +11,28 @@ import (
 	"time"
 )
 
+// resolveShellForEnv finds an available shell binary using the same resolution
+// strategy as core/terminal.resolveShell, but duplicated here to avoid an
+// import cycle (config → core/terminal is not allowed).
+func resolveShellForEnv() string {
+	if s := os.Getenv("SHELL"); s != "" {
+		if resolved, err := exec.LookPath(s); err == nil {
+			return resolved
+		}
+	}
+	for _, name := range []string{"zsh", "bash", "sh"} {
+		if resolved, err := exec.LookPath(name); err == nil {
+			return resolved
+		}
+	}
+	for _, path := range []string{"/bin/zsh", "/bin/bash", "/bin/sh"} {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "/bin/sh"
+}
+
 // LoadShellEnvironment loads environment variables from the user's shell profile.
 // This is necessary on macOS where apps launched from Finder/Dock don't inherit
 // shell environment variables (like those set in .zshrc/.bash_profile).
@@ -25,11 +47,10 @@ func LoadShellEnvironment(logger *slog.Logger) {
 		return
 	}
 
-	// Get user's shell from SHELL env var, fallback to zsh on macOS
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/zsh"
-	}
+	// Resolve the user's shell using PATH lookup with fallbacks.
+	// On macOS, when launched from Finder, SHELL may be unset or point to
+	// a non-existent path — use exec.LookPath for reliable resolution.
+	shell := resolveShellForEnv()
 
 	// Run shell with -l (login) flag to source profile files
 	// We avoid -i (interactive) to prevent extra output from .zshrc/.bashrc

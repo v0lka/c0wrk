@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/v0lka/c0wrk/sdk/agent"
@@ -115,8 +116,14 @@ func CreateSearchProvider(providerName, apiKey string, timeout time.Duration) we
 
 // CreateSearchProviderWithClient creates a search provider with an optional HTTP client.
 // Returns nil if the provider requires an API key but none is configured.
+// Provider name matching is case-insensitive; unrecognized names fall back to tavily.
 func CreateSearchProviderWithClient(providerName, apiKey string, timeout time.Duration, client *http.Client) websearch.SearchProvider {
-	switch providerName {
+	switch strings.ToLower(providerName) {
+	case "tavily", "":
+		if apiKey == "" {
+			return nil
+		}
+		return websearch.NewTavilyProviderWithClient(apiKey, timeout, client)
 	case "brave":
 		if apiKey == "" {
 			return nil
@@ -129,7 +136,8 @@ func CreateSearchProviderWithClient(providerName, apiKey string, timeout time.Du
 		return websearch.NewExaProviderWithClient(apiKey, timeout, client)
 	case "duckduckgo":
 		return websearch.NewDuckDuckGoProviderWithClient(timeout, client)
-	default: // "tavily" or empty
+	default:
+		// Unrecognized provider name — treat as tavily.
 		if apiKey == "" {
 			return nil
 		}

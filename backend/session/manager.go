@@ -250,6 +250,23 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		return nil, fmt.Errorf("failed to resolve workspace for project %s: %w", info.ProjectID, err)
 	}
 
+	// For No Project, each session gets its own isolated workspace.
+	// The resolver above returns the project-level workspace which is
+	// shared, but No Project sessions must use per-session workspaces
+	// (the same logic as CreateSession). Re-derive it here so that
+	// lazily restored sessions use the correct directory.
+	if info.ProjectID == project.NoProjectID {
+		workspacePath = filepath.Join(m.projectsDir, project.NoProjectID, "sessions", id, "Workspace")
+		// Ensure the path is always absolute so tools and prompts receive
+		// a stable, fully qualified workspace directory.
+		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
+			workspacePath = absPath
+		}
+		if mkErr := os.MkdirAll(workspacePath, 0o755); mkErr != nil {
+			m.log().Warn("failed to recreate per-session workspace on restore", "session_id", id, "error", mkErr)
+		}
+	}
+
 	// Create session logger.
 	logger, logFile, err := m.createSessionLogger(id)
 	if err != nil {
@@ -440,6 +457,11 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// For No Project, each session gets its own isolated workspace.
 	if projectID == project.NoProjectID {
 		workspacePath = filepath.Join(m.projectsDir, project.NoProjectID, "sessions", id, "Workspace")
+		// Ensure the path is always absolute so tools and prompts receive
+		// a stable, fully qualified workspace directory.
+		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
+			workspacePath = absPath
+		}
 		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create per-session workspace: %w", err)
 		}

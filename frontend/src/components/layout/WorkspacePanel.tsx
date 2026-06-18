@@ -17,6 +17,16 @@ export function WorkspacePanel() {
     return active?.is_no_project === true
   })
 
+  // In CHAT (No Project) mode, hide the tab strip entirely — only show the file
+  // explorer with file-name search. Git and Semantics are unavailable anyway.
+  if (isNoProject) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden">
+        <FileTreePanel />
+      </div>
+    )
+  }
+
   return (
     <TooltipProvider>
       <Tabs defaultValue="explorer" className="flex h-full flex-col gap-0">
@@ -29,19 +39,19 @@ export function WorkspacePanel() {
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <TabsTrigger value="git" className="px-2" disabled={isNoProject}>
+              <TabsTrigger value="git" className="px-2">
                 <GitBranch className="size-4" />
               </TabsTrigger>
             </TooltipTrigger>
-            <TooltipContent side="bottom">{isNoProject ? 'Git (unavailable in No Project)' : 'Git'}</TooltipContent>
+            <TooltipContent side="bottom">Git</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <TabsTrigger value="semantics" className="px-2" disabled={isNoProject}>
+              <TabsTrigger value="semantics" className="px-2">
                 <Database className="size-4" />
               </TabsTrigger>
             </TooltipTrigger>
-            <TooltipContent side="bottom">{isNoProject ? 'Semantics (unavailable in No Project)' : 'Semantics'}</TooltipContent>
+            <TooltipContent side="bottom">Semantics</TooltipContent>
           </Tooltip>
         </TabsList>
 

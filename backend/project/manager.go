@@ -34,10 +34,16 @@ func (m *Manager) EnsureNoProject() error {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	wsPath := filepath.Join(m.projectsDir, NoProjectID, "Workspace")
+	// Ensure the stored path is always absolute so it remains valid
+	// regardless of runtime working directory changes.
+	if absPath, err := filepath.Abs(wsPath); err == nil {
+		wsPath = absPath
+	}
 	info := ProjectInfo{
 		ID:            NoProjectID,
 		Name:          "No Project",
-		WorkspacePath: filepath.Join(m.projectsDir, NoProjectID, "Workspace"),
+		WorkspacePath: wsPath,
 		IsExternal:    false,
 		IsNoProject:   true,
 		CreatedAt:     now,

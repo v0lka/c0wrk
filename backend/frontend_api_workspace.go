@@ -15,9 +15,13 @@ import (
 
 // resolveWorkspacePath validates that filePath is within the active project
 // workspace and returns the resolved absolute path and workspace root.
+// For No Project (CHAT mode), the validation root is the No Project base
+// directory (which contains both the placeholder Workspace and per-session
+// session workspaces), allowing file operations on session-isolated workspaces.
 func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
+	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
@@ -28,7 +32,17 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 	if err != nil {
 		return "", "", fmt.Errorf("invalid path: %w", err)
 	}
-	absRoot, err = filepath.Abs(projectPath)
+
+	// For No Project, validate against the No Project base directory
+	// (e.g. ~/.c0wrk/projects/__no_project__/) instead of the project
+	// workspace (e.g. .../__no_project__/Workspace) so that per-session
+	// workspaces (e.g. .../__no_project__/sessions/<id>/Workspace) pass.
+	if projectID == project.NoProjectID {
+		absRoot = filepath.Dir(projectPath)
+		absRoot, err = filepath.Abs(absRoot)
+	} else {
+		absRoot, err = filepath.Abs(projectPath)
+	}
 	if err != nil {
 		return "", "", fmt.Errorf("invalid workspace path: %w", err)
 	}
@@ -47,22 +61,29 @@ func resolveFileIcon(info os.FileInfo) (icon, color string) {
 
 // GetSessionWorkspace returns the workspace directory path for a given session.
 // When the session is known to the session manager, its specific WorkspacePath
-// is returned ONLY if it matches the active project — this guards against
+// is returned if it belongs to the active project — this guards against
 // returning a stale workspace from a session that belongs to a different
 // project the user switched away from.
+// For No Project (CHAT mode), each session has its own isolated workspace
+// (under projectsDir/__no_project__/sessions/<id>/Workspace) which differs
+// from the project-level workspace path. In this case the session workspace
+// is always preferred.
 // Falls back to the active project workspace path if the session is not yet
-// registered, the manager is unavailable, or the session's workspace does not
-// match the active project.
+// registered, the manager is unavailable, or the session belongs to a
+// different project.
 func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	f.activeProjectMu.RLock()
 	activeProject := f.activeProjectPath
+	activeProjectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
 
 	if sessionID != "" && f.app != nil {
 		if mgr := f.app.Manager(); mgr != nil {
 			if wsPath, ok := mgr.GetSessionWorkspacePath(sessionID); ok && wsPath != "" {
-				// Only return the session workspace if it belongs to the active project.
-				if wsPath == activeProject || activeProject == "" {
+				// Return the session workspace if it belongs to the active project.
+				// For No Project, session and project workspaces differ by design
+				// (per-session isolation), so match by project ID instead.
+				if wsPath == activeProject || activeProject == "" || activeProjectID == project.NoProjectID {
 					return wsPath, nil
 				}
 			}
@@ -177,6 +198,7 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
+	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
@@ -187,7 +209,18 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	if err != nil {
 		return nil, fmt.Errorf("invalid path: %w", err)
 	}
-	absRoot, err := filepath.Abs(projectPath)
+
+	// For No Project, validate against the No Project base directory
+	// (e.g. ~/.c0wrk/projects/__no_project__/) instead of the project
+	// workspace (e.g. .../__no_project__/Workspace) so that per-session
+	// workspaces (e.g. .../__no_project__/sessions/<id>/Workspace) pass.
+	var absRoot string
+	if projectID == project.NoProjectID {
+		absRoot = filepath.Dir(projectPath)
+	} else {
+		absRoot = projectPath
+	}
+	absRoot, err = filepath.Abs(absRoot)
 	if err != nil {
 		return nil, fmt.Errorf("invalid workspace path: %w", err)
 	}

@@ -9,9 +9,9 @@ describe('extractBashTitle', () => {
   it('extracts command from parsedArgs', () => {
     expect(extractBashTitle({ command: 'go test ./...' }, '')).toBe('go test ./...')
   })
-  it('truncates long commands', () => {
+  it('returns long commands in full', () => {
     const long = 'a'.repeat(100)
-    expect(extractBashTitle({ command: long }, '')).toBe('a'.repeat(60) + '...')
+    expect(extractBashTitle({ command: long }, '')).toBe(long)
   })
   it('falls back to raw args', () => {
     expect(extractBashTitle(undefined, '{"command":"npm run build"}')).toBe('npm run build')
@@ -58,9 +58,9 @@ describe('extractSearchTitle', () => {
   it('extracts keywords array', () => {
     expect(extractSearchTitle({ keywords: ['auth', 'login'] }, '')).toBe('auth, login')
   })
-  it('truncates long patterns', () => {
+  it('returns long patterns in full', () => {
     const long = 'x'.repeat(80)
-    expect(extractSearchTitle({ pattern: long }, '')).toBe('x'.repeat(50) + '...')
+    expect(extractSearchTitle({ pattern: long }, '')).toBe(long)
   })
 })
 
@@ -68,9 +68,9 @@ describe('extractUrlTitle', () => {
   it('extracts url', () => {
     expect(extractUrlTitle({ url: 'https://example.com/api' }, '')).toBe('https://example.com/api')
   })
-  it('truncates long urls', () => {
+  it('returns long urls in full', () => {
     const long = 'https://' + 'a'.repeat(100)
-    expect(extractUrlTitle({ url: long }, '').length).toBe(53)
+    expect(extractUrlTitle({ url: long }, '')).toBe(long)
   })
 })
 
