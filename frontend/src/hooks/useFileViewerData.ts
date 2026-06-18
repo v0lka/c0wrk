@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { subscribe } from '@/api/runtime'
 import { readFile, getFileDiff } from '@/api/workspace'
 import { isBinaryContent } from '@/lib/fileViewerUtils'
@@ -28,7 +29,13 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
       const content = await readFile(path)
       if (isBinaryContent(content)) { setFileBinary(path); return }
       setFileContent(path, content, detectLanguageFromPath(path))
-      try { const diff = await getFileDiff(path); if (diff) setFileDiff(path, diff) } catch { /* optional */ }
+      // Skip diff for No Project (no git operations)
+      const activeProject = useProjectStore.getState().projects?.find(
+        (p) => p.id === useProjectStore.getState().activeProjectId
+      )
+      if (activeProject?.is_no_project !== true) {
+        try { const diff = await getFileDiff(path); if (diff) setFileDiff(path, diff) } catch { /* optional */ }
+      }
     } catch (err) { setFileError(path, err instanceof Error ? err.message : String(err)) }
   }, [setFileLoading, setFileBinary, setFileContent, setFileDiff, setFileError])
 

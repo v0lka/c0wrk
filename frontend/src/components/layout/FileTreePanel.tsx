@@ -172,18 +172,30 @@ export function FileTreePanel() {
     if (!workspacePath) { clearTree(); return }
     let cancelled = false
 
+    const activeProject = projects?.find((p) => p.id === activeProjectId)
+    const isNoProject = activeProject?.is_no_project === true
+
     setRootPath(workspacePath)
-    Promise.all([
+    const ops: Promise<unknown>[] = [
       listDirectory(workspacePath).then((entries) => { if (!cancelled) setEntries(workspacePath, entries) }),
-      getGitStatus(workspacePath).then((status) => { if (!cancelled) setGitStatus(status) }),
-      watchDirectory(workspacePath),
-    ]).catch(() => { /* ignore */ })
+    ]
+    // Skip file watching for No Project (back-end has no active watcher).
+    if (!isNoProject) {
+      ops.push(watchDirectory(workspacePath))
+    }
+    // Skip git status for No Project
+    if (!isNoProject) {
+      ops.push(getGitStatus(workspacePath).then((status) => { if (!cancelled) setGitStatus(status) }))
+    } else {
+      setGitStatus({})
+    }
+    Promise.all(ops).catch(() => { /* ignore */ })
 
     return () => {
       cancelled = true
       unwatchDirectory(workspacePath).catch(() => { })
     }
-  }, [workspacePath, clearTree, setRootPath, setEntries, setGitStatus])
+  }, [workspacePath, activeProjectId, projects, clearTree, setRootPath, setEntries, setGitStatus])
 
   // Refresh on workspace:tree_changed
   useEffect(() => {
@@ -191,7 +203,12 @@ export function FileTreePanel() {
       const rp = useFileTreeStore.getState().rootPath
       if (!rp) return
       listDirectory(rp).then((entries) => setEntries(rp, entries)).catch(() => { })
-      getGitStatus(rp).then(setGitStatus).catch(() => { })
+      const activeProject = useProjectStore.getState().projects?.find(
+        (p) => p.id === useProjectStore.getState().activeProjectId
+      )
+      if (activeProject?.is_no_project !== true) {
+        getGitStatus(rp).then(setGitStatus).catch(() => { })
+      }
     })
     return unsub
   }, [setEntries, setGitStatus])

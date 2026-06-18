@@ -85,6 +85,7 @@ func (s *SQLiteProjectStore) LoadProject(ctx context.Context, id string) (*Proje
 	if err != nil {
 		return nil, fmt.Errorf("failed to load project: %w", err)
 	}
+	info.IsNoProject = info.ID == NoProjectID
 	return &info, nil
 }
 
@@ -105,6 +106,7 @@ func (s *SQLiteProjectStore) ListProjects(ctx context.Context) ([]ProjectInfo, e
 		if err := rows.Scan(&info.ID, &info.Name, &info.WorkspacePath, &info.IsExternal, &info.CreatedAt, &info.LastActiveAt); err != nil {
 			return nil, fmt.Errorf("failed to scan project: %w", err)
 		}
+		info.IsNoProject = info.ID == NoProjectID
 		projects = append(projects, info)
 	}
 	if err := rows.Err(); err != nil {

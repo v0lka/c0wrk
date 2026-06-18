@@ -26,7 +26,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `chatStore`          | Messages per session, streaming text, activity flags, token counts | No           |
 | `planStore`          | DAG items per session, step status, routing stats                  | No           |
 | `sessionStore`       | Session list (sorted by last_active_at), active session ID, project-switch reset (`resetForProjectSwitch`) | No           |
-| `projectStore`       | Project list (sorted by last_active_at), active project ID         | No           |
+| `projectStore`       | Project list (sorted by last_active_at, No Project always first), active project ID, lastRealProjectId (for CODE toggle) | No           |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search, git status      | No           |
 | `fileViewerStore`    | Open files (content/diff/language), tabs, panel width, project-switch file restore (`restoreProjectFiles`) | localStorage |
 | `inputModeStore`     | Chat/terminal input mode, panel height, expanded state, selected model override, selected reasoning effort | localStorage |

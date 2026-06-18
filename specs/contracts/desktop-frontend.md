@@ -53,7 +53,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method                   | Parameters                  | Returns                         | Description |
 | ------------------------ | --------------------------- | ------------------------------- | ----------- |
-| `CreateProject`          | name, externalPath          | (\*ProjectInfo, error)         | Create project |
+| `CreateProject`          | name, externalPath          | (\*ProjectInfo, error)         | Create project with external workspace (UI always supplies externalPath; internal workspaces reserved for No Project auto-creation) |
 | `DeleteProject`          | id                          | error                           | Delete project |
 | `RenameProject`          | id, name                    | error                           | Rename project |
 | `ListProjects`           | —                           | ([]ProjectInfo, error)          | List all projects |

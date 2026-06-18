@@ -92,6 +92,36 @@ func (r *ToolRegistry) List() []ToolDescriptor {
 	return descriptors
 }
 
+// ListFiltered returns descriptors for all registered tools except those
+// whose names appear in excludeNames. An empty or nil excludeNames returns all tools.
+func (r *ToolRegistry) ListFiltered(excludeNames map[string]bool) []ToolDescriptor {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	descriptors := make([]ToolDescriptor, 0, len(r.tools))
+	for _, tool := range r.tools {
+		if excludeNames != nil && excludeNames[tool.Name()] {
+			continue
+		}
+		source := "core"
+		if s, ok := r.toolSources[tool.Name()]; ok {
+			source = s
+		}
+		sourceCategory := SourceCategoryCore
+		if strings.HasPrefix(source, "mcp") {
+			sourceCategory = SourceCategoryMCP
+		}
+		descriptors = append(descriptors, ToolDescriptor{
+			Name:           tool.Name(),
+			Description:    tool.Description(),
+			InputSchema:    tool.InputSchema(),
+			Source:         source,
+			SourceCategory: sourceCategory,
+		})
+	}
+	return descriptors
+}
+
 // Execute looks up a tool by name and executes it with the given input.
 // Returns an error if the tool is not found.
 // This is a simple execute with NO policy enforcement, NO confirmation, NO judge.

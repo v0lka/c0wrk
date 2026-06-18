@@ -7,13 +7,14 @@ Provides tool infrastructure for the agent: discovery, registration, policy enfo
 ## Key Files
 
 - `sdk/tools/tool.go` — Tool interface, ToolDescriptor, ToolPolicy, ToolResult, BaseTool
-- `sdk/tools/registry.go` — SDK ToolRegistry (basic get/list/execute)
+- `sdk/tools/registry.go` — SDK ToolRegistry (basic get/list/execute/ListFiltered)
 - `sdk/security/wrap.go` — Content wrapping for untrusted tool output (indirect prompt injection defense)
 - `core/tools/registry.go` — core ToolRegistry (wraps SDK, adds policies/judge/hooks/symlink check)
 - `core/tools/symlink.go` — symlink detection, traversal, confirmation gating
 - `core/tools/builtin_registration.go` — RegisterBuiltinTools function
 - `core/tools/judge.go` — ToolJudge (LLM-based safety evaluation)
 - `core/tools/mcp/gateway.go` — MCP Gateway (dynamic tool discovery)
+- `core/toolnames.go` — tool name constants, NoProjectDisabledTools, NoProjectBashBlacklist
 
 ## Core Types
 
@@ -72,13 +73,16 @@ const (
 │  │  (basic store: Register, Get, List, Execute) │   │
 │  └─────────────────────────────────────────────┘   │
 │                                                     │
-│  + resolvePolicy()      policy resolution chain     │
-│  + confirmAndExecute()  user confirmation flow      │
-│  + SetJudge()           LLM safety evaluation       │
-│  + SetPreExecuteHook()  pre-execution gate          │
-│  + SetToolFilter()      registration filter         │
-│  + SetParamInjector()   input transformation        │
-│  + RegisterWithSource() filtered registration       │
+│  + resolvePolicy()        policy resolution chain     │
+│  + confirmAndExecute()    user confirmation flow      │
+│  + SetJudge()             LLM safety evaluation        │
+│  + SetPreExecuteHook()    pre-execution gate          │
+│  + SetToolFilter()         registration filter         │
+│  + SetParamInjector()     input transformation        │
+│  + RegisterWithSource()   filtered registration       │
+│  + SetDisabledTools()     block tools by name (e.g., No Project) │
+│  + DisabledTools()        read disabled-tool set       │
+│  + SetExtraBashBlacklist()  runtime bash command blacklist       │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -88,15 +92,17 @@ const (
 ToolRegistry.Execute(ctx, name, input)
 │
 ├─ 1. Lookup tool by name → not found? return error result
-├─ 2. Internal tool? → execute immediately (bypass all checks)
-├─ 3. PreExecuteHook (blocking gate, e.g., index ready)
-├─ 4. ParamInjector (transform input, e.g., scope paths)
-├─ 5. Symlink Gate: detect symlinks in input paths
+├─ 2. Disabled tool (No Project mode)? → return error result (applies to ALL tools including internal)
+├─ 3. Extra bash blacklist match? → return error result (per-session, e.g., No Project blocks dev commands)
+├─ 4. Internal tool? → execute immediately (bypass remaining policy/judge/hook checks)
+├─ 5. PreExecuteHook (blocking gate, e.g., index ready)
+├─ 6. ParamInjector (transform input, e.g., scope paths)
+├─ 7. Symlink Gate: detect symlinks in input paths
 │      ├─ Symlinks found → force confirmation (unless always_deny)
 │      └─ No symlinks → continue
-├─ 6. resolvePolicy: per-tool > skill > default > tool's own
-├─ 7. Auto-approval: all paths in workspace/temp? → execute
-└─ 8. Apply policy:
+├─ 8. resolvePolicy: per-tool > skill > default > tool's own
+├─ 9. Auto-approval: all paths in workspace/temp? → execute
+└─ 10. Apply policy:
       ├─ AlwaysAllow → execute (unless ToolJudger flags)
       ├─ AlwaysDeny → error result
       └─ UserConfirm → confirmFunc blocks → execute or deny
@@ -105,12 +111,14 @@ ToolRegistry.Execute(ctx, name, input)
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools (ask_user, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact, tool_result_read) bypass all checks
+- Internal tools (ask_user, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact, tool_result_read) bypass policy and judge checks, but disabled-tool and extra-bash-blacklist checks apply to all tools including internal ones
 - The symlink gate runs before policy resolution for every non-internal tool call
 - Symlinks in workspace or temp dir that are OS-level infrastructure (e.g., macOS /tmp → /private/tmp) are filtered out and do not trigger confirmation
 - MCP tools are tagged with source `mcp`
 - Core built-in tools are tagged with source `core`
 - Tool filter can silently reject registration (no error returned)
+- Disabled tools are blocked at execution time; the registry's `SetDisabledTools` and `DisabledTools` methods deep-copy the map to prevent concurrent mutation
+- Extra bash blacklist patterns are compiled at set time and checked against `bash_exec` command input; the check runs before the internal-tool bypass
 - The registry is thread-safe (sync.RWMutex)
 - Untrusted tool output (IsUntrusted() == true) is wrapped in <untrusted-content> tags before entering the LLM context
 - All MCP tools are untrusted; built-in untrusted tools set `Untrusted: true` on their `BaseTool` (classifications: web_search, web_fetch, bash_exec, ripgrep, glob, read_file)
@@ -157,6 +165,8 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 - `ParamInjector` — transform tool input (e.g., inject workspace path for MCP tools)
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
 - New built-in tools: implement `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools`
+- To disable tools at runtime (e.g., for No Project mode): call `SetDisabledTools(names)` on the core registry; all tools including internal ones are blocked at execution time
+- To add runtime bash command restrictions: call `SetExtraBashBlacklist(patterns)` on the core registry; patterns are compiled regexps checked before `bash_exec` execution
 
 ## Related Specs
 

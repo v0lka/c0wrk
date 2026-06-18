@@ -18,7 +18,7 @@
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
 | `Plan`, `PlanStep`    | sdk/orchestration (direct) | core → backend | Plan structure                        |
 | `ToolPolicy`          | sdk/tools      | backend → core | Security policy values                |
-| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation) |
+| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation, ExtraBashBlacklist) |
 | `Manager`             | sdk/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
 | `PTYManager`          | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
 | `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |
@@ -112,7 +112,8 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Model override         | backend → core | `HandleOptions.ModelOverride`            |
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
-| Available tools config | backend → core | `BuiltinToolsConfig` (incl. perToolTruncation) |
+| Available tools config | backend → core | `BuiltinToolsConfig` (incl. perToolTruncation, ExtraBashBlacklist) |
+| No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies      | backend → core | `BuilderConfig.Security`                 |
 | Execution result       | core → backend | `*HandleResult`                          |

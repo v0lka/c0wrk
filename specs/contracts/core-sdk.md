@@ -63,7 +63,8 @@
 | `Tool`                 | sdk/tools | core/tools (embedded registry) | Tool interface (incl. IsUntrusted())          |
 | `BaseTool`             | sdk/tools | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
 | `IsUntrustedTool()`    | sdk/tools | REMOVED                        | Replaced by ToolExecutor.IsToolUntrusted() — delegates to Tool.IsUntrusted() + MCP source check |
-| `ToolRegistry`         | sdk/tools | core/tools (embedded)          | Basic tool store                              |
+| `ToolRegistry`         | sdk/tools | core/tools (embedded)          | Basic tool store                |
+| `ListFiltered`         | sdk/tools | core/orchestrator              | Filtered tool listing (e.g., exclude disabled tools) |
 | `ToolDescriptor`       | sdk/tools | core/orchestrator, planner     | Tool metadata                                 |
 | `ToolPolicy`           | sdk/tools | core/tools                     | Policy enum                                   |
 | `ToolResult`           | sdk/tools | core/tools                     | Execution result                              |

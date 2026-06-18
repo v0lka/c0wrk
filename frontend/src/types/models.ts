@@ -5,6 +5,7 @@ export interface ProjectInfo {
   readonly name: string
   readonly workspace_path: string
   readonly is_external: boolean
+  readonly is_no_project: boolean
   readonly created_at: string
   readonly last_active_at: string
 }

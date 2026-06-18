@@ -83,6 +83,9 @@ backend/workspace.StartWatcher(projectPath)
       └─ Frontend: fileTreeStore refreshes affected subtree
 ```
 
+File watching is skipped for No Project (the per-session workspace has no
+meaningful filesystem to watch).
+
 ### Git Integration
 
 - `GetGitStatus()` returns per-file status (modified, added, deleted, untracked)
@@ -93,6 +96,7 @@ backend/workspace.StartWatcher(projectPath)
 - All git calls use `exec.CommandContext(ctx, "git", ...)` with stdout/stderr capture; errors are propagated, never swallowed
 - Non-repository paths are distinguished from failures by matching `"not a git repository"` in stderr; a legitimate non-repo returns an empty result, any other error is returned to the caller
 - The `git` binary is a hard runtime dependency — its absence is detected at startup by `desktop.verifyExternalDependencies` (fatal modal + quit), not at call sites
+- No Project: `isGitRepo()` returns false (no git operations), `GetGitStatus` returns empty map, `GetFileDiff` returns empty string
 
 ### Vector Index
 
@@ -119,6 +123,7 @@ App started
   → Emit vector_index:status event (state=ready)
 
 Project switched (after vector index ready)
+  → No Project: skip entirely (no indexing)
   → vectorindex.CurrentBranch(ctx, workspacePath) via git CLI
   → backend/vectorindex: SwitchBranch(branch) → Start indexing (background goroutine)
   → GitMonitor watches .git/HEAD for subsequent branch changes
@@ -151,6 +156,9 @@ Filename search is available via the `glob` built-in tool (`sdk/tools/builtins/g
 - Missing `git` binary is a fatal startup condition, never a runtime surprise
 - ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path
 - Vector search RPC returns empty results (not an error) if invoked before the embedder is ready
+- No Project: file watching, git operations, and vector indexing are all skipped (deactivated at the FrontendAPI layer)
+- No Project: git status and diff always return empty (no git process spawned)
+- No Project: vector search never returns results (indexer is never started, semantic_search tool is disabled anyway)
 
 ## Configuration
 

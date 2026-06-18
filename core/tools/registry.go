@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -56,10 +57,12 @@ type ToolRegistry struct {
 	skillPolicyOverrides map[string]sdktools.ToolPolicy
 	defaultPolicy        sdktools.ToolPolicy
 	hasDefaultPolicy     bool
-	preExecuteHook       PreExecuteHook
-	toolFilter           ToolFilter
-	paramInjector        ParamInjector
-	logger               *slog.Logger
+	preExecuteHook        PreExecuteHook
+	toolFilter            ToolFilter
+	paramInjector         ParamInjector
+	disabledTools         map[string]bool
+	extraBashBlacklist    []*regexp.Regexp
+	logger                *slog.Logger
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -85,15 +88,22 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	defer r.mu.RUnlock()
 
 	cloned := &ToolRegistry{
-		ToolRegistry:     r.ToolRegistry, // shared SDK registry (tool definitions)
-		confirmFunc:      r.confirmFunc,
-		judge:            r.judge,
-		defaultPolicy:    r.defaultPolicy,
-		hasDefaultPolicy: r.hasDefaultPolicy,
-		preExecuteHook:   r.preExecuteHook,
-		toolFilter:       r.toolFilter,
-		paramInjector:    r.paramInjector,
-		logger:           r.logger,
+		ToolRegistry:        r.ToolRegistry, // shared SDK registry (tool definitions)
+		confirmFunc:         r.confirmFunc,
+		judge:               r.judge,
+		defaultPolicy:       r.defaultPolicy,
+		hasDefaultPolicy:    r.hasDefaultPolicy,
+		preExecuteHook:      r.preExecuteHook,
+		toolFilter:          r.toolFilter,
+		paramInjector:       r.paramInjector,
+		extraBashBlacklist:  r.extraBashBlacklist, // shared (compiled regexps are read-only)
+		logger:              r.logger,
+	}
+	if r.disabledTools != nil {
+		cloned.disabledTools = make(map[string]bool, len(r.disabledTools))
+		for k, v := range r.disabledTools {
+			cloned.disabledTools[k] = v
+		}
 	}
 	if r.policyOverrides != nil {
 		cloned.policyOverrides = make(map[string]sdktools.ToolPolicy, len(r.policyOverrides))
@@ -108,6 +118,58 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		}
 	}
 	return cloned
+}
+
+// SetDisabledTools sets tool names that are blocked from execution.
+// Used by No Project mode to disable code-oriented tools.
+// An empty or nil map clears all disabled tools.
+// The caller's map is deep-copied so future mutations to it do not affect the registry.
+func (r *ToolRegistry) SetDisabledTools(names map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(names) == 0 {
+		r.disabledTools = nil
+		return
+	}
+	r.disabledTools = make(map[string]bool, len(names))
+	for k, v := range names {
+		r.disabledTools[k] = v
+	}
+}
+
+// DisabledTools returns a copy of the current set of disabled tool names.
+// Returns nil if no tools are disabled.
+func (r *ToolRegistry) DisabledTools() map[string]bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.disabledTools == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(r.disabledTools))
+	for k, v := range r.disabledTools {
+		out[k] = v
+	}
+	return out
+}
+
+// SetExtraBashBlacklist compiles and stores additional bash command blacklist
+// patterns checked at execution time. This allows per-session blacklist
+// augmentation (e.g., No Project mode blocks development tools) without
+// re-registering the shared bash_exec tool instance.
+// An empty or nil slice clears the extra blacklist.
+func (r *ToolRegistry) SetExtraBashBlacklist(patterns []string) error {
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return fmt.Errorf("invalid extra bash blacklist pattern %q: %w", p, err)
+		}
+		compiled = append(compiled, re)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.extraBashBlacklist = compiled
+	return nil
 }
 
 // SetLogger sets the logger for the tool registry. If nil, slog.Default() is used.
@@ -224,16 +286,49 @@ func (r *ToolRegistry) SetSkillPolicyOverrides(overrides map[string]sdktools.Too
 // Execute looks up a tool by name and executes it with the given input.
 // Returns an error if the tool is not found.
 // Security policy is resolved via resolvePolicy() and applied accordingly.
-// Internal tools bypass all policy and judge checks.
+// Internal tools bypass policy and judge checks, but disabled-tool checks
+// (No Project mode) are applied to all tools including internal ones.
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
 	tool, ok := r.Get(name)
 	if !ok {
 		return sdktools.ToolResult{Content: "tool not found: " + name, IsError: true}, nil
 	}
 
-	// Internal tools bypass all policy/judge checks
+	// Check disabled tools (No Project mode) — MUST precede internal bypass
+	// so that tools like semantic_search are blocked at execution time too.
+	r.mu.RLock()
+	disabled := r.disabledTools
+	extraBashBL := r.extraBashBlacklist
+	r.mu.RUnlock()
+	if disabled != nil && disabled[name] {
+		return sdktools.ToolResult{
+			Content: fmt.Sprintf("tool %q is not available in No Project mode", name),
+			IsError: true,
+		}, nil
+	}
+
+	// Internal tools bypass remaining policy/judge checks
 	if IsInternalTool(name) {
 		return tool.Execute(ctx, input)
+	}
+
+	// Extra bash blacklist check (per-session, e.g. No Project mode).
+	// Parses the input to extract the command and checks it against
+	// compiled patterns.
+	if name == "bash_exec" && len(extraBashBL) > 0 {
+		var params struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(input, &params); err == nil && params.Command != "" {
+			for _, re := range extraBashBL {
+				if re.MatchString(params.Command) {
+					return sdktools.ToolResult{
+						Content: fmt.Sprintf("command %q is not available in No Project mode", params.Command),
+						IsError: true,
+					}, nil
+				}
+			}
+		}
 	}
 
 	// Get source for hooks

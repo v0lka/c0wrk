@@ -9,6 +9,7 @@ import (
 
 	"github.com/epilande/go-devicons"
 
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
@@ -87,13 +88,20 @@ func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
 
 // GetGitStatus returns a map of absolute file paths to their git status for the
 // active project. Delegates to core/workspace.GitStatus after path validation.
+// Returns an empty map for No Project (no git operations).
 func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
+	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
 		return nil, errors.New("no active project")
+	}
+
+	// No Project: git operations are not available.
+	if projectID == project.NoProjectID {
+		return map[string]GitStatusEntry{}, nil
 	}
 
 	absDir, err := filepath.Abs(dirPath)
@@ -130,7 +138,17 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 // within the active project workspace. Uses the cached isGitRepo check to
 // avoid redundant git rev-parse calls, then delegates to the appropriate
 // core/workspace variant.
+// Returns an empty string for No Project (no git operations).
 func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
+	// No Project: git diff is not available. Check before resolveWorkspacePath
+	// to avoid misleading path-resolution errors.
+	f.activeProjectMu.RLock()
+	isNoProject := f.activeProjectID == project.NoProjectID
+	f.activeProjectMu.RUnlock()
+	if isNoProject {
+		return "", nil
+	}
+
 	absPath, absRoot, err := f.resolveWorkspacePath(filePath)
 	if err != nil {
 		return "", err

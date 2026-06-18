@@ -15,14 +15,12 @@ interface CreateProjectDialogProps {
 
 export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogProps) {
   const [name, setName] = useState('')
-  const [isExternal, setIsExternal] = useState(false)
   const [externalPath, setExternalPath] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const switchProjectWithState = useProjectSwitchState()
 
   const reset = () => {
     setName('')
-    setIsExternal(false)
     setExternalPath('')
   }
 
@@ -39,10 +37,10 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
   }
 
   const handleSubmit = async () => {
-    if (!name.trim()) return
+    if (!name.trim() || !externalPath) return
     setSubmitting(true)
     try {
-      const project = await createProject(name.trim(), isExternal ? externalPath : undefined)
+      const project = await createProject(name.trim(), externalPath)
       try {
         await switchProjectWithState(project.id)
       } catch {
@@ -63,11 +61,24 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
         <DialogHeader>
           <DialogTitle>Create Project</DialogTitle>
           <DialogDescription>
-            Give your project a name and choose workspace type.
+            Choose a workspace directory and give your project a name.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Directory</label>
+            <Button variant="outline" size="sm" className="gap-1.5 w-full justify-start" onClick={handlePickDir}>
+              <FolderOpen className="size-4" />
+              {externalPath ? 'Change directory' : 'Choose directory'}
+            </Button>
+            {externalPath && (
+              <p className="truncate text-xs text-muted-foreground" title={externalPath}>
+                {externalPath}
+              </p>
+            )}
+          </div>
+
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Project name</label>
             <Input
@@ -78,40 +89,6 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
               onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
             />
           </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground">Workspace</label>
-            <div className="flex gap-2">
-              <Button
-                variant={!isExternal ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => { setIsExternal(false); setExternalPath('') }}
-              >
-                Internal
-              </Button>
-              <Button
-                variant={isExternal ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setIsExternal(true)}
-              >
-                External
-              </Button>
-            </div>
-          </div>
-
-          {isExternal && (
-            <div className="space-y-2">
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={handlePickDir}>
-                <FolderOpen className="size-4" />
-                Choose directory
-              </Button>
-              {externalPath && (
-                <p className="truncate text-xs text-muted-foreground" title={externalPath}>
-                  {externalPath}
-                </p>
-              )}
-            </div>
-          )}
         </div>
 
         <DialogFooter>
@@ -120,7 +97,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={!name.trim() || (isExternal && !externalPath) || submitting}
+            disabled={!name.trim() || !externalPath || submitting}
           >
             {submitting ? 'Creating...' : 'Create'}
           </Button>

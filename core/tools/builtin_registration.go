@@ -15,12 +15,13 @@ import (
 // All limit and callback types are imported directly from their source packages
 // per ADR-008 (no type re-exports).
 type BuiltinToolsConfig struct {
-	FileLimits      builtins.FileLimits
-	RipgrepLimits   builtins.RipgrepLimits
-	WebFetchLimits  builtins.WebFetchLimits
-	WebSearchLimits builtins.WebSearchLimits
-	BashTimeouts    builtins.BashTimeouts
-	BashBlacklist   []string
+	FileLimits          builtins.FileLimits
+	RipgrepLimits       builtins.RipgrepLimits
+	WebFetchLimits      builtins.WebFetchLimits
+	WebSearchLimits     builtins.WebSearchLimits
+	BashTimeouts        builtins.BashTimeouts
+	BashBlacklist       []string
+	ExtraBashBlacklist  []string
 
 	// Search provider configuration.
 	SearchProvider string
@@ -45,8 +46,11 @@ type BuiltinToolsConfig struct {
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
 func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error {
-	// Bash
-	bashTool, err := builtins.NewBashExecToolWithTimeouts(cfg.BashBlacklist, cfg.BashTimeouts)
+	// Bash (merge configured blacklist with any extra patterns)
+	allBlacklist := make([]string, 0, len(cfg.BashBlacklist)+len(cfg.ExtraBashBlacklist))
+	allBlacklist = append(allBlacklist, cfg.BashBlacklist...)
+	allBlacklist = append(allBlacklist, cfg.ExtraBashBlacklist...)
+	bashTool, err := builtins.NewBashExecToolWithTimeouts(allBlacklist, cfg.BashTimeouts)
 	if err != nil {
 		return fmt.Errorf("bash tool: %w", err)
 	}

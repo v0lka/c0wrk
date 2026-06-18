@@ -226,6 +226,7 @@ export namespace backend {
 	    openai_compatible: ConfigProviderFull;
 	    chatgpt: ConfigProviderFull;
 	    all_models: ModelInfo[];
+	    models_ready: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigLLMResponse(source);
@@ -240,6 +241,7 @@ export namespace backend {
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ConfigProviderFull);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderFull);
 	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
+	        this.models_ready = source["models_ready"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -720,6 +722,7 @@ export namespace project {
 	    name: string;
 	    workspace_path: string;
 	    is_external: boolean;
+	    is_no_project: boolean;
 	    created_at: string;
 	    last_active_at: string;
 	
@@ -733,6 +736,7 @@ export namespace project {
 	        this.name = source["name"];
 	        this.workspace_path = source["workspace_path"];
 	        this.is_external = source["is_external"];
+	        this.is_no_project = source["is_no_project"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
 	    }

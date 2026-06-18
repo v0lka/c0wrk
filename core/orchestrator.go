@@ -125,6 +125,12 @@ type Orchestrator struct {
 	vectorSearchFunc    builtins.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
 
+	// isNoProject is set to true when this orchestrator runs inside the
+	// "No Project" pseudo-project. When true, the routing domain is
+	// overridden from "code" to "general" so that code-oriented planning
+	// and execution strategies are not applied.
+	isNoProject bool
+
 	// currentRequestCtx captures the ctx produced at the top of HandleMessage
 	// (after WithActiveSkills). coreStepConfigurator's step-local skill narrowing
 	// and plannerSDKAdapter's Replan callback both read from this pointer to
@@ -628,6 +634,25 @@ func (o *Orchestrator) emitInitialContextFill(ctx context.Context) {
 	o.emitter.ContextFill(0, 0, effectiveMax, "ok", "")
 }
 
+// SetNoProjectMode configures this orchestrator for No Project mode:
+// disables code-oriented tools, adds extended bash command blacklist,
+// and marks the orchestrator to override code domain to general.
+func (o *Orchestrator) SetNoProjectMode() {
+	o.isNoProject = true
+	if o.coreToolRegistry == nil {
+		if o.logger != nil {
+			o.logger.Warn("SetNoProjectMode: coreToolRegistry is nil, skipping tool configuration")
+		}
+		return
+	}
+	o.coreToolRegistry.SetDisabledTools(NoProjectDisabledTools)
+	if err := o.coreToolRegistry.SetExtraBashBlacklist(NoProjectBashBlacklist); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("failed to set extra bash blacklist for No Project", "error", err)
+		}
+	}
+}
+
 // SetReasoningEffort propagates the per-request reasoning effort to all components
 // that make LLM calls: router, planner, and the SDK P&E engine.
 func (o *Orchestrator) SetReasoningEffort(effort string) {
@@ -679,8 +704,13 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		return nil, err
 	}
 
-	// 2. Get available tools.
-	availableTools := o.toolRegistry.List()
+	// 2. Get available tools (exclude disabled tools in No Project mode).
+	var availableTools []sdktools.ToolDescriptor
+	if o.coreToolRegistry != nil {
+		availableTools = o.toolRegistry.ListFiltered(o.coreToolRegistry.DisabledTools())
+	} else {
+		availableTools = o.toolRegistry.List()
+	}
 	mcpCount := 0
 	for _, t := range availableTools {
 		if t.SourceCategory == sdktools.SourceCategoryMCP {
@@ -696,6 +726,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 	if clarification != nil {
 		return clarification, nil
+	}
+
+	// No Project mode: override code domain to general so that
+	// code-oriented planning and execution strategies are not applied.
+	if o.isNoProject && routing.Domain == "code" {
+		routing.Domain = "general"
 	}
 
 	// Capture ctx and skills for step configurator / planner adapter. Cleared on return.

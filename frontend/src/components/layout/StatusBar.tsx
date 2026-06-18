@@ -1,6 +1,7 @@
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore, type SessionStats } from '@/stores/planStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { domainLabels } from '@/constants/routingLabels'
 import { formatTokenCount } from '@/lib/formatters'
 import { Separator } from '@/components/ui/separator'
@@ -18,6 +19,10 @@ export function StatusBar() {
   const activityStatus = useChatStore((s) => s.activityStatus)
   const sessionTokens = useChatStore((s) => s.sessionTokens)
   const sessionStats = usePlanStore((s) => s.sessionStats)
+  const isNoProject = useProjectStore((s) => {
+    const active = s.projects?.find((p) => p.id === s.activeProjectId)
+    return active?.is_no_project === true
+  })
 
   const session = sessions?.find((s) => s.id === activeSessionId)
   const tokens = activeSessionId ? sessionTokens[activeSessionId] : undefined
@@ -87,8 +92,8 @@ export function StatusBar() {
         </>
       )}
 
-      {/* Vector index status */}
-      <IndexingStatus />
+      {/* Vector index status (hidden for No Project) */}
+      {!isNoProject && <IndexingStatus />}
 
       {/* Spacer */}
       <div className="flex-1" />

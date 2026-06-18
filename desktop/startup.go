@@ -120,6 +120,10 @@ func (a *App) Startup(ctx context.Context) {
 	var projectMgr *project.Manager
 	if projStore != nil {
 		projectMgr = project.NewManager(projStore, projectsDir)
+		// Ensure the "No Project" pseudo-project always exists.
+		if err := projectMgr.EnsureNoProject(); err != nil {
+			log.Warn("failed to ensure No Project", "error", err)
+		}
 	}
 	cachedProjects := a.preloadProjectsAndSessions(projectMgr, sessStore, log)
 	log.Info("startup phase complete", "phase", "preload", "elapsed_ms", time.Since(startTime).Milliseconds())

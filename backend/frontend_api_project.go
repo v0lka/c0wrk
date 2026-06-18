@@ -33,7 +33,12 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
-	// If deleting the active project, clear active state
+
+	if err := f.projectManager.DeleteProject(id); err != nil {
+		return err
+	}
+
+	// Clear active project state only after successful deletion.
 	f.activeProjectMu.Lock()
 	wasActive := f.activeProjectID == id
 	if wasActive {
@@ -41,10 +46,6 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 		f.activeProjectPath = ""
 	}
 	f.activeProjectMu.Unlock()
-
-	if err := f.projectManager.DeleteProject(id); err != nil {
-		return err
-	}
 
 	// Clean up vector index data for the deleted project.
 	if vm := f.getVectorManager(); vm != nil {
@@ -219,10 +220,17 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 }
 
 // switchProjectSetupWatcher creates a file watcher for the new project workspace.
+// No-op for No Project (no file watching needed).
 func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
+	// Always tear down the previous watcher, regardless of target project.
 	if f.watcher != nil {
 		_ = f.watcher.Close() // Best-effort cleanup; error is non-critical.
 		f.watcher = nil
+	}
+
+	// No Project: file watching is not needed.
+	if p.IsNoProject {
+		return
 	}
 
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
@@ -242,7 +250,13 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 }
 
 // switchProjectSetupVector configures vector indexing for the new project.
+// No-op for No Project (vector indexing requires a code workspace).
 func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
+	// No Project: vector indexing is not available.
+	if p.IsNoProject {
+		return nil
+	}
+
 	vm := f.getVectorManager()
 	if vm == nil {
 		return nil

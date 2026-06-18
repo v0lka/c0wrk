@@ -151,7 +151,11 @@ type gitRepoCacheEntry struct {
 // cached for gitRepoCacheTTL to avoid repeated git process spawning during
 // rapid file-tree refresh cycles. The cache is a ViewModel concern — the
 // underlying workspace.IsGitRepo is stateless per ADR-009.
+// Returns false for No Project (no git operations).
 func (f *FrontendAPI) isGitRepo(dir string) bool {
+	if f.isNoProject() {
+		return false
+	}
 	now := time.Now()
 
 	f.gitRepoCacheMu.Lock()
@@ -188,6 +192,14 @@ func (f *FrontendAPI) isGitRepo(dir string) bool {
 	f.gitRepoCacheMu.Unlock()
 
 	return isRepo
+}
+
+// isNoProject reports whether the active project is the "No Project"
+// pseudo-project. Thread-safe.
+func (f *FrontendAPI) isNoProject() bool {
+	f.activeProjectMu.RLock()
+	defer f.activeProjectMu.RUnlock()
+	return f.activeProjectID == project.NoProjectID
 }
 
 // Cleanup releases resources owned by FrontendAPI.

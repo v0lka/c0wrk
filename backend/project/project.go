@@ -4,12 +4,18 @@ package project
 
 import "context"
 
+// NoProjectID is the well-known identifier for the "No Project" pseudo-project.
+// Sessions under this project receive per-session workspaces and code-oriented
+// tools are disabled.
+const NoProjectID = "__no_project__"
+
 // ProjectInfo is the public-facing project metadata.
 type ProjectInfo struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	WorkspacePath string `json:"workspace_path"`
 	IsExternal    bool   `json:"is_external"`
+	IsNoProject   bool   `json:"is_no_project"`
 	CreatedAt     string `json:"created_at"`
 	LastActiveAt  string `json:"last_active_at"`
 }

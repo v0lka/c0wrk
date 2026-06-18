@@ -39,6 +39,7 @@ interface ProjectInfo {
   name: string
   workspace_path: string
   is_external: boolean
+  is_no_project: boolean
   created_at: string
   last_active_at: string
 }
@@ -103,6 +104,13 @@ Three-column panel layout (no router, single-page app):
 
 Resize handles (4px) between panels. Panel states persisted via localStorage.
 
+### Sidebar header
+
+Between the collapse and settings buttons sits a CHAT/CODE segmented toggle:
+- **CHAT**: switches to No Project (pseudo-project with code tools disabled, bash blacklist, per-session workspaces)
+- **CODE**: switches to `lastRealProjectId` (the most recent non-No-Project project) or the first available real project
+- The toggle is hidden when no projects are loaded yet
+
 Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and custom token decorations for `/skill` references (warning color) and `@file` references (info color) via a `StateField`. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions: typing `/` at a word boundary triggers fuzzy-filtered skill suggestions, and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the backend preprocessor.
 
 ## Design System
@@ -151,6 +159,9 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - Project-switch persistence and restoration is hook-driven (`useProjectSwitchState`) and uses best-effort source-state save plus deterministic destination session fallback
 - Project switch flow preserves order: save source UI state before `switchProject`, then restore destination file/session state after switch
 - Session restore fallback during project switch is deterministic: saved session for destination project, otherwise latest destination session, otherwise a new session
+- `lastRealProjectId` always tracks the most recent non-No-Project project activated (updated in `setActiveProjectId` when switching to a real project; preserved when switching to No Project)
+- CHAT/CODE toggle switches projects via `switchProject()`; CHAT selects No Project, CODE selects `lastRealProjectId` (or first real project if the last one was deleted)
+- All projects created through the CreateProjectDialog always require an external workspace directory; internal workspaces are reserved for No Project auto-creation
 
 ## Configuration
 

@@ -45,6 +45,13 @@ type Orchestrator struct {
     trackingCaller       *llm.TrackingCaller          // per-step context tracker wiring
     vectorSearchFunc     builtins.VectorSearchFunc     // for vector search hints (from sdk/tools/builtins)
     skillManager         *skills.SkillManager         // skill discovery and activation
+
+    // isNoProject is set to true when this orchestrator runs inside the
+    // "No Project" pseudo-project. When true, the routing domain is
+    // overridden from "code" to "general" so that code-oriented planning
+    // and execution strategies are not applied.
+    isNoProject bool
+
     currentRequestCtx    atomic.Pointer[context.Context]        // scoped to active HandleMessage
     currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor] // router-matched skills
 }
@@ -106,7 +113,8 @@ HandleMessage(ctx, message, sessionID, opts)
 │     ├─ opts.TaskID == "": create new BB via bbFactory
 │     └─ opts.TaskID != "": restore BB from persistence
 │
-├─ 2. Load available tools from registry
+├─ 2. Load available tools from registry (filtered via ListFiltered to
+│     exclude disabled tools in No Project mode)
 │
 ├─ 3. ROUTE: router.Route(ctx, routingMessage, tools, history, skills)
 │     → When opts.UserSkills is non-empty, routingMessage is augmented with
@@ -114,6 +122,8 @@ HandleMessage(ctx, message, sessionID, opts)
 │       can classify domain/complexity based on the actual task semantics
 │     → RoutingDecision
 │     → Emit Routing event
+│
+├─ 3a. No Project: override routing.Domain from "code" to "general"
 │
 ├─ 4. Activate matched skills:
 │     → Merge router-matched skills with opts.UserSkills (deduplicated union)
@@ -161,6 +171,8 @@ HandleMessage(ctx, message, sessionID, opts)
 - Skills are activated task-wide but rendered per-step by StepConfigurator
 - NeedsClarification is suppressed when UserSkills is non-empty (explicit `/skill` invocation implies clear intent)
 - currentRequestCtx and currentRequestSkills are cleared at end of HandleMessage
+- isNoProject: routing domain "code" is overridden to "general" after classification
+- SetNoProjectMode(): disables code tools (ripgrep, glob, edit_file, semantic_search) and adds extended bash command blacklist on the core tool registry
 
 ## Configuration
 

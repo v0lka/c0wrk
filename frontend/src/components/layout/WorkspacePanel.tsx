@@ -2,9 +2,21 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { FileTreePanel } from './FileTreePanel'
 import { VectorStorePanel } from './VectorStorePanel'
+import { useProjectStore } from '@/stores/projectStore'
 import { FolderTree, GitBranch, Database } from 'lucide-react'
 
 export function WorkspacePanel() {
+  const isNoProject = useProjectStore((s) => {
+    // When projects is null (loading), treat as not No Project to avoid
+    // flashing disabled tabs that then change state once data arrives.
+    // The tabs will show as enabled during loading; if the active project
+    // turns out to be No Project, they'll disable on the next render —
+    // which is a less noticeable transition than enabled → disabled.
+    if (s.projects === null) return false
+    const active = s.projects.find((p) => p.id === s.activeProjectId)
+    return active?.is_no_project === true
+  })
+
   return (
     <TooltipProvider>
       <Tabs defaultValue="explorer" className="flex h-full flex-col gap-0">
@@ -17,15 +29,19 @@ export function WorkspacePanel() {
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <TabsTrigger value="git" className="px-2" disabled><GitBranch className="size-4" /></TabsTrigger>
+              <TabsTrigger value="git" className="px-2" disabled={isNoProject}>
+                <GitBranch className="size-4" />
+              </TabsTrigger>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Git</TooltipContent>
+            <TooltipContent side="bottom">{isNoProject ? 'Git (unavailable in No Project)' : 'Git'}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <TabsTrigger value="semantics" className="px-2"><Database className="size-4" /></TabsTrigger>
+              <TabsTrigger value="semantics" className="px-2" disabled={isNoProject}>
+                <Database className="size-4" />
+              </TabsTrigger>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Semantics</TooltipContent>
+            <TooltipContent side="bottom">{isNoProject ? 'Semantics (unavailable in No Project)' : 'Semantics'}</TooltipContent>
           </Tooltip>
         </TabsList>
 

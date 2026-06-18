@@ -17,6 +17,8 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
 - `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume
+- `core/toolnames.go` — NoProjectDisabledTools, NoProjectBashBlacklist constants
+- `backend/project/manager.go` — EnsureNoProject (pseudo-project lifecycle)
 
 ## Flow
 
@@ -28,6 +30,11 @@ User clicks "New Chat" (or first message in empty state)
   → Backend: FrontendAPI.CreateSession()
       ├─ Read active project ID + workspace path
       ├─ Call SessionManager.CreateSession(projectID, workspacePath)
+      │   ├─ No Project (__no_project__): creates per-session workspace
+      │   │   under projectsDir/__no_project__/sessions/<id>/Workspace
+      │   ├─ Creates orchestrator via factory
+      │   └─ No Project: calls orchestrator.SetNoProjectMode() to
+      │       disable code tools and add bash command blacklist
       ├─ Persist to SQLite (sessions table; best-effort when store wired)
       └─ Return SessionInfo {id, name, projectId, createdAt}
   → Frontend: sessionStore.addSession()
@@ -225,6 +232,9 @@ type HandleResult struct {
 ## Invariants
 
 - One Orchestrator per session (created lazily on first message)
+- `DeleteSession` removes the in-memory session and cleans up the per-session
+  workspace directory (`projectsDir/__no_project__/sessions/<id>/`) for No Project
+  sessions. The session temp directory is always cleaned up regardless.
 - Session state survives app restart (SQLite persistence)
 - Project switch session restore order is deterministic: valid saved session for destination project, otherwise latest destination session, otherwise new destination session
 - Destination project switch state always persists the resolved `saved_session_id` in `project_ui_state` when project persistence is wired

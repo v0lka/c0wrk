@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,36 @@ type Manager struct {
 	store       ProjectStore
 	projectsDir string // ~/.c0wrk/Projects/
 	mu          sync.RWMutex
+}
+
+// EnsureNoProject creates the No Project pseudo-project if it does not already exist.
+// It is safe to call multiple times (idempotent).
+func (m *Manager) EnsureNoProject() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	proj, err := m.store.LoadProject(context.Background(), NoProjectID)
+	if err != nil {
+		return fmt.Errorf("checking No Project: %w", err)
+	}
+	if proj != nil {
+		return nil // already exists
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	info := ProjectInfo{
+		ID:            NoProjectID,
+		Name:          "No Project",
+		WorkspacePath: filepath.Join(m.projectsDir, NoProjectID, "Workspace"),
+		IsExternal:    false,
+		IsNoProject:   true,
+		CreatedAt:     now,
+		LastActiveAt:  now,
+	}
+	if err := os.MkdirAll(info.WorkspacePath, 0o755); err != nil {
+		return fmt.Errorf("creating No Project workspace dir: %w", err)
+	}
+	return m.store.SaveProject(context.Background(), info)
 }
 
 // NewManager creates a new project Manager.
@@ -67,8 +98,11 @@ func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error)
 }
 
 // DeleteProject removes a project. For internal projects, the workspace directory is also removed.
-// External workspace directories are never touched.
+// External workspace directories are never touched. The No Project pseudo-project cannot be deleted.
 func (m *Manager) DeleteProject(id string) error {
+	if id == NoProjectID {
+		return errors.New("cannot delete the No Project pseudo-project")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -107,6 +141,9 @@ func (m *Manager) DeleteProject(id string) error {
 
 // RenameProject updates a project's display name.
 func (m *Manager) RenameProject(id, name string) error {
+	if id == NoProjectID {
+		return errors.New("cannot rename the No Project pseudo-project")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.store.RenameProject(context.Background(), id, name)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -321,6 +322,11 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		return nil, fmt.Errorf("failed to create orchestrator for restored session: %w", err)
 	}
 
+	// Configure No Project mode: disable code tools + extended bash blacklist.
+	if info.ProjectID == project.NoProjectID {
+		orchestrator.SetNoProjectMode()
+	}
+
 	// Wire task persistence into orchestrator.
 	if adapter != nil {
 		orchestrator.SetTaskStore(adapter)
@@ -431,6 +437,14 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Generate UUID for session ID
 	id := uuid.New().String()
 
+	// For No Project, each session gets its own isolated workspace.
+	if projectID == project.NoProjectID {
+		workspacePath = filepath.Join(m.projectsDir, project.NoProjectID, "sessions", id, "Workspace")
+		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to create per-session workspace: %w", err)
+		}
+	}
+
 	// Create session-specific logger
 	logger, logFile, err := m.createSessionLogger(id)
 	if err != nil {
@@ -502,6 +516,11 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 			_ = dumpFile.Close()
 		}
 		return nil, fmt.Errorf("failed to create orchestrator: %w", err)
+	}
+
+	// Configure No Project mode: disable code tools + extended bash blacklist.
+	if projectID == project.NoProjectID {
+		orchestrator.SetNoProjectMode()
 	}
 
 	// Wire task persistence into core orchestrator for continuations
@@ -667,6 +686,16 @@ func (m *Manager) DeleteSession(id string) error {
 
 	// Purge file coherence state for this session.
 	m.fileTracker.PurgeSession(id)
+
+	// Clean up per-session workspace directory for No Project sessions.
+	// Regular projects share a project-scoped workspace; No Project creates
+	// a per-session isolated workspace that must be cleaned up on deletion.
+	if session.ProjectID == project.NoProjectID {
+		wsDir := filepath.Join(m.projectsDir, project.NoProjectID, "sessions", id)
+		if err := os.RemoveAll(wsDir); err != nil {
+			m.log().Warn("failed to remove No Project session workspace", "session_id", id, "ws_dir", wsDir, "error", err)
+		}
+	}
 
 	// Clean up temp directory
 	if session.TempDir != "" {
