@@ -175,11 +175,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.LMStudio.BaseURL = "http://localhost:1234"
 	}
 
-	// Memory defaults
-	if cfg.Memory.Database == "" {
-		cfg.Memory.Database = "database.db"
-	}
-
 	// Router defaults
 	if cfg.Router.HistoryWindow == 0 {
 		cfg.Router.HistoryWindow = 10

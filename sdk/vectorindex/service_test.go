@@ -56,7 +56,7 @@ func TestSetProject(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := svc.SetProject("test-project"); err != nil {
+		if err := svc.SetProject("test-project", t.TempDir()); err != nil {
 			t.Fatalf("SetProject failed: %v", err)
 		}
 		if svc.db == nil {
@@ -65,19 +65,18 @@ func TestSetProject(t *testing.T) {
 	})
 
 	t.Run("persistent mode creates directory", func(t *testing.T) {
-		dir := t.TempDir()
+		projectDir := filepath.Join(t.TempDir(), "my-project")
 		svc, err := NewService(ServiceConfig{
-			PersistPath:   dir,
+			// PersistPath removed — caller provides full path
 			EmbeddingFunc: fakeEmbeddingFunc(),
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := svc.SetProject("my-project"); err != nil {
+		if err := svc.SetProject("my-project", projectDir); err != nil {
 			t.Fatalf("SetProject failed: %v", err)
 		}
 
-		projectDir := filepath.Join(dir, "my-project")
 		info, statErr := os.Stat(projectDir)
 		if statErr != nil {
 			t.Fatalf("project directory not created: %v", statErr)
@@ -103,7 +102,7 @@ func TestSwitchBranch(t *testing.T) {
 		}
 	})
 
-	if err := svc.SetProject("test"); err != nil {
+	if err := svc.SetProject("test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 
@@ -227,7 +226,7 @@ func TestSearchWithDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := svc.SetProject("search-test"); err != nil {
+	if err := svc.SetProject("search-test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -429,7 +428,7 @@ func TestValidateCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := svc.SetProject("validate-test"); err != nil {
+	if err := svc.SetProject("validate-test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -559,7 +558,7 @@ func TestRebuildCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := svc.SetProject("rebuild-test"); err != nil {
+	if err := svc.SetProject("rebuild-test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -603,7 +602,7 @@ func TestServiceClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := svc.SetProject("close-test"); err != nil {
+	if err := svc.SetProject("close-test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 
@@ -649,7 +648,7 @@ func TestGetCollectionFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := svc.SetProject("files-test"); err != nil {
+	if err := svc.SetProject("files-test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -723,7 +722,7 @@ func TestDeleteDocumentsByIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := svc.SetProject("delete-test"); err != nil {
+	if err := svc.SetProject("delete-test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -785,15 +784,14 @@ func containsPath(paths []string, target string) bool {
 // matching the exact term "MatcherFactory" via bleve), and returns it.
 func seedHybridService(t *testing.T) *Service {
 	t.Helper()
-	dir := t.TempDir()
 	svc, err := NewService(ServiceConfig{
-		PersistPath:   dir,
+		// PersistPath removed
 		EmbeddingFunc: fakeEmbeddingFunc(),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if err := svc.SetProject("hybrid-proj"); err != nil {
+	if err := svc.SetProject("hybrid-proj", t.TempDir()); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -952,7 +950,7 @@ func TestHybridSearch_AutoFallbackWhenLexicalEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if err := svc.SetProject("fallback-proj"); err != nil {
+	if err := svc.SetProject("fallback-proj", t.TempDir()); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -989,10 +987,13 @@ func TestHybridSearch_AutoFallbackWhenLexicalEmpty(t *testing.T) {
 		t.Fatal("expected vector fallback to return results")
 	}
 
-	// Explicit ModeLexical should error out because there is no lexical index at all.
-	if _, err := svc.HybridSearch(context.Background(), SearchOptions{
+	// Explicit ModeLexical with an empty (but opened) lexical index returns
+	// empty results, not an error — the index exists, it just has no documents.
+	if results, err := svc.HybridSearch(context.Background(), SearchOptions{
 		Query: "hello", TopK: 2, Mode: ModeLexical,
-	}); err == nil {
-		t.Error("ModeLexical with no lexical index should return error")
+	}); err != nil {
+		t.Fatalf("ModeLexical with empty lexical index should not error: %v", err)
+	} else if len(results) != 0 {
+		t.Errorf("expected empty results for ModeLexical with empty index, got %d", len(results))
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
@@ -53,7 +54,7 @@ const (
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
 	ID                  string
-	ProjectID           string
+	ProjectID           string // immutable after creation (no lock needed for reads)
 	Name                string
 	CreatedAt           time.Time
 	LastActiveAt        time.Time
@@ -81,8 +82,8 @@ type Session struct {
 }
 
 // sessionTempDir returns the temp directory path for a session.
-func sessionTempDir(projectsDir, projectID, sessionID string) string {
-	return filepath.Join(projectsDir, projectID, "Temp", sessionID)
+func sessionTempDir(agentDir, projectID, sessionID string) string {
+	return config.SessionTempDir(agentDir, projectID, sessionID)
 }
 
 // OrchestratorFactory creates a new Orchestrator with the given emitter, logger, workspace path,
@@ -106,9 +107,8 @@ type Manager struct {
 	mu                  sync.RWMutex
 	orchestratorFactory OrchestratorFactory
 	emitFunc            func(Event) // shared event emission callback
-	logDir              string      // base directory for session logs
+	agentDir            string      // base agent directory (~/.c0wrk)
 	logLevel            string      // current log level for session loggers
-	projectsDir         string      // base directory for project temp dirs (~/.c0wrk/Projects)
 	tokenPersist        TokenPersistFunc
 	taskStore           TaskStore           // optional persistent task store
 	sessionStore        SessionStore        // optional persistent session store
@@ -140,14 +140,13 @@ func (m *Manager) log() *slog.Logger {
 }
 
 // NewManager creates a new session Manager.
-func NewManager(factory OrchestratorFactory, emitFunc func(Event), logDir, projectsDir string) *Manager {
+func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir string) *Manager {
 	m := &Manager{
 		sessions:            make(map[string]*Session),
 		orchestratorFactory: factory,
 		emitFunc:            emitFunc,
-		logDir:              logDir,
+		agentDir:            agentDir,
 		logLevel:            "DEBUG",
-		projectsDir:         projectsDir,
 		stopTimeout:         10 * time.Second,
 	}
 	m.fileTracker = NewFileCoherenceTracker(m.resolveSessionName)
@@ -282,7 +281,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// (the same logic as CreateSession). Re-derive it here so that
 	// lazily restored sessions use the correct directory.
 	if info.ProjectID == project.NoProjectID {
-		workspacePath = filepath.Join(m.projectsDir, project.NoProjectID, "sessions", id, "Workspace")
+		workspacePath = config.NoProjectSessionWorkspace(m.agentDir, id)
 		// Ensure the path is always absolute so tools and prompts receive
 		// a stable, fully qualified workspace directory.
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
@@ -297,7 +296,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	}
 
 	// Create session logger.
-	logger, logFile, err := m.createSessionLogger(id)
+	logger, logFile, err := m.createSessionLogger(info.ProjectID, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session logger: %w", err)
 	}
@@ -348,11 +347,15 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// Create LLM dump file when DEBUG logging is enabled.
 	var dumpFile *os.File
 	if strings.EqualFold(m.logLevel, "DEBUG") {
-		dumpPath := filepath.Join(m.logDir, fmt.Sprintf("session_%s_llm_dump.jsonl", id))
-		dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
-			dumpFile = nil
+		dumpPath := config.SessionDumpPath(m.agentDir, info.ProjectID, id)
+		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
+			m.log().Warn("failed to create dumps directory", "session_id", id, "error", mkErr)
+		} else {
+			dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			if err != nil {
+				m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
+				dumpFile = nil
+			}
 		}
 	}
 
@@ -400,7 +403,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	}
 
 	// Create session temp directory.
-	tempDir := sessionTempDir(m.projectsDir, info.ProjectID, id)
+	tempDir := sessionTempDir(m.agentDir, info.ProjectID, id)
 	if mkErr := os.MkdirAll(tempDir, 0o755); mkErr != nil {
 		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", mkErr)
 	}
@@ -521,7 +524,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 
 	// For No Project, each session gets its own isolated workspace.
 	if projectID == project.NoProjectID {
-		workspacePath = filepath.Join(m.projectsDir, project.NoProjectID, "sessions", id, "Workspace")
+		workspacePath = config.NoProjectSessionWorkspace(m.agentDir, id)
 		// Ensure the path is always absolute so tools and prompts receive
 		// a stable, fully qualified workspace directory.
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
@@ -536,7 +539,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	}
 
 	// Create session-specific logger
-	logger, logFile, err := m.createSessionLogger(id)
+	logger, logFile, err := m.createSessionLogger(projectID, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session logger: %w", err)
 	}
@@ -587,11 +590,15 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	// Create LLM request/response dump file when DEBUG logging is enabled
 	var dumpFile *os.File
 	if strings.EqualFold(m.logLevel, "DEBUG") {
-		dumpPath := filepath.Join(m.logDir, fmt.Sprintf("session_%s_llm_dump.jsonl", id))
-		dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
-			dumpFile = nil // non-fatal, continue without dump
+		dumpPath := config.SessionDumpPath(m.agentDir, projectID, id)
+		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
+			m.log().Warn("failed to create dumps directory", "session_id", id, "error", mkErr)
+		} else {
+			dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			if err != nil {
+				m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
+				dumpFile = nil // non-fatal, continue without dump
+			}
 		}
 	}
 
@@ -634,7 +641,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	}
 
 	// Create session temp directory
-	tempDir := sessionTempDir(m.projectsDir, projectID, id)
+	tempDir := sessionTempDir(m.agentDir, projectID, id)
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", err)
 	}
@@ -683,14 +690,15 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 
 // createSessionLogger creates a logger for a specific session.
 // Returns the logger, the file handle (for cleanup), and an error.
-func (m *Manager) createSessionLogger(sessionID string) (*slog.Logger, *os.File, error) {
+func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger, *os.File, error) {
+	logDir := config.SessionLogsDir(m.agentDir, projectID, sessionID)
 	// Create log directory if it doesn't exist
-	if err := os.MkdirAll(m.logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
 	// Create log file for this session
-	logFile := filepath.Join(m.logDir, fmt.Sprintf("session_%s.log", sessionID))
+	logFile := config.SessionLogPath(m.agentDir, projectID, sessionID)
 	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
@@ -781,7 +789,7 @@ func (m *Manager) DeleteSession(id string) error {
 	// Regular projects share a project-scoped workspace; No Project creates
 	// a per-session isolated workspace that must be cleaned up on deletion.
 	if session.ProjectID == project.NoProjectID {
-		wsDir := filepath.Join(m.projectsDir, project.NoProjectID, "sessions", id)
+		wsDir := config.SessionDir(m.agentDir, project.NoProjectID, id)
 		if err := os.RemoveAll(wsDir); err != nil {
 			m.log().Warn("failed to remove No Project session workspace", "session_id", id, "ws_dir", wsDir, "error", err)
 		}

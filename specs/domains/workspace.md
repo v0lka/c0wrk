@@ -106,6 +106,7 @@ Git operations and vector indexing remain skipped.
 - Embeddings computed via ONNX Runtime (local, no API calls)
 - Model: quantized embedding model downloaded by `make fetch-embedding-model`
 - Collections are partitioned per git branch; switching branches produces a new pair of collections (`vector/` and `lexical/<branch>/`)
+- Storage location: `~/.c0wrk/projects/<projectID>/vector_index/` (per-project, co-located with session data)
 - Branch detection on project switch uses `vectorindex.CurrentBranch`; detection failure propagates and aborts the switch rather than silently degrading
 - A `GitMonitor` watches `.git/HEAD` via fsnotify and triggers re-partitioning on branch change
 - Hybrid search fuses the two ranked lists via Reciprocal Rank Fusion (`score = Σ 1/(k+rank)`, `k=60`). Per-side fanout is `max(topK*4, 100)`; `FilePattern` (doublestar glob) and `MustMatch` post-filters are applied **before** fusion so rank spaces are comparable.

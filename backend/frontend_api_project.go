@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/sdk/vectorindex"
@@ -50,7 +51,7 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 
 	// Clean up vector index data for the deleted project.
 	if vm := f.getVectorManager(); vm != nil {
-		_ = vm.DeleteProjectData(id) // Best-effort; error is non-critical.
+		_ = vm.DeleteProjectData(config.ProjectVectorIndexPath(f.agentDir, id)) // Best-effort; error is non-critical.
 	}
 
 	// Stop watcher if this was the active project
@@ -275,7 +276,7 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 	}
 	capturedBranch := branch
 
-	if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, vectorindex.ProjectCallbacks{
+	if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{
 		OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
 			f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
 				State:        string(state),

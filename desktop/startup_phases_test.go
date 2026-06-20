@@ -144,7 +144,7 @@ func TestPreloadProjectsAndSessions_Empty(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	projStore, sessStore := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, filepath.Join(dir, "projects"))
+	projectMgr := project.NewManager(projStore, dir)
 
 	got := a.preloadProjectsAndSessions(projectMgr, sessStore, testLoggerForPhases())
 	if len(got) != 0 {
@@ -168,7 +168,7 @@ func TestPreloadProjectsAndSessions_WithSeededData(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	projStore, sessStore := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, filepath.Join(dir, "projects"))
+	projectMgr := project.NewManager(projStore, dir)
 
 	// Seed: create a project with a session.
 	p, err := projectMgr.CreateProject("test-proj", "")
@@ -453,7 +453,7 @@ func TestEmitBackendReady_FreshQueryWithProjects(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	projStore, _ := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, filepath.Join(dir, "projects"))
+	projectMgr := project.NewManager(projStore, dir)
 	if _, err := projectMgr.CreateProject("Bar", ""); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestEmitBackendReady_FreshQueryWithProjects(t *testing.T) {
 func TestMaybeReinitLogger_KeepsCurrentForInfo(t *testing.T) {
 	a := &App{}
 	current := testLoggerForPhases()
-	got, sl := a.maybeReinitLogger("INFO", nil, current)
+	got, sl := a.maybeReinitLogger("INFO", nil, current, t.TempDir())
 	if got != current {
 		t.Error("expected same logger for INFO level")
 	}
@@ -489,7 +489,7 @@ func TestMaybeReinitLogger_KeepsCurrentForInfo(t *testing.T) {
 func TestMaybeReinitLogger_KeepsCurrentForEmpty(t *testing.T) {
 	a := &App{}
 	current := testLoggerForPhases()
-	got, _ := a.maybeReinitLogger("", nil, current)
+	got, _ := a.maybeReinitLogger("", nil, current, t.TempDir())
 	if got != current {
 		t.Error("expected same logger for empty level")
 	}

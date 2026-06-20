@@ -53,9 +53,6 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 				Models: f.config.LLM.ChatGPT.Models,
 			},
 		},
-		Memory: ConfigMemResponse{
-			Database: f.config.Memory.Database,
-		},
 		Search: ConfigSearchResp{
 			Provider: f.config.Search.Provider,
 			APIKey:   maskAPIKey(f.config.Search.APIKey),

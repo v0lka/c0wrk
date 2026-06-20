@@ -208,4 +208,5 @@ type HandleOptions struct {
 	ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
 	ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
 	PlanReview      bool     // true = pause after planning for user review before execution
+	SessionPlansDir string   // directory for session-scoped plan files; REQUIRED when PlanReview is true
 }

@@ -10,13 +10,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // Manager provides high-level project lifecycle operations.
 type Manager struct {
-	store       ProjectStore
-	projectsDir string // ~/.c0wrk/Projects/
-	mu          sync.RWMutex
+	store     ProjectStore
+	agentDir  string // ~/.c0wrk
+	mu        sync.RWMutex
 }
 
 // EnsureNoProject creates the No Project pseudo-project if it does not already exist.
@@ -34,7 +36,7 @@ func (m *Manager) EnsureNoProject() error {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	wsPath := filepath.Join(m.projectsDir, NoProjectID, "Workspace")
+	wsPath := config.ProjectWorkspacePath(m.agentDir, NoProjectID)
 	// Ensure the stored path is always absolute so it remains valid
 	// regardless of runtime working directory changes.
 	if absPath, err := filepath.Abs(wsPath); err == nil {
@@ -56,15 +58,15 @@ func (m *Manager) EnsureNoProject() error {
 }
 
 // NewManager creates a new project Manager.
-func NewManager(store ProjectStore, projectsDir string) *Manager {
+func NewManager(store ProjectStore, agentDir string) *Manager {
 	return &Manager{
-		store:       store,
-		projectsDir: projectsDir,
+		store:    store,
+		agentDir: agentDir,
 	}
 }
 
 // CreateProject creates a new project with either an internal or external workspace.
-// If externalPath is empty, an internal workspace directory is created under projectsDir.
+// If externalPath is empty, an internal workspace directory is created under the agentDir.
 // If externalPath is non-empty, the path is validated and used as-is (external project).
 func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error) {
 	m.mu.Lock()
@@ -81,8 +83,8 @@ func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error)
 	}
 
 	if externalPath == "" {
-		// Internal project: create workspace directory under projectsDir/<id>/Workspace
-		info.WorkspacePath = filepath.Join(m.projectsDir, id, "Workspace")
+		// Internal project: create workspace directory under ~/.c0wrk/projects/<id>/Workspace
+		info.WorkspacePath = config.ProjectWorkspacePath(m.agentDir, id)
 		info.IsExternal = false
 		if err := os.MkdirAll(info.WorkspacePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create internal workspace directory: %w", err)
@@ -127,14 +129,14 @@ func (m *Manager) DeleteProject(id string) error {
 
 	if !proj.IsExternal {
 		// Internal project: remove the project directory tree
-		projectDir := filepath.Join(m.projectsDir, id)
+		projectDir := config.ProjectDir(m.agentDir, id)
 		if err := os.RemoveAll(projectDir); err != nil {
 			return fmt.Errorf("failed to remove internal project directory: %w", err)
 		}
 	} else {
-		// External project: only clean up the project directory under projectsDir if it
+		// External project: only clean up the project directory under the agentDir if it
 		// somehow exists (it shouldn't, but be safe). NEVER touch the external workspace.
-		projectDir := filepath.Join(m.projectsDir, id)
+		projectDir := config.ProjectDir(m.agentDir, id)
 		if _, err := os.Stat(projectDir); err == nil {
 			if err := os.RemoveAll(projectDir); err != nil {
 				return fmt.Errorf("failed to remove stale project directory: %w", err)

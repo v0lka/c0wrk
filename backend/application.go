@@ -26,8 +26,6 @@ type ApplicationConfig struct {
 	Config      *config.Config
 	Logger      *slog.Logger
 	AgentDir    string // base agent directory (e.g. ~/.c0wrk)
-	LogDir      string // directory for session log files
-	ProjectsDir string // base directory for project temp dirs
 
 	// Persistence stores (optional — nil disables corresponding functionality).
 	SessionStore session.SessionStore
@@ -122,7 +120,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// 6. Session manager.
-	manager := session.NewManager(factory, emitFunc, cfg.LogDir, cfg.ProjectsDir)
+	manager := session.NewManager(factory, emitFunc, cfg.AgentDir)
 	if cfg.SessionStore != nil {
 		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string) {
 			if err := cfg.SessionStore.UpdateSessionTokens(context.Background(), sessionID, inputTokens, outputTokens, model, family); err != nil {

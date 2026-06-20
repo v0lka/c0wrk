@@ -23,10 +23,10 @@ import (
 // hidden fields that are stripped from the user-visible markdown).
 const planFileExt = ".plan.json"
 
-// planReviewSidecar is the struct persisted alongside the plan markdown so
+// PlanReviewSidecar is the struct persisted alongside the plan markdown so
 // hidden fields (DependsOn, Profile, etc.) and the routing decision survive
 // app restart.
-type planReviewSidecar struct {
+type PlanReviewSidecar struct {
 	Plan  *orchestration.Plan       `json:"plan"`
 	Route *router.RoutingDecision   `json:"route,omitempty"`
 }
@@ -41,14 +41,9 @@ func RandomSuffix() string {
 	return hex.EncodeToString(b)
 }
 
-// planDir returns the .c0wrk/plans directory path for a workspace.
-func planDir(workspacePath string) string {
-	return filepath.Join(workspacePath, ".c0wrk", "plans")
-}
-
 // HandlePlanReview generates a plan, serializes it to markdown, saves to
-// .c0wrk/plans/, and returns a HandleResult signalling plan review phase
-// (no execution). The caller should not call engine.Resume() after this.
+// the session's plans directory (provided via opts.SessionPlansDir), and
+// returns a HandleResult signalling plan review phase (no execution).
 func (o *Orchestrator) HandlePlanReview(
 	ctx context.Context,
 	message string,
@@ -88,13 +83,13 @@ func (o *Orchestrator) HandlePlanReview(
 	// Serialize plan to markdown
 	md := SerializePlan(plan)
 
-	// Determine workspace path and save .md file
-	workspacePath := sdktools.WorkspacePathFrom(ctx)
-	if workspacePath == "" {
-		return nil, errors.New("no workspace path in context, cannot save plan")
+	// Determine plans directory from call options (session-scoped).
+	// SessionPlansDir is always set by production callers; empty only
+	// from test code which is responsible for its own path setup.
+	plansDir := opts.SessionPlansDir
+	if plansDir == "" {
+		return nil, errors.New("SessionPlansDir is required in HandleOptions")
 	}
-
-	plansDir := planDir(workspacePath)
 	if err := os.MkdirAll(plansDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create plans directory: %w", err)
 	}
@@ -116,7 +111,7 @@ func (o *Orchestrator) HandlePlanReview(
 	// Serialize full plan (with hidden fields) and routing decision as JSON
 	// for restart survival. The route is needed so ApprovePlan can resume
 	// execution with the correct domain/complexity/mode context.
-	planJSON, jErr := json.Marshal(planReviewSidecar{
+	planJSON, jErr := json.Marshal(PlanReviewSidecar{
 		Plan:  plan,
 		Route: routing,
 	})

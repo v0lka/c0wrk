@@ -43,7 +43,7 @@ type FrontendAPI struct {
 
 	// Project
 	projectManager    *project.Manager
-	projectsDir       string
+	agentDir          string
 	activeProjectID   string
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
@@ -94,7 +94,7 @@ type FrontendAPIConfig struct {
 	LogLevel        string
 	Watcher         *workspace.Watcher
 	ProjectManager  *project.Manager
-	ProjectsDir     string
+	AgentDir        string
 	VectorManager   *vectorindex.Manager
 	TerminalManager TerminalManager
 	EmitEvent       func(string, ...any)
@@ -114,7 +114,7 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		logLevel:        cfg.LogLevel,
 		watcher:         cfg.Watcher,
 		projectManager:  cfg.ProjectManager,
-		projectsDir:     cfg.ProjectsDir,
+		agentDir:        cfg.AgentDir,
 		vectorManager:   cfg.VectorManager,
 		terminalManager: cfg.TerminalManager,
 		emitEvent:       cfg.EmitEvent,

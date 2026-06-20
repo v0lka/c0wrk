@@ -43,7 +43,7 @@ func ResolveAndLoad(log *slog.Logger) *ResolvedConfig {
 		log.Error("failed to create agent directory", "error", err)
 	}
 
-	configPath := filepath.Join(agentDir, "config.yaml")
+	configPath := ConfigPath(agentDir)
 
 	// If the primary config file does not exist, try fallback; if both are
 	// missing, create a default config at the primary path.

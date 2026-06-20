@@ -164,10 +164,6 @@ export interface ConfigLLMResponse {
   models_ready: boolean
 }
 
-export interface ConfigMemResponse {
-  database: string
-}
-
 export interface ConfigSearchResp {
   provider: string
   api_key: string
@@ -178,7 +174,6 @@ export interface ConfigResponse {
   log_level: string
   config_errors: string[]
   llm: ConfigLLMResponse
-  memory: ConfigMemResponse
   search: ConfigSearchResp
   proxy: ProxySettingsResponse
 }

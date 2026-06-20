@@ -35,7 +35,7 @@ func TestCriticalPathBudget(t *testing.T) {
 	// ── Phase 2 equivalent: config with defaults ───────────────────
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
-	_ = cfg // startup reads cfg.Memory.Database; budget covers loading time
+	_ = cfg // configuration loaded (database path is now fixed via config.DatabasePath)
 
 	// ── Phase 3 equivalent: database ────────────────────────────────
 	dbPath := filepath.Join(dir, "test.db")
@@ -61,7 +61,7 @@ func TestCriticalPathBudget(t *testing.T) {
 		t.Fatalf("MkdirAll projects: %v", mkErr)
 	}
 
-	projectMgr := project.NewManager(projStore, projectsDir)
+	projectMgr := project.NewManager(projStore, dir)
 
 	projects, err := projectMgr.ListProjects()
 	if err != nil {
@@ -112,8 +112,7 @@ func TestCriticalPathBudget_WithData(t *testing.T) {
 		t.Fatalf("NewSQLiteSessionStore: %v", err)
 	}
 
-	projectsDir := filepath.Join(dir, "projects")
-	projectMgr := project.NewManager(projStore, projectsDir)
+	projectMgr := project.NewManager(projStore, dir)
 
 	// Seed data: create a project and a handful of sessions.
 	proj, err := projectMgr.CreateProject("bench-project", "")

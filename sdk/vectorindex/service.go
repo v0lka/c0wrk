@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -19,10 +18,6 @@ import (
 
 // ServiceConfig holds configuration for creating a Service.
 type ServiceConfig struct {
-	// PersistPath is the base path for vector storage (e.g., ~/.c0wrk/vector_index/).
-	// If empty, the database runs in-memory only.
-	PersistPath string
-
 	// EmbeddingFunc is the chromem-go compatible embedding function
 	// (from Embedder.EmbeddingFunc()).
 	EmbeddingFunc chromem.EmbeddingFunc
@@ -46,8 +41,8 @@ type Service struct {
 	collection    *chromem.Collection
 	lexical       lexical.Index
 	embeddingFunc chromem.EmbeddingFunc
-	persistPath   string
 	projectID     string
+	projectPath   string // full path to project vector storage (set by SetProject)
 	currentBranch string
 	mu            sync.RWMutex
 	ready         atomic.Bool
@@ -74,7 +69,6 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 	s := &Service{
 		embeddingFunc:    cfg.EmbeddingFunc,
-		persistPath:      cfg.PersistPath,
 		readyCh:          make(chan struct{}),
 		logger:           logger,
 		ignoreDirs:       cfg.IgnoreDirs,
@@ -87,7 +81,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 // SetProject switches to a project directory, creating a project-specific
 // subdirectory for persistence and initializing the chromem-go DB.
-func (s *Service) SetProject(projectID string) error {
+func (s *Service) SetProject(projectID, fullPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -98,6 +92,7 @@ func (s *Service) SetProject(projectID string) error {
 	s.collection = nil
 	s.currentBranch = ""
 	s.projectID = projectID
+	s.projectPath = fullPath
 	s.db = nil
 	if s.lexical != nil {
 		if err := s.lexical.Close(); err != nil {
@@ -106,14 +101,13 @@ func (s *Service) SetProject(projectID string) error {
 		s.lexical = nil
 	}
 
-	if s.persistPath != "" {
-		projectPath := filepath.Join(s.persistPath, projectID)
-		if err := os.MkdirAll(projectPath, 0o750); err != nil {
-			return fmt.Errorf("creating project directory %s: %w", projectPath, err)
+	if fullPath != "" {
+		if err := os.MkdirAll(fullPath, 0o750); err != nil {
+			return fmt.Errorf("creating project directory %s: %w", fullPath, err)
 		}
-		db, err := chromem.NewPersistentDB(projectPath, false)
+		db, err := chromem.NewPersistentDB(fullPath, false)
 		if err != nil {
-			return fmt.Errorf("opening persistent DB at %s: %w", projectPath, err)
+			return fmt.Errorf("opening persistent DB at %s: %w", fullPath, err)
 		}
 		s.db = db
 	} else {
@@ -297,13 +291,12 @@ func (s *Service) CurrentBranchName() string {
 
 // DeleteProjectData removes the on-disk vector data for a project.
 // It is safe to call even if the project was never indexed.
-func (s *Service) DeleteProjectData(projectID string) error {
-	if s.persistPath == "" {
+func (s *Service) DeleteProjectData(fullPath string) error {
+	if fullPath == "" {
 		return nil
 	}
-	projectPath := filepath.Join(s.persistPath, projectID)
-	if err := os.RemoveAll(projectPath); err != nil {
-		return fmt.Errorf("removing vector data for project %s: %w", projectID, err)
+	if err := os.RemoveAll(fullPath); err != nil {
+		return fmt.Errorf("removing vector data for project: %w", err)
 	}
 	return nil
 }

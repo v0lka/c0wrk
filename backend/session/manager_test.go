@@ -14,16 +14,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
 )
 
 // testManager creates a Manager with a mock factory for testing.
-func testManager(t *testing.T) (manager *Manager, events chan Event, dir string) {
+func testManager(t *testing.T) (manager *Manager, events chan Event, agentDir string) {
 	t.Helper()
 
-	// Create temp directories for logs and projects
-	logDir := t.TempDir()
-	projectsDir := t.TempDir()
+	// Create temp directory for agent
+	agentDir = t.TempDir()
 
 	// Create event channel to capture events
 	eventChan := make(chan Event, 100)
@@ -40,9 +40,8 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, dir string)
 		return nil, nil
 	}
 
-	manager = NewManager(factory, emitFunc, logDir, projectsDir)
+	manager = NewManager(factory, emitFunc, agentDir)
 	events = eventChan
-	dir = logDir
 	return
 }
 
@@ -84,7 +83,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestManager_CreateSession(t *testing.T) {
-	manager, eventChan, logDir := testManager(t)
+	manager, eventChan, agentDir := testManager(t)
 
 	wsPath := testWorkspacePath(t)
 	info, err := manager.CreateSession(testProjectID, wsPath)
@@ -119,7 +118,7 @@ func TestManager_CreateSession(t *testing.T) {
 	}
 
 	// Verify log file was created
-	logFile := filepath.Join(logDir, "session_"+info.ID+".log")
+	logFile := config.SessionLogPath(agentDir, testProjectID, info.ID)
 	if _, err := os.Stat(logFile); os.IsNotExist(err) {
 		t.Errorf("Log file not created: %s", logFile)
 	}
@@ -725,8 +724,6 @@ func TestManager_CancelTask_WithActiveTask(t *testing.T) {
 
 // TestManager_CreateSession_FactoryError verifies error handling when factory fails.
 func TestManager_CreateSession_FactoryError(t *testing.T) {
-	logDir := t.TempDir()
-
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
 		select {
@@ -740,7 +737,7 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 		return nil, errors.New("factory error")
 	}
 
-	manager := NewManager(factory, emitFunc, logDir, t.TempDir())
+	manager := NewManager(factory, emitFunc, t.TempDir())
 
 	_, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	if err == nil {
@@ -1030,8 +1027,6 @@ func TestCancelUnfinishedTask_NoTaskStore(t *testing.T) {
 // TestSendMessage_StoresTaskIDForContinuation verifies that after a successful task,
 // the task ID is stored in lastCompletedTaskID for potential continuations.
 func TestSendMessage_StoresTaskIDForContinuation(t *testing.T) {
-	// Create a manager with a factory that creates orchestrators with mocked behavior
-	logDir := t.TempDir()
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
 		select {
@@ -1048,7 +1043,7 @@ func TestSendMessage_StoresTaskIDForContinuation(t *testing.T) {
 		return nil, nil
 	}
 
-	manager := NewManager(factory, emitFunc, logDir, t.TempDir())
+	manager := NewManager(factory, emitFunc, t.TempDir())
 
 	// Create a session
 	wsPath := testWorkspacePath(t)
@@ -1084,7 +1079,6 @@ func TestSendMessage_StoresTaskIDForContinuation(t *testing.T) {
 // TestSendMessage_LastTaskIDClearedOnContinuationError verifies that when ContinueTask
 // fails and falls back to Handle, the lastCompletedTaskID is cleared.
 func TestSendMessage_LastTaskIDClearedOnContinuationError(t *testing.T) {
-	logDir := t.TempDir()
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
 		select {
@@ -1097,7 +1091,7 @@ func TestSendMessage_LastTaskIDClearedOnContinuationError(t *testing.T) {
 		return nil, nil
 	}
 
-	manager := NewManager(factory, emitFunc, logDir, t.TempDir())
+	manager := NewManager(factory, emitFunc, t.TempDir())
 
 	// Create a session
 	wsPath := testWorkspacePath(t)
@@ -1279,8 +1273,7 @@ func (m *mockSessionStoreForRestore) GetSessionsInPlanReview(_ context.Context, 
 func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreForRestore) {
 	t.Helper()
 
-	logDir := t.TempDir()
-	projectsDir := t.TempDir()
+	agentDir := t.TempDir()
 
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
@@ -1294,12 +1287,12 @@ func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreFo
 		return nil, nil
 	}
 
-	mgr := NewManager(factory, emitFunc, logDir, projectsDir)
+	mgr := NewManager(factory, emitFunc, agentDir)
 
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetProjectResolver(func(projectID string) (string, error) {
-		return filepath.Join(projectsDir, projectID), nil
+		return filepath.Join(agentDir, projectID), nil
 	})
 
 	return mgr, eventChan, store
@@ -1534,9 +1527,6 @@ func TestRestoreSession_NotInStore(t *testing.T) {
 // TestRestoreSession_NoProjectResolver verifies that restoration returns nil
 // gracefully when SetProjectResolver was never called.
 func TestRestoreSession_NoProjectResolver(t *testing.T) {
-	logDir := t.TempDir()
-	projectsDir := t.TempDir()
-
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
 		select {
@@ -1549,7 +1539,7 @@ func TestRestoreSession_NoProjectResolver(t *testing.T) {
 		return nil, nil
 	}
 
-	mgr := NewManager(factory, emitFunc, logDir, projectsDir)
+	mgr := NewManager(factory, emitFunc, t.TempDir())
 
 	// Set store but NOT project resolver.
 	store := newMockSessionStore()
@@ -1666,9 +1656,6 @@ func TestRestoreSession_CancelTask(t *testing.T) {
 // TestRestoreSession_ProjectResolverError verifies that when the project
 // resolver returns an error, GetSession gracefully returns false.
 func TestRestoreSession_ProjectResolverError(t *testing.T) {
-	logDir := t.TempDir()
-	projectsDir := t.TempDir()
-
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
 		select {
@@ -1681,7 +1668,7 @@ func TestRestoreSession_ProjectResolverError(t *testing.T) {
 		return nil, nil
 	}
 
-	mgr := NewManager(factory, emitFunc, logDir, projectsDir)
+	mgr := NewManager(factory, emitFunc, t.TempDir())
 
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)

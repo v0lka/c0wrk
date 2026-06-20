@@ -80,13 +80,9 @@ func TestParseLevel(t *testing.T) {
 }
 
 func TestInit_CreatesDirectoryAndFile(t *testing.T) {
-	// Override baseLogDir for testing
 	testDir := t.TempDir()
-	oldBaseLogDir := baseLogDir
-	baseLogDir = testDir
-	defer func() { baseLogDir = oldBaseLogDir }()
 
-	logger, err := Init("INFO")
+	logger, err := Init("INFO", testDir)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -117,13 +113,9 @@ func TestInit_CreatesDirectoryAndFile(t *testing.T) {
 }
 
 func TestInit_InvalidLevelDefaultsToInfo(t *testing.T) {
-	// Override baseLogDir for testing
 	testDir := t.TempDir()
-	oldBaseLogDir := baseLogDir
-	baseLogDir = testDir
-	defer func() { baseLogDir = oldBaseLogDir }()
 
-	logger, err := Init("INVALID_LEVEL")
+	logger, err := Init("INVALID_LEVEL", testDir)
 	if err != nil {
 		t.Fatalf("Init() with invalid level should not return error, got: %v", err)
 	}
@@ -136,13 +128,9 @@ func TestInit_InvalidLevelDefaultsToInfo(t *testing.T) {
 }
 
 func TestSessionLogger_Logger(t *testing.T) {
-	// Override baseLogDir for testing
 	testDir := t.TempDir()
-	oldBaseLogDir := baseLogDir
-	baseLogDir = testDir
-	defer func() { baseLogDir = oldBaseLogDir }()
 
-	logger, err := Init("DEBUG")
+	logger, err := Init("DEBUG", testDir)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -158,13 +146,9 @@ func TestSessionLogger_Logger(t *testing.T) {
 }
 
 func TestSessionLogger_Close(t *testing.T) {
-	// Override baseLogDir for testing
 	testDir := t.TempDir()
-	oldBaseLogDir := baseLogDir
-	baseLogDir = testDir
-	defer func() { baseLogDir = oldBaseLogDir }()
 
-	logger, err := Init("INFO")
+	logger, err := Init("INFO", testDir)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -180,14 +164,10 @@ func TestSessionLogger_Close(t *testing.T) {
 }
 
 func TestSessionLogger_LevelFiltering(t *testing.T) {
-	// Override baseLogDir for testing
 	testDir := t.TempDir()
-	oldBaseLogDir := baseLogDir
-	baseLogDir = testDir
-	defer func() { baseLogDir = oldBaseLogDir }()
 
 	// Create logger with WARN level
-	logger, err := Init("WARN")
+	logger, err := Init("WARN", testDir)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -234,13 +214,9 @@ func TestSessionLogger_LevelFiltering(t *testing.T) {
 }
 
 func TestSessionLogger_JSONFormat(t *testing.T) {
-	// Override baseLogDir for testing
 	testDir := t.TempDir()
-	oldBaseLogDir := baseLogDir
-	baseLogDir = testDir
-	defer func() { baseLogDir = oldBaseLogDir }()
 
-	logger, err := Init("INFO")
+	logger, err := Init("INFO", testDir)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

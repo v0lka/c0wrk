@@ -59,10 +59,8 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 		t.Fatalf("failed to create session store: %v", err)
 	}
 
-	projectsDir := t.TempDir()
-	logDir := t.TempDir()
-
-	projectManager := project.NewManager(projectStore, projectsDir)
+	agentDir := t.TempDir()
+	projectManager := project.NewManager(projectStore, agentDir)
 	createdProject, err := projectManager.CreateProject("Switch Target", "")
 	if err != nil {
 		_ = db.Close()
@@ -72,7 +70,7 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error) {
 		return nil, nil
 	}
-	manager := session.NewManager(factory, func(session.Event) {}, logDir, projectsDir)
+	manager := session.NewManager(factory, func(session.Event) {}, agentDir)
 	manager.SetSessionStore(sessionStore)
 	manager.SetProjectResolver(func(projectID string) (string, error) {
 		p, err := projectManager.GetProject(projectID)
@@ -87,7 +85,7 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 		store:          sessionStore,
 		projStore:      projectStore,
 		projectManager: projectManager,
-		projectsDir:    projectsDir,
+		agentDir:       agentDir,
 		appCtx:         func() context.Context { return ctx },
 	}
 

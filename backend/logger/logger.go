@@ -10,19 +10,15 @@ import (
 	"time"
 )
 
-// baseLogDir is the base directory for log files.
-// It can be overridden for testing.
-var baseLogDir = filepath.Join(os.Getenv("HOME"), ".c0wrk", "logs")
-
 // SessionLogger wraps a slog.Logger with a session file.
 type SessionLogger struct {
 	logger *slog.Logger
 	file   *os.File
 }
 
-// Init creates a new SessionLogger with the specified log level.
+// Init creates a new SessionLogger with the specified log level and log directory.
 // It creates the log directory if it doesn't exist and opens a new session file.
-func Init(level string) (*SessionLogger, error) {
+func Init(level, logDir string) (*SessionLogger, error) {
 	parsedLevel, err := parseLevel(level)
 	if err != nil {
 		// Log warning about invalid level and use INFO as default
@@ -33,13 +29,13 @@ func Init(level string) (*SessionLogger, error) {
 	parseErr := err
 
 	// Create log directory
-	if err := os.MkdirAll(baseLogDir, 0o750); err != nil {
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
 	// Generate session file path with timestamp
 	timestamp := time.Now().Format("2006-01-02T15-04-05")
-	sessionFile := filepath.Join(baseLogDir, fmt.Sprintf("session-%s.log", timestamp))
+	sessionFile := filepath.Join(logDir, fmt.Sprintf("session-%s.log", timestamp))
 
 	// Open log file
 	file, err := os.OpenFile(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)

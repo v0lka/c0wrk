@@ -13,7 +13,6 @@ type ConfigResponse struct {
 	LogLevel     string                `json:"log_level"`
 	ConfigErrors []string              `json:"config_errors"`
 	LLM          ConfigLLMResponse     `json:"llm"`
-	Memory       ConfigMemResponse     `json:"memory"`
 	Search       ConfigSearchResp      `json:"search"`
 	Proxy        ProxySettingsResponse `json:"proxy"`
 }
@@ -48,11 +47,6 @@ type ConfigProviderFull struct {
 	APIKey  string   `json:"api_key"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models"` // enabled models for this provider
-}
-
-// ConfigMemResponse holds memory section of config response.
-type ConfigMemResponse struct {
-	Database string `json:"database"`
 }
 
 // ConfigSearchResp holds search config values.

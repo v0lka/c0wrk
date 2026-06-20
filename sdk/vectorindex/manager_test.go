@@ -15,7 +15,6 @@ func TestManagerSwitchProject(t *testing.T) {
 	persistDir := t.TempDir()
 
 	svc, err := NewService(ServiceConfig{
-		PersistPath:   persistDir,
 		EmbeddingFunc: fakeEmbeddingFunc(),
 	})
 	if err != nil {
@@ -40,8 +39,11 @@ func TestManagerSwitchProject(t *testing.T) {
 		t.Fatalf("write b.go: %v", err)
 	}
 
+	viPathA := filepath.Join(persistDir, "project-a")
+	viPathB := filepath.Join(persistDir, "project-b")
+
 	// Index project A.
-	if err := mgr.SwitchProject("project-a", wsA, ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-a", wsA, viPathA, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject A: %v", err)
 	}
 	if err := svc.WaitReady(context.Background()); err != nil {
@@ -53,7 +55,7 @@ func TestManagerSwitchProject(t *testing.T) {
 	}
 
 	// Switch to project B.
-	if err := mgr.SwitchProject("project-b", wsB, ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-b", wsB, viPathB, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject B: %v", err)
 	}
 	if err := svc.WaitReady(context.Background()); err != nil {
@@ -65,7 +67,7 @@ func TestManagerSwitchProject(t *testing.T) {
 	}
 
 	// Switch back to project A and verify its data is still intact.
-	if err := mgr.SwitchProject("project-a", wsA, ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-a", wsA, viPathA, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject A again: %v", err)
 	}
 	if err := svc.WaitReady(context.Background()); err != nil {
@@ -84,7 +86,6 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	persistDir := t.TempDir()
 
 	svc, err := NewService(ServiceConfig{
-		PersistPath:   persistDir,
 		EmbeddingFunc: fakeEmbeddingFunc(),
 	})
 	if err != nil {
@@ -110,8 +111,11 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 		t.Fatalf("write b.go: %v", err)
 	}
 
+	viPathA := filepath.Join(persistDir, "project-a")
+	viPathB := filepath.Join(persistDir, "project-b")
+
 	// Index project A.
-	if err := mgr.SwitchProject("project-a", wsA, ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-a", wsA, viPathA, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject A: %v", err)
 	}
 	if err := svc.WaitReady(context.Background()); err != nil {
@@ -122,7 +126,7 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	mgr.NotifyFileChange(wsA)
 
 	// Immediately switch to project B (this should cancel the debounce).
-	if err := mgr.SwitchProject("project-b", wsB, ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-b", wsB, viPathB, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject B: %v", err)
 	}
 	if err := svc.WaitReady(context.Background()); err != nil {
@@ -144,7 +148,7 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	}
 
 	// Switch back to A and verify it was not corrupted.
-	if err := mgr.SwitchProject("project-a", wsA, ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-a", wsA, viPathA, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject A again: %v", err)
 	}
 	if err := svc.WaitReady(context.Background()); err != nil {
@@ -163,7 +167,6 @@ func TestManagerDeleteProjectData(t *testing.T) {
 	persistDir := t.TempDir()
 
 	svc, err := NewService(ServiceConfig{
-		PersistPath:   persistDir,
 		EmbeddingFunc: fakeEmbeddingFunc(),
 	})
 	if err != nil {
@@ -182,19 +185,20 @@ func TestManagerDeleteProjectData(t *testing.T) {
 		t.Fatalf("write x.go: %v", err)
 	}
 
-	if err := mgr.SwitchProject("project-x", ws, ProjectCallbacks{}); err != nil {
+	projectDir := filepath.Join(persistDir, "project-x")
+
+	if err := mgr.SwitchProject("project-x", ws, projectDir, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 	if err := svc.WaitReady(context.Background()); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
-	projectDir := filepath.Join(persistDir, "project-x")
 	if _, err := os.Stat(projectDir); err != nil {
 		t.Fatalf("project vector dir should exist: %v", err)
 	}
 
-	if err := mgr.DeleteProjectData("project-x"); err != nil {
+	if err := mgr.DeleteProjectData(projectDir); err != nil {
 		t.Fatalf("DeleteProjectData: %v", err)
 	}
 

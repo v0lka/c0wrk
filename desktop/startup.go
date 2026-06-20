@@ -66,11 +66,20 @@ func (a *App) Startup(ctx context.Context) {
 	startTime := time.Now()
 	a.ctx = ctx
 
+	// ── Phase 0: Resolve agent directory (needed for logger paths) ──
+	// Compute early so logger.Init can write to the correct directory.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = "."
+	}
+	agentDir := filepath.Join(homeDir, config.DefaultAgentDir)
+	logDir := config.LogsDir(agentDir)
+
 	// ── Phase 1: Shell Environment + Logger ──────────────────────────
 	// On macOS, apps launched from Finder/Dock don't inherit shell env vars.
 	// MUST run before any config/env-var resolution.
 	config.LoadShellEnvironment(nil)
-	log, sessionLogger := a.initLogger()
+	log, sessionLogger := a.initLogger(logDir)
 	a.sessionLogger = sessionLogger // stored for cleanup on early Startup exits (W1)
 	log.Info("startup phase complete", "phase", "logger", "elapsed_ms", time.Since(startTime).Milliseconds())
 
@@ -84,13 +93,13 @@ func (a *App) Startup(ctx context.Context) {
 	cfg := resolved.Config
 	configPath := resolved.ConfigPath
 	configLoadErrors := resolved.LoadErrors
-	agentDir := resolved.AgentDir
+	// agentDir and logDir are already computed in phase 0
 
 	logLevel := cfg.LogLevel
-	log, sessionLogger = a.maybeReinitLogger(logLevel, sessionLogger, log)
+	log, sessionLogger = a.maybeReinitLogger(logLevel, sessionLogger, log, logDir)
 
 	// ── Phase 3: Database + Terminal Manager (parallel) ───────────────
-	dbPath := filepath.Join(agentDir, cfg.Memory.Database)
+	dbPath := config.DatabasePath(agentDir)
 	var db *sql.DB
 	var termManager *terminal.Manager
 	var phase3 sync.WaitGroup
@@ -111,15 +120,14 @@ func (a *App) Startup(ctx context.Context) {
 	projStore, sessStore := a.initStores(db, log)
 	log.Info("startup phase complete", "phase", "stores", "elapsed_ms", time.Since(startTime).Milliseconds())
 
-	logDir := filepath.Join(agentDir, "logs")
-	projectsDir := filepath.Join(agentDir, "projects")
+	projectsDir := config.ProjectsDir(agentDir)
 	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
 		log.Error("failed to create projects directory", "error", err)
 	}
 
 	var projectMgr *project.Manager
 	if projStore != nil {
-		projectMgr = project.NewManager(projStore, projectsDir)
+		projectMgr = project.NewManager(projStore, agentDir)
 		// Ensure the "No Project" pseudo-project always exists.
 		if err := projectMgr.EnsureNoProject(); err != nil {
 			log.Warn("failed to ensure No Project", "error", err)
@@ -143,8 +151,6 @@ func (a *App) Startup(ctx context.Context) {
 		Config:               cfg,
 		Logger:               log,
 		AgentDir:             agentDir,
-		LogDir:               logDir,
-		ProjectsDir:          projectsDir,
 		SessionStore:         sessStore,
 		TaskStore:            sessStore,
 		UIEmitFunc:           uiEmitFunc,
@@ -168,7 +174,7 @@ func (a *App) Startup(ctx context.Context) {
 		SessionLogger:   sessionLogger,
 		LogLevel:        logLevel,
 		ProjectManager:  projectMgr,
-		ProjectsDir:     projectsDir,
+		AgentDir:        agentDir,
 		VectorManager:   nil, // set lazily once background init completes
 		TerminalManager: termManager,
 		EmitEvent: func(eventName string, data ...any) {

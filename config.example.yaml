@@ -82,8 +82,8 @@ skills:
 # ---------------------------------------------------------------------------
 # Memory / Persistence
 # ---------------------------------------------------------------------------
-memory:
-  database: "" # Path to SQLite database; empty = default location (${c0wrk}/database.db)
+# The SQLite database is always stored at ~/.c0wrk/database.db
+# (no longer configurable — the memory.database key is retired).
 
 # ---------------------------------------------------------------------------
 # Router

@@ -262,18 +262,6 @@ export namespace backend {
 		    return a;
 		}
 	}
-	export class ConfigMemResponse {
-	    database: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ConfigMemResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.database = source["database"];
-	    }
-	}
 	
 	export class ProxySettingsResponse {
 	    enabled: boolean;
@@ -312,7 +300,6 @@ export namespace backend {
 	    log_level: string;
 	    config_errors: string[];
 	    llm: ConfigLLMResponse;
-	    memory: ConfigMemResponse;
 	    search: ConfigSearchResp;
 	    proxy: ProxySettingsResponse;
 	
@@ -326,7 +313,6 @@ export namespace backend {
 	        this.log_level = source["log_level"];
 	        this.config_errors = source["config_errors"];
 	        this.llm = this.convertValues(source["llm"], ConfigLLMResponse);
-	        this.memory = this.convertValues(source["memory"], ConfigMemResponse);
 	        this.search = this.convertValues(source["search"], ConfigSearchResp);
 	        this.proxy = this.convertValues(source["proxy"], ProxySettingsResponse);
 	    }

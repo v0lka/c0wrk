@@ -10,7 +10,7 @@ import (
 
 // WriteFile writes content to a file within the session's workspace.
 // For No Project, validates containment within the session-specific workspace
-// (~/.c0wrk/projects/__no_project__/sessions/<sessionID>/Workspace/).
+// (~/.c0wrk/projects/__no_project__/<sessionID>/workspace/).
 // For concrete projects, validates against the project workspace directory.
 func (f *FrontendAPI) WriteFile(sessionID, path, content string) error {
 	absPath, _, err := f.resolveWorkspacePath(path)

@@ -21,7 +21,6 @@ type ManagerConfig struct {
 	CloseFn          func() error         // Optional: called in Shutdown (e.g., embedder.Close)
 	ChunkFn          ChunkFunc            // Optional: defaults to adapter over embedding.ChunkFile
 	HashFn           HashFunc             // Optional: defaults to embedding.ComputeFileHash
-	PersistPath      string               // base path for vector storage
 	IgnoreDirs       []string             // user-configured dirs to skip (merged with defaults)
 	IgnoreExtensions []string             // user-configured extensions to skip
 	IgnoreFileNames  []string             // user-configured file names to skip
@@ -91,7 +90,6 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	ignoreNames := buildMap(cfg.IgnoreFileNames)
 
 	svc, err := NewService(ServiceConfig{
-		PersistPath:      cfg.PersistPath,
 		EmbeddingFunc:    cfg.EmbeddingFunc,
 		Logger:           logger,
 		IgnoreDirs:       ignoreDirs,
@@ -158,15 +156,15 @@ func (m *Manager) Searcher() VectorSearcher {
 }
 
 // DeleteProjectData removes the on-disk vector data for a project.
-func (m *Manager) DeleteProjectData(projectID string) error {
-	return m.service.DeleteProjectData(projectID)
+func (m *Manager) DeleteProjectData(fullPath string) error {
+	return m.service.DeleteProjectData(fullPath)
 }
 
 // SwitchProject sets up vector indexing for the given project and workspace.
 // It cancels any in-flight indexing, configures the service for the project,
 // detects the git branch, creates an indexer, starts background indexing,
 // and starts a git branch monitor.
-func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCallbacks) error {
+func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks) error {
 	// Cancel previous indexing and any pending debounced incremental runs.
 	m.mu.Lock()
 	if m.indexCancel != nil {
@@ -183,7 +181,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath string, cbs ProjectCall
 	m.stopDebounce()
 
 	// Set project on service.
-	if err := m.service.SetProject(projectID); err != nil {
+	if err := m.service.SetProject(projectID, vectorIndexFullPath); err != nil {
 		return err
 	}
 

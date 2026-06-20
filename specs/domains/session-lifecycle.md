@@ -8,6 +8,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing, plan review state)
 - `backend/session/manager_execution.go` — SendMessage, ApprovePlan, RejectPlan, CancelTask execution flows
+- `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state)
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
@@ -32,7 +33,7 @@ User clicks "New Chat" (or first message in empty state)
       ├─ Read active project ID + workspace path
       ├─ Call SessionManager.CreateSession(projectID, workspacePath)
       │   ├─ No Project (__no_project__): creates per-session workspace
-      │   │   under projectsDir/__no_project__/sessions/<id>/Workspace
+      │   │   under ~/.c0wrk/projects/__no_project__/<id>/workspace
       │   ├─ Creates orchestrator via factory
       │   └─ No Project: calls orchestrator.SetNoProjectMode() to
       │       disable code tools and add bash command blacklist
@@ -99,7 +100,8 @@ The session enters one of two plan review states (`awaiting_accept` or `awaiting
 ```
 SendMessage(PlanReview=true)
   → orchestrator.HandleMessage(PlanReview=true)
-      └─ HandlePlanReview(): plan → serialize → save to .c0wrk/plans/
+      └─ HandlePlanReview(): plan → serialize → save to session-scoped plans dir
+          (~/.c0wrk/projects/<pid>/<sid>/plans/)
           → return HandleResult{PlanReviewPhase: "awaiting_accept", PlanReviewPath: path}
   → Manager detects PlanReviewPhase != ""
       ├─ Store planReviewPhase, planReviewPath, planReviewMsg, planReviewMode,
@@ -139,7 +141,7 @@ User clicks Reject without feedback:
       └─ User sends a message describing what needs changing → replan with feedback
 ```
 
-Plan files are stored at `<workspace>/.c0wrk/plans/<session_prefix>_<random6>.md`.
+Plan files are stored at `~/.c0wrk/projects/<projectID>/<sessionID>/plans/<session_prefix>_<random6>.md`.
 Previous plan files are not deleted on replan or rejection — they remain as history.
 
 ### Task Resumption
@@ -278,6 +280,7 @@ type HandleOptions struct {
     ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
     ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
     PlanReview      bool     // true = pause after planning for user review
+    SessionPlansDir string   // directory for session-scoped plan files
 }
 
 // HandleResult — orchestration output
@@ -305,8 +308,8 @@ type HandleResult struct {
 ## Invariants
 
 - One Orchestrator per session (created lazily on first message)
-- `DeleteSession` removes the in-memory session and cleans up the per-session
-  workspace directory (`projectsDir/__no_project__/sessions/<id>/`) for No Project
+- `DeleteSession` removes the in-memory session and cleans up the entire per-session
+  directory (`~/.c0wrk/projects/__no_project__/<id>/`) for No Project
   sessions. The session temp directory is always cleaned up regardless.
 - Session state survives app restart (SQLite persistence)
 - Project switch session restore order is deterministic: valid saved session for destination project, otherwise latest destination session, otherwise new destination session
@@ -323,7 +326,7 @@ type HandleResult struct {
 - Plan review state survives app restart via SQLite persistence in the sessions table
 - Startup recovery queries `GetSessionsInPlanReview()` for all projects and re-emits `plan_review_ready` events
 - Stale plan review state (missing .md file) is cleared on recovery to prevent stuck sessions
-- Plan files live at `<workspace>/.c0wrk/plans/` and are not deleted on rejection or replanning
+- Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` and are not deleted on rejection or replanning
 - `CancelTask` clears plan review state, persists the cleared state, completes the blackboard task, and emits `task_cancelled`
 
 ## Configuration

@@ -50,7 +50,7 @@ func setupTestService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if err := svc.SetProject("indexer-test"); err != nil {
+	if err := svc.SetProject("indexer-test", t.TempDir()); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {

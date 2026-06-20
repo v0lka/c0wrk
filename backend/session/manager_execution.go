@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -145,6 +145,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 			ModelOverride:   modelOverride,
 			ReasoningEffort: reasoningEffort,
 			PlanReview:      planReview,
+			SessionPlansDir: config.SessionPlansDir(m.agentDir, session.ProjectID, id),
 		})
 
 		// Plan review: if orchestrator returned a plan for review, store state
@@ -225,6 +226,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 				ModelOverride:   modelOverride,
 				ReasoningEffort: reasoningEffort,
 				PlanReview:      planReview,
+				SessionPlansDir: config.SessionPlansDir(m.agentDir, session.ProjectID, id),
 			})
 			if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
 				m.log().Warn("task completed with incomplete execution (after fallback)", "session_id", id, "error", err)
@@ -774,13 +776,6 @@ func (m *Manager) RejectPlan(ctx context.Context, sessionID, feedback string) er
 // handleReplanWithFeedback implements the replan-with-feedback flow shared by
 // RejectPlan (with feedback) and SendMessage (awaiting_feedback message).
 
-// planReviewSidecarJSON mirrors core.planReviewSidecar for serializing plan
-// and routing metadata alongside the user-visible markdown in .plan.json files.
-type planReviewSidecarJSON struct {
-	Plan  *orchestration.Plan       `json:"plan"`
-	Route *router.RoutingDecision   `json:"route,omitempty"`
-}
-
 func (m *Manager) handleReplanWithFeedback(ctx context.Context, session *Session, sessionID, feedback string) error {
 	session.mu.Lock()
 	originalMsg := session.planReviewMsg
@@ -843,11 +838,7 @@ func (m *Manager) handleReplanWithFeedback(ctx context.Context, session *Session
 	newMD := core.SerializePlan(newPlan)
 
 	// Save to new .md file
-	workspacePath := sdktools.WorkspacePathFrom(ctx2)
-	if workspacePath == "" {
-		workspacePath = session.WorkspacePath
-	}
-	plansDir := filepath.Join(workspacePath, ".c0wrk", "plans")
+	plansDir := config.SessionPlansDir(m.agentDir, session.ProjectID, sessionID)
 	if mkErr := os.MkdirAll(plansDir, 0o755); mkErr != nil {
 		return fmt.Errorf("failed to create plans directory: %w", mkErr)
 	}
@@ -871,7 +862,7 @@ func (m *Manager) handleReplanWithFeedback(ctx context.Context, session *Session
 	session.mu.Lock()
 	route := session.planReviewRoute
 	session.mu.Unlock()
-	planJSON, jErr := json.Marshal(planReviewSidecarJSON{
+	planJSON, jErr := json.Marshal(core.PlanReviewSidecar{
 		Plan:  newPlan,
 		Route: route,
 	})

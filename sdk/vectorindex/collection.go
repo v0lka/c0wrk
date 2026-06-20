@@ -62,16 +62,20 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	}
 
 	// Close any previously-open lexical index and open the one for this
-	// branch. The lexical index is only persisted when the service was
-	// configured with a PersistPath; in-memory mode skips it entirely.
+	// branch. The lexical index is persisted alongside the chromem DB under
+	// the project's vector_index directory (set by SetProject).
 	if s.lexical != nil {
 		if closeErr := s.lexical.Close(); closeErr != nil {
 			s.logger.Warn("failed to close previous lexical index", "error", closeErr)
 		}
 		s.lexical = nil
 	}
-	if s.persistPath != "" && s.projectID != "" {
-		lexDir := filepath.Join(s.persistPath, s.projectID, "lexical", lexicalBranchDirName(branchName))
+	// The lexical index directory is derived from the chromem DB path
+	// (stored in the database, which was opened from the project path).
+	// If the DB is persistent, extract its directory to place the lexical
+	// index alongside it; otherwise skip lexical persistence.
+	if s.projectPath != "" && s.projectID != "" {
+		lexDir := filepath.Join(s.projectPath, "lexical", lexicalBranchDirName(branchName))
 		// Ensure the parent directory (…/{projectID}/lexical/) exists;
 		// bleve's New() creates the leaf (branch) directory itself.
 		if mkErr := os.MkdirAll(filepath.Dir(lexDir), 0o750); mkErr != nil {

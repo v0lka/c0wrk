@@ -10,8 +10,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// setupTestManager creates a Manager backed by an in-memory SQLite store and a temp projectsDir.
-func setupTestManager(t *testing.T) (mgr *Manager, dir string) {
+// setupTestManager creates a Manager backed by an in-memory SQLite store and a temp agent dir.
+func setupTestManager(t *testing.T) (mgr *Manager, agentDir string) {
 	t.Helper()
 
 	db, err := sql.Open("sqlite", ":memory:")
@@ -32,13 +32,13 @@ func setupTestManager(t *testing.T) (mgr *Manager, dir string) {
 		t.Fatalf("failed to create project store: %v", err)
 	}
 
-	projectsDir := t.TempDir()
-	mgr = NewManager(store, projectsDir)
-	return mgr, projectsDir
+	agentDir = t.TempDir()
+	mgr = NewManager(store, agentDir)
+	return mgr, agentDir
 }
 
 func TestManager_CreateProject_Internal(t *testing.T) {
-	mgr, projectsDir := setupTestManager(t)
+	mgr, agentDir := setupTestManager(t)
 
 	proj, err := mgr.CreateProject("My Project", "")
 	if err != nil {
@@ -61,8 +61,8 @@ func TestManager_CreateProject_Internal(t *testing.T) {
 		t.Error("LastActiveAt should not be empty")
 	}
 
-	// Verify workspace directory was created
-	expectedWorkspace := filepath.Join(projectsDir, proj.ID, "Workspace")
+	// Verify workspace directory was created (under projects/<id>/Workspace)
+	expectedWorkspace := filepath.Join(agentDir, "projects", proj.ID, "Workspace")
 	if proj.WorkspacePath != expectedWorkspace {
 		t.Errorf("WorkspacePath = %q, want %q", proj.WorkspacePath, expectedWorkspace)
 	}
@@ -88,7 +88,7 @@ func TestManager_CreateProject_Internal(t *testing.T) {
 }
 
 func TestManager_CreateProject_External(t *testing.T) {
-	mgr, projectsDir := setupTestManager(t)
+	mgr, agentDir := setupTestManager(t)
 
 	// Create an external directory to point to
 	externalDir := t.TempDir()
@@ -105,10 +105,10 @@ func TestManager_CreateProject_External(t *testing.T) {
 		t.Errorf("WorkspacePath = %q, want %q", proj.WorkspacePath, externalDir)
 	}
 
-	// Verify NO directory was created under projectsDir for external projects
-	projectDir := filepath.Join(projectsDir, proj.ID)
+	// Verify NO directory was created under agentDir for external projects
+	projectDir := filepath.Join(agentDir, "projects", proj.ID)
 	if _, err := os.Stat(projectDir); !os.IsNotExist(err) {
-		t.Errorf("no directory should be created under projectsDir for external projects, but %q exists", projectDir)
+		t.Errorf("no directory should be created under agentDir for external projects, but %q exists", projectDir)
 	}
 }
 
@@ -122,7 +122,7 @@ func TestManager_CreateProject_ExternalPathNotExist(t *testing.T) {
 }
 
 func TestManager_DeleteProject_Internal(t *testing.T) {
-	mgr, projectsDir := setupTestManager(t)
+	mgr, agentDir := setupTestManager(t)
 
 	proj, err := mgr.CreateProject("ToDelete", "")
 	if err != nil {
@@ -130,7 +130,7 @@ func TestManager_DeleteProject_Internal(t *testing.T) {
 	}
 
 	// Verify directory exists before delete
-	projectDir := filepath.Join(projectsDir, proj.ID)
+	projectDir := filepath.Join(agentDir, "projects", proj.ID)
 	if _, err := os.Stat(projectDir); err != nil {
 		t.Fatalf("project directory should exist before delete: %v", err)
 	}

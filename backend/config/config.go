@@ -21,7 +21,6 @@ type Config struct {
 	LLM LLMConfig `yaml:"llm"`
 	MCP       MCPConfig       `yaml:"mcp"`
 
-	Memory        MemoryConfig        `yaml:"memory"`
 	Router        RouterConfig        `yaml:"router"`
 	Executor      ExecutorConfig      `yaml:"executor"`
 	Security      SecurityConfig      `yaml:"security"`
@@ -146,11 +145,6 @@ type MCPServerConfig struct {
 	// http fields (new)
 	URL     string            `yaml:"url,omitempty"`
 	Headers map[string]string `yaml:"headers,omitempty"`
-}
-
-// MemoryConfig holds memory system configuration.
-type MemoryConfig struct {
-	Database string `yaml:"database"` // single DB path for all persistent memory
 }
 
 // RouterConfig holds router settings.

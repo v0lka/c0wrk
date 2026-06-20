@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,8 +31,8 @@ import (
 // startup errors land on disk. Returns the active logger plus the underlying
 // SessionLogger so the caller can re-init it later if config requests a
 // different level. Errors are logged via slog.Default() but never block startup.
-func (a *App) initLogger() (*slog.Logger, *logger.SessionLogger) {
-	sessionLogger, err := logger.Init("INFO")
+func (a *App) initLogger(logDir string) (*slog.Logger, *logger.SessionLogger) {
+	sessionLogger, err := logger.Init("INFO", logDir)
 	if err != nil {
 		slog.Error("failed to initialize logger", "error", err)
 	}
@@ -50,11 +49,11 @@ func (a *App) initLogger() (*slog.Logger, *logger.SessionLogger) {
 // maybeReinitLogger re-initializes the session logger if the configured level
 // differs from the bootstrap "INFO". On failure, the original logger is kept.
 // Returns the active logger and (possibly new) SessionLogger.
-func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogger, current *slog.Logger) (*slog.Logger, *logger.SessionLogger) {
+func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogger, current *slog.Logger, logDir string) (*slog.Logger, *logger.SessionLogger) {
 	if level == "" || level == "INFO" {
 		return current, sessionLogger
 	}
-	newLogger, err := logger.Init(level)
+	newLogger, err := logger.Init(level, logDir)
 	if err != nil {
 		return current, sessionLogger
 	}
@@ -483,7 +482,6 @@ func (a *App) startVectorIndexBackground(
 		vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
 			EmbeddingFunc:    emb.EmbeddingFunc(),
 			CloseFn:          emb.Close,
-			PersistPath:      filepath.Join(agentDir, "vector_index"),
 			IgnoreDirs:       cfg.Workspace.IgnoreDirs,
 			IgnoreExtensions: cfg.Workspace.IgnoreExtensions,
 			IgnoreFileNames:  cfg.Workspace.IgnoreFileNames,

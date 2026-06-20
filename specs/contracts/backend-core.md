@@ -12,7 +12,7 @@
 | `Orchestrator`        | core           | core → backend | Per-session orchestration engine      |
 | `BuilderConfig`       | core           | backend → core | Configuration transfer object         |
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
-| `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides |
+| `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides, session plans dir |
 | `Emitter`             | core           | backend → core | Event emission interface              |
 | `Blackboard`          | sdk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
@@ -112,6 +112,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
 | Model override         | backend → core | `HandleOptions.ModelOverride`            |
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
+| Session plans dir      | backend → core | `HandleOptions.SessionPlansDir`          |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. perToolTruncation, ExtraBashBlacklist) |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
@@ -140,3 +141,6 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Changing tool config types → update `BuiltinToolsConfig` re-exports in `core/tools/builtin_registration.go`
 - `vectorindex.ManagerConfig` no longer accepts model-path fields (`ModelPath`, `TokenizerPath`, `LibraryPath`, `MaxSeqLength`, `HiddenDim`); caller is now responsible for embedder lifecycle via `EmbeddingFunc` + `CloseFn`
 - `core/tools` AskUser* and builtins limit/vector type aliases removed per ADR-008; import directly from `sdk/tools` / `sdk/tools/builtins`
+- Adding `SessionPlansDir` to `HandleOptions` → update session manager `HandleOptions` construction in `backend/session/manager_execution.go`
+- Removing `LogDir`/`ProjectsDir` from `ApplicationConfig` → update `desktop/startup.go` caller; use `backend/config/paths.go` functions instead
+- Changing directories under `~/.c0wrk/` → update `backend/config/paths.go` (single source of truth); verify all callers use path functions, not direct `filepath.Join`
