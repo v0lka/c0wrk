@@ -20,7 +20,7 @@ type ChatRole = 'user' | 'assistant' | 'tool_call' | 'tool_result'
   | 'tool_confirm' | 'ask_user' | 'task_cancelled'
   | 'status' | 'task_resumed'
   | 'task_failed_resumable' | 'step_limit' | 'context_compaction'
-  | 'step_todo_update' | 'memory_read'
+  | 'step_todo_update' | 'memory_read' | 'plan_review'
 
 export const roleToType: Record<ChatRole, MessageType> = {
   user: 'user', assistant: 'assistant', tool_call: 'tool_call', tool_result: 'tool_result',
@@ -34,6 +34,7 @@ export const roleToType: Record<ChatRole, MessageType> = {
   task_failed_resumable: 'error', step_limit: 'assistant', context_compaction: 'assistant',
   step_todo_update: 'step_todo_update',
   memory_read: 'memory_read',
+  plan_review: 'plan_review',
 }
 
 /** Convert a persisted ChatMessage to ChatMessageUI, matching live event shape. */
@@ -99,7 +100,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         break
       case 'tool_call': handleToolCall(msg, meta, planStepId, stepIndexMap, toolItemsByKey, pendingResults, pushItem); break
       case 'tool_result': handleToolResult(meta, toolItemsByKey, pendingResults); break
-      case 'tool_confirm': case 'ask_user': case 'task_failed_resumable': case 'step_limit':
+      case 'tool_confirm': case 'ask_user': case 'task_failed_resumable': case 'step_limit': case 'plan_review':
         handleActionMessage(msg, meta, planStepId, pendingActions, pushItem); break
       case 'context_compaction': {
         const bp = (meta?.before_percent as number) ?? 0
@@ -135,6 +136,7 @@ export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] 
     else if (msg.type === 'ask_user') actions.push({ kind: 'ask_user', message: msg })
     else if (msg.type === 'task_failed_resumable') actions.push({ kind: 'resume_action', message: msg })
     else if (msg.type === 'step_limit') actions.push({ kind: 'step_limit', message: msg })
+    else if (msg.type === 'plan_review') actions.push({ kind: 'plan_review', message: msg })
   }
   return actions.length > 0 ? actions : EMPTY_PENDING
 }

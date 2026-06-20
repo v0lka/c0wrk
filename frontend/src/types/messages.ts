@@ -10,7 +10,7 @@ export type MessageType =
   | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry'
   | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable' | 'task_resumed' | 'step_limit' | 'context_compaction'
-  | 'step_todo_update' | 'memory_read'
+  | 'step_todo_update' | 'memory_read' | 'plan_review'
 
 export interface ChatMessageUI {
   id: string
@@ -25,7 +25,7 @@ export type DisplayItemKind =
   | 'user' | 'assistant' | 'thought' | 'thought_group' | 'tool' | 'tool_confirm'
   | 'ask_user' | 'step_limit' | 'resume_action' | 'error' | 'service' | 'plan_step'
   | 'reflection' | 'step_finish' | 'action_placeholder'
-  | 'context_compaction' | 'memory_read'
+  | 'context_compaction' | 'memory_read' | 'plan_review'
 
 export type DisplayItem =
   | { kind: 'user'; message: ChatMessageUI }
@@ -45,6 +45,7 @@ export type DisplayItem =
   | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }
   | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
+  | { kind: 'plan_review'; message: ChatMessageUI }
 
 export interface GroupedMessages {
   items: DisplayItem[]
@@ -79,6 +80,10 @@ export function askUserResolved(answer: string): AskUserResolved {
 
 export function resumeResolved(): ResumeResolved {
   return { resolved: true }
+}
+
+export function planReviewResolved(decision: 'accepted' | 'rejected'): Record<string, unknown> {
+  return { resolved: true, decision }
 }
 
 // -- Read-side type guards --

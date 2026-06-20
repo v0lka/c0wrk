@@ -76,6 +76,30 @@ type ErrorData struct {
 	Error     string `json:"error"`
 }
 
+// --- Plan review event payloads ---
+
+// PlanReviewReadyData is the payload for "plan_review_ready" events.
+type PlanReviewReadyData struct {
+	SessionID   string `json:"session_id"`
+	PlanPath    string `json:"plan_path"`
+	PlanContent string `json:"plan_content"`
+}
+
+// ValidationIssue describes a single validation failure.
+type ValidationIssue struct {
+	StepIndex   int    `json:"step_index,omitempty"`
+	Field       string `json:"field"`
+	Severity    string `json:"severity"` // "error" | "warning"
+	Description string `json:"description"`
+	Suggestion  string `json:"suggestion,omitempty"`
+}
+
+// PlanValidationFailedData is the payload for "plan_validation_failed" events.
+type PlanValidationFailedData struct {
+	SessionID string            `json:"session_id"`
+	Issues    []ValidationIssue `json:"issues"`
+}
+
 // --- Tool confirmation payloads ---
 
 // ToolConfirmPayload is sent to the frontend when a tool needs user confirmation.

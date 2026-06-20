@@ -180,7 +180,7 @@ func appendPlannerContextSections(ctx context.Context, base string) string {
 	result := base
 
 	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+	if envBlock := tools.FormatFullEnvBlock(ctx, tools.EnvInfoFrom(ctx)); envBlock != "" {
 		result += "\n\n" + envBlock
 	}
 
@@ -234,7 +234,7 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	}
 
 	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
+	if envBlock := tools.FormatFullEnvBlock(ctx, tools.EnvInfoFrom(ctx)); envBlock != "" {
 		result += "\n\n" + envBlock
 	}
 

@@ -233,8 +233,9 @@ func EnvInfoFrom(ctx context.Context) *EnvInfo {
 }
 
 // FormatFullEnvBlock returns a detailed environment block for executor/planner prompts.
+// HomeDir is redacted when the context is marked as No Project (CHAT) mode.
 // Returns "" if info is nil.
-func FormatFullEnvBlock(info *EnvInfo) string {
+func FormatFullEnvBlock(ctx context.Context, info *EnvInfo) string {
 	if info == nil {
 		return ""
 	}
@@ -249,7 +250,9 @@ func FormatFullEnvBlock(info *EnvInfo) string {
 	fmt.Fprintf(&b, "- OS: %s\n", info.OS)
 	fmt.Fprintf(&b, "- Architecture: %s\n", info.Arch)
 	fmt.Fprintf(&b, "- Shell: %s\n", info.Shell)
-	fmt.Fprintf(&b, "- Home directory: %s\n", info.HomeDir)
+	if !IsNoProject(ctx) {
+		fmt.Fprintf(&b, "- Home directory: %s\n", info.HomeDir)
+	}
 	fmt.Fprintf(&b, "- Current time: %s\n", now.Format(time.RFC3339))
 	fmt.Fprintf(&b, "- Timezone: %s\n", tzLabel)
 	fmt.Fprintf(&b, "- Node.js: %s\n", runtimeOrNotInstalled(info.NodeVersion))
@@ -263,8 +266,9 @@ func FormatFullEnvBlock(info *EnvInfo) string {
 }
 
 // FormatCompactEnvBlock returns a minimal environment block for evaluator/judge/reflector prompts.
+// HomeDir is redacted when the context is marked as No Project (CHAT) mode.
 // Includes OS, current time, and timezone. Returns "" if info is nil.
-func FormatCompactEnvBlock(info *EnvInfo) string {
+func FormatCompactEnvBlock(ctx context.Context, info *EnvInfo) string {
 	if info == nil {
 		return ""
 	}

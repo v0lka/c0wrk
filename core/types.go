@@ -195,6 +195,9 @@ type HandleResult struct {
 	// Retry-loop fields (Phase 3)
 	AttemptCount int                    `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
 	Reflections  []orchestration.Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
+	// Plan review fields
+	PlanReviewPhase string `json:"plan_review_phase,omitempty"` // non-empty = orchestrator paused in plan review
+	PlanReviewPath  string `json:"plan_review_path,omitempty"`  // path to the .md plan file for review
 }
 
 // HandleOptions controls how a message is processed by HandleMessage.
@@ -204,4 +207,5 @@ type HandleOptions struct {
 	UserSkills      []string // explicitly requested by user via /skill refs (bypass router)
 	ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
 	ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
+	PlanReview      bool     // true = pause after planning for user review before execution
 }

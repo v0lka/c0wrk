@@ -6,10 +6,11 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 
 ## Key Files
 
-- `backend/session/manager.go` — SessionManager (session CRUD, message routing)
+- `backend/session/manager.go` — SessionManager (session CRUD, message routing, plan review state)
+- `backend/session/manager_execution.go` — SendMessage, ApprovePlan, RejectPlan, CancelTask execution flows
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
-- `backend/session/persistence.go` — SessionStore (SQLite persistence)
-- `backend/session/events.go` — event data structs (session created/renamed/deleted/archived, message received)
+- `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state)
+- `backend/session/events.go` — event data structs (session lifecycle + plan review)
 - `backend/session/emitter.go` — WailsEmitter (bridges events to frontend)
 - `backend/session/event_persister.go` — EventPersister (persists events to SQLite)
 - `backend/session/task_adapter.go` — task step/fact adapter for persistence
@@ -69,7 +70,7 @@ Backend SwitchProject path
 
 ```
 User sends message
-  → Frontend: SendMessage(sessionId, text, mode, activeSkills, modelOverride, reasoningEffort)
+  → Frontend: SendMessage(sessionId, text, mode, activeSkills, modelOverride, reasoningEffort, planReview)
   → Backend: FrontendAPI.SendMessage()
       ├─ Persist original text to DB (preserves /skill and @file refs)
       ├─ Preprocess text for orchestrator:
@@ -89,6 +90,57 @@ User sends message
       ├─ On success: persist result, emit task_complete
       └─ On failure: emit task_failed_resumable or error
 ```
+
+### Plan Review
+
+When `PlanReview` is true in HandleOptions, the orchestrator pauses after planning.
+The session enters one of two plan review states (`awaiting_accept` or `awaiting_feedback`).
+
+```
+SendMessage(PlanReview=true)
+  → orchestrator.HandleMessage(PlanReview=true)
+      └─ HandlePlanReview(): plan → serialize → save to .c0wrk/plans/
+          → return HandleResult{PlanReviewPhase: "awaiting_accept", PlanReviewPath: path}
+  → Manager detects PlanReviewPhase != ""
+      ├─ Store planReviewPhase, planReviewPath, planReviewMsg, planReviewMode,
+      │   planReviewSkills, planReviewBB on Session (guarded by mu)
+      ├─ Persist to SQLite via UpdateSessionPlanReview()
+      ├─ Emit plan_review_ready {plan_path, plan_content}
+      └─ GOROUTINE EXITS (session.active = false, planReviewPhase != none)
+
+User clicks Accept:
+  → Frontend: ApprovePlan(sessionId, planPath)
+  → Backend: Manager.ApprovePlan()
+      ├─ Read .md from disk
+      ├─ ParsePlanMarkdown() — structural validation
+      ├─ If structural errors → emit plan_validation_failed, return error
+      ├─ MergePlanSteps(parsed, original) — restore hidden fields
+      ├─ SemanticValidatePlan() — LLM-based validation
+      ├─ If semantic errors → emit plan_validation_failed, return error
+      ├─ bb.SetPlan(mergedPlan), clear plan review state, persist cleared state
+      ├─ Emit plan_review_accepted
+      └─ Launch execution goroutine → orchestrator.Resume(ctx, bb, nil)
+          (same pattern as ResumeTask)
+
+User clicks Reject with feedback:
+  → Frontend: RejectPlan(sessionId, feedback)
+  → Backend: Manager.RejectPlan()
+      ├─ Read previous plan .md from disk
+      ├─ orchestrator.PlanWithFeedback(originalMsg, prevPlanMD, feedback)
+      ├─ Serialize new plan → save to NEW .md file
+      ├─ Update planReviewPhase/planReviewPath, persist, emit plan_review_ready
+      └─ (User can Accept or Reject the new plan)
+
+User clicks Reject without feedback:
+  → Frontend: RejectPlan(sessionId, "")
+  → Backend: Manager.RejectPlan()
+      ├─ Set planReviewPhase = "awaiting_feedback", persist
+      ├─ Emit plan_review_awaiting_feedback
+      └─ User sends a message describing what needs changing → replan with feedback
+```
+
+Plan files are stored at `<workspace>/.c0wrk/plans/<session_prefix>_<random6>.md`.
+Previous plan files are not deleted on replan or rejection — they remain as history.
 
 ### Task Resumption
 
@@ -124,6 +176,11 @@ User clicks "Cancel" on the resume prompt
 User clicks "Cancel"
   → Frontend: CancelTask(sessionId)
   → Backend: FrontendAPI.CancelTask()
+      ├─ If planReviewPhase != none:
+      │   ├─ Clear planReviewPhase, planReviewPath, planReviewBB
+      │   ├─ Persist cleared state via UpdateSessionPlanReview()
+      │   ├─ Complete blackboard task (not resumable)
+      │   └─ Emit task_cancelled → return
       └─ Cancel context → executor stops at next iteration
           → emit task_cancelled
 ```
@@ -134,7 +191,7 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 
 - `projects` — project roster (in `backend/project/persistence.go`)
 - `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
-- `sessions` — id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family
+- `sessions` — id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family, plan_review_phase, plan_review_path, plan_review_context
 - `session_messages` — id, session_id, role, content, metadata (JSON), created_at
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
 - `task_steps` — step_id, task_id, summary, full_output, error_text, steps (JSON), created_at (PRIMARY KEY (task_id, step_id))
@@ -164,6 +221,16 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | `SaveTerminalCommand(ctx, sessionID, command)`               | Save terminal command to history                                 |
 | `LoadTerminalCommands(ctx, sessionID, limit)`                | Load most recent terminal commands                               |
 | `Close()`                                                    | Close the store (no-op for SQLite, lifecycle managed externally) |
+
+### PlanReviewStore Interface
+
+A separate `PlanReviewStore` interface (in `backend/session/persistence.go`) provides plan review workflow persistence. `SQLiteSessionStore` implements both `SessionStore` and `PlanReviewStore`.
+
+| Method                                                              | Description                                                      |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `UpdateSessionPlanReview(ctx, id, phase, planPath)`                 | Persist plan review phase and path for restart survival           |
+| `UpdateSessionPlanReviewContext(ctx, id, phase, planPath, ctxJSON)` | Persist plan review state including restart-survival context (original message, mode, skills as JSON) |
+| `GetSessionsInPlanReview(ctx, projectID)`                           | Query sessions currently in a plan review phase                   |
 
 ### Conversation History
 
@@ -198,15 +265,19 @@ type SessionInfo struct {
     TotalOutputTokens int
     Model            string
     Family           string
+    PlanReviewPhase  string // "" | "awaiting_accept" | "awaiting_feedback"
+    PlanReviewPath   string // path to .md plan file awaiting review
+    PlanReviewContext string // JSON with {msg, mode, skills} for restart survival
 }
 
-// HandleOptions — execution mode + user-specified skill overrides
+// HandleOptions — execution mode + plan review + user-specified skill overrides
 type HandleOptions struct {
     TaskID          string
     ExecutionMode   string   // "normal" | "advanced"
     UserSkills      []string
     ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
     ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
+    PlanReview      bool     // true = pause after planning for user review
 }
 
 // HandleResult — orchestration output
@@ -217,6 +288,8 @@ type HandleResult struct {
     Blackboard      Blackboard       `json:"-"`
     AttemptCount    int              `json:"attempt_count,omitempty"`
     Reflections     []Reflection     `json:"reflections,omitempty"`
+    PlanReviewPhase string           `json:"plan_review_phase,omitempty"` // non-empty = paused for review
+    PlanReviewPath  string           `json:"plan_review_path,omitempty"`  // path to .md plan file
 }
 ```
 
@@ -247,6 +320,11 @@ type HandleResult struct {
   the orchestrator returns.
 - The Cancel button on the resume prompt is a hard discard: it persists
   completion on the unfinished task without launching the orchestrator.
+- Plan review state survives app restart via SQLite persistence in the sessions table
+- Startup recovery queries `GetSessionsInPlanReview()` for all projects and re-emits `plan_review_ready` events
+- Stale plan review state (missing .md file) is cleared on recovery to prevent stuck sessions
+- Plan files live at `<workspace>/.c0wrk/plans/` and are not deleted on rejection or replanning
+- `CancelTask` clears plan review state, persists the cleared state, completes the blackboard task, and emits `task_cancelled`
 
 ## Configuration
 

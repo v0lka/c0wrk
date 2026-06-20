@@ -114,6 +114,15 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `task_resumed`    | no payload (session-scoped only)  | useActionEvents | Failed task resumed          |
 | `terminal_output` | `{data: string}` (base64-encoded) | Terminal.tsx    | PTY output for terminal mode |
 
+### Plan Review
+
+| Event Type                       | Payload                                                                     | Handler Hook         | Description                                                   |
+| -------------------------------- | --------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------- |
+| `plan_review_ready`              | `{plan_path: string, plan_content: string}`                                  | usePlanReviewEvents  | Plan generated, saved to .md, awaiting user review            |
+| `plan_validation_failed`         | `{issues: [{step_index?, field, severity, description, suggestion?}]}`      | usePlanReviewEvents  | Plan structural or semantic validation failed                 |
+| `plan_review_awaiting_feedback`  | no payload (session-scoped only)                                            | usePlanReviewEvents  | Plan rejected without feedback; waiting for user to describe  |
+| `plan_review_accepted`           | no payload (session-scoped only)                                            | usePlanReviewEvents  | Plan approved, execution starting                             |
+
 ### Blackboard & Judge
 
 | Event Type            | Payload                           | Handler Hook         | Description                 |

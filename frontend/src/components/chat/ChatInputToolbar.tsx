@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button'
-import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow } from 'lucide-react'
+import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { ModelCombobox } from './ModelCombobox'
@@ -23,6 +23,8 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     setMode,
     executionMode,
     setExecutionMode,
+    planReview,
+    setPlanReview,
     isInputDisabled,
     isNoProject,
     showCancel,
@@ -94,6 +96,20 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
             disabled={isInputDisabled}
           >
             <Workflow className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={cn(
+              'text-muted-foreground hover:text-foreground',
+              planReview && 'text-highlight bg-muted/50',
+            )}
+            onClick={() => setPlanReview(!planReview)}
+            title="Plan Review — Review and edit the plan before execution"
+            aria-label="Toggle plan review mode"
+            disabled={isInputDisabled}
+          >
+            <ClipboardList className="size-3.5" />
           </Button>
         </>
       )}

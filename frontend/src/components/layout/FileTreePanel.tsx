@@ -205,10 +205,8 @@ export function FileTreePanel() {
         .then((entries) => { if (!cancelled) setEntries(workspacePath, entries) })
         .catch(() => { if (!cancelled) setEntries(workspacePath, []) }),
     ]
-    // Skip file watching for No Project (back-end has no active watcher).
-    if (!isNoProject) {
-      ops.push(watchDirectory(workspacePath))
-    }
+    // Start watching the workspace root for changes.
+    ops.push(watchDirectory(workspacePath))
     // Skip git status for No Project
     if (!isNoProject) {
       ops.push(getGitStatus(workspacePath).then((status) => { if (!cancelled) setGitStatus(status) }))

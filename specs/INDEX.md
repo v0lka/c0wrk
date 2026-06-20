@@ -19,6 +19,7 @@
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
 | Session create/resume/persist            | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
+| Plan review, user approval, replan with feedback | [domains/session-lifecycle.md](domains/session-lifecycle.md) + [domains/orchestration/planner.md](domains/orchestration/planner.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |

@@ -125,7 +125,24 @@ export function handleActionMessage(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined, planStepId: string | undefined,
   pendingActions: DisplayItem[], pushItem: (item: DisplayItem, psId?: string) => void,
 ) {
-  if (meta?.resolved === true) return
+  if (meta?.resolved === true) {
+    // For resolved plan_review, mark the most recent unresolved
+    // plan_review in pendingActions as resolved. This handles both
+    // live events and message replay after restart.
+    if (msg.type === 'plan_review') {
+      for (let i = pendingActions.length - 1; i >= 0; i--) {
+        const pa = pendingActions[i]!
+        if (pa.kind === 'plan_review' && pa.message.metadata?.resolved !== true) {
+          pa.message = {
+            ...pa.message,
+            metadata: { ...pa.message.metadata, resolved: true, decision: meta?.decision as string },
+          }
+          break
+        }
+      }
+    }
+    return
+  }
   switch (msg.type) {
     case 'tool_confirm':
       pendingActions.push({ kind: 'tool_confirm', message: msg })
@@ -141,6 +158,10 @@ export function handleActionMessage(
     case 'step_limit':
       pendingActions.push({ kind: 'step_limit', message: msg })
       pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Step limit reached — awaiting decision...' }, planStepId)
+      break
+    case 'plan_review':
+      pendingActions.push({ kind: 'plan_review', message: msg })
+      pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Plan is ready for review...' }, planStepId)
       break
   }
 }

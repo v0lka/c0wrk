@@ -432,7 +432,9 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	o.emitInitialContextFill(ctx)
 
 	// Emit routing decision so the frontend can display the resumed context.
-	o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
+	if routing != nil {
+		o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
+	}
 
 	o.logInfo("resume_task", "plan_steps", len(plan.Steps), "reflections", len(bb.GetReflections()))
 
@@ -653,13 +655,45 @@ func (o *Orchestrator) SetNoProjectMode() {
 	}
 }
 
+// Emitter returns the orchestrator's event emitter for use by external callers
+// that need to emit plan step events (e.g., after feedback-driven replanning).
+// Returns a noop emitter when the orchestrator has no emitter configured,
+// preventing nil-pointer panics in callers.
+func (o *Orchestrator) Emitter() Emitter {
+	if o.emitter == nil {
+		return &noopEmitter{}
+	}
+	return o.emitter
+}
+
+// LookupSkillDescriptors converts skill names to SkillDescriptors using the
+// orchestrator's skill manager. Unknown names are silently skipped. Returns nil
+// if the skill manager is not available.
+func (o *Orchestrator) LookupSkillDescriptors(names []string) []skills.SkillDescriptor {
+	if o.skillManager == nil || len(names) == 0 {
+		return nil
+	}
+	var result []skills.SkillDescriptor
+	for _, name := range names {
+		if s, ok := o.skillManager.Get(name); ok {
+			result = append(result, s.Descriptor())
+		}
+	}
+	return result
+}
+
 // SetReasoningEffort propagates the per-request reasoning effort to all components
-// that make LLM calls: router, planner, and the SDK P&E engine.
+// that make LLM calls: router, planner, the SDK P&E engine, and the direct LLM caller.
 func (o *Orchestrator) SetReasoningEffort(effort string) {
 	o.config.ReasoningEffort = effort
 	o.router.SetReasoningEffort(effort)
 	o.planner.Cfg.ReasoningEffort = effort
 	o.engine.SetReasoningEffort(effort)
+	// Propagate to the direct LLM caller used by SemanticValidatePlan and
+	// other internal LLM calls that bypass router/planner/engine.
+	if setter, ok := o.llm.(interface{ SetReasoningEffort(string) }); ok {
+		setter.SetReasoningEffort(effort)
+	}
 }
 
 // SetTaskStore sets the TaskPersistence store for blackboard restoration.
@@ -728,12 +762,6 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		return clarification, nil
 	}
 
-	// No Project mode: override code domain to general so that
-	// code-oriented planning and execution strategies are not applied.
-	if o.isNoProject && routing.Domain == "code" {
-		routing.Domain = "general"
-	}
-
 	// Capture ctx and skills for step configurator / planner adapter. Cleared on return.
 	ctxCopy := ctx
 	o.currentRequestCtx.Store(&ctxCopy)
@@ -752,6 +780,15 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 
 	// 5. Execute (first message or continuation).
+	// Plan review: bypass normal execution and return early with plan review phase set.
+	if opts.PlanReview && opts.TaskID == "" {
+		reviewResult, reviewErr := o.HandlePlanReview(ctx, message, sessionID, bb, availableTools, activeSkills, opts, routing)
+		if reviewErr != nil {
+			return nil, reviewErr
+		}
+		return reviewResult, nil
+	}
+
 	var execResult *orchestration.ExecutionResult
 	switch opts.TaskID {
 	case "":

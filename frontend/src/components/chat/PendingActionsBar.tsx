@@ -7,10 +7,11 @@ import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
 import { ResumeActionPanel } from './ResumeActionPanel'
 import { StepLimitPrompt } from './StepLimitPrompt'
+import { PlanReviewPanel } from './PlanReviewPanel'
 import { cn } from '@/lib/utils'
 import type { DisplayItem } from '@/types/messages'
 
-type PendingActionItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'resume_action' | 'step_limit' }>
+type PendingActionItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'resume_action' | 'step_limit' | 'plan_review' }>
 
 export function PendingActionsBar() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -37,6 +38,7 @@ export function PendingActionsBar() {
             case 'ask_user': return <AskUserPanel key={a.message.id} item={a} />
             case 'resume_action': return <ResumeActionPanel key={a.message.id} item={a} />
             case 'step_limit': return <StepLimitPrompt key={a.message.id} item={a} />
+            case 'plan_review': return <PlanReviewPanel key={a.message.id} item={a} />
           }
         })}
       </div>

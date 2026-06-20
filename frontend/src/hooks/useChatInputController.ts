@@ -4,6 +4,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useExecutionModeStore } from '@/stores/executionModeStore'
+import { usePlanReviewStore } from '@/stores/planReviewStore'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
 import { extractSkillRefs } from '@/lib/parseReferences'
@@ -34,6 +35,8 @@ export interface ChatInputController {
   setMode: (m: 'chat' | 'terminal') => void
   executionMode: 'normal' | 'advanced'
   setExecutionMode: (m: 'normal' | 'advanced') => void
+  planReview: boolean
+  setPlanReview: (v: boolean) => void
 
   // Resize and expand
   height: number
@@ -76,6 +79,8 @@ export function useChatInputController(): ChatInputController {
 
   const executionMode = useExecutionModeStore((s) => s.mode)
   const setExecutionMode = useExecutionModeStore((s) => s.setMode)
+  const planReview = usePlanReviewStore((s) => s.planReview)
+  const setPlanReview = usePlanReviewStore((s) => s.setPlanReview)
 
   const { send, cancel, isProcessing } = useMessageSender()
 
@@ -171,6 +176,8 @@ export function useChatInputController(): ChatInputController {
     setMode,
     executionMode,
     setExecutionMode,
+    planReview,
+    setPlanReview,
     height,
     setHeight,
     isExpanded,

@@ -49,6 +49,9 @@ func (t *CreateDirectoryTool) Judge(ctx context.Context, input json.RawMessage) 
 		return false, ""
 	}
 	params.Path = resolvePath(ctx, params.Path)
+	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		return false, err.Error()
+	}
 	return judgeWriteInWorkspace(ctx, params.Path)
 }
 
@@ -64,6 +67,9 @@ func (t *CreateDirectoryTool) Execute(ctx context.Context, input json.RawMessage
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
+	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		return tools.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
 
 	if err := os.MkdirAll(params.Path, 0o755); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to create directory: %v", err), IsError: true}, nil

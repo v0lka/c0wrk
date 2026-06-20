@@ -44,10 +44,18 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
-| `SendMessage`          | id, text, mode, activeSkills, modelOverride, reasoningEffort | error                     | Send user message (async execution)                   |
+| `SendMessage`          | id, text, mode, activeSkills, modelOverride, reasoningEffort, planReview | error                     | Send user message (async execution)                   |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
 | `ResumeTask`           | id                           | error                     | Resume failed task                                    |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
+
+### Plan Review (`backend/frontend_api_plan_review.go`)
+
+| Method          | Parameters            | Returns | Description                                                  |
+| --------------- | --------------------- | ------- | ------------------------------------------------------------ |
+| `WriteFile`     | sessionID, path, content | error   | Write content to a file within the workspace (with path containment) |
+| `ApprovePlan`   | sessionID, planPath   | error   | Validate and approve a plan for execution after user review   |
+| `RejectPlan`    | sessionID, feedback   | error   | Reject a plan; empty feedback = await user message, non-empty = replan with feedback |
 
 ### Project (`backend/frontend_api_project.go`)
 

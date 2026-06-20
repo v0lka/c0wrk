@@ -49,6 +49,9 @@ func (t *DeleteFileTool) Judge(ctx context.Context, input json.RawMessage) (allo
 		return false, ""
 	}
 	params.Path = resolvePath(ctx, params.Path)
+	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		return false, err.Error()
+	}
 	return judgeWriteInWorkspace(ctx, params.Path)
 }
 
@@ -64,6 +67,9 @@ func (t *DeleteFileTool) Execute(ctx context.Context, input json.RawMessage) (to
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
+	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		return tools.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
 
 	// Coherence check: block delete if file was modified since this session's last read.
 	checker := tools.CoherenceFrom(ctx)

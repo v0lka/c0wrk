@@ -68,6 +68,7 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   action_placeholder: ActionPlaceholder as ItemRenderer,
   context_compaction: ContextCompactionBlock as ItemRenderer,
   memory_read: MemoryReadBlock as ItemRenderer,
+  plan_review: (() => null) as ItemRenderer,
 }
 
 export function CompactErrorFallback() {

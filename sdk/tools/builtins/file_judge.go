@@ -79,6 +79,12 @@ func judgeReadInWorkspace(ctx context.Context, input json.RawMessage) (allowed b
 	}
 
 	resolved := resolvePath(ctx, params.Path)
+	if resolved == "" {
+		return false, "path is outside the session workspace"
+	}
+	if err := validatePathInWorkspace(ctx, resolved); err != nil {
+		return false, err.Error()
+	}
 	absPath, err := filepath.Abs(resolved)
 	if err != nil {
 		return true, "read-only file operation"

@@ -42,10 +42,17 @@ const (
 
 // NoProjectDisabledTools is the set of tool names that are blocked from both
 // listing and execution when the current project is "No Project" (__no_project__).
+//
+// Note: edit_file and write_file are intentionally NOT in this list. In No Project
+// (CHAT) mode, write/edit operations are constrained to the per-session isolated
+// workspace by the Judge layer (judgeWriteInWorkspace). This enables editing
+// arbitrary files within the session workspace (including .c0wrk/plans/ for
+// Plan Review) without exposing the broader filesystem. CHAT mode was never
+// strictly read-only — bash_exec has always been allowed for session-scoped
+// command execution.
 var NoProjectDisabledTools = map[string]bool{
 	ToolRipgrep:        true,
 	ToolGlob:           true,
-	ToolEditFile:       true,
 	ToolSemanticSearch: true,
 }
 

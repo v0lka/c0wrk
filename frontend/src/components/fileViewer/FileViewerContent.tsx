@@ -2,6 +2,7 @@ import { Loader2 } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useFileViewerData } from '@/hooks/useFileViewerData'
 import { CodeMirrorFileViewer } from '@/components/fileViewer/CodeMirrorFileViewer'
+import { PlanEditor } from '@/components/fileViewer/PlanEditor'
 
 /**
  * FileViewerContent is the data-loading shell for the file viewer. It chooses
@@ -43,6 +44,12 @@ export function FileViewerContent() {
         <p className="text-sm text-muted-foreground">Unsupported file format</p>
       </div>
     )
+  }
+
+  // Plan files: render structured editor instead of plain markdown viewer
+  const isPlanFile = activeFile.includes('.c0wrk/plans/')
+  if (isPlanFile) {
+    return <PlanEditor content={fileData.content} path={activeFile} />
   }
 
   return (

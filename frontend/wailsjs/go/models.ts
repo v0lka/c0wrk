@@ -547,6 +547,7 @@ export namespace backend {
 	export class SecuritySettingsResponse {
 	    default_policy: string;
 	    tool_policies: Record<string, ToolPolicyResponse>;
+	    auto_approve_workspace_writes: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SecuritySettingsResponse(source);
@@ -556,6 +557,7 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.default_policy = source["default_policy"];
 	        this.tool_policies = this.convertValues(source["tool_policies"], ToolPolicyResponse, true);
+	        this.auto_approve_workspace_writes = source["auto_approve_workspace_writes"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -780,6 +782,9 @@ export namespace session {
 	    total_output_tokens: number;
 	    model: string;
 	    family: string;
+	    plan_review_phase: string;
+	    plan_review_path: string;
+	    plan_review_context: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -798,6 +803,9 @@ export namespace session {
 	        this.total_output_tokens = source["total_output_tokens"];
 	        this.model = source["model"];
 	        this.family = source["family"];
+	        this.plan_review_phase = source["plan_review_phase"];
+	        this.plan_review_path = source["plan_review_path"];
+	        this.plan_review_context = source["plan_review_context"];
 	    }
 	}
 	export class TerminalCommand {

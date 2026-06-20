@@ -5,6 +5,7 @@ import { useCallback, useState } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useExecutionModeStore } from '@/stores/executionModeStore'
+import { usePlanReviewStore } from '@/stores/planReviewStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { sendMessage, cancelTask } from '@/api/chat'
 import { createSession } from '@/api/sessions'
@@ -57,7 +58,8 @@ export function useMessageSender(): UseMessageSenderResult {
     try {
       const modelOverride = useInputModeStore.getState().selectedModel ?? ''
       const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
-      await sendMessage(sessionId, messageText, executionMode, activeSkills ?? [], modelOverride, reasoningOverride)
+      const planReview = usePlanReviewStore.getState().planReview
+      await sendMessage(sessionId, messageText, executionMode, activeSkills ?? [], modelOverride, reasoningOverride, planReview)
     } catch (error) {
       logger.error('Failed to send message:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)

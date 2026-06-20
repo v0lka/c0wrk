@@ -46,7 +46,7 @@ func TestFormatFullEnvBlock(t *testing.T) {
 		PythonVersion: "3.12.4",
 	}
 
-	out := FormatFullEnvBlock(info)
+	out := FormatFullEnvBlock(context.Background(), info)
 
 	expected := []string{
 		"## Environment",
@@ -78,7 +78,7 @@ func TestFormatCompactEnvBlock(t *testing.T) {
 		PythonVersion: "3.12.4",
 	}
 
-	out := FormatCompactEnvBlock(info)
+	out := FormatCompactEnvBlock(context.Background(), info)
 
 	// Should contain.
 	for _, s := range []string{"## Environment", "OS: Linux 6.1.0", "Current time:", "Timezone:"} {
@@ -96,10 +96,10 @@ func TestFormatCompactEnvBlock(t *testing.T) {
 }
 
 func TestFormatEnvBlock_Nil(t *testing.T) {
-	if out := FormatFullEnvBlock(nil); out != "" {
+	if out := FormatFullEnvBlock(context.Background(), nil); out != "" {
 		t.Errorf("expected empty string for nil, got %q", out)
 	}
-	if out := FormatCompactEnvBlock(nil); out != "" {
+	if out := FormatCompactEnvBlock(context.Background(), nil); out != "" {
 		t.Errorf("expected empty string for nil, got %q", out)
 	}
 }
@@ -115,7 +115,7 @@ func TestFormatFullEnvBlock_MissingRuntime(t *testing.T) {
 		PythonVersion: "", // not installed
 	}
 
-	out := FormatFullEnvBlock(info)
+	out := FormatFullEnvBlock(context.Background(), info)
 
 	if !strings.Contains(out, "Python: not installed") {
 		t.Errorf("expected 'Python: not installed' in output\nGot:\n%s", out)

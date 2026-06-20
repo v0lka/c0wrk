@@ -12,7 +12,7 @@
 | `Orchestrator`        | core           | core → backend | Per-session orchestration engine      |
 | `BuilderConfig`       | core           | backend → core | Configuration transfer object         |
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
-| `HandleOptions`       | core           | backend → core | Execution mode, model override, reasoning effort, user skill overrides |
+| `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides |
 | `Emitter`             | core           | backend → core | Event emission interface              |
 | `Blackboard`          | sdk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | core           | core → backend | Routing classification                |
@@ -90,7 +90,7 @@ backend.Application
        └─ Owns event persistence (SQLite)
 ```
 
-The session manager never touches core internals — it treats the Orchestrator as a black box with `HandleMessage()` and `Resume()` entry points.
+The session manager never touches core internals — it treats the Orchestrator as a black box with `HandleMessage()`, `Resume()`, `PlanWithFeedback()`, `SemanticValidatePlan()`, and `PlanReviewPhase` signalling on `HandleResult` entry points.
 
 ## Event Emission
 
@@ -108,6 +108,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | ---------------------- | -------------- | ---------------------------------------- |
 | User message           | backend → core | `string` via `HandleMessage()`           |
 | Execution mode         | backend → core | `HandleOptions.ExecutionMode`            |
+| Plan review flag       | backend → core | `HandleOptions.PlanReview`               |
 | User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
 | Model override         | backend → core | `HandleOptions.ModelOverride`            |
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
@@ -117,6 +118,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies      | backend → core | `BuilderConfig.Security`                 |
 | Execution result       | core → backend | `*HandleResult`                          |
+| Plan review path       | core → backend | `HandleResult.PlanReviewPath`            |
 | Lifecycle events       | core → backend | `Emitter` method calls                   |
 | Blackboard state       | core → backend | `Blackboard` interface (for persistence) |
 
@@ -131,6 +133,8 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Adding a field to `BuilderConfig` → update `backend/configadapter.go`
 - Adding a new per-tool truncation entry → update `backend/configadapter.go` `convertTruncationMap()`
 - Changing `HandleResult` fields → update session event emission in backend
+- Adding `PlanReview` to `HandleOptions` → update `backend/frontend_api_session.go` + `backend/session/manager_execution.go`
+- Adding `PlanReviewPhase`/`PlanReviewPath` to `HandleResult` → update session manager goroutine branching
 - Changing `Emitter` interface → update backend emitter implementation
 - Adding new `OrchestratorBuilder` method → update `backend/application.go` if exposed to frontend
 - Changing tool config types → update `BuiltinToolsConfig` re-exports in `core/tools/builtin_registration.go`

@@ -2,18 +2,24 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, activeSkills []string, modelOverride, reasoningEffort string) error {
+func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, activeSkills []string, modelOverride, reasoningEffort string, planReview bool) error {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to restore session: %w", err)
@@ -23,6 +29,29 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	}
 
 	session.mu.Lock()
+	// Check if session is awaiting plan review feedback — treat incoming
+	// message as replan feedback instead of a new request.
+	if session.planReviewPhase == PlanReviewAwaitingFeedback {
+		feedbackMsg := text
+		// Create the cancellable context while holding the lock to prevent
+		// TOCTOU with CancelTask which clears planReviewBB and planReviewCancel.
+		replanCtx, replanCancel := context.WithCancel(context.Background())
+		session.planReviewCancel = replanCancel
+		session.mu.Unlock()
+		go func() {
+			defer func() {
+				session.mu.Lock()
+				session.planReviewCancel = nil
+				session.mu.Unlock()
+			}()
+			if err := m.handleReplanWithFeedback(session, id, feedbackMsg, replanCtx); err != nil {
+				m.log().Warn("replan with feedback failed", "session", id, "error", err)
+				m.emitFunc(Event{SessionID: id, Type: "error", Data: ErrorData{SessionID: id, Error: err.Error()}})
+			}
+		}()
+		return nil
+	}
+
 	// Check if already active (prevent double-send on the same session)
 	if session.active {
 		session.mu.Unlock()
@@ -38,6 +67,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	taskCtx = sdktools.WithWorkspacePath(taskCtx, session.WorkspacePath)
 	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
+	if session.ProjectID == project.NoProjectID {
+		taskCtx = sdktools.WithNoProject(taskCtx)
+	}
 	session.cancel = cancel
 	session.mu.Unlock()
 
@@ -112,7 +144,62 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 			UserSkills:      skills,
 			ModelOverride:   modelOverride,
 			ReasoningEffort: reasoningEffort,
+			PlanReview:      planReview,
 		})
+
+		// Plan review: if orchestrator returned a plan for review, store state
+		// and emit plan_review_ready, then exit the goroutine (don't block).
+		if result != nil && result.PlanReviewPhase != "" {
+			planReviewPhase := PlanReviewPhase(result.PlanReviewPhase)
+			session.mu.Lock()
+			session.planReviewPhase = planReviewPhase
+			session.planReviewPath = result.PlanReviewPath
+			session.planReviewMsg = msg
+			session.planReviewMode = mode
+			session.planReviewSkills = skills
+			session.planReviewBB = result.Blackboard
+			session.planReviewRoute = result.RoutingDecision
+			session.mu.Unlock()
+
+			// Read plan content from disk for immediate frontend display.
+			// Only emit if the file was read successfully; on failure, log
+			// and skip the event — the frontend would render an empty viewer.
+			planContent, readErr := os.ReadFile(result.PlanReviewPath)
+			if readErr != nil {
+				m.log().Warn("failed to read plan content for review", "session", id, "path", result.PlanReviewPath, "error", readErr)
+			} else {
+				m.emitFunc(Event{
+					SessionID: id,
+					Type:      "plan_review_ready",
+					Data: PlanReviewReadyData{
+						SessionID:   id,
+						PlanPath:    result.PlanReviewPath,
+						PlanContent: string(planContent),
+					},
+				})
+			}
+
+			// Persist plan review state for restart survival.
+			m.mu.RLock()
+			prs := m.planReviewStore
+			m.mu.RUnlock()
+			if prs != nil {
+				contextJSON, err := json.Marshal(map[string]any{
+					"msg":    msg,
+					"mode":   mode,
+					"skills": skills,
+				})
+				if err != nil {
+					m.log().Warn("failed to marshal plan review context", "session", id, "error", err)
+					contextJSON = []byte("{}")
+				}
+				if err := prs.UpdateSessionPlanReviewContext(context.Background(), id, string(planReviewPhase), result.PlanReviewPath, string(contextJSON)); err != nil {
+					m.log().Warn("failed to persist plan review state", "session", id, "error", err)
+				}
+			}
+
+			return
+		}
 
 		// Distinguish partial-success (incomplete plan) from total failure: the
 		// SDK now wraps partial executions in ErrExecutionIncomplete and returns
@@ -137,6 +224,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 				UserSkills:      skills,
 				ModelOverride:   modelOverride,
 				ReasoningEffort: reasoningEffort,
+				PlanReview:      planReview,
 			})
 			if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
 				m.log().Warn("task completed with incomplete execution (after fallback)", "session_id", id, "error", err)
@@ -295,6 +383,9 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	taskCtx = sdktools.WithWorkspacePath(taskCtx, session.WorkspacePath)
 	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
+	if session.ProjectID == project.NoProjectID {
+		taskCtx = sdktools.WithNoProject(taskCtx)
+	}
 	session.cancel = cancel
 	session.mu.Unlock()
 
@@ -387,6 +478,460 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	return nil
 }
 
+// ApprovePlan validates and executes a plan that was awaiting user review.
+func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) error {
+	session, err := m.getOrRestoreSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	session.mu.Lock()
+	if session.planReviewPhase != PlanReviewAwaitingAccept {
+		session.mu.Unlock()
+		return fmt.Errorf("session is not awaiting plan review")
+	}
+	if session.active {
+		session.mu.Unlock()
+		return fmt.Errorf("session is already processing a task")
+	}
+	session.mu.Unlock()
+
+	// Read the plan markdown from disk (I/O — outside lock).
+	planMD, err := os.ReadFile(planPath)
+	if err != nil {
+		return fmt.Errorf("failed to read plan file: %w", err)
+	}
+
+	// Parse and validate structure
+	parsed, parseErrors := core.ParsePlanMarkdown(string(planMD))
+	if len(parseErrors) > 0 {
+		issues := make([]ValidationIssue, len(parseErrors))
+		for i, pe := range parseErrors {
+			issues[i] = ValidationIssue{
+				StepIndex:   pe.StepNum,
+				Field:       pe.Field,
+				Severity:    "error",
+				Description: pe.Detail,
+			}
+		}
+		m.emitFunc(Event{
+			SessionID: sessionID,
+			Type:      "plan_validation_failed",
+			Data: PlanValidationFailedData{
+				SessionID: sessionID,
+				Issues:    issues,
+			},
+		})
+		return fmt.Errorf("plan structural validation failed: %d issues", len(parseErrors))
+	}
+
+	// Get original plan from blackboard
+	session.mu.Lock()
+	bb := session.planReviewBB
+	session.mu.Unlock()
+	if bb == nil {
+		return fmt.Errorf("no blackboard found for plan review")
+	}
+
+	originalPlan := bb.GetPlan()
+	if originalPlan == nil {
+		return fmt.Errorf("no original plan found on blackboard")
+	}
+
+	// Merge user-edited content with original hidden fields
+	mergedSteps := core.MergePlanSteps(parsed, originalPlan)
+	mergedPlan := &orchestration.Plan{Steps: mergedSteps}
+
+	// Run semantic validation (LLM-based) with enriched context.
+	if session.orchestrator != nil {
+		originalMsg := ""
+		session.mu.Lock()
+		originalMsg = session.planReviewMsg
+		session.mu.Unlock()
+
+		// Enrich context with session values for model/NoProject awareness.
+		valCtx := ctx
+		valCtx = sdktools.WithWorkspacePath(valCtx, session.WorkspacePath)
+		valCtx = sdktools.WithTempDir(valCtx, session.TempDir)
+		if session.ProjectID == project.NoProjectID {
+			valCtx = sdktools.WithNoProject(valCtx)
+		}
+
+		semanticIssues, valErr := session.orchestrator.SemanticValidatePlan(valCtx, originalMsg, string(planMD))
+		if valErr != nil {
+			m.log().Warn("semantic validation failed", "session", sessionID, "error", valErr)
+		} else if len(semanticIssues) > 0 {
+			issues := make([]ValidationIssue, len(semanticIssues))
+			for i, desc := range semanticIssues {
+				issues[i] = ValidationIssue{
+					Severity:    "warning",
+					Description: desc,
+				}
+			}
+			m.emitFunc(Event{
+				SessionID: sessionID,
+				Type:      "plan_validation_failed",
+				Data: PlanValidationFailedData{
+					SessionID: sessionID,
+					Issues:    issues,
+				},
+			})
+			return fmt.Errorf("plan semantic validation failed: %d issues", len(issues))
+		}
+	}
+
+	// All validation passed. Now set active=true and launch execution.
+	session.mu.Lock()
+	if session.active {
+		session.mu.Unlock()
+		return fmt.Errorf("session is already processing a task")
+	}
+	bb.SetPlan(mergedPlan)
+	route := session.planReviewRoute
+	session.planReviewPhase = PlanReviewNone
+	session.planReviewPath = ""
+	session.planReviewRoute = nil
+	session.planReviewMsg = ""
+	session.planReviewMode = ""
+	session.planReviewSkills = nil
+	session.active = true
+	resumeDoneCh := make(chan struct{})
+	session.done = resumeDoneCh
+	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, sessionID))
+	taskCtx = sdktools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
+	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
+	if session.ProjectID == project.NoProjectID {
+		taskCtx = sdktools.WithNoProject(taskCtx)
+	}
+	session.cancel = cancel
+	session.mu.Unlock()
+
+	// Emit plan accepted event
+	m.emitFunc(Event{
+		SessionID: sessionID,
+		Type:      "plan_review_accepted",
+		Data:      map[string]any{"session_id": sessionID},
+	})
+
+	// Clear persisted plan review state.
+	m.mu.RLock()
+	prs := m.planReviewStore
+	m.mu.RUnlock()
+	if prs != nil {
+		if err := prs.UpdateSessionPlanReview(context.Background(), sessionID, "", ""); err != nil {
+			m.log().Warn("failed to clear plan review state", "session", sessionID, "error", err)
+		}
+	}
+
+	// Clean up superseded plan files (.md and .plan.json) now that the
+	// plan is accepted and execution is starting. Previous plan files from
+	// replanning iterations remain as history; only the accepted pair is
+	// removed to avoid accumulating stale files.
+	m.cleanupAcceptedPlanFiles(planPath)
+
+	// Launch execution goroutine (same pattern as ResumeTask)
+	go func() {
+		defer close(resumeDoneCh)
+		defer func() {
+			session.mu.Lock()
+			session.active = false
+			session.cancel = nil
+			session.done = nil
+			session.mu.Unlock()
+		}()
+
+		result, execErr := session.orchestrator.Resume(taskCtx, bb, route)
+
+		if execErr != nil && errors.Is(execErr, orchestration.ErrExecutionIncomplete) && result != nil {
+			m.log().Warn("approved plan execution completed with incomplete execution", "session_id", sessionID, "error", execErr)
+			execErr = nil
+		}
+
+		if execErr != nil {
+			if taskCtx.Err() == context.Canceled {
+				m.emitFunc(Event{SessionID: sessionID, Type: "task_cancelled", Data: TaskCancelledData{SessionID: sessionID}})
+				return
+			}
+			m.emitFunc(Event{SessionID: sessionID, Type: "error", Data: ErrorData{SessionID: sessionID, Error: execErr.Error()}})
+			m.emitResumableIfUnfinished(sessionID)
+			return
+		}
+
+		// Store task ID for potential continuations
+		if result != nil {
+			if pbb, ok := result.Blackboard.(*PersistentBlackboard); ok {
+				session.mu.Lock()
+				session.lastCompletedTaskID = pbb.TaskID()
+				session.mu.Unlock()
+			}
+		}
+
+		output := ""
+		if result != nil {
+			output = result.Output
+		}
+		m.emitFunc(Event{SessionID: sessionID, Type: "task_complete", Data: TaskCompleteData{SessionID: sessionID, Output: output, Plan: mergedPlan}})
+		m.emitResumableIfUnfinished(sessionID)
+	}()
+
+	return nil
+}
+
+// RejectPlan rejects a plan that was awaiting user review, optionally with
+// feedback for replanning.
+func (m *Manager) RejectPlan(ctx context.Context, sessionID, feedback string) error {
+	session, err := m.getOrRestoreSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	session.mu.Lock()
+	if session.planReviewPhase != PlanReviewAwaitingAccept {
+		session.mu.Unlock()
+		return fmt.Errorf("session is not awaiting plan review")
+	}
+	session.mu.Unlock()
+
+	if feedback == "" {
+		// No feedback: wait for user to provide feedback as a message
+		session.mu.Lock()
+		prevPlanPath := session.planReviewPath
+		session.planReviewPhase = PlanReviewAwaitingFeedback
+		session.mu.Unlock()
+
+		// Persist the awaiting_feedback state with context for restart survival.
+		// Keep the previous plan path so handleReplanWithFeedback can read the
+		// original plan after a restart (awaiting_feedback has no path in the
+		// normal sense, but needs the previous plan for replanning).
+		m.mu.RLock()
+		prs := m.planReviewStore
+		m.mu.RUnlock()
+		if prs != nil {
+			session.mu.Lock()
+			contextJSON, err := json.Marshal(map[string]any{
+				"msg":    session.planReviewMsg,
+				"mode":   session.planReviewMode,
+				"skills": session.planReviewSkills,
+			})
+			session.mu.Unlock()
+			if err != nil {
+				m.log().Warn("failed to marshal plan review context", "session", sessionID, "error", err)
+				contextJSON = []byte("{}")
+			}
+			if err := prs.UpdateSessionPlanReviewContext(context.Background(), sessionID, string(PlanReviewAwaitingFeedback), prevPlanPath, string(contextJSON)); err != nil {
+				m.log().Warn("failed to persist plan review state", "session", sessionID, "error", err)
+			}
+		}
+
+		// Emit rejection resolution so it survives app restart (like plan_review_accepted).
+		m.emitFunc(Event{
+			SessionID: sessionID,
+			Type:      "plan_review_rejected",
+			Data:      map[string]any{"session_id": sessionID},
+		})
+		m.emitFunc(Event{
+			SessionID: sessionID,
+			Type:      "plan_review_awaiting_feedback",
+			Data:      map[string]string{"session_id": sessionID},
+		})
+		return nil
+	}
+
+	// Emit rejection resolution so it survives app restart (like plan_review_accepted).
+	m.emitFunc(Event{
+		SessionID: sessionID,
+		Type:      "plan_review_rejected",
+		Data:      map[string]any{"session_id": sessionID},
+	})
+
+	// Feedback provided: replan with feedback in a goroutine so the Wails RPC
+	// does not block on the LLM call.
+	// Create a cancellable context so CancelTask can interrupt the LLM call.
+	replanCtx, replanCancel := context.WithCancel(context.Background())
+	session.mu.Lock()
+	session.planReviewCancel = replanCancel
+	session.mu.Unlock()
+	go func() {
+		defer func() {
+			session.mu.Lock()
+			session.planReviewCancel = nil
+			session.mu.Unlock()
+		}()
+		if err := m.handleReplanWithFeedback(session, sessionID, feedback, replanCtx); err != nil {
+			m.log().Warn("replan with feedback failed", "session", sessionID, "error", err)
+			m.emitFunc(Event{SessionID: sessionID, Type: "error", Data: ErrorData{SessionID: sessionID, Error: err.Error()}})
+		}
+	}()
+	return nil
+}
+
+// handleReplanWithFeedback implements the replan-with-feedback flow shared by
+// RejectPlan (with feedback) and SendMessage (awaiting_feedback message).
+
+// planReviewSidecarJSON mirrors core.planReviewSidecar for serializing plan
+// and routing metadata alongside the user-visible markdown in .plan.json files.
+type planReviewSidecarJSON struct {
+	Plan  *orchestration.Plan       `json:"plan"`
+	Route *router.RoutingDecision   `json:"route,omitempty"`
+}
+
+func (m *Manager) handleReplanWithFeedback(session *Session, sessionID, feedback string, ctx context.Context) error {
+	originalMsg := ""
+	prevPlanPath := ""
+	var planReviewSkills []string
+	session.mu.Lock()
+	originalMsg = session.planReviewMsg
+	prevPlanPath = session.planReviewPath
+	planReviewSkills = session.planReviewSkills
+	session.mu.Unlock()
+
+	// Read previous plan markdown
+	prevPlanMD, err := os.ReadFile(prevPlanPath)
+	if err != nil {
+		return fmt.Errorf("failed to read previous plan: %w", err)
+	}
+
+	if session.orchestrator == nil {
+		return fmt.Errorf("no orchestrator available for replanning")
+	}
+
+	// Determine single-step mode
+	singleStep := false
+	session.mu.Lock()
+	if session.planReviewMode == "normal" {
+		singleStep = true
+	}
+	session.mu.Unlock()
+
+	// Build enriched context mirroring the SendMessage path (EnvInfo, TempDir,
+	// Coherence, NoProject). Derived from the caller context so CancelTask
+	// can interrupt an in-flight LLM call.
+	ctx2 := ctx
+	if ctx2 == nil {
+		ctx2 = context.Background()
+	}
+	ctx2 = sdktools.WithWorkspacePath(ctx2, session.WorkspacePath)
+	ctx2 = sdktools.WithTempDir(ctx2, session.TempDir)
+	ctx2 = sdktools.WithCoherence(ctx2, m.fileTracker)
+	if session.ProjectID == project.NoProjectID {
+		ctx2 = sdktools.WithNoProject(ctx2)
+	}
+	m.mu.RLock()
+	envInfo := m.envInfo
+	m.mu.RUnlock()
+	if envInfo != nil {
+		ctx2 = sdktools.WithEnvInfo(ctx2, envInfo)
+	}
+
+	newPlan, err := session.orchestrator.PlanWithFeedback(
+		ctx2,
+		originalMsg,
+		string(prevPlanMD),
+		feedback,
+		nil, // tools — orchestrator handles this internally
+		session.orchestrator.LookupSkillDescriptors(planReviewSkills),
+		singleStep,
+	)
+	if err != nil {
+		return fmt.Errorf("replanning failed: %w", err)
+	}
+
+	// Serialize new plan
+	newMD := core.SerializePlan(newPlan)
+
+	// Save to new .md file
+	workspacePath := sdktools.WorkspacePathFrom(ctx2)
+	if workspacePath == "" {
+		workspacePath = session.WorkspacePath
+	}
+	plansDir := filepath.Join(workspacePath, ".c0wrk", "plans")
+	if mkErr := os.MkdirAll(plansDir, 0o755); mkErr != nil {
+		return fmt.Errorf("failed to create plans directory: %w", mkErr)
+	}
+
+	sessionPrefix := "session"
+	if len(sessionID) > 8 {
+		sessionPrefix = sessionID[:8]
+	} else if sessionID != "" {
+		sessionPrefix = sessionID
+	}
+
+	newPlanPath := filepath.Join(plansDir, fmt.Sprintf("%s_%s.md", sessionPrefix, core.RandomSuffix()))
+	if writeErr := os.WriteFile(newPlanPath, []byte(newMD), 0o644); writeErr != nil {
+		return fmt.Errorf("failed to write new plan: %w", writeErr)
+	}
+
+	// Write .plan.json sidecar so hidden fields (DependsOn, Profile, etc.)
+	// and routing decision survive app restart. Mirrors HandlePlanReview in
+	// core/plan_review.go.
+	jsonPath := strings.TrimSuffix(newPlanPath, ".md") + ".plan.json"
+	session.mu.Lock()
+	route := session.planReviewRoute
+	session.mu.Unlock()
+	planJSON, jErr := json.Marshal(planReviewSidecarJSON{
+		Plan:  newPlan,
+		Route: route,
+	})
+	if jErr != nil {
+		m.log().Warn("failed to marshal plan JSON for sidecar", "session", sessionID, "error", jErr)
+	} else if wErr := os.WriteFile(jsonPath, planJSON, 0o644); wErr != nil {
+		m.log().Warn("failed to write plan JSON sidecar", "session", sessionID, "path", jsonPath, "error", wErr)
+	}
+
+	// Emit new plan_review_ready (PlanWithFeedback already emitted PlanGenerated
+	// events internally; session manager only needs to emit the review-ready event).
+	session.mu.Lock()
+	bb := session.planReviewBB
+	if bb != nil {
+		bb.SetPlan(newPlan)
+		session.planReviewBB = bb
+	}
+	session.planReviewPhase = PlanReviewAwaitingAccept
+	session.planReviewPath = newPlanPath
+	session.mu.Unlock()
+
+	// Persist updated plan review state.
+	m.mu.RLock()
+	prs := m.planReviewStore
+	m.mu.RUnlock()
+	if prs != nil {
+		session.mu.Lock()
+		contextJSON, err := json.Marshal(map[string]any{
+			"msg":    originalMsg,
+			"mode":   session.planReviewMode,
+			"skills": session.planReviewSkills,
+		})
+		session.mu.Unlock()
+		if err != nil {
+			m.log().Warn("failed to marshal plan review context", "session", sessionID, "error", err)
+			contextJSON = []byte("{}")
+		}
+		if err := prs.UpdateSessionPlanReviewContext(context.Background(), sessionID, string(PlanReviewAwaitingAccept), newPlanPath, string(contextJSON)); err != nil {
+			m.log().Warn("failed to persist plan review state after replan", "session", sessionID, "error", err)
+		}
+	}
+
+	// Emit new plan_review_ready
+	m.emitFunc(Event{
+		SessionID: sessionID,
+		Type:      "plan_review_ready",
+		Data: PlanReviewReadyData{
+			SessionID:   sessionID,
+			PlanPath:    newPlanPath,
+			PlanContent: newMD,
+		},
+	})
+
+	return nil
+}
+
 // CancelUnfinishedTask discards any unfinished task in the given session by
 // marking it as completed in the task store. After this returns successfully,
 // the session no longer has a resumable task and emitResumableIfUnfinished
@@ -455,6 +1000,53 @@ func (m *Manager) CancelTask(id string) error {
 	}
 
 	session.mu.Lock()
+
+	// Handle plan review cancellation: clear review state and persist.
+	if session.planReviewPhase != PlanReviewNone {
+		bb := session.planReviewBB // capture before clearing
+		planReviewCancel := session.planReviewCancel
+		planPath := session.planReviewPath // capture for cleanup
+		session.planReviewPhase = PlanReviewNone
+		session.planReviewPath = ""
+		session.planReviewMsg = ""
+		session.planReviewMode = ""
+		session.planReviewSkills = nil
+		session.planReviewBB = nil
+		session.planReviewRoute = nil
+		session.planReviewCancel = nil
+		session.mu.Unlock()
+
+		// Cancel any in-flight replan LLM call.
+		if planReviewCancel != nil {
+			planReviewCancel()
+		}
+
+		// Persist cleared state.
+		m.mu.RLock()
+		prs := m.planReviewStore
+		m.mu.RUnlock()
+		if prs != nil {
+			if err := prs.UpdateSessionPlanReview(context.Background(), id, "", ""); err != nil {
+				m.log().Warn("failed to clear plan review state on cancel", "session", id, "error", err)
+			}
+		}
+
+		// Complete the blackboard task so it's not left resumable.
+		if bb != nil {
+			if pbb, ok := bb.(*PersistentBlackboard); ok {
+				pbb.CompleteTask(0)
+			}
+		}
+
+		// Clean up plan files left behind by the cancelled review.
+		if planPath != "" {
+			m.cleanupAcceptedPlanFiles(planPath)
+		}
+
+		m.emitFunc(Event{SessionID: id, Type: "task_cancelled", Data: TaskCancelledData{SessionID: id}})
+		return nil
+	}
+
 	if !session.active {
 		session.mu.Unlock()
 		return errors.New("no active task to cancel")
@@ -527,6 +1119,21 @@ func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error)
 	}
 
 	return &BlackboardState{TaskState: state}, nil
+}
+
+// cleanupAcceptedPlanFiles removes the .md and .plan.json files for an
+// accepted plan. Only the accepted file pair is removed; previous plan
+// files from replanning iterations remain as history.
+func (m *Manager) cleanupAcceptedPlanFiles(planPath string) {
+	// Remove the .md file (best-effort; non-critical).
+	if err := os.Remove(planPath); err != nil && !os.IsNotExist(err) {
+		m.log().Warn("failed to remove accepted plan .md file", "path", planPath, "error", err)
+	}
+	// Remove the .plan.json sidecar.
+	jsonPath := strings.TrimSuffix(planPath, ".md") + ".plan.json"
+	if err := os.Remove(jsonPath); err != nil && !os.IsNotExist(err) {
+		m.log().Warn("failed to remove accepted plan .plan.json file", "path", jsonPath, "error", err)
+	}
 }
 
 // BlackboardState wraps a core.TaskState for the GetBlackboardState API.

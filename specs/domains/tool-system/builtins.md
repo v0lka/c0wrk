@@ -66,7 +66,7 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 ## Error Handling
 
 - **Tool not found**: `ToolRegistry.Execute()` returns `ToolResult{IsError: true}` with an "unknown tool" message — does not panic
-- **Path validation**: file tools reject paths outside workspace with a descriptive error before any I/O
+- **Path validation**: file tools reject paths outside workspace with a descriptive error before any I/O. This includes absolute paths that point outside the workspace root — previously returned as-is, now rejected for security hardening.
 - **Bash blacklist**: commands matching blacklist patterns are rejected with `IsError: true` and a "blocked by security policy" message
 - **Ripgrep**: exit code 1 ("no matches") is NOT an error; exit codes ≥ 2 produce `IsError` with stderr content
 - **Web tools**: network errors surface as `IsError` with a descriptive message; timeout errors include the configured timeout value

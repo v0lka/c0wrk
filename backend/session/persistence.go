@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,9 @@ type SessionInfo struct {
 	TotalOutputTokens int    `json:"total_output_tokens"`
 	Model             string `json:"model"`
 	Family            string `json:"family"`
+	PlanReviewPhase   string `json:"plan_review_phase"` // "" | "awaiting_accept" | "awaiting_feedback"
+	PlanReviewPath    string `json:"plan_review_path"`  // path to .md plan file awaiting review
+	PlanReviewContext string `json:"plan_review_context"` // JSON with {msg, mode, skills} for restart survival
 }
 
 // ChatMessage represents a stored chat message.
@@ -74,6 +78,15 @@ type SessionStore interface {
 	Close() error
 }
 
+// PlanReviewStore provides persistence for plan review workflow state.
+// It is separate from SessionStore so that implementations that don't need
+// plan review support do not have to implement these methods.
+type PlanReviewStore interface {
+	UpdateSessionPlanReview(ctx context.Context, id string, phase, planPath string) error
+	UpdateSessionPlanReviewContext(ctx context.Context, id string, phase, planPath, contextJSON string) error
+	GetSessionsInPlanReview(ctx context.Context, projectID string) ([]SessionInfo, error)
+}
+
 // SQLiteSessionStore implements SessionStore using SQLite.
 type SQLiteSessionStore struct {
 	db     *sql.DB
@@ -119,7 +132,10 @@ func (s *SQLiteSessionStore) createTables() error {
 		total_input_tokens INTEGER DEFAULT 0,
 		total_output_tokens INTEGER DEFAULT 0,
 		model TEXT DEFAULT '',
-		family TEXT DEFAULT ''
+		family TEXT DEFAULT '',
+		plan_review_phase TEXT DEFAULT '',
+		plan_review_path TEXT DEFAULT '',
+		plan_review_context TEXT DEFAULT ''
 	);
 
 	CREATE TABLE IF NOT EXISTS session_messages (
@@ -176,7 +192,42 @@ func (s *SQLiteSessionStore) createTables() error {
 
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add plan_review columns for existing databases.
+	// Retry on SQLITE_BUSY (err 5) — ALTER TABLE requires exclusive access and
+	// may contend with in-flight read transactions during startup.
+	for _, col := range []struct {
+		name string
+		def  string
+	}{
+		{"plan_review_phase", "TEXT DEFAULT ''"},
+		{"plan_review_path", "TEXT DEFAULT ''"},
+		{"plan_review_context", "TEXT DEFAULT ''"},
+	} {
+		var lastErr error
+		for attempt := range 3 {
+			_, lastErr = s.db.ExecContext(context.Background(),
+				fmt.Sprintf("ALTER TABLE sessions ADD COLUMN %s %s", col.name, col.def))
+			if lastErr == nil || strings.Contains(lastErr.Error(), "duplicate column name") {
+				lastErr = nil
+				break
+			}
+			if !strings.Contains(lastErr.Error(), "database is locked") {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+			}
+		}
+		if lastErr != nil && !strings.Contains(lastErr.Error(), "duplicate column name") {
+			s.log().Warn("migration ALTER TABLE failed", "column", col.name, "error", lastErr)
+		}
+	}
+
+	return nil
 }
 
 // SaveSession saves or updates a session.
@@ -187,8 +238,8 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 		lastActiveAt = info.CreatedAt
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family, plan_review_phase, plan_review_path, plan_review_context)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			last_active_at = excluded.last_active_at,
@@ -196,8 +247,11 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 			total_input_tokens = excluded.total_input_tokens,
 			total_output_tokens = excluded.total_output_tokens,
 			model = excluded.model,
-			family = excluded.family`,
-		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family,
+			family = excluded.family,
+			plan_review_phase = excluded.plan_review_phase,
+			plan_review_path = excluded.plan_review_path,
+			plan_review_context = excluded.plan_review_context`,
+		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family, info.PlanReviewPhase, info.PlanReviewPath, info.PlanReviewContext,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -209,9 +263,9 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*SessionInfo, error) {
 	var info SessionInfo
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions WHERE id = ?`,
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(plan_review_phase, ''), COALESCE(plan_review_path, ''), COALESCE(plan_review_context, '') FROM sessions WHERE id = ?`,
 		id,
-	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family)
+	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.PlanReviewPhase, &info.PlanReviewPath, &info.PlanReviewContext)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -232,7 +286,10 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		       COALESCE(total_input_tokens, 0),
 		       COALESCE(total_output_tokens, 0),
 		       COALESCE(model, ''),
-		       COALESCE(family, '')
+		       COALESCE(family, ''),
+		       COALESCE(plan_review_phase, ''),
+		       COALESCE(plan_review_path, ''),
+		       COALESCE(plan_review_context, '')
 		FROM sessions
 		ORDER BY COALESCE(last_active_at, created_at) DESC`)
 	if err != nil {
@@ -247,7 +304,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.PlanReviewPhase, &info.PlanReviewPath, &info.PlanReviewContext); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -268,7 +325,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 // ListSessionsByProject returns all sessions for a given project, ordered by last activity (newest first).
 func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(plan_review_phase, ''), COALESCE(plan_review_path, ''), COALESCE(plan_review_context, '') FROM sessions
 		WHERE project_id = ?
 		ORDER BY COALESCE(last_active_at, created_at) DESC`, projectID)
 	if err != nil {
@@ -283,7 +340,7 @@ func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectI
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.PlanReviewPhase, &info.PlanReviewPath, &info.PlanReviewContext); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -348,6 +405,65 @@ func (s *SQLiteSessionStore) UpdateSessionActivity(ctx context.Context, id strin
 		return fmt.Errorf("failed to update session activity: %w", err)
 	}
 	return nil
+}
+
+// UpdateSessionPlanReview persists plan review state for restart survival.
+// Also clears plan_review_context so the column stays consistent with phase/path.
+func (s *SQLiteSessionStore) UpdateSessionPlanReview(ctx context.Context, id string, phase, planPath string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET plan_review_phase = ?, plan_review_path = ?, plan_review_context = '' WHERE id = ?`,
+		phase, planPath, id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update session plan review state: %w", err)
+	}
+	return nil
+}
+
+// UpdateSessionPlanReviewContext persists plan review state including the
+// restart-survival context (original message, mode, skills as JSON).
+func (s *SQLiteSessionStore) UpdateSessionPlanReviewContext(ctx context.Context, id string, phase, planPath, contextJSON string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET plan_review_phase = ?, plan_review_path = ?, plan_review_context = ? WHERE id = ?`,
+		phase, planPath, contextJSON, id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update session plan review context: %w", err)
+	}
+	return nil
+}
+
+// GetSessionsInPlanReview returns all sessions currently in a plan review phase.
+func (s *SQLiteSessionStore) GetSessionsInPlanReview(ctx context.Context, projectID string) ([]SessionInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(plan_review_phase, ''), COALESCE(plan_review_path, ''), COALESCE(plan_review_context, '') FROM sessions
+		WHERE plan_review_phase != '' AND project_id = ?
+		ORDER BY COALESCE(last_active_at, created_at) DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sessions in plan review: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			s.log().Warn("failed to close database rows", "error", err)
+		}
+	}()
+
+	var sessions []SessionInfo
+	for rows.Next() {
+		var info SessionInfo
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.PlanReviewPhase, &info.PlanReviewPath, &info.PlanReviewContext); err != nil {
+			return nil, fmt.Errorf("failed to scan session: %w", err)
+		}
+		sessions = append(sessions, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating sessions: %w", err)
+	}
+
+	if sessions == nil {
+		sessions = []SessionInfo{}
+	}
+	return sessions, nil
 }
 
 // SaveMessage saves a chat message.
@@ -530,7 +646,9 @@ type TaskStore interface {
 	ReactivateTask(ctx context.Context, taskID string) error
 }
 
-// compile-time check
+// compile-time checks
+var _ SessionStore = (*SQLiteSessionStore)(nil)
+var _ PlanReviewStore = (*SQLiteSessionStore)(nil)
 var _ TaskStore = (*SQLiteSessionStore)(nil)
 
 // ---------------------------------------------------------------------------

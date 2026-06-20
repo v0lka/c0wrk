@@ -79,6 +79,9 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 		}
 	} else {
 		params.Path = resolvePath(ctx, params.Path)
+		if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+			return tools.ToolResult{Content: err.Error(), IsError: true}, nil
+		}
 	}
 
 	// Apply defaults

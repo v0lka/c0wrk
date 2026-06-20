@@ -139,6 +139,35 @@ func (p *EventPersister) Persist(evt Event) {
 		role = "step_todo_update"
 	case "session_tokens":
 		return // transient — no persistence needed
+	case "plan_review_ready":
+		role = "plan_review"
+	case "plan_validation_failed":
+		role = "status"
+	case "plan_review_awaiting_feedback":
+		role = "status"
+	case "plan_review_accepted":
+		// Persist as plan_review (not status) so the frontend's message
+		// replay treats it as a resolution of the preceding
+		// plan_review_ready message. The resolved metadata signals the
+		// grouping logic to skip this as a pending action.
+		role = "plan_review"
+		if data, ok := evt.Data.(map[string]any); ok {
+			data["resolved"] = true
+			data["decision"] = "accepted"
+		} else {
+			evt.Data = map[string]any{"resolved": true, "decision": "accepted"}
+		}
+	case "plan_review_rejected":
+		// Persist as plan_review (same treatment as plan_review_accepted)
+		// so the frontend resolves the preceding plan_review_ready message
+		// after app restart.
+		role = "plan_review"
+		if data, ok := evt.Data.(map[string]any); ok {
+			data["resolved"] = true
+			data["decision"] = "rejected"
+		} else {
+			evt.Data = map[string]any{"resolved": true, "decision": "rejected"}
+		}
 	default:
 		return // unknown transient events — skip
 	}

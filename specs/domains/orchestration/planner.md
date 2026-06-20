@@ -8,6 +8,8 @@ Generates DAG execution plans from user tasks, assigns agent profiles to steps, 
 
 - `sdk/planner/planner.go` — Planner struct (Plan, Replan)
 - `core/planner_adapter.go` — core adapter (PlanContinuation, skill threading, replan callback)
+- `core/plan_serializer.go` — Plan ↔ Markdown serialization and structural validation
+- `core/plan_review.go` — HandlePlanReview, PlanWithFeedback, SemanticValidatePlan
 - `core/prompts/planner_base.md` — base planning prompt (MODE-TOT, MODE-GUIDANCE placeholders)
 - `core/prompts/planner_informed.md` — informed planning prompt (after exploration)
 - `core/prompts/planner_replan.md` — replanning prompt
@@ -129,6 +131,50 @@ For follow-up messages in an existing task:
 5. New steps DependsOn terminal steps
 6. Merged with existing plan
 
+### Plan Review Mode
+
+When `HandleOptions.PlanReview` is true, the orchestrator pauses after planning
+instead of executing immediately:
+
+```
+HandleMessage(PlanReview=true)
+  → HandlePlanReview()
+      ├─ Planner.Plan() — generates DAG as usual
+      ├─ SerializePlan() → markdown with # Step N: headers + **What**:**Where**:**How**:**Acceptance Criteria**: fields
+      ├─ Write to .c0wrk/plans/<session_prefix>_<random6>.md
+      ├─ Emit plan_generated event (step list for frontend)
+      └─ Return HandleResult{PlanReviewPhase: "awaiting_accept", PlanReviewPath: path}
+```
+
+The serialized markdown omits hidden fields (DependsOn, Profile, EstimatedTools).
+Only Summary and Description are user-visible. On approval, `MergePlanSteps()`
+recombines user-edited content with original hidden fields by position.
+
+### Feedback-Driven Replanning
+
+When the user rejects a plan with feedback:
+
+```
+RejectPlan(sessionID, feedback)
+  → PlanWithFeedback(originalMsg, previousPlanMD, feedback)
+      ├─ Enriches user message: original request + previous plan + feedback
+      ├─ Calls Planner.Plan() with enriched message (standard planning path)
+      └─ Returns new Plan
+  → SerializePlan() → save to NEW .md file
+  → Emit plan_review_ready with new path
+```
+
+Previous .md files are not deleted — they remain as history in `.c0wrk/plans/`.
+
+### Semantic Plan Validation
+
+`SemanticValidatePlan(ctx, originalMessage, planMD)` uses an LLM call to evaluate
+the edited plan against three dimensions:
+
+- Coverage: does the plan address all aspects of the original request?
+- Relevance: are any steps unnecessary or unrelated?
+- Internal consistency: logical sequence, no contradictions, clean step boundaries
+
 ### Prompt Construction
 
 The planner assembles prompts from template sections using a unified `buildSystemPromptFromMode` builder. Templates (`planner_base.md`, `planner_informed.md`) contain placeholders that are substituted with mode-appropriate content:
@@ -165,6 +211,12 @@ Provider-specific prompt variants are selected based on model family. The `maxSt
 - Planner never executes mutating tools during exploration phase
 - Exploration uses a separate ContextManager (isolated from main execution)
 - Active skill bodies are rendered verbatim in the planner prompt (no truncation); plan steps must reflect the full skill guidance the executor will receive
+- Plan Review mode always serializes plans to `.c0wrk/plans/` as markdown before user review
+- Serialized plans omit hidden fields (DependsOn, Profile, EstimatedTools); these are restored from the original plan on approval
+- Plan markdown format uses `# Step N: <title>` headings with `**What**:`, `**Where**:`, `**How**:`, `**Acceptance Criteria**:` bold fields
+- `MergePlanSteps()` pairs user-edited steps with original hidden fields by position (first parsed step ↔ first original step)
+- `PlanWithFeedback()` enriches the user message with previous plan + feedback rather than using a separate prompt template
+- Plan validation is two-phase: structural (Go, regex-based) then semantic (LLM call)
 
 ## Related Specs
 

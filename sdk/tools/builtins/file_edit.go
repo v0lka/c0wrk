@@ -60,6 +60,9 @@ func (t *EditFileTool) Judge(ctx context.Context, input json.RawMessage) (allowe
 		return false, ""
 	}
 	params.Path = resolvePath(ctx, params.Path)
+	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		return false, err.Error()
+	}
 	return judgeWriteInWorkspace(ctx, params.Path)
 }
 
@@ -78,6 +81,9 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
+	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		return tools.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
 
 	// Coherence check: block edit if file was modified since this session's last read.
 	checker := tools.CoherenceFrom(ctx)

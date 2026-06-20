@@ -5,10 +5,10 @@ import { logger } from '@/lib/logger'
 import { isChatMessage, isTokenInfo, isArrayOf } from '@/types/guards'
 import type { ChatMessage, TokenInfo } from '@/types/models'
 
-export async function sendMessage(sessionId: string, text: string, mode: string, activeSkills: string[] = [], modelOverride: string = '', reasoningOverride: string = ''): Promise<void> {
+export async function sendMessage(sessionId: string, text: string, mode: string, activeSkills: string[] = [], modelOverride: string = '', reasoningOverride: string = '', planReview: boolean = false): Promise<void> {
   try {
     const app = getApp()
-    await app.SendMessage(sessionId, text, mode, activeSkills, modelOverride, reasoningOverride)
+    await app.SendMessage(sessionId, text, mode, activeSkills, modelOverride, reasoningOverride, planReview)
   } catch (err) {
     logger.error('Failed to send message:', err)
     throw err

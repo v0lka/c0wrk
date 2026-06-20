@@ -49,6 +49,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
           <button
             type="button"
             onClick={() => handleToggleMode('chat')}
+            title="Assistant mode"
             className={cn(
               'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
               isChatMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
@@ -61,6 +62,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
             type="button"
             onClick={() => handleToggleMode('code')}
             disabled={!hasRealProject}
+            title="Coding agent mode"
             className={cn(
               'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
               !isChatMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',

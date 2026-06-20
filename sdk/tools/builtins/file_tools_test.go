@@ -445,8 +445,8 @@ func TestWriteFileTool_Judge_WriteActionOutsideWorkspace(t *testing.T) {
 	if allow {
 		t.Error("expected Judge to return allow=false for write action outside workspace")
 	}
-	if reasoning != "" {
-		t.Errorf("expected empty reasoning when outside workspace, got: %s", reasoning)
+	if !strings.Contains(reasoning, "outside") {
+		t.Errorf("expected reasoning to mention 'outside', got: %s", reasoning)
 	}
 }
 
@@ -801,8 +801,8 @@ func TestDeleteDirectoryTool_Judge_DeleteDirectoryOutsideWorkspace(t *testing.T)
 	if allow {
 		t.Error("expected Judge to return allow=false for delete_directory outside workspace")
 	}
-	if reasoning != "" {
-		t.Errorf("expected empty reasoning when outside workspace, got: %s", reasoning)
+	if !strings.Contains(reasoning, "outside") {
+		t.Errorf("expected reasoning to mention 'outside', got: %s", reasoning)
 	}
 }
 

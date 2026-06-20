@@ -88,6 +88,12 @@ export interface StepTodoUpdateData {
   total_count: number
 }
 
+// --- Plan review event payloads ---
+
+export interface PlanReviewReadyData { session_id: string; plan_path: string; plan_content: string }
+export interface ValidationIssueData { step_index?: number; field: string; severity: string; description: string; suggestion?: string }
+export interface PlanValidationFailedData { issues: ValidationIssueData[] }
+
 // --- Session event map ---
 
 export interface SessionEventMap {
@@ -126,6 +132,10 @@ export interface SessionEventMap {
   readonly skills_activated: SkillsActivatedData
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
+  readonly plan_review_ready: PlanReviewReadyData
+  readonly plan_validation_failed: PlanValidationFailedData
+  readonly plan_review_awaiting_feedback: void
+  readonly plan_review_accepted: void
 }
 
 export type SessionEventKey = keyof SessionEventMap
@@ -213,6 +223,14 @@ export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData 
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }
 export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
   return isObj(d) && has(d, 'step_id', 'items') && Array.isArray(d.items)
+}
+
+export function isPlanReviewReadyData(d: unknown): d is PlanReviewReadyData {
+  return isObj(d) && typeof d.plan_path === 'string' && typeof d.plan_content === 'string'
+}
+
+export function isPlanValidationFailedData(d: unknown): d is PlanValidationFailedData {
+  return isObj(d) && Array.isArray(d.issues)
 }
 
 // --- Global event type guards ---

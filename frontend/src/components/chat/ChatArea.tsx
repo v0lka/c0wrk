@@ -113,7 +113,6 @@ export function ChatArea() {
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
           <div className="flex flex-col items-center gap-3">
             <MessageCircle className="h-12 w-12 opacity-20" />
-            <p>Send a message to start the conversation</p>
           </div>
         </div>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>

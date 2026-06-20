@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -172,6 +173,7 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	f.switchProjectTeardown(id)
 	f.switchProjectActivate(p)
 	f.switchProjectSetupWatcher(p)
+	f.recoverPlanReviewSessions(p)
 
 	if err := f.switchProjectSetupVector(p); err != nil {
 		return err
@@ -220,7 +222,9 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 }
 
 // switchProjectSetupWatcher creates a file watcher for the new project workspace.
-// No-op for No Project (no file watching needed).
+// For No Project, the watcher is scoped to the most recently active session's
+// workspace directory to avoid cross-session tree_changed noise. Falls back to
+// the project workspace path if no session workspace can be determined.
 func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	// Always tear down the previous watcher, regardless of target project.
 	if f.watcher != nil {
@@ -228,18 +232,24 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		f.watcher = nil
 	}
 
-	// No Project: file watching is not needed.
+	// Determine the watcher root. For No Project, scope to the active
+	// session's workspace directory so file changes in session A don't
+	// trigger tree refreshes while viewing session B.
+	watcherRoot := p.WorkspacePath
 	if p.IsNoProject {
-		return
+		if sessionWS := f.resolveNoProjectSessionWorkspace(); sessionWS != "" {
+			watcherRoot = sessionWS
+		}
 	}
 
-	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
-		// Existing behavior: emit workspace tree change.
+	watcher, err := workspace.NewWatcher(watcherRoot, func() {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 
-		// Trigger debounced incremental indexing via Manager.
-		if vm := f.getVectorManager(); vm != nil {
-			vm.NotifyFileChange(p.WorkspacePath)
+		// No Project: skip vector index notification (no indexing).
+		if !p.IsNoProject {
+			if vm := f.getVectorManager(); vm != nil {
+				vm.NotifyFileChange(p.WorkspacePath)
+			}
 		}
 	})
 	if err != nil {
@@ -250,13 +260,10 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 }
 
 // switchProjectSetupVector configures vector indexing for the new project.
-// No-op for No Project (vector indexing requires a code workspace).
+// For No Project, this still switches the vector index to an empty collection
+// so that stale results from a previously-active CODE project do not leak
+// into CHAT-mode prompts via RAG hint injection.
 func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
-	// No Project: vector indexing is not available.
-	if p.IsNoProject {
-		return nil
-	}
-
 	vm := f.getVectorManager()
 	if vm == nil {
 		return nil
@@ -517,6 +524,27 @@ func (f *FrontendAPI) createSessionForProject(projectID string) string {
 	return created.ID
 }
 
+// resolveNoProjectSessionWorkspace returns the workspace path of the most
+// recently active session for the No Project, or an empty string if no
+// session exists yet. Used to scope the file watcher to the session-specific
+// directory instead of the shared __no_project__/ base.
+func (f *FrontendAPI) resolveNoProjectSessionWorkspace() string {
+	if f.app == nil || f.app.Manager() == nil {
+		return ""
+	}
+	sessions, err := f.app.Manager().ListSessionsByProject(project.NoProjectID)
+	if err != nil || len(sessions) == 0 {
+		return ""
+	}
+	// ListSessionsByProject returns sessions sorted by last_active_at desc,
+	// so sessions[0] is the most recently active.
+	ws, ok := f.app.Manager().GetSessionWorkspacePath(sessions[0].ID)
+	if !ok || ws == "" {
+		return ""
+	}
+	return ws
+}
+
 func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID string) string {
 	savedSessionID = strings.TrimSpace(savedSessionID)
 	if savedSessionID == "" {
@@ -546,4 +574,82 @@ func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID st
 	}
 
 	return ""
+}
+
+// recoverPlanReviewSessions queries sessions in plan review for the given
+// project, restores them, validates the .md file still exists, and re-emits
+// plan_review_ready events so the frontend re-opens the review panel after
+// app restart. Stale state (missing .md file) is cleared to prevent stuck sessions.
+func (f *FrontendAPI) recoverPlanReviewSessions(p *project.ProjectInfo) {
+	if f.store == nil {
+		return
+	}
+	manager := f.app.Manager()
+	if manager == nil {
+		return
+	}
+
+	ctx := f.ctx()
+	sessions, err := f.store.GetSessionsInPlanReview(ctx, p.ID)
+	if err != nil {
+		f.log().Warn("failed to query plan review sessions on recovery", "project", p.ID, "error", err)
+		return
+	}
+
+	for _, info := range sessions {
+		// For awaiting_feedback sessions, emit the feedback prompt instead
+		// of plan_review_ready so the user knows to type a message.
+		if info.PlanReviewPhase == string(session.PlanReviewAwaitingFeedback) {
+			manager.EmitSessionEvent(info.ID, "plan_review_awaiting_feedback",
+				map[string]string{"session_id": info.ID})
+			continue
+		}
+
+		// Plan review path may be empty — stale state without a path.
+		if info.PlanReviewPath == "" {
+			// Stale state without a path — clear it.
+			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
+				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
+			}
+			continue
+		}
+		if _, statErr := os.Stat(info.PlanReviewPath); os.IsNotExist(statErr) {
+			// Plan file missing — clear stale state.
+			f.log().Info("clearing stale plan review state (plan file missing)", "session", info.ID, "path", info.PlanReviewPath)
+			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
+				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
+			}
+			continue
+		}
+
+		// Restore the session into memory (getOrRestoreSession also restores planReviewBB/Route from persistence).
+		sess, ok := manager.GetSession(info.ID)
+		if !ok || sess == nil {
+			f.log().Warn("failed to restore session for plan review recovery", "session", info.ID)
+			continue
+		}
+
+		// Read plan content and emit plan_review_ready as a session-scoped event.
+		planContent, readErr := os.ReadFile(info.PlanReviewPath)
+		if readErr != nil {
+			f.log().Warn("failed to read plan file for recovery", "session", info.ID, "path", info.PlanReviewPath, "error", readErr)
+			// Clear stale state and notify the frontend so the session isn't stuck.
+			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
+				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
+			}
+			manager.EmitSessionEvent(info.ID, "plan_validation_failed", session.PlanValidationFailedData{
+				SessionID: info.ID,
+				Issues:    []session.ValidationIssue{{Severity: "error", Description: "Plan file could not be read after restart: " + readErr.Error()}},
+			})
+			continue
+		}
+		// Emit plan_review_ready through the session manager's emitFunc
+		// so the event persists and reaches frontend listeners correctly.
+		// Use a session-scoped emit via the manager directly.
+		manager.EmitSessionEvent(info.ID, "plan_review_ready", session.PlanReviewReadyData{
+			SessionID:   info.ID,
+			PlanPath:    info.PlanReviewPath,
+			PlanContent: string(planContent),
+		})
+	}
 }
