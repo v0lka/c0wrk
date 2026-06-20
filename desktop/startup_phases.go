@@ -409,8 +409,9 @@ func (a *App) buildFrontendAPI(
 	if cfg.Config != nil && cfg.Config.LLM.DefaultModel == "" {
 		log.Error("no default model configured - check your config.yaml")
 		a.emit(backend.EventStartupError, map[string]string{
-			"message": "no default model configured - check your config.yaml",
-			"error":   "config has no default_model defined under llm",
+			"message":    "no default model configured - check your config.yaml",
+			"error":      "config has no default_model defined under llm",
+			"error_code": "missing_default_model",
 		})
 	}
 }

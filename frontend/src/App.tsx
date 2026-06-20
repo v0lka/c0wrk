@@ -9,6 +9,7 @@ import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { isStartupError, isVectorIndexPayload, type StartupError } from '@/types/events'
 
 function App() {
@@ -25,6 +26,13 @@ function App() {
     return subscribe('startup_error', (data: unknown) => {
       if (!isStartupError(data)) return
       setStartupError(data)
+      // When LLM is not configured, also open settings on the LLM tab
+      if (data.error_code === 'missing_default_model') {
+        const settingsState = useSettingsStore.getState()
+        if (!settingsState.open) {
+          settingsState.openSettings('llm')
+        }
+      }
     })
   }, [])
 

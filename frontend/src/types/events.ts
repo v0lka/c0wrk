@@ -143,7 +143,7 @@ export type SessionEventKey = keyof SessionEventMap
 // --- Global event map ---
 
 export interface GlobalEventMap {
-  readonly 'startup_error': { readonly message: string; readonly error: string }
+  readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
   readonly 'backend:ready': void
   readonly 'projects:loaded': void
   readonly 'sessions:loaded': void
