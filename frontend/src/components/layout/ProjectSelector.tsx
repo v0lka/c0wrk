@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { ChevronDown, Check, FolderPlus, Pencil, Plus, Trash2, Layers } from 'lucide-react'
+import { ChevronDown, Check, FolderPlus, Pencil, Plus, Trash2 } from 'lucide-react'
 
 export function ProjectSelector() {
   const projects = useProjectStore((s) => s.projects)
@@ -26,6 +26,7 @@ export function ProjectSelector() {
   const renameRef = useRef<HTMLInputElement>(null)
 
   const activeProject = projects?.find((p) => p.id === activeProjectId)
+  const realProjects = projects?.filter((p) => !p.is_no_project) ?? []
 
   const handleSwitch = useCallback(async (id: string) => {
     if (id === activeProjectId) return
@@ -95,16 +96,14 @@ export function ProjectSelector() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56">
-              {projects?.map((project) => (
+              {realProjects.map((project) => (
                 <DropdownMenuItem
                   key={project.id}
                   className="group/item gap-2"
                   onSelect={() => handleSwitch(project.id)}
                 >
                   {project.id === activeProjectId && <Check className="size-3.5 shrink-0" />}
-                  {project.is_no_project && <Layers className="size-3.5 shrink-0 text-muted-foreground" />}
                   <span className="flex-1 truncate">{project.name}</span>
-                  {!project.is_no_project && (
                   <span
                     className="ml-auto flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
                     onPointerDown={(e) => e.stopPropagation()}
@@ -118,10 +117,9 @@ export function ProjectSelector() {
                       <Trash2 className="size-3 text-destructive" />
                     </button>
                   </span>
-                  )}
                 </DropdownMenuItem>
               ))}
-              {projects && projects.length > 0 && <DropdownMenuSeparator />}
+              {realProjects.length > 0 && <DropdownMenuSeparator />}
               <DropdownMenuItem onClick={() => setCreateOpen(true)}>
                 <FolderPlus className="size-3.5" />
                 New Project...

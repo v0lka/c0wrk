@@ -15,6 +15,10 @@ interface SidebarProps {
 
 export function Sidebar({ width, collapsed, onToggleCollapse }: SidebarProps) {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const projects = useProjectStore((s) => s.projects)
+
+  const noProject = projects?.find((p) => p.is_no_project)
+  const isChatMode = noProject ? activeProjectId === noProject.id : false
 
   if (collapsed) {
     return (
@@ -32,7 +36,7 @@ export function Sidebar({ width, collapsed, onToggleCollapse }: SidebarProps) {
       style={{ width }}
     >
       <SidebarHeader onToggleCollapse={onToggleCollapse} collapsed={collapsed} />
-      <ProjectSelector />
+      {!isChatMode && <ProjectSelector />}
       {activeProjectId && <SessionSelector />}
       {activeProjectId && (
         <div className="flex-1 overflow-hidden">
