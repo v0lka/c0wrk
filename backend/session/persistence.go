@@ -82,8 +82,8 @@ type SessionStore interface {
 // It is separate from SessionStore so that implementations that don't need
 // plan review support do not have to implement these methods.
 type PlanReviewStore interface {
-	UpdateSessionPlanReview(ctx context.Context, id string, phase, planPath string) error
-	UpdateSessionPlanReviewContext(ctx context.Context, id string, phase, planPath, contextJSON string) error
+	UpdateSessionPlanReview(ctx context.Context, id, phase, planPath string) error
+	UpdateSessionPlanReviewContext(ctx context.Context, id, phase, planPath, contextJSON string) error
 	GetSessionsInPlanReview(ctx context.Context, projectID string) ([]SessionInfo, error)
 }
 
@@ -409,7 +409,7 @@ func (s *SQLiteSessionStore) UpdateSessionActivity(ctx context.Context, id strin
 
 // UpdateSessionPlanReview persists plan review state for restart survival.
 // Also clears plan_review_context so the column stays consistent with phase/path.
-func (s *SQLiteSessionStore) UpdateSessionPlanReview(ctx context.Context, id string, phase, planPath string) error {
+func (s *SQLiteSessionStore) UpdateSessionPlanReview(ctx context.Context, id, phase, planPath string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET plan_review_phase = ?, plan_review_path = ?, plan_review_context = '' WHERE id = ?`,
 		phase, planPath, id,
@@ -422,7 +422,7 @@ func (s *SQLiteSessionStore) UpdateSessionPlanReview(ctx context.Context, id str
 
 // UpdateSessionPlanReviewContext persists plan review state including the
 // restart-survival context (original message, mode, skills as JSON).
-func (s *SQLiteSessionStore) UpdateSessionPlanReviewContext(ctx context.Context, id string, phase, planPath, contextJSON string) error {
+func (s *SQLiteSessionStore) UpdateSessionPlanReviewContext(ctx context.Context, id, phase, planPath, contextJSON string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET plan_review_phase = ?, plan_review_path = ?, plan_review_context = ? WHERE id = ?`,
 		phase, planPath, contextJSON, id,

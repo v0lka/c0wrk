@@ -90,7 +90,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	params.Path = resolvePath(ctx, params.Path)
 	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
-		return tools.ToolResult{Content: err.Error(), IsError: true}, nil
+		return tools.ToolResult{Content: err.Error(), IsError: true}, nil //nolint:nilerr // error embedded in ToolResult by design
 	}
 
 	// Coherence check: detect if file was modified by another session since last read.

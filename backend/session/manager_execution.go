@@ -44,7 +44,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 				session.planReviewCancel = nil
 				session.mu.Unlock()
 			}()
-			if err := m.handleReplanWithFeedback(session, id, feedbackMsg, replanCtx); err != nil {
+			if err := m.handleReplanWithFeedback(replanCtx, session, id, feedbackMsg); err != nil {
 				m.log().Warn("replan with feedback failed", "session", id, "error", err)
 				m.emitFunc(Event{SessionID: id, Type: "error", Data: ErrorData{SessionID: id, Error: err.Error()}})
 			}
@@ -491,11 +491,11 @@ func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) e
 	session.mu.Lock()
 	if session.planReviewPhase != PlanReviewAwaitingAccept {
 		session.mu.Unlock()
-		return fmt.Errorf("session is not awaiting plan review")
+		return errors.New("session is not awaiting plan review")
 	}
 	if session.active {
 		session.mu.Unlock()
-		return fmt.Errorf("session is already processing a task")
+		return errors.New("session is already processing a task")
 	}
 	session.mu.Unlock()
 
@@ -533,12 +533,12 @@ func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) e
 	bb := session.planReviewBB
 	session.mu.Unlock()
 	if bb == nil {
-		return fmt.Errorf("no blackboard found for plan review")
+		return errors.New("no blackboard found for plan review")
 	}
 
 	originalPlan := bb.GetPlan()
 	if originalPlan == nil {
-		return fmt.Errorf("no original plan found on blackboard")
+		return errors.New("no original plan found on blackboard")
 	}
 
 	// Merge user-edited content with original hidden fields
@@ -547,9 +547,8 @@ func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) e
 
 	// Run semantic validation (LLM-based) with enriched context.
 	if session.orchestrator != nil {
-		originalMsg := ""
 		session.mu.Lock()
-		originalMsg = session.planReviewMsg
+		originalMsg := session.planReviewMsg
 		session.mu.Unlock()
 
 		// Enrich context with session values for model/NoProject awareness.
@@ -587,7 +586,7 @@ func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) e
 	session.mu.Lock()
 	if session.active {
 		session.mu.Unlock()
-		return fmt.Errorf("session is already processing a task")
+		return errors.New("session is already processing a task")
 	}
 	bb.SetPlan(mergedPlan)
 	route := session.planReviewRoute
@@ -695,7 +694,7 @@ func (m *Manager) RejectPlan(ctx context.Context, sessionID, feedback string) er
 	session.mu.Lock()
 	if session.planReviewPhase != PlanReviewAwaitingAccept {
 		session.mu.Unlock()
-		return fmt.Errorf("session is not awaiting plan review")
+		return errors.New("session is not awaiting plan review")
 	}
 	session.mu.Unlock()
 
@@ -764,7 +763,7 @@ func (m *Manager) RejectPlan(ctx context.Context, sessionID, feedback string) er
 			session.planReviewCancel = nil
 			session.mu.Unlock()
 		}()
-		if err := m.handleReplanWithFeedback(session, sessionID, feedback, replanCtx); err != nil {
+		if err := m.handleReplanWithFeedback(replanCtx, session, sessionID, feedback); err != nil {
 			m.log().Warn("replan with feedback failed", "session", sessionID, "error", err)
 			m.emitFunc(Event{SessionID: sessionID, Type: "error", Data: ErrorData{SessionID: sessionID, Error: err.Error()}})
 		}
@@ -782,14 +781,11 @@ type planReviewSidecarJSON struct {
 	Route *router.RoutingDecision   `json:"route,omitempty"`
 }
 
-func (m *Manager) handleReplanWithFeedback(session *Session, sessionID, feedback string, ctx context.Context) error {
-	originalMsg := ""
-	prevPlanPath := ""
-	var planReviewSkills []string
+func (m *Manager) handleReplanWithFeedback(ctx context.Context, session *Session, sessionID, feedback string) error {
 	session.mu.Lock()
-	originalMsg = session.planReviewMsg
-	prevPlanPath = session.planReviewPath
-	planReviewSkills = session.planReviewSkills
+	originalMsg := session.planReviewMsg
+	prevPlanPath := session.planReviewPath
+	planReviewSkills := session.planReviewSkills
 	session.mu.Unlock()
 
 	// Read previous plan markdown
@@ -799,7 +795,7 @@ func (m *Manager) handleReplanWithFeedback(session *Session, sessionID, feedback
 	}
 
 	if session.orchestrator == nil {
-		return fmt.Errorf("no orchestrator available for replanning")
+		return errors.New("no orchestrator available for replanning")
 	}
 
 	// Determine single-step mode

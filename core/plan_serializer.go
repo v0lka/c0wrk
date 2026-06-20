@@ -54,12 +54,12 @@ func SerializePlan(plan *orchestration.Plan) string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(fmt.Sprintf("# Step %d: %s\n\n", i+1, step.Summary))
+		fmt.Fprintf(&b, "# Step %d: %s\n\n", i+1, step.Summary)
 		fields := parseDescriptionFields(step.Description)
-		b.WriteString(fmt.Sprintf("**What**: %s\n\n", fieldOrPlaceholder(fields["what"], "...")))
-		b.WriteString(fmt.Sprintf("**Where**: %s\n\n", fieldOrPlaceholder(fields["where"], "...")))
-		b.WriteString(fmt.Sprintf("**How**: %s\n\n", fieldOrPlaceholder(fields["how"], "...")))
-		b.WriteString(fmt.Sprintf("**Acceptance Criteria**: %s\n", fieldOrPlaceholder(fields["acceptance_criteria"], "...")))
+		fmt.Fprintf(&b, "**What**: %s\n\n", fieldOrPlaceholder(fields["what"], "..."))
+		fmt.Fprintf(&b, "**Where**: %s\n\n", fieldOrPlaceholder(fields["where"], "..."))
+		fmt.Fprintf(&b, "**How**: %s\n\n", fieldOrPlaceholder(fields["how"], "..."))
+		fmt.Fprintf(&b, "**Acceptance Criteria**: %s\n", fieldOrPlaceholder(fields["acceptance_criteria"], "..."))
 	}
 	return b.String()
 }
@@ -149,18 +149,19 @@ func detectFieldHeader(line string) (fieldName, content string, isHeader bool) {
 		idxColon := strings.Index(after, ":")
 	
 		var sepIdx int
-		if idxStar >= 0 && idxColon >= 0 {
+		switch {
+		case idxStar >= 0 && idxColon >= 0:
 			// Take the earlier separator
 			if idxStar < idxColon {
 				sepIdx = idxStar
 			} else {
 				sepIdx = idxColon
 			}
-		} else if idxStar >= 0 {
+		case idxStar >= 0:
 			sepIdx = idxStar
-		} else if idxColon >= 0 {
+		case idxColon >= 0:
 			sepIdx = idxColon
-		} else {
+		default:
 			return "", "", false
 		}
 	
@@ -198,7 +199,13 @@ func ParsePlanMarkdown(md string) (*ParsedPlan, []PlanParseError) {
 		// loc[2] = start of group 1 (step number), loc[3] = end
 		// loc[4] = start of group 2 (title), loc[5] = end
 		stepNum := 0
-		fmt.Sscanf(md[loc[2]:loc[3]], "%d", &stepNum)
+		if _, err := fmt.Sscanf(md[loc[2]:loc[3]], "%d", &stepNum); err != nil {
+			errors = append(errors, PlanParseError{
+				StepNum: stepNum,
+				Field:   "title",
+				Detail:  fmt.Sprintf("failed to parse step number: %v", err),
+			})
+		}
 		title := strings.TrimSpace(md[loc[4]:loc[5]])
 
 		if stepNum != prevNum+1 {

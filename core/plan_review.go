@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,7 +91,7 @@ func (o *Orchestrator) HandlePlanReview(
 	// Determine workspace path and save .md file
 	workspacePath := sdktools.WorkspacePathFrom(ctx)
 	if workspacePath == "" {
-		return nil, fmt.Errorf("no workspace path in context, cannot save plan")
+		return nil, errors.New("no workspace path in context, cannot save plan")
 	}
 
 	plansDir := planDir(workspacePath)

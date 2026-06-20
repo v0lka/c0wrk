@@ -1263,10 +1263,10 @@ func (m *mockSessionStoreForRestore) LoadTerminalCommands(_ context.Context, _ s
 	return []TerminalCommand{}, nil
 }
 func (m *mockSessionStoreForRestore) Close() error { return nil }
-func (m *mockSessionStoreForRestore) UpdateSessionPlanReview(_ context.Context, _ string, _, _ string) error {
+func (m *mockSessionStoreForRestore) UpdateSessionPlanReview(_ context.Context, _, _, _ string) error {
 	return nil
 }
-func (m *mockSessionStoreForRestore) UpdateSessionPlanReviewContext(_ context.Context, _ string, _, _, _ string) error {
+func (m *mockSessionStoreForRestore) UpdateSessionPlanReviewContext(_ context.Context, _, _, _, _ string) error {
 	return nil
 }
 func (m *mockSessionStoreForRestore) GetSessionsInPlanReview(_ context.Context, _ string) ([]SessionInfo, error) {
