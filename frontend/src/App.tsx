@@ -4,22 +4,49 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { subscribe } from '@/api/runtime'
 import { AlertCircle, X } from 'lucide-react'
 import { SettingsModal } from '@/components/settings/SettingsModal'
+import { ToolInstallSplash } from '@/components/ToolInstallSplash'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { isStartupError, isVectorIndexPayload, type StartupError } from '@/types/events'
+import type { ToolManagerToolInfo } from '@/types/events'
+import { isStartupError, isVectorIndexPayload, isToolManagerStartData } from '@/types/events'
+import type { StartupError } from '@/types/events'
+
+type AppPhase = 'splash' | 'waiting_ready' | 'main'
 
 function App() {
   const [startupError, setStartupError] = useState<StartupError | null>(null)
+  const [phase, setPhase] = useState<AppPhase>('splash')
+  const [splashTools, setSplashTools] = useState<readonly ToolManagerToolInfo[] | null>(null)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
 
-  // Wire loaders
+  // Wire loaders — always run regardless of phase.
   useProjectLoader()
   useSessionLoader()
   useSessionEvents(activeSessionId)
+
+  // ── Tool manager lifecycle ────────────────────────────────────────────
+
+  // Listen for tool_manager:start → show splash with tool list.
+  useEffect(() => {
+    return subscribe('tool_manager:start', (data: unknown) => {
+      if (!isToolManagerStartData(data)) return
+      setSplashTools(data.tools)
+      setPhase('splash')
+    })
+  }, [])
+
+  // Listen for tool_manager:done → transition to waiting_ready.
+  // Guard against out-of-order events: if backend:ready already transitioned
+  // to main, don't revert to waiting_ready.
+  useEffect(() => {
+    return subscribe('tool_manager:done', () => {
+      setPhase(prev => prev === 'splash' ? 'waiting_ready' : prev)
+    })
+  }, [])
 
   // Listen for startup errors from the backend
   useEffect(() => {
@@ -36,6 +63,19 @@ function App() {
     })
   }, [])
 
+  // ── backend:ready — transition to main ────────────────────────────────
+
+  useEffect(() => {
+    return subscribe('backend:ready', () => {
+      setPhase(prev => {
+        // splash → main: no tools needed at all
+        // waiting_ready → main: normal transition after tools done
+        if (prev === 'splash' || prev === 'waiting_ready') return 'main'
+        return prev
+      })
+    })
+  }, [])
+
   // Listen for vector index status (non-session-scoped)
   useEffect(() => {
     return subscribe('vector_index:status', (data: unknown) => {
@@ -48,6 +88,33 @@ function App() {
     setStartupError(null)
   }, [])
 
+  // ── Render ─────────────────────────────────────────────────────────────
+
+  // Phase: splash (tool install in progress).
+  if (phase === 'splash' && splashTools !== null) {
+    return <ToolInstallSplash tools={splashTools} />
+  }
+
+  // Phase: splash but no tool_manager:start received yet — show minimal spinner.
+  if (phase === 'splash') {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
+        <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    )
+  }
+
+  // Phase: waiting_ready — tools done, waiting for backend.
+  if (phase === 'waiting_ready') {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-background">
+        <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <p className="text-sm text-muted-foreground">Starting c0wrk…</p>
+      </div>
+    )
+  }
+
+  // Phase: main — normal app rendering.
   return (
     <TooltipProvider>
       <div className="fixed top-0 left-0 right-0 z-50 flex flex-col pointer-events-none">

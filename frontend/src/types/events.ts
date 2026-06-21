@@ -94,6 +94,24 @@ export interface PlanReviewReadyData { session_id: string; plan_path: string; pl
 export interface ValidationIssueData { step_index?: number; field: string; severity: string; description: string; suggestion?: string }
 export interface PlanValidationFailedData { issues: ValidationIssueData[] }
 
+// --- Tool manager event payloads ---
+
+export interface ToolManagerToolInfo { readonly name: string; readonly version: string }
+
+export interface ToolManagerStartData { readonly tools: readonly ToolManagerToolInfo[] }
+
+export interface ToolManagerProgressData {
+  readonly tool: string
+  readonly stage: 'download' | 'extract' | 'python_bootstrap'
+  readonly bytes_done: number
+  readonly bytes_total: number
+}
+
+export interface ToolManagerDoneData {
+  readonly installed_count: number
+  readonly skipped_count: number
+}
+
 // --- Session event map ---
 
 export interface SessionEventMap {
@@ -153,6 +171,9 @@ export interface GlobalEventMap {
   readonly 'project:deleted': string
   readonly 'project:renamed': { readonly id: string; readonly name: string }
   readonly 'project:switched': ProjectInfo
+  readonly 'tool_manager:start': ToolManagerStartData
+  readonly 'tool_manager:progress': ToolManagerProgressData
+  readonly 'tool_manager:done': ToolManagerDoneData
 }
 
 export type GlobalEventKey = keyof GlobalEventMap
@@ -251,3 +272,22 @@ export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
   if (typeof d.total_files !== 'number') return false
   return true
 }
+
+// --- Tool manager event type guards ---
+
+function isToolManagerToolInfo(d: unknown): d is ToolManagerToolInfo {
+  return isObj(d) && typeof d.name === 'string' && typeof d.version === 'string'
+}
+
+export function isToolManagerStartData(d: unknown): d is ToolManagerStartData {
+  return isObj(d) && Array.isArray(d.tools) && d.tools.every(isToolManagerToolInfo)
+}
+
+const VALID_TOOL_STAGES = new Set(['download', 'extract', 'python_bootstrap'])
+
+export function isToolManagerProgressData(d: unknown): d is ToolManagerProgressData {
+  return isObj(d) && typeof d.tool === 'string' && typeof d.stage === 'string' &&
+    VALID_TOOL_STAGES.has(d.stage) &&
+    typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number'
+}
+

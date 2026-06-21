@@ -136,6 +136,45 @@ desktop/startup.go (background goroutine, after EventBackendReady):
 
 `EventBackendReady` fires without waiting for vector index or MCP gateway async init. The frontend receives projects/sessions immediately; vector search becomes available asynchronously.
 
+## Startup Sequence
+
+Application startup follows a phased approach with conditional window visibility:
+
+```
+main.go: wails.Run(options.App{StartHidden: true})
+  ↓
+Phase 0: resolve agent directory
+Phase 1: shell env + logger (<50ms)
+Phase 2: config + deps + tools (parallel, up to 3-10 min on first run)
+  │
+  ├─ Config resolution
+  ├─ Git dependency verification
+  └─ initTools()
+      ├─ Manager.NeedsInstall() — quick check (.versions + binary existence)
+      ├─ YES (tools needed):
+      │   ├─ emit tool_manager:start(tools)  → frontend shows splash
+      │   ├─ wailsRuntime.WindowShow(ctx)    → window becomes visible
+      │   ├─ EnsureCriticalTools()
+      │   │   ├─ download → emit tool_manager:progress(bytes_done, bytes_total)
+      │   │   └─ extract / python_bootstrap
+      │   └─ emit tool_manager:done()
+      └─ NO (all up-to-date):
+          └─ window stays hidden, no splash
+  ↓
+Phase 3: database + terminal (parallel, ~100ms)
+Phase 4: stores + preload (~100ms)
+Phase 5: application + frontend API (~150ms)
+  ↓
+emitBackendReady():
+  ├─ if window still hidden → WindowShow(ctx)  ("no tools needed" path)
+  └─ emit backend:ready
+```
+
+**Frontend state machine** during startup:
+- `splash` (initial): renders `<ToolInstallSplash />` if `tool_manager:start` received, otherwise a minimal spinner
+- `tool_manager:done` → `waiting_ready` (spinner with "Starting c0wrk…")
+- `backend:ready` → `main` (`<AppLayout />`)
+
 ## Tool Execution Flow
 
 ```

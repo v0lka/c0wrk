@@ -20,11 +20,32 @@ type DownloadResult struct {
 	ArchiveBytes int64  // size of the downloaded archive
 }
 
+// progressWriter wraps an io.Writer and calls a progress callback at ~100ms
+// intervals to avoid flooding the event channel during fast downloads.
+type progressWriter struct {
+	writer    io.Writer
+	progress  func(done, total int64)
+	total     int64
+	written   int64
+	lastFlush time.Time
+}
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n, err := pw.writer.Write(p)
+	pw.written += int64(n)
+	if now := time.Now(); now.Sub(pw.lastFlush) >= 100*time.Millisecond {
+		pw.progress(pw.written, pw.total)
+		pw.lastFlush = now
+	}
+	return n, err
+}
+
 // Downloader handles HTTP downloads for tool archives with checksum verification
-// and cache-resume support. The interface exists so tests can substitute a
-// mock implementation.
+// and cache-resume support. The progress callback receives (bytesDone, bytesTotal)
+// during the download; it may be nil if progress reporting is not needed.
+// The interface exists so tests can substitute a mock implementation.
 type Downloader interface {
-	Download(ctx context.Context, tool ToolSpec, cacheDir string) (*DownloadResult, error)
+	Download(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error)
 }
 
 // HTTPDownloader is the production Downloader that fetches archives from
@@ -45,7 +66,9 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 // Download fetches the archive for the given tool and platform. It writes the
 // archive to cacheDir/<ArchiveName>. If the file already exists and its
 // checksum matches, the download is skipped (cache hit).
-func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir string) (*DownloadResult, error) {
+// The progress callback receives (bytesDone, bytesTotal) with throttle at
+// ~100ms intervals; may be nil.
+func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error) {
 	platform := Platform()
 	url, ok := tool.URLs[platform]
 	if !ok || url == "" {
@@ -89,7 +112,23 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 	}
 	defer func() { _ = f.Close() }()
 
-	n, err := io.Copy(f, resp.Body)
+	// Wire up progress tracking if Content-Length is known.
+	var writer io.Writer = f
+	if resp.ContentLength > 0 && progress != nil {
+		pw := &progressWriter{
+			writer:    f,
+			progress:  progress,
+			total:     resp.ContentLength,
+			lastFlush: time.Now(),
+		}
+		writer = pw
+		progress(0, resp.ContentLength)
+	}
+	n, err := io.Copy(writer, resp.Body)
+	// Final progress callback to guarantee 100% is reported.
+	if resp.ContentLength > 0 && progress != nil {
+		progress(n, resp.ContentLength)
+	}
 	if err != nil {
 		_ = os.Remove(archivePath)
 		return nil, fmt.Errorf("tool %q: writing archive: %w", tool.Name, err)
@@ -133,11 +172,11 @@ func (d *HTTPDownloader) verifyChecksum(path string, tool ToolSpec, platform str
 }
 
 // DownloadFunc is a function adapter that implements Downloader.
-type DownloadFunc func(ctx context.Context, tool ToolSpec, cacheDir string) (*DownloadResult, error)
+type DownloadFunc func(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error)
 
 // Download implements Downloader.
-func (f DownloadFunc) Download(ctx context.Context, tool ToolSpec, cacheDir string) (*DownloadResult, error) {
-	return f(ctx, tool, cacheDir)
+func (f DownloadFunc) Download(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error) {
+	return f(ctx, tool, cacheDir, progress)
 }
 
 // Compile-time check that DownloadFunc implements Downloader.

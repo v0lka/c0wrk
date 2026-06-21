@@ -31,7 +31,7 @@ func checkDiskSpace(path string, minFree int64) error {
 		slog.Warn("disk space check unavailable", "path", path, "error", err)
 		return nil //nolint:nilerr // best-effort check, non-fatal
 	}
-	free := int64(stat.Bavail) * int64(stat.Bsize)
+	free := int64(stat.Bavail) * int64(stat.Bsize) //nolint:unconvert // Bsize is int64 on Linux, uint32 on Darwin
 	if free < minFree {
 		return fmt.Errorf("only %d MB free (need at least %d MB)", free/(1024*1024), minFree/(1024*1024))
 	}

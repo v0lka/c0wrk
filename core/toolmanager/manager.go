@@ -115,7 +115,6 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 		}
 
 		m.Logger.Info("installing tool", "tool", tool.Name, "version", tool.Version)
-		m.reportProgress(tool.Name, "download", 0, 0)
 		if installErr := m.installOne(ctx, tool, cacheDir); installErr != nil {
 			return fmt.Errorf("failed to install %s: %w", tool.Name, installErr)
 		}
@@ -129,6 +128,32 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 
 	m.Logger.Info("all critical tools ready", "count", len(tools))
 	return nil
+}
+
+// NeedsInstall returns the tools that need to be installed (version mismatch
+// or missing binary). The caller can use this to decide whether to show a
+// splash screen before starting the actual download/install work.
+func (m *Manager) NeedsInstall() ([]ToolSpec, error) {
+	versions, err := ReadVersions(m.ToolsDir)
+	if err != nil {
+		versions = ToolVersions{}
+	}
+	tools, err := ManagedTools()
+	if err != nil {
+		return nil, err
+	}
+	var needed []ToolSpec
+	for _, tool := range tools {
+		if versions[tool.Name] != tool.Version {
+			needed = append(needed, tool)
+			continue
+		}
+		binPath := m.binaryPath(tool.Name, tool.Type)
+		if _, statErr := os.Stat(binPath); statErr != nil {
+			needed = append(needed, tool)
+		}
+	}
+	return needed, nil
 }
 
 // GetToolPath returns the absolute path to a managed tool's binary.
@@ -185,11 +210,14 @@ func (m *Manager) installOne(ctx context.Context, tool ToolSpec, cacheDir string
 // installStatic downloads and installs a static binary. Retries once on
 // transient download failures.
 func (m *Manager) installStatic(ctx context.Context, tool ToolSpec, cacheDir string) error {
-	result, err := m.Downloader.Download(ctx, tool, cacheDir)
+	downloadProgress := func(done, total int64) {
+		m.reportProgress(tool.Name, "download", done, total)
+	}
+	result, err := m.Downloader.Download(ctx, tool, cacheDir, downloadProgress)
 	if err != nil {
 		// Retry once for transient failures.
 		m.Logger.Warn("download failed, retrying", "tool", tool.Name, "error", err)
-		result, err = m.Downloader.Download(ctx, tool, cacheDir)
+		result, err = m.Downloader.Download(ctx, tool, cacheDir, downloadProgress)
 		if err != nil {
 			return fmt.Errorf("download: %w", err)
 		}

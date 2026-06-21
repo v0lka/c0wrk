@@ -90,8 +90,8 @@ func (a *App) Startup(ctx context.Context) {
 	// ── Phase 2: Config + Dependencies + Tools (parallel) ─────────────
 	// On first run, tool downloads may take 3–10 minutes. Subsequent runs
 	// check the .versions file and return in <100ms.
-	resolved, toolsBinPath, depsOK := a.initConfigAndDeps(ctx, log)
-	log.Info("startup phase complete", "phase", "config", "elapsed_ms", time.Since(startTime).Milliseconds())
+	resolved, toolsBinPath, toolsInstalled, depsOK := a.initConfigAndDeps(ctx, log)
+	log.Info("startup phase complete", "phase", "config", "elapsed_ms", time.Since(startTime).Milliseconds(), "tools_installed", toolsInstalled)
 	if !depsOK {
 		return
 	}

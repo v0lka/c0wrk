@@ -17,6 +17,14 @@ const EventStartupError = "startup_error"
 // EventBackendReady is emitted when the Go backend finishes initialization.
 const EventBackendReady = "backend:ready"
 
+// EventToolManagerStart is emitted before managed-tool downloads begin,
+// carrying the list of tools that need to be installed or updated.
+// The frontend uses it to show the tool-install splash screen.
+const EventToolManagerStart = "tool_manager:start"
+
+// EventToolManagerDone is emitted when all managed-tool installations complete.
+const EventToolManagerDone = "tool_manager:done"
+
 // EventProjectsLoaded is emitted when all projects have been loaded from disk.
 const EventProjectsLoaded = "projects:loaded"
 

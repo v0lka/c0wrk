@@ -77,9 +77,10 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 // take 3–10 minutes; subsequent runs check the .versions file and skip.
 //
 // Returns the resolved config, the tools/bin/ directory path (empty on
-// failure), and ok=false if any dependency check or tool install fails.
+// failure), whether any tools were installed, and ok=false if any dependency
+// check or tool install fails.
 // The caller must prepend toolsBinPath to PATH before subsequent phases.
-func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, ok bool) {
+func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, toolsInstalled, ok bool) {
 	var depsOK bool
 
 	var wg sync.WaitGroup
@@ -109,17 +110,17 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 				log.Error("panic in tool initialization", "panic", r)
 			}
 		}()
-		toolsBinPath = a.initTools(ctx, log)
+		toolsBinPath, toolsInstalled = a.initTools(ctx, log)
 	}()
 	wg.Wait()
 
 	if !depsOK {
-		return resolved, "", false
+		return resolved, "", false, false
 	}
 	if toolsBinPath == "" {
-		return resolved, "", false
+		return resolved, "", false, false
 	}
-	return resolved, toolsBinPath, true
+	return resolved, toolsBinPath, toolsInstalled, true
 }
 
 // initTools ensures managed tools (rg, rtk, uv, markitdown) are downloaded and
@@ -127,8 +128,8 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 // minutes. On subsequent runs it returns immediately (version check). If a tool
 // cannot be installed, a fatal modal is shown and the function returns an empty
 // string so the caller can abort startup. On success, returns the tools/bin/
-// directory path.
-func (a *App) initTools(ctx context.Context, log *slog.Logger) string {
+// directory path and whether any tools were actually installed.
+func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath string, toolsInstalled bool) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		homeDir = "."
@@ -149,6 +150,31 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) string {
 			})
 		},
 	})
+
+	// Early detection: check which tools need installing BEFORE doing any work.
+	// This lets us decide whether to show the window + splash or keep it hidden.
+	needed, needsErr := mgr.NeedsInstall()
+	if needsErr != nil {
+		log.Warn("failed to check tool install status, showing window as fallback", "error", needsErr)
+		// ManagedTools() or ReadVersions() failed — we can't determine which tools
+		// need installing, but EnsureCriticalTools will run regardless. Show the window
+		// so the user sees progress instead of staring at nothing.
+		wailsRuntime.WindowShow(ctx)
+		a.emit(backend.EventToolManagerStart, map[string]any{
+			"tools": []map[string]string{},
+		})
+	} else if len(needed) > 0 {
+		// Tools need installing — show the window with a splash screen.
+		toolNames := make([]map[string]string, len(needed))
+		for i, t := range needed {
+			toolNames[i] = map[string]string{"name": t.Name, "version": t.Version}
+		}
+		a.emit(backend.EventToolManagerStart, map[string]any{
+			"tools": toolNames,
+		})
+		wailsRuntime.WindowShow(ctx)
+	}
+
 	if err := mgr.EnsureCriticalTools(ctx); err != nil {
 		log.Error("failed to install critical tools", "error", err)
 		_, _ = wailsRuntime.MessageDialog(ctx, wailsRuntime.MessageDialogOptions{
@@ -159,9 +185,22 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) string {
 			DefaultButton: "Exit",
 		})
 		wailsRuntime.Quit(ctx)
-		return ""
+		return "", false
 	}
-	return mgr.PrependToPATH()
+
+	if needsErr == nil && len(needed) > 0 {
+		a.emit(backend.EventToolManagerDone, map[string]any{
+			"installed_count": len(needed),
+			"skipped_count":   0,
+		})
+	} else if needsErr != nil {
+		a.emit(backend.EventToolManagerDone, map[string]any{
+			"installed_count": 0,
+			"skipped_count":   0,
+		})
+	}
+
+	return mgr.PrependToPATH(), len(needed) > 0
 }
 
 // initDatabase opens the shared SQLite connection. On failure logs the error
@@ -494,7 +533,16 @@ func (a *App) buildFrontendAPI(
 // emitBackendReady fires the EventBackendReady event with cached projects
 // when available, falling back to a fresh ListProjects call. The signal tells
 // the frontend that all synchronous backend subsystems are wired up.
+// WindowShow is called unconditionally — when the window was already shown
+// for tool installation this is a no-op; when no tools were needed this is
+// the first time the window becomes visible.
 func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr *project.Manager, log *slog.Logger) {
+	// When the window is still hidden (no tools needed installing), show it now.
+	// WindowShow is idempotent: if already visible (tools were installed), it's a no-op.
+	// Guard against nil ctx in tests (no Wails lifecycle).
+	if a.ctx != nil {
+		wailsRuntime.WindowShow(a.ctx)
+	}
 	switch {
 	case len(cachedProjects) > 0:
 		a.emit(backend.EventBackendReady, cachedProjects)

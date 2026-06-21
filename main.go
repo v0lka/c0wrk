@@ -25,6 +25,7 @@ func main() {
 		MinWidth:         1024,
 		MinHeight:        600,
 		BackgroundColour: options.NewRGB(40, 44, 52),
+		StartHidden:     os.Getenv("C0WRK_START_HIDDEN") != "false",
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
