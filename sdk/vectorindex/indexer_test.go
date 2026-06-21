@@ -56,6 +56,11 @@ func setupTestService(t *testing.T) *Service {
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
 		t.Fatalf("SwitchBranch: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := svc.Close(); err != nil {
+			t.Logf("Service.Close in cleanup: %v", err)
+		}
+	})
 	return svc
 }
 

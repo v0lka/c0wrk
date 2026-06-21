@@ -20,6 +20,11 @@ func TestManagerSwitchProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := svc.Close(); err != nil {
+			t.Logf("Service.Close in cleanup: %v", err)
+		}
+	})
 
 	mgr := &Manager{
 		service: svc,
@@ -91,6 +96,11 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := svc.Close(); err != nil {
+			t.Logf("Service.Close in cleanup: %v", err)
+		}
+	})
 
 	mgr := &Manager{
 		service: svc,
@@ -172,6 +182,11 @@ func TestManagerDeleteProjectData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := svc.Close(); err != nil {
+			t.Logf("Service.Close in cleanup: %v", err)
+		}
+	})
 
 	mgr := &Manager{
 		service: svc,
