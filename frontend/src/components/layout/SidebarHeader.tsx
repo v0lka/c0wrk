@@ -1,8 +1,9 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
+import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { cn } from '@/lib/utils'
 import { PanelLeftClose, PanelLeftOpen, Settings, MessageCircle, Code2 } from 'lucide-react'
 
@@ -20,12 +21,19 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
 
   const noProject = projects?.find((p) => p.is_no_project)
   const isChatMode = noProject ? activeProjectId === noProject.id : false
+  const hasRealProject = projects?.some((p) => !p.is_no_project)
+
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
 
   const handleToggleMode = useCallback(async (mode: 'chat' | 'code') => {
     try {
       if (mode === 'chat' && noProject && activeProjectId !== noProject.id) {
         await switchProjectWithState(noProject.id)
       } else if (mode === 'code') {
+        if (!hasRealProject) {
+          setCreateDialogOpen(true)
+          return
+        }
         // Resolve target: lastRealProjectId if it still exists, otherwise first real project.
         const real = lastRealProjectId
           ? projects?.find((p) => p.id === lastRealProjectId && !p.is_no_project)
@@ -38,9 +46,11 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
     } catch {
       // runtime_error toast already shown by global event listener
     }
-  }, [noProject, activeProjectId, lastRealProjectId, projects, switchProjectWithState])
+  }, [noProject, activeProjectId, lastRealProjectId, projects, hasRealProject, switchProjectWithState])
 
-  const hasRealProject = projects?.some((p) => !p.is_no_project)
+  const handleCreateDialogClose = useCallback((open: boolean) => {
+    setCreateDialogOpen(open)
+  }, [])
 
   return (
     <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
@@ -65,12 +75,10 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
           <button
             type="button"
             onClick={() => handleToggleMode('code')}
-            disabled={!hasRealProject}
             title="Coding agent mode"
             className={cn(
               'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
-              !isChatMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-              !hasRealProject && 'opacity-50 cursor-not-allowed'
+              !isChatMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
             )}
           >
             <Code2 className="size-3" />
@@ -82,6 +90,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
       <Button variant="ghost" size="icon-xs" onClick={() => openSettings()} aria-label="Settings">
         <Settings className="size-4" />
       </Button>
+      <CreateProjectDialog open={createDialogOpen} onOpenChange={handleCreateDialogClose} />
     </div>
   )
 }
