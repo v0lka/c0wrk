@@ -97,7 +97,7 @@ Git operations and vector indexing remain skipped.
 - `vectorindex.CurrentBranch(ctx, repoPath)` detects the active branch via `git symbolic-ref --short HEAD` (falls back to `git rev-parse --short=12 HEAD` for detached HEAD)
 - All git calls use `exec.CommandContext(ctx, "git", ...)` with stdout/stderr capture; errors are propagated, never swallowed
 - Non-repository paths are distinguished from failures by matching `"not a git repository"` in stderr; a legitimate non-repo returns an empty result, any other error is returned to the caller
-- The `git` binary is a hard runtime dependency — its absence is detected at startup by `desktop.verifyExternalDependencies` (fatal modal + quit), not at call sites
+- The `git` binary is required for CODE mode. Its absence is detected on project switch in `backend/frontend_api_project.go` via `exec.LookPath`, emitting a `runtime_error` event (dismissable toast) and rejecting the switch. CHAT mode (No Project) never invokes git.
 - No Project: `isGitRepo()` returns false (no git operations), `GetGitStatus` returns empty map, `GetFileDiff` returns empty string
 
 ### Vector Index

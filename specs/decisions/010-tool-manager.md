@@ -19,7 +19,7 @@ ADR-004 established git and rg as hard PATH dependencies checked at startup with
 
 ## Decision
 
-1. **git** remains a hard system dependency verified via `exec.LookPath` at startup. It is complex to bundle statically (libcurl, OpenSSL, libiconv) and 99.9% of developers already have it.
+1. **git** remains a system dependency but is checked lazily via `exec.LookPath` on the first CODE-mode project switch (not at startup). If missing, a dismissable toast notification is shown and the project switch is rejected. CHAT mode (No Project) does not require git. It is complex to bundle statically (libcurl, OpenSSL, libiconv) and 99.9% of developers already have it.
 
 2. **rg, rtk, uv, and markitdown** are managed by a new `core/toolmanager/` package. On first run, tools are downloaded to `~/.c0wrk/tools/`. On subsequent runs, a `.versions` JSON file is checked and download is skipped if versions match.
 
@@ -39,7 +39,7 @@ ADR-004 established git and rg as hard PATH dependencies checked at startup with
 
 ### Positive
 
-- Users no longer need to manually install rg, rtk, uv, or Python+markitdown. Only git is required.
+- Users no longer need to manually install rg, rtk, uv, or Python+markitdown. git is only required for CODE mode and is checked on first project switch.
 - Version management is automatic and deterministic across installs — every user gets the same tool versions.
 - Uninstalling managed tools is as simple as deleting `~/.c0wrk/tools/`.
 - Adding a new tool requires only a new entry in the registry — no UX/doc changes.

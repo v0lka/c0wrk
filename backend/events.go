@@ -14,6 +14,10 @@ package backend
 // EventStartupError is emitted when the desktop application fails to start.
 const EventStartupError = "startup_error"
 
+// EventRuntimeError is emitted when a non-fatal runtime error occurs that
+// should be shown to the user (e.g. git not found when switching to CODE mode).
+const EventRuntimeError = "runtime_error"
+
 // EventBackendReady is emitted when the Go backend finishes initialization.
 const EventBackendReady = "backend:ready"
 

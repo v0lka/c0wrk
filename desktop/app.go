@@ -33,7 +33,7 @@ type App struct {
 	db *sql.DB // shared SQLite connection; lifecycle: opened in Startup, closed in Shutdown
 
 	// sessionLogger is stored so Shutdown can close it on early Startup exits
-	// (e.g. when verifyExternalDependencies fails and Startup returns before
+	// (e.g. when tool installation fails and Startup returns before
 	// FrontendAPI is wired).
 	sessionLogger *logger.SessionLogger
 

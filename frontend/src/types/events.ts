@@ -162,6 +162,7 @@ export type SessionEventKey = keyof SessionEventMap
 
 export interface GlobalEventMap {
   readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
+  readonly 'runtime_error': { readonly id: string; readonly message: string; readonly error_code?: string }
   readonly 'backend:ready': void
   readonly 'projects:loaded': void
   readonly 'sessions:loaded': void
@@ -260,6 +261,12 @@ export type StartupError = GlobalEventMap['startup_error']
 
 export function isStartupError(d: unknown): d is StartupError {
   return isObj(d) && typeof d.message === 'string' && typeof d.error === 'string'
+}
+
+export type RuntimeError = GlobalEventMap['runtime_error']
+
+export function isRuntimeError(d: unknown): d is RuntimeError {
+  return isObj(d) && typeof d.id === 'string' && typeof d.message === 'string'
 }
 
 const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable'])

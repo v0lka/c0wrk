@@ -12,13 +12,14 @@ import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import type { ToolManagerToolInfo } from '@/types/events'
-import { isStartupError, isVectorIndexPayload, isToolManagerStartData } from '@/types/events'
-import type { StartupError } from '@/types/events'
+import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStartData } from '@/types/events'
+import type { StartupError, RuntimeError } from '@/types/events'
 
 type AppPhase = 'splash' | 'waiting_ready' | 'main'
 
 function App() {
   const [startupError, setStartupError] = useState<StartupError | null>(null)
+  const [runtimeError, setRuntimeError] = useState<RuntimeError | null>(null)
   const [phase, setPhase] = useState<AppPhase>('splash')
   const [splashTools, setSplashTools] = useState<readonly ToolManagerToolInfo[] | null>(null)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -76,6 +77,14 @@ function App() {
     })
   }, [])
 
+  // Listen for runtime errors from the backend (e.g. git missing for CODE mode)
+  useEffect(() => {
+    return subscribe('runtime_error', (data: unknown) => {
+      if (!isRuntimeError(data)) return
+      setRuntimeError(data)
+    })
+  }, [])
+
   // Listen for vector index status (non-session-scoped)
   useEffect(() => {
     return subscribe('vector_index:status', (data: unknown) => {
@@ -86,6 +95,10 @@ function App() {
 
   const dismissStartupError = useCallback(() => {
     setStartupError(null)
+  }, [])
+
+  const dismissRuntimeError = useCallback(() => {
+    setRuntimeError(null)
   }, [])
 
   // ── Render ─────────────────────────────────────────────────────────────
@@ -130,6 +143,21 @@ function App() {
               <button
                 onClick={dismissStartupError}
                 className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+        {runtimeError && (
+          <div className="bg-destructive/90 text-destructive-foreground px-4 py-3 shadow-lg pointer-events-auto animate-in fade-in duration-300">
+            <div className="max-w-4xl mx-auto flex items-center gap-3">
+              <AlertCircle className="h-5 w-5 flex-shrink-0" />
+              <p className="flex-1 text-sm font-medium">{runtimeError.message}</p>
+              <button
+                onClick={dismissRuntimeError}
+                className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
+                aria-label="Dismiss"
               >
                 <X className="h-4 w-4" />
               </button>

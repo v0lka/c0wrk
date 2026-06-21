@@ -71,20 +71,18 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 	return log, newLogger
 }
 
-// initConfigAndDeps loads the config file, verifies the sole native hard
-// dependency (git), and ensures managed tools (rg, rtk, uv, markitdown) are
-// downloaded/installed — all in parallel. On first run, tool downloads may
-// take 3–10 minutes; subsequent runs check the .versions file and skip.
+// initConfigAndDeps loads the config file and ensures managed tools
+// (rg, rtk, uv, markitdown) are downloaded/installed — all in parallel.
+// On first run, tool downloads may take 3–10 minutes; subsequent runs check
+// the .versions file and skip.
 //
 // Returns the resolved config, the tools/bin/ directory path (empty on
-// failure), whether any tools were installed, and ok=false if any dependency
-// check or tool install fails.
+// failure), whether any tools were installed, and toolsOK=false if the tool
+// install fails.
 // The caller must prepend toolsBinPath to PATH before subsequent phases.
-func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, toolsInstalled, ok bool) {
-	var depsOK bool
-
+func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, toolsInstalled, toolsOK bool) {
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		defer func() {
@@ -98,15 +96,6 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error("panic in dependency verification", "panic", r)
-			}
-		}()
-		depsOK = verifyExternalDependencies(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
 				log.Error("panic in tool initialization", "panic", r)
 			}
 		}()
@@ -114,9 +103,6 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 	}()
 	wg.Wait()
 
-	if !depsOK {
-		return resolved, "", false, false
-	}
 	if toolsBinPath == "" {
 		return resolved, "", false, false
 	}

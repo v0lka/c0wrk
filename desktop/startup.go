@@ -46,7 +46,7 @@ func (a *App) Startup(ctx context.Context) {
 	//
 	// CRITICAL PATH (blocks UI):
 	//   Phase 1: shell_env + logger      — budget: 50ms
-	//   Phase 2: config + deps + tools   — budget: 100ms (parallel)
+	//   Phase 2: config + tools          — budget: 100ms (parallel)
 	//   Phase 3: database + terminal     — budget: 100ms (parallel)
 	//   Phase 4: stores + preload        — budget: 100ms
 	//   Phase 5: application + api       — budget: 150ms
@@ -90,9 +90,9 @@ func (a *App) Startup(ctx context.Context) {
 	// ── Phase 2: Config + Dependencies + Tools (parallel) ─────────────
 	// On first run, tool downloads may take 3–10 minutes. Subsequent runs
 	// check the .versions file and return in <100ms.
-	resolved, toolsBinPath, toolsInstalled, depsOK := a.initConfigAndDeps(ctx, log)
+	resolved, toolsBinPath, toolsInstalled, toolsOK := a.initConfigAndDeps(ctx, log)
 	log.Info("startup phase complete", "phase", "config", "elapsed_ms", time.Since(startTime).Milliseconds(), "tools_installed", toolsInstalled)
-	if !depsOK {
+	if !toolsOK {
 		return
 	}
 

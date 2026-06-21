@@ -22,17 +22,21 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
   const isChatMode = noProject ? activeProjectId === noProject.id : false
 
   const handleToggleMode = useCallback(async (mode: 'chat' | 'code') => {
-    if (mode === 'chat' && noProject && activeProjectId !== noProject.id) {
-      await switchProjectWithState(noProject.id)
-    } else if (mode === 'code') {
-      // Resolve target: lastRealProjectId if it still exists, otherwise first real project.
-      const real = lastRealProjectId
-        ? projects?.find((p) => p.id === lastRealProjectId && !p.is_no_project)
-        : null
-      const target = real ?? projects?.find((p) => !p.is_no_project)
-      if (target && activeProjectId !== target.id) {
-        await switchProjectWithState(target.id)
+    try {
+      if (mode === 'chat' && noProject && activeProjectId !== noProject.id) {
+        await switchProjectWithState(noProject.id)
+      } else if (mode === 'code') {
+        // Resolve target: lastRealProjectId if it still exists, otherwise first real project.
+        const real = lastRealProjectId
+          ? projects?.find((p) => p.id === lastRealProjectId && !p.is_no_project)
+          : null
+        const target = real ?? projects?.find((p) => !p.is_no_project)
+        if (target && activeProjectId !== target.id) {
+          await switchProjectWithState(target.id)
+        }
       }
+    } catch {
+      // runtime_error toast already shown by global event listener
     }
   }, [noProject, activeProjectId, lastRealProjectId, projects, switchProjectWithState])
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded by [ADR-010](./010-tool-manager.md) for ripgrep. git remains a hard system dependency.
+Superseded by [ADR-010](./010-tool-manager.md) for ripgrep. git is now a conditional dependency — checked on first CODE-mode project switch instead of at startup. CHAT mode (No Project) does not require git.
 
 ## Context
 
@@ -21,10 +21,10 @@ In practice these libraries diverged from the user-visible behavior of the real 
 ## Decision
 
 1. Remove `github.com/go-git/go-git/v6` and `github.com/localrivet/goripgrep` from the module. All git operations call the `git` CLI via `exec.CommandContext`; all regex search operations call the `rg` CLI via `exec.CommandContext` with `--json` for structured parsing.
-2. Treat `git` and `rg` as hard runtime dependencies. At startup, `desktop.verifyExternalDependencies` checks `exec.LookPath` for every required binary. If any is missing it shows a blocking fatal modal ("Missing Required Dependencies") with an Exit button, calls `wailsRuntime.Quit`, and aborts `Startup`.
+2. Treat `rg` as a hard runtime dependency (managed by the tool-manager per ADR-010). Treat `git` as a conditional dependency — checked via `exec.LookPath` at the entry point of `SwitchProject` for CODE-mode projects. If git is missing, a `runtime_error` event is emitted to the frontend (dismissable toast) and the project switch is rejected. CHAT mode (No Project) never checks for git.
 3. Remove every "degrade silently" path in call sites. Errors from `git` or `rg` propagate to the caller. The single permitted non-error empty result is the case where `git` legitimately reports "not a git repository" for a path outside any repo; this is detected by matching stderr and distinguished from every other failure mode.
 
-New external binaries may be added to `requiredBinaries` in `desktop/prerequisites.go`; every addition requires a spec update to the relevant domain spec's "Key Files" or "Invariants" section.
+External binary dependencies managed by the tool-manager are added to the tool registry in `core/toolmanager/registry.go`. There are no startup-hard binary dependencies.
 
 ## Consequences
 
@@ -39,8 +39,8 @@ New external binaries may be added to `requiredBinaries` in `desktop/prerequisit
 
 **Negative:**
 
-- c0wrk no longer runs on systems without `git` and `rg` on PATH; packaging/install docs must say so
-- Startup fails fast instead of partially initializing, so install problems surface as a modal rather than a gradually-degraded UI
+- c0wrk CODE mode does not run on systems without `git` on PATH; CHAT mode is unaffected
+- CODE-mode project switch fails with a toast notification if git is missing
 - Every git/rg invocation pays process-startup cost (~few ms on modern systems); acceptable because these calls are user-driven, not hot-loop
 - Tests and CI environments must provision both binaries
 
@@ -52,4 +52,4 @@ New external binaries may be added to `requiredBinaries` in `desktop/prerequisit
 
 **Keep libraries but wrap silent failures with explicit errors.** Rejected: still keeps the library-vs-CLI behavior drift. Removing the libraries removes the entire class of drift bugs.
 
-**Make the dependencies soft with a feature-flag "git disabled" mode.** Rejected: every feature that matters (workspace status, diff view, vector index branch partitioning, ripgrep tool) depends on them. A "git disabled" mode is a different product.
+**Make git a hard startup dependency for all modes.** Rejected: CHAT mode (No Project) is a general-purpose assistant that never calls git. Blocking CHAT-mode users who don't have git installed is an unnecessary barrier. The current approach checks git lazily on first CODE-mode switch.

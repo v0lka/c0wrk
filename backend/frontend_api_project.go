@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -171,6 +174,17 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return fmt.Errorf("project not found: %s", id)
 	}
 
+	// CODE mode requires git; No Project (CHAT mode) does not.
+	if !p.IsNoProject && !gitOnPath() {
+		f.emitEvent(EventRuntimeError, map[string]string{
+			"id":         uuid.New().String(),
+			"message":    "Git is required for CODE mode. Please install git and try again.",
+			"error_code": "git_not_found",
+		})
+		f.log().Warn("SwitchProject blocked: git not found on PATH", "project", id)
+		return nil // error already reported via event; no-op the switch
+	}
+
 	f.switchProjectTeardown(id)
 	f.switchProjectActivate(p)
 	f.switchProjectSetupWatcher(p)
@@ -184,6 +198,12 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	f.emitEvent(EventProjectSwitched, p)
 
 	return nil
+}
+
+// gitOnPath reports whether git is available on PATH.
+func gitOnPath() bool {
+	_, err := exec.LookPath("git")
+	return err == nil
 }
 
 // switchProjectTeardown persists the previous project state and cancels in-flight work.

@@ -61,7 +61,8 @@ Verified from project configuration and build files:
 - **Node.js + npm** (used by Wails frontend commands and `frontend/package.json` scripts)
 - **Wails v2.12.0 CLI** (`wails build`, `wails dev` are used by Makefile)
 - **golangci-lint** (for `make lint`)
-- **`git`** and **`rg` (ripgrep)** — hard runtime dependencies; presence is verified at startup by `desktop.verifyExternalDependencies` (the app refuses to launch if either is missing)
+- **`git`** — required for CODE mode only; checked on first project switch. CHAT mode (No Project) works without git.
+- **`rg` (ripgrep)** — auto-downloaded by the tool-manager on first run; no manual install needed.
 - Platform support in Makefile ONNX fetch logic:
   - macOS (`arm64`, `x86_64`)
   - Linux (`aarch64`, `x64`)
