@@ -220,12 +220,9 @@ search:
 toolLimits:
   # File read limits
   readDefaultLines: 2000 # Max lines returned per read call
-  readMaxBytes: 51200 # Total output cap in bytes (50 KB)
 
   # Search limits
   webSearchMaxResults: 5 # Max web search results
-
-  # Web fetch
 
   # --- Per-tool Stage 1 truncation (applied before token budget) ------------
   # WARNING: These are SAFETY limits, not performance settings. Changing

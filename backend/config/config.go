@@ -279,18 +279,10 @@ type SearchConfig struct {
 // These limits prevent tool outputs from consuming excessive context.
 type ToolLimitsConfig struct {
 	// File read limits
-	ReadDefaultLines  int `yaml:"readDefaultLines"`  // max lines per read call (default: 2000)
-	ReadMaxLineLength int `yaml:"readMaxLineLength"` // DEPRECATED: no longer used (truncation is centralized)
-	ReadMaxBytes      int `yaml:"readMaxBytes"`      // DEPRECATED: no longer used (truncation is centralized)
+	ReadDefaultLines int `yaml:"readDefaultLines"` // max lines per read call (default: 2000)
 
 	// Search limits
-	RipgrepMaxResults    int `yaml:"ripgrepMaxResults"`    // DEPRECATED: no longer used (truncation is centralized)
-	RipgrepMaxLineLength int `yaml:"ripgrepMaxLineLength"` // DEPRECATED: no longer used (truncation is centralized)
-	GlobMaxResults       int `yaml:"globMaxResults"`       // DEPRECATED: no longer used (truncation is centralized)
-	WebSearchMaxResults  int `yaml:"webSearchMaxResults"`  // max web search results (default: 5)
-
-	// Web fetch limit
-	WebFetchMaxBodySize int `yaml:"webFetchMaxBodySize"` // DEPRECATED: no longer used (truncation is centralized)
+	WebSearchMaxResults int `yaml:"webSearchMaxResults"` // max web search results (default: 5)
 
 	// Per-tool Stage 1 truncation defaults (line/byte-based, applied before token budget).
 	// If omitted for a tool, no Stage 1 truncation is applied.
