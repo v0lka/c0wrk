@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 )
 
 // ProgressCallback is called during tool installation to report progress
@@ -19,6 +21,10 @@ type ProgressCallback func(toolName, stage string, bytesDone, bytesTotal int64)
 // Manager orchestrates the download, installation, and version-tracking of
 // managed external tools. It is the single public API consumed by the desktop
 // startup layer.
+//
+// Manager is not safe for concurrent use. It is intended to be constructed,
+// used for EnsureCriticalTools during synchronous startup, and then discarded
+// or used only from the same goroutine that created it.
 type Manager struct {
 	ToolsDir  string // e.g. ~/.c0wrk/tools/
 	BinDir    string // e.g. ~/.c0wrk/tools/bin/
@@ -50,7 +56,7 @@ func NewManager(toolsDir, binDir, pythonDir string, logger *slog.Logger, cfg Man
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 5 * 60 * 1e9} // 5 minutes
+		client = &http.Client{Timeout: 5 * time.Minute}
 	}
 	return &Manager{
 		ToolsDir:         toolsDir,
@@ -68,18 +74,21 @@ func NewManager(toolsDir, binDir, pythonDir string, logger *slog.Logger, cfg Man
 // Python). On subsequent runs it checks the .versions file and skips already-
 // installed tools. Returns an error describing which tool could not be installed.
 func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
-	// Check available disk space before creating directories.
-	if err := checkDiskSpace(m.ToolsDir, 200*1024*1024); err != nil {
-		return fmt.Errorf("insufficient disk space: %w", err)
-	}
-
 	cacheDir := filepath.Join(m.ToolsDir, ".cache")
 
-	// Create required directories.
+	// Create required directories FIRST so the disk-space check below
+	// has a valid path to stat. Without this, on first run Statfs would
+	// receive ENOENT for ~/.c0wrk/tools/ and silently skip the check.
+	// The parent ~/.c0wrk/ exists by now (created during Phase 1 logger init).
 	for _, dir := range []string{m.BinDir, cacheDir, m.PythonDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("creating directory %s: %w", dir, err)
 		}
+	}
+
+	// Check available disk space (now that the tools directory exists).
+	if err := checkDiskSpace(m.ToolsDir, 200*1024*1024); err != nil {
+		return fmt.Errorf("insufficient disk space: %w", err)
 	}
 
 	// Read installed versions.
@@ -89,12 +98,15 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 		versions = ToolVersions{}
 	}
 
-	tools := ManagedTools()
+	tools, err := ManagedTools()
+	if err != nil {
+		return fmt.Errorf("resolving tool registry: %w", err)
+	}
 	for _, tool := range tools {
 		if versions[tool.Name] == tool.Version {
 			// Verify the binary still exists on disk — the version file
 			// could be stale if the user manually deleted the binary.
-			binPath := m.binaryPath(tool.Name)
+			binPath := m.binaryPath(tool.Name, tool.Type)
 			if _, statErr := os.Stat(binPath); statErr == nil {
 				m.Logger.Debug("tool already up-to-date", "tool", tool.Name, "version", tool.Version)
 				continue
@@ -120,9 +132,11 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 }
 
 // GetToolPath returns the absolute path to a managed tool's binary.
+// typ must match the tool's ToolType (StaticBinary or PythonPackage)
+// to resolve the correct file extension on Windows.
 // Returns empty string if the tool is not managed or not installed.
-func (m *Manager) GetToolPath(name string) string {
-	p := m.binaryPath(name)
+func (m *Manager) GetToolPath(name string, typ ToolType) string {
+	p := m.binaryPath(name, typ)
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
@@ -130,10 +144,16 @@ func (m *Manager) GetToolPath(name string) string {
 }
 
 // binaryPath returns the expected binary path for a managed tool.
-func (m *Manager) binaryPath(name string) string {
+// For PythonPackage tools on Windows, the wrapper script uses .cmd;
+// for StaticBinary tools, the executable uses .exe.
+func (m *Manager) binaryPath(name string, typ ToolType) string {
 	p := filepath.Join(m.BinDir, name)
 	if runtime.GOOS == "windows" {
-		p += ".exe"
+		if typ == PythonPackage {
+			p += ".cmd"
+		} else {
+			p += ".exe"
+		}
 	}
 	return p
 }
@@ -182,7 +202,37 @@ func (m *Manager) installStatic(ctx context.Context, tool ToolSpec, cacheDir str
 		return fmt.Errorf("install: %w", err)
 	}
 	m.Logger.Debug("binary installed", "tool", tool.Name)
+	m.cleanupOldArchives(tool, cacheDir)
 	return nil
+}
+
+// cleanupOldArchives removes cached archives for the given tool that don't
+// match the current ArchiveName. This prevents stale version archives from
+// accumulating in ~/.c0wrk/tools/.cache/ across version bumps.
+func (m *Manager) cleanupOldArchives(tool ToolSpec, cacheDir string) {
+	// List all files in cacheDir matching the tool's prefix (tool name).
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		return // cache dir doesn't exist or is unreadable — nothing to clean
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Skip the current archive.
+		if name == tool.ArchiveName {
+			continue
+		}
+		// Remove archives that start with the tool name prefix
+		// (e.g. "uv-", "ripgrep-", "rtk-").
+		if strings.HasPrefix(name, tool.Name+"-") || strings.HasPrefix(name, tool.Name+".") {
+			path := filepath.Join(cacheDir, name)
+			if err := os.Remove(path); err != nil {
+				m.Logger.Debug("failed to remove old archive", "path", path, "error", err)
+			}
+		}
+	}
 }
 
 // installPython bootstraps a Python environment and installs the package.

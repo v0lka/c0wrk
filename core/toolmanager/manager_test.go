@@ -34,7 +34,11 @@ func TestManager_EnsureCriticalTools_AllUpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	versions := ToolVersions{}
-	for _, tool := range ManagedTools() {
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
 		versions[tool.Name] = tool.Version
 	}
 	if err := WriteVersions(toolsDir, versions); err != nil {
@@ -74,7 +78,7 @@ func TestManager_GetToolPath_NotInstalled(t *testing.T) {
 		Logger:     slog.New(slog.DiscardHandler),
 	}
 
-	if p := mgr.GetToolPath("rg"); p != "" {
+	if p := mgr.GetToolPath("rg", StaticBinary); p != "" {
 		t.Errorf("expected empty path for uninstalled tool, got %q", p)
 	}
 }
@@ -98,7 +102,7 @@ func TestManager_GetToolPath_Installed(t *testing.T) {
 		Logger:     slog.New(slog.DiscardHandler),
 	}
 
-	if p := mgr.GetToolPath("rg"); p != binPath {
+	if p := mgr.GetToolPath("rg", StaticBinary); p != binPath {
 		t.Errorf("GetToolPath = %q, want %q", p, binPath)
 	}
 }

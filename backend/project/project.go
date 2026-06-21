@@ -2,7 +2,9 @@
 // for the desktop UI layer.
 package project
 
-import "context"
+import (
+	"context"
+)
 
 // NoProjectID is the well-known identifier for the "No Project" pseudo-project.
 // Sessions under this project receive per-session workspaces and code-oriented

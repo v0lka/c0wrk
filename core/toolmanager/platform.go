@@ -6,6 +6,7 @@ package toolmanager
 
 import (
 	"fmt"
+	"log/slog"
 	"runtime"
 )
 
@@ -18,19 +19,32 @@ func Platform() string {
 // PlatformTriple returns the upstream release naming convention used in
 // archive file names and internal archive directory paths.
 // Format: "<arch>-<vendor>-<os>[-<abi>]", e.g. "aarch64-apple-darwin".
-func PlatformTriple() string {
+// Unsupported platforms receive a synthetic "<goarch>-<goos>" fallback;
+// the caller should handle missing tool URLs/checksums for those platforms.
+//
+// Decision (2026-06-21): this function uses a fallback for unsupported
+// platforms (synthetic GOARCH-GOOS triple) rather than returning an error.
+// This ensures the tool-manager doesn't block startup on unknown platforms;
+// tools without URLs for the platform are simply skipped. If a new platform
+// needs explicit support, add its triple to the switch and verify upstream
+// URLs exist.
+func PlatformTriple() (string, error) {
 	switch {
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "amd64":
-		return "x86_64-apple-darwin"
+		return "x86_64-apple-darwin", nil
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
-		return "aarch64-apple-darwin"
+		return "aarch64-apple-darwin", nil
 	case runtime.GOOS == "linux" && runtime.GOARCH == "amd64":
-		return "x86_64-unknown-linux-musl"
+		return "x86_64-unknown-linux-musl", nil
 	case runtime.GOOS == "linux" && runtime.GOARCH == "arm64":
-		return "aarch64-unknown-linux-gnu"
+		return "aarch64-unknown-linux-gnu", nil
 	case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
-		return "x86_64-pc-windows-msvc"
+		return "x86_64-pc-windows-msvc", nil
 	}
-	// Fallback: use the Go convention.
-	return fmt.Sprintf("%s-%s", runtime.GOARCH, runtime.GOOS)
+	// Fallback for platforms not explicitly listed. The caller will
+	// receive a synthetic triple and can proceed — tool URLs/checksums
+	// will be empty for this platform, causing the tool to be skipped.
+	slog.Warn("unsupported platform, using fallback triple",
+		"os", runtime.GOOS, "arch", runtime.GOARCH)
+	return fmt.Sprintf("%s-%s", runtime.GOARCH, runtime.GOOS), nil
 }

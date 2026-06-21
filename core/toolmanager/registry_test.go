@@ -5,14 +5,20 @@ import (
 )
 
 func TestManagedTools_Count(t *testing.T) {
-	tools := ManagedTools()
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(tools) != 4 {
 		t.Errorf("ManagedTools() returned %d tools, want 4", len(tools))
 	}
 }
 
 func TestManagedTools_Order(t *testing.T) {
-	tools := ManagedTools()
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
 	// uv must be first (bootstrapper for markitdown).
 	if tools[0].Name != "uv" {
 		t.Errorf("first tool is %q, want uv", tools[0].Name)
@@ -25,7 +31,10 @@ func TestManagedTools_Order(t *testing.T) {
 
 func TestManagedTools_HasURLs(t *testing.T) {
 	platform := Platform()
-	tools := ManagedTools()
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tool := range tools {
 		if tool.Type != StaticBinary {
 			continue
@@ -38,7 +47,10 @@ func TestManagedTools_HasURLs(t *testing.T) {
 }
 
 func TestManagedTools_StaticBinariesHaveArchiveInfo(t *testing.T) {
-	tools := ManagedTools()
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tool := range tools {
 		if tool.Type != StaticBinary {
 			continue
@@ -56,7 +68,10 @@ func TestManagedTools_StaticBinariesHaveArchiveInfo(t *testing.T) {
 }
 
 func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
-	tools := ManagedTools()
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tool := range tools {
 		if tool.Name == "markitdown" {
 			if tool.Type != PythonPackage {

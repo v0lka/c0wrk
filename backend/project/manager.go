@@ -57,8 +57,15 @@ func (m *Manager) EnsureNoProject() error {
 	return m.store.SaveProject(context.Background(), info)
 }
 
-// NewManager creates a new project Manager.
+// NewManager creates a new project Manager and ensures the projects base
+// directory (~/.c0wrk/projects/) exists.
 func NewManager(store ProjectStore, agentDir string) *Manager {
+	// Ensure the projects base directory exists so downstream project
+	// creation (internal workspaces, session directories) can proceed
+	// without the caller needing to manage directory layout.
+	projectsDir := config.ProjectsDir(agentDir)
+	_ = os.MkdirAll(projectsDir, 0o755)
+
 	return &Manager{
 		store:    store,
 		agentDir: agentDir,

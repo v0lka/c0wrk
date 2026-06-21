@@ -11,7 +11,10 @@ import (
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
-
+// NoProjectID is the well-known identifier for the "No Project" pseudo-project.
+// Sessions under this project receive per-session workspaces and code-oriented
+// tools are disabled.
+const NoProjectID = "__no_project__"
 
 // ---------------------------------------------------------------------------
 // ContextManager — extends sdk/agent.ContextManager with c0wrk-specific SetTask

@@ -1,12 +1,15 @@
 // Package config provides configuration loading and validation for the agent.
 package config
 
-import "path/filepath"
+import (
+	"path/filepath"
+)
 
-// NoProjectID is the well-known identifier for the "No Project" pseudo-project.
-// Duplicated from backend/project to avoid a circular import (config ← project).
-// If this value ever needs to change, update both packages.
-const NoProjectID = "__no_project__"
+// noProjectID is the well-known identifier for the "No Project" pseudo-project.
+// Defined here rather than importing project (to avoid a circular dependency
+// since project/manager.go imports config) or core (to keep the dependency
+// graph lean — config is a low-level package consumed by most backend packages).
+const noProjectID = "__no_project__"
 
 // ---------------------------------------------------------------------------
 // Top-level ~/.c0wrk/ paths
@@ -120,5 +123,5 @@ func SessionPlansDir(agentDir, projectID, sessionID string) string {
 
 // NoProjectSessionWorkspace returns the isolated workspace for a No-Project session.
 func NoProjectSessionWorkspace(agentDir, sessionID string) string {
-	return filepath.Join(ProjectDir(agentDir, NoProjectID), sessionID, "workspace")
+	return filepath.Join(ProjectDir(agentDir, noProjectID), sessionID, "workspace")
 }

@@ -149,7 +149,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	}
 
 	// Step 4: Create a wrapper script in binDir.
-	if err := createWrapper(wrapperPath, venvDir, tool.Name); err != nil {
+	if err := createWrapper(wrapperPath, venvPython, tool.Name); err != nil {
 		return nil, fmt.Errorf("tool %q: creating wrapper: %w", tool.Name, err)
 	}
 
@@ -193,10 +193,10 @@ func findPythonInDir(dir, pythonVersion string) string {
 }
 
 // createWrapper creates a shell script that invokes the Python module.
-func createWrapper(wrapperPath, venvDir, moduleName string) error {
-	pythonBin := filepath.Join(venvDir, "bin", "python3")
+// pythonBin must be the absolute path to the Python interpreter (already
+// resolved by the caller via findPythonInDir).
+func createWrapper(wrapperPath, pythonBin, moduleName string) error {
 	if runtime.GOOS == "windows" {
-		pythonBin = filepath.Join(venvDir, "Scripts", "python.exe")
 		wrapperPath = strings.TrimSuffix(wrapperPath, ".cmd") + ".cmd"
 		content := fmt.Sprintf("@echo off\r\n\"%s\" -m %s %%*\r\n", pythonBin, moduleName) //nolint:gocritic // batch file, not Go string
 		return os.WriteFile(wrapperPath, []byte(content), 0o755)

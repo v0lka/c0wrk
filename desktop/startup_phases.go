@@ -139,7 +139,16 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) string {
 	binDir := config.ToolsBinDir(agentDir)
 	pythonDir := config.ToolsPythonDir(agentDir)
 
-	mgr := toolmanager.NewManager(toolsDir, binDir, pythonDir, log, toolmanager.ManagerConfig{})
+	mgr := toolmanager.NewManager(toolsDir, binDir, pythonDir, log, toolmanager.ManagerConfig{
+		ProgressCallback: func(toolName, stage string, bytesDone, bytesTotal int64) {
+			a.emit("tool_manager:progress", map[string]any{
+				"tool":        toolName,
+				"stage":       stage,
+				"bytes_done":  bytesDone,
+				"bytes_total": bytesTotal,
+			})
+		},
+	})
 	if err := mgr.EnsureCriticalTools(ctx); err != nil {
 		log.Error("failed to install critical tools", "error", err)
 		_, _ = wailsRuntime.MessageDialog(ctx, wailsRuntime.MessageDialogOptions{

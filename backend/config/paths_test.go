@@ -129,7 +129,7 @@ func TestSessionPlansDir(t *testing.T) {
 
 func TestNoProjectSessionWorkspace(t *testing.T) {
 	got := NoProjectSessionWorkspace(testAgentDir, "sess-456")
-	want := filepath.Join(testAgentDir, "projects", NoProjectID, "sess-456", "workspace")
+	want := filepath.Join(testAgentDir, "projects", noProjectID, "sess-456", "workspace")
 	if got != want {
 		t.Errorf("NoProjectSessionWorkspace: got %q, want %q", got, want)
 	}

@@ -98,10 +98,8 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Prepend managed tools/bin/ to PATH so subsequent exec.CommandContext
 	// calls (rg, rtk, markitdown) resolve to the managed binaries.
-	// The original PATH is preserved for MCP server subprocesses.
 	a.toolsBinPath = toolsBinPath
 	if toolsBinPath != "" {
-		a.originalPATH = os.Getenv("PATH")
 		os.Setenv("PATH", toolsBinPath+string(os.PathListSeparator)+os.Getenv("PATH")) //nolint:errcheck // Setenv error is non-actionable at startup
 		log.Info("tools/bin prepended to PATH", "path", toolsBinPath)
 	}
@@ -135,11 +133,6 @@ func (a *App) Startup(ctx context.Context) {
 	// ── Phase 4: Stores + Project/Session Preload ────────────────────
 	projStore, sessStore := a.initStores(db, log)
 	log.Info("startup phase complete", "phase", "stores", "elapsed_ms", time.Since(startTime).Milliseconds())
-
-	projectsDir := config.ProjectsDir(agentDir)
-	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
-		log.Error("failed to create projects directory", "error", err)
-	}
 
 	var projectMgr *project.Manager
 	if projStore != nil {

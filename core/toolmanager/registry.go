@@ -21,11 +21,23 @@ type ToolSpec struct {
 
 	// ArchiveName returns the archive file name for the current platform
 	// (e.g. "ripgrep-14.1.1-x86_64-apple-darwin.tar.gz").
+	// Constructed from PlatformTriple() unless ArchiveNameOverride is set.
 	ArchiveName string
+
+	// ArchiveNameOverride, when non-empty, replaces the PlatformTriple-derived
+	// ArchiveName. Use this when an upstream project uses a different naming
+	// convention than PlatformTriple for a specific platform (e.g. uv uses
+	// "-gnu" on linux-amd64, but PlatformTriple returns "-musl").
+	ArchiveNameOverride string
 
 	// BinPathInArchive is the relative path to the binary inside the archive
 	// (e.g. "ripgrep-14.1.1-x86_64-apple-darwin/rg").
+	// Constructed from PlatformTriple() unless BinPathInArchiveOverride is set.
 	BinPathInArchive string
+
+	// BinPathInArchiveOverride, when non-empty, replaces the PlatformTriple-derived
+	// BinPathInArchive. See ArchiveNameOverride for rationale.
+	BinPathInArchiveOverride string
 
 	// PipSpec is the pip install spec for PythonPackage tools (e.g. "markitdown[all]").
 	PipSpec string
@@ -49,29 +61,33 @@ type ToolSpec struct {
 // tool-manager downloads and installs them, but no built-in tool wrappers
 // consume them yet. Wrappers will be added in sdk/tools/builtins/ when the
 // agent is ready to invoke these tools.
-func ManagedTools() []ToolSpec {
-	return []ToolSpec{
+func ManagedTools() ([]ToolSpec, error) {
+	triple, err := PlatformTriple()
+	if err != nil {
+		return nil, err
+	}
+	tools := []ToolSpec{
 		{
 			Name:             "uv",
 			Version:          "0.7.0",
 			Type:             StaticBinary,
 			Description:      "Python package and project manager (bootstrapper for markitdown)",
 			BinName:          "uv",
-			ArchiveName:      "uv-" + PlatformTriple() + ".tar.gz",
-			BinPathInArchive: "uv-" + PlatformTriple() + "/uv",
+			ArchiveName:      "uv-" + triple + ".tar.gz",
+			BinPathInArchive: "uv-" + triple + "/uv",
 			URLs: map[string]string{
 				"darwin-amd64":  "https://github.com/astral-sh/uv/releases/download/0.7.0/uv-x86_64-apple-darwin.tar.gz",
 				"darwin-arm64":  "https://github.com/astral-sh/uv/releases/download/0.7.0/uv-aarch64-apple-darwin.tar.gz",
-				"linux-amd64":   "https://github.com/astral-sh/uv/releases/download/0.7.0/uv-x86_64-unknown-linux-gnu.tar.gz",
+				"linux-amd64":   "https://github.com/astral-sh/uv/releases/download/0.7.0/uv-x86_64-unknown-linux-musl.tar.gz",
 				"linux-arm64":   "https://github.com/astral-sh/uv/releases/download/0.7.0/uv-aarch64-unknown-linux-gnu.tar.gz",
 				"windows-amd64": "https://github.com/astral-sh/uv/releases/download/0.7.0/uv-x86_64-pc-windows-msvc.zip",
 			},
 			Checksums: map[string]string{
-				"darwin-amd64":  "4f438e830044ab2c873e3ca8d1c8e1e33e5a3f55c5e1a8f8c9e1e3e7f7e8a9b0c",
-				"darwin-arm64":  "d5e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8",
-				"linux-amd64":   "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0",
-				"linux-arm64":   "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1",
-				"windows-amd64": "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+				"darwin-amd64":  "dc5037f3ffbf8074b3ee63de7a73aa57421b0da0837a478e26317424dbab16f3",
+				"darwin-arm64":  "964ebe641b563920e0650a60bf5ac21e6c8c56557704e5ecfaaad7ff62c3a73c",
+				"linux-amd64":  "08e1bb8fdea2c6d5edbe40ab1651de097b884020056c0925a9973582ff669d04",
+				"linux-arm64":   "540fcb8f2f972c82260a8063a6a4b496d7ff858edc42aa0e2c733a7b55ef8dd8",
+				"windows-amd64": "62836c9d6e3f346d06c45fee4109be21ca9d1df8d087472dcc8d51815f182332",
 			},
 		},
 		{
@@ -80,8 +96,8 @@ func ManagedTools() []ToolSpec {
 			Type:             StaticBinary,
 			Description:      "Fast recursive regex content search (ripgrep)",
 			BinName:          "rg",
-			ArchiveName:      "ripgrep-14.1.1-" + PlatformTriple() + ".tar.gz",
-			BinPathInArchive: "ripgrep-14.1.1-" + PlatformTriple() + "/rg",
+			ArchiveName:      "ripgrep-14.1.1-" + triple + ".tar.gz",
+			BinPathInArchive: "ripgrep-14.1.1-" + triple + "/rg",
 			URLs: map[string]string{
 				"darwin-amd64":  "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-apple-darwin.tar.gz",
 				"darwin-arm64":  "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-aarch64-apple-darwin.tar.gz",
@@ -90,11 +106,11 @@ func ManagedTools() []ToolSpec {
 				"windows-amd64": "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip",
 			},
 			Checksums: map[string]string{
-				"darwin-amd64":  "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3",
-				"darwin-arm64":  "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
-				"linux-amd64":   "f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
-				"linux-arm64":   "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
-				"windows-amd64": "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7",
+				"darwin-amd64":  "fc87e78f7cb3fea12d69072e7ef3b21509754717b746368fd40d88963630e2b3",
+				"darwin-arm64":  "24ad76777745fbff131c8fbc466742b011f925bfa4fffa2ded6def23b5b937be",
+				"linux-amd64":   "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e",
+				"linux-arm64":   "c827481c4ff4ea10c9dc7a4022c8de5db34a5737cb74484d62eb94a95841ab2f",
+				"windows-amd64": "d0f534024c42afd6cb4d38907c25cd2b249b79bbe6cc1dbee8e3e37c2b6e25a1",
 			},
 		},
 		{
@@ -103,7 +119,7 @@ func ManagedTools() []ToolSpec {
 			Type:             StaticBinary,
 			Description:      "CLI proxy that reduces LLM token consumption on common dev commands (infrastructure-only: installed but not yet consumed by the agent)",
 			BinName:          "rtk",
-			ArchiveName:      "rtk-" + PlatformTriple() + ".tar.gz",
+			ArchiveName:      "rtk-" + triple + ".tar.gz",
 			BinPathInArchive: "rtk",
 			URLs: map[string]string{
 				"darwin-amd64":  "https://github.com/rtk-ai/rtk/releases/download/v0.28.2/rtk-x86_64-apple-darwin.tar.gz",
@@ -113,11 +129,11 @@ func ManagedTools() []ToolSpec {
 				"windows-amd64": "https://github.com/rtk-ai/rtk/releases/download/v0.28.2/rtk-x86_64-pc-windows-msvc.zip",
 			},
 			Checksums: map[string]string{
-				"darwin-amd64":  "c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8",
-				"darwin-arm64":  "d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9",
-				"linux-amd64":   "e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0",
-				"linux-arm64":   "f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1",
-				"windows-amd64": "a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2",
+				"darwin-amd64":  "5ce5dab3b744a6ecce7ff9deea9fd4606f72c6490c9ee447d74883d9393dcbc7",
+				"darwin-arm64":  "5dede8ac36648960a3ad52611856b9047a7817b755750d2bdbda8d4e9931db4d",
+				"linux-amd64":   "c7b61e87b8430e42b04ab84fbe1b3b41b563454b0181247fd04844b8e9194371",
+				"linux-arm64":   "9dbf6dd22cfdf8b85b916505a5e96e1721d7af4cbe2f3dc90b87c9d677d01636",
+				"windows-amd64": "8bd4ae58b8657f9afd82c76f28e06232b0e8f994e949176206425dcc6005936a",
 			},
 		},
 		{
@@ -133,4 +149,17 @@ func ManagedTools() []ToolSpec {
 			Checksums: nil,
 		},
 	}
+
+	// Apply per-tool overrides for tools whose upstream naming convention
+	// differs from PlatformTriple for specific platforms.
+	for i := range tools {
+		if tools[i].ArchiveNameOverride != "" {
+			tools[i].ArchiveName = tools[i].ArchiveNameOverride
+		}
+		if tools[i].BinPathInArchiveOverride != "" {
+			tools[i].BinPathInArchive = tools[i].BinPathInArchiveOverride
+		}
+	}
+
+	return tools, nil
 }
