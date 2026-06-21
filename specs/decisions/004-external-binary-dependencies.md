@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-010](./010-tool-manager.md) for ripgrep. git remains a hard system dependency.
 
 ## Context
 

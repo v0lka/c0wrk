@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/config"
@@ -19,6 +22,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
+	"github.com/v0lka/c0wrk/core/toolmanager"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/embedding"
@@ -67,26 +71,88 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 	return log, newLogger
 }
 
-// initConfigAndDeps loads the config file and verifies required external
-// dependencies (git, rg) in parallel. The verifyExternalDependencies helper
-// shows a fatal modal and quits the app on missing deps; depsOK=false signals
-// the caller to abort startup gracefully.
-func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (*config.ResolvedConfig, bool) {
-	var resolved *config.ResolvedConfig
+// initConfigAndDeps loads the config file, verifies the sole native hard
+// dependency (git), and ensures managed tools (rg, rtk, uv, markitdown) are
+// downloaded/installed — all in parallel. On first run, tool downloads may
+// take 3–10 minutes; subsequent runs check the .versions file and skip.
+//
+// Returns the resolved config, the tools/bin/ directory path (empty on
+// failure), and ok=false if any dependency check or tool install fails.
+// The caller must prepend toolsBinPath to PATH before subsequent phases.
+func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, ok bool) {
 	var depsOK bool
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in config resolution", "panic", r)
+			}
+		}()
 		resolved = config.ResolveAndLoad(log)
 	}()
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in dependency verification", "panic", r)
+			}
+		}()
 		depsOK = verifyExternalDependencies(ctx)
 	}()
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in tool initialization", "panic", r)
+			}
+		}()
+		toolsBinPath = a.initTools(ctx, log)
+	}()
 	wg.Wait()
-	return resolved, depsOK
+
+	if !depsOK {
+		return resolved, "", false
+	}
+	if toolsBinPath == "" {
+		return resolved, "", false
+	}
+	return resolved, toolsBinPath, true
+}
+
+// initTools ensures managed tools (rg, rtk, uv, markitdown) are downloaded and
+// installed in <agentDir>/tools/. On first run this blocks startup for several
+// minutes. On subsequent runs it returns immediately (version check). If a tool
+// cannot be installed, a fatal modal is shown and the function returns an empty
+// string so the caller can abort startup. On success, returns the tools/bin/
+// directory path.
+func (a *App) initTools(ctx context.Context, log *slog.Logger) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = "."
+	}
+	agentDir := filepath.Join(homeDir, config.DefaultAgentDir)
+
+	toolsDir := config.ToolsDir(agentDir)
+	binDir := config.ToolsBinDir(agentDir)
+	pythonDir := config.ToolsPythonDir(agentDir)
+
+	mgr := toolmanager.NewManager(toolsDir, binDir, pythonDir, log, toolmanager.ManagerConfig{})
+	if err := mgr.EnsureCriticalTools(ctx); err != nil {
+		log.Error("failed to install critical tools", "error", err)
+		_, _ = wailsRuntime.MessageDialog(ctx, wailsRuntime.MessageDialogOptions{
+			Type:          wailsRuntime.ErrorDialog,
+			Title:         "Tool Installation Failed",
+			Message:       "c0wrk was unable to download required tools:\n\n" + err.Error() + "\n\nCheck your internet connection and disk space, then restart c0wrk.",
+			Buttons:       []string{"Exit"},
+			DefaultButton: "Exit",
+		})
+		wailsRuntime.Quit(ctx)
+		return ""
+	}
+	return mgr.PrependToPATH()
 }
 
 // initDatabase opens the shared SQLite connection. On failure logs the error

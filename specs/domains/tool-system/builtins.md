@@ -177,7 +177,7 @@ Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 - `tool_result_read` is an internal tool that bypasses policy checks and the caching layer
 - Per-tool Stage 1 truncation produces a fragmentation nudge with the SHA256 hash of the full result; the LLM uses `tool_result_read(hash, start_line, num_lines)` to retrieve fragments
 - Optional tools (semantic_search, web_search, ask_user) are only registered if their dependency func/key is provided
-- `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a hard runtime dependency verified at startup by `desktop.verifyExternalDependencies`
+- `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a managed runtime dependency provided by the tool-manager (`core/toolmanager/`), downloaded on first run to `~/.c0wrk/tools/bin/`, and PATH-prepended at startup (see ADR-010)
 - `ripgrep` parses the `rg --json` event stream (match/context/end events); exit code 1 means "no matches" and is not an error, exit codes ≥ 2 surface as `IsError` with stderr content
 - Untrusted built-in tools (`bash_exec`, `read_file`, `glob`, `ripgrep`, `web_fetch`, `web_search`) have `Untrusted: true` on `BaseTool`; their output is wrapped in `<untrusted-content>` tags before entering the LLM context
 

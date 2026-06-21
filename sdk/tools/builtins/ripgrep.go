@@ -17,10 +17,9 @@ import (
 const toolRipgrepDescription = `Search file contents using regex or literal patterns. Returns matches in "file:line: content" format with optional surrounding context lines. Automatically respects .gitignore rules and skips binary files. Use this when you need to find code patterns, function definitions, or text within files. For finding files by name or path pattern, use glob instead.`
 
 // RipgrepTool searches file contents using regex patterns via the system
-// `rg` CLI (ripgrep). The binary is a declared runtime prerequisite (see
-// specs/decisions/004-external-binary-dependencies.md) — availability is
-// verified at application startup, so this tool does not attempt to work
-// around a missing binary.
+// `rg` CLI (ripgrep). The rg binary is a managed runtime dependency provided
+// by the tool-manager (see specs/decisions/010-tool-manager.md) and
+// PATH-prepended at startup by desktop/startup.go.
 type RipgrepTool struct {
 	*tools.BaseTool
 	limits RipgrepLimits

@@ -42,6 +42,23 @@ func ModelsDir(agentDir string) string {
 	return filepath.Join(agentDir, "models")
 }
 
+// ToolsDir returns the managed external tools directory (~/.c0wrk/tools/).
+func ToolsDir(agentDir string) string {
+	return filepath.Join(agentDir, "tools")
+}
+
+// ToolsBinDir returns the directory for static binaries managed by the
+// tool-manager (~/.c0wrk/tools/bin/).
+func ToolsBinDir(agentDir string) string {
+	return filepath.Join(ToolsDir(agentDir), "bin")
+}
+
+// ToolsPythonDir returns the directory for Python installations managed by
+// the tool-manager (~/.c0wrk/tools/python/).
+func ToolsPythonDir(agentDir string) string {
+	return filepath.Join(ToolsDir(agentDir), "python")
+}
+
 // ---------------------------------------------------------------------------
 // Per-project paths (agentDir + projectID)
 // ---------------------------------------------------------------------------

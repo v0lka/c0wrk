@@ -38,11 +38,15 @@ type pendingConfirmData struct {
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
 	// ══════════════════════════════════════════════════════════════════
-	// STARTUP MANIFEST — Critical Path Time Budget: <500ms total
+	// STARTUP MANIFEST — Critical Path Time Budget: <500ms (subsequent runs)
+	//
+	// NOTE: On first run, Phase 2 may take 3–10 minutes while the
+	// tool-manager downloads and installs required external tools
+	// (rg, rtk, uv, markitdown). Subsequent runs skip via .versions check.
 	//
 	// CRITICAL PATH (blocks UI):
 	//   Phase 1: shell_env + logger      — budget: 50ms
-	//   Phase 2: config + deps_check     — budget: 100ms (parallel)
+	//   Phase 2: config + deps + tools   — budget: 100ms (parallel)
 	//   Phase 3: database + terminal     — budget: 100ms (parallel)
 	//   Phase 4: stores + preload        — budget: 100ms
 	//   Phase 5: application + api       — budget: 150ms
@@ -83,11 +87,23 @@ func (a *App) Startup(ctx context.Context) {
 	a.sessionLogger = sessionLogger // stored for cleanup on early Startup exits (W1)
 	log.Info("startup phase complete", "phase", "logger", "elapsed_ms", time.Since(startTime).Milliseconds())
 
-	// ── Phase 2: Config + External Dependencies (parallel) ───────────
-	resolved, depsOK := a.initConfigAndDeps(ctx, log)
+	// ── Phase 2: Config + Dependencies + Tools (parallel) ─────────────
+	// On first run, tool downloads may take 3–10 minutes. Subsequent runs
+	// check the .versions file and return in <100ms.
+	resolved, toolsBinPath, depsOK := a.initConfigAndDeps(ctx, log)
 	log.Info("startup phase complete", "phase", "config", "elapsed_ms", time.Since(startTime).Milliseconds())
 	if !depsOK {
 		return
+	}
+
+	// Prepend managed tools/bin/ to PATH so subsequent exec.CommandContext
+	// calls (rg, rtk, markitdown) resolve to the managed binaries.
+	// The original PATH is preserved for MCP server subprocesses.
+	a.toolsBinPath = toolsBinPath
+	if toolsBinPath != "" {
+		a.originalPATH = os.Getenv("PATH")
+		os.Setenv("PATH", toolsBinPath+string(os.PathListSeparator)+os.Getenv("PATH")) //nolint:errcheck // Setenv error is non-actionable at startup
+		log.Info("tools/bin prepended to PATH", "path", toolsBinPath)
 	}
 
 	cfg := resolved.Config

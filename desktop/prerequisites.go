@@ -10,13 +10,13 @@ import (
 )
 
 // requiredBinaries lists external CLI tools c0wrk hard-depends on at runtime.
-// See specs/decisions/004-external-binary-dependencies.md for rationale.
+// Only git is a native hard dependency — all other tools (rg, rtk, uv,
+// markitdown) are managed by the tool-manager (see specs/decisions/010-tool-manager.md).
 var requiredBinaries = []struct {
 	name    string
 	purpose string
 }{
 	{"git", "workspace git status, diffs, branch detection, and .gitignore filtering"},
-	{"rg", "fast regex content search (ripgrep tool)"},
 }
 
 // verifyExternalDependencies ensures every required external binary is on

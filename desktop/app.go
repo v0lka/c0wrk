@@ -55,6 +55,16 @@ type App struct {
 	// lets tests inject a fake event sink so phase helpers can be exercised
 	// without a live Wails runtime (W-19/W-23). Production wiring keeps it nil.
 	wailsEmit func(eventName string, optionalData ...any)
+
+	// toolsBinPath is the managed tools bin directory (e.g. ~/.c0wrk/tools/bin/),
+	// set during Phase 2 and prepended to PATH. Used by tools that need explicit
+	// binary resolution instead of relying on PATH.
+	toolsBinPath string
+
+	// originalPATH is the PATH value before tools/bin/ was prepended. Preserved
+	// so that MCP server subprocesses can be launched with the unmodified PATH,
+	// avoiding managed tools leaking into user shell commands and MCP server environments.
+	originalPATH string
 }
 
 // NewApp creates a new App instance.
