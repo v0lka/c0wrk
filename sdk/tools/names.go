@@ -12,4 +12,5 @@ const (
 	ToolGlob      = "glob"
 	ToolWebFetch  = "web_fetch"
 	ToolBashExec  = "bash_exec"
+	ToolBatch     = "batch"
 )

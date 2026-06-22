@@ -135,10 +135,16 @@ const TOOL_CONFIGS: Record<string, CardConfig> = {
 }
 
 const CACHED_SUFFIX = ' (cached)'
+const BATCHED_SUFFIX = ' (batched)'
 
 export function resolveCardConfig(toolName: string, source?: string): CardConfig {
   if (source && source !== '' && source !== 'core') {
     return { ...MCP_CONFIG, extractTitle: () => toolName }
+  }
+  // Handle batched tool results: strip " (batched)" suffix and look up original config.
+  if (toolName.endsWith(BATCHED_SUFFIX)) {
+    const originalName = toolName.slice(0, -BATCHED_SUFFIX.length)
+    return TOOL_CONFIGS[originalName] ?? { ...FALLBACK_CONFIG, extractTitle: () => originalName }
   }
   // Handle cached tool results: strip " (cached)" suffix and look up original config.
   if (toolName.endsWith(CACHED_SUFFIX)) {

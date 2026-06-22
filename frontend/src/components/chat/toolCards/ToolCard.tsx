@@ -27,14 +27,18 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
 
   // Detect cached tool (tool_result_read emitted as "original_tool (cached)")
   const isCached = item.toolName.endsWith(' (cached)')
+  // Detect batched tool (batch sub-call emitted as "original_tool (batched)")
+  const isBatched = item.toolName.endsWith(' (batched)')
   const cacheRange = useMemo(() => parseCacheRange(item.result), [item.result])
 
-  // For cached tools, args are from tool_result_read, not the original tool.
+  // For cached/batched tools, args are from tool_result_read or batch, not the original tool.
   // Show the original tool name as title; range info is patched into the header.
-  const title = isCached
+  const title = isBatched
+    ? item.toolName.replace(' (batched)', '')
+    : isCached
     ? item.toolName.replace(' (cached)', '')
     : config.extractTitle(item.parsedArgs, item.args)
-  const hint = isCached ? undefined : config.extractHint?.(item.parsedArgs, item.args)
+  const hint = (isCached || isBatched) ? undefined : config.extractHint?.(item.parsedArgs, item.args)
   const Icon = config.icon
   const Body = config.Body
 
@@ -51,9 +55,16 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
       : null
   , [isCached])
 
+  // Batched badge
+  const batchedBadge = useMemo(() =>
+    isBatched
+      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded">batched</span>
+      : null
+  , [isBatched])
+
   // Determine if title references a file path (for clickable navigation)
-  // Cached tools never get file links — we don't have the original path.
-  const isFileTool = !isCached && ['write_file', 'edit_file', 'read_file', 'read_skill_resource',
+  // Cached/batched tools never get file links — we don't have the original path.
+  const isFileTool = !isCached && !isBatched && ['write_file', 'edit_file', 'read_file', 'read_skill_resource',
     'create_directory', 'delete_file', 'delete_directory', 'list_directory'].includes(item.toolName)
   const filePath = hint && isFileTool ? hint : undefined
 
@@ -83,6 +94,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
         <Icon className={`h-3.5 w-3.5 shrink-0 ${item.status === 'error' ? 'text-destructive' : ''}`} />
         {titleNode}
         {cachedBadge}
+        {batchedBadge}
         {mcpBadge}
         {cacheRangeNode}
       </div>
@@ -95,7 +107,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
       icon={<Icon className={`h-3.5 w-3.5 ${item.status === 'error' ? 'text-destructive' : ''}`} />}
       label={titleNode}
       statusIcon={<StatusIcon status={item.status} />}
-      badge={<>{cachedBadge}{mcpBadge}</>}
+      badge={<>{cachedBadge}{batchedBadge}{mcpBadge}</>}
       headerExtra={cacheRangeNode}
       defaultOpen={item.status === 'error'}
     >

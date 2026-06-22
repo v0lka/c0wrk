@@ -364,6 +364,12 @@ func (e *Executor) processSingleToolCall(
 	}
 	// --- End circuit breaker ---
 
+	// --- Batch meta-tool: execute sub-calls sequentially ---
+	if action.Name == "batch" {
+		return e.processBatchTool(ctx, action, callIdx, toolCalls, resp, thought, state, cw)
+	}
+	// --- End batch handling ---
+
 	// Check for finish tool
 	if action.Name == "finish" {
 		// Parse answer from input
@@ -536,6 +542,169 @@ func (e *Executor) processSingleToolCall(
 
 	// Add step to context window
 	cw.AddStep(step)
+
+	return nil, actionNone, nil
+}
+
+// processBatchTool handles the batch meta-tool by executing each sub-call
+// sequentially through the full tool execution pipeline.
+func (e *Executor) processBatchTool(
+	ctx context.Context,
+	action llm.ToolCall,
+	callIdx int,
+	toolCalls []llm.ToolCall,
+	resp *llm.ChatResponse,
+	thought string,
+	state *runState,
+	cw ContextManager,
+) (*ExecutorResult, loopAction, error) {
+	responseGroup := state.responseGroup
+
+	// Parse batch input.
+	var batchInput struct {
+		Calls []struct {
+			Tool  string          `json:"tool"`
+			Input json.RawMessage `json:"input"`
+		} `json:"calls"`
+	}
+	if err := json.Unmarshal(action.Input, &batchInput); err != nil {
+		obs := fmt.Sprintf("batch parse error: %v", err)
+		e.emitter.ToolCall(state.stepNum, callIdx, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
+		e.emitter.ToolResult(state.stepNum, callIdx, len(obs), obs)
+		step := Step{
+			Thought:          thought,
+			ReasoningContent: resp.Message.ReasoningContent,
+			Action:           action,
+			Observation:      obs,
+			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			ResponseGroup:    responseGroup,
+		}
+		state.allSteps = append(state.allSteps, step)
+		cw.AddStep(step)
+		return nil, actionNone, nil
+	}
+
+	for subIdx, sub := range batchInput.Calls {
+		subCall := llm.ToolCall{
+			ID:    fmt.Sprintf("batch_sub_%d", subIdx),
+			Name:  sub.Tool,
+			Input: sub.Input,
+		}
+
+		// Emit tool call with "(batched)" suffix.
+		batchedName := sub.Tool + " (batched)"
+		e.emitter.ToolCall(state.stepNum, subIdx, batchedName, string(sub.Input), e.tools.GetToolSource(sub.Tool))
+
+		// Circuit breaker: repeat identical tool call.
+		if loopAct, execResult, err := e.checkRepeatIdenticalTool(ctx, subCall, subIdx, thought, resp, state, cw); loopAct != actionNone || execResult != nil {
+			return execResult, loopAct, err
+		}
+
+		// Execute via full policy pipeline.
+		execCtx := ctx
+		if e.toolCache != nil {
+			execCtx = WithToolResultCache(ctx, e.toolCache)
+			execCtx = WithPerToolTruncation(execCtx, e.perToolTruncation)
+		}
+		result, execErr := e.tools.Execute(execCtx, subCall.Name, subCall.Input)
+		if execErr != nil {
+			// Infrastructure error — capture as error result, continue.
+			result = tools.ToolResult{Content: fmt.Sprintf("error executing %q: %v", subCall.Name, execErr), IsError: true}
+		}
+
+		observation := result.Content
+		e.lastToolResultIsError = result.IsError
+
+		// Fruitless result detector.
+		if loopAct, execResult, err := e.checkFruitlessResult(ctx, subCall, subIdx, observation, result.IsError, state, cw); loopAct != actionNone || execResult != nil {
+			return execResult, loopAct, err
+		}
+
+		// Same-tool repetition detector.
+		if loopAct, execResult, err := e.checkSameToolRepetition(ctx, subCall, subIdx, observation, result, state, cw); loopAct != actionNone || execResult != nil {
+			return execResult, loopAct, err
+		}
+
+		// Ensure non-empty observation (OpenAI API requirement).
+		if observation == "" {
+			observation = "(no output)"
+		}
+
+		isUntrusted := e.tools.IsToolUntrusted(subCall.Name)
+
+		// --- Stage 1: Per-tool truncation + caching ---
+		truncated, wasTruncated := e.applyPerToolTruncation(observation, subCall.Name)
+		if wasTruncated {
+			observation = truncated
+		}
+
+		if e.toolCache != nil {
+			if _, isNonCacheable := nonCacheableTools[subCall.Name]; !isNonCacheable {
+				meta := e.buildCacheMeta(execCtx, subCall.Name, subCall.Input)
+				hash := e.toolCache.Store(subCall.Name, result.Content, meta)
+
+				if wasTruncated {
+					maxLines := 0
+					if e.perToolTruncation != nil {
+						if cfg, ok := e.perToolTruncation[subCall.Name]; ok {
+							maxLines = cfg.MaxLines
+						}
+					}
+					nudge := formatFragmentationNudge(hash, subCall.Name, maxLines)
+					observation += nudge
+				}
+			}
+		}
+		// --- End Stage 1 ---
+
+		// --- Stage 2: Token-budget truncation (preserve Stage 1 nudge) ---
+		const stage1NudgePrefix = "\n\n[This output was truncated to"
+		var stage1Nudge string
+		if idx := strings.Index(observation, stage1NudgePrefix); idx >= 0 {
+			stage1Nudge = observation[idx:]
+			observation = observation[:idx]
+		}
+		observation = e.applyToolResultBudget(observation, cw, subCall.Name)
+		observation += stage1Nudge
+		// --- End Stage 2 ---
+
+		// Emit tool result.
+		e.emitter.ToolResult(state.stepNum, subIdx, len(observation), observation)
+
+		// Pre-compaction nudge for last sub-call (only for LLM context, after emission).
+		if subIdx == len(batchInput.Calls)-1 && callIdx == len(toolCalls)-1 && e.preWarningPercent > 0 && !state.preCompactionNudgeEmitted {
+			fill := cw.CheckFill()
+			if fill.Status == "ok" && fill.Percent >= float64(e.preWarningPercent) {
+				if vulnerable := cw.VulnerableOutputs(); len(vulnerable) > 0 {
+					observation += "\n\n" + formatPreCompactionNudge(fill.Percent, vulnerable)
+					state.preCompactionNudgeEmitted = true
+					e.emitter.ExecutorDiagnostic(state.stepNum, "pre_compaction_nudge", map[string]any{
+						"fill_percent":     fill.Percent,
+						"vulnerable_count": len(vulnerable),
+					})
+				}
+			}
+		}
+
+		// Create step — only first sub-call in the first response group call carries thought.
+		stepThought := ""
+		stepReasoning := ""
+		if subIdx == 0 && callIdx == 0 {
+			stepThought = thought
+			stepReasoning = resp.Message.ReasoningContent
+		}
+		step := Step{
+			Thought:          stepThought,
+			ReasoningContent: stepReasoning,
+			Action:           subCall,
+			Observation:      observation,
+			IsUntrusted:      isUntrusted,
+			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			ResponseGroup:    responseGroup,
+		}
+		state.allSteps = append(state.allSteps, step)
+		cw.AddStep(step)
+	}
 
 	return nil, actionNone, nil
 }

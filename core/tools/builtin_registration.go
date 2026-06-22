@@ -84,6 +84,9 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// Tool result cache reader
 	registry.Register(builtins.NewToolResultReadTool())
 
+	// Batch meta-tool
+	registry.Register(builtins.NewBatchTool())
+
 	// Step output tools
 	registry.Register(builtins.NewReadStepOutputTool())
 	registry.Register(builtins.NewListStepOutputsTool())

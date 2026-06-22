@@ -30,6 +30,7 @@ var nonCacheableTools = map[string]struct{}{
 	"search_facts":      {},
 	"set_step_status":   {},
 	"ask_user":          {},
+	"batch":             {},
 }
 
 const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Wrap up your work NOW: summarize your findings and finish. Do not start new explorations."
