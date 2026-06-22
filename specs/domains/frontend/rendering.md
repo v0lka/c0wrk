@@ -76,11 +76,14 @@ Key transformations in `groupMessages()`:
 
 ### Pinned Last User Message
 
-The most recent user message is rendered as a sticky element at the top of the chat area. It is NOT a separate component — `ChatArea.tsx` finds the last user item, filters it out of the main list, and renders `UserMessage` with `isPinned` inside a sticky wrapper (`sticky top-0 z-10`):
+All user messages always render in the chat history. The most recent user message is additionally rendered as a sticky element at the top of the chat area, but **only when it is not visible** in the scroll viewport:
 
+- `ChatArea.tsx` finds the last user item and renders `UserMessage` with `isPinned` inside a sticky wrapper (`sticky top-0 z-10`)
+- Visibility is tracked via an `IntersectionObserver` (root: scroll container, threshold: 0) watching the original message element in the chat history (located by `data-message-id`)
+- The pin appears only when the original message is fully scrolled out of view; disappears when any part becomes visible again
 - Collapsible when content exceeds `containerHeight / 7` (maxPinnedHeight) — click to expand full text
-- Provides context for what the agent is working on
-- Does not scroll with message list (sticky positioning, not a separate render tree)
+- Provides context for what the agent is working on when the original message is off-screen
+- Does not scroll with message list (sticky positioning)
 
 ## Invariants
 

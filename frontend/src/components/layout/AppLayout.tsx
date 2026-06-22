@@ -21,7 +21,7 @@ function clamp(value: number, lo: number, hi: number): number {
 }
 
 function getDefaultSidebarWidth(): number {
-  return clamp(Math.round(window.innerWidth / 6), SIDEBAR_MIN, SIDEBAR_MAX)
+  return clamp(Math.round(window.innerWidth / 5), SIDEBAR_MIN, SIDEBAR_MAX)
 }
 
 export function AppLayout() {

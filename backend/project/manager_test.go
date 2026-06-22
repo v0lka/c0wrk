@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // setupTestManager creates a Manager backed by an in-memory SQLite store and a temp agent dir.
@@ -62,7 +64,7 @@ func TestManager_CreateProject_Internal(t *testing.T) {
 	}
 
 	// Verify workspace directory was created (under projects/<id>/Workspace)
-	expectedWorkspace := filepath.Join(agentDir, "projects", proj.ID, "Workspace")
+	expectedWorkspace := filepath.Join(agentDir, "projects", proj.ID, config.WorkspaceSegment)
 	if proj.WorkspacePath != expectedWorkspace {
 		t.Errorf("WorkspacePath = %q, want %q", proj.WorkspacePath, expectedWorkspace)
 	}

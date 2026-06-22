@@ -22,21 +22,30 @@ type Manager struct {
 }
 
 // EnsureNoProject creates the No Project pseudo-project if it does not already exist.
-// It is safe to call multiple times (idempotent).
-func (m *Manager) EnsureNoProject() error {
+// It is safe to call multiple times (idempotent). Returns created=true when
+// the project was newly created (false when it already existed).
+//
+// For No Project, WorkspacePath points to the project directory itself
+// (~/.c0wrk/projects/__no_project__/) rather than a shared Workspace/
+// subdirectory. Per-session workspaces live under <session-uuid>/workspace/
+// and are created lazily by the session manager.
+func (m *Manager) EnsureNoProject() (created bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	proj, err := m.store.LoadProject(context.Background(), NoProjectID)
 	if err != nil {
-		return fmt.Errorf("checking No Project: %w", err)
+		return false, fmt.Errorf("checking No Project: %w", err)
 	}
 	if proj != nil {
-		return nil // already exists
+		return false, nil // already exists
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	wsPath := config.ProjectWorkspacePath(m.agentDir, NoProjectID)
+	// No Project workspace is the project directory itself; per-session
+	// workspaces live under <uuid>/workspace/ and are created by the
+	// session manager on demand.
+	wsPath := config.ProjectDir(m.agentDir, NoProjectID)
 	// Ensure the stored path is always absolute so it remains valid
 	// regardless of runtime working directory changes.
 	if absPath, err := filepath.Abs(wsPath); err == nil {
@@ -51,10 +60,12 @@ func (m *Manager) EnsureNoProject() error {
 		CreatedAt:     now,
 		LastActiveAt:  now,
 	}
-	if err := os.MkdirAll(info.WorkspacePath, 0o755); err != nil {
-		return fmt.Errorf("creating No Project workspace dir: %w", err)
+	// Do not eagerly create the directory — per-session workspace
+	// creation will create parent directories lazily via MkdirAll.
+	if err := m.store.SaveProject(context.Background(), info); err != nil {
+		return false, err
 	}
-	return m.store.SaveProject(context.Background(), info)
+	return true, nil
 }
 
 // NewManager creates a new project Manager and ensures the projects base

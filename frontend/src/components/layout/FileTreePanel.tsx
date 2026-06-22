@@ -177,6 +177,9 @@ export function FileTreePanel() {
 
   // For No Project, each session has its own isolated workspace that differs
   // from the project workspace. Fetch it via GetSessionWorkspace RPC.
+  // Never fall back to projectWorkspacePath for No Project — the project-level
+  // directory (~/.c0wrk/projects/__no_project__/) contains all sessions'
+  // scaffolding and must not be exposed as the file tree root.
   const [sessionWorkspacePath, setSessionWorkspacePath] = useState<string | null>(null)
   useEffect(() => {
     if (!isNoProject || !activeSessionId) {
@@ -184,15 +187,37 @@ export function FileTreePanel() {
       return
     }
     let cancelled = false
-    getSessionWorkspace(activeSessionId).then((wsPath) => {
-      if (!cancelled) setSessionWorkspacePath(wsPath)
-    }).catch(() => {
-      // Keep previous value on error; fall back to project workspace.
-    })
-    return () => { cancelled = true }
+    let attempts = 0
+    const maxRetries = 5
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+    async function fetchWithRetry(): Promise<void> {
+      while (attempts < maxRetries && !cancelled) {
+        try {
+          const wsPath = await getSessionWorkspace(activeSessionId!)
+          if (!cancelled) setSessionWorkspacePath(wsPath)
+          return
+        } catch {
+          attempts++
+          if (attempts < maxRetries && !cancelled) {
+            // Wait with backoff: 1s, 2s, 3s, 4s, 5s
+            await new Promise<void>(resolve => {
+              retryTimer = setTimeout(resolve, 1000 * attempts)
+            })
+          }
+        }
+      }
+    }
+    fetchWithRetry()
+    return () => {
+      cancelled = true
+      if (retryTimer !== null) clearTimeout(retryTimer)
+    }
   }, [isNoProject, activeSessionId])
 
-  const workspacePath = isNoProject ? (sessionWorkspacePath ?? projectWorkspacePath) : projectWorkspacePath
+  // For No Project, the workspace is per-session — use the RPC-fetched path
+  // exclusively. Never expose the project-level __no_project__/ directory.
+  const workspacePath = isNoProject ? sessionWorkspacePath : projectWorkspacePath
 
   // Load root on project or session change
   useEffect(() => {
@@ -267,13 +292,13 @@ export function FileTreePanel() {
         </div>
       ) : isFiltering ? (
         <p className="flex-1 p-4 text-center text-xs text-muted-foreground">No matching files</p>
-      ) : rootEntries ? (
+      ) : activeProjectId ? (
         <div className="flex-1 flex items-center justify-center">
           <FolderTree className="size-12 text-muted-foreground/30" />
         </div>
       ) : (
         <p className="flex-1 p-4 text-center text-xs text-muted-foreground">
-          {activeProjectId ? 'Loading workspace...' : 'Select a project to browse files'}
+          Select a project to browse files
         </p>
       )}
     </div>

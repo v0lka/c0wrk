@@ -408,7 +408,7 @@ func TestEmitBackendReady_WithCachedProjects(t *testing.T) {
 	a.wailsEmit = rec.emit
 
 	cached := []project.ProjectInfo{{ID: "p1", Name: "Foo"}}
-	a.emitBackendReady(cached, nil, testLoggerForPhases())
+	a.emitBackendReady(cached, nil, false, testLoggerForPhases())
 
 	events := rec.snapshot()
 	if len(events) != 1 {
@@ -427,7 +427,7 @@ func TestEmitBackendReady_NilManager_NoCached(t *testing.T) {
 	rec := &emitRecorder{}
 	a.wailsEmit = rec.emit
 
-	a.emitBackendReady(nil, nil, testLoggerForPhases())
+	a.emitBackendReady(nil, nil, false, testLoggerForPhases())
 
 	events := rec.snapshot()
 	if len(events) != 1 {
@@ -458,7 +458,7 @@ func TestEmitBackendReady_FreshQueryWithProjects(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	a.emitBackendReady(nil, projectMgr, testLoggerForPhases())
+	a.emitBackendReady(nil, projectMgr, false, testLoggerForPhases())
 
 	events := rec.snapshot()
 	if len(events) != 1 {

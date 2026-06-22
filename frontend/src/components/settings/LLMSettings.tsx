@@ -5,7 +5,7 @@ import { useModelFetch } from './useModelFetch'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { PROVIDERS, PROVIDER_LABELS } from '@/lib/llm-providers'
 
-export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void }) {
+export function LLMSettings({ onSettingsSaved, onDefaultModelChange }: { onSettingsSaved?: () => void; onDefaultModelChange?: (model: string) => void }) {
   const {
     defaultModel,
     providerConfigs,
@@ -13,7 +13,7 @@ export function LLMSettings({ onSettingsSaved }: { onSettingsSaved?: () => void 
     setDefaultModel,
     updateProviderConfig,
     toggleModel,
-  } = useLLMConfig(onSettingsSaved)
+  } = useLLMConfig(onSettingsSaved, onDefaultModelChange)
 
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
 

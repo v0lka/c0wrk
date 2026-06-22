@@ -9,19 +9,19 @@ import (
 
 	"github.com/epilande/go-devicons"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 // resolveWorkspacePath validates that filePath is within the active project
 // workspace and returns the resolved absolute path and workspace root.
-// For No Project (CHAT mode), the validation root is the No Project base
-// directory (~/.c0wrk/projects/__no_project__/) which contains both the
-// shared Workspace and per-session workspaces (<sid>/workspace/).
+// For No Project (CHAT mode), WorkspacePath is the project directory itself
+// (~/.c0wrk/projects/__no_project__/); per-session workspaces live under
+// <sid>/workspace/.
 func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
-	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
@@ -33,22 +33,15 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 		return "", "", fmt.Errorf("invalid path: %w", err)
 	}
 
-	// For No Project, validate against the No Project base directory
-	// (~/.c0wrk/projects/__no_project__/) instead of the project
-	// workspace (~/.c0wrk/projects/__no_project__/Workspace) so that
-	// per-session workspaces (<sid>/workspace/) pass.
+	// For No Project, WorkspacePath points to the project directory itself
+	// (~/.c0wrk/projects/__no_project__/) — no need for filepath.Dir.
 	//
 	// NOTE: resolveWorkspacePath does NOT enforce the structural
 	// <sid>/workspace constraint — that lives in ListDirectory,
 	// the user-facing entry point. ReadFile, GetFileIcon, and GetFileDiff
 	// receive paths returned by ListDirectory, so the trust boundary is
 	// maintained.
-	if projectID == project.NoProjectID {
-		absRoot = filepath.Dir(projectPath)
-		absRoot, err = filepath.Abs(absRoot)
-	} else {
-		absRoot, err = filepath.Abs(projectPath)
-	}
+	absRoot, err = filepath.Abs(projectPath)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid workspace path: %w", err)
 	}
@@ -99,6 +92,21 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	if activeProject == "" {
 		return "", errors.New("no active project")
 	}
+
+	// For No Project, per-session workspaces are deterministic:
+	// __no_project__/<sessionID>/workspace. When the session is not yet
+	// in memory (e.g. after a project switch where the session was not
+	// created by applySavedProjectSwitchState), derive the path from the
+	// session ID instead of falling back to the project-level directory
+	// which would expose all sessions' scaffolding.
+	if activeProjectID == project.NoProjectID && sessionID != "" {
+		wsPath := config.NoProjectSessionWorkspace(f.agentDir, sessionID)
+		if absPath, absErr := filepath.Abs(wsPath); absErr == nil {
+			return absPath, nil
+		}
+		return wsPath, nil
+	}
+
 	return activeProject, nil
 }
 
@@ -216,17 +224,9 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 		return nil, fmt.Errorf("invalid path: %w", err)
 	}
 
-	// For No Project, validate against the No Project base directory
-	// (~/.c0wrk/projects/__no_project__/) instead of the project
-	// workspace (~/.c0wrk/projects/__no_project__/Workspace) so that
-	// per-session workspaces (<sid>/workspace/) pass.
-	var absRoot string
-	if projectID == project.NoProjectID {
-		absRoot = filepath.Dir(projectPath)
-	} else {
-		absRoot = projectPath
-	}
-	absRoot, err = filepath.Abs(absRoot)
+	// For No Project, WorkspacePath is the project dir itself
+	// (~/.c0wrk/projects/__no_project__/) — use it directly.
+	absRoot, err := filepath.Abs(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("invalid workspace path: %w", err)
 	}
@@ -237,20 +237,10 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	// No Project: enforce that session paths follow the
 	// <sessionID>/workspace/... pattern. This prevents access to
 	// non-workspace subdirectories (logs/, dumps/, temp/, plans/)
-	// and to other sessions' directories. Other paths under the
-	// No Project base directory (e.g. the shared Workspace) are allowed.
+	// and to other sessions' directories.
 	if projectID == project.NoProjectID {
-		rel, relErr := filepath.Rel(absRoot, absDir)
-		if relErr == nil {
-			parts := strings.Split(filepath.ToSlash(rel), "/")
-			// Paths directly under __no_project__/ that start with
-			// a non-"Workspace" segment are session directories
-			// (UUIDs). Only allow access to workspace/ within them.
-			if len(parts) >= 1 && parts[0] != "Workspace" && parts[0] != "." {
-				if len(parts) < 2 || parts[1] != "workspace" {
-					return nil, errors.New("access denied: path under session must be <sessionID>/workspace")
-				}
-			}
+		if err := config.ValidateNoProjectSessionPath(absRoot, absDir); err != nil {
+			return nil, err
 		}
 	}
 

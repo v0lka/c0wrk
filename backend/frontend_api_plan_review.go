@@ -5,33 +5,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // WriteFile writes content to a file within the session's workspace.
-// For No Project, validates containment within the session-specific workspace
-// (~/.c0wrk/projects/__no_project__/<sessionID>/workspace/).
-// For concrete projects, validates against the project workspace directory.
 func (f *FrontendAPI) WriteFile(sessionID, path, content string) error {
 	absPath, _, err := f.resolveWorkspacePath(path)
 	if err != nil {
 		return err
 	}
 
-	// For No Project, tighten containment to the session-specific workspace.
-	if f.app != nil && f.app.Manager() != nil {
-		sessionWS, ok := f.app.Manager().GetSessionWorkspacePath(sessionID)
-		if ok {
-			sessionWS, err = filepath.Abs(sessionWS)
-			if err != nil {
-				return fmt.Errorf("invalid session workspace path: %w", err)
-			}
-			// Validate that absPath is within the session workspace.
-			rel, relErr := filepath.Rel(sessionWS, absPath)
-			if relErr != nil || strings.HasPrefix(rel, "..") {
-				return fmt.Errorf("path %q is outside session workspace %q", path, sessionWS)
-			}
-		}
+	// Validate containment within the session's workspace directory.
+	// For No Project this enforces <sessionID>/workspace/ isolation.
+	f.activeProjectMu.RLock()
+	projectID := f.activeProjectID
+	f.activeProjectMu.RUnlock()
+	if err := config.ValidateWithinSessionWorkspace(f.agentDir, projectID, sessionID, absPath); err != nil {
+		return fmt.Errorf("path %q is outside session workspace: %w", path, err)
 	}
 
 	dir := filepath.Dir(absPath)

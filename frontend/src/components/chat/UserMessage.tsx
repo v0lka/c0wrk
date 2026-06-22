@@ -45,7 +45,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
 
   if (!isPinned) {
     return (
-      <div className="flex flex-col items-end gap-1 max-w-[80%] ml-auto">
+      <div className="flex flex-col items-end gap-1 max-w-[80%] ml-auto" data-message-id={item.message.id}>
         <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5">
           <UserMessageContent content={content} />
         </div>

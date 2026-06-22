@@ -2,7 +2,10 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 // noProjectID is the well-known identifier for the "No Project" pseudo-project.
@@ -10,6 +13,15 @@ import (
 // since project/manager.go imports config) or core (to keep the dependency
 // graph lean — config is a low-level package consumed by most backend packages).
 const noProjectID = "__no_project__"
+
+// WorkspaceSegment is the directory name for workspace directories.
+// Regular projects use "Workspace" under the project dir; No Project sessions
+// use "workspace" under the per-session directory.
+const WorkspaceSegment = "Workspace"
+
+// NoProjectWorkspaceSegment is the directory name for per-session No Project
+// workspace directories (<sessionID>/workspace/).
+const NoProjectWorkspaceSegment = "workspace"
 
 // ---------------------------------------------------------------------------
 // Top-level ~/.c0wrk/ paths
@@ -73,7 +85,7 @@ func ProjectDir(agentDir, projectID string) string {
 
 // ProjectWorkspacePath returns the internal workspace directory for a project.
 func ProjectWorkspacePath(agentDir, projectID string) string {
-	return filepath.Join(ProjectDir(agentDir, projectID), "Workspace")
+	return filepath.Join(ProjectDir(agentDir, projectID), WorkspaceSegment)
 }
 
 // ProjectVectorIndexPath returns the vector index storage for a project.
@@ -123,5 +135,65 @@ func SessionPlansDir(agentDir, projectID, sessionID string) string {
 
 // NoProjectSessionWorkspace returns the isolated workspace for a No-Project session.
 func NoProjectSessionWorkspace(agentDir, sessionID string) string {
-	return filepath.Join(ProjectDir(agentDir, noProjectID), sessionID, "workspace")
+	return filepath.Join(ProjectDir(agentDir, noProjectID), sessionID, NoProjectWorkspaceSegment)
+}
+
+// SessionWorkspaceRoot returns the workspace root directory for a session.
+// For regular projects this is the project workspace; for No Project it is
+// the isolated per-session workspace (<sessionID>/workspace/).
+func SessionWorkspaceRoot(agentDir, projectID, sessionID string) string {
+	if projectID == noProjectID {
+		return NoProjectSessionWorkspace(agentDir, sessionID)
+	}
+	return ProjectWorkspacePath(agentDir, projectID)
+}
+
+// ValidateWithinSessionWorkspace checks that absPath is contained within
+// the session's workspace directory. For No Project sessions this enforces
+// the <sessionID>/workspace/ isolation boundary.
+//
+// Existing paths are resolved via EvalSymlinks before comparison to prevent
+// symlink-based escapes. Paths that don't exist on disk (e.g. when validating
+// a file write destination) use the raw path — there are no symlinks to
+// resolve, and the Rel-based containment check provides the baseline guard.
+func ValidateWithinSessionWorkspace(agentDir, projectID, sessionID, absPath string) error {
+	wsRoot := SessionWorkspaceRoot(agentDir, projectID, sessionID)
+	rel, err := filepath.Rel(resolveSymlinksIfExists(wsRoot), resolveSymlinksIfExists(absPath))
+	if err != nil {
+		return fmt.Errorf("cannot resolve path relative to workspace: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("path %q is outside session workspace %q", absPath, wsRoot)
+	}
+	return nil
+}
+
+// resolveSymlinksIfExists resolves symlinks in path when the path exists
+// on disk, falling back to the raw cleaned path otherwise (no symlinks to
+// resolve). Errors from EvalSymlinks on missing paths are silently ignored;
+// the caller's Rel-based containment check is the primary defense.
+func resolveSymlinksIfExists(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+// ValidateNoProjectSessionPath checks that absDir is either the No Project
+// project directory itself or a <sessionID>/workspace/... subdirectory.
+// Returns an error if absDir falls outside the allowed No Project tree.
+func ValidateNoProjectSessionPath(projectDir, absDir string) error {
+	rel, err := filepath.Rel(projectDir, absDir)
+	if err != nil {
+		return fmt.Errorf("cannot resolve path relative to No Project dir: %w", err)
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	// Paths directly under the project dir (UUID session directories)
+	// must follow the <sessionID>/workspace/... pattern.
+	if len(parts) >= 1 && parts[0] != "." {
+		if len(parts) < 2 || parts[1] != NoProjectWorkspaceSegment {
+			return errors.New("access denied: path under session must be <sessionID>/workspace")
+		}
+	}
+	return nil
 }

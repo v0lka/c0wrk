@@ -65,7 +65,7 @@ func TestProjectDir(t *testing.T) {
 
 func TestProjectWorkspacePath(t *testing.T) {
 	got := ProjectWorkspacePath(testAgentDir, "proj-123")
-	want := filepath.Join(testAgentDir, "projects", "proj-123", "Workspace")
+	want := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
 	if got != want {
 		t.Errorf("ProjectWorkspacePath: got %q, want %q", got, want)
 	}
@@ -129,8 +129,55 @@ func TestSessionPlansDir(t *testing.T) {
 
 func TestNoProjectSessionWorkspace(t *testing.T) {
 	got := NoProjectSessionWorkspace(testAgentDir, "sess-456")
-	want := filepath.Join(testAgentDir, "projects", noProjectID, "sess-456", "workspace")
+	want := filepath.Join(testAgentDir, "projects", noProjectID, "sess-456", NoProjectWorkspaceSegment)
 	if got != want {
 		t.Errorf("NoProjectSessionWorkspace: got %q, want %q", got, want)
 	}
+}
+
+func TestSessionWorkspaceRoot(t *testing.T) {
+	t.Run("regular project", func(t *testing.T) {
+		got := SessionWorkspaceRoot(testAgentDir, "proj-1", "sess-1")
+		want := filepath.Join(testAgentDir, "projects", "proj-1", WorkspaceSegment)
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("no project", func(t *testing.T) {
+		got := SessionWorkspaceRoot(testAgentDir, noProjectID, "sess-1")
+		want := filepath.Join(testAgentDir, "projects", noProjectID, "sess-1", NoProjectWorkspaceSegment)
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
+func TestValidateWithinSessionWorkspace(t *testing.T) {
+	t.Run("path within session workspace", func(t *testing.T) {
+		wsRoot := SessionWorkspaceRoot(testAgentDir, noProjectID, "sess-1")
+		absPath := filepath.Join(wsRoot, "file.txt")
+		if err := ValidateWithinSessionWorkspace(testAgentDir, noProjectID, "sess-1", absPath); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+	t.Run("path outside session workspace", func(t *testing.T) {
+		wsRoot := SessionWorkspaceRoot(testAgentDir, noProjectID, "sess-1")
+		absPath := filepath.Join(wsRoot, "..", "sess-2", NoProjectWorkspaceSegment, "file.txt")
+		if err := ValidateWithinSessionWorkspace(testAgentDir, noProjectID, "sess-1", absPath); err == nil {
+			t.Error("expected error for path outside session workspace")
+		}
+	})
+	t.Run("path to other session logs", func(t *testing.T) {
+		absPath := filepath.Join(testAgentDir, "projects", noProjectID, "sess-1", "logs", "session.log")
+		if err := ValidateWithinSessionWorkspace(testAgentDir, noProjectID, "sess-1", absPath); err == nil {
+			t.Error("expected error for path to session logs")
+		}
+	})
+	t.Run("regular project validates against project workspace", func(t *testing.T) {
+		wsRoot := SessionWorkspaceRoot(testAgentDir, "proj-1", "sess-1")
+		absPath := filepath.Join(wsRoot, "file.txt")
+		if err := ValidateWithinSessionWorkspace(testAgentDir, "proj-1", "sess-1", absPath); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
 }

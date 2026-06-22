@@ -36,7 +36,7 @@ function toProviderConfig(p: ConfigProviderFull): ProviderConfig {
  * Manages LLM config state: loading, default model, per-provider config, and model toggling.
  * Persistence is delegated to useLLMConfigSave (fixes #1, #7, #8).
  */
-export function useLLMConfig(onSettingsSaved?: () => void): UseLLMConfigResult {
+export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?: (model: string) => void): UseLLMConfigResult {
     const [defaultModel, setDefaultModelState] = useState('')
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
     const [isLoading, setIsLoading] = useState(true)
@@ -75,8 +75,9 @@ export function useLLMConfig(onSettingsSaved?: () => void): UseLLMConfigResult {
 
     const setDefaultModel = useCallback((model: string) => {
         setDefaultModelState(model)
+        onDefaultModelChange?.(model)
         debouncedSave(model, configsRef.current)
-    }, [debouncedSave])
+    }, [debouncedSave, onDefaultModelChange])
 
     const updateProviderConfig = useCallback((provider: string, updates: Partial<ProviderConfig>) => {
         setProviderConfigs((prev) => {

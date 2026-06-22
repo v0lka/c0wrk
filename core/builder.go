@@ -177,16 +177,21 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 }
 
 // waitReady blocks until async initialization completes or the context is cancelled.
+// Unlike WaitReady, this does NOT return initErr — it only waits for the init
+// goroutine to finish. Callers that need the cached router (RebuildRouter,
+// RebuildJudge, Build) should proceed with their own logic; Build constructs a
+// fresh per-session router anyway, and RebuildRouter clears initErr on success.
 func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
 	select {
 	case <-b.initDone:
-		return b.initErr
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
 // WaitReady blocks until async initialization completes or the context is cancelled.
+// Returns the init error if the initial LLM router setup failed.
 // Exported for use by the backend package.
 //
 // IMPORTANT: A nil return only guarantees the LLM router initialized successfully.
@@ -194,7 +199,12 @@ func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
 // tools are required. Gateway failures are intentionally non-fatal so the
 // orchestrator can still operate with built-in tools when MCP servers are unavailable.
 func (b *OrchestratorBuilder) WaitReady(ctx context.Context) error {
-	return b.waitReady(ctx)
+	select {
+	case <-b.initDone:
+		return b.initErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ToolRegistry returns the shared tool registry. The registry is set once during
@@ -390,6 +400,8 @@ func (b *OrchestratorBuilder) Build(
 
 // RebuildRouter creates a new LLM router from the given config and caches it.
 // This is called when LLM settings change at runtime.
+// On success, clears initErr so that subsequent Build calls (session creation)
+// can proceed even if the initial startup initialization failed.
 func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -403,6 +415,7 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	b.mu.Lock()
 	b.llmRouter = llmRouter
 	b.modelRegistry = modelReg
+	b.initErr = nil
 	b.mu.Unlock()
 	return nil
 }

@@ -83,10 +83,10 @@ backend/workspace.StartWatcher(projectPath)
       └─ Frontend: fileTreeStore refreshes affected subtree
 ```
 
-File watching is enabled for No Project using the No Project base directory
-(`__no_project__/`) as the watcher root, so that per-session workspaces
-(`__no_project__/sessions/<uuid>/Workspace/`) fall within the watched tree.
-Git operations and vector indexing remain skipped.
+File watching is enabled for No Project using the active session's
+workspace directory (`__no_project__/<sessionID>/workspace/`) as the
+watcher root (falling back to the project base directory when no
+session exists). Git operations and vector indexing remain skipped.
 
 ### Git Integration
 
@@ -159,7 +159,7 @@ Filename search is available via the `glob` built-in tool (`sdk/tools/builtins/g
 - Missing `git` binary is a fatal startup condition, never a runtime surprise
 - ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path
 - Vector search RPC returns empty results (not an error) if invoked before the embedder is ready
-- No Project: git operations and vector indexing are skipped (deactivated at the FrontendAPI layer). File watching uses the No Project base directory (`__no_project__/`) as root so per-session workspaces are covered.
+- No Project: git operations and vector indexing are skipped (deactivated at the FrontendAPI layer). File watching is scoped to the active session's workspace directory (`__no_project__/<sessionID>/workspace/`), falling back to the project base directory when no session exists.
 - No Project: git status and diff always return empty (no git process spawned)
 - No Project: vector search never returns results (indexer is never started, semantic_search tool is disabled anyway)
 

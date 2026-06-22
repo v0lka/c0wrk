@@ -31,6 +31,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     hasContent,
     isOptimizing,
     optimizeError,
+    sendError,
     handleSend,
     handleOptimize,
     cancel,
@@ -144,6 +145,15 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
               role="alert"
             >
               {optimizeError}
+            </span>
+          )}
+          {sendError && (
+            <span
+              className="text-xs text-destructive italic mr-1 truncate max-w-[200px]"
+              title={sendError}
+              role="alert"
+            >
+              {sendError}
             </span>
           )}
           <Button

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/llm"
@@ -186,6 +187,32 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 
 	// Clear any config load errors since settings are now valid
 	f.configLoadErrors = nil
+
+	// Ensure No Project exists now that the app is usable.
+	// On a clean first run this is the first time the pseudo-project
+	// is created — it was deferred during startup to avoid provisioning
+	// infrastructure before configuration validation.
+	//
+	// Guard on a non-empty default model: during initial LLM setup the
+	// frontend may debounce-save partial edits before the user has selected
+	// a model. Creating No Project and switching on every keystroke would
+	// disrupt the file panel while the settings dialog is still open.
+	if f.projectManager != nil && f.config.LLM.DefaultModel != "" {
+		if _, err := f.projectManager.EnsureNoProject(); err != nil {
+			f.log().Warn("failed to ensure No Project after config update", "error", err)
+		}
+		// Always switch to No Project and re-emit the project list after
+		// LLM config is saved, regardless of whether No Project was just
+		// created or already existed from a previous run.
+		if swErr := f.SwitchProject(project.NoProjectID); swErr != nil {
+			f.log().Warn("failed to switch to No Project after config update", "error", swErr)
+		}
+		if projects, pErr := f.projectManager.ListProjects(); pErr == nil {
+			f.emitEvent(EventBackendReady, projects)
+		} else {
+			f.log().Warn("failed to list projects after config update", "error", pErr)
+		}
+	}
 
 	// Rebuild judge and LLM router via the backend builder so new sessions
 	// use the updated provider immediately.

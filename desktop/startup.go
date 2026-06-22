@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -137,10 +138,9 @@ func (a *App) Startup(ctx context.Context) {
 	var projectMgr *project.Manager
 	if projStore != nil {
 		projectMgr = project.NewManager(projStore, agentDir)
-		// Ensure the "No Project" pseudo-project always exists.
-		if err := projectMgr.EnsureNoProject(); err != nil {
-			log.Warn("failed to ensure No Project", "error", err)
-		}
+		// No Project is deferred until after LLM config validation (Phase 5).
+		// On a clean first run, we must not create infrastructure before
+		// verifying that the app is usable.
 	}
 	cachedProjects := a.preloadProjectsAndSessions(projectMgr, sessStore, log)
 	log.Info("startup phase complete", "phase", "preload", "elapsed_ms", time.Since(startTime).Milliseconds())
@@ -196,8 +196,46 @@ func (a *App) Startup(ctx context.Context) {
 
 	a.wireWailsEventListeners(log, uiEmitFunc)
 
+	// ── Session restoration resolver ─────────────────────────────────
+	// Enable lazy session restoration from the database by wiring a
+	// project resolver that maps project IDs to workspace paths. Without
+	// this, sessions created in previous launches cannot be restored on
+	// demand, and GetSessionWorkspace falls back to the project-level
+	// directory which is incorrect for No Project (per-session isolation).
+	if projectMgr != nil {
+		application.Manager().SetProjectResolver(func(projectID string) (string, error) {
+			p, err := projectMgr.GetProject(projectID)
+			if err != nil {
+				return "", fmt.Errorf("resolving project %s: %w", projectID, err)
+			}
+			if p == nil {
+				return "", fmt.Errorf("project not found: %s", projectID)
+			}
+			return p.WorkspacePath, nil
+		})
+	}
+
+	// ── Ensure No Project (only when LLM is configured) ──────────────
+	// On a clean first run with no config, we must not create projects
+	// or sessions — the frontend will show the settings dialog instead.
+	if cfg.LLM.DefaultModel != "" && projectMgr != nil {
+		created, err := projectMgr.EnsureNoProject()
+		if err != nil {
+			log.Warn("failed to ensure No Project", "error", err)
+		} else if created {
+			// Refresh cached list so emitBackendReady includes No Project.
+			if projects, pErr := projectMgr.ListProjects(); pErr == nil {
+				cachedProjects = projects
+			} else {
+				log.Warn("failed to refresh project list after EnsureNoProject", "error", pErr)
+			}
+		}
+	}
+
 	// ── EventBackendReady ────────────────────────────────────────────
-	a.emitBackendReady(cachedProjects, projectMgr, log)
+	// filterNoProject=true delegates No Project stripping to emitBackendReady
+	// when LLM is unconfigured.
+	a.emitBackendReady(cachedProjects, projectMgr, cfg.LLM.DefaultModel == "", log)
 	log.Info("startup complete \u2014 backend ready", "total_elapsed_ms", time.Since(startTime).Milliseconds())
 
 	// Store vector manager pointer for Shutdown fallback check (W3).

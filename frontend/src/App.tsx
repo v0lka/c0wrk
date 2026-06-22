@@ -11,17 +11,18 @@ import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import type { ToolManagerToolInfo } from '@/types/events'
-import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStartData } from '@/types/events'
+import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
+import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStartData, isToolManagerProgressData } from '@/types/events'
 import type { StartupError, RuntimeError } from '@/types/events'
 
 type AppPhase = 'splash' | 'waiting_ready' | 'main'
 
 function App() {
-  const [startupError, setStartupError] = useState<StartupError | null>(null)
   const [runtimeError, setRuntimeError] = useState<RuntimeError | null>(null)
+  const [startupError, setStartupError] = useState<StartupError | null>(null)
   const [phase, setPhase] = useState<AppPhase>('splash')
   const [splashTools, setSplashTools] = useState<readonly ToolManagerToolInfo[] | null>(null)
+  const [progressMap, setProgressMap] = useState<Map<string, ToolManagerProgressData>>(new Map())
   const activeSessionId = useSessionStore(s => s.activeSessionId)
 
   // Wire loaders — always run regardless of phase.
@@ -37,6 +38,32 @@ function App() {
       if (!isToolManagerStartData(data)) return
       setSplashTools(data.tools)
       setPhase('splash')
+    })
+  }, [])
+
+  // Listen for tool_manager:progress — subscribed at App level so it's
+  // active before ToolInstallSplash mounts, preventing lost events.
+  // Also auto-derives the tool list if tool_manager:start was lost for any
+  // reason (e.g. window-visibility race with Wails event delivery).
+  useEffect(() => {
+    return subscribe('tool_manager:progress', (data: unknown) => {
+      if (!isToolManagerProgressData(data)) return
+      setProgressMap(prev => {
+        const next = new Map(prev)
+        next.set(data.tool, data)
+        return next
+      })
+      // If we got progress but tool_manager:start was lost, auto-populate
+      // the tool list from the progress map so the splash renders.
+      setSplashTools(prev => {
+        // If we already have the proper list from tool_manager:start
+        // (tools have real version strings), keep it.
+        if (prev !== null && prev.length > 0 && prev[0]?.version !== '') return prev
+        // Build incrementally from progress events; deduplicate by name.
+        const existing = new Set((prev ?? []).map(t => t.name))
+        if (existing.has(data.tool)) return (prev ?? []) as readonly ToolManagerToolInfo[]
+        return [...(prev ?? []), { name: data.tool, version: '' }] as readonly ToolManagerToolInfo[]
+      })
     })
   }, [])
 
@@ -93,19 +120,19 @@ function App() {
     })
   }, [])
 
-  const dismissStartupError = useCallback(() => {
-    setStartupError(null)
-  }, [])
-
   const dismissRuntimeError = useCallback(() => {
     setRuntimeError(null)
+  }, [])
+
+  const dismissStartupError = useCallback(() => {
+    setStartupError(null)
   }, [])
 
   // ── Render ─────────────────────────────────────────────────────────────
 
   // Phase: splash (tool install in progress).
   if (phase === 'splash' && splashTools !== null) {
-    return <ToolInstallSplash tools={splashTools} />
+    return <ToolInstallSplash tools={splashTools} progressMap={progressMap} />
   }
 
   // Phase: splash but no tool_manager:start received yet — show minimal spinner.
@@ -143,6 +170,7 @@ function App() {
               <button
                 onClick={dismissStartupError}
                 className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
+                aria-label="Dismiss"
               >
                 <X className="h-4 w-4" />
               </button>

@@ -1,8 +1,6 @@
-import { useEffect, useState, useMemo } from 'react'
-import { subscribe } from '@/api/runtime'
+import { useMemo } from 'react'
 import { cn } from '@/lib/utils'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
-import { isToolManagerProgressData } from '@/types/events'
 import { Download, PackageOpen } from 'lucide-react'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -33,15 +31,18 @@ const STAGE_LABELS: Record<string, string> = {
 }
 
 function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progress?: ToolManagerProgressData }) {
-  const active = !!progress && progress.bytes_total > 0
-  const done = !progress || (progress.bytes_done > 0 && progress.bytes_done >= progress.bytes_total)
+  const hasProgress = progress !== undefined
+  const done = hasProgress && progress.bytes_total > 0 && progress.bytes_done >= progress.bytes_total
+  const active = hasProgress && progress.bytes_total > 0 && !done
 
   return (
     <div className="flex items-center gap-3 py-1.5">
       {/* Icon */}
-      {done
-        ? <PackageOpen className="size-4 text-success shrink-0" />
-        : <Download className="size-4 text-primary shrink-0 animate-pulse" />
+      {!hasProgress
+        ? <Download className="size-4 text-muted-foreground/50 shrink-0" />
+        : done
+          ? <PackageOpen className="size-4 text-success shrink-0" />
+          : <Download className="size-4 text-primary shrink-0 animate-pulse" />
       }
 
       {/* Tool name + version */}
@@ -50,9 +51,11 @@ function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progre
           <span className="text-sm font-medium text-foreground truncate">
             {tool.name}
           </span>
-          <span className="text-xs text-muted-foreground shrink-0">
-            v{tool.version}
-          </span>
+          {tool.version && (
+            <span className="text-xs text-muted-foreground shrink-0">
+              v{tool.version}
+            </span>
+          )}
         </div>
 
         {/* Stage & bytes */}
@@ -84,11 +87,14 @@ function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progre
             </span>
           </>
         )}
-        {done && (
+        {done && !active && (
           <span className="text-xs text-success ml-auto">Done</span>
         )}
-        {!progress && (
+        {!hasProgress && (
           <span className="text-xs text-muted-foreground ml-auto">Pending</span>
+        )}
+        {hasProgress && !done && !active && (
+          <span className="text-xs text-muted-foreground ml-auto">Starting…</span>
         )}
       </div>
     </div>
@@ -97,22 +103,10 @@ function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progre
 
 // ── Main component ──────────────────────────────────────────────────────────
 
-export function ToolInstallSplash({ tools }: { tools: readonly ToolManagerToolInfo[] }) {
-  const [progressMap, setProgressMap] = useState<Map<string, ToolManagerProgressData>>(new Map())
-
-  // Listen for progress events.
-  useEffect(() => {
-    const unsub = subscribe('tool_manager:progress', (data: unknown) => {
-      if (!isToolManagerProgressData(data)) return
-      setProgressMap(prev => {
-        const next = new Map(prev)
-        next.set(data.tool, data)
-        return next
-      })
-    })
-    return unsub
-  }, [])
-
+export function ToolInstallSplash({ tools, progressMap }: {
+  tools: readonly ToolManagerToolInfo[]
+  progressMap: Map<string, ToolManagerProgressData>
+}) {
   // Memoize the tools list in display order.
   const toolList = useMemo(() => tools, [tools])
 

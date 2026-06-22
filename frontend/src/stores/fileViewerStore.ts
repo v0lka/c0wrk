@@ -52,7 +52,7 @@ const VIEWER_MAX = 900
 
 function getDefaultViewerWidth(): number {
   const screenWidth = typeof window !== 'undefined' ? window.innerWidth : 1440
-  return Math.max(VIEWER_MIN, Math.min(VIEWER_MAX, Math.round(screenWidth * 3 / 6)))
+  return Math.max(VIEWER_MIN, Math.min(VIEWER_MAX, Math.round(screenWidth * 2 / 5)))
 }
 
 // --- Store ---
@@ -234,9 +234,14 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
     }),
     {
       name: 'c0wrk-file-viewer',
-      version: 1,
-      // Bump version and implement migration when adding/removing/renaming persisted fields.
-      migrate: (persistedState, _version) => persistedState,
+      version: 2,
+      migrate: (persistedState, _version) => {
+        const state = persistedState as Partial<FileViewerState & FileViewerActions>
+        if (_version < 2) {
+          state.width = getDefaultViewerWidth()
+        }
+        return state as FileViewerState & FileViewerActions
+      },
       partialize: (state) => ({
         openTabs: state.openTabs,
         activeFile: state.activeFile,

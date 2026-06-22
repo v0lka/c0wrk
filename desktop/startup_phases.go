@@ -150,7 +150,10 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 			"tools": []map[string]string{},
 		})
 	} else if len(needed) > 0 {
-		// Tools need installing — show the window with a splash screen.
+		// Emit BEFORE WindowShow so splash data is queued when the
+		// frontend mounts. App.tsx auto-populates splashTools from
+		// tool_manager:progress events as a fallback if this event
+		// is missed due to a mount-timing race.
 		toolNames := make([]map[string]string, len(needed))
 		for i, t := range needed {
 			toolNames[i] = map[string]string{"name": t.Name, "version": t.Version}
@@ -522,29 +525,48 @@ func (a *App) buildFrontendAPI(
 // WindowShow is called unconditionally — when the window was already shown
 // for tool installation this is a no-op; when no tools were needed this is
 // the first time the window becomes visible.
-func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr *project.Manager, log *slog.Logger) {
+//
+// filterNoProject strips the No Project pseudo-project from the emitted list
+// regardless of whether projects come from cache or a fresh query.
+// This is used when LLM is unconfigured to prevent the frontend from
+// auto-loading No Project before the settings dialog is shown.
+func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr *project.Manager, filterNoProject bool, log *slog.Logger) {
 	// When the window is still hidden (no tools needed installing), show it now.
 	// WindowShow is idempotent: if already visible (tools were installed), it's a no-op.
 	// Guard against nil ctx in tests (no Wails lifecycle).
 	if a.ctx != nil {
 		wailsRuntime.WindowShow(a.ctx)
 	}
+
+	// Collect projects from cache or fresh query, applying No Project filter if
+	// requested.
+	var projects []project.ProjectInfo
 	switch {
 	case len(cachedProjects) > 0:
-		a.emit(backend.EventBackendReady, cachedProjects)
+		projects = cachedProjects
 	case projectMgr != nil:
-		projects, err := projectMgr.ListProjects()
+		var err error
+		projects, err = projectMgr.ListProjects()
 		if err != nil {
 			log.Warn("failed to load projects for backend:ready", "error", err)
 			a.emit(backend.EventBackendReady)
 			return
 		}
-		if len(projects) > 0 {
-			a.emit(backend.EventBackendReady, projects)
-		} else {
-			a.emit(backend.EventBackendReady)
+	}
+
+	if filterNoProject {
+		filtered := make([]project.ProjectInfo, 0, len(projects))
+		for _, p := range projects {
+			if p.ID != project.NoProjectID {
+				filtered = append(filtered, p)
+			}
 		}
-	default:
+		projects = filtered
+	}
+
+	if len(projects) > 0 {
+		a.emit(backend.EventBackendReady, projects)
+	} else {
 		a.emit(backend.EventBackendReady)
 	}
 }

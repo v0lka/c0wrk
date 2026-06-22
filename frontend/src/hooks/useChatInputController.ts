@@ -9,6 +9,7 @@ import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
 import { extractSkillRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
+import { createSession } from '@/api/sessions'
 import { logger } from '@/lib/logger'
 
 // useChatInputController owns the editor lifecycle, send/optimize state and
@@ -25,6 +26,7 @@ export interface ChatInputController {
   hasContent: boolean
   isOptimizing: boolean
   optimizeError: string | null
+  sendError: string | null
   showCancel: boolean
   isInputDisabled: boolean
   isNoProject: boolean
@@ -62,6 +64,7 @@ export interface ChatInputController {
 export function useChatInputController(): ChatInputController {
   const [isOptimizing, setIsOptimizing] = useState(false)
   const [optimizeError, setOptimizeError] = useState<string | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [hasContent, setHasContent] = useState(false)
 
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
@@ -72,10 +75,30 @@ export function useChatInputController(): ChatInputController {
   const height = useInputModeStore((s) => s.height)
   const isExpanded = useInputModeStore((s) => s.isExpanded)
   const pendingInsertion = useInputModeStore((s) => s.pendingInsertion)
-  const setMode = useInputModeStore((s) => s.setMode)
+  const storeSetMode = useInputModeStore((s) => s.setMode)
   const setHeight = useInputModeStore((s) => s.setHeight)
   const toggleExpanded = useInputModeStore((s) => s.toggleExpanded)
   const clearPendingInsertion = useInputModeStore((s) => s.clearPendingInsertion)
+
+  // Wrapped setMode that implicitly creates a session when switching to
+  // terminal mode so the user never sees "Start a conversation…".
+  const setMode = useCallback(async (newMode: 'chat' | 'terminal') => {
+    if (newMode === 'terminal') {
+      const sid = useSessionStore.getState().activeSessionId
+      if (!sid) {
+        try {
+          const newSession = await createSession()
+          useSessionStore.getState().addSession(newSession)
+          useSessionStore.getState().setActiveSessionId(newSession.id)
+        } catch (err) {
+          logger.error('Failed to implicitly create session for terminal:', err)
+          setSendError('Failed to create session — please create one first.')
+          return // stay in current mode
+        }
+      }
+    }
+    storeSetMode(newMode)
+  }, [storeSetMode])
 
   const executionMode = useExecutionModeStore((s) => s.mode)
   const setExecutionMode = useExecutionModeStore((s) => s.setMode)
@@ -120,9 +143,12 @@ export function useChatInputController(): ChatInputController {
     if (!messageText) return
     const skills = extractSkillRefs(messageText)
     editor.clear()
+    setSendError(null)
     try {
       await send(messageText, skills)
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setSendError(message)
       editor.setText(messageText)
     }
   }, [editor, send])
@@ -156,6 +182,13 @@ export function useChatInputController(): ChatInputController {
     return () => window.clearTimeout(handle)
   }, [optimizeError])
 
+  // Auto-dismiss the send error after a few seconds.
+  useEffect(() => {
+    if (!sendError) return
+    const handle = window.setTimeout(() => setSendError(null), 6000)
+    return () => window.clearTimeout(handle)
+  }, [sendError])
+
   // Refocus the editor when switching back to chat mode.
   useEffect(() => {
     if (mode === 'chat') {
@@ -168,6 +201,7 @@ export function useChatInputController(): ChatInputController {
     hasContent,
     isOptimizing,
     optimizeError,
+    sendError,
     showCancel,
     isInputDisabled,
     isNoProject,

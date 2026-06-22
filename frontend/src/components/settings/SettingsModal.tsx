@@ -13,8 +13,9 @@ import { LLMSettings } from './LLMSettings'
 import { SearchSettings } from './SearchSettings'
 import { MCPSettings } from './MCPSettings'
 import { SecuritySettings } from './SecuritySettings'
-import { Settings, Brain, Search, Shield, Info, Server } from 'lucide-react'
+import { Settings, Brain, Search, Shield, Info, Server, AlertTriangle, X } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { getConfig } from '@/api/config'
 
 export function SettingsModal() {
   const open = useSettingsStore((s) => s.open)
@@ -22,25 +23,87 @@ export function SettingsModal() {
   const closeSettings = useSettingsStore((s) => s.closeSettings)
   const setActiveTab = useSettingsStore((s) => s.setActiveTab)
   const [bannerRefreshKey, setBannerRefreshKey] = useState(0)
+  const [closeBlocked, setCloseBlocked] = useState(false)
+  const [checkingClose, setCheckingClose] = useState(false)
+  const [currentDefaultModel, setCurrentDefaultModel] = useState('')
+  const checkingRef = useRef(false)
   const prevOpenRef = useRef(open)
 
   useEffect(() => {
     if (open && !prevOpenRef.current) {
       setBannerRefreshKey((k) => k + 1)
+      setCloseBlocked(false)
     }
     prevOpenRef.current = open
   }, [open])
 
-  const handleSettingsSaved = useCallback(() => {
-    setBannerRefreshKey((k) => k + 1)
+  const handleDefaultModelChange = useCallback((model: string) => {
+    setCurrentDefaultModel(model)
+    if (model) {
+      setCloseBlocked(false)
+    }
   }, [])
 
+  const handleSettingsSaved = useCallback(() => {
+    setBannerRefreshKey((k) => k + 1)
+    setCloseBlocked(false)
+  }, [])
+
+  const handleOpenChange = useCallback(async (isOpen: boolean) => {
+    if (!isOpen) {
+      // Fast path: if local UI state already has a model, allow close immediately.
+      if (currentDefaultModel) {
+        setCloseBlocked(false)
+        closeSettings()
+        return
+      }
+      // Guard against concurrent close checks.
+      if (checkingRef.current) return
+      checkingRef.current = true
+      setCheckingClose(true)
+      try {
+        const cfg = await getConfig()
+        if (!cfg?.llm?.default_model) {
+          setCloseBlocked(true)
+          setActiveTab('llm')
+          return
+        }
+      } catch {
+        // If config is unavailable, allow close.
+      } finally {
+        checkingRef.current = false
+        setCheckingClose(false)
+      }
+      setCloseBlocked(false)
+      closeSettings()
+    }
+  }, [closeSettings, currentDefaultModel, setActiveTab])
+
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) closeSettings() }}>
-      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden">
-        <DialogHeader>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden" showCloseButton={false}>
+        <DialogHeader className="flex flex-row items-center justify-between">
           <DialogTitle>Settings</DialogTitle>
+          <button
+            onClick={() => handleOpenChange(false)}
+            disabled={checkingClose}
+            className="rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:outline-none disabled:opacity-50"
+            aria-label="Close"
+          >
+            {checkingClose ? (
+              <div className="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            ) : (
+              <X className="size-4" />
+            )}
+          </button>
         </DialogHeader>
+
+        {closeBlocked && (
+          <div className="flex items-start gap-2 rounded-md bg-destructive/10 border border-destructive/20 p-3 text-sm">
+            <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
+            <span className="text-destructive font-medium">Default model is not configured.</span>
+          </div>
+        )}
 
         <Tabs
           value={activeTab}
@@ -86,7 +149,7 @@ export function SettingsModal() {
           </TabsContent>
 
           <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0">
-            <LLMSettings onSettingsSaved={handleSettingsSaved} />
+            <LLMSettings onSettingsSaved={handleSettingsSaved} onDefaultModelChange={handleDefaultModelChange} />
           </TabsContent>
 
           <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0">

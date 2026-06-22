@@ -76,20 +76,52 @@ export function ChatArea() {
 
   const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
 
-  // Find last user message for pinning and filter it from the main list (memoized)
-  const { lastUserItem, filteredItems } = useMemo(() => {
-    let last: Extract<typeof displayItems[number], { kind: 'user' }> | null = null
+  // Find last user message for conditional pinning (message stays in chat history)
+  const lastUserItem = useMemo(() => {
     for (let i = displayItems.length - 1; i >= 0; i--) {
       if (displayItems[i]!.kind === 'user') {
-        last = displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
-        break
+        return displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
       }
     }
-    const filtered = last
-      ? displayItems.filter(item => !(item.kind === 'user' && 'message' in item && item.message.id === last!.message.id))
-      : displayItems
-    return { lastUserItem: last, filteredItems: filtered }
+    return null
   }, [displayItems])
+
+  // IntersectionObserver ref for stable cleanup across effect re-runs
+  const observerRef = useRef<IntersectionObserver | null>(null)
+
+  // Track whether the last user message is visible in the scroll viewport
+  const [isLastUserVisible, setIsLastUserVisible] = useState(false)
+  const lastUserMessageId = lastUserItem?.message.id
+
+  useEffect(() => {
+    if (!lastUserMessageId || !scrollRef.current) {
+      setIsLastUserVisible(true)
+      return
+    }
+
+    const viewport = scrollRef.current
+    const raf = requestAnimationFrame(() => {
+      const element = viewport.querySelector(`[data-message-id="${lastUserMessageId}"]`)
+      if (!element) {
+        setIsLastUserVisible(true)
+        return
+      }
+
+      const observer = new IntersectionObserver(
+        ([entry]) => {
+          setIsLastUserVisible(entry?.isIntersecting ?? true)
+        },
+        { root: viewport, threshold: 0 },
+      )
+      observer.observe(element)
+      observerRef.current = observer
+    })
+
+    return () => {
+      cancelAnimationFrame(raf)
+      observerRef.current?.disconnect()
+    }
+  }, [lastUserMessageId])
 
   if (!activeSessionId) {
     return (
@@ -97,7 +129,6 @@ export function ChatArea() {
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
           <div className="flex flex-col items-center gap-3">
             <MessageCircle className="h-12 w-12 opacity-20" />
-            <p>Send a message to start a new conversation</p>
           </div>
         </div>
         <ChatInput />
@@ -130,15 +161,15 @@ export function ChatArea() {
   return (
     <ScrollProvider>
       <div className="flex flex-1 flex-col min-h-0 bg-background" ref={containerRef}>
-        {/* Pinned last user message */}
-        {lastUserItem && (
+        {/* Pinned last user message — only when scrolled out of viewport */}
+        {lastUserItem && !isLastUserVisible && (
           <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
             <UserMessage item={lastUserItem} isPinned maxHeight={maxPinnedHeight} />
           </div>
         )}
         <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
           <div className="p-4 space-y-4 min-w-0">
-            <ChatMessageRenderer items={filteredItems} />
+            <ChatMessageRenderer items={displayItems} />
             {streamingText && (
               <ErrorBoundary fallback={<CompactErrorFallback />}>
                 <AssistantMessage content={streamingText} isStreaming />
