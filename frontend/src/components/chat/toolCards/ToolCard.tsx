@@ -38,7 +38,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
     : isCached
     ? item.toolName.replace(' (cached)', '')
     : config.extractTitle(item.parsedArgs, item.args)
-  const hint = (isCached || isBatched) ? undefined : config.extractHint?.(item.parsedArgs, item.args)
+  const hint = isCached ? undefined : config.extractHint?.(item.parsedArgs, item.args)
   const Icon = config.icon
   const Body = config.Body
 
@@ -62,10 +62,11 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
       : null
   , [isBatched])
 
-  // Determine if title references a file path (for clickable navigation)
-  // Cached/batched tools never get file links — we don't have the original path.
-  const isFileTool = !isCached && !isBatched && ['write_file', 'edit_file', 'read_file', 'read_skill_resource',
-    'create_directory', 'delete_file', 'delete_directory', 'list_directory'].includes(item.toolName)
+  // Cached tools never get file links — we don't have the original path.
+  // Batched tools DO carry the sub-call's own args, so file links are possible.
+  const baseToolName = isBatched ? item.toolName.replace(' (batched)', '') : isCached ? item.toolName.replace(' (cached)', '') : item.toolName
+  const isFileTool = !isCached && ['write_file', 'edit_file', 'read_file', 'read_skill_resource',
+    'create_directory', 'delete_file', 'delete_directory', 'list_directory'].includes(baseToolName)
   const filePath = hint && isFileTool ? hint : undefined
 
   const titleNode = useMemo(() => (

@@ -20,6 +20,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 - `sdk/tools/builtins/paths.go` — workspace path resolution
 - `sdk/tools/builtins/workspace.go` — workspace detection
 - `sdk/tools/builtins/netcheck.go` — network connectivity check for web tools
+- `sdk/tools/builtins/batch.go` — batch meta-tool (sequential sub-call execution intercepted at executor level)
 - `sdk/tools/coherence.go` — FileCoherenceChecker interface, FileSig, CoherenceConflict types
 - `core/tools/builtin_registration.go` — registration function + config types
 
@@ -27,7 +28,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 ### Tool Registration
 
-All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)`. Registration is ordered (earlier tools take precedence in case of name conflicts). Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`) always bypass policy checks during execution.
+All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)`. Registration is ordered (earlier tools take precedence in case of name conflicts). Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`, `batch`) always bypass policy checks during execution. `batch` is marked internal (`internalTools` map) but is intercepted at the executor level before reaching the registry — its policy is `always_allow` to ensure the LLM can always use the schema.
 
 ### Policy Resolution
 
@@ -98,6 +99,7 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 | `set_step_status`     | Agent     | always_allow   | no        | Update step status/checklist                       |
 | `store_fact`          | Agent     | always_allow   | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | always_allow   | no        | Search blackboard facts                            |
+| `batch`               | Agent     | always_allow   | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
 | `read_skill_resource` | Agent     | always_allow   | no        | Read skill resource files                          |
 | `tool_result_read`    | Agent     | internal       | no        | Read cached tool result fragments by hash          |
 
@@ -115,8 +117,9 @@ RegisterBuiltinTools(registry, cfg):
   8. set_step_status
   9. store_fact, search_facts
   10. tool_result_read
-  11. semantic_search (optional: needs vector search func)
-  12. ask_user (optional: needs ask_user func)
+  11. batch
+  12. semantic_search (optional: needs vector search func)
+  13. ask_user (optional: needs ask_user func)
 ```
 
 Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder` (not in `RegisterBuiltinTools`).
@@ -171,10 +174,11 @@ Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 
 ## Invariants
 
+- `batch` is intercepted at the executor level — `BatchTool.Execute()` returns an error if called directly; the executor parses the batch input and runs each sub-call through the full policy + truncation + caching pipeline sequentially, emitting each sub-call as `"<original_tool> (batched)"` via the event emitter
 - All built-in tools have static descriptors (name/description/schema don't change at runtime)
 - Tools with `PolicyUserConfirm` default ALWAYS require confirmation unless overridden by config
 - Limits are applied at tool creation time (immutable after registration); output truncation limits are centralized in the executor, not in individual tools
-- `tool_result_read` is an internal tool that bypasses policy checks and the caching layer
+- `tool_result_read` and `batch` are non-cacheable internal tools that bypass policy checks and the caching layer; `batch` is intercepted at the executor level and never reaches the registry's `Execute()` path
 - Per-tool Stage 1 truncation produces a fragmentation nudge with the SHA256 hash of the full result; the LLM uses `tool_result_read(hash, start_line, num_lines)` to retrieve fragments
 - Optional tools (semantic_search, web_search, ask_user) are only registered if their dependency func/key is provided
 - `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a managed runtime dependency provided by the tool-manager (`core/toolmanager/`), downloaded on first run to `~/.c0wrk/tools/bin/`, and PATH-prepended at startup (see ADR-010)

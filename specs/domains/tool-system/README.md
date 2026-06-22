@@ -12,6 +12,7 @@ Provides tool infrastructure for the agent: discovery, registration, policy enfo
 - `core/tools/registry.go` — core ToolRegistry (wraps SDK, adds policies/judge/hooks/symlink check)
 - `core/tools/symlink.go` — symlink detection, traversal, confirmation gating
 - `core/tools/builtin_registration.go` — RegisterBuiltinTools function
+- `sdk/tools/builtins/batch.go` — batch meta-tool (intercepted at executor level)
 - `core/tools/judge.go` — ToolJudge (LLM-based safety evaluation)
 - `core/tools/mcp/gateway.go` — MCP Gateway (dynamic tool discovery)
 - `core/toolnames.go` — tool name constants, NoProjectDisabledTools, NoProjectBashBlacklist
@@ -111,7 +112,7 @@ ToolRegistry.Execute(ctx, name, input)
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools (ask_user, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact, tool_result_read) bypass policy and judge checks, but disabled-tool and extra-bash-blacklist checks apply to all tools including internal ones
+- Internal tools (ask_user, batch, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact, tool_result_read) bypass policy and judge checks, but disabled-tool and extra-bash-blacklist checks apply to all tools including internal ones. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - The symlink gate runs before policy resolution for every non-internal tool call
 - Symlinks in workspace or temp dir that are OS-level infrastructure (e.g., macOS /tmp → /private/tmp) are filtered out and do not trigger confirmation
 - MCP tools are tagged with source `mcp`

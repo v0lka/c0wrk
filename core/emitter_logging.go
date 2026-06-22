@@ -75,9 +75,9 @@ func (l *loggingEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, s
 	l.inner.ToolCall(stepNum, callIdx, toolName, argsPreview, source)
 }
 
-func (l *loggingEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string) {
-	l.logger.Debug("executor: tool result", "stepNum", stepNum, "callIdx", callIdx, "resultLen", resultLen)
-	l.inner.ToolResult(stepNum, callIdx, resultLen, preview)
+func (l *loggingEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string, isError bool) {
+	l.logger.Debug("executor: tool result", "stepNum", stepNum, "callIdx", callIdx, "resultLen", resultLen, "isError", isError)
+	l.inner.ToolResult(stepNum, callIdx, resultLen, preview, isError)
 }
 
 func (l *loggingEmitter) StepComplete(stepNum int, duration time.Duration) {

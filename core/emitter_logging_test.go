@@ -26,7 +26,7 @@ func (s *spyEmitter) record(method string, args ...any) {
 func (s *spyEmitter) StepStart(n int)                      { s.record("StepStart", n) }
 func (s *spyEmitter) Thought(n int, c, r string)           { s.record("Thought", n, c, r) }
 func (s *spyEmitter) ToolCall(n, ci int, t, a, src string) { s.record("ToolCall", n, ci, t, a, src) }
-func (s *spyEmitter) ToolResult(n, ci, l int, p string)    { s.record("ToolResult", n, ci, l, p) }
+func (s *spyEmitter) ToolResult(n, ci, l int, p string, e bool) { s.record("ToolResult", n, ci, l, p, e) }
 func (s *spyEmitter) StepComplete(n int, d time.Duration)  { s.record("StepComplete", n, d) }
 func (s *spyEmitter) SubAgentLaunch(id, desc string)       { s.record("SubAgentLaunch", id, desc) }
 func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration) {
@@ -106,7 +106,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"StepStart", func(e Emitter) { e.StepStart(1) }, "StepStart"},
 		{"Thought", func(e Emitter) { e.Thought(1, "c", "r") }, "Thought"},
 		{"ToolCall", func(e Emitter) { e.ToolCall(1, 0, "bash", "ls", "core") }, "ToolCall"},
-		{"ToolResult", func(e Emitter) { e.ToolResult(1, 0, 100, "ok") }, "ToolResult"},
+		{"ToolResult", func(e Emitter) { e.ToolResult(1, 0, 100, "ok", false) }, "ToolResult"},
 		{"StepComplete", func(e Emitter) { e.StepComplete(1, dur) }, "StepComplete"},
 		{"SubAgentLaunch", func(e Emitter) { e.SubAgentLaunch("s1", "desc") }, "SubAgentLaunch"},
 		{"SubAgentComplete", func(e Emitter) { e.SubAgentComplete("s1", true, dur) }, "SubAgentComplete"},

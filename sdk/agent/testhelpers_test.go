@@ -210,7 +210,7 @@ func (r *recordingEvents) ToolCall(stepNum, callIdx int, toolName, argsPreview, 
 	r.record(fmt.Sprintf("ToolCall:%d:%s:%s", stepNum, toolName, source))
 }
 
-func (r *recordingEvents) ToolResult(stepNum, callIdx, resultLen int, preview string) {
+func (r *recordingEvents) ToolResult(stepNum, callIdx, resultLen int, preview string, _ bool) {
 	r.record(fmt.Sprintf("ToolResult:%d", stepNum))
 }
 

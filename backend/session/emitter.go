@@ -345,8 +345,8 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 }
 
 // ToolResult emits a tool result event.
-func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string) {
-	e.log().Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "callIdx", callIdx, "resultLen", resultLen)
+func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string, isError bool) {
+	e.log().Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "callIdx", callIdx, "resultLen", resultLen, "isError", isError)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -359,6 +359,7 @@ func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview strin
 		"call_idx":   callIdx,
 		"result_len": resultLen,
 		"result":     preview,
+		"error":      isError,
 	}
 	if toolCallID != "" {
 		data["tool_call_id"] = toolCallID

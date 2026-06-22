@@ -6,10 +6,12 @@ Executes individual plan steps via the ReAct loop (Thought → Action → Observ
 
 ## Key Files
 
-- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop)
+- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, non-cacheable tools set, batch dispatch)
+- `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception)
 - `sdk/orchestration/orchestrator.go` — SDK Orchestrator (drives DAG execution, parallel steps)
 - `core/stepconfig.go` — coreStepConfigurator (resolves per-step config)
 - `sdk/agent/events.go` — AgentEvents interface (lifecycle hooks)
+- `sdk/tools/builtins/batch.go` — batch meta-tool descriptor (intercepted at executor, never directly executed)
 
 ## Behavior
 
@@ -86,6 +88,7 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │      → Response may contain: text, tool_calls, or finish
 │   │
 │   │   ├─ 2. If tool_call:
+│   │      ├─ If batch meta-tool → processBatchTool() (see Batch Tool below)
 │   │      ├─ Inject ToolResultCache into context (for fragmentation reader)
 │   │      ├─ Execute tool via ToolExecutor.Execute(ctx, name, input)
 │   │      ├─ Set Step.IsUntrusted ← tool.IsUntrusted() || source starts with "mcp"
@@ -136,6 +139,7 @@ Config: `CircuitBreakerConfig` (thresholds per detection type).
 
 These tools are always available regardless of step's AllowedTools filter:
 
+- `batch` — execute multiple tool calls sequentially in one turn (intercepted at executor level)
 - `finish` — end step execution
 - `store_fact` — save findings to blackboard
 - `search_facts` — retrieve stored facts
@@ -168,9 +172,39 @@ Every non-infrastructure tool result is cached and truncated in two stages:
 
 - File tools (`read_file`, `write_file`, `edit_file`, `delete_file`): cache entries tagged with file path + mtime + size. On `tool_result_read`, the executor checks current file metadata against cached signature. If changed, returns an error instructing the LLM to re-read.
 - MCP tools: cache entries carry a TTL. Expired entries are evicted on access.
-- Non-cacheable tools (`tool_result_read`, `finish`, `read_step_output`, `list_step_outputs`, `store_fact`, `search_facts`, `set_step_status`, `ask_user`): excluded from both caching and Stage 1 truncation.
+- Non-cacheable tools (`batch`, `tool_result_read`, `finish`, `read_step_output`, `list_step_outputs`, `store_fact`, `search_facts`, `set_step_status`, `ask_user`): excluded from both caching and Stage 1 truncation.
 
 **Cache TTL:** `toolResultBudget.cacheTTLSeconds` (default: 300). Eviction runs on access.
+
+### Batch Tool Interception
+
+The `batch` meta-tool is intercepted at the executor level in `processBatchTool()` before it reaches the tool registry. Flow:
+
+```
+processBatchTool(ctx, action, callIdx, toolCalls, resp, thought, state, cw)
+│
+├─ Parse batch input: { calls: [{ tool, input }, ...] }
+├─ For each sub-call (subIdx):
+│   │
+│   ├─ Emit ToolCall as "<tool_name> (batched)"
+│   ├─ Circuit breaker: checkRepeatIdenticalTool, checkFruitlessResult, checkSameToolRepetition
+│   ├─ Execute sub-call through full policy pipeline: e.tools.Execute(ctx, name, input)
+│   ├─ Set IsUntrusted via e.tools.IsToolUntrusted(name)
+│   ├─ Stage 1: Per-tool truncation + ToolResultCache.Store() + fragmentation nudge
+│   ├─ Stage 2: Token-budget truncation (preserves Stage 1 nudge)
+│   ├─ Emit ToolResult
+│   └─ Pre-compaction nudge (on last sub-call only)
+│
+└─ Return actionNone (continue loop)
+```
+
+Key behaviors:
+- Errors in individual sub-calls do not abort the batch — the error is captured as the tool result and processing continues
+- Sub-calls go through the full policy + truncation + caching pipeline (same as standalone tool calls)
+- Circuit breakers (repeat, fruitless, same-tool) are checked per sub-call; if triggered, the batch aborts and returns the circuit breaker action
+- Each sub-call is emitted to the frontend with the suffix `" (batched)"` (e.g., `read_file (batched)`)
+- Only the first sub-call in the first response group carries `Thought` and `ReasoningContent`
+- The `batch` tool itself is in the `nonCacheableTools` set — its result is never cached, and the tool never reaches the registry's `Execute()` path (its `Execute()` method returns an error)
 
 ## Error Handling
 
@@ -192,6 +226,9 @@ Every non-infrastructure tool result is cached and truncated in two stages:
 - Untrusted tool output is wrapped in `<untrusted-content>` XML tags in `context.go` `buildStepMessages()` before messages are sent to the LLM
 - Every tool result from a cacheable tool is stored in ToolResultCache before truncation; the cache entry key is SHA256(toolName + full content)
 - `tool_result_read` validates cache coherence on every read: for file tools, it compares current file mtime+size with the cached signature; for MCP tools, it checks TTL expiry
+- `batch` is intercepted in `processBatchTool()` before reaching the registry; its own `Execute()` returns an error. Sub-calls within a batch go through the full policy + truncation + caching pipeline and are emitted as `"<tool_name> (batched)"`
+- The `batch` tool is marked in `nonCacheableTools`; its sub-calls are cached individually per normal tool rules
+- `batch` sub-call errors do not abort the batch — errors are captured inline and processing continues to the next sub-call
 
 ## Related Specs
 

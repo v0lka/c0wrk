@@ -24,7 +24,7 @@ var internalTools = map[string]struct{}{
 	"semantic_search":     {},
 	"set_step_status":     {},
 	"store_fact":          {},
-	"batch":               {},
+	sdktools.ToolBatch:  {},
 }
 
 // IsInternalTool returns true if the given tool name is an internal tool

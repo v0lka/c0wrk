@@ -163,7 +163,7 @@ func TestEventEmitterToolResult(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.ToolResult(2, 0, 1024, "preview content")
+	emitter.ToolResult(2, 0, 1024, "preview content", false)
 
 	if received.Type != "tool_result" {
 		t.Errorf("expected type 'tool_result', got %q", received.Type)
@@ -404,7 +404,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.StepStart(1)
 	emitter.Thought(1, "I need to think about this", "")
 	emitter.ToolCall(1, 0, "bash", "ls", "core")
-	emitter.ToolResult(1, 0, 100, "")
+	emitter.ToolResult(1, 0, 100, "", false)
 	emitter.StepComplete(1, time.Second)
 	emitter.SubAgentLaunch("step_1", "Do something")
 	emitter.SubAgentComplete("step_1", true, time.Second)
@@ -769,7 +769,7 @@ func TestEventEmitterToolCallID(t *testing.T) {
 
 	emitter := NewEventEmitter("test-session", emit)
 	emitter.ToolCall(1, 0, "bash", "ls -la", "core")
-	emitter.ToolResult(1, 0, 100, "file listing")
+	emitter.ToolResult(1, 0, 100, "file listing", false)
 
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
@@ -893,7 +893,7 @@ func TestEventEmitterToolResult_NoToolCallID(t *testing.T) {
 
 	emitter := NewEventEmitter("test-session", emit)
 	// Call ToolResult without prior ToolCall for this (step, callIdx)
-	emitter.ToolResult(99, 0, 50, "orphan result")
+	emitter.ToolResult(99, 0, 50, "orphan result", false)
 
 	data, ok := received.Data.(map[string]any)
 	if !ok {

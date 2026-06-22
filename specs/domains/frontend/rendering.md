@@ -11,6 +11,8 @@ Transforms flat message arrays into a structured display tree, rendering each it
 - `frontend/src/components/chat/ChatArea.tsx` — chat container (hosts pinned last user message + message list + new-activity banner)
 - `frontend/src/components/chat/ChatMessageRenderer.tsx` — item type dispatch
 - `frontend/src/components/chat/toolCards/` — specialized tool card system (registry-driven per-tool rendering)
+- `frontend/src/components/chat/toolCards/toolCardRegistry.ts` — per-tool card config lookup, `(cached)` / `(batched)` suffix stripping
+- `frontend/src/components/chat/toolCards/ToolCard.tsx` — tool card component (renders cached/batched badges, suffix-aware title extraction)
 - `frontend/src/components/chat/PendingActionsBar.tsx` — action bar (confirm/ask/limit)
 - `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
 - `frontend/src/components/chat/UserMessageContent.tsx` — renders user message content with skill chips and clickable file links (falls back to Markdown for messages without references)
@@ -44,7 +46,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `assistant`          | Assistant response        | Left-aligned, markdown rendered; local file links clickable (open File Viewer)|
 | `thought`            | Single reasoning block    | Collapsed by default, muted                                                   |
 | `thought_group`      | Multiple thoughts grouped | Collapsible container                                                         |
-| `tool`               | Tool call + result pair   | Specialized card per tool (icon + verb + title + type-specific body)           |
+| `tool`               | Tool call + result pair   | Specialized card per tool (icon + verb + title + type-specific body). Batched sub-calls arrive with `" (batched)"` suffix — `ToolCard.tsx` strips the suffix, renders a "batched" badge, and looks up the original tool's card config. Cached tool reads arrive with `" (cached)"` suffix and follow the same pattern. |
 | `tool_confirm`       | Pending confirmation      | Action buttons (Allow/Deny)                                                   |
 | `ask_user`           | Agent question to user    | Form with inputs                                                              |
 | `step_limit`         | Budget decision           | Action buttons                                                                |

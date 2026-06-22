@@ -284,7 +284,7 @@ func (e *Executor) handleTruncationStopReason(ctx context.Context, resp *llm.Cha
 	}
 	state.allSteps = append(state.allSteps, step)
 	cw.AddStep(step)
-	e.emitter.ToolResult(state.stepNum, 0, len(truncObs), truncObs)
+	e.emitter.ToolResult(state.stepNum, 0, len(truncObs), truncObs, false)
 	e.emitter.StepComplete(state.stepNum, time.Since(state.stepStartTime))
 	return nil, actionContinue
 }
@@ -343,34 +343,16 @@ func (e *Executor) processSingleToolCall(
 	cw ContextManager,
 ) (*ExecutorResult, loopAction, error) {
 	responseGroup := state.responseGroup
-	// Emit tool call
-	toolDisplayName := action.Name
-	// For tool_result_read: display as "original_tool (cached)" in chat UI
-	if action.Name == "tool_result_read" && e.toolCache != nil {
-		var trParams struct {
-			Hash string `json:"hash"`
-		}
-		if json.Unmarshal(action.Input, &trParams) == nil && trParams.Hash != "" {
-			if entry, ok := e.toolCache.Get(trParams.Hash); ok {
-				toolDisplayName = entry.ToolName + " (cached)"
-			}
-		}
-	}
-	e.emitter.ToolCall(state.stepNum, callIdx, toolDisplayName, string(action.Input), e.tools.GetToolSource(action.Name))
-
-	// --- Circuit breaker: detect repeated identical tool calls ---
-	if loopAct, execResult, err := e.checkRepeatIdenticalTool(ctx, action, callIdx, thought, resp, state, cw); loopAct != actionNone || execResult != nil {
-		return execResult, loopAct, err
-	}
-	// --- End circuit breaker ---
 
 	// --- Batch meta-tool: execute sub-calls sequentially ---
-	if action.Name == "batch" {
+	// Must be FIRST — batch is intercepted before ToolCall emission so no
+	// phantom "batch" tool card appears in the frontend.
+	if action.Name == tools.ToolBatch {
 		return e.processBatchTool(ctx, action, callIdx, toolCalls, resp, thought, state, cw)
 	}
 	// --- End batch handling ---
 
-	// Check for finish tool
+	// Check for finish tool (also before ToolCall emission).
 	if action.Name == "finish" {
 		// Parse answer from input
 		var params struct {
@@ -399,7 +381,7 @@ func (e *Executor) processSingleToolCall(
 		}
 		state.allSteps = append(state.allSteps, step)
 
-		e.emitter.ToolResult(state.stepNum, callIdx, len(params.Answer), params.Answer)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(params.Answer), params.Answer, false)
 
 		state.finishResult = &ExecutorResult{
 			Output:   params.Answer,
@@ -408,6 +390,29 @@ func (e *Executor) processSingleToolCall(
 		}
 		return nil, actionBreak, nil // stop processing further tool calls
 	}
+
+	// Emit tool call (AFTER batch/finish checks — meta-tools handle their own events).
+	toolDisplayName := action.Name
+	// For tool_result_read: display as "original_tool (cached)" in chat UI
+	if action.Name == "tool_result_read" && e.toolCache != nil {
+		var trParams struct {
+			Hash string `json:"hash"`
+		}
+		if json.Unmarshal(action.Input, &trParams) == nil && trParams.Hash != "" {
+			if entry, ok := e.toolCache.Get(trParams.Hash); ok {
+				toolDisplayName = entry.ToolName + " (cached)"
+			}
+		}
+	}
+	e.emitter.ToolCall(state.stepNum, callIdx, toolDisplayName, string(action.Input), e.tools.GetToolSource(action.Name))
+
+	// --- Circuit breaker: detect repeated identical tool calls ---
+	// Placed AFTER batch/finish checks so meta-tools aren't subject to
+	// repeat-detection — processBatchTool handles per-sub-call circuit breakers.
+	if loopAct, execResult, err := e.checkRepeatIdenticalTool(ctx, action, callIdx, thought, resp, state, cw); loopAct != actionNone || execResult != nil {
+		return execResult, loopAct, err
+	}
+	// --- End circuit breaker ---
 
 	// Execute the tool (task context should already be set by the caller)
 	// Inject tool result cache into context so tool_result_read can access it.
@@ -462,47 +467,11 @@ func (e *Executor) processSingleToolCall(
 	}
 	// --- End parse error tracker ---
 
-	// --- Stage 1: Per-tool truncation + optional caching ---
-	// Apply per-tool line/byte truncation regardless of cache presence.
-	truncated, wasTruncated := e.applyPerToolTruncation(observation, action.Name)
-	if wasTruncated {
-		observation = truncated
-	}
-
-	// Cache full result and append fragmentation nudge when truncated.
-	if e.toolCache != nil {
-		if _, isNonCacheable := nonCacheableTools[action.Name]; !isNonCacheable {
-			meta := e.buildCacheMeta(execCtx, action.Name, action.Input)
-			hash := e.toolCache.Store(action.Name, result.Content, meta)
-
-			if wasTruncated {
-				maxLines := 0
-				if e.perToolTruncation != nil {
-					if cfg, ok := e.perToolTruncation[action.Name]; ok {
-						maxLines = cfg.MaxLines
-					}
-				}
-				nudge := formatFragmentationNudge(hash, action.Name, maxLines)
-				observation += nudge
-			}
-		}
-	}
-	// --- End Stage 1 caching / truncation ---
-
-	// --- Stage 2: Token-budget truncation (preserve Stage 1 nudge) ---
-	// Extract any Stage 1 nudge so it isn't stripped by token-budget truncation.
-	const stage1NudgePrefix = "\n\n[This output was truncated to"
-	var stage1Nudge string
-	if idx := strings.Index(observation, stage1NudgePrefix); idx >= 0 {
-		stage1Nudge = observation[idx:]
-		observation = observation[:idx]
-	}
-	observation = e.applyToolResultBudget(observation, cw, action.Name)
-	observation += stage1Nudge
-	// --- End Stage 2 ---
+	// Stage 1 + 2: truncation, caching, token budget (shared helper).
+	observation = e.processToolResult(observation, result.Content, action.Name, action.Input, execCtx, cw)
 
 	// Emit tool result
-	e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation)
+	e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, result.IsError)
 
 	// Pre-compaction nudge: warn LLM when context pressure enters danger zone.
 	// NOTE: The nudge is appended AFTER ToolResult emission intentionally — it is
@@ -570,7 +539,7 @@ func (e *Executor) processBatchTool(
 	if err := json.Unmarshal(action.Input, &batchInput); err != nil {
 		obs := fmt.Sprintf("batch parse error: %v", err)
 		e.emitter.ToolCall(state.stepNum, callIdx, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
-		e.emitter.ToolResult(state.stepNum, callIdx, len(obs), obs)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(obs), obs, true)
 		step := Step{
 			Thought:          thought,
 			ReasoningContent: resp.Message.ReasoningContent,
@@ -584,19 +553,63 @@ func (e *Executor) processBatchTool(
 		return nil, actionNone, nil
 	}
 
+	// Empty calls array — emit a result instead of silently doing nothing.
+	if len(batchInput.Calls) == 0 {
+		obs := "batch: no calls provided (empty calls array)"
+		e.emitter.ToolCall(state.stepNum, callIdx, action.Name, string(action.Input), e.tools.GetToolSource(action.Name))
+		e.emitter.ToolResult(state.stepNum, callIdx, len(obs), obs, true)
+		step := Step{
+			Thought:          thought,
+			ReasoningContent: resp.Message.ReasoningContent,
+			Action:           action,
+			Observation:      obs,
+			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			ResponseGroup:    responseGroup,
+		}
+		state.allSteps = append(state.allSteps, step)
+		cw.AddStep(step)
+		return nil, actionNone, nil
+	}
+
+	// Use unique index space for batch sub-calls to avoid collisions
+	// with standalone tool call indices in the emitter's localToolIDs map.
+	const batchIndexBase = 10000
+	baseIdx := callIdx * batchIndexBase
+
 	for subIdx, sub := range batchInput.Calls {
+		effectiveIdx := baseIdx + subIdx
 		subCall := llm.ToolCall{
 			ID:    fmt.Sprintf("batch_sub_%d", subIdx),
 			Name:  sub.Tool,
 			Input: sub.Input,
 		}
 
+		// Explicit nested-batch guard — produce a clear error rather than
+		// letting the registry return an implementation-internal message.
+		if subCall.Name == tools.ToolBatch {
+			obs := "error: batch cannot be nested inside another batch call"
+			batchedName := "batch (batched)"
+			e.emitter.ToolCall(state.stepNum, effectiveIdx, batchedName, string(sub.Input), e.tools.GetToolSource(sub.Tool))
+			e.emitter.ToolResult(state.stepNum, effectiveIdx, len(obs), obs, true)
+			step := Step{
+				Thought:     thought,
+				Action:      subCall,
+				Observation: obs,
+				IsUntrusted: false,
+				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				ResponseGroup: responseGroup,
+			}
+			state.allSteps = append(state.allSteps, step)
+			cw.AddStep(step)
+			continue
+		}
+
 		// Emit tool call with "(batched)" suffix.
 		batchedName := sub.Tool + " (batched)"
-		e.emitter.ToolCall(state.stepNum, subIdx, batchedName, string(sub.Input), e.tools.GetToolSource(sub.Tool))
+		e.emitter.ToolCall(state.stepNum, effectiveIdx, batchedName, string(sub.Input), e.tools.GetToolSource(sub.Tool))
 
 		// Circuit breaker: repeat identical tool call.
-		if loopAct, execResult, err := e.checkRepeatIdenticalTool(ctx, subCall, subIdx, thought, resp, state, cw); loopAct != actionNone || execResult != nil {
+		if loopAct, execResult, err := e.checkRepeatIdenticalTool(ctx, subCall, effectiveIdx, thought, resp, state, cw); loopAct != actionNone || execResult != nil {
 			return execResult, loopAct, err
 		}
 
@@ -616,12 +629,12 @@ func (e *Executor) processBatchTool(
 		e.lastToolResultIsError = result.IsError
 
 		// Fruitless result detector.
-		if loopAct, execResult, err := e.checkFruitlessResult(ctx, subCall, subIdx, observation, result.IsError, state, cw); loopAct != actionNone || execResult != nil {
+		if loopAct, execResult, err := e.checkFruitlessResult(ctx, subCall, effectiveIdx, observation, result.IsError, state, cw); loopAct != actionNone || execResult != nil {
 			return execResult, loopAct, err
 		}
 
 		// Same-tool repetition detector.
-		if loopAct, execResult, err := e.checkSameToolRepetition(ctx, subCall, subIdx, observation, result, state, cw); loopAct != actionNone || execResult != nil {
+		if loopAct, execResult, err := e.checkSameToolRepetition(ctx, subCall, effectiveIdx, observation, result, state, cw); loopAct != actionNone || execResult != nil {
 			return execResult, loopAct, err
 		}
 
@@ -632,44 +645,11 @@ func (e *Executor) processBatchTool(
 
 		isUntrusted := e.tools.IsToolUntrusted(subCall.Name)
 
-		// --- Stage 1: Per-tool truncation + caching ---
-		truncated, wasTruncated := e.applyPerToolTruncation(observation, subCall.Name)
-		if wasTruncated {
-			observation = truncated
-		}
-
-		if e.toolCache != nil {
-			if _, isNonCacheable := nonCacheableTools[subCall.Name]; !isNonCacheable {
-				meta := e.buildCacheMeta(execCtx, subCall.Name, subCall.Input)
-				hash := e.toolCache.Store(subCall.Name, result.Content, meta)
-
-				if wasTruncated {
-					maxLines := 0
-					if e.perToolTruncation != nil {
-						if cfg, ok := e.perToolTruncation[subCall.Name]; ok {
-							maxLines = cfg.MaxLines
-						}
-					}
-					nudge := formatFragmentationNudge(hash, subCall.Name, maxLines)
-					observation += nudge
-				}
-			}
-		}
-		// --- End Stage 1 ---
-
-		// --- Stage 2: Token-budget truncation (preserve Stage 1 nudge) ---
-		const stage1NudgePrefix = "\n\n[This output was truncated to"
-		var stage1Nudge string
-		if idx := strings.Index(observation, stage1NudgePrefix); idx >= 0 {
-			stage1Nudge = observation[idx:]
-			observation = observation[:idx]
-		}
-		observation = e.applyToolResultBudget(observation, cw, subCall.Name)
-		observation += stage1Nudge
-		// --- End Stage 2 ---
+		// Stage 1 + 2: truncation, caching, token budget (shared helper).
+		observation = e.processToolResult(observation, result.Content, subCall.Name, subCall.Input, execCtx, cw)
 
 		// Emit tool result.
-		e.emitter.ToolResult(state.stepNum, subIdx, len(observation), observation)
+		e.emitter.ToolResult(state.stepNum, effectiveIdx, len(observation), observation, result.IsError)
 
 		// Pre-compaction nudge for last sub-call (only for LLM context, after emission).
 		if subIdx == len(batchInput.Calls)-1 && callIdx == len(toolCalls)-1 && e.preWarningPercent > 0 && !state.preCompactionNudgeEmitted {
@@ -707,6 +687,55 @@ func (e *Executor) processBatchTool(
 	}
 
 	return nil, actionNone, nil
+}
+
+// processToolResult applies Stage 1 (per-tool truncation + caching +
+// fragmentation nudge) and Stage 2 (token-budget truncation preserving
+// the Stage 1 nudge). Shared by processSingleToolCall and processBatchTool
+// to avoid duplicated pipeline logic.
+func (e *Executor) processToolResult(
+	observation string,
+	fullResult string,
+	toolName string,
+	input json.RawMessage,
+	execCtx context.Context,
+	cw ContextManager,
+) string {
+	// --- Stage 1: Per-tool truncation + optional caching ---
+	truncated, wasTruncated := e.applyPerToolTruncation(observation, toolName)
+	if wasTruncated {
+		observation = truncated
+	}
+
+	if e.toolCache != nil {
+		if _, isNonCacheable := nonCacheableTools[toolName]; !isNonCacheable {
+			meta := e.buildCacheMeta(execCtx, toolName, input)
+			hash := e.toolCache.Store(toolName, fullResult, meta)
+
+			if wasTruncated {
+				maxLines := 0
+				if e.perToolTruncation != nil {
+					if cfg, ok := e.perToolTruncation[toolName]; ok {
+						maxLines = cfg.MaxLines
+					}
+				}
+				nudge := formatFragmentationNudge(hash, toolName, maxLines)
+				observation += nudge
+			}
+		}
+	}
+
+	// --- Stage 2: Token-budget truncation (preserve Stage 1 nudge) ---
+	const stage1NudgePrefix = "\n\n[This output was truncated to"
+	var stage1Nudge string
+	if idx := strings.Index(observation, stage1NudgePrefix); idx >= 0 {
+		stage1Nudge = observation[idx:]
+		observation = observation[:idx]
+	}
+	observation = e.applyToolResultBudget(observation, cw, toolName)
+	observation += stage1Nudge
+
+	return observation
 }
 
 // checkRepeatIdenticalTool detects repeated identical tool calls and applies
@@ -773,7 +802,7 @@ func (e *Executor) checkRepeatIdenticalTool(
 			return actionBreak, nil, nil
 		}
 		abortMsg := fmt.Sprintf("Aborted: tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount)
-		e.emitter.ToolResult(state.stepNum, callIdx, len(abortMsg), abortMsg)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(abortMsg), abortMsg, true)
 		return actionNone, &ExecutorResult{
 			Output:   abortMsg,
 			Steps:    state.allSteps,
@@ -787,7 +816,7 @@ func (e *Executor) checkRepeatIdenticalTool(
 			nudgeMsg = repeatErrorNudgeMessage
 		}
 		e.emitter.ExecutorDiagnostic(state.stepNum, "repeated_tool_call_nudge", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
-		e.emitter.ToolResult(state.stepNum, callIdx, len(nudgeMsg), nudgeMsg)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(nudgeMsg), nudgeMsg, false)
 		stepThought := ""
 		stepReasoning := ""
 		if callIdx == 0 {
@@ -837,7 +866,7 @@ func (e *Executor) checkFruitlessResult(
 	// Check fruitless thresholds (skip if threshold is 0 = disabled)
 	if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
 		e.emitter.ExecutorDiagnostic(state.stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
-		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
 		abortReason := fmt.Sprintf("%d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount)
 		if e.stepLimitFunc != nil {
 			slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
@@ -882,7 +911,7 @@ func (e *Executor) checkFruitlessResult(
 	if e.circuitBreaker.FruitlessNudgeThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessNudgeThreshold && !e.fruitlessNudgeAttempted {
 		e.fruitlessNudgeAttempted = true
 		e.emitter.ExecutorDiagnostic(state.stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
-		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, false)
 		nudgeStep := Step{
 			Observation: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
 		}
@@ -931,7 +960,7 @@ func (e *Executor) checkSameToolRepetition(
 		// Check same-tool thresholds (skip if threshold is 0 = disabled)
 		if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
 			e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation)
+			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
 			abortReason := fmt.Sprintf("Tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount)
 			if e.stepLimitFunc != nil {
 				slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
@@ -976,7 +1005,7 @@ func (e *Executor) checkSameToolRepetition(
 		if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
 			e.sameToolNudgeAttempted = true
 			e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation)
+			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, false)
 			nudgeStep := Step{
 				Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
 			}
@@ -1017,7 +1046,7 @@ func (e *Executor) checkParseErrors(
 
 		if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
 			e.emitter.ExecutorDiagnostic(state.stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
-			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation)
+			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
 			abortReason := fmt.Sprintf("Tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount)
 			if e.stepLimitFunc != nil {
 				slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)

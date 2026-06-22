@@ -3,7 +3,7 @@ package builtins
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -15,16 +15,6 @@ const batchDescription = `Execute multiple tool calls sequentially in one turn. 
 // exists to expose the JSON schema to the LLM.
 type BatchTool struct {
 	*tools.BaseTool
-}
-
-// batchInput represents the input for the batch tool.
-type batchInput struct {
-	Calls []batchCall `json:"calls"`
-}
-
-type batchCall struct {
-	Tool  string          `json:"tool"`
-	Input json.RawMessage `json:"input"`
 }
 
 // NewBatchTool creates a new BatchTool instance.
@@ -55,5 +45,5 @@ func NewBatchTool() *BatchTool {
 
 // Execute returns an error — batch is intercepted and handled at the executor level.
 func (t *BatchTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
-	return tools.ToolResult{}, fmt.Errorf("batch is handled at the executor level and should not be called directly")
+	return tools.ToolResult{}, errors.New("batch is handled at the executor level and should not be called directly")
 }
