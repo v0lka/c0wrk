@@ -178,19 +178,15 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 		return "", false
 	}
 
-	if needsErr == nil && len(needed) > 0 {
+	switch {
+	case needsErr == nil && len(needed) > 0:
 		a.emit(backend.EventToolManagerDone, map[string]any{
 			"installed_count": len(needed),
 			"skipped_count":   0,
 		})
-	} else if needsErr != nil {
-		a.emit(backend.EventToolManagerDone, map[string]any{
-			"installed_count": 0,
-			"skipped_count":   0,
-		})
-	} else {
-		// No tools needed — tell the frontend so it can transition from splash
-		// to waiting_ready before backend:ready arrives.
+	default:
+		// No tools needed or install failed — tell the frontend so it can
+		// transition from splash to waiting_ready before backend:ready arrives.
 		a.emit(backend.EventToolManagerDone, map[string]any{
 			"installed_count": 0,
 			"skipped_count":   0,
