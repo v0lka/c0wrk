@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -29,9 +28,9 @@ func extractPayload(eventName string, data []any, log *slog.Logger) (map[string]
 }
 
 // parseConfirmDecision converts the JSON decision field (which may arrive as a
-// JSON number → float64, an int, or a string) into a tools.ConfirmationResponse.
+// JSON number → float64, an int, or a string) into a sdktools.ConfirmationResponse.
 // Returns ok=false on missing/unrecognized values and logs a warning.
-func parseConfirmDecision(payload map[string]any, log *slog.Logger) (tools.ConfirmationResponse, bool) {
+func parseConfirmDecision(payload map[string]any, log *slog.Logger) (sdktools.ConfirmationResponse, bool) {
 	decisionVal, ok := payload["decision"]
 	if !ok {
 		log.Warn("tool confirmation response missing decision field")
@@ -40,17 +39,17 @@ func parseConfirmDecision(payload map[string]any, log *slog.Logger) (tools.Confi
 
 	switch v := decisionVal.(type) {
 	case float64:
-		return tools.ConfirmationResponse(int(v)), true
+		return sdktools.ConfirmationResponse(int(v)), true
 	case int:
-		return tools.ConfirmationResponse(v), true
+		return sdktools.ConfirmationResponse(v), true
 	case string:
 		switch v {
 		case "allow_once":
-			return tools.ConfirmAllowOnce, true
+			return sdktools.ConfirmAllowOnce, true
 		case "deny":
-			return tools.ConfirmDeny, true
+			return sdktools.ConfirmDeny, true
 		case "stop", "deny_and_stop":
-			return tools.ConfirmDenyAndStop, true
+			return sdktools.ConfirmDenyAndStop, true
 		default:
 			log.Warn("unknown string confirmation decision", "decision", v)
 			return 0, false

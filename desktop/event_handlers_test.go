@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -69,17 +68,17 @@ func TestParseConfirmDecision(t *testing.T) {
 	tests := []struct {
 		name    string
 		payload map[string]any
-		want    tools.ConfirmationResponse
+		want    sdktools.ConfirmationResponse
 		wantOK  bool
 	}{
 		{name: "missing field", payload: map[string]any{}, wantOK: false},
-		{name: "string allow_once", payload: map[string]any{"decision": "allow_once"}, want: tools.ConfirmAllowOnce, wantOK: true},
-		{name: "string deny", payload: map[string]any{"decision": "deny"}, want: tools.ConfirmDeny, wantOK: true},
-		{name: "string stop", payload: map[string]any{"decision": "stop"}, want: tools.ConfirmDenyAndStop, wantOK: true},
-		{name: "string deny_and_stop", payload: map[string]any{"decision": "deny_and_stop"}, want: tools.ConfirmDenyAndStop, wantOK: true},
+		{name: "string allow_once", payload: map[string]any{"decision": "allow_once"}, want: sdktools.ConfirmAllowOnce, wantOK: true},
+		{name: "string deny", payload: map[string]any{"decision": "deny"}, want: sdktools.ConfirmDeny, wantOK: true},
+		{name: "string stop", payload: map[string]any{"decision": "stop"}, want: sdktools.ConfirmDenyAndStop, wantOK: true},
+		{name: "string deny_and_stop", payload: map[string]any{"decision": "deny_and_stop"}, want: sdktools.ConfirmDenyAndStop, wantOK: true},
 		{name: "unknown string", payload: map[string]any{"decision": "approve_forever"}, wantOK: false},
-		{name: "float64 (JSON number)", payload: map[string]any{"decision": float64(int(tools.ConfirmAllowOnce))}, want: tools.ConfirmAllowOnce, wantOK: true},
-		{name: "int", payload: map[string]any{"decision": int(tools.ConfirmDeny)}, want: tools.ConfirmDeny, wantOK: true},
+		{name: "float64 (JSON number)", payload: map[string]any{"decision": float64(int(sdktools.ConfirmAllowOnce))}, want: sdktools.ConfirmAllowOnce, wantOK: true},
+		{name: "int", payload: map[string]any{"decision": int(sdktools.ConfirmDeny)}, want: sdktools.ConfirmDeny, wantOK: true},
 		{name: "unsupported type bool", payload: map[string]any{"decision": true}, wantOK: false},
 		{name: "unsupported type nil", payload: map[string]any{"decision": nil}, wantOK: false},
 	}
@@ -100,7 +99,7 @@ func TestParseConfirmDecision(t *testing.T) {
 
 func TestHandleToolConfirmResponse_HappyPath(t *testing.T) {
 	a := &App{}
-	ch := make(chan tools.ConfirmationResponse, 1)
+	ch := make(chan sdktools.ConfirmationResponse, 1)
 	a.pendingConfirmations.Store("rid-1", &pendingConfirmData{ch: ch, toolName: "bash_exec"})
 
 	a.handleToolConfirmResponse(map[string]any{
@@ -110,7 +109,7 @@ func TestHandleToolConfirmResponse_HappyPath(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != tools.ConfirmAllowOnce {
+		if got != sdktools.ConfirmAllowOnce {
 			t.Errorf("got %v, want ConfirmAllowOnce", got)
 		}
 	case <-time.After(100 * time.Millisecond):
@@ -166,7 +165,7 @@ func TestHandleToolConfirmResponse_WrongChannelType(t *testing.T) {
 func TestHandleToolConfirmResponse_ChannelFull(t *testing.T) {
 	a := &App{}
 	// Unbuffered channel with no receiver simulates "channel full"
-	ch := make(chan tools.ConfirmationResponse)
+	ch := make(chan sdktools.ConfirmationResponse)
 	a.pendingConfirmations.Store("rid-full", &pendingConfirmData{ch: ch, toolName: "edit_file"})
 
 	log, buf := captureLogger()
@@ -362,7 +361,7 @@ func TestHandleToolJudgeRequest_NoApplication(t *testing.T) {
 	// runJudgeEvaluation guards against a.app == nil and emits an error.
 	a := &App{}
 	a.pendingConfirmations.Store("cid-1", &pendingConfirmData{
-		ch:        make(chan tools.ConfirmationResponse, 1),
+		ch:        make(chan sdktools.ConfirmationResponse, 1),
 		toolName:  "bash_exec",
 		input:     json.RawMessage(`{"command":"ls"}`),
 		sessionID: "sess-1",

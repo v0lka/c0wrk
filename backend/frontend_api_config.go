@@ -8,9 +8,9 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
-	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/proxy"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
@@ -60,7 +60,7 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		},
 		Proxy: ProxySettingsResponse{
 			Enabled:    f.config.Proxy.Enabled,
-			URL:        core.MaskProxyURL(f.config.Proxy.URL),
+			URL:        proxy.MaskURL(f.config.Proxy.URL),
 			BypassList: nonNilStringSlice(f.config.Proxy.BypassList),
 			TLSCertDir: f.config.Proxy.TLSCertDir,
 		},
@@ -266,7 +266,7 @@ func (f *FrontendAPI) GetProxySettings() ProxySettingsResponse {
 
 	return ProxySettingsResponse{
 		Enabled:    f.config.Proxy.Enabled,
-		URL:        core.MaskProxyURL(f.config.Proxy.URL),
+		URL:        proxy.MaskURL(f.config.Proxy.URL),
 		BypassList: nonNilStringSlice(f.config.Proxy.BypassList),
 		TLSCertDir: f.config.Proxy.TLSCertDir,
 	}

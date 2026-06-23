@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // ReconfigureMCP reconfigures the MCP gateway with the given config.
@@ -85,7 +85,7 @@ func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
 // are auto-injected at execution time and should not be visible to the LLM.
 func defaultSchemaSanitizer() mcp.SchemaSanitizer {
 	autoInjected := map[string]bool{
-		tools.AutoInjectedParamProject: true,
+		sdktools.AutoInjectedParamProject: true,
 	}
 	return func(_ string, schema json.RawMessage) json.RawMessage {
 		return mcp.StripParamsFromSchema(schema, autoInjected)

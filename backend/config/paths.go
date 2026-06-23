@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/v0lka/c0wrk/sdk/pathutil"
 )
 
 // noProjectID is the well-known identifier for the "No Project" pseudo-project.
@@ -197,3 +199,48 @@ func ValidateNoProjectSessionPath(projectDir, absDir string) error {
 	}
 	return nil
 }
+// ---------------------------------------------------------------------------
+// Path containment and session-infra helpers
+// ---------------------------------------------------------------------------
+
+// IsWithinPath returns true if child is equal to or a descendant of parent.
+// Wraps pathutil.IsWithinPath so all backend path-containment checks use a
+// single import. See sdk/pathutil.IsWithinPath for full semantics.
+func IsWithinPath(parent, child string) (bool, error) {
+	return pathutil.IsWithinPath(parent, child)
+}
+
+// IsSessionInfraPath returns true if absPath falls within a session's plans/
+// or temp/ subdirectory under the project data directory. These directories
+// live outside the workspace but are allowed for file viewer access
+// (plan review, temp file inspection).
+//
+// Expected structure: <projectDir>/<sessionID>/plans/... or
+// <projectDir>/<sessionID>/temp/...
+func IsSessionInfraPath(projectDir, absPath string) bool {
+	ok, err := pathutil.IsWithinPath(projectDir, absPath)
+	if err != nil || !ok {
+		return false
+	}
+	rel, err := filepath.Rel(projectDir, absPath)
+	if err != nil {
+		return false
+	}
+	parts := pathutil.SplitPathComponents(filepath.ToSlash(rel))
+	// Structure: <sessionID>/plans/... or <sessionID>/temp/...
+	return len(parts) >= 2 && (parts[1] == "plans" || parts[1] == "temp")
+}
+
+// ProjectSkillsPath returns the project-local agent skills directory.
+// This is <workspacePath>/.agents/skills.
+func ProjectSkillsPath(workspacePath string) string {
+	return filepath.Join(workspacePath, ".agents", "skills")
+}
+
+// SessionStepDumpDir returns the per-step dump directory for a session,
+// derived from the session's LLM dump path.
+func SessionStepDumpDir(agentDir, projectID, sessionID string) string {
+	dumpPath := SessionDumpPath(agentDir, projectID, sessionID)
+	return filepath.Join(filepath.Dir(dumpPath), "steps")
+}
+

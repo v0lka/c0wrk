@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-
+	"github.com/v0lka/c0wrk/sdk/pathutil"
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
@@ -34,9 +33,9 @@ func resolvePath(ctx context.Context, path string) string {
 	if filepath.IsAbs(path) {
 		// For the target path, resolve the longest existing prefix
 		// (the file may not exist yet).
-		realPath := resolveExistingPrefix(path)
-		rel, err := filepath.Rel(realWS, realPath)
-		if err != nil || strings.HasPrefix(rel, "..") {
+		realPath := pathutil.ResolveExistingPrefix(path)
+		ok, err := pathutil.IsWithinPath(realWS, realPath)
+		if err != nil || !ok {
 			return "" // caller will produce "path is outside workspace" error
 		}
 		// Return the symlink-resolved path to prevent TOCTOU race between
@@ -54,10 +53,10 @@ func resolvePath(ctx context.Context, path string) string {
 		return ""
 	}
 	// Resolve symlinks on the longest existing prefix.
-	resolved := resolveExistingPrefix(absJoined)
+	resolved := pathutil.ResolveExistingPrefix(absJoined)
 	// Verify containment.
-	rel, err := filepath.Rel(realWS, resolved)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	ok, err := pathutil.IsWithinPath(realWS, resolved)
+	if err != nil || !ok {
 		return ""
 	}
 	return resolved
@@ -77,34 +76,6 @@ func resolveWorkspaceRoot(ws string) (string, error) {
 	return resolved, nil
 }
 
-// resolveExistingPrefix resolves symlinks on the longest existing prefix of
-// the given path, joining the non-existent suffix back. This handles paths to
-// files/directories that don't exist yet (common for write/mkdir tools).
-func resolveExistingPrefix(path string) string {
-	// Walk up until we find an existing component.
-	candidate := path
-	for {
-		resolved, err := filepath.EvalSymlinks(candidate)
-		if err == nil {
-			// Found existing prefix — rejoin the non-existent tail.
-			if candidate == path {
-				return resolved
-			}
-			rel, err := filepath.Rel(candidate, path)
-			if err != nil {
-				// Paths on different volumes/roots — fall back to unresolved.
-				return path
-			}
-			return filepath.Join(resolved, rel)
-		}
-		parent := filepath.Dir(candidate)
-		if parent == candidate {
-			// Reached root — nothing exists, return as-is.
-			return path
-		}
-		candidate = parent
-	}
-}
 
 // validatePathInWorkspace checks whether the given path (already resolved by
 // resolvePath) lies within the session workspace. The path may be absolute
@@ -133,9 +104,9 @@ func validatePathInWorkspace(ctx context.Context, resolved string) error {
 		return fmt.Errorf("cannot resolve workspace: %w", err)
 	}
 
-	resolvedAbs := resolveExistingPrefix(absPath)
-	rel, err := filepath.Rel(wsAbs, resolvedAbs)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	resolvedAbs := pathutil.ResolveExistingPrefix(absPath)
+	ok, err := pathutil.IsWithinPath(wsAbs, resolvedAbs)
+	if err != nil || !ok {
 		return fmt.Errorf("path is outside the session workspace: %s", resolved)
 	}
 	return nil

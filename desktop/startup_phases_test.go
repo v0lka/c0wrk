@@ -16,7 +16,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/sdk/vectorindex"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
@@ -236,11 +235,11 @@ func TestBuildConfirmCallback_NoAppContext_DenyAndStop(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildConfirmCallback(uiEmit)
 
-	resp, err := cb(context.Background(), tools.ConfirmationRequest{ToolName: "bash_exec"})
+	resp, err := cb(context.Background(), sdktools.ConfirmationRequest{ToolName: "bash_exec"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if resp != tools.ConfirmDenyAndStop {
+	if resp != sdktools.ConfirmDenyAndStop {
 		t.Errorf("got %v, want ConfirmDenyAndStop (C-4)", resp)
 	}
 }
@@ -251,11 +250,11 @@ func TestBuildConfirmCallback_NoSessionID_DenyAndStop(t *testing.T) {
 	cb := a.buildConfirmCallback(uiEmit)
 
 	// ctx WITHOUT a session ID
-	resp, err := cb(context.Background(), tools.ConfirmationRequest{ToolName: "edit_file"})
+	resp, err := cb(context.Background(), sdktools.ConfirmationRequest{ToolName: "edit_file"})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	if resp != tools.ConfirmDenyAndStop {
+	if resp != sdktools.ConfirmDenyAndStop {
 		t.Errorf("got %v, want ConfirmDenyAndStop (C-4)", resp)
 	}
 }
@@ -273,9 +272,9 @@ func TestBuildConfirmCallback_HappyPath(t *testing.T) {
 
 	ctx := session.ContextWithSessionID(context.Background(), "sess-xyz")
 	done := make(chan struct{})
-	var resp tools.ConfirmationResponse
+	var resp sdktools.ConfirmationResponse
 	go func() {
-		resp, _ = cb(ctx, tools.ConfirmationRequest{
+		resp, _ = cb(ctx, sdktools.ConfirmationRequest{
 			ToolName: "bash_exec",
 			Input:    []byte(`{"command":"ls"}`),
 		})
@@ -319,14 +318,14 @@ func TestBuildConfirmCallback_HappyPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("pending entry has wrong type: %T", val)
 	}
-	pd.ch <- tools.ConfirmAllowOnce
+	pd.ch <- sdktools.ConfirmAllowOnce
 
 	select {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("callback did not return after channel send")
 	}
-	if resp != tools.ConfirmAllowOnce {
+	if resp != sdktools.ConfirmAllowOnce {
 		t.Errorf("got %v, want ConfirmAllowOnce", resp)
 	}
 }

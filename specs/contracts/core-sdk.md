@@ -69,9 +69,25 @@
 | `ToolDescriptor`       | sdk/tools | core/orchestrator, planner     | Tool metadata                                 |
 | `ToolPolicy`           | sdk/tools | core/tools                     | Policy enum                                   |
 | `ToolResult`           | sdk/tools | core/tools                     | Execution result                              |
+| `ConfirmFunc`          | sdk/tools | core/tools, backend, desktop   | User confirmation callback                    |
+| `ConfirmationRequest`  | sdk/tools | core/tools, backend, desktop   | Confirmation request payload                  |
+| `ConfirmationResponse` | sdk/tools | core/tools, backend, desktop   | Confirmation response enum (`ConfirmAllowOnce`, `ConfirmDeny`, `ConfirmDenyAndStop`) |
+| `ToolJudger`           | sdk/tools | core/tools, core/tools/mcp     | Tool self-judging interface                   |
+| `AutoInjectedParamProject` | sdk/tools | core/tools/mcp (schema sanitizer) | Constant for auto-injected parameter name   |
 | `FileCoherenceChecker` | sdk/tools | core/tools (re-exported)       | Cross-session file conflict detection          |
 | `FileSig`              | sdk/tools | core/tools (re-exported)       | File signature (mtime + size) for coherence    |
 | `CoherenceConflict`    | sdk/tools | core/tools (re-exported)       | Conflict record with session and timing detail |
+
+### Consumed from `sdk/proxy`
+
+| Interface / Type | Package    | Consumed By                                      | Purpose                              |
+| ---------------- | ---------- | ------------------------------------------------ | ------------------------------------ |
+| `Config`         | sdk/proxy  | core/builderconfig, backend/configadapter        | HTTP proxy settings (URL, bypass, TLS certs, env vars) |
+| `BuildTransport` | sdk/proxy  | core/builder                                     | Build proxy-configured `*http.Transport`     |
+| `BuildClient`    | sdk/proxy  | core/builder                                     | Build proxy-configured `*http.Client`         |
+| `SetEnvVars`     | sdk/proxy  | core/builder (on SetGlobalEnv opt-in)            | Export `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`SSL_CERT_DIR` for child processes |
+| `ClearEnvVars`   | sdk/proxy  | core/builder (on proxy disable)                  | Remove proxy environment variables            |
+| `MaskURL`        | sdk/proxy  | backend/frontend_api_config                      | Mask proxy URL password for UI display        |
 
 ### Consumed from `sdk/memory`
 
@@ -86,13 +102,14 @@ All layers above sdk import source packages directly, e.g.:
 
 ```go
 // desktop/startup_phases.go
-import "github.com/v0lka/c0wrk/core/tools"  // → tools.ConfirmFunc, tools.AskUserFunc, ...
-import "github.com/v0lka/c0wrk/sdk/agent"    // → agent.StepLimitFunc, agent.StepLimitDeny, ...
+import "github.com/v0lka/c0wrk/sdk/tools"  // → sdktools.ConfirmFunc, sdktools.AskUserFunc, ...
+import "github.com/v0lka/c0wrk/sdk/agent"   // → agent.StepLimitFunc, agent.StepLimitDeny, ...
 
 // backend/application.go
-import "github.com/v0lka/c0wrk/core/tools"      // → tools.ConfirmFunc, tools.EnvInfo, ...
+import "github.com/v0lka/c0wrk/sdk/tools"      // → sdktools.ConfirmFunc, sdktools.EnvInfo, ...
 import "github.com/v0lka/c0wrk/core/tools/mcp"  // → mcp.ServerStatus
 import "github.com/v0lka/c0wrk/sdk/agent"       // → agent.StepLimitFunc
+import "github.com/v0lka/c0wrk/sdk/proxy"       // → proxy.MaskURL, proxy.Config
 ```
 
 ## Initialization
@@ -148,5 +165,5 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 - If you modify `sdk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
 - If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sdk type that backend or desktop needs → import directly from the source package
-- If you modify `sdk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation AND `core/tools/tool.go` re-export
+- If you modify `sdk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation
 - If you change `IsUntrusted()` semantics → update ALL built-in tool registrations (`sdk/tools/builtins/*.go`) AND `sdk/security/wrap.go`

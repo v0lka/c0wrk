@@ -21,7 +21,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
 	"github.com/v0lka/c0wrk/sdk/vectorindex"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -29,7 +28,7 @@ import (
 // pendingConfirmData holds the state for a pending tool confirmation,
 // including metadata needed for on-demand judge evaluation.
 type pendingConfirmData struct {
-	ch          chan tools.ConfirmationResponse
+	ch          chan sdktools.ConfirmationResponse
 	taskContext string
 	toolName    string
 	input       json.RawMessage
@@ -252,7 +251,7 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.pendingConfirmations.Range(func(key, value any) bool {
 		if pd, ok := value.(*pendingConfirmData); ok {
 			select {
-			case pd.ch <- tools.ConfirmDenyAndStop:
+			case pd.ch <- sdktools.ConfirmDenyAndStop:
 			default:
 			}
 		}
@@ -370,7 +369,7 @@ func resolveModelPath(filename, agentDir string) string {
 	}
 
 	// Fallback: <agentDir>/models/<filename>
-	userPath := filepath.Join(agentDir, "models", filename)
+	userPath := filepath.Join(config.ModelsDir(agentDir), filename)
 	if _, statErr := os.Stat(userPath); statErr == nil {
 		return userPath
 	}

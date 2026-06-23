@@ -373,7 +373,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 		// Per-step dump tracker uses a "steps" subdirectory
 		if dumpFile != nil {
-			stepDumpDir := filepath.Join(filepath.Dir(dumpPath), "steps")
+			stepDumpDir := config.SessionStepDumpDir(m.agentDir, info.ProjectID, id)
 			stepDumpTracker = orchestration.NewStepDumpTracker(stepDumpDir)
 		}
 	}
@@ -628,7 +628,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		}
 		// Per-step dump tracker uses a "steps" subdirectory
 		if dumpFile != nil {
-			stepDumpDir := filepath.Join(filepath.Dir(dumpPath), "steps")
+			stepDumpDir := config.SessionStepDumpDir(m.agentDir, projectID, id)
 			stepDumpTracker = orchestration.NewStepDumpTracker(stepDumpDir)
 		}
 	}

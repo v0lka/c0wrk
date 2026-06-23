@@ -206,12 +206,12 @@ func TestConfirmFunc_AllowOnce(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
 		if req.ToolName != "mutating" {
 			t.Errorf("expected tool name 'mutating', got %q", req.ToolName)
 		}
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -234,8 +234,8 @@ func TestConfirmFunc_Deny(t *testing.T) {
 	tool := newMockTool("mutating", "A mutating tool")
 	registry.Register(tool)
 
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
-		return ConfirmDeny, nil
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		return sdktools.ConfirmDeny, nil
 	})
 
 	ctx := context.Background()
@@ -258,8 +258,8 @@ func TestConfirmFunc_DenyAndStop(t *testing.T) {
 	tool := newMockTool("mutating", "A mutating tool")
 	registry.Register(tool)
 
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
-		return ConfirmDenyAndStop, nil
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		return sdktools.ConfirmDenyAndStop, nil
 	})
 
 	ctx := context.Background()
@@ -280,9 +280,9 @@ func TestConfirmFunc_ReadOnlyBypass(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -325,7 +325,7 @@ func TestConfirmFunc_ConfirmFuncError(t *testing.T) {
 	registry.Register(tool)
 
 	expectedErr := context.DeadlineExceeded
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		return 0, expectedErr
 	})
 
@@ -345,9 +345,9 @@ func TestPolicyAlwaysAllow_ExecutesImmediately(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -401,9 +401,9 @@ func TestPolicyUserConfirm_AlwaysCallsConfirmFunc(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -510,9 +510,9 @@ func TestPolicyOverrideFromConfig(t *testing.T) {
 	})
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -669,10 +669,10 @@ func TestPolicyAlwaysAllow_WithToolJudgerFlags(t *testing.T) {
 
 	confirmCalled := false
 	var receivedReasoning string
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
 		receivedReasoning = req.JudgeReasoning
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -701,9 +701,9 @@ func TestPolicyAlwaysAllow_WithToolJudgerAllows(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -732,9 +732,9 @@ func TestPolicyAlwaysAllow_WithoutToolJudger(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -763,9 +763,9 @@ func TestPolicyAlwaysAllow_WithToolJudgerEmptyReasoning(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -796,9 +796,9 @@ func TestAutoApproval_WorkspacePath(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -829,9 +829,9 @@ func TestAutoApproval_UserConfirmWithJudger_WorkspaceEnabled(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -858,9 +858,9 @@ func TestAutoApproval_UserConfirmWithJudger_WorkspaceDisabled(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -889,9 +889,9 @@ func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -915,9 +915,9 @@ func TestAutoApproval_TempDir(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -945,9 +945,9 @@ func TestAutoApproval_AlwaysAllow_WorkspacePath(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -971,9 +971,9 @@ func TestAutoApproval_OutsideWorkspace(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -1038,9 +1038,9 @@ func TestInternalTool_BypassesPolicyAlwaysDeny(t *testing.T) {
 
 	// Set up a confirm func that should NOT be called for internal tools
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -1072,9 +1072,9 @@ func TestInternalTool_BypassesPolicyUserConfirm(t *testing.T) {
 
 	// Set up a confirm func that should NOT be called for internal tools
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()
@@ -1413,9 +1413,9 @@ func TestAutoApproval_AlwaysDenyRespected(t *testing.T) {
 	registry.Register(tool)
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	ctx := context.Background()

@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/v0lka/c0wrk/sdk/pathutil"
 )
 
 // SymlinkTraversal describes a path that traverses a symlink.
@@ -239,7 +241,8 @@ func checkPathsForSymlinks(paths []string, workspace string) (inside, outside []
 		if t == nil {
 			continue
 		}
-		t.OutsideWorkspace = isPathOutside(t.FullResolved, workspace)
+		ok, _ := pathutil.IsWithinPath(workspace, t.FullResolved)
+		t.OutsideWorkspace = !ok
 		if t.OutsideWorkspace {
 			outside = append(outside, *t)
 		} else {
@@ -259,7 +262,7 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 	}
 
 	cleaned := filepath.Clean(absPath)
-	parts := splitPath(cleaned)
+	parts := pathutil.SplitPathComponents(cleaned)
 	if len(parts) == 0 {
 		return nil
 	}
@@ -335,54 +338,7 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 	return nil
 }
 
-// splitPath splits a cleaned absolute path into components,
-// handling the leading separator properly.
-func splitPath(p string) []string {
-	sep := string(filepath.Separator)
-	parts := strings.Split(p, sep)
-	// Remove leading empty string from split of absolute path (e.g., "/a/b" → ["", "a", "b"])
-	if len(parts) > 0 && parts[0] == "" {
-		parts = parts[1:]
-	}
-	// Filter empty parts
-	var result []string
-	for _, part := range parts {
-		if part != "" {
-			result = append(result, part)
-		}
-	}
-	return result
-}
 
-// isPathOutside returns true if the given absolute path is not within the
-// workspace directory. Both paths are symlink-resolved for accurate comparison
-// (handles macOS /tmp → /private/tmp and similar OS-level symlinks).
-// Uses filepath.Rel for robust boundary detection that correctly handles
-// sibling directories (e.g., /home/user/proj vs /home/user/proj-other),
-// case-insensitive filesystems, and other edge cases.
-func isPathOutside(absPath, workspace string) bool {
-	if workspace == "" {
-		return false
-	}
-
-	workspaceAbs := filepath.Clean(workspace)
-	if resolved, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
-		workspaceAbs = resolved
-	}
-
-	pathAbs := filepath.Clean(absPath)
-	if resolved, err := filepath.EvalSymlinks(pathAbs); err == nil {
-		pathAbs = resolved
-	}
-
-	rel, err := filepath.Rel(workspaceAbs, pathAbs)
-	if err != nil {
-		// Different volume roots — path is definitely outside workspace.
-		return true
-	}
-	// If the relative path starts with "..", the path escapes the workspace.
-	return strings.HasPrefix(rel, "..")
-}
 
 // FormatSymlinkReasoning formats symlink traversals into a human-readable
 // message for the confirmation dialog. Outside-workspace traversals are
@@ -426,5 +382,3 @@ func FormatSymlinkReasoning(inside, outside []SymlinkTraversal, suspicious bool)
 
 	return strings.TrimSpace(sb.String())
 }
-
-

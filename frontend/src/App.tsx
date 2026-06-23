@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { subscribe } from '@/api/runtime'
+import { listProjects } from '@/api/projects'
 import { AlertCircle, X } from 'lucide-react'
 import { SettingsModal } from '@/components/settings/SettingsModal'
 import { ToolInstallSplash } from '@/components/ToolInstallSplash'
@@ -102,6 +103,30 @@ function App() {
         return prev
       })
     })
+  }, [])
+
+  // ── Safety net: try RPC on mount to detect already-ready backend ─────
+  // If the backend completed startup before the frontend subscribed to
+  // events, backend:ready would have been missed. An RPC that succeeds
+  // proves the backend is wired; transition to main immediately.
+  // Guarded: only acts when no tools are being installed (splashTools
+  // is null), to avoid transitioning past the tool-install splash.
+  useEffect(() => {
+    let cancelled = false
+    listProjects().then(() => {
+      if (cancelled) return
+      setSplashTools(prev => {
+        // Only transition if we didn't receive tool_manager:start
+        // (i.e. no tools are being installed).
+        if (prev === null) {
+          setPhase(p => (p === 'splash' || p === 'waiting_ready') ? 'main' : p)
+        }
+        return prev
+      })
+    }).catch(() => {
+      // Backend not ready yet — the backend:ready event will handle it.
+    })
+    return () => { cancelled = true }
   }, [])
 
   // Listen for runtime errors from the backend (e.g. git missing for CODE mode)

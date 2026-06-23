@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1293,7 +1292,7 @@ func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreFo
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetProjectResolver(func(projectID string) (string, error) {
-		return filepath.Join(agentDir, projectID), nil
+		return config.ProjectDir(agentDir, projectID), nil
 	})
 
 	return mgr, eventChan, store

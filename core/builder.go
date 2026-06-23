@@ -18,6 +18,7 @@ import (
 	"github.com/openai/openai-go/option"
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
+	"github.com/v0lka/c0wrk/sdk/proxy"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
@@ -94,7 +95,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc sdktools.AskUserFunc
 
 	// 0. Build proxy client (fast — no network, just config parsing)
 	if cfg.Proxy.Enabled {
-		proxyClient, err := BuildProxyClient(cfg.Proxy, 30*time.Second, logger)
+		proxyClient, err := proxy.BuildClient(cfg.Proxy, 30*time.Second, logger)
 		if err != nil {
 			logger.Warn("failed to build proxy client, proceeding without proxy", "error", err)
 		} else {
@@ -102,7 +103,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc sdktools.AskUserFunc
 			// Opt-in global env mutation (W-12). SetGlobalEnv defaults to false;
 			// only set when the user explicitly opts in via config.
 			if cfg.Proxy.SetGlobalEnv {
-				SetProxyEnvVars(cfg.Proxy)
+				proxy.SetEnvVars(cfg.Proxy)
 			}
 		}
 	}
@@ -474,9 +475,9 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		// Always clear global env on disable so a previously-set HTTP_PROXY does
 		// not linger after the user turns the proxy off, regardless of
 		// SetGlobalEnv (the user has explicitly switched proxy off).
-		ClearProxyEnvVars()
+		proxy.ClearEnvVars()
 	} else {
-		proxyClient, err := BuildProxyClient(cfg.Proxy, 30*time.Second, b.logger)
+		proxyClient, err := proxy.BuildClient(cfg.Proxy, 30*time.Second, b.logger)
 		if err != nil {
 			return fmt.Errorf("building proxy client: %w", err)
 		}
@@ -487,7 +488,7 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		// only set when the user explicitly opts in via config. Never clear
 		// when proxy is enabled — the user may have set proxy env vars externally.
 		if cfg.Proxy.SetGlobalEnv {
-			SetProxyEnvVars(cfg.Proxy)
+			proxy.SetEnvVars(cfg.Proxy)
 		}
 	}
 
@@ -705,7 +706,7 @@ func (b *OrchestratorBuilder) buildSessionSkillManager(workspacePath string, log
 
 	dirs := make([]string, 0, len(baseDirs)+1)
 	if workspacePath != "" {
-		dirs = append(dirs, filepath.Join(workspacePath, ".agents", "skills"))
+		dirs = append(dirs, filepath.Join(workspacePath, SkillsRelativePath))
 	}
 	dirs = append(dirs, baseDirs...)
 

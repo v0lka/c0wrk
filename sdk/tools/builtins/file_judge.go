@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"strings"
-
+	"github.com/v0lka/c0wrk/sdk/pathutil"
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
@@ -41,29 +40,14 @@ func judgeWriteInWorkspace(ctx context.Context, path string) (allowed bool, reas
 		absPathClean = filepath.Join(resolvedParent, filepath.Base(absPathClean))
 	}
 
-	if !strings.HasSuffix(workspaceAbs, string(filepath.Separator)) {
-		workspaceAbs += string(filepath.Separator)
-	}
-
-	workspaceClean := strings.TrimSuffix(workspaceAbs, string(filepath.Separator))
-	if !strings.HasPrefix(absPathClean+string(filepath.Separator), workspaceAbs) && absPathClean != workspaceClean {
+	ok, err := pathutil.IsWithinPath(workspaceAbs, absPathClean)
+	if err != nil || !ok {
 		return false, ""
 	}
 
 	return true, "target is within session workspace"
 }
 
-// isPathContainedIn checks whether absPath is within or equal to root (both already resolved).
-func isPathContainedIn(absPath, root string) bool {
-	if root == "" {
-		return false
-	}
-	if !strings.HasSuffix(root, string(filepath.Separator)) {
-		root += string(filepath.Separator)
-	}
-	rootClean := strings.TrimSuffix(root, string(filepath.Separator))
-	return strings.HasPrefix(absPath+string(filepath.Separator), root) || absPath == rootClean
-}
 
 // judgeReadInWorkspace checks whether a read operation targets a path inside
 // the session workspace or temp directory. For PolicyAlwaysAllow read tools:
@@ -106,7 +90,8 @@ func judgeReadInWorkspace(ctx context.Context, input json.RawMessage) (allowed b
 		if evaled, evalErr := filepath.EvalSymlinks(wsAbs); evalErr == nil {
 			wsAbs = evaled
 		}
-		if isPathContainedIn(absPath, wsAbs) {
+		ok, err := pathutil.IsWithinPath(wsAbs, absPath)
+		if err == nil && ok {
 			return true, "read-only file operation within workspace"
 		}
 	}
@@ -117,7 +102,8 @@ func judgeReadInWorkspace(ctx context.Context, input json.RawMessage) (allowed b
 		if evaled, evalErr := filepath.EvalSymlinks(tmpAbs); evalErr == nil {
 			tmpAbs = evaled
 		}
-		if isPathContainedIn(absPath, tmpAbs) {
+		ok, err := pathutil.IsWithinPath(tmpAbs, absPath)
+		if err == nil && ok {
 			return true, "read-only file operation within temp directory"
 		}
 	}

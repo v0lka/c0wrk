@@ -64,7 +64,7 @@ func TestManager_CreateProject_Internal(t *testing.T) {
 	}
 
 	// Verify workspace directory was created (under projects/<id>/Workspace)
-	expectedWorkspace := filepath.Join(agentDir, "projects", proj.ID, config.WorkspaceSegment)
+	expectedWorkspace := config.ProjectWorkspacePath(agentDir, proj.ID)
 	if proj.WorkspacePath != expectedWorkspace {
 		t.Errorf("WorkspacePath = %q, want %q", proj.WorkspacePath, expectedWorkspace)
 	}
@@ -108,7 +108,7 @@ func TestManager_CreateProject_External(t *testing.T) {
 	}
 
 	// Verify NO directory was created under agentDir for external projects
-	projectDir := filepath.Join(agentDir, "projects", proj.ID)
+	projectDir := config.ProjectDir(agentDir, proj.ID)
 	if _, err := os.Stat(projectDir); !os.IsNotExist(err) {
 		t.Errorf("no directory should be created under agentDir for external projects, but %q exists", projectDir)
 	}
@@ -132,7 +132,7 @@ func TestManager_DeleteProject_Internal(t *testing.T) {
 	}
 
 	// Verify directory exists before delete
-	projectDir := filepath.Join(agentDir, "projects", proj.ID)
+	projectDir := config.ProjectDir(agentDir, proj.ID)
 	if _, err := os.Stat(projectDir); err != nil {
 		t.Fatalf("project directory should exist before delete: %v", err)
 	}

@@ -7,14 +7,13 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/v0lka/c0wrk/core/tools"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
-// Compile-time check that Tool implements tools.ToolJudger.
-var _ tools.ToolJudger = (*Tool)(nil)
+// Compile-time check that Tool implements sdktools.ToolJudger.
+var _ sdktools.ToolJudger = (*Tool)(nil)
 
-// Tool wraps an MCP server tool as a tools.Tool interface implementation.
+// Tool wraps an MCP server tool as a sdktools.Tool interface implementation.
 type Tool struct {
 	server      *Server
 	name        string
@@ -218,7 +217,7 @@ func (t *Tool) ServerName() string {
 	return t.server.Name()
 }
 
-// Judge implements tools.ToolJudger for MCP tools.
+// Judge implements sdktools.ToolJudger for MCP tools.
 // MCP tools are remote and opaque, so we always defer to the LLM Judge.
 func (t *Tool) Judge(_ context.Context, _ json.RawMessage) (allowed bool, reason string) {
 	return false, "" // defer to LLM Judge

@@ -7,6 +7,7 @@ Provides tool infrastructure for the agent: discovery, registration, policy enfo
 ## Key Files
 
 - `sdk/tools/tool.go` — Tool interface, ToolDescriptor, ToolPolicy, ToolResult, BaseTool
+- `sdk/tools/safety.go` — ToolJudger, ConfirmFunc, ConfirmationRequest, ConfirmationResponse
 - `sdk/tools/registry.go` — SDK ToolRegistry (basic get/list/execute/ListFiltered)
 - `sdk/security/wrap.go` — Content wrapping for untrusted tool output (indirect prompt injection defense)
 - `core/tools/registry.go` — core ToolRegistry (wraps SDK, adds policies/judge/hooks/symlink check)

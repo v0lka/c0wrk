@@ -148,6 +148,7 @@ func (s *SQLiteSessionStore) createTables() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id);
+	CREATE INDEX IF NOT EXISTS idx_session_messages_session_role ON session_messages(session_id, role);
 	CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
 
 	CREATE TABLE IF NOT EXISTS tasks (
@@ -464,6 +465,27 @@ func (s *SQLiteSessionStore) GetSessionsInPlanReview(ctx context.Context, projec
 		sessions = []SessionInfo{}
 	}
 	return sessions, nil
+}
+
+// HasResolvedPlanReviewMessage checks whether the session has a plan_review
+// message marked as resolved (accepted or rejected) in its chat history.
+// This is used during plan review recovery to skip re-emitting plan_review_ready
+// for sessions whose plan was already handled.
+func (s *SQLiteSessionStore) HasResolvedPlanReviewMessage(ctx context.Context, sessionID string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT metadata FROM session_messages
+		WHERE session_id = ? AND role = 'plan_review'
+		  AND json_extract(metadata, '$.resolved') = 1
+		LIMIT 1`, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check resolved plan review: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			s.log().Warn("failed to close database rows", "error", err)
+		}
+	}()
+	return rows.Next(), rows.Err()
 }
 
 // SaveMessage saves a chat message.

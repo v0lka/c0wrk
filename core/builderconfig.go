@@ -1,5 +1,7 @@
 package core
 
+import "github.com/v0lka/c0wrk/sdk/proxy"
+
 // BuilderConfig holds all configuration that the OrchestratorBuilder needs.
 // It is defined in core so that core never imports backend/config.
 // The backend layer constructs a BuilderConfig from *config.Config via ToBuilderConfig.
@@ -14,7 +16,7 @@ type BuilderConfig struct {
 	Orchestration BuilderOrchestrationConfig
 	ToolLimits    BuilderToolLimitsConfig
 	Timeouts      BuilderTimeoutsConfig
-	Proxy         BuilderProxyConfig
+	Proxy         proxy.Config
 
 	// ExpandEnvVars resolves ${ENV_VAR} patterns in a string.
 	// Injected by the backend so core does not import os/config.
@@ -268,21 +270,4 @@ type BuilderTimeoutsConfig struct {
 	WebSearchTimeout int
 }
 
-// ---------------------------------------------------------------------------
-// Proxy
-// ---------------------------------------------------------------------------
 
-// BuilderProxyConfig holds HTTP/HTTPS proxy settings.
-type BuilderProxyConfig struct {
-	Enabled    bool
-	URL        string   // env-expanded proxy URL
-	BypassList []string // hostnames/IPs to skip proxy
-	TLSCertDir string   // env-expanded path to custom CA certs directory
-
-	// SetGlobalEnv, when true, mutates HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
-	// in the process environment so subprocesses (e.g. bash_exec children) inherit
-	// the proxy settings. Default false — most callers should use the explicitly
-	// threaded *http.Client returned by BuildProxyClient instead. Mutating global
-	// env affects every child process and other Go libraries that read these vars.
-	SetGlobalEnv bool
-}

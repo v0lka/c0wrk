@@ -1,8 +1,9 @@
 package backend
 
 import (
-	"path/filepath"
 	"sync/atomic"
+
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // ListSkills returns lightweight descriptors for all available skills,
@@ -21,7 +22,7 @@ func (f *FrontendAPI) ListSkills() []SkillDescriptorDTO {
 
 	projectSkillDir := ""
 	if wsPath != "" {
-		projectSkillDir = filepath.Join(wsPath, ".agents", "skills")
+		projectSkillDir = config.ProjectSkillsPath(wsPath)
 	}
 
 	// Check cache: valid if gen matches and project path hasn't changed.

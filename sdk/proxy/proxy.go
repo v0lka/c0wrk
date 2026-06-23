@@ -1,4 +1,5 @@
-package core
+// Package proxy provides reusable HTTP proxy infrastructure for AI agent SDKs.
+package proxy
 
 import (
 	"crypto/tls"
@@ -15,10 +16,25 @@ import (
 	"time"
 )
 
-// BuildProxyTransport creates an *http.Transport configured with the given proxy settings.
+// Config holds HTTP/HTTPS proxy settings.
+type Config struct {
+	Enabled    bool
+	URL        string   // scheme://user:password@host:port
+	BypassList []string // hostnames/IPs to skip proxy
+	TLSCertDir string   // directory with .pem/.crt CA certs
+
+	// SetGlobalEnv, when true, mutates HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
+	// in the process environment so subprocesses inherit the proxy settings.
+	// Default false — most callers should use the explicitly threaded *http.Client
+	// returned by BuildClient instead. Mutating global env affects every child
+	// process and other Go libraries that read these vars.
+	SetGlobalEnv bool
+}
+
+// BuildTransport creates an *http.Transport configured with the given proxy settings.
 // It sets up proxy routing, bypass list, and custom TLS CA certificates.
 // Returns nil transport (no error) if proxy is disabled.
-func BuildProxyTransport(cfg BuilderProxyConfig, logger *slog.Logger) (*http.Transport, error) {
+func BuildTransport(cfg Config, logger *slog.Logger) (*http.Transport, error) {
 	if !cfg.Enabled || cfg.URL == "" {
 		return nil, nil
 	}
@@ -60,10 +76,10 @@ func BuildProxyTransport(cfg BuilderProxyConfig, logger *slog.Logger) (*http.Tra
 	return transport, nil
 }
 
-// BuildProxyClient creates an *http.Client configured with proxy settings and
+// BuildClient creates an *http.Client configured with proxy settings and
 // the given timeout. Returns nil (no error) if proxy is disabled.
-func BuildProxyClient(cfg BuilderProxyConfig, timeout time.Duration, logger *slog.Logger) (*http.Client, error) {
-	transport, err := BuildProxyTransport(cfg, logger)
+func BuildClient(cfg Config, timeout time.Duration, logger *slog.Logger) (*http.Client, error) {
+	transport, err := BuildTransport(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -76,12 +92,12 @@ func BuildProxyClient(cfg BuilderProxyConfig, timeout time.Duration, logger *slo
 	}, nil
 }
 
-// SetProxyEnvVars sets HTTP_PROXY, HTTPS_PROXY, NO_PROXY, and SSL_CERT_DIR
+// SetEnvVars sets HTTP_PROXY, HTTPS_PROXY, NO_PROXY, and SSL_CERT_DIR
 // environment variables based on the proxy configuration.
 // These are inherited by child processes (e.g. bash_exec).
-func SetProxyEnvVars(cfg BuilderProxyConfig) {
+func SetEnvVars(cfg Config) {
 	if !cfg.Enabled || cfg.URL == "" {
-		ClearProxyEnvVars()
+		ClearEnvVars()
 		return
 	}
 	_ = os.Setenv("HTTP_PROXY", cfg.URL)
@@ -100,8 +116,8 @@ func SetProxyEnvVars(cfg BuilderProxyConfig) {
 	}
 }
 
-// ClearProxyEnvVars removes proxy-related environment variables.
-func ClearProxyEnvVars() {
+// ClearEnvVars removes proxy-related environment variables.
+func ClearEnvVars() {
 	_ = os.Unsetenv("HTTP_PROXY")
 	_ = os.Unsetenv("HTTPS_PROXY")
 	_ = os.Unsetenv("http_proxy")
@@ -111,9 +127,9 @@ func ClearProxyEnvVars() {
 	_ = os.Unsetenv("SSL_CERT_DIR")
 }
 
-// MaskProxyURL replaces the password in a proxy URL with "***" for safe display.
+// MaskURL replaces the password in a proxy URL with "***" for safe display.
 // Returns the original string if parsing fails.
-func MaskProxyURL(rawURL string) string {
+func MaskURL(rawURL string) string {
 	if rawURL == "" {
 		return ""
 	}

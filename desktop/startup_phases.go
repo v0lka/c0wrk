@@ -23,7 +23,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
 	"github.com/v0lka/c0wrk/core/toolmanager"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/embedding"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -137,23 +136,26 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 		},
 	})
 
+	// Show the window unconditionally at the start of tool initialization so
+	// the frontend has time to mount and subscribe to events before
+	// backend:ready fires in Phase 5. On first run this reveals the
+	// tool-install splash; on subsequent runs it prevents the race where
+	// backend:ready is emitted before the frontend subscribes, which would
+	// leave the app stuck on the spinner forever.
+	// WindowShow is idempotent — calling it again in emitBackendReady is a
+	// no-op when the window is already visible.
+	wailsRuntime.WindowShow(ctx)
+
 	// Early detection: check which tools need installing BEFORE doing any work.
-	// This lets us decide whether to show the window + splash or keep it hidden.
 	needed, needsErr := mgr.NeedsInstall()
 	if needsErr != nil {
 		log.Warn("failed to check tool install status, showing window as fallback", "error", needsErr)
 		// ManagedTools() or ReadVersions() failed — we can't determine which tools
-		// need installing, but EnsureCriticalTools will run regardless. Show the window
-		// so the user sees progress instead of staring at nothing.
-		wailsRuntime.WindowShow(ctx)
+		// need installing, but EnsureCriticalTools will run regardless.
 		a.emit(backend.EventToolManagerStart, map[string]any{
 			"tools": []map[string]string{},
 		})
 	} else if len(needed) > 0 {
-		// Emit BEFORE WindowShow so splash data is queued when the
-		// frontend mounts. App.tsx auto-populates splashTools from
-		// tool_manager:progress events as a fallback if this event
-		// is missed due to a mount-timing race.
 		toolNames := make([]map[string]string, len(needed))
 		for i, t := range needed {
 			toolNames[i] = map[string]string{"name": t.Name, "version": t.Version}
@@ -161,7 +163,6 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 		a.emit(backend.EventToolManagerStart, map[string]any{
 			"tools": toolNames,
 		})
-		wailsRuntime.WindowShow(ctx)
 	}
 
 	if err := mgr.EnsureCriticalTools(ctx); err != nil {
@@ -183,6 +184,13 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 			"skipped_count":   0,
 		})
 	} else if needsErr != nil {
+		a.emit(backend.EventToolManagerDone, map[string]any{
+			"installed_count": 0,
+			"skipped_count":   0,
+		})
+	} else {
+		// No tools needed — tell the frontend so it can transition from splash
+		// to waiting_ready before backend:ready arrives.
 		a.emit(backend.EventToolManagerDone, map[string]any{
 			"installed_count": 0,
 			"skipped_count":   0,
@@ -321,23 +329,23 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) sdktools.AskUserF
 // when no UI context is available we return ConfirmDenyAndStop and log a
 // warning rather than auto-approving — silently allowing in this path would
 // let any tool execute without user oversight.
-func (a *App) buildConfirmCallback(uiEmit func(session.Event)) tools.ConfirmFunc {
-	return func(ctx context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
+func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmFunc {
+	return func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		if a.ctx == nil {
 			slog.Warn("confirmation callback denied: app context unavailable",
 				"tool", req.ToolName, "reason", "ctx_nil")
-			return tools.ConfirmDenyAndStop, nil
+			return sdktools.ConfirmDenyAndStop, nil
 		}
 
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
 			slog.Warn("confirmation callback denied: no session ID in context",
 				"tool", req.ToolName, "reason", "session_id_missing")
-			return tools.ConfirmDenyAndStop, nil
+			return sdktools.ConfirmDenyAndStop, nil
 		}
 
 		requestID := uuid.New().String()
-		ch := make(chan tools.ConfirmationResponse, 1)
+		ch := make(chan sdktools.ConfirmationResponse, 1)
 		a.pendingConfirmations.Store(requestID, &pendingConfirmData{
 			ch:          ch,
 			taskContext: sdktools.TaskContextFrom(ctx),
@@ -359,10 +367,10 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) tools.ConfirmFunc
 			return resp, nil
 		case <-ctx.Done():
 			a.pendingConfirmations.Delete(requestID)
-			return tools.ConfirmDenyAndStop, ctx.Err()
+			return sdktools.ConfirmDenyAndStop, ctx.Err()
 		case <-a.ctx.Done():
 			a.pendingConfirmations.Delete(requestID)
-			return tools.ConfirmDenyAndStop, a.ctx.Err()
+			return sdktools.ConfirmDenyAndStop, a.ctx.Err()
 		}
 	}
 }

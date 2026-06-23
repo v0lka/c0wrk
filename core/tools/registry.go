@@ -52,7 +52,7 @@ type ParamInjector func(toolName, source string, input json.RawMessage) json.Raw
 type ToolRegistry struct {
 	*sdktools.ToolRegistry
 	mu                         sync.RWMutex
-	confirmFunc                ConfirmFunc
+	confirmFunc                sdktools.ConfirmFunc
 	judge                      *sdktools.ToolJudge
 	policyOverrides            map[string]sdktools.ToolPolicy
 	skillPolicyOverrides       map[string]sdktools.ToolPolicy
@@ -191,7 +191,7 @@ func (r *ToolRegistry) log() *slog.Logger {
 
 // SetConfirmFunc sets the confirmation callback for mutating tools.
 // If nil, all tools execute without confirmation (CLI mode).
-func (r *ToolRegistry) SetConfirmFunc(fn ConfirmFunc) {
+func (r *ToolRegistry) SetConfirmFunc(fn sdktools.ConfirmFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.confirmFunc = fn
@@ -397,7 +397,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	switch policy {
 	case sdktools.PolicyAlwaysAllow:
 		// Safety filter: if the tool implements ToolJudger and flags the call, escalate to user confirmation.
-		if judger, ok := tool.(ToolJudger); ok {
+		if judger, ok := tool.(sdktools.ToolJudger); ok {
 			allow, reasoning := judger.Judge(ctx, input)
 			if !allow && reasoning != "" {
 				r.log().Debug("sdktools.PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
@@ -421,7 +421,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		autoApprove := r.autoApproveWorkspaceWrites
 		r.mu.RUnlock()
 		if autoApprove {
-			if judger, ok := tool.(ToolJudger); ok {
+			if judger, ok := tool.(sdktools.ToolJudger); ok {
 				allow, reason := judger.Judge(ctx, input)
 				if allow {
 					r.log().Debug("workspace auto-approve: Judge allows", "tool", name, "reason", reason)
@@ -447,7 +447,7 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool
 		return tool.Execute(ctx, input)
 	}
 
-	resp, err := confirmFunc(ctx, ConfirmationRequest{
+	resp, err := confirmFunc(ctx, sdktools.ConfirmationRequest{
 		ToolName:       name,
 		Input:          input,
 		JudgeReasoning: reasoning,
@@ -457,15 +457,15 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool
 	}
 
 	switch resp {
-	case ConfirmAllowOnce:
+	case sdktools.ConfirmAllowOnce:
 		return tool.Execute(ctx, input)
-	case ConfirmDeny:
+	case sdktools.ConfirmDeny:
 		msg := "Tool execution denied by user."
 		if reasoning != "" {
 			msg += " LLM Judge reasoning for flagging this call: " + reasoning
 		}
 		return sdktools.ToolResult{Content: msg, IsError: true}, nil
-	case ConfirmDenyAndStop:
+	case sdktools.ConfirmDenyAndStop:
 		return sdktools.ToolResult{}, context.Canceled
 	default:
 		return sdktools.ToolResult{}, fmt.Errorf("unknown confirmation response: %d", resp)

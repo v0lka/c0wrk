@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
+
+	"github.com/v0lka/c0wrk/sdk/pathutil"
 )
 
 // SkillManager discovers, parses, and serves Agent Skills from configured directories.
@@ -145,18 +146,12 @@ func (m *SkillManager) ResolveResourcePath(skillName, relPath string) (string, e
 func SafeResolvePath(baseDir, relPath string) (string, error) {
 	cleanBase := filepath.Clean(baseDir)
 	cleanAbs := filepath.Clean(filepath.Join(baseDir, relPath))
-	if cleanAbs != cleanBase && !isSubPath(cleanBase, cleanAbs) {
-		return "", fmt.Errorf("path %q escapes skill directory", relPath)
+	if cleanAbs != cleanBase {
+		ok, err := pathutil.IsWithinPath(cleanBase, cleanAbs)
+		if err != nil || !ok {
+			return "", fmt.Errorf("path %q escapes skill directory", relPath)
+		}
 	}
 	return cleanAbs, nil
 }
 
-// isSubPath returns true if sub is a descendant of parent or the same directory.
-func isSubPath(parent, sub string) bool {
-	rel, err := filepath.Rel(parent, sub)
-	if err != nil {
-		return false
-	}
-	// rel is "." for same dir, ".." or "../*" for escapes, anything else is a descendant.
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}

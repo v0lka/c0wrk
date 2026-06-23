@@ -3,6 +3,7 @@ package backend
 import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/proxy"
 )
 
 // derefBool safely dereferences a *bool, defaulting to true when nil.
@@ -161,7 +162,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			WebFetchTimeout:  cfg.Timeouts.WebFetchTimeout,
 			WebSearchTimeout: cfg.Timeouts.WebSearchTimeout,
 		},
-		Proxy: core.BuilderProxyConfig{
+		Proxy: proxy.Config{
 			Enabled:      cfg.Proxy.Enabled,
 			URL:          config.ExpandEnvVars(cfg.Proxy.URL),
 			BypassList:   cfg.Proxy.BypassList,

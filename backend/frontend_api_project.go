@@ -643,6 +643,20 @@ func (f *FrontendAPI) recoverPlanReviewSessions(p *project.ProjectInfo) {
 			continue
 		}
 
+		// Check if the plan was already resolved (accepted or rejected).
+		// A resolved plan_review message in chat history means the plan was
+		// handled and we should not re-emit plan_review_ready.
+		if resolved, rErr := f.store.HasResolvedPlanReviewMessage(ctx, info.ID); rErr != nil {
+			f.log().Warn("failed to check resolved plan review, skipping recovery", "session", info.ID, "error", rErr)
+			continue
+		} else if resolved {
+			f.log().Info("clearing stale plan review state (plan already resolved)", "session", info.ID)
+			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
+				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
+			}
+			continue
+		}
+
 		// Restore the session into memory (getOrRestoreSession also restores planReviewBB/Route from persistence).
 		sess, ok := manager.GetSession(info.ID)
 		if !ok || sess == nil {

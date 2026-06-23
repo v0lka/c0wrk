@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/v0lka/c0wrk/sdk/pathutil"
 )
 
 // ── extractAllPathsFromJSON tests ─────────────────────────────────────────
@@ -516,25 +518,29 @@ func TestDetectSymlinks_StructuredClean(t *testing.T) {
 // ── isPathOutside tests ───────────────────────────────────────────────────
 
 func TestIsPathOutside_InsideWorkspace(t *testing.T) {
-	if isPathOutside("/workspace/project/file.txt", "/workspace/project") {
+	ok, err := pathutil.IsWithinPath("/workspace/project", "/workspace/project/file.txt")
+	if err != nil || !ok {
 		t.Fatal("expected inside workspace")
 	}
 }
 
 func TestIsPathOutside_OutsideWorkspace(t *testing.T) {
-	if !isPathOutside("/etc/passwd", "/workspace") {
+	ok, _ := pathutil.IsWithinPath("/workspace", "/etc/passwd")
+	if ok {
 		t.Fatal("expected outside workspace")
 	}
 }
 
 func TestIsPathOutside_EmptyWorkspace(t *testing.T) {
-	if isPathOutside("/tmp/anything", "") {
-		t.Fatal("expected false for empty workspace (can't determine)")
+	ok, _ := pathutil.IsWithinPath("", "/tmp/anything")
+	if !ok {
+		t.Fatal("expected true for empty workspace (can't determine)")
 	}
 }
 
 func TestIsPathOutside_WorkspaceIsFile(t *testing.T) {
-	if !isPathOutside("/workspace", "/workspace/other/dir") {
+	ok, _ := pathutil.IsWithinPath("/workspace/other/dir", "/workspace")
+	if ok {
 		t.Fatal("expected outside — path is parent of workspace")
 	}
 }

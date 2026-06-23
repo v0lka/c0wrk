@@ -41,9 +41,9 @@ func TestCheckSymlinksAndConfirm_InternalToolBypass(t *testing.T) {
 func TestCheckSymlinksAndConfirm_CleanPathNoIntercept(t *testing.T) {
 	dir := t.TempDir()
 	r := newRegistryForSymlinkTest(t)
-	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		t.Fatal("confirmFunc should NOT be called for clean path")
-		return ConfirmDeny, nil
+		return sdktools.ConfirmDeny, nil
 	})
 
 	normalPath := filepath.Join(dir, "normal.txt")
@@ -70,10 +70,10 @@ func TestCheckSymlinksAndConfirm_Intercepts(t *testing.T) {
 	_ = os.Symlink(realDir, symlinkPath)
 
 	r := newRegistryForSymlinkTest(t)
-	confirmed := make(chan ConfirmationRequest, 1)
-	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	confirmed := make(chan sdktools.ConfirmationRequest, 1)
+	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmed <- req
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	nestedPath := filepath.Join(symlinkPath, "file.txt")
@@ -112,9 +112,9 @@ func TestCheckSymlinksAndConfirm_RespectsAlwaysDeny(t *testing.T) {
 	r.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
 		"read_file": sdktools.PolicyAlwaysDeny,
 	})
-	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		t.Fatal("confirmFunc should NOT be called when policy is AlwaysDeny")
-		return ConfirmDeny, nil
+		return sdktools.ConfirmDeny, nil
 	})
 
 	nestedPath := filepath.Join(symlinkPath, "file.txt")
@@ -141,8 +141,8 @@ func TestCheckSymlinksAndConfirm_DenyResponse(t *testing.T) {
 	_ = os.Symlink(realDir, symlinkPath)
 
 	r := newRegistryForSymlinkTest(t)
-	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
-		return ConfirmDeny, nil
+	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		return sdktools.ConfirmDeny, nil
 	})
 
 	nestedPath := filepath.Join(symlinkPath, "file.txt")
@@ -171,9 +171,9 @@ func TestCheckSymlinksAndConfirm_BashExecWithSymlink(t *testing.T) {
 
 	r := newRegistryForSymlinkTest(t)
 	confirmed := make(chan string, 1)
-	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmed <- req.JudgeReasoning
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	command := "cat " + filepath.Join(symlinkPath, "file.txt")
@@ -201,9 +201,9 @@ func TestCheckSymlinksAndConfirm_BashExecWithSymlink(t *testing.T) {
 func TestCheckSymlinksAndConfirm_BashExecSuspiciousForceConfirm(t *testing.T) {
 	r := newRegistryForSymlinkTest(t)
 	confirmed := make(chan struct{}, 1)
-	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmed <- struct{}{}
-		return ConfirmDeny, nil
+		return sdktools.ConfirmDeny, nil
 	})
 
 	input, _ := json.Marshal(map[string]string{"command": "cat $HOME/file"})
@@ -270,11 +270,11 @@ func TestCheckSymlinksAndConfirm_TempDirOSLevelSymlink(t *testing.T) {
 	ws := t.TempDir()
 
 	r := newRegistryForSymlinkTest(t)
-	r.SetConfirmFunc(func(ctx context.Context, req ConfirmationRequest) (ConfirmationResponse, error) {
+	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		if stringsContains(req.JudgeReasoning, "symlink") {
 			t.Fatalf("symlink gate should NOT have intercepted OS-level temp dir symlink; JudgeReasoning=%q", req.JudgeReasoning)
 		}
-		return ConfirmAllowOnce, nil
+		return sdktools.ConfirmAllowOnce, nil
 	})
 
 	command := "cat " + testFile

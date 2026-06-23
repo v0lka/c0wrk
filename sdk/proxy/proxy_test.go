@@ -1,4 +1,4 @@
-package core
+package proxy
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func TestShouldBypass(t *testing.T) {
 	}
 }
 
-func TestMaskProxyURL(t *testing.T) {
+func TestMaskURL(t *testing.T) {
 	tests := []struct {
 		in   string
 		want string
@@ -89,15 +89,15 @@ func TestMaskProxyURL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
-			if got := MaskProxyURL(tt.in); got != tt.want {
-				t.Errorf("MaskProxyURL(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := MaskURL(tt.in); got != tt.want {
+				t.Errorf("MaskURL(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestBuildProxyTransport_Disabled(t *testing.T) {
-	tr, err := BuildProxyTransport(BuilderProxyConfig{Enabled: false}, nil)
+func TestBuildTransport_Disabled(t *testing.T) {
+	tr, err := BuildTransport(Config{Enabled: false}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,8 +106,8 @@ func TestBuildProxyTransport_Disabled(t *testing.T) {
 	}
 }
 
-func TestBuildProxyTransport_Enabled(t *testing.T) {
-	tr, err := BuildProxyTransport(BuilderProxyConfig{
+func TestBuildTransport_Enabled(t *testing.T) {
+	tr, err := BuildTransport(Config{
 		Enabled:    true,
 		URL:        "http://proxy.example:3128",
 		BypassList: []string{"localhost"},
@@ -140,8 +140,8 @@ func TestBuildProxyTransport_Enabled(t *testing.T) {
 	}
 }
 
-func TestBuildProxyClient(t *testing.T) {
-	client, err := BuildProxyClient(BuilderProxyConfig{Enabled: false}, 5*time.Second, nil)
+func TestBuildClient(t *testing.T) {
+	client, err := BuildClient(Config{Enabled: false}, 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestBuildProxyClient(t *testing.T) {
 		t.Error("expected nil client when disabled")
 	}
 
-	client, err = BuildProxyClient(BuilderProxyConfig{
+	client, err = BuildClient(Config{
 		Enabled: true,
 		URL:     "http://proxy:3128",
 	}, 5*time.Second, nil)
@@ -164,7 +164,7 @@ func TestBuildProxyClient(t *testing.T) {
 	}
 }
 
-func TestSetProxyEnvVars_Roundtrip(t *testing.T) {
+func TestSetEnvVars_Roundtrip(t *testing.T) {
 	// Snapshot any pre-existing values so we can restore them.
 	keys := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_DIR"}
 	prev := map[string]string{}
@@ -181,13 +181,13 @@ func TestSetProxyEnvVars_Roundtrip(t *testing.T) {
 		}
 	})
 
-	cfg := BuilderProxyConfig{
+	cfg := Config{
 		Enabled:    true,
 		URL:        "http://proxy.example:3128",
 		BypassList: []string{"localhost", "127.0.0.1"},
 		TLSCertDir: "/etc/ssl/certs",
 	}
-	SetProxyEnvVars(cfg)
+	SetEnvVars(cfg)
 
 	if got := os.Getenv("HTTP_PROXY"); got != cfg.URL {
 		t.Errorf("HTTP_PROXY = %q, want %q", got, cfg.URL)
@@ -199,7 +199,7 @@ func TestSetProxyEnvVars_Roundtrip(t *testing.T) {
 		t.Errorf("SSL_CERT_DIR = %q, want %q", got, cfg.TLSCertDir)
 	}
 
-	ClearProxyEnvVars()
+	ClearEnvVars()
 	for _, k := range keys {
 		if got := os.Getenv(k); got != "" {
 			t.Errorf("after clear: %s = %q, want empty", k, got)
@@ -207,7 +207,7 @@ func TestSetProxyEnvVars_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestSetProxyEnvVars_Disabled(t *testing.T) {
+func TestSetEnvVars_Disabled(t *testing.T) {
 	prev := os.Getenv("HTTP_PROXY")
 	t.Cleanup(func() {
 		if prev == "" {
@@ -218,7 +218,7 @@ func TestSetProxyEnvVars_Disabled(t *testing.T) {
 	})
 
 	_ = os.Setenv("HTTP_PROXY", "http://stale:1234")
-	SetProxyEnvVars(BuilderProxyConfig{Enabled: false})
+	SetEnvVars(Config{Enabled: false})
 	if got := os.Getenv("HTTP_PROXY"); got != "" {
 		t.Errorf("disabled proxy did not clear HTTP_PROXY; got %q", got)
 	}

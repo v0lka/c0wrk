@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/epilande/go-devicons"
 
@@ -19,9 +18,20 @@ import (
 // For No Project (CHAT mode), WorkspacePath is the project directory itself
 // (~/.c0wrk/projects/__no_project__/); per-session workspaces live under
 // <sid>/workspace/.
+//
+// Additionally allows paths within session infrastructure directories
+// (plans/, temp/) which live under the project directory but outside the
+// workspace — these are needed for plan review and future features.
+//
+// IMPORTANT: for session-infra paths the returned absRoot is
+// config.ProjectDir(agentDir, projectID), NOT the project workspace.
+// Callers that compute relative paths from absRoot (e.g. GetFileDiff)
+// must account for this — the project data dir is not a git repo and
+// git-based diff operations will fall back to the no-repo variant.
 func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
+	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
 
 	if projectPath == "" {
@@ -45,11 +55,21 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 	if err != nil {
 		return "", "", fmt.Errorf("invalid workspace path: %w", err)
 	}
-	if absPath != absRoot && !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
-		return "", "", errors.New("path outside project workspace")
+	ok, err := config.IsWithinPath(absRoot, absPath)
+	if err != nil || !ok {
+		// Path is outside the project workspace — check if it falls within
+		// session infrastructure directories (plans/, temp/) under the
+		// project's data directory (~/.c0wrk/projects/<projectID>/).
+		projectDir := config.ProjectDir(f.agentDir, projectID)
+		if !config.IsSessionInfraPath(projectDir, absPath) {
+			return "", "", errors.New("path outside project workspace")
+		}
+		// Use the project data directory as the root for session infra paths.
+		absRoot = config.ProjectDir(f.agentDir, projectID)
 	}
 	return absPath, absRoot, nil
 }
+
 
 // resolveFileIcon returns the Nerd Font icon and hex color for a file or directory.
 // The color is snapped to the nearest theme palette color.
@@ -147,7 +167,8 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 	if err != nil {
 		return nil, fmt.Errorf("invalid workspace path: %w", err)
 	}
-	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(filepath.Separator)) {
+	ok, err := config.IsWithinPath(absRoot, absDir)
+	if err != nil || !ok {
 		return nil, errors.New("path outside project workspace")
 	}
 
@@ -230,7 +251,8 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	if err != nil {
 		return nil, fmt.Errorf("invalid workspace path: %w", err)
 	}
-	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(filepath.Separator)) {
+	ok, err := config.IsWithinPath(absRoot, absDir)
+	if err != nil || !ok {
 		return nil, errors.New("path outside project workspace")
 	}
 
