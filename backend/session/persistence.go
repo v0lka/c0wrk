@@ -200,6 +200,8 @@ func (s *SQLiteSessionStore) createTables() error {
 	// Migration: add plan_review columns for existing databases.
 	// Retry on SQLITE_BUSY (err 5) — ALTER TABLE requires exclusive access and
 	// may contend with in-flight read transactions during startup.
+	// Uses PRAGMA table_info to check column existence before ALTER TABLE,
+	// avoiding fragile driver-specific error string matching.
 	for _, col := range []struct {
 		name string
 		def  string
@@ -208,12 +210,16 @@ func (s *SQLiteSessionStore) createTables() error {
 		{"plan_review_path", "TEXT DEFAULT ''"},
 		{"plan_review_context", "TEXT DEFAULT ''"},
 	} {
+		if s.columnExists("sessions", col.name) {
+			continue // column already present, skip
+		}
+
+		// Column missing — attempt ALTER TABLE with retries on SQLITE_BUSY.
 		var lastErr error
 		for attempt := range 3 {
 			_, lastErr = s.db.ExecContext(context.Background(),
 				fmt.Sprintf("ALTER TABLE sessions ADD COLUMN %s %s", col.name, col.def))
-			if lastErr == nil || strings.Contains(lastErr.Error(), "duplicate column name") {
-				lastErr = nil
+			if lastErr == nil {
 				break
 			}
 			if !strings.Contains(lastErr.Error(), "database is locked") {
@@ -223,12 +229,27 @@ func (s *SQLiteSessionStore) createTables() error {
 				time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
 			}
 		}
-		if lastErr != nil && !strings.Contains(lastErr.Error(), "duplicate column name") {
+		if lastErr != nil {
 			s.log().Warn("migration ALTER TABLE failed", "column", col.name, "error", lastErr)
 		}
 	}
 
 	return nil
+}
+
+// columnExists checks whether a column exists in a table using PRAGMA table_info.
+func (s *SQLiteSessionStore) columnExists(table, column string) bool {
+	rows, err := s.db.QueryContext(context.Background(),
+		"SELECT 1 FROM pragma_table_info(?) WHERE name = ?", table, column)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			s.log().Warn("failed to close pragma rows", "error", cerr)
+		}
+	}()
+	return rows.Next()
 }
 
 // SaveSession saves or updates a session.
@@ -630,7 +651,7 @@ type TaskRecord struct {
 	Reflections     json.RawMessage `json:"reflections"`
 	FinalOutput     string          `json:"final_output"`
 	AttemptCount    int             `json:"attempt_count"`
-	Status          string          `json:"status"` // "in_progress", "completed", "failed"
+	Status          string          `json:"status"` // "in_progress", "completed", "failed", "cancelled"
 	CreatedAt       time.Time       `json:"created_at"`
 	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
 }
@@ -659,6 +680,7 @@ type TaskStore interface {
 	AddTaskReflection(ctx context.Context, taskID string, reflectionJSON json.RawMessage) error
 	CompleteTask(ctx context.Context, taskID, finalOutput string, attemptCount int) error
 	FailTask(ctx context.Context, taskID string) error
+	CancelTask(ctx context.Context, taskID string) error
 	LoadTask(ctx context.Context, taskID string) (*TaskRecord, error)
 	LoadTaskSteps(ctx context.Context, taskID string) ([]TaskStepRecord, error)
 	SaveFacts(ctx context.Context, taskID string, factsJSON json.RawMessage) error
@@ -795,6 +817,19 @@ func (s *SQLiteSessionStore) FailTask(ctx context.Context, taskID string) error 
 	)
 	if err != nil {
 		return fmt.Errorf("failed to fail task: %w", err)
+	}
+	return nil
+}
+
+// CancelTask marks a task as cancelled.
+func (s *SQLiteSessionStore) CancelTask(ctx context.Context, taskID string) error {
+	now := time.Now()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ?`,
+		now, taskID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to cancel task: %w", err)
 	}
 	return nil
 }
