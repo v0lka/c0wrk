@@ -122,10 +122,26 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	}
 }
 
+// FrontendAPILifecycle holds infrastructure/lifecycle methods that must NOT be
+// exposed as Wails RPC methods. FrontendAPI owns a pointer to this struct;
+// desktop accesses it via FrontendAPI.Lifecycle() which acts as a benign RPC
+// getter (returns a struct pointer — Wails does not recursively bind methods
+// on returned objects).
+type FrontendAPILifecycle struct {
+	f *FrontendAPI
+}
+
+// Lifecycle returns the lifecycle accessor for infrastructure methods that
+// should not be directly callable from the frontend.
+func (f *FrontendAPI) Lifecycle() *FrontendAPILifecycle {
+	return &FrontendAPILifecycle{f: f}
+}
+
 // SetConfigLoadState sets the config loading state for display by GetConfig.
 // Called by desktop after initial config loading.
-func (f *FrontendAPI) SetConfigLoadState(errors []string) {
-	f.configLoadErrors = errors
+// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+func (l *FrontendAPILifecycle) SetConfigLoadState(errors []string) {
+	l.f.configLoadErrors = errors
 }
 
 // ctx returns the application context, falling back to context.Background()
@@ -204,7 +220,9 @@ func (f *FrontendAPI) isNoProject() bool {
 
 // Cleanup releases resources owned by FrontendAPI.
 // Called from desktop.Shutdown.
-func (f *FrontendAPI) Cleanup() {
+// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+func (l *FrontendAPILifecycle) Cleanup() {
+	f := l.f
 	if f.terminalManager != nil {
 		f.terminalManager.StopAll()
 	}
@@ -244,10 +262,11 @@ func (f *FrontendAPI) log() *slog.Logger {
 
 // SetVectorManager sets the vector index manager after background initialization.
 // Thread-safe; may be called from any goroutine.
-func (f *FrontendAPI) SetVectorManager(m *vectorindex.Manager) {
-	f.vectorManagerMu.Lock()
-	f.vectorManager = m
-	f.vectorManagerMu.Unlock()
+// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+func (l *FrontendAPILifecycle) SetVectorManager(m *vectorindex.Manager) {
+	l.f.vectorManagerMu.Lock()
+	l.f.vectorManager = m
+	l.f.vectorManagerMu.Unlock()
 }
 
 // getVectorManager returns the vector index manager (may be nil if not yet initialized).

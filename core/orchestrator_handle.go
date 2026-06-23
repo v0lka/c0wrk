@@ -263,16 +263,20 @@ func (o *Orchestrator) executeContinuation(
 		return nil, errors.New("no existing plan found for continuation")
 	}
 
-	// Build completedSteps from BB's step results for PlanContinuation
+	// Build completedSteps from BB's step results for PlanContinuation.
+	// Iterate over the existing plan's step order (not the map) so the
+	// planner receives a deterministic, reproducible sequence of results.
 	singleStep := o.shouldUseSingleStep(opts.ExecutionMode)
 	allResults := bb.GetAllStepResults()
 	completedSteps := make([]orchestration.CompletedStep, 0, len(allResults))
-	for stepID, sr := range allResults {
-		completedSteps = append(completedSteps, orchestration.CompletedStep{
-			StepID: stepID,
-			Output: sr.FullOutput,
-			Steps:  sr.Steps,
-		})
+	for _, step := range existingPlan.Steps {
+		if sr, ok := allResults[step.ID]; ok {
+			completedSteps = append(completedSteps, orchestration.CompletedStep{
+				StepID: step.ID,
+				Output: sr.FullOutput,
+				Steps:  sr.Steps,
+			})
+		}
 	}
 
 	o.logDebug("orchestrator: calling PlanContinuation", "singleStep", singleStep)

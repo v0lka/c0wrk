@@ -121,9 +121,10 @@ type BuilderSummarization struct {
 
 // BuilderHierarchical configures hierarchical compaction ratios.
 type BuilderHierarchical struct {
-	DistantRatio float64
-	MiddleRatio  float64
-	RecentRatio  float64
+	EnabledAboveSteps int     // step count at which hierarchical compaction activates
+	DistantRatio      float64
+	MiddleRatio       float64
+	RecentRatio       float64
 }
 
 // BuilderCompactionThresholds defines context-window usage thresholds.

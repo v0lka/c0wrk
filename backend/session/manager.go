@@ -1042,13 +1042,6 @@ func (m *Manager) Shutdown() {
 		if session.active && session.cancel != nil {
 			session.cancel()
 		}
-		// Close log file
-		if session.logFile != nil {
-			_ = session.logFile.Close()
-		}
-		if session.dumpFile != nil {
-			_ = session.dumpFile.Close()
-		}
 		doneCh := session.done
 		session.mu.Unlock()
 
@@ -1067,5 +1060,17 @@ func (m *Manager) Shutdown() {
 		case <-p.doneCh:
 		case <-time.After(m.stopTimeout):
 		}
+	}
+
+	// Only close file handles after all goroutines have stopped.
+	for _, p := range pendingList {
+		p.session.mu.Lock()
+		if p.session.logFile != nil {
+			_ = p.session.logFile.Close()
+		}
+		if p.session.dumpFile != nil {
+			_ = p.session.dumpFile.Close()
+		}
+		p.session.mu.Unlock()
 	}
 }

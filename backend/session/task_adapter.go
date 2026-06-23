@@ -100,6 +100,11 @@ func (a *TaskStoreAdapter) PersistFailure(taskID string) error {
 	return a.store.FailTask(context.Background(), taskID)
 }
 
+// PersistCancellation marks the task as cancelled.
+func (a *TaskStoreAdapter) PersistCancellation(taskID string) error {
+	return a.store.CancelTask(context.Background(), taskID)
+}
+
 // ReactivateTask reactivates a completed task back to in_progress.
 func (a *TaskStoreAdapter) ReactivateTask(taskID string) error {
 	return a.store.ReactivateTask(context.Background(), taskID)

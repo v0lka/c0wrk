@@ -4,12 +4,15 @@ package project
 
 import (
 	"context"
+
+	"github.com/v0lka/c0wrk/core"
 )
 
 // NoProjectID is the well-known identifier for the "No Project" pseudo-project.
 // Sessions under this project receive per-session workspaces and code-oriented
 // tools are disabled.
-const NoProjectID = "__no_project__"
+// Defined in core/types.go; re-exported here for convenience.
+const NoProjectID = core.NoProjectID
 
 // ProjectInfo is the public-facing project metadata.
 type ProjectInfo struct {

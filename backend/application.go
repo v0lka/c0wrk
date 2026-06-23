@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/session"
@@ -123,7 +124,9 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	manager := session.NewManager(factory, emitFunc, cfg.AgentDir)
 	if cfg.SessionStore != nil {
 		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string) {
-			if err := cfg.SessionStore.UpdateSessionTokens(context.Background(), sessionID, inputTokens, outputTokens, model, family); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := cfg.SessionStore.UpdateSessionTokens(ctx, sessionID, inputTokens, outputTokens, model, family); err != nil {
 				app.log().Warn("failed to persist session tokens", "session", sessionID, "error", err)
 			}
 		})
@@ -240,7 +243,10 @@ func (e errJudgeNotAvailable) Error() string { return string(e) }
 // are resolved against agentDir. Entries that expand to an empty string after
 // substitution are dropped.
 func resolveSkillDirs(dirs []string, agentDir string, expandEnv func(string) string) []string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		slog.Default().Warn("failed to resolve user home directory; tilde-prefixed skill dirs will remain unresolved", "error", err)
+	}
 	resolved := make([]string, 0, len(dirs))
 	for _, d := range dirs {
 		d = expandEnv(d)

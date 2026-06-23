@@ -494,7 +494,7 @@ func (a *App) buildFrontendAPI(
 	a.FrontendAPI = backend.NewFrontendAPI(cfg)
 	log.Info("startup phase complete", "phase", "frontend_api", "elapsed_ms", time.Since(startTime).Milliseconds())
 
-	a.SetConfigLoadState(configLoadErrors)
+	a.Lifecycle().SetConfigLoadState(configLoadErrors)
 
 	// Wire project resolver for lazy session restoration.
 	if projStore != nil {
@@ -638,7 +638,7 @@ func (a *App) startVectorIndexBackground(
 		// Store on FrontendAPI immediately so Cleanup can shut it down — doing
 		// this here instead of in a separate goroutine eliminates the race where
 		// Shutdown runs Cleanup before SetVectorManager completes (W3).
-		a.SetVectorManager(vectorMgr)
+		a.Lifecycle().SetVectorManager(vectorMgr)
 		log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
 	}()
 }

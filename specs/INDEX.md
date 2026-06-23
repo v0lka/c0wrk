@@ -40,10 +40,15 @@
                      ▼
 ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌─────┐
 │ desktop  │───▶│ backend  │───▶│   core   │───▶│ sdk │
-└──────────┘    └──────────┘    └──────────┘    └─────┘
+└──────────┘    └────┬─────┘    └──────────┘    └─────┘
+                     │ direct import
+                     ▼
+                   ┌─────┐
+                   │ sdk │
+                   └─────┘
 ```
 
-Import rule: each arrow is one-way. `backend` imports `core` AND `sdk`. `core` remains the primary sdk consumer. See ADR-008.
+Import rule: each arrow is one-way. `backend` imports `core` AND `sdk` directly (per ADR-008). `core` remains the primary sdk consumer.
 
 ## Spec Workflow and Format Reference
 

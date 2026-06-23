@@ -22,6 +22,7 @@ type PersistableBlackboard interface {
 	SetRouting(routing *router.RoutingDecision)
 	CompleteTask(attemptCount int)
 	FailTask()
+	CancelTask()
 	ReactivateTask()
 	TaskID() string
 }
@@ -45,6 +46,7 @@ type TaskPersistence interface {
 	PersistReflection(taskID string, r orchestration.Reflection) error
 	PersistCompletion(taskID, finalOutput string, attemptCount int) error
 	PersistFailure(taskID string) error
+	PersistCancellation(taskID string) error
 	PersistFacts(taskID string, facts []orchestration.Fact) error
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
@@ -68,5 +70,5 @@ type TaskState struct {
 	Reflections     []orchestration.Reflection
 	FinalOutput     string
 	Facts           []orchestration.Fact // keyword-tagged facts
-	Status          string // "in_progress", "completed", "failed"
+	Status          string // "in_progress", "completed", "failed", "cancelled"
 }

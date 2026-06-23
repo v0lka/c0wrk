@@ -22,7 +22,10 @@ import (
 // variables injected. xterm.js is an xterm-compatible terminal with 256-color
 // (and true-color) support, so we set TERM=xterm-256color and COLORTERM=truecolor.
 func buildTermEnv() []string {
-	env := os.Environ()
+	// Force a copy to avoid sharing the backing array with os.Environ().
+	raw := os.Environ()
+	env := make([]string, 0, len(raw)+2)
+	env = append(env, raw...)
 	hasTerm := false
 	hasColorterm := false
 	for _, e := range env {

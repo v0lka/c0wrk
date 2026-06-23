@@ -838,6 +838,7 @@ func (m *mockTaskStoreForResumable) CompleteTask(_ context.Context, _, _ string,
 	return nil
 }
 func (m *mockTaskStoreForResumable) FailTask(_ context.Context, _ string) error { return nil }
+func (m *mockTaskStoreForResumable) CancelTask(_ context.Context, _ string) error { return nil }
 func (m *mockTaskStoreForResumable) LoadTask(_ context.Context, _ string) (*TaskRecord, error) {
 	return nil, nil
 }

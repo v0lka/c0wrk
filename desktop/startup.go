@@ -289,12 +289,12 @@ func (a *App) Shutdown(ctx context.Context) {
 	// SetVectorManager has not, so Cleanup won't miss it.
 	if a.vectorMgrPtr != nil {
 		if mgr := a.vectorMgrPtr.Load(); mgr != nil {
-			a.SetVectorManager(mgr)
+			a.Lifecycle().SetVectorManager(mgr)
 		}
 	}
 
 	if a.FrontendAPI != nil {
-		a.Cleanup()
+		a.Lifecycle().Cleanup()
 	}
 
 	// Wait for in-flight judge goroutines before tearing down the backend (W2).

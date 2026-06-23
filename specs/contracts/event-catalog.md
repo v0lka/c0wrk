@@ -91,6 +91,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `subagent_complete` | `{step_id, success, duration (ms)}`                                 | useSubagentEvents | Subagent finished       |
 | `skills_activated`  | `{skills: string[]}`                                                | useChatEvents     | Skills matched for task |
 | `step_todo_update`  | `{step_id, items: {text, checked}[], completed_count, total_count}` | usePlanEvents     | Step checklist update   |
+| `memory_read`       | `{step_num, content}`                                               | useChatEvents     | Agent read from persistent memory |
 
 ### Session Lifecycle
 
@@ -125,20 +126,21 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `plan_validation_failed`         | `{issues: [{step_index?, field, severity, description, suggestion?}]}`      | usePlanReviewEvents  | Plan structural or semantic validation failed                 |
 | `plan_review_awaiting_feedback`  | no payload (session-scoped only)                                            | usePlanReviewEvents  | Plan rejected without feedback; waiting for user to describe  |
 | `plan_review_accepted`           | no payload (session-scoped only)                                            | usePlanReviewEvents  | Plan approved, execution starting                             |
+| `plan_review_rejected`           | no payload (session-scoped only)                                            | usePlanReviewEvents  | Plan rejected (emitted alongside `plan_review_awaiting_feedback` when no immediate feedback is provided) |
 
 ### Blackboard & Judge
 
 | Event Type            | Payload                           | Handler Hook         | Description                 |
 | --------------------- | --------------------------------- | -------------------- | --------------------------- |
 | `blackboard_updated`  | `{change_type}`                   | useBlackboardEvents  | Blackboard state changed    |
-| `tool_judge_response` | `{confirm_id, reasoning, error?}` | ToolConfirmation.tsx | LLM judge evaluation result |
+| `tool_judge_response` | `{confirm_id, reasoning, error?}` | ToolConfirmation.tsx | LLM judge evaluation result (response to `tool_judge_request` frontend→backend event) |
 
 ## Frontend-to-Backend Events
 
 | Event                   | Direction          | Payload                                                           | Purpose                           |
 | ----------------------- | ------------------ | ----------------------------------------------------------------- | --------------------------------- |
 | `tool_confirm_response` | frontend → backend | `{confirm_id, response}`                                          | User's tool confirmation decision |
-| `tool_judge_request`    | frontend → backend | `{confirm_id}` (see `JudgeRequestPayload`)                        | Request LLM judge evaluation      |
+| `tool_judge_request`    | frontend → backend | `{confirm_id}` (see `JudgeRequestPayload`)                        | Request LLM judge evaluation (response via `tool_judge_response` backend→frontend event) |
 | `ask_user_response`     | frontend → backend | `{request_id, answers}`                                           | User's answers to agent questions |
 | `step_limit_response`   | frontend → backend | `{request_id, response}` (`allow_once` / `allow_always` / `deny`) | User's step limit decision        |
 

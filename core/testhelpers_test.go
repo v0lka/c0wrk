@@ -302,6 +302,12 @@ func (t *testPersistableBlackboard) FailTask() {
 		_ = t.store.PersistFailure(t.taskID)
 	}
 }
+func (t *testPersistableBlackboard) CancelTask() {
+	t.failed = true
+	if t.store != nil {
+		_ = t.store.PersistCancellation(t.taskID)
+	}
+}
 func (t *testPersistableBlackboard) ReactivateTask() {
 	t.reactivated = true
 	if t.store != nil {

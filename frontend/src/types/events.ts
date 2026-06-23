@@ -154,6 +154,8 @@ export interface SessionEventMap {
   readonly plan_validation_failed: PlanValidationFailedData
   readonly plan_review_awaiting_feedback: void
   readonly plan_review_accepted: void
+  readonly plan_review_rejected: void
+  readonly memory_read: { readonly step_num: number; readonly content: string }
 }
 
 export type SessionEventKey = keyof SessionEventMap

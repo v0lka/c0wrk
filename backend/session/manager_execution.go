@@ -1026,10 +1026,10 @@ func (m *Manager) CancelTask(id string) error {
 			}
 		}
 
-		// Complete the blackboard task so it's not left resumable.
+		// Cancel the blackboard task so it's not left resumable.
 		if bb != nil {
 			if pbb, ok := bb.(*PersistentBlackboard); ok {
-				pbb.CompleteTask(0)
+				pbb.CancelTask()
 			}
 		}
 

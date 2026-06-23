@@ -75,7 +75,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method                   | Parameters               | Returns                           | Description                    |
 | ------------------------ | ------------------------ | --------------------------------- | ------------------------------ |
-| `GetConfig`              | —                        | (ConfigResponse, error)           | Get current config (sanitized) |
+| `GetConfig`              | —                        | ConfigResponse                    | Get current config (sanitized) |
 | `UpdateLLMConfig`       | LLMFullConfigRequest    | error                             | Update full LLM multi-provider config |
 | `UpdateSearchSettings`   | SearchSettingsRequest    | error                             | Update search config           |
 | `GetSecuritySettings`    | —                        | (SecuritySettingsResponse, error) | Get security policies          |

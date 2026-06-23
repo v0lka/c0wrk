@@ -89,9 +89,10 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 					KeepLast:  cfg.Executor.Compaction.Summarization.KeepLast,
 				},
 				Hierarchical: core.BuilderHierarchical{
-					DistantRatio: cfg.Executor.Compaction.Hierarchical.DistantRatio,
-					MiddleRatio:  cfg.Executor.Compaction.Hierarchical.MiddleRatio,
-					RecentRatio:  cfg.Executor.Compaction.Hierarchical.RecentRatio,
+					EnabledAboveSteps: cfg.Executor.Compaction.Hierarchical.EnabledAboveSteps,
+					DistantRatio:      cfg.Executor.Compaction.Hierarchical.DistantRatio,
+					MiddleRatio:       cfg.Executor.Compaction.Hierarchical.MiddleRatio,
+					RecentRatio:       cfg.Executor.Compaction.Hierarchical.RecentRatio,
 				},
 				Thresholds: core.BuilderCompactionThresholds{
 					PredictivePercent: cfg.Executor.Compaction.Thresholds.PredictivePercent,

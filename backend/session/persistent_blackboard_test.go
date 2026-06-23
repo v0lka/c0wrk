@@ -119,6 +119,12 @@ func (m *mockTaskPersistence) PersistFailure(taskID string) error {
 	return m.persistError
 }
 
+func (m *mockTaskPersistence) PersistCancellation(taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistError
+}
+
 func (m *mockTaskPersistence) PersistFacts(taskID string, facts []orchestration.Fact) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
