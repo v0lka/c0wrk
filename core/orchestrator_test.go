@@ -2105,6 +2105,129 @@ func TestOrchestrator_AgentsMD_NilVectorSearchFunc(t *testing.T) {
 	}
 }
 
+// TestOrchestrator_AgentsMD_RouterPromptInjection verifies that when
+// AGENTS.md is present in the workspace, its content appears in the router's
+// system prompt during routeAndActivateSkills. The router needs project context
+// (tech stack, build commands, conventions) to correctly match skills.
+func TestOrchestrator_AgentsMD_RouterPromptInjection(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsContent := "# Project Instructions\nTech stack: Go 1.26, React 19.\nRun `make test` before committing."
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	var routerPromptSystem string
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Capture the router system prompt and short-circuit with
+			// needs_clarification so the planner/executor are never called.
+			if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+				routerPromptSystem = req.Messages[0].Content
+			}
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"domain": "code", "complexity": 3, "needs_clarification": true}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         r,
+		Planner:        p,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
+	_, err := orchestrator.HandleMessage(ctx, "build the project", "", HandleOptions{ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if routerPromptSystem == "" {
+		t.Fatal("router system prompt was not captured")
+	}
+
+	// Verify AGENTS.md advisory framing appears in the router's system prompt.
+	if !strings.Contains(routerPromptSystem, "<untrusted-content source=\"AGENTS.md\">") {
+		t.Error("router system prompt should contain untrusted-content AGENTS.md tag")
+	}
+	if !strings.Contains(routerPromptSystem, "AGENTS.md") {
+		t.Error("router system prompt should reference AGENTS.md")
+	}
+	if !strings.Contains(routerPromptSystem, "Tech stack: Go 1.26, React 19.") {
+		t.Error("router system prompt should contain verbatim AGENTS.md content")
+	}
+}
+
+// TestOrchestrator_AgentsMD_RouterPromptAbsentWhenNoWorkspace verifies that
+// the router prompt does NOT contain AGENTS.md when there is no workspace
+// (and therefore no AGENTS.md in context).
+func TestOrchestrator_AgentsMD_RouterPromptAbsentWhenNoWorkspace(t *testing.T) {
+	var routerPromptSystem string
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			// Capture the router system prompt and short-circuit with
+			// needs_clarification so the planner/executor are never called.
+			if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+				routerPromptSystem = req.Messages[0].Content
+			}
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"domain": "code", "complexity": 3, "needs_clarification": true}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         r,
+		Planner:        p,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	// No workspace path in context — AGENTS.md should not be read or injected.
+	ctx := context.Background()
+	_, err := orchestrator.HandleMessage(ctx, "build the project", "", HandleOptions{ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if routerPromptSystem == "" {
+		t.Fatal("router system prompt was not captured")
+	}
+
+	if strings.Contains(routerPromptSystem, "<untrusted-content source=\"AGENTS.md\">") {
+		t.Error("router system prompt should NOT contain AGENTS.md untrusted-content tag when no workspace")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Per-step skills & tools — Normal-mode invariant and narrowing tests (Task 6)
 // ---------------------------------------------------------------------------

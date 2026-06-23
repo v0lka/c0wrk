@@ -19,15 +19,22 @@ type Config struct {
 	SystemPrompt string
 	// HistoryWindow is the number of recent messages to include. Default: 10.
 	HistoryWindow int
+	// AppendContextSections, when non-nil, is called with the request context
+	// to produce additional prompt sections inserted via the PROJECT-CONTEXT
+	// placeholder in the system prompt template. This is the hook for injecting
+	// AGENTS.md content so the router can consider project conventions when
+	// matching skills.
+	AppendContextSections func(ctx context.Context) string
 }
 
 // Router classifies user requests by domain and complexity.
 type Router struct {
-	llm                 agent.LLMCaller
-	systemPrompt        string
-	historyWindow       int
-	modelRegistry    *llm.ModelRegistry
-	reasoningEffort  string
+	llm                    agent.LLMCaller
+	systemPrompt           string
+	historyWindow          int
+	modelRegistry          *llm.ModelRegistry
+	reasoningEffort        string
+	appendContextSections  func(ctx context.Context) string
 }
 
 // NewRouter creates a new Router with the given caller and config.
@@ -37,9 +44,10 @@ func NewRouter(caller agent.LLMCaller, cfg Config) *Router {
 		hw = 10
 	}
 	return &Router{
-		llm:           caller,
-		systemPrompt:  cfg.SystemPrompt,
-		historyWindow: hw,
+		llm:                   caller,
+		systemPrompt:          cfg.SystemPrompt,
+		historyWindow:         hw,
+		appendContextSections: cfg.AppendContextSections,
 	}
 }
 
@@ -61,12 +69,27 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	// Build skill list for the prompt
 	skillListStr := formatSkillList(availableSkills)
 
-	// Build system prompt
-	systemPrompt := prompt.NewBuilder().
+	// Build context sections from the request (AGENTS.md, etc.).
+	var projectContext string
+	if r.appendContextSections != nil {
+		projectContext = r.appendContextSections(ctx)
+	}
+
+	// Build system prompt.
+	// If the template uses PROJECT-CONTEXT, insert the context there
+	// (before the JSON-output directive to avoid recency bias).
+	// Otherwise fall back to appending at the end for backward compatibility.
+	builder := prompt.NewBuilder().
 		Core(r.systemPrompt).
 		Replace("AVAILABLE-TOOLS", toolListStr).
-		Replace("AVAILABLE-SKILLS", skillListStr).
-		Build()
+		Replace("AVAILABLE-SKILLS", skillListStr)
+	if strings.Contains(r.systemPrompt, "PROJECT-CONTEXT") {
+		builder = builder.Replace("PROJECT-CONTEXT", projectContext)
+	}
+	systemPrompt := builder.Build()
+	if projectContext != "" && !strings.Contains(r.systemPrompt, "PROJECT-CONTEXT") {
+		systemPrompt += projectContext
+	}
 
 	// Build messages for the request
 	messages := make([]llm.Message, 0, len(history)+2)
