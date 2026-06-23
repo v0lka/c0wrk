@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -92,7 +93,7 @@ func sessionTempDir(agentDir, projectID, sessionID string) string {
 // capture the correct project workspace.
 // bbFactory may be nil, in which case the orchestrator uses an in-memory MapBlackboard.
 // Returns an error if the orchestrator cannot be created.
-type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error)
+type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error)
 
 // TokenPersistFunc is called with cumulative session token totals after each LLM call.
 // The sessionID parameter identifies which session the tokens belong to.
@@ -310,7 +311,19 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	persistFn := m.tokenPersist
 	ts := m.taskStore
 	maxSumLen := m.maxSummaryLen
+	// Fast-path existence check: if another goroutine already restored
+	// this session, skip expensive resource creation to avoid wasted I/O.
+	_, exists := m.sessions[id]
 	m.mu.RUnlock()
+
+	if exists {
+		// Another goroutine already restored the session. Return it directly
+		// without creating duplicate log/dump resources.
+		m.mu.RLock()
+		sess := m.sessions[id]
+		m.mu.RUnlock()
+		return sess, nil
+	}
 
 	// Wire token persistence callback if configured.
 	if persistFn != nil {
@@ -346,6 +359,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	// Create LLM dump file when DEBUG logging is enabled.
 	var dumpFile *os.File
+	var stepDumpTracker *orchestration.StepDumpTracker
 	if strings.EqualFold(m.logLevel, "DEBUG") {
 		dumpPath := config.SessionDumpPath(m.agentDir, info.ProjectID, id)
 		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
@@ -357,16 +371,24 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 				dumpFile = nil
 			}
 		}
+		// Per-step dump tracker uses a "steps" subdirectory
+		if dumpFile != nil {
+			stepDumpDir := filepath.Join(filepath.Dir(dumpPath), "steps")
+			stepDumpTracker = orchestration.NewStepDumpTracker(stepDumpDir)
+		}
 	}
 
 	// Create orchestrator.
-	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile)
+	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
 		}
 		if dumpFile != nil {
 			_ = dumpFile.Close()
+		}
+		if stepDumpTracker != nil {
+			_ = stepDumpTracker.CloseAll()
 		}
 		return nil, fmt.Errorf("failed to create orchestrator for restored session: %w", err)
 	}
@@ -468,6 +490,9 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 		if dumpFile != nil {
 			_ = dumpFile.Close()
+		}
+		if stepDumpTracker != nil {
+			_ = stepDumpTracker.CloseAll()
 		}
 		return existing, nil
 	}
@@ -589,6 +614,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 
 	// Create LLM request/response dump file when DEBUG logging is enabled
 	var dumpFile *os.File
+	var stepDumpTracker *orchestration.StepDumpTracker
 	if strings.EqualFold(m.logLevel, "DEBUG") {
 		dumpPath := config.SessionDumpPath(m.agentDir, projectID, id)
 		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
@@ -600,10 +626,15 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 				dumpFile = nil // non-fatal, continue without dump
 			}
 		}
+		// Per-step dump tracker uses a "steps" subdirectory
+		if dumpFile != nil {
+			stepDumpDir := filepath.Join(filepath.Dir(dumpPath), "steps")
+			stepDumpTracker = orchestration.NewStepDumpTracker(stepDumpDir)
+		}
 	}
 
 	// Create orchestrator using the factory (called outside the lock — can be slow)
-	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile)
+	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		// Close the log file since we're not creating the session
 		if logFile != nil {
@@ -611,6 +642,9 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		}
 		if dumpFile != nil {
 			_ = dumpFile.Close()
+		}
+		if stepDumpTracker != nil {
+			_ = stepDumpTracker.CloseAll()
 		}
 		return nil, fmt.Errorf("failed to create orchestrator: %w", err)
 	}
@@ -767,6 +801,10 @@ func (m *Manager) DeleteSession(id string) error {
 	// Now safely remove the session from the map.
 	m.mu.Lock()
 	session.mu.Lock()
+	// Close per-step dump files via orchestrator cleanup (idempotent).
+	if session.orchestrator != nil {
+		session.orchestrator.Cleanup()
+	}
 	// Close log file if it exists
 	if session.logFile != nil {
 		if err := session.logFile.Close(); err != nil {
@@ -956,6 +994,23 @@ func (s *Session) IsActive() bool {
 	return s.active
 }
 
+// DumpFile returns a duplicated file handle for the session's LLM dump file,
+// or nil if DEBUG is disabled. The caller owns the returned handle and must
+// close it when done. Duping ensures that background goroutines (title generation,
+// ToolJudge) have independent handles that survive session deletion.
+func (s *Session) DumpFile() *os.File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dumpFile == nil {
+		return nil
+	}
+	fd, err := syscall.Dup(int(s.dumpFile.Fd()))
+	if err != nil {
+		return nil
+	}
+	return os.NewFile(uintptr(fd), s.dumpFile.Name())
+}
+
 // EmitSessionEvent emits a session-scoped event through the manager's emit
 // pipeline (event persister included). Used by recovery flows that need to
 // emit events outside of a live session goroutine.
@@ -979,6 +1034,10 @@ func (m *Manager) Shutdown() {
 	var pendingList []pending
 	for id, session := range m.sessions {
 		session.mu.Lock()
+		// Close per-step dump files via orchestrator cleanup (idempotent).
+		if session.orchestrator != nil {
+			session.orchestrator.Cleanup()
+		}
 		// Cancel any active task
 		if session.active && session.cancel != nil {
 			session.cancel()

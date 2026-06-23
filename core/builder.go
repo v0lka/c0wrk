@@ -257,6 +257,7 @@ func (b *OrchestratorBuilder) Build(
 	bbFactory BlackboardFactory,
 	stepLimitFunc agent.StepLimitFunc,
 	dumpWriter io.Writer,
+	stepDumpTracker *orchestration.StepDumpTracker,
 ) (*Orchestrator, error) {
 	// Wait for async initialization to complete before building an orchestrator.
 	waitCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -303,7 +304,7 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, corePlanner, coreReflector := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter)
+	coreRouter, corePlanner, coreReflector := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter, stepDumpTracker)
 	if coreRouter == nil || corePlanner == nil {
 		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or corePlanner is nil")
 	}
@@ -395,6 +396,8 @@ func (b *OrchestratorBuilder) Build(
 		CoreToolRegistry:  sessionRegistry, // for skill policy overrides (per-session)
 		ToolCache:         toolCache,
 		PerToolTruncation: perToolTruncation,
+		StepDumpTracker:   stepDumpTracker,
+		ProviderName:      cfg.LLM.DefaultProviderName(),
 	}), nil
 }
 
@@ -555,7 +558,12 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		Temperature:     &temp,
 		ReasoningEffort: reasoningEffort,
 	}
-	resp, err := llmRouter.Call(ctx, req)
+	caller := agent.LLMCaller(llmRouter)
+	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
+		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
+		caller = agent.NewDumpCaller(caller, dw, b.logger)
+	}
+	resp, err := caller.Call(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -843,11 +851,13 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	contextFactory ContextManagerFactory,
 	tokenCounter llm.TokenCounter,
 	dumpWriter io.Writer,
+	stepDumpTracker *orchestration.StepDumpTracker,
 ) (*router.Router, *planner.Planner, *reflector.Reflector) {
 	if caller == nil {
 		return nil, nil, nil
 	}
-	loggedCaller := agent.NewLoggingLLMCaller(caller, cfg.LLM.DefaultProviderName(), logger)
+	providerName := cfg.LLM.DefaultProviderName()
+	loggedCaller := agent.NewLoggingLLMCaller(caller, providerName, logger)
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
 	coreRouter := newCoreRouter(loggedCaller, cfg.Router.HistoryWindow)
 	corePlanner := newCorePlanner(loggedCaller, b.registry)
@@ -873,13 +883,24 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 
 	// Wire CallerForStep so exploration's ContextTokenTracker gets corrected by API responses
 	if tc, ok := caller.(*llm.TrackingCaller); ok {
-		corePlanner.Cfg.CallerForStep = func(cm agent.ContextManager) agent.LLMCaller {
+		corePlanner.Cfg.CallerForStep = func(cm agent.ContextManager, stepID string) agent.LLMCaller {
+			var base agent.LLMCaller = tc
 			if ctm, ok := cm.(interface {
 				ContextTracker() *llm.ContextTokenTracker
 			}); ok {
-				return tc.WithContextTracker(ctm.ContextTracker())
+				base = tc.WithContextTracker(ctm.ContextTracker())
 			}
-			return tc
+			// DEBUG-level logging (gated on dump tracker, which only exists when DEBUG is enabled)
+			if stepDumpTracker != nil && providerName != "" {
+				base = agent.NewLoggingLLMCaller(base, providerName, logger)
+			}
+			// Wrap with per-step LLM dump
+			if stepDumpTracker != nil {
+				if w := stepDumpTracker.OpenStepDump(stepID); w != nil {
+					base = agent.NewDumpCaller(base, w, logger)
+				}
+			}
+			return base
 		}
 	}
 
@@ -1003,6 +1024,9 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 		}
 	}
 
+	debugEnabled := b.logger != nil && b.logger.Enabled(context.Background(), slog.LevelDebug)
+	judgeProvider = newJudgeDumpProvider(judgeProvider, b.logger, cfg.LLM.DefaultProviderName(), debugEnabled)
+
 	judge := sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
 		Model:        cfg.Security.JudgeModel,
 		DefaultModel: defaultModel,
@@ -1018,6 +1042,52 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 	} else if b.logger != nil {
 		b.logger.Warn("tool judge rebuild failed: judge will not be available for on-demand evaluation")
 	}
+}
+
+// judgeDumpProvider wraps an llm.Provider to add context-aware LLM dump support.
+// When a DumpWriter exists in the context, it wraps the LLM call with
+// agent.NewDumpCaller + agent.NewLoggingLLMCaller for DEBUG-level observability.
+type judgeDumpProvider struct {
+	inner        llm.Provider
+	logger       *slog.Logger
+	providerName string
+}
+
+func (p *judgeDumpProvider) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	caller := agent.LLMCaller(&providerAsLLMCaller{p: p.inner})
+	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
+		caller = agent.NewLoggingLLMCaller(caller, p.providerName, p.logger)
+		caller = agent.NewDumpCaller(caller, dw, p.logger)
+	}
+	return caller.Call(ctx, req)
+}
+
+func (p *judgeDumpProvider) StreamChatCompletion(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatChunk, error) {
+	// Streaming dump support is not yet implemented (dumpCaller only wraps
+	// non-streaming Call). The judge currently only uses ChatCompletion, so
+	// this path is unreachable in practice. If a future provider switches
+	// the judge to streaming, this bypass must be addressed — either by
+	// adding a streaming-aware DumpCaller or by buffering the stream.
+	return p.inner.StreamChatCompletion(ctx, req)
+}
+
+func (p *judgeDumpProvider) Name() string { return p.inner.Name() }
+
+// providerAsLLMCaller adapts llm.Provider to agent.LLMCaller so it can be
+// wrapped with agent.NewDumpCaller and agent.NewLoggingLLMCaller.
+type providerAsLLMCaller struct{ p llm.Provider }
+
+func (a *providerAsLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	return a.p.ChatCompletion(ctx, req)
+}
+
+// newJudgeDumpProvider wraps a provider for context-aware dump support.
+// Returns inner unchanged if logger is nil, providerName is empty, or debug is disabled.
+func newJudgeDumpProvider(inner llm.Provider, logger *slog.Logger, providerName string, debugEnabled bool) llm.Provider {
+	if inner == nil || logger == nil || providerName == "" || !debugEnabled {
+		return inner
+	}
+	return &judgeDumpProvider{inner: inner, logger: logger, providerName: providerName}
 }
 
 // applySecurityPolicies applies per-tool policy overrides and default policy.

@@ -16,6 +16,7 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
@@ -115,8 +116,8 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// 5. Orchestrator factory closure for the session manager.
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error) {
-		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.stepLimitFunc, dumpWriter)
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.stepLimitFunc, dumpWriter, stepDumpTracker)
 	}
 
 	// 6. Session manager.

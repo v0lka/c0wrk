@@ -36,11 +36,12 @@
 | `Events`           | sdk/orchestration | core/types (adapted via emitterEventsAdapter) | Orchestration lifecycle    |
 | `Blackboard`       | sdk/orchestration | core/types (direct)                            | Shared task state          |
 | `Orchestrator`     | sdk/orchestration | core/orchestrator (as `engine`)               | DAG execution engine       |
-| `Config`           | sdk/orchestration | core/orchestrator (NewOrchestrator)           | Engine configuration (incl. ToolCache, PerToolTruncation) |
+| `Config`           | sdk/orchestration | core/orchestrator (NewOrchestrator)           | Engine configuration (incl. ToolCache, PerToolTruncation, StepDumpTracker) |
 | `Plan`, `PlanStep` | sdk/orchestration | core/types (direct use)                        | Plan data structures       |
 | `CompletedStep`    | sdk/orchestration | core/types (direct)                            | Step result record         |
 | `Reflection`       | sdk/orchestration | core/types (direct)                            | Reflector output           |
 | `PruningOverride`  | sdk/orchestration | core/stepconfig                               | Per-step pruning config    |
+| `StepDumpTracker`  | sdk/orchestration | core/orchestrator, core/builder, backend/session | Per-step LLM dump file manager |
 
 ### Consumed from `sdk/llm`
 
@@ -143,6 +144,7 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 
 - If you modify an `sdk/orchestration` interface → update adapter in `core/orchestrator.go`
 - If you add a field to `sdk/orchestration.Config` → update `NewOrchestrator` in `core/orchestrator.go`
+- If you change `CallerForStep` signature (sdk/orchestration or sdk/planner) → update all closures in `core/orchestrator.go` and `core/builder.go`, plus all call sites in `sdk/orchestration/orchestrator.go` and `sdk/planner/planner.go`
 - If you modify `sdk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
 - If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sdk type that backend or desktop needs → import directly from the source package

@@ -55,6 +55,15 @@ func New(cfg Config) *Orchestrator {
 	}
 }
 
+// Cleanup releases held resources (per-step dump files). Idempotent.
+func (o *Orchestrator) Cleanup() {
+	if o.cfg.StepDumpTracker != nil {
+		if err := o.cfg.StepDumpTracker.CloseAll(); err != nil {
+			o.log().Warn("orchestrator cleanup: error closing step dump files", "error", err)
+		}
+	}
+}
+
 func (o *Orchestrator) log() *slog.Logger {
 	if o.cfg.Logger != nil {
 		return o.cfg.Logger
@@ -448,7 +457,7 @@ func (o *Orchestrator) executePlanWithSteps(
 			}
 
 			scopedEvents := o.scopeEvents(step.ID)
-			stepCaller := o.callerForStep(cm)
+			stepCaller := o.callerForStep(cm, step.ID)
 			executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, false, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 			o.configureExecutor(executor, stepCfg)
@@ -668,7 +677,7 @@ func (o *Orchestrator) retryFailedSteps(
 				o.cfg.ContextSetup(cm, taskDef.task)
 			}
 
-			retryCaller := o.callerForStep(cm)
+			retryCaller := o.callerForStep(cm, failedStepID)
 			executor := agent.NewExecutor(retryCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 			executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
 			o.configureExecutor(executor, stepCfg)
@@ -855,10 +864,11 @@ func (o *Orchestrator) resolveModelMeta(ctx context.Context) llm.ModelMetadata {
 	return llm.ModelMetadata{}
 }
 
+// callerForStep returns a step-local LLMCaller for the given ContextManager and step ID.
 // If CallerForStep is configured, it delegates to it; otherwise falls back to the shared LLM.
-func (o *Orchestrator) callerForStep(cm agent.ContextManager) agent.LLMCaller {
+func (o *Orchestrator) callerForStep(cm agent.ContextManager, stepID string) agent.LLMCaller {
 	if o.cfg.CallerForStep != nil {
-		return o.cfg.CallerForStep(cm)
+		return o.cfg.CallerForStep(cm, stepID)
 	}
 	return o.cfg.LLM
 }
@@ -1036,7 +1046,7 @@ func (o *Orchestrator) ExecuteAdHocStep(
 
 	// 4. Create executor infrastructure
 	scopedEvents := o.scopeEvents(step.ID)
-	stepCaller := o.callerForStep(cm)
+	stepCaller := o.callerForStep(cm, step.ID)
 	executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, !streaming, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
 	executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 	o.configureExecutor(executor, stepCfg)

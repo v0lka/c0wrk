@@ -51,7 +51,7 @@ type Config struct {
 	Emitter             PlannerEvents
 	TokenCounter        llm.TokenCounter
 	ContextFactory      ContextManagerFactory
-	CallerForStep       func(cm agent.ContextManager) agent.LLMCaller
+	CallerForStep       func(cm agent.ContextManager, stepID string) agent.LLMCaller
 	MaxExploreSteps     int
 	ReasoningEffort     string
 }

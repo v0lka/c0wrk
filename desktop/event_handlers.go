@@ -183,6 +183,14 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 	judgeCtx, judgeCancel := context.WithTimeout(parentCtx, 120*time.Second)
 	defer judgeCancel()
 
+	// Inject session dump writer for judge LLM call observability.
+	if sess, ok := a.app.Manager().GetSession(pendingData.sessionID); ok {
+		if dumpFile := sess.DumpFile(); dumpFile != nil {
+			defer func() { _ = dumpFile.Close() }()
+			judgeCtx = agent.WithDumpWriter(judgeCtx, dumpFile)
+		}
+	}
+
 	responsePayload := session.JudgeResponsePayload{ConfirmID: confirmID}
 
 	_, reasoning, err := a.app.EvaluateJudge(judgeCtx, pendingData.toolName, pendingData.input, pendingData.taskContext)

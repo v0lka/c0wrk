@@ -19,6 +19,7 @@
 | `Plan`, `PlanStep`    | sdk/orchestration (direct) | core → backend | Plan structure                        |
 | `ToolPolicy`          | sdk/tools      | backend → core | Security policy values                |
 | `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation, ExtraBashBlacklist) |
+| `StepDumpTracker`     | sdk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
 | `Manager`             | sdk/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
 | `PTYManager`          | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
 | `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |
@@ -74,10 +75,11 @@ type OrchestratorFactory func(
     workspacePath string,
     bbFactory core.BlackboardFactory,
     dumpWriter io.Writer,
+    stepDumpTracker *orchestration.StepDumpTracker,
 ) (*core.Orchestrator, error)
 ```
 
-The factory captures `*OrchestratorBuilder` and calls `Build()` per session.
+The factory captures `*OrchestratorBuilder` and calls `Build()` per session. The `stepDumpTracker` is created by the session manager from the session's dump directory (`~/.c0wrk/projects/<pid>/<sid>/dumps/steps/`) when DEBUG-level logging is enabled. If nil, per-step dumps are a no-op.
 
 ## Session Manager Ownership
 
@@ -133,6 +135,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 
 - Adding a field to `BuilderConfig` → update `backend/configadapter.go`
 - Adding a new per-tool truncation entry → update `backend/configadapter.go` `convertTruncationMap()`
+- Changing `OrchestratorFactory` signature → update factory closure in `backend/application.go` and all test factory mocks
 - Changing `HandleResult` fields → update session event emission in backend
 - Adding `PlanReview` to `HandleOptions` → update `backend/frontend_api_session.go` + `backend/session/manager_execution.go`
 - Adding `PlanReviewPhase`/`PlanReviewPath` to `HandleResult` → update session manager goroutine branching

@@ -9,6 +9,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing, plan review state)
 - `backend/session/manager_execution.go` — SendMessage, ApprovePlan, RejectPlan, CancelTask execution flows
 - `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
+- `sdk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state)
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
@@ -251,6 +252,37 @@ When the first message is received for a session with the default auto-generated
 - Emits `session_renamed` event
 - Frontend updates session list
 
+### LLM Dump Files (DEBUG mode)
+
+When the global log level is set to `DEBUG`, the session manager creates LLM dump
+files for all LLM calls within the session:
+
+```
+~/.c0wrk/projects/<projectID>/<sessionID>/dumps/
+├── session_<id>_llm_dump.jsonl       ← router, planner, reflector, title gen, ToolJudge
+└── steps/
+    ├── step_<stepID>.jsonl           ← executor step (initial + retries append to same file)
+    └── step_planner-exploration.jsonl ← planner exploration sub-agent
+```
+
+Each `.jsonl` file contains full, untruncated request/response pairs for every LLM
+call, serialized as `dumpEntry` records (`ts`, `direction`, `data`, `error`). No
+sampling or truncation is applied.
+
+The session-level file (`session_<id>_llm_dump.jsonl`) is written via `DumpCaller`
+wrapping the main `llm.Router`. Per-step files are created lazily by
+`StepDumpTracker` which manages file handles through the orchestrator lifecycle and
+closes them all on session deletion or application shutdown.
+
+Dump file creation is controlled by `Manager.logLevel`. When not `DEBUG`:
+`dumpFile` and `stepDumpTracker` are nil, and no files are created.
+
+Cross-cutting LLM calls that don't pass through the per-step `CallerForStep`
+pipeline (title generation, ToolJudge) receive the dump writer via
+`context.Context` using `agent.DumpWriterContextKey`. The writers are injected at
+the call sites: `SendMessage` for title generation and
+`desktop/event_handlers.go` for ToolJudge.
+
 ## Core Types
 
 ```go
@@ -328,6 +360,8 @@ type HandleResult struct {
 - Stale plan review state (missing .md file) is cleared on recovery to prevent stuck sessions
 - Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` and are not deleted on rejection or replanning
 - `CancelTask` clears plan review state, persists the cleared state, completes the blackboard task, and emits `task_cancelled`
+- `DeleteSession` closes all per-step dump files via `Orchestrator.Cleanup()` before closing the session-level log and dump files
+- `Shutdown` closes all per-step dump files for every active session via `Orchestrator.Cleanup()` before canceling and closing session resources
 
 ## Configuration
 

@@ -167,7 +167,7 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 
 	// Build should fail gracefully with an informative error when no LLM
 	// provider is actually reachable, not panic or return nil.
-	orch, buildErr := b.Build(cfg, nil, nil, "", nil, nil, nil)
+	orch, buildErr := b.Build(cfg, nil, nil, "", nil, nil, nil, nil)
 	if buildErr == nil && orch != nil {
 		// If the local LM Studio happens to be running, verify basic wiring.
 		if orch.router == nil {

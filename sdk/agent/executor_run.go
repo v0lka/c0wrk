@@ -468,7 +468,7 @@ func (e *Executor) processSingleToolCall(
 	// --- End parse error tracker ---
 
 	// Stage 1 + 2: truncation, caching, token budget (shared helper).
-	observation = e.processToolResult(observation, result.Content, action.Name, action.Input, execCtx, cw)
+	observation = e.processToolResult(execCtx, observation, result.Content, action.Name, action.Input, cw)
 
 	// Emit tool result
 	e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, result.IsError)
@@ -646,7 +646,7 @@ func (e *Executor) processBatchTool(
 		isUntrusted := e.tools.IsToolUntrusted(subCall.Name)
 
 		// Stage 1 + 2: truncation, caching, token budget (shared helper).
-		observation = e.processToolResult(observation, result.Content, subCall.Name, subCall.Input, execCtx, cw)
+		observation = e.processToolResult(execCtx, observation, result.Content, subCall.Name, subCall.Input, cw)
 
 		// Emit tool result.
 		e.emitter.ToolResult(state.stepNum, effectiveIdx, len(observation), observation, result.IsError)
@@ -694,11 +694,11 @@ func (e *Executor) processBatchTool(
 // the Stage 1 nudge). Shared by processSingleToolCall and processBatchTool
 // to avoid duplicated pipeline logic.
 func (e *Executor) processToolResult(
+	execCtx context.Context,
 	observation string,
 	fullResult string,
 	toolName string,
 	input json.RawMessage,
-	execCtx context.Context,
 	cw ContextManager,
 ) string {
 	// --- Stage 1: Per-tool truncation + optional caching ---

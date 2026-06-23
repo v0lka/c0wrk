@@ -13,6 +13,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -101,9 +102,16 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	store := m.sessionStore
 	m.mu.RUnlock()
 	if sessionName == "Session "+safeSessionPrefix(id) && titleGen != nil {
+		dumpFile := session.DumpFile()
 		go func() {
+			if dumpFile != nil {
+				defer func() { _ = dumpFile.Close() }()
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
+			if dumpFile != nil {
+				ctx = agent.WithDumpWriter(ctx, dumpFile)
+			}
 			title := titleGen.Generate(ctx, text, activeSkills)
 			if title == "" {
 				return

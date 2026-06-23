@@ -11,6 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/orchestration"
 	_ "modernc.org/sqlite"
 )
 
@@ -67,7 +68,7 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 		t.Fatalf("failed to create test project: %v", err)
 	}
 
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 	manager := session.NewManager(factory, func(session.Event) {}, agentDir)

@@ -189,6 +189,14 @@ type OrchestratorDeps struct {
 	// Tool result caching and per-tool truncation.
 	ToolCache         *agent.ToolResultCache
 	PerToolTruncation map[string]agent.ToolTruncationConfig
+
+	// StepDumpTracker manages per-step LLM dump files. Created by the session layer.
+	// If nil, per-step dumps are disabled.
+	StepDumpTracker *orchestration.StepDumpTracker
+
+	// ProviderName is the active provider name for DEBUG-level LLM logging
+	// in per-step callers (LoggingLLMCaller wrapping).
+	ProviderName string
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -267,16 +275,27 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 				ccm.SetTask(taskDesc)
 			}
 		},
-		CallerForStep: func(cm agent.ContextManager) agent.LLMCaller {
+		CallerForStep: func(cm agent.ContextManager, stepID string) agent.LLMCaller {
 			if deps.TrackingCaller == nil {
 				return deps.LLM
 			}
+			var caller agent.LLMCaller = deps.TrackingCaller
 			if ctm, ok := cm.(interface {
 				ContextTracker() *llm.ContextTokenTracker
 			}); ok {
-				return deps.TrackingCaller.WithContextTracker(ctm.ContextTracker())
+				caller = deps.TrackingCaller.WithContextTracker(ctm.ContextTracker())
 			}
-			return deps.TrackingCaller
+			// DEBUG-level logging (gated on dump tracker, which only exists when DEBUG is enabled)
+			if deps.StepDumpTracker != nil && deps.ProviderName != "" {
+				caller = agent.NewLoggingLLMCaller(caller, deps.ProviderName, deps.Logger)
+			}
+			// Wrap with per-step LLM dump
+			if deps.StepDumpTracker != nil {
+				if w := deps.StepDumpTracker.OpenStepDump(stepID); w != nil {
+					caller = agent.NewDumpCaller(caller, w, deps.Logger)
+				}
+			}
+			return caller
 		},
 		Events:                    &emitterEventsAdapter{Emitter: emitter, logger: deps.Logger},
 		SystemPrompt:              buildSystemPrompt,
@@ -291,6 +310,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		ReasoningEffort:           cfg.ReasoningEffort,
 		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger, buildSystemPrompt, taskCtxProvider, deps.SkillManager),
 		StepLimitFunc:             cfg.StepLimitFunc,
+		StepDumpTracker:           deps.StepDumpTracker,
 	}
 
 	// Configure state factory to use core's blackboard factory.
@@ -314,6 +334,14 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 
 	o.engine = orchestration.New(sdkCfg)
 	return o
+}
+
+// Cleanup releases all resources held by the orchestrator engine (e.g., per-step dump files).
+// Idempotent — safe to call multiple times.
+func (o *Orchestrator) Cleanup() {
+	if o.engine != nil {
+		o.engine.Cleanup()
+	}
 }
 
 // plannerSDKAdapter adapts the core *Planner (whose public methods now take

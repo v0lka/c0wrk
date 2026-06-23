@@ -392,7 +392,7 @@ func (p *Planner) planWithExploration(
 
 	execCaller := p.llm
 	if p.Cfg.CallerForStep != nil {
-		execCaller = p.Cfg.CallerForStep(cm)
+		execCaller = p.Cfg.CallerForStep(cm, "planner-exploration")
 	}
 
 	var executorEmitter agent.AgentEvents
