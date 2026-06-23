@@ -22,13 +22,23 @@ export function PlanReviewPanel({ item }: PlanReviewPanelProps) {
   if (!activeSessionId) return null
 
   const planPath = item.message.metadata?.planPath as string | undefined
+  const planContent = item.message.metadata?.planContent as string | undefined
   const isResolved = item.message.metadata?.resolved === true
 
   if (isResolved) {
     const decision = item.message.metadata?.decision as string | undefined
+    if (decision === 'accepted') {
+      return (
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <Check className="h-3.5 w-3.5 text-success" />
+          <span className="text-sm">Plan accepted</span>
+        </div>
+      )
+    }
     return (
-      <div className="text-xs text-muted-foreground p-2">
-        Plan {decision === 'accepted' ? 'accepted' : 'rejected'}.
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        <X className="h-3.5 w-3.5 text-destructive" />
+        <span className="text-sm">Plan rejected</span>
       </div>
     )
   }
@@ -76,12 +86,28 @@ export function PlanReviewPanel({ item }: PlanReviewPanelProps) {
         <ClipboardList className="h-4 w-4 text-highlight shrink-0" />
         <span className="text-sm font-medium">Plan is ready for review — open in right panel</span>
       </div>
+      <div className="mb-4 space-y-2">
+        {planPath && (
+          <p className="text-sm">
+            <span className="text-muted-foreground">Plan:</span>{' '}
+            <span className="font-medium font-mono text-xs break-all">{planPath}</span>
+          </p>
+        )}
+        {planContent && (
+          <div className="min-w-0 overflow-hidden">
+            <p className="text-xs text-muted-foreground mb-1">Preview:</p>
+            <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto border border-border max-w-full min-w-0 max-h-24 overflow-y-auto">
+              <code>{planContent.length > 500 ? planContent.slice(0, 500) + '\u2026' : planContent}</code>
+            </pre>
+          </div>
+        )}
+      </div>
       {error && (
-        <div className="text-xs text-destructive mb-2 p-2 bg-destructive/10 rounded">
-          {error}
+        <div className="mb-4 p-3 bg-destructive/10 border border-destructive/30 rounded-md">
+          <p className="text-xs text-destructive">{error}</p>
         </div>
       )}
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 mb-3">
         <Button size="sm" onClick={handleAccept} disabled={isSubmitting} className="text-xs">
           Accept <Check className="ml-1 h-3 w-3" />
         </Button>
