@@ -398,3 +398,63 @@ func TestRoute_NoReasoningEffortWhenEmpty(t *testing.T) {
 		t.Errorf("expected empty ReasoningEffort, got %q", got)
 	}
 }
+
+func TestRoute_AppendContextSections(t *testing.T) {
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{Role: "assistant", Content: `{"domain":"code","complexity":3,"matched_skills":["go-lint"]}`},
+			}, nil
+		},
+	}
+
+	appendCalled := false
+	r := NewRouter(mock, Config{
+		SystemPrompt:  "Tools: {{AVAILABLE-TOOLS}}\nSkills: {{AVAILABLE-SKILLS}}",
+		HistoryWindow: 5,
+		AppendContextSections: func(ctx context.Context) string {
+			appendCalled = true
+			return "\n\n## Project Context\nTech stack: Go 1.26, React 19."
+		},
+	})
+
+	_, err := r.Route(context.Background(), "fix the bug", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+
+	if !appendCalled {
+		t.Error("AppendContextSections was not called")
+	}
+
+	systemMsg := mock.lastCall().Messages[0]
+	if !strings.Contains(systemMsg.Content, "## Project Context") {
+		t.Error("system prompt should contain appended context section")
+	}
+	if !strings.Contains(systemMsg.Content, "Tech stack: Go 1.26, React 19.") {
+		t.Error("system prompt should contain appended context content")
+	}
+}
+
+func TestRoute_AppendContextSections_Nil(t *testing.T) {
+	// Verify that nil AppendContextSections is a no-op.
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{
+				Message: llm.Message{Role: "assistant", Content: `{"domain":"code","complexity":2}`},
+			}, nil
+		},
+	}
+
+	r := newTestRouter(mock, 5) // newTestRouter does NOT set AppendContextSections
+
+	_, err := r.Route(context.Background(), "test", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+
+	systemMsg := mock.lastCall().Messages[0]
+	if strings.Contains(systemMsg.Content, "AGENTS.md") {
+		t.Error("system prompt should NOT contain AGENTS.md when AppendContextSections is nil")
+	}
+}
