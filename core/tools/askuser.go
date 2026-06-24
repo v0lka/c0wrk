@@ -1,4 +1,4 @@
-package builtins
+package tools
 
 import (
 	"context"
@@ -6,21 +6,21 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 const toolAskUserDescription = `Ask the user one or more questions and present selectable answer options for each. Supports single-select (default) and multi-select modes per question. The user can pick from predefined options or provide a custom free-text answer for each question. Not available in non-interactive (CLI) mode.`
 
 // AskUserTool asks the user a question and returns their answer.
 type AskUserTool struct {
-	*tools.BaseTool
-	askFunc tools.AskUserFunc
+	*sdktools.BaseTool
+	askFunc AskUserFunc
 }
 
 // NewAskUserTool creates a new AskUserTool with the given callback function.
-func NewAskUserTool(fn tools.AskUserFunc) *AskUserTool {
+func NewAskUserTool(fn AskUserFunc) *AskUserTool {
 	return &AskUserTool{
-		BaseTool: &tools.BaseTool{
+		BaseTool: &sdktools.BaseTool{
 			ToolName:        "ask_user",
 			ToolDescription: toolAskUserDescription,
 			Schema: json.RawMessage(`{
@@ -62,24 +62,24 @@ func NewAskUserTool(fn tools.AskUserFunc) *AskUserTool {
 		},
 		"required": ["questions"]
 	}`),
-			Policy: tools.PolicyAlwaysAllow,
+			Policy: sdktools.PolicyAlwaysAllow,
 		},
 		askFunc: fn,
 	}
 }
 
 type askUserInput struct {
-	Questions []tools.AskUserQuestion `json:"questions"`
+	Questions []AskUserQuestion `json:"questions"`
 }
 
-func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (sdktools.ToolResult, error) {
 	var params askUserInput
 	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ParseInputError(err)
+		return sdktools.ParseInputError(err)
 	}
 
 	if len(params.Questions) == 0 {
-		return tools.ToolResult{
+		return sdktools.ToolResult{
 			Content: "validation error: questions array must not be empty",
 			IsError: true,
 		}, nil
@@ -87,13 +87,13 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools
 
 	for _, q := range params.Questions {
 		if strings.TrimSpace(q.Question) == "" {
-			return tools.ToolResult{
+			return sdktools.ToolResult{
 				Content: fmt.Sprintf("validation error: question %q has empty text", q.ID),
 				IsError: true,
 			}, nil
 		}
 		if len(q.Options) == 0 {
-			return tools.ToolResult{
+			return sdktools.ToolResult{
 				Content: fmt.Sprintf("validation error: question %q must have at least one option", q.ID),
 				IsError: true,
 			}, nil
@@ -101,19 +101,17 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	}
 
 	if t.askFunc == nil {
-		return tools.ToolResult{
+		return sdktools.ToolResult{
 			Content: "ask_user is not available in this mode",
 			IsError: true,
 		}, nil
 	}
 
-	req := tools.AskUserRequest{
-		Questions: params.Questions,
-	}
+	req := AskUserRequest(params)
 
 	resp, err := t.askFunc(ctx, req)
 	if err != nil {
-		return tools.ToolResult{
+		return sdktools.ToolResult{
 			Content: fmt.Sprintf("ask_user failed: %v", err),
 			IsError: true,
 		}, nil
@@ -148,5 +146,5 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		lines = append(lines, line)
 	}
 
-	return tools.ToolResult{Content: strings.Join(lines, "\n"), IsError: false}, nil
+	return sdktools.ToolResult{Content: strings.Join(lines, "\n"), IsError: false}, nil
 }

@@ -3,7 +3,7 @@ package backend
 import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/proxy"
+	"github.com/v0lka/c0wrk/core/proxy"
 )
 
 // derefBool safely dereferences a *bool, defaulting to true when nil.

@@ -21,13 +21,14 @@ import (
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/terminal"
 	"github.com/v0lka/c0wrk/core/toolmanager"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/embedding"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	"github.com/v0lka/c0wrk/sdk/vectorindex"
+	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
 // initLogger initializes the session logger with a temporary INFO level so any
@@ -291,18 +292,18 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 // into Wails events and waits for the frontend response. Errors out cleanly
 // when no UI context or session is available so the tool reports the
 // unavailability instead of blocking forever.
-func (a *App) buildAskUserCallback(uiEmit func(session.Event)) sdktools.AskUserFunc {
-	return func(ctx context.Context, req sdktools.AskUserRequest) (sdktools.AskUserResponse, error) {
+func (a *App) buildAskUserCallback(uiEmit func(session.Event)) coretools.AskUserFunc {
+	return func(ctx context.Context, req coretools.AskUserRequest) (coretools.AskUserResponse, error) {
 		if a.ctx == nil {
-			return sdktools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
+			return coretools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
 		}
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
-			return sdktools.AskUserResponse{}, errors.New("ask_user not available: no session context")
+			return coretools.AskUserResponse{}, errors.New("ask_user not available: no session context")
 		}
 
 		requestID := uuid.New().String()
-		ch := make(chan sdktools.AskUserResponse, 1)
+		ch := make(chan coretools.AskUserResponse, 1)
 		a.pendingAskUser.Store(requestID, ch)
 
 		payload := session.AskUserPayload{RequestID: requestID, Questions: req.Questions}
@@ -313,10 +314,10 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) sdktools.AskUserF
 			return resp, nil
 		case <-ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return sdktools.AskUserResponse{}, ctx.Err()
+			return coretools.AskUserResponse{}, ctx.Err()
 		case <-a.ctx.Done():
 			a.pendingAskUser.Delete(requestID)
-			return sdktools.AskUserResponse{}, a.ctx.Err()
+			return coretools.AskUserResponse{}, a.ctx.Err()
 		}
 	}
 }

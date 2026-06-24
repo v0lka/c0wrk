@@ -21,6 +21,8 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 - `sdk/tools/builtins/workspace.go` — workspace detection
 - `sdk/tools/builtins/netcheck.go` — network connectivity check for web tools
 - `sdk/tools/builtins/batch.go` — batch meta-tool (sequential sub-call execution intercepted at executor level)
+- `core/tools/askuser.go` — ask_user tool implementation (c0wrk-specific, moved from sdk/)
+- `core/tools/askuser_types.go` — AskUser request/response types
 - `sdk/tools/coherence.go` — FileCoherenceChecker interface, FileSig, CoherenceConflict types
 - `core/tools/builtin_registration.go` — registration function + config types
 
@@ -161,7 +163,7 @@ Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 
 ## Adding a New Built-in Tool — Checklist
 
-1. Create `sdk/tools/builtins/<name>.go` implementing `tools.Tool` interface
+1. Create `sdk/tools/builtins/<name>.go` implementing `tools.Tool` interface (c0wrk-specific tools like `ask_user` go in `core/tools/`)
 2. Add constructor: `NewXxxTool(...)` with relevant limits/config
 3. Register in `core/tools/builtin_registration.go` → `RegisterBuiltinTools()`
 4. If tool needs config, add field to `BuiltinToolsConfig` struct

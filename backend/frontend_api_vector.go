@@ -3,7 +3,7 @@ package backend
 import (
 	"errors"
 
-	"github.com/v0lka/c0wrk/sdk/vectorindex"
+	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
 const defaultVectorBrowseTopK = 50

@@ -14,7 +14,7 @@ import (
 
 	chromem "github.com/philippgille/chromem-go"
 
-	"github.com/v0lka/c0wrk/sdk/vectorindex/lexical"
+	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 )
 
 // sanitizeRe matches characters that are not alphanumeric, hyphens, or underscores.

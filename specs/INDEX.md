@@ -113,3 +113,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [008-backend-sdk-direct-import.md](decisions/008-backend-sdk-direct-import.md) - Backend allowed to import sdk directly
 - [009-backend-domain-logic-extraction.md](decisions/009-backend-domain-logic-extraction.md) - Extraction of domain logic from App/UI layer
 - [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, rtk, uv, markitdown)
+- [011-sdk-to-core-extraction.md](decisions/011-sdk-to-core-extraction.md) - Move vector index and proxy from SDK to Core

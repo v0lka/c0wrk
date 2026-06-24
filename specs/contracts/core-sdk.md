@@ -63,7 +63,6 @@
 | ---------------------- | --------- | ------------------------------ | ---------------------------------------------- |
 | `Tool`                 | sdk/tools | core/tools (embedded registry) | Tool interface (incl. IsUntrusted())          |
 | `BaseTool`             | sdk/tools | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
-| `IsUntrustedTool()`    | sdk/tools | REMOVED                        | Replaced by ToolExecutor.IsToolUntrusted() — delegates to Tool.IsUntrusted() + MCP source check |
 | `ToolRegistry`         | sdk/tools | core/tools (embedded)          | Basic tool store                |
 | `ListFiltered`         | sdk/tools | core/orchestrator              | Filtered tool listing (e.g., exclude disabled tools) |
 | `ToolDescriptor`       | sdk/tools | core/orchestrator, planner     | Tool metadata                                 |
@@ -78,16 +77,20 @@
 | `FileSig`              | sdk/tools | core/tools (re-exported)       | File signature (mtime + size) for coherence    |
 | `CoherenceConflict`    | sdk/tools | core/tools (re-exported)       | Conflict record with session and timing detail |
 
-### Consumed from `sdk/proxy`
+AskUser types (`AskUserFunc`, `AskUserRequest`, `AskUserResponse`, `AskUserQuestion`, `AskUserAnswer`, `AskUserOption`) moved to `core/tools/` as c0wrk-specific UI types. The `ask_user` tool implementation also lives in `core/tools/askuser.go`.
+
+### Consumed from `core/proxy`
+
+Proxy configuration moved from sdk/ to core/ per architectural extraction (c0wrk-specific infrastructure).
 
 | Interface / Type | Package    | Consumed By                                      | Purpose                              |
 | ---------------- | ---------- | ------------------------------------------------ | ------------------------------------ |
-| `Config`         | sdk/proxy  | core/builderconfig, backend/configadapter        | HTTP proxy settings (URL, bypass, TLS certs, env vars) |
-| `BuildTransport` | sdk/proxy  | core/builder                                     | Build proxy-configured `*http.Transport`     |
-| `BuildClient`    | sdk/proxy  | core/builder                                     | Build proxy-configured `*http.Client`         |
-| `SetEnvVars`     | sdk/proxy  | core/builder (on SetGlobalEnv opt-in)            | Export `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`SSL_CERT_DIR` for child processes |
-| `ClearEnvVars`   | sdk/proxy  | core/builder (on proxy disable)                  | Remove proxy environment variables            |
-| `MaskURL`        | sdk/proxy  | backend/frontend_api_config                      | Mask proxy URL password for UI display        |
+| `Config`         | core/proxy | core/builderconfig, backend/configadapter        | HTTP proxy settings (URL, bypass, TLS certs, env vars) |
+| `BuildTransport` | core/proxy | core/builder                                     | Build proxy-configured `*http.Transport`     |
+| `BuildClient`    | core/proxy | core/builder                                     | Build proxy-configured `*http.Client`         |
+| `SetEnvVars`     | core/proxy | core/builder (on SetGlobalEnv opt-in)            | Export `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`SSL_CERT_DIR` for child processes |
+| `ClearEnvVars`   | core/proxy | core/builder (on proxy disable)                  | Remove proxy environment variables            |
+| `MaskURL`        | core/proxy | backend/frontend_api_config                      | Mask proxy URL password for UI display        |
 
 ### Consumed from `sdk/memory`
 
@@ -102,14 +105,16 @@ All layers above sdk import source packages directly, e.g.:
 
 ```go
 // desktop/startup_phases.go
-import "github.com/v0lka/c0wrk/sdk/tools"  // → sdktools.ConfirmFunc, sdktools.AskUserFunc, ...
+import "github.com/v0lka/c0wrk/sdk/tools"  // → sdktools.ConfirmFunc, ...
+import "github.com/v0lka/c0wrk/core/tools" // → coretools.AskUserFunc, coretools.WithNoProject
 import "github.com/v0lka/c0wrk/sdk/agent"   // → agent.StepLimitFunc, agent.StepLimitDeny, ...
 
 // backend/application.go
 import "github.com/v0lka/c0wrk/sdk/tools"      // → sdktools.ConfirmFunc, sdktools.EnvInfo, ...
 import "github.com/v0lka/c0wrk/core/tools/mcp"  // → mcp.ServerStatus
 import "github.com/v0lka/c0wrk/sdk/agent"       // → agent.StepLimitFunc
-import "github.com/v0lka/c0wrk/sdk/proxy"       // → proxy.MaskURL, proxy.Config
+import "github.com/v0lka/c0wrk/core/proxy"       // → proxy.MaskURL, proxy.Config
+import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 ```
 
 ## Initialization

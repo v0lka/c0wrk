@@ -30,7 +30,7 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 │  core/              Orchestration engine + domain services          │
 │                     Router, Planner, Reflector, Orchestrator,       │
 │                     tool registry (policy), MCP gateway, skills,    │
-│                     vector index, workspace watcher, terminal       │
+│                     vector index, proxy, workspace watcher, terminal│
 └────────────────────────────────┬────────────────────────────────────┘
                                  │ Go imports
                                  ▼
@@ -61,10 +61,12 @@ The lowest layer. Contains the generic building blocks for an LLM agent applicat
 
 The brain of c0wrk. Implements the specific orchestration cycle: Router (classifies requests), Planner (generates DAG plans), Reflector (analyzes failures), and the top-level Orchestrator that ties them together. Wraps the sdk tool registry with policy enforcement, confirmation flow, and the LLM judge. Manages the MCP gateway and skill system. Contains all prompt templates (embedded markdown).
 
-Also references domain services moved from `backend/` per ADR-009:
-- `sdk/vectorindex/` — embedding, BM25+chromem hybrid search, git branch monitoring for index freshness (lives in sdk/ per ADR-009)
+Also owns domain services:
+- `core/vectorindex/` — embedding, BM25+chromem hybrid search, git branch monitoring for index freshness
+- `core/proxy/` — HTTP proxy configuration with PAC support
 - `core/terminal/` — PTY lifecycle management, shell environment, I/O
 - `core/workspace/` — fsnotify watcher with debouncing, git status/diff operations, file tree walking
+- `core/tools/` — built-in tool registration, c0wrk-specific tool types (ask_user)
 
 ### `backend/` — Application ViewModel
 

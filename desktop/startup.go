@@ -20,7 +20,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
-	"github.com/v0lka/c0wrk/sdk/vectorindex"
+	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -259,9 +260,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 	a.pendingAskUser.Range(func(key, value any) bool {
-		if ch, ok := value.(chan sdktools.AskUserResponse); ok {
+		if ch, ok := value.(chan coretools.AskUserResponse); ok {
 			select {
-			case ch <- sdktools.AskUserResponse{}:
+			case ch <- coretools.AskUserResponse{}:
 			default:
 			}
 		}

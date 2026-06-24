@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/v0lka/c0wrk/core/prompts"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/prompt"
@@ -180,7 +181,7 @@ func appendPlannerContextSections(ctx context.Context, base string) string {
 	result := base
 
 	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(ctx, tools.EnvInfoFrom(ctx)); envBlock != "" {
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{HideHomeDir: coretools.IsNoProject(ctx)}); envBlock != "" {
 		result += "\n\n" + envBlock
 	}
 
@@ -234,7 +235,7 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	}
 
 	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(ctx, tools.EnvInfoFrom(ctx)); envBlock != "" {
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{HideHomeDir: coretools.IsNoProject(ctx)}); envBlock != "" {
 		result += "\n\n" + envBlock
 	}
 

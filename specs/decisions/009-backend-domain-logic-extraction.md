@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-011](011-sdk-to-core-extraction.md) — vectorindex and proxy moved from sdk/ to core/.
 
 ## Context
 

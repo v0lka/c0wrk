@@ -10,7 +10,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/proxy"
+	"github.com/v0lka/c0wrk/core/proxy"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.

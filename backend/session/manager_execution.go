@@ -13,6 +13,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -69,7 +70,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {
-		taskCtx = sdktools.WithNoProject(taskCtx)
+		taskCtx = coretools.WithNoProject(taskCtx)
 	}
 	session.cancel = cancel
 	session.mu.Unlock()
@@ -394,7 +395,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {
-		taskCtx = sdktools.WithNoProject(taskCtx)
+		taskCtx = coretools.WithNoProject(taskCtx)
 	}
 	session.cancel = cancel
 	session.mu.Unlock()
@@ -566,7 +567,7 @@ func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) e
 		valCtx = sdktools.WithWorkspacePath(valCtx, session.WorkspacePath)
 		valCtx = sdktools.WithTempDir(valCtx, session.TempDir)
 		if session.ProjectID == project.NoProjectID {
-			valCtx = sdktools.WithNoProject(valCtx)
+			valCtx = coretools.WithNoProject(valCtx)
 		}
 
 		semanticIssues, valErr := session.orchestrator.SemanticValidatePlan(valCtx, originalMsg, string(planMD))
@@ -614,7 +615,7 @@ func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) e
 	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {
-		taskCtx = sdktools.WithNoProject(taskCtx)
+		taskCtx = coretools.WithNoProject(taskCtx)
 	}
 	session.cancel = cancel
 	session.mu.Unlock()
@@ -820,7 +821,7 @@ func (m *Manager) handleReplanWithFeedback(ctx context.Context, session *Session
 	ctx2 = sdktools.WithTempDir(ctx2, session.TempDir)
 	ctx2 = sdktools.WithCoherence(ctx2, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {
-		ctx2 = sdktools.WithNoProject(ctx2)
+		ctx2 = coretools.WithNoProject(ctx2)
 	}
 	m.mu.RLock()
 	envInfo := m.envInfo

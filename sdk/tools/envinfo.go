@@ -232,10 +232,16 @@ func EnvInfoFrom(ctx context.Context) *EnvInfo {
 	return nil
 }
 
+// EnvFormatOptions controls the formatting of environment info blocks.
+type EnvFormatOptions struct {
+	// HideHomeDir suppresses the home directory line in the environment block.
+	HideHomeDir bool
+}
+
 // FormatFullEnvBlock returns a detailed environment block for executor/planner prompts.
-// HomeDir is redacted when the context is marked as No Project (CHAT) mode.
+// Set opts.HideHomeDir to true to suppress the home directory line (e.g., in CHAT mode).
 // Returns "" if info is nil.
-func FormatFullEnvBlock(ctx context.Context, info *EnvInfo) string {
+func FormatFullEnvBlock(info *EnvInfo, opts EnvFormatOptions) string {
 	if info == nil {
 		return ""
 	}
@@ -250,7 +256,7 @@ func FormatFullEnvBlock(ctx context.Context, info *EnvInfo) string {
 	fmt.Fprintf(&b, "- OS: %s\n", info.OS)
 	fmt.Fprintf(&b, "- Architecture: %s\n", info.Arch)
 	fmt.Fprintf(&b, "- Shell: %s\n", info.Shell)
-	if !IsNoProject(ctx) {
+	if !opts.HideHomeDir {
 		fmt.Fprintf(&b, "- Home directory: %s\n", info.HomeDir)
 	}
 	fmt.Fprintf(&b, "- Current time: %s\n", now.Format(time.RFC3339))
@@ -266,9 +272,8 @@ func FormatFullEnvBlock(ctx context.Context, info *EnvInfo) string {
 }
 
 // FormatCompactEnvBlock returns a minimal environment block for evaluator/judge/reflector prompts.
-// HomeDir is redacted when the context is marked as No Project (CHAT) mode.
 // Includes OS, current time, and timezone. Returns "" if info is nil.
-func FormatCompactEnvBlock(ctx context.Context, info *EnvInfo) string {
+func FormatCompactEnvBlock(info *EnvInfo) string {
 	if info == nil {
 		return ""
 	}

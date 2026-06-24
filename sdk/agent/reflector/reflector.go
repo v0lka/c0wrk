@@ -65,7 +65,7 @@ func (r *Reflector) Reflect(
 		Build()
 
 	// Append compact environment context for reflection analysis.
-	if envBlock := tools.FormatCompactEnvBlock(ctx, tools.EnvInfoFrom(ctx)); envBlock != "" {
+	if envBlock := tools.FormatCompactEnvBlock(tools.EnvInfoFrom(ctx)); envBlock != "" {
 		systemPrompt += "\n\n" + envBlock
 	}
 

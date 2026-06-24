@@ -9,7 +9,6 @@ import (
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 	websearch "github.com/v0lka/c0wrk/sdk/tools/builtins/web_search"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // BuiltinToolsConfig holds configuration for registering built-in tools.
@@ -35,7 +34,7 @@ type BuiltinToolsConfig struct {
 
 	// AskUserFunc is the callback for the ask_user tool.
 	// If nil, the ask_user tool is not registered.
-	AskUserFunc sdktools.AskUserFunc
+	AskUserFunc AskUserFunc
 
 	// VectorSearchFunc is the callback for the semantic_search tool.
 	// If nil, the semantic_search tool is not registered.
@@ -105,7 +104,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 
 	// Ask user (optional)
 	if cfg.AskUserFunc != nil {
-		registry.Register(builtins.NewAskUserTool(cfg.AskUserFunc))
+		registry.Register(NewAskUserTool(cfg.AskUserFunc))
 	}
 
 	return nil

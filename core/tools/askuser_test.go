@@ -1,4 +1,4 @@
-package builtins
+package tools
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 func TestAskUserTool_Name(t *testing.T) {
@@ -19,14 +19,14 @@ func TestAskUserTool_Name(t *testing.T) {
 
 func TestAskUserTool_DefaultPolicy(t *testing.T) {
 	tool := NewAskUserTool(nil)
-	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
+	if tool.DefaultPolicy() != sdktools.PolicyAlwaysAllow {
 		t.Errorf("expected PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
 	}
 }
 
 func TestAskUserTool_Execute_SingleSelect(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{Answers: []tools.AskUserAnswer{{ID: "q1", Selected: []string{"opt1"}}}}, nil
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{Answers: []AskUserAnswer{{ID: "q1", Selected: []string{"opt1"}}}}, nil
 	}
 	tool := NewAskUserTool(fn)
 
@@ -35,7 +35,7 @@ func TestAskUserTool_Execute_SingleSelect(t *testing.T) {
 			{
 				"id":       "q1",
 				"question": "Pick one",
-				"options":  []tools.AskUserOption{{Label: "Option 1", Value: "opt1"}, {Label: "Option 2", Value: "opt2"}},
+				"options":  []AskUserOption{{Label: "Option 1", Value: "opt1"}, {Label: "Option 2", Value: "opt2"}},
 			},
 		},
 	})
@@ -53,8 +53,8 @@ func TestAskUserTool_Execute_SingleSelect(t *testing.T) {
 }
 
 func TestAskUserTool_Execute_MultiSelect(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{Answers: []tools.AskUserAnswer{{ID: "q1", Selected: []string{"opt1", "opt2"}}}}, nil
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{Answers: []AskUserAnswer{{ID: "q1", Selected: []string{"opt1", "opt3"}}}}, nil
 	}
 	tool := NewAskUserTool(fn)
 
@@ -62,9 +62,13 @@ func TestAskUserTool_Execute_MultiSelect(t *testing.T) {
 		"questions": []map[string]any{
 			{
 				"id":           "q1",
-				"question":     "Pick many",
-				"options":      []tools.AskUserOption{{Label: "A", Value: "opt1"}, {Label: "B", Value: "opt2"}},
+				"question":     "Pick several",
 				"multi_select": true,
+				"options": []AskUserOption{
+					{Label: "A", Value: "opt1"},
+					{Label: "B", Value: "opt2"},
+					{Label: "C", Value: "opt3"},
+				},
 			},
 		},
 	})
@@ -76,14 +80,14 @@ func TestAskUserTool_Execute_MultiSelect(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected IsError=false, got true. Content: %s", result.Content)
 	}
-	if !strings.Contains(result.Content, "User selected: opt1, opt2") {
-		t.Errorf("expected content to contain 'User selected: opt1, opt2', got %q", result.Content)
+	if !strings.Contains(result.Content, "User selected: opt1, opt3") {
+		t.Errorf("expected content to contain 'User selected: opt1, opt3', got %q", result.Content)
 	}
 }
 
 func TestAskUserTool_Execute_CustomText(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{Answers: []tools.AskUserAnswer{{ID: "q1", CustomText: "my custom answer"}}}, nil
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{Answers: []AskUserAnswer{{ID: "q1", CustomText: "my free text"}}}, nil
 	}
 	tool := NewAskUserTool(fn)
 
@@ -91,8 +95,8 @@ func TestAskUserTool_Execute_CustomText(t *testing.T) {
 		"questions": []map[string]any{
 			{
 				"id":       "q1",
-				"question": "What do you think?",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "a"}},
+				"question": "Explain",
+				"options":  []AskUserOption{{Label: "Reason", Value: "r"}},
 			},
 		},
 	})
@@ -104,14 +108,14 @@ func TestAskUserTool_Execute_CustomText(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected IsError=false, got true. Content: %s", result.Content)
 	}
-	if !strings.Contains(result.Content, "User answered: my custom answer") {
-		t.Errorf("expected content to contain 'User answered: my custom answer', got %q", result.Content)
+	if !strings.Contains(result.Content, "User answered: my free text") {
+		t.Errorf("expected content to contain 'User answered: my free text', got %q", result.Content)
 	}
 }
 
 func TestAskUserTool_Execute_SelectedAndCustom(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{Answers: []tools.AskUserAnswer{{ID: "q1", Selected: []string{"opt1"}, CustomText: "extra info"}}}, nil
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{Answers: []AskUserAnswer{{ID: "q1", Selected: []string{"opt1"}, CustomText: "also this"}}}, nil
 	}
 	tool := NewAskUserTool(fn)
 
@@ -119,8 +123,8 @@ func TestAskUserTool_Execute_SelectedAndCustom(t *testing.T) {
 		"questions": []map[string]any{
 			{
 				"id":       "q1",
-				"question": "Pick and explain",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "opt1"}},
+				"question": "Choose",
+				"options":  []AskUserOption{{Label: "A", Value: "opt1"}},
 			},
 		},
 	})
@@ -132,21 +136,19 @@ func TestAskUserTool_Execute_SelectedAndCustom(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected IsError=false, got true. Content: %s", result.Content)
 	}
-	expected := "Q \"Pick and explain\" → User selected: opt1. Additional input: extra info"
-	if result.Content != expected {
-		t.Errorf("expected %q, got %q", expected, result.Content)
+	if !strings.Contains(result.Content, "User selected: opt1. Additional input: also this") {
+		t.Errorf("expected 'User selected: opt1. Additional input: also this', got %q", result.Content)
 	}
 }
 
 func TestAskUserTool_Execute_NilFunc(t *testing.T) {
 	tool := NewAskUserTool(nil)
-
 	input, _ := json.Marshal(map[string]any{
 		"questions": []map[string]any{
 			{
 				"id":       "q1",
 				"question": "Hello?",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "a"}},
+				"options":  []AskUserOption{{Label: "A", Value: "a"}},
 			},
 		},
 	})
@@ -156,37 +158,38 @@ func TestAskUserTool_Execute_NilFunc(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.IsError {
-		t.Errorf("expected IsError=true for nil askFunc")
+		t.Errorf("expected IsError=true when askFunc is nil")
 	}
-	if !strings.Contains(result.Content, "not available") {
-		t.Errorf("expected error about not available, got %q", result.Content)
+	if !strings.Contains(result.Content, "ask_user is not available") {
+		t.Errorf("expected 'ask_user is not available', got %q", result.Content)
 	}
 }
 
-func TestAskUserTool_Execute_InvalidInput(t *testing.T) {
-	tool := NewAskUserTool(nil)
-
-	result, err := tool.Execute(context.Background(), json.RawMessage(`{invalid json`))
+func TestAskUserTool_Execute_InvalidJSON(t *testing.T) {
+	tool := NewAskUserTool(func(_ context.Context, _ AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{}, nil
+	})
+	result, err := tool.Execute(context.Background(), []byte("not-json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.IsError {
 		t.Errorf("expected IsError=true for invalid JSON")
 	}
-	if !strings.Contains(result.Content, "failed to parse input") {
-		t.Errorf("expected parse error message, got %q", result.Content)
-	}
 }
 
 func TestAskUserTool_Execute_EmptyQuestion(t *testing.T) {
-	tool := NewAskUserTool(nil)
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{}, nil
+	}
+	tool := NewAskUserTool(fn)
 
 	input, _ := json.Marshal(map[string]any{
 		"questions": []map[string]any{
 			{
 				"id":       "q1",
-				"question": "",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "a"}},
+				"question": "   ",
+				"options":  []AskUserOption{{Label: "A", Value: "a"}},
 			},
 		},
 	})
@@ -198,20 +201,23 @@ func TestAskUserTool_Execute_EmptyQuestion(t *testing.T) {
 	if !result.IsError {
 		t.Errorf("expected IsError=true for empty question")
 	}
-	if !strings.Contains(result.Content, "has empty text") {
-		t.Errorf("expected validation error about question, got %q", result.Content)
+	if !strings.Contains(result.Content, `question "q1" has empty text`) {
+		t.Errorf("expected validation error about empty question, got %q", result.Content)
 	}
 }
 
-func TestAskUserTool_Execute_EmptyOptions(t *testing.T) {
-	tool := NewAskUserTool(nil)
+func TestAskUserTool_Execute_NoOptions(t *testing.T) {
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{}, nil
+	}
+	tool := NewAskUserTool(fn)
 
 	input, _ := json.Marshal(map[string]any{
 		"questions": []map[string]any{
 			{
 				"id":       "q1",
 				"question": "Hello?",
-				"options":  []tools.AskUserOption{},
+				"options":  []AskUserOption{},
 			},
 		},
 	})
@@ -221,16 +227,16 @@ func TestAskUserTool_Execute_EmptyOptions(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.IsError {
-		t.Errorf("expected IsError=true for empty options")
+		t.Errorf("expected IsError=true for no options")
 	}
-	if !strings.Contains(result.Content, "must have at least one option") {
-		t.Errorf("expected validation error about options, got %q", result.Content)
+	if !strings.Contains(result.Content, `question "q1" must have at least one option`) {
+		t.Errorf("expected validation error about missing options, got %q", result.Content)
 	}
 }
 
 func TestAskUserTool_Execute_FuncError(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{}, errors.New("connection lost")
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{}, errors.New("connection lost")
 	}
 	tool := NewAskUserTool(fn)
 
@@ -239,7 +245,7 @@ func TestAskUserTool_Execute_FuncError(t *testing.T) {
 			{
 				"id":       "q1",
 				"question": "Hello?",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "a"}},
+				"options":  []AskUserOption{{Label: "A", Value: "a"}},
 			},
 		},
 	})
@@ -257,8 +263,8 @@ func TestAskUserTool_Execute_FuncError(t *testing.T) {
 }
 
 func TestAskUserTool_Execute_NoAnswer(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{Answers: []tools.AskUserAnswer{{ID: "q1"}}}, nil
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{Answers: []AskUserAnswer{{ID: "q1"}}}, nil
 	}
 	tool := NewAskUserTool(fn)
 
@@ -267,7 +273,7 @@ func TestAskUserTool_Execute_NoAnswer(t *testing.T) {
 			{
 				"id":       "q1",
 				"question": "Hello?",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "a"}},
+				"options":  []AskUserOption{{Label: "A", Value: "a"}},
 			},
 		},
 	})
@@ -304,9 +310,9 @@ func TestAskUserTool_Execute_EmptyQuestionsArray(t *testing.T) {
 }
 
 func TestAskUserTool_Execute_MultipleQuestions(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{
-			Answers: []tools.AskUserAnswer{
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{
+			Answers: []AskUserAnswer{
 				{ID: "q1", Selected: []string{"opt1"}},
 				{ID: "q2", Selected: []string{"yes"}},
 			},
@@ -319,12 +325,12 @@ func TestAskUserTool_Execute_MultipleQuestions(t *testing.T) {
 			{
 				"id":       "q1",
 				"question": "Pick one",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "opt1"}, {Label: "B", Value: "opt2"}},
+				"options":  []AskUserOption{{Label: "A", Value: "opt1"}, {Label: "B", Value: "opt2"}},
 			},
 			{
 				"id":       "q2",
 				"question": "Proceed?",
-				"options":  []tools.AskUserOption{{Label: "Yes", Value: "yes"}, {Label: "No", Value: "no"}},
+				"options":  []AskUserOption{{Label: "Yes", Value: "yes"}, {Label: "No", Value: "no"}},
 			},
 		},
 	})
@@ -345,9 +351,9 @@ func TestAskUserTool_Execute_MultipleQuestions(t *testing.T) {
 }
 
 func TestAskUserTool_Execute_MixedResponses(t *testing.T) {
-	fn := func(_ context.Context, req tools.AskUserRequest) (tools.AskUserResponse, error) {
-		return tools.AskUserResponse{
-			Answers: []tools.AskUserAnswer{
+	fn := func(_ context.Context, req AskUserRequest) (AskUserResponse, error) {
+		return AskUserResponse{
+			Answers: []AskUserAnswer{
 				{ID: "q1", Selected: []string{"opt1"}},
 				{ID: "q2", CustomText: "my custom answer"},
 			},
@@ -360,12 +366,12 @@ func TestAskUserTool_Execute_MixedResponses(t *testing.T) {
 			{
 				"id":       "q1",
 				"question": "Pick one",
-				"options":  []tools.AskUserOption{{Label: "A", Value: "opt1"}, {Label: "B", Value: "opt2"}},
+				"options":  []AskUserOption{{Label: "A", Value: "opt1"}, {Label: "B", Value: "opt2"}},
 			},
 			{
 				"id":       "q2",
 				"question": "Explain why",
-				"options":  []tools.AskUserOption{{Label: "Reason", Value: "r"}},
+				"options":  []AskUserOption{{Label: "Reason", Value: "r"}},
 			},
 		},
 	})

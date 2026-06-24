@@ -18,7 +18,7 @@ import (
 	"github.com/openai/openai-go/option"
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
-	"github.com/v0lka/c0wrk/sdk/proxy"
+	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
@@ -79,7 +79,7 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 // MCP gateway and LLM router initialization happens asynchronously so that
 // this function returns immediately. Callers that need those components
 // (Build, GenerateTitle, etc.) block until the background init finishes.
-func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc sdktools.AskUserFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
+func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
 	// Defensive default: if the caller did not provide an env-var expander,
 	// fall back to a no-op so that downstream callers (proxy/MCP/LLM config)
 	// don't panic on a nil function pointer. The real expander is supplied by

@@ -13,7 +13,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	chromem "github.com/philippgille/chromem-go"
 
-	"github.com/v0lka/c0wrk/sdk/vectorindex/lexical"
+	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 )
 
 // ServiceConfig holds configuration for creating a Service.

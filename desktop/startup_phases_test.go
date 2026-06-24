@@ -15,7 +15,8 @@ import (
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/sdk/vectorindex"
+	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
@@ -211,7 +212,7 @@ func TestBuildAskUserCallback_NoAppContext(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildAskUserCallback(uiEmit)
 
-	_, err := cb(context.Background(), sdktools.AskUserRequest{})
+	_, err := cb(context.Background(), coretools.AskUserRequest{})
 	if err == nil {
 		t.Fatal("expected error when a.ctx is nil")
 	}
@@ -222,7 +223,7 @@ func TestBuildAskUserCallback_NoSessionInContext(t *testing.T) {
 	uiEmit := func(session.Event) {}
 	cb := a.buildAskUserCallback(uiEmit)
 
-	_, err := cb(context.Background(), sdktools.AskUserRequest{})
+	_, err := cb(context.Background(), coretools.AskUserRequest{})
 	if err == nil {
 		t.Fatal("expected error when ctx has no session ID")
 	}

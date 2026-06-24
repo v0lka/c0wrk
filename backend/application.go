@@ -14,6 +14,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
@@ -34,7 +35,7 @@ type ApplicationConfig struct {
 
 	// UI callbacks provided by the desktop adapter.
 	UIEmitFunc    func(session.Event)  // Wails event emission
-	AskUserFunc   sdktools.AskUserFunc // ask_user tool callback
+	AskUserFunc   coretools.AskUserFunc // ask_user tool callback
 	ConfirmFunc   sdktools.ConfirmFunc    // tool confirmation callback
 	StepLimitFunc agent.StepLimitFunc  // step limit callback
 

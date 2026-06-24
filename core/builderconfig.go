@@ -1,6 +1,6 @@
 package core
 
-import "github.com/v0lka/c0wrk/sdk/proxy"
+import "github.com/v0lka/c0wrk/core/proxy"
 
 // BuilderConfig holds all configuration that the OrchestratorBuilder needs.
 // It is defined in core so that core never imports backend/config.

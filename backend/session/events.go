@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/sdk/agent/router"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // Event type constants for backend-to-frontend communication.
@@ -127,7 +127,7 @@ type JudgeResponsePayload struct {
 // AskUserPayload is sent to the frontend when the agent asks the user questions.
 type AskUserPayload struct {
 	RequestID string                  `json:"request_id"`
-	Questions []sdktools.AskUserQuestion `json:"questions"`
+	Questions []coretools.AskUserQuestion `json:"questions"`
 }
 
 // --- Step limit payloads ---

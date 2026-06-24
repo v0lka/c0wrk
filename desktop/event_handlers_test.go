@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/session"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -186,7 +187,7 @@ func TestHandleToolConfirmResponse_ChannelFull(t *testing.T) {
 
 func TestHandleAskUserResponse_HappyPath(t *testing.T) {
 	a := &App{}
-	ch := make(chan sdktools.AskUserResponse, 1)
+	ch := make(chan coretools.AskUserResponse, 1)
 	a.pendingAskUser.Store("au-1", ch)
 
 	a.handleAskUserResponse(map[string]any{
@@ -216,7 +217,7 @@ func TestHandleAskUserResponse_HappyPath(t *testing.T) {
 
 func TestHandleAskUserResponse_NoAnswersField(t *testing.T) {
 	a := &App{}
-	ch := make(chan sdktools.AskUserResponse, 1)
+	ch := make(chan coretools.AskUserResponse, 1)
 	a.pendingAskUser.Store("au-2", ch)
 
 	a.handleAskUserResponse(map[string]any{"request_id": "au-2"}, silentLogger())
@@ -242,7 +243,7 @@ func TestHandleAskUserResponse_MissingRequestID(t *testing.T) {
 
 func TestHandleAskUserResponse_MalformedAnswers(t *testing.T) {
 	a := &App{}
-	ch := make(chan sdktools.AskUserResponse, 1)
+	ch := make(chan coretools.AskUserResponse, 1)
 	a.pendingAskUser.Store("au-3", ch)
 
 	// Each branch malformed in a different way; all should be silently skipped.

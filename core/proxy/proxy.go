@@ -1,4 +1,4 @@
-// Package proxy provides reusable HTTP proxy infrastructure for AI agent SDKs.
+// Package proxy provides HTTP proxy infrastructure for c0wrk LLM API clients.
 package proxy
 
 import (

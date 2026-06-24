@@ -20,7 +20,7 @@
 | `ToolPolicy`          | sdk/tools      | backend → core | Security policy values                |
 | `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation, ExtraBashBlacklist) |
 | `StepDumpTracker`     | sdk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
-| `Manager`             | sdk/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
+| `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
 | `PTYManager`          | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
 | `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |
 | `FileNode`            | core/workspace | core → backend | File tree node (type alias in backend) |
@@ -143,7 +143,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Adding new `OrchestratorBuilder` method → update `backend/application.go` if exposed to frontend
 - Changing tool config types → update `BuiltinToolsConfig` re-exports in `core/tools/builtin_registration.go`
 - `vectorindex.ManagerConfig` no longer accepts model-path fields (`ModelPath`, `TokenizerPath`, `LibraryPath`, `MaxSeqLength`, `HiddenDim`); caller is now responsible for embedder lifecycle via `EmbeddingFunc` + `CloseFn`
-- `core/tools` AskUser* and builtins limit/vector type aliases removed per ADR-008; import directly from `sdk/tools` / `sdk/tools/builtins`
+- `core/tools` AskUser* types are c0wrk-specific; import directly from `core/tools`
 - Adding `SessionPlansDir` to `HandleOptions` → update session manager `HandleOptions` construction in `backend/session/manager_execution.go`
 - Removing `LogDir`/`ProjectsDir` from `ApplicationConfig` → update `desktop/startup.go` caller; use `backend/config/paths.go` functions instead
 - Changing directories under `~/.c0wrk/` → update `backend/config/paths.go` (single source of truth); verify all callers use path functions, not direct `filepath.Join`

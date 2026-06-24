@@ -155,7 +155,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	userPrompt := "Task: " + taskContext + "\n\nTool: " + toolName + "\n\nInput: " + inputStr
 
 	// Append compact environment context for safety reasoning.
-	if envBlock := FormatCompactEnvBlock(ctx, EnvInfoFrom(ctx)); envBlock != "" {
+	if envBlock := FormatCompactEnvBlock(EnvInfoFrom(ctx)); envBlock != "" {
 		userPrompt += "\n\n" + envBlock
 	}
 
