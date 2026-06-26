@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDuckDuckGoProvider_Search(t *testing.T) {
@@ -45,7 +46,7 @@ func TestDuckDuckGoProvider_Search(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDuckDuckGoProvider()
+	provider := NewDuckDuckGoProviderWithClient(30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	results, err := provider.Search(context.Background(), "golang testing", 5)
@@ -91,7 +92,7 @@ func TestDuckDuckGoProvider_EmptyResults(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDuckDuckGoProvider()
+	provider := NewDuckDuckGoProviderWithClient(30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	results, err := provider.Search(context.Background(), "test", 5)
@@ -110,7 +111,7 @@ func TestDuckDuckGoProvider_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDuckDuckGoProvider()
+	provider := NewDuckDuckGoProviderWithClient(30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	_, err := provider.Search(context.Background(), "test", 5)
@@ -147,7 +148,7 @@ func TestDuckDuckGoProvider_MaxResults(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewDuckDuckGoProvider()
+	provider := NewDuckDuckGoProviderWithClient(30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	results, err := provider.Search(context.Background(), "test", 2)
@@ -198,7 +199,7 @@ func TestCleanDuckDuckGoURL(t *testing.T) {
 }
 
 func TestDuckDuckGoProvider_RealSearch(t *testing.T) {
-	provider := NewDuckDuckGoProvider()
+	provider := NewDuckDuckGoProviderWithClient(30*time.Second, nil)
 	results, err := provider.Search(context.Background(), "golang programming language", 3)
 	if err != nil {
 		t.Fatalf("Search() returned error: %v", err)

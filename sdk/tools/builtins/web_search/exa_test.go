@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExaProvider_Search(t *testing.T) {
@@ -63,7 +64,7 @@ func TestExaProvider_Search(t *testing.T) {
 	defer server.Close()
 
 	// Create provider with mock server URL
-	provider := NewExaProvider("test-api-key")
+	provider := NewExaProviderWithClient("test-api-key", 30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	results, err := provider.Search(context.Background(), "golang testing", 5)
@@ -103,7 +104,7 @@ func TestExaProvider_TextFallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewExaProvider("test-api-key")
+	provider := NewExaProviderWithClient("test-api-key", 30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	results, err := provider.Search(context.Background(), "test", 5)
@@ -124,7 +125,7 @@ func TestExaProvider_EmptyResults(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewExaProvider("test-api-key")
+	provider := NewExaProviderWithClient("test-api-key", 30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	results, err := provider.Search(context.Background(), "test", 5)
@@ -137,7 +138,7 @@ func TestExaProvider_EmptyResults(t *testing.T) {
 }
 
 func TestExaProvider_MissingAPIKey(t *testing.T) {
-	provider := NewExaProvider("")
+	provider := NewExaProviderWithClient("", 30*time.Second, nil)
 
 	_, err := provider.Search(context.Background(), "test", 5)
 	if err == nil {
@@ -155,7 +156,7 @@ func TestExaProvider_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewExaProvider("test-api-key")
+	provider := NewExaProviderWithClient("test-api-key", 30*time.Second, nil)
 	provider.SetBaseURL(server.URL)
 
 	_, err := provider.Search(context.Background(), "test", 5)
@@ -173,7 +174,7 @@ func TestExaProvider_RealSearch(t *testing.T) {
 		t.Skip("Skipping integration test: EXA_API_KEY environment variable not set")
 	}
 
-	provider := NewExaProvider(apiKey)
+	provider := NewExaProviderWithClient(apiKey, 30*time.Second, nil)
 	results, err := provider.Search(context.Background(), "golang programming language", 3)
 	if err != nil {
 		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "INVALID_API_KEY") || strings.Contains(err.Error(), "403") {

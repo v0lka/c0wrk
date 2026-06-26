@@ -21,17 +21,6 @@ type DuckDuckGoProvider struct {
 	client  *http.Client
 }
 
-// NewDuckDuckGoProvider creates a new DuckDuckGoProvider.
-// No API key is required for DuckDuckGo.
-func NewDuckDuckGoProvider() *DuckDuckGoProvider {
-	return NewDuckDuckGoProviderWithTimeout(30 * time.Second)
-}
-
-// NewDuckDuckGoProviderWithTimeout creates a new DuckDuckGoProvider with the given timeout.
-func NewDuckDuckGoProviderWithTimeout(timeout time.Duration) *DuckDuckGoProvider {
-	return NewDuckDuckGoProviderWithClient(timeout, nil)
-}
-
 // NewDuckDuckGoProviderWithClient creates a new DuckDuckGoProvider with the given timeout
 // and optional HTTP client. If client is nil, a default client with the specified timeout is used.
 func NewDuckDuckGoProviderWithClient(timeout time.Duration, client *http.Client) *DuckDuckGoProvider {

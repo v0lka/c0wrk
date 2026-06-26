@@ -5,8 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/v0lka/c0wrk/sdk/agent"
 )
 
 func TestBlackboard_OriginalRequest(t *testing.T) {
@@ -271,92 +269,6 @@ func TestBlackboard_StepResult_EmptyOutput(t *testing.T) {
 	}
 }
 
-func TestMapBlackboard_WithMaxSummaryTokens(t *testing.T) {
-	// Token budget = 10 tokens → 40 chars max for summary.
-	bb := NewMapBlackboard(WithMaxSummaryTokens(10))
-
-	// Output with a single paragraph longer than 40 chars but shorter than 500 chars.
-	output := strings.Repeat("a", 100)
-	bb.SetStepResult("s1", output, nil, nil)
-
-	r, ok := bb.GetStepResult("s1")
-	if !ok {
-		t.Fatal("expected to find step result")
-	}
-	// generateSummary produces 100-char string (no paragraph break, under 500).
-	// Token cap should truncate to 40 chars + "...".
-	if len(r.Summary) != 43 { // 40 + "..."
-		t.Fatalf("expected summary length 43, got %d", len(r.Summary))
-	}
-	if !strings.HasSuffix(r.Summary, "...") {
-		t.Fatalf("expected summary to end with '...', got %q", r.Summary)
-	}
-
-	// Verify full output is untouched.
-	if r.FullOutput != output {
-		t.Fatalf("full output should not be modified")
-	}
-}
-
-func TestMapBlackboard_GetStepResultBudgeted(t *testing.T) {
-	bb := NewMapBlackboard()
-
-	output := strings.Repeat("x", 1000)
-	bb.SetStepResult("s1", output, nil, nil)
-
-	// Budget = 50 tokens → 200 chars max.
-	r, ok := bb.GetStepResultBudgeted("s1", 50)
-	if !ok {
-		t.Fatal("expected to find step result")
-	}
-	if len(r.FullOutput) != 203 { // 200 + "..."
-		t.Fatalf("expected full output length 203, got %d", len(r.FullOutput))
-	}
-	if !strings.HasSuffix(r.FullOutput, "...") {
-		t.Fatalf("expected truncation suffix")
-	}
-}
-
-func TestMapBlackboard_GetStepResultBudgeted_ZeroMeansUnlimited(t *testing.T) {
-	bb := NewMapBlackboard()
-
-	output := strings.Repeat("y", 5000)
-	bb.SetStepResult("s1", output, nil, nil)
-
-	// maxOutputTokens = 0 → full output returned.
-	r, ok := bb.GetStepResultBudgeted("s1", 0)
-	if !ok {
-		t.Fatal("expected to find step result")
-	}
-	if r.FullOutput != output {
-		t.Fatalf("expected full output when maxOutputTokens is 0, got len %d", len(r.FullOutput))
-	}
-}
-
-func TestMapBlackboard_GetStepResultBudgeted_NotFound(t *testing.T) {
-	bb := NewMapBlackboard()
-	_, ok := bb.GetStepResultBudgeted("nonexistent", 100)
-	if ok {
-		t.Fatal("expected not found")
-	}
-}
-
-func TestBlackboard_StepResult_StepsCopy(t *testing.T) {
-	bb := NewMapBlackboard()
-
-	steps := []agent.Step{
-		{Thought: "thinking"},
-	}
-	bb.SetStepResult("s1", "output", nil, steps)
-
-	// Mutate original steps — should not affect blackboard.
-	steps[0].Thought = "MUTATED"
-
-	r, _ := bb.GetStepResult("s1")
-	if r.Steps[0].Thought != "thinking" {
-		t.Fatalf("step copy broken: got %q", r.Steps[0].Thought)
-	}
-}
 
 func TestCopyPlanPreservesExplorationContext(t *testing.T) {
 	original := &Plan{

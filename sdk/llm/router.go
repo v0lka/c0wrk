@@ -330,25 +330,10 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	return nil, lastErr
 }
 
-// GetProvider returns a provider by name.
-// Returns nil if the provider is not found.
-func (r *Router) GetProvider(name string) Provider {
-	provider, ok := r.providers[name]
-	if !ok {
-		return nil
-	}
-	return provider
-}
-
 // GetDefaultProvider returns the active provider.
 // Returns nil if no provider is configured.
 func (r *Router) GetDefaultProvider() Provider {
 	return r.activeProvider
-}
-
-// ActiveModel returns the active model name.
-func (r *Router) ActiveModel() string {
-	return r.activeModel
 }
 
 // ActiveProviderName returns the logical name of the active provider.

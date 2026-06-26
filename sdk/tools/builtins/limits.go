@@ -45,13 +45,6 @@ type WebFetchLimits struct {
 	Timeout time.Duration // timeout for HTTP requests
 }
 
-// DefaultWebFetchLimits returns the default limits for web_fetch.
-func DefaultWebFetchLimits() WebFetchLimits {
-	return WebFetchLimits{
-		Timeout: 30 * time.Second,
-	}
-}
-
 // WebSearchLimits holds configurable limits for the web_search tool.
 type WebSearchLimits struct {
 	MaxResults int           // max number of search results

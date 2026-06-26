@@ -478,42 +478,6 @@ func TestContextTokenTracker_AddDelta(t *testing.T) {
 	})
 }
 
-func TestContextTokenTracker_AddDeltaMessages(t *testing.T) {
-	counter := NewSimpleTokenCounter()
-	tracker := NewContextTokenTracker(counter)
-
-	t.Run("adds message tokens to pendingDelta", func(t *testing.T) {
-		tracker.Reset()
-		msgs := []Message{
-			{Role: "user", Content: "Hello!"},
-		}
-		tracker.AddDeltaMessages(msgs)
-
-		got := tracker.EstimateTotal()
-		// user(1) + Hello!(2) + 4 overhead = 7
-		if got != 7 {
-			t.Errorf("after AddDeltaMessages, EstimateTotal() = %d, want 7", got)
-		}
-	})
-
-	t.Run("accumulates multiple message batches", func(t *testing.T) {
-		tracker.Reset()
-		msgs1 := []Message{
-			{Role: "user", Content: "Hi"},
-		}
-		msgs2 := []Message{
-			{Role: "assistant", Content: "Hello"},
-		}
-		tracker.AddDeltaMessages(msgs1) // expected: 6 tokens
-		tracker.AddDeltaMessages(msgs2) // expected: 9 tokens
-
-		got := tracker.EstimateTotal()
-		want := 15 // 6 + 9
-		if got != want {
-			t.Errorf("after multiple AddDeltaMessages, EstimateTotal() = %d, want %d", got, want)
-		}
-	})
-}
 
 func TestContextTokenTracker_Correct(t *testing.T) {
 	counter := NewSimpleTokenCounter()

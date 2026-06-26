@@ -85,16 +85,3 @@ func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDep
 	}
 }
 
-// StrategyDisplayName returns a human-readable name for a compaction strategy.
-func StrategyDisplayName(strategyType string) string {
-	switch strategyType {
-	case "sliding_window":
-		return "Sliding Window"
-	case "summarization":
-		return "Summarization"
-	case "hierarchical":
-		return "Hierarchical"
-	default:
-		return "Unknown"
-	}
-}

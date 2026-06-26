@@ -8,10 +8,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBraveProvider_Name(t *testing.T) {
-	p := NewBraveProvider("test-key")
+	p := NewBraveProviderWithClient("test-key", 30*time.Second, nil)
 	if p.Name() != "brave" {
 		t.Errorf("Name() = %q, want %q", p.Name(), "brave")
 	}
@@ -48,7 +49,7 @@ func TestBraveProvider_Search(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewBraveProvider("test-key")
+	p := NewBraveProviderWithClient("test-key", 30*time.Second, nil)
 	p.SetBaseURL(srv.URL)
 
 	results, err := p.Search(context.Background(), "golang testing", 5)
@@ -87,7 +88,7 @@ func TestBraveProvider_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewBraveProvider("test-key")
+	p := NewBraveProviderWithClient("test-key", 30*time.Second, nil)
 	p.SetBaseURL(srv.URL)
 
 	_, err := p.Search(context.Background(), "test", 5)
@@ -106,7 +107,7 @@ func TestBraveProvider_EmptyResults(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewBraveProvider("test-key")
+	p := NewBraveProviderWithClient("test-key", 30*time.Second, nil)
 	p.SetBaseURL(srv.URL)
 
 	results, err := p.Search(context.Background(), "test", 5)
@@ -119,7 +120,7 @@ func TestBraveProvider_EmptyResults(t *testing.T) {
 }
 
 func TestBraveProvider_MissingAPIKey(t *testing.T) {
-	p := NewBraveProvider("")
+	p := NewBraveProviderWithClient("", 30*time.Second, nil)
 
 	_, err := p.Search(context.Background(), "test", 5)
 	if err == nil {
@@ -135,7 +136,7 @@ func TestBraveProvider_RealSearch(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("Skipping integration test: BRAVE_API_KEY environment variable not set")
 	}
-	provider := NewBraveProvider(apiKey)
+	provider := NewBraveProviderWithClient(apiKey, 30*time.Second, nil)
 	results, err := provider.Search(context.Background(), "golang programming language", 3)
 	if err != nil {
 		t.Fatalf("Search() returned error: %v", err)

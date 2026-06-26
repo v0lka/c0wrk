@@ -20,22 +20,12 @@ type MapBlackboard struct {
 	stepResults      map[string]StepResult
 	reflections      []Reflection
 	finalResult      string
-	maxSummaryTokens int    // token-based limit for summaries (0 = use char-based default)
 	maxSummaryLen    int    // char-based limit for summaries (0 = use default 500)
 	facts            []Fact // keyword-tagged facts for inter-step communication
 }
 
 // MapBlackboardOption configures a MapBlackboard.
 type MapBlackboardOption func(*MapBlackboard)
-
-// WithMaxSummaryTokens sets a token-based cap on auto-generated step summaries.
-// The summary produced by GenerateSummary is further truncated to approximately
-// n*4 characters (1 token ≈ 4 chars). A value of 0 disables the token budget.
-func WithMaxSummaryTokens(n int) MapBlackboardOption {
-	return func(b *MapBlackboard) {
-		b.maxSummaryTokens = n
-	}
-}
 
 // WithMaxSummaryLen sets a character-based cap on auto-generated step summaries.
 // A value of 0 uses the default (500).
@@ -152,22 +142,12 @@ func (b *MapBlackboard) SetPlan(plan *Plan) {
 }
 
 // SetStepResult records the result of a completed step, auto-generating a summary.
-// If maxSummaryTokens is configured, the summary is additionally capped to
-// approximately maxSummaryTokens*4 characters.
 func (b *MapBlackboard) SetStepResult(stepID, output string, err error, steps []agent.Step) {
 	maxLen := b.maxSummaryLen
 	if maxLen == 0 {
 		maxLen = 500
 	}
 	summary := GenerateSummary(output, maxLen)
-
-	// Apply token-budget cap as a secondary limit.
-	if b.maxSummaryTokens > 0 {
-		maxChars := b.maxSummaryTokens * 4
-		if len(summary) > maxChars {
-			summary = summary[:maxChars] + "..."
-		}
-	}
 
 	stepsCopy := make([]agent.Step, len(steps))
 	copy(stepsCopy, steps)
@@ -183,26 +163,6 @@ func (b *MapBlackboard) SetStepResult(stepID, output string, err error, steps []
 	}
 }
 
-// GetStepResultBudgeted returns a copy of the step result with FullOutput
-// truncated to approximately maxOutputTokens tokens (maxOutputTokens * 4 chars).
-// If maxOutputTokens is 0, the full output is returned unmodified.
-func (b *MapBlackboard) GetStepResultBudgeted(stepID string, maxOutputTokens int) (StepResult, bool) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	r, ok := b.stepResults[stepID]
-	if !ok {
-		return StepResult{}, false
-	}
-	out := copyStepResult(r)
-	if maxOutputTokens > 0 {
-		maxChars := maxOutputTokens * 4
-		if len(out.FullOutput) > maxChars {
-			out.FullOutput = out.FullOutput[:maxChars] + "..."
-		}
-	}
-	return out, true
-}
-
 // AddReflection appends a reflection to the list.
 func (b *MapBlackboard) AddReflection(r Reflection) {
 	b.mu.Lock()
@@ -215,11 +175,6 @@ func (b *MapBlackboard) SetFinalResult(result string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.finalResult = result
-}
-
-// MaxSummaryTokens returns the configured token budget for summaries.
-func (b *MapBlackboard) MaxSummaryTokens() int {
-	return b.maxSummaryTokens
 }
 
 // MaxSummaryLen returns the configured character limit for summaries.

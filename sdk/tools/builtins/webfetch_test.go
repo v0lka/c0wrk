@@ -8,12 +8,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
 func TestWebFetchTool_Descriptor(t *testing.T) {
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	// Verify name
 	if name := tool.Name(); name != "web_fetch" {
@@ -64,14 +65,14 @@ func TestWebFetchTool_Descriptor(t *testing.T) {
 }
 
 func TestWebFetchTool_ImplementsToolInterface(t *testing.T) {
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	// Verify it implements the Tool interface
 	var _ tools.Tool = tool
 }
 
 func TestWebFetchTool_MissingURL(t *testing.T) {
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	// Test with empty input
@@ -99,7 +100,7 @@ func TestWebFetchTool_MissingURL(t *testing.T) {
 }
 
 func TestWebFetchTool_InvalidURL(t *testing.T) {
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	testCases := []struct {
@@ -131,7 +132,7 @@ func TestWebFetchTool_InvalidURL(t *testing.T) {
 }
 
 func TestWebFetchTool_InvalidJSON(t *testing.T) {
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input := json.RawMessage(`{invalid json`)
@@ -164,7 +165,7 @@ func TestWebFetchTool_HTTPServer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -192,7 +193,7 @@ func TestWebFetchTool_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -221,7 +222,7 @@ func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -268,7 +269,7 @@ func TestWebFetchTool_TruncationAppliesToMarkdownNotHTML(t *testing.T) {
 	}))
 	defer server.Close()
 
-	limits := DefaultWebFetchLimits()
+	limits := WebFetchLimits{Timeout: 30 * time.Second}
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -298,7 +299,7 @@ func TestWebFetchTool_FetchRealPage(t *testing.T) {
 	// Skip if running in CI or no network
 	t.Skip("Skipping integration test - requires network access")
 
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	// Use a stable URL
@@ -316,7 +317,7 @@ func TestWebFetchTool_FetchRealPage(t *testing.T) {
 }
 
 func TestWebFetchTool_DefaultPolicy(t *testing.T) {
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
 		t.Errorf("expected DefaultPolicy() to return PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
 	}
@@ -336,7 +337,7 @@ func TestWebFetchTool_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -393,7 +394,7 @@ func TestWebFetchTool_ReadabilityExtraction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -442,7 +443,7 @@ func TestWebFetchTool_StartLineEndLine(t *testing.T) {
 	server := multiLineServer()
 	defer server.Close()
 
-	limits := DefaultWebFetchLimits()
+	limits := WebFetchLimits{Timeout: 30 * time.Second}
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -469,7 +470,7 @@ func TestWebFetchTool_StartLineOnly(t *testing.T) {
 	server := multiLineServer()
 	defer server.Close()
 
-	limits := DefaultWebFetchLimits()
+	limits := WebFetchLimits{Timeout: 30 * time.Second}
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -496,7 +497,7 @@ func TestWebFetchTool_EndLineOnly(t *testing.T) {
 	server := multiLineServer()
 	defer server.Close()
 
-	limits := DefaultWebFetchLimits()
+	limits := WebFetchLimits{Timeout: 30 * time.Second}
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -523,7 +524,7 @@ func TestWebFetchTool_LineRangeOutOfBounds(t *testing.T) {
 	server := multiLineServer()
 	defer server.Close()
 
-	limits := DefaultWebFetchLimits()
+	limits := WebFetchLimits{Timeout: 30 * time.Second}
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -559,7 +560,7 @@ func TestWebFetchTool_TruncationShowsLineCount(t *testing.T) {
 	}))
 	defer server.Close()
 
-	limits := DefaultWebFetchLimits()
+	limits := WebFetchLimits{Timeout: 30 * time.Second}
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -594,7 +595,7 @@ func TestWebFetchTool_LineRangeWithTruncation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	limits := DefaultWebFetchLimits()
+	limits := WebFetchLimits{Timeout: 30 * time.Second}
 	tool := NewWebFetchTool(limits)
 	ctx := context.Background()
 
@@ -634,7 +635,7 @@ func TestWebFetchTool_ReadabilityFallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -656,7 +657,7 @@ func TestWebFetchTool_ReadabilityFallback(t *testing.T) {
 }
 
 func TestWebFetchTool_Judge_PrivateIP(t *testing.T) {
-	tool := NewWebFetchTool(DefaultWebFetchLimits())
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	t.Run("loopback is blocked", func(t *testing.T) {
 		input, _ := json.Marshal(map[string]string{"url": "http://127.0.0.1/secret"})

@@ -290,13 +290,6 @@ func AllPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
 	return AllPathsInDir(input, workspacePath)
 }
 
-// ResetCache clears all cached verdicts.
-func (j *ToolJudge) ResetCache() {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	j.cache = make(map[string]judgeResult)
-}
-
 // parseJudgeResponse extracts verdict and reasoning from LLM response.
 // Expected format:
 //

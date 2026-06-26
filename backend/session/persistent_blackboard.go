@@ -226,13 +226,6 @@ func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, 
 		maxLen = 500
 	}
 	summary := orchestration.GenerateSummary(output, maxLen)
-	// Apply the same token-budget cap as MapBlackboard.
-	if pb.MaxSummaryTokens() > 0 {
-		maxChars := pb.MaxSummaryTokens() * 4
-		if len(summary) > maxChars {
-			summary = summary[:maxChars] + "..."
-		}
-	}
 
 	var errText string
 	if err != nil {

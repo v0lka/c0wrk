@@ -129,16 +129,6 @@ func (m *SkillManager) SkillPath(name string) (string, bool) {
 	return s.DirPath, true
 }
 
-// ResolveResourcePath resolves a relative path within a skill's directory.
-// Returns an error if the skill doesn't exist or the resolved path escapes the skill dir.
-func (m *SkillManager) ResolveResourcePath(skillName, relPath string) (string, error) {
-	skillDir, ok := m.SkillPath(skillName)
-	if !ok {
-		return "", fmt.Errorf("skill %q not found", skillName)
-	}
-	return SafeResolvePath(skillDir, relPath)
-}
-
 // SafeResolvePath resolves a relative path within a base directory, preventing
 // path traversal attacks. Returns the cleaned absolute path or an error if the
 // resolved path escapes the base directory. Used by both SkillManager and

@@ -108,57 +108,6 @@ func TestFindReadySteps(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FindFailedStep
-// ---------------------------------------------------------------------------
-
-func TestFindFailedStep(t *testing.T) {
-	tests := []struct {
-		name   string
-		steps  []CompletedStep
-		wantID string // empty = expect zero-value
-	}{
-		{
-			name:   "no steps",
-			steps:  nil,
-			wantID: "",
-		},
-		{
-			name: "all success",
-			steps: []CompletedStep{
-				{StepID: "s1", Output: "ok"},
-				{StepID: "s2", Output: "ok"},
-			},
-			wantID: "",
-		},
-		{
-			name: "first step failed",
-			steps: []CompletedStep{
-				{StepID: "s1", Error: errors.New("fail")},
-				{StepID: "s2", Output: "ok"},
-			},
-			wantID: "s1",
-		},
-		{
-			name: "second step failed - returns first failed",
-			steps: []CompletedStep{
-				{StepID: "s1", Output: "ok"},
-				{StepID: "s2", Error: errors.New("fail")},
-			},
-			wantID: "s2",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := FindFailedStep(tt.steps)
-			if got.StepID != tt.wantID {
-				t.Errorf("got StepID %q, want %q", got.StepID, tt.wantID)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // BuildCarryForward
 // ---------------------------------------------------------------------------
 

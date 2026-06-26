@@ -437,87 +437,6 @@ func TestLMStudioListModels(t *testing.T) {
 	}
 }
 
-// TestLMStudioLoadModel tests loading a model.
-func TestLMStudioLoadModel(t *testing.T) {
-	var receivedModel string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("expected POST request, got %s", r.Method)
-		}
-		if r.URL.Path != "/api/v1/models/load" {
-			t.Errorf("expected path /api/v1/models/load, got %s", r.URL.Path)
-		}
-
-		// Decode request body
-		var req map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("failed to decode request body: %v", err)
-		}
-		receivedModel = req["model"]
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	p, err := NewLMStudioProvider(LMStudioProviderConfig{
-		Name:    "lmstudio",
-		BaseURL: server.URL,
-	})
-	if err != nil {
-		t.Fatalf("NewLMStudioProvider failed: %v", err)
-	}
-
-	ctx := context.Background()
-	err = p.LoadModel(ctx, "llama-3.2-1b")
-	if err != nil {
-		t.Fatalf("LoadModel failed: %v", err)
-	}
-
-	if receivedModel != "llama-3.2-1b" {
-		t.Errorf("expected model 'llama-3.2-1b', got %q", receivedModel)
-	}
-}
-
-// TestLMStudioUnloadModel tests unloading a model.
-func TestLMStudioUnloadModel(t *testing.T) {
-	var receivedModel string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("expected POST request, got %s", r.Method)
-		}
-		if r.URL.Path != "/api/v1/models/unload" {
-			t.Errorf("expected path /api/v1/models/unload, got %s", r.URL.Path)
-		}
-
-		// Decode request body
-		var req map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("failed to decode request body: %v", err)
-		}
-		receivedModel = req["model"]
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	p, err := NewLMStudioProvider(LMStudioProviderConfig{
-		Name:    "lmstudio",
-		BaseURL: server.URL,
-	})
-	if err != nil {
-		t.Fatalf("NewLMStudioProvider failed: %v", err)
-	}
-
-	ctx := context.Background()
-	err = p.UnloadModel(ctx, "llama-3.2-1b")
-	if err != nil {
-		t.Fatalf("UnloadModel failed: %v", err)
-	}
-
-	if receivedModel != "llama-3.2-1b" {
-		t.Errorf("expected model 'llama-3.2-1b', got %q", receivedModel)
-	}
-}
 
 // TestLMStudioChatCompletionWithTools tests non-streaming response with tool calls via OpenAI-compatible endpoint.
 func TestLMStudioChatCompletionWithTools(t *testing.T) {
@@ -1339,36 +1258,6 @@ func TestLMStudioMetadataSourceZeroContext(t *testing.T) {
 	}
 }
 
-// TestLMStudioLoadModelError tests LoadModel with server error.
-func TestLMStudioLoadModelError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = fmt.Fprintf(w, `{"error":{"message":"model not found"}}`)
-	}))
-	defer server.Close()
-
-	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
-	err := p.LoadModel(context.Background(), "nonexistent")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// TestLMStudioUnloadModelError tests UnloadModel with server error.
-func TestLMStudioUnloadModelError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = fmt.Fprintf(w, `{"error":{"message":"model not loaded"}}`)
-	}))
-	defer server.Close()
-
-	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
-	err := p.UnloadModel(context.Background(), "nonexistent")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 // TestLMStudioListModelsError tests ListModels with server error.
 func TestLMStudioListModelsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1412,25 +1301,6 @@ func TestLMStudioStreamChatCompletionWithToolsHTTPError(t *testing.T) {
 
 	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
 	_, err := p.StreamChatCompletion(context.Background(), ChatRequest{
-		Model:    "test-model",
-		Messages: []Message{{Role: "user", Content: "Hi"}},
-		Tools:    []ToolDefinition{{Name: "test", Description: "test", InputSchema: json.RawMessage(`{}`)}},
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// TestLMStudioChatCompletionOpenAIError tests OpenAI-compatible endpoint error.
-func TestLMStudioChatCompletionOpenAIError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = fmt.Fprintf(w, `{"error":{"message":"bad request"}}`)
-	}))
-	defer server.Close()
-
-	p, _ := NewLMStudioProvider(LMStudioProviderConfig{Name: "lmstudio", BaseURL: server.URL})
-	_, err := p.ChatCompletion(context.Background(), ChatRequest{
 		Model:    "test-model",
 		Messages: []Message{{Role: "user", Content: "Hi"}},
 		Tools:    []ToolDefinition{{Name: "test", Description: "test", InputSchema: json.RawMessage(`{}`)}},

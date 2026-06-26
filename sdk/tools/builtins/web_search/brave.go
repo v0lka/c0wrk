@@ -21,16 +21,6 @@ type BraveProvider struct {
 	client  *http.Client
 }
 
-// NewBraveProvider creates a new BraveProvider with the given API key.
-func NewBraveProvider(apiKey string) *BraveProvider {
-	return NewBraveProviderWithTimeout(apiKey, 30*time.Second)
-}
-
-// NewBraveProviderWithTimeout creates a new BraveProvider with the given API key and timeout.
-func NewBraveProviderWithTimeout(apiKey string, timeout time.Duration) *BraveProvider {
-	return NewBraveProviderWithClient(apiKey, timeout, nil)
-}
-
 // NewBraveProviderWithClient creates a new BraveProvider with the given API key, timeout,
 // and optional HTTP client. If client is nil, a default client with the specified timeout is used.
 func NewBraveProviderWithClient(apiKey string, timeout time.Duration, client *http.Client) *BraveProvider {

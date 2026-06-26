@@ -21,16 +21,6 @@ type ExaProvider struct {
 	client  *http.Client
 }
 
-// NewExaProvider creates a new ExaProvider with the given API key.
-func NewExaProvider(apiKey string) *ExaProvider {
-	return NewExaProviderWithTimeout(apiKey, 30*time.Second)
-}
-
-// NewExaProviderWithTimeout creates a new ExaProvider with the given API key and timeout.
-func NewExaProviderWithTimeout(apiKey string, timeout time.Duration) *ExaProvider {
-	return NewExaProviderWithClient(apiKey, timeout, nil)
-}
-
 // NewExaProviderWithClient creates a new ExaProvider with the given API key, timeout,
 // and optional HTTP client. If client is nil, a default client with the specified timeout is used.
 func NewExaProviderWithClient(apiKey string, timeout time.Duration, client *http.Client) *ExaProvider {

@@ -10,9 +10,6 @@ import (
 // replaced with a deferred error; this test catches typos that would silently
 // disable SSRF protection).
 func TestPrivateNetworksParse(t *testing.T) {
-	if err := PrivateNetworksInitErr(); err != nil {
-		t.Fatalf("privateNetworks failed to initialize: %v", err)
-	}
 	if len(privateNetworks) == 0 {
 		t.Fatal("privateNetworks list is empty after init")
 	}

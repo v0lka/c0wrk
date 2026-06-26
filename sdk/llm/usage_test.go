@@ -111,22 +111,6 @@ func TestUsageTracker_Totals(t *testing.T) {
 	}
 }
 
-func TestUsageTracker_SetTotals(t *testing.T) {
-	tr := NewUsageTracker()
-	tr.SetTotals(1000, 500)
-
-	in, out := tr.Totals()
-	if in != 1000 || out != 500 {
-		t.Errorf("after SetTotals: %d/%d, want 1000/500", in, out)
-	}
-
-	// Record should add on top of restored totals
-	tr.Record(TokenUsage{InputTokens: 10, OutputTokens: 5}, "m", "f")
-	in, out = tr.Totals()
-	if in != 1010 || out != 505 {
-		t.Errorf("after record on restored: %d/%d, want 1010/505", in, out)
-	}
-}
 
 func TestUsageTracker_ConcurrentRecord(t *testing.T) {
 	tr := NewUsageTracker()
@@ -192,7 +176,7 @@ func TestTrackingCaller_CallCorrectContextTracker(t *testing.T) {
 
 	ctxTracker := NewContextTokenTracker(NewSimpleTokenCounter())
 	ctxTracker.AddDelta("some pending text that should be replaced")
-	tc.SetContextTracker(ctxTracker)
+	tc = tc.WithContextTracker(ctxTracker)
 
 	_, err := tc.Call(context.Background(), ChatRequest{Model: "gpt-4o"})
 	if err != nil {
@@ -283,7 +267,7 @@ func TestTrackingCaller_StreamCorrectContextTracker(t *testing.T) {
 
 	ctxTracker := NewContextTokenTracker(NewSimpleTokenCounter())
 	ctxTracker.AddDelta("some pending text")
-	tc.SetContextTracker(ctxTracker)
+	tc = tc.WithContextTracker(ctxTracker)
 
 	ch, err := tc.Stream(context.Background(), ChatRequest{Model: "m"})
 	if err != nil {

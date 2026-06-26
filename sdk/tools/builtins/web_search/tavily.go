@@ -20,16 +20,6 @@ type TavilyProvider struct {
 	client  *http.Client
 }
 
-// NewTavilyProvider creates a new TavilyProvider with the given API key.
-func NewTavilyProvider(apiKey string) *TavilyProvider {
-	return NewTavilyProviderWithTimeout(apiKey, 30*time.Second)
-}
-
-// NewTavilyProviderWithTimeout creates a new TavilyProvider with the given API key and timeout.
-func NewTavilyProviderWithTimeout(apiKey string, timeout time.Duration) *TavilyProvider {
-	return NewTavilyProviderWithClient(apiKey, timeout, nil)
-}
-
 // NewTavilyProviderWithClient creates a new TavilyProvider with the given API key, timeout,
 // and optional HTTP client. If client is nil, a default client with the specified timeout is used.
 func NewTavilyProviderWithClient(apiKey string, timeout time.Duration, client *http.Client) *TavilyProvider {

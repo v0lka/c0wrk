@@ -843,47 +843,6 @@ func (p *LMStudioProvider) ListModels(ctx context.Context) ([]LMStudioModel, err
 	return result.Models, nil
 }
 
-// LoadModel loads a model in LM Studio.
-func (p *LMStudioProvider) LoadModel(ctx context.Context, model string) error {
-	reqBody := map[string]string{"model": model}
-	httpReq, err := p.newHTTPRequest(ctx, "POST", "/api/v1/models/load", reqBody)
-	if err != nil {
-		return fmt.Errorf("lmstudio: failed to create request: %w", err)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("lmstudio: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return p.parseErrorResponse(resp)
-	}
-
-	return nil
-}
-
-// UnloadModel unloads a model from LM Studio.
-func (p *LMStudioProvider) UnloadModel(ctx context.Context, model string) error {
-	reqBody := map[string]string{"model": model}
-	httpReq, err := p.newHTTPRequest(ctx, "POST", "/api/v1/models/unload", reqBody)
-	if err != nil {
-		return fmt.Errorf("lmstudio: failed to create request: %w", err)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("lmstudio: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return p.parseErrorResponse(resp)
-	}
-
-	return nil
-}
 
 // MetadataSource returns a ModelMetadataSource that resolves model metadata
 // by querying the LM Studio server's model listing endpoint.

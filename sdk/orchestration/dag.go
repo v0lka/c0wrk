@@ -34,17 +34,6 @@ func FindReadySteps(plan *Plan, completed map[string]CompletedStep) []PlanStep {
 	return ready
 }
 
-// FindFailedStep returns the first CompletedStep with an error from the list.
-// If no step has an error, it returns a zero-value CompletedStep.
-func FindFailedStep(completedSteps []CompletedStep) CompletedStep {
-	for _, cs := range completedSteps {
-		if cs.Error != nil {
-			return cs
-		}
-	}
-	return CompletedStep{}
-}
-
 // BuildCarryForward maps previously completed step outputs to a new plan.
 // Steps whose IDs appear in the new plan AND completed without error are
 // candidates for carry-forward. Steps whose dependencies (in the new plan)

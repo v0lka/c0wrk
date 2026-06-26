@@ -357,11 +357,7 @@ func TestPerStepRetry_MaxRetriesBoundary(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// ExecuteAdHocStep Tests
-// ---------------------------------------------------------------------------
-
-// mockContextManager is a minimal mock for ContextManager used in ExecuteAdHocStep tests.
+// mockContextManager is a minimal mock for ContextManager.
 type mockContextManager struct {
 	systemPrompt   string
 	taskDefinition string
@@ -379,127 +375,10 @@ func (m *mockContextManager) OutputLimit() int                                  
 func (m *mockContextManager) VulnerableOutputs() []agent.VulnerableOutput       { return nil }
 func (m *mockContextManager) SetTask(task string)                               { m.taskDefinition = task }
 
-// TestExecuteAdHocStep_AppendsToBlackboard verifies that ExecuteAdHocStep
-// stores the step result in the Blackboard and the result can be retrieved.
-func TestExecuteAdHocStep_AppendsToBlackboard(t *testing.T) {
-	bb := NewMapBlackboard()
-	bb.SetOriginalRequest("original task")
-	bb.SetPlan(&Plan{Steps: []PlanStep{
-		{ID: "step_1", Description: "First step"},
-	}})
-	bb.SetStepResult("step_1", "output from step 1", nil, nil)
+// mockLLM is a minimal LLM mock.
+type mockLLM struct{}
 
-	o := New(Config{
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
-			return &mockContextManager{systemPrompt: systemPrompt}
-		},
-		LLM:          &mockLLMForAdHoc{},
-		Tools:        &mockToolExecutor{},
-		TokenCounter: llm.NewSimpleTokenCounter(),
-		MaxSteps:     10,
-		ToolRegistry: tools.NewToolRegistry(),
-	})
-
-	step := PlanStep{
-		ID:          "continuation_1",
-		Description: "Continue the task",
-	}
-
-	result, err := o.ExecuteAdHocStep(context.Background(), bb, step, "original task", false)
-	if err != nil {
-		t.Fatalf("ExecuteAdHocStep failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-
-	if result.StepID != "continuation_1" {
-		t.Errorf("expected StepID continuation_1, got %q", result.StepID)
-	}
-
-	// Verify the result is stored in the blackboard
-	sr, ok := bb.GetStepResult("continuation_1")
-	if !ok {
-		t.Fatal("expected step result to be stored in blackboard")
-	}
-
-	if sr.StepID != "continuation_1" {
-		t.Errorf("blackboard step ID: got %q, want continuation_1", sr.StepID)
-	}
-
-	if sr.FullOutput == "" {
-		t.Error("expected non-empty full output in blackboard")
-	}
-}
-
-// TestExecuteAdHocStep_ExtendsPlan verifies that ExecuteAdHocStep extends
-// the existing plan in the blackboard.
-func TestExecuteAdHocStep_ExtendsPlan(t *testing.T) {
-	bb := NewMapBlackboard()
-	bb.SetOriginalRequest("original task")
-
-	// Start with a 2-step plan
-	initialPlan := &Plan{Steps: []PlanStep{
-		{ID: "step_1", Description: "First step"},
-		{ID: "step_2", Description: "Second step"},
-	}}
-	bb.SetPlan(initialPlan)
-	bb.SetStepResult("step_1", "output 1", nil, nil)
-	bb.SetStepResult("step_2", "output 2", nil, nil)
-
-	o := New(Config{
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
-			return &mockContextManager{systemPrompt: systemPrompt}
-		},
-		LLM:          &mockLLMForAdHoc{},
-		Tools:        &mockToolExecutor{},
-		TokenCounter: llm.NewSimpleTokenCounter(),
-		MaxSteps:     10,
-		ToolRegistry: tools.NewToolRegistry(),
-	})
-
-	step := PlanStep{
-		ID:          "continuation_1",
-		Description: "Continue the task",
-		DependsOn:   []string{"step_1", "step_2"},
-	}
-
-	_, err := o.ExecuteAdHocStep(context.Background(), bb, step, "original task", false)
-	if err != nil {
-		t.Fatalf("ExecuteAdHocStep failed: %v", err)
-	}
-
-	// Verify plan now has 3 steps
-	updatedPlan := bb.GetPlan()
-	if updatedPlan == nil {
-		t.Fatal("expected non-nil plan")
-	}
-
-	if len(updatedPlan.Steps) != 3 {
-		t.Fatalf("expected 3 steps in plan, got %d", len(updatedPlan.Steps))
-	}
-
-	// Verify the new step is appended with correct ID
-	lastStep := updatedPlan.Steps[2]
-	if lastStep.ID != "continuation_1" {
-		t.Errorf("expected last step ID continuation_1, got %q", lastStep.ID)
-	}
-
-	if lastStep.Description != "Continue the task" {
-		t.Errorf("expected description 'Continue the task', got %q", lastStep.Description)
-	}
-
-	// Verify dependencies are preserved
-	if len(lastStep.DependsOn) != 2 {
-		t.Errorf("expected 2 dependencies, got %d", len(lastStep.DependsOn))
-	}
-}
-
-// mockLLMForAdHoc is a minimal LLM mock for ExecuteAdHocStep tests.
-type mockLLMForAdHoc struct{}
-
-func (m *mockLLMForAdHoc) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+func (m *mockLLM) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
 	return &llm.ChatResponse{
 		Message: llm.Message{
 			Role:    "assistant",
@@ -527,93 +406,6 @@ func (m *mockToolExecutor) GetToolSource(name string) string {
 
 func (m *mockToolExecutor) IsToolUntrusted(name string) bool {
 	return false
-}
-
-// ---------------------------------------------------------------------------
-// ExecuteWithBlackboard Tests
-// ---------------------------------------------------------------------------
-
-// TestExecuteWithBlackboard_UsesProvidedBlackboard verifies that ExecuteWithBlackboard
-// uses the provided blackboard and does NOT create a new one.
-func TestExecuteWithBlackboard_UsesProvidedBlackboard(t *testing.T) {
-	// Create a blackboard with pre-existing state
-	bb := NewMapBlackboard()
-	bb.SetOriginalRequest("pre-existing request")
-	preExistingPlan := &Plan{Steps: []PlanStep{
-		{ID: "pre_step_1", Description: "Pre-existing step"},
-	}}
-	bb.SetPlan(preExistingPlan)
-
-	var capturedBB Blackboard
-	o := New(Config{
-		Planner: &mockPlanner{
-			planFn: func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error) {
-				// This should NOT be called since we're providing a BB with existing plan
-				return nil, errors.New("Planner.Plan should not be called for ExecuteWithBlackboard")
-			},
-		},
-		Events: &recordingEvents{},
-		StateFactory: func(taskID string) Blackboard {
-			t.Error("StateFactory should not be called - BB should be provided")
-			return nil
-		},
-		// Use Resume path by checking that the BB's plan is used
-	})
-
-	// Resume requires a plan, so let's test with Resume instead
-	result, err := o.Resume(context.Background(), bb)
-	// The test orchestrator has no ContextFactory, so the step will fail. The
-	// SDK now wraps partial executions in ErrExecutionIncomplete and still
-	// returns the result — accept that case as success for this test which
-	// only validates that the provided blackboard is reused.
-	if err != nil && !errors.Is(err, ErrExecutionIncomplete) {
-		t.Fatalf("Resume failed: %v", err)
-	}
-	if result == nil {
-		t.Fatal("Resume should return a non-nil result even on incomplete execution")
-	}
-
-	// Verify the original request is preserved (not overwritten)
-	if result.Blackboard.GetOriginalRequest() != "pre-existing request" {
-		t.Errorf("original request should be preserved, got: %s", result.Blackboard.GetOriginalRequest())
-	}
-
-	// Keep a reference to verify it's the same instance
-	capturedBB = result.Blackboard
-	_ = capturedBB
-}
-
-// TestExecuteWithBlackboard_DoesNotSetOriginalRequest verifies that ExecuteWithBlackboard
-// does NOT call SetOriginalRequest on the provided blackboard.
-func TestExecuteWithBlackboard_DoesNotSetOriginalRequest(t *testing.T) {
-	bb := &blackboardWithCallTracker{Blackboard: NewMapBlackboard()}
-	bb.SetOriginalRequest("original value")
-	bb.setOriginalRequestCalled = false // reset after setup
-
-	o := New(Config{
-		Planner: &mockPlanner{},
-		Events:  &recordingEvents{},
-	})
-
-	// Use Resume which requires a plan in the BB
-	bb.SetPlan(&Plan{Steps: []PlanStep{{ID: "step_1", Description: "Test"}}})
-	_, _ = o.Resume(context.Background(), bb)
-
-	// Verify SetOriginalRequest was NOT called (except for our initial set)
-	if bb.setOriginalRequestCalled {
-		t.Error("ExecuteWithBlackboard/Resume should NOT call SetOriginalRequest on the provided blackboard")
-	}
-}
-
-// blackboardWithCallTracker wraps MapBlackboard to track method calls.
-type blackboardWithCallTracker struct {
-	Blackboard
-	setOriginalRequestCalled bool
-}
-
-func (b *blackboardWithCallTracker) SetOriginalRequest(req string) {
-	b.setOriginalRequestCalled = true
-	b.Blackboard.SetOriginalRequest(req)
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +445,7 @@ func TestExecute_ContextCancelled_ReturnsImmediately(t *testing.T) {
 		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
 			return &mockContextManager{systemPrompt: systemPrompt}
 		},
-		LLM:          &mockLLMForAdHoc{},
+		LLM:          &mockLLM{},
 		Tools:        &mockToolExecutor{},
 		TokenCounter: llm.NewSimpleTokenCounter(),
 		MaxSteps:     10,
@@ -709,45 +501,6 @@ func TestExecute_ContextCancelledDuringStep_NoRetry(t *testing.T) {
 	// The LLM should have been called exactly once (no retry after cancellation).
 	if cLLM.callCount != 1 {
 		t.Errorf("expected LLM to be called once, got %d", cLLM.callCount)
-	}
-}
-
-// TestExecuteAdHocStep_ContextCancelled_ReturnsFunctionError verifies that
-// ExecuteAdHocStep returns context cancellation as a function-level error
-// (second return value), not just in StepResult.Error.
-func TestExecuteAdHocStep_ContextCancelled_ReturnsFunctionError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	bb := NewMapBlackboard()
-	bb.SetOriginalRequest("original task")
-	bb.SetPlan(&Plan{Steps: []PlanStep{
-		{ID: "step_1", Description: "First step"},
-	}})
-	bb.SetStepResult("step_1", "output from step 1", nil, nil)
-
-	o := New(Config{
-		ContextFactory: func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...PruningOverride) agent.ContextManager {
-			return &mockContextManager{systemPrompt: systemPrompt}
-		},
-		LLM:          &cancellingLLM{cancelFn: cancel},
-		Tools:        &mockToolExecutor{},
-		TokenCounter: llm.NewSimpleTokenCounter(),
-		MaxSteps:     10,
-		ToolRegistry: tools.NewToolRegistry(),
-		Events:       &recordingEvents{},
-	})
-
-	step := PlanStep{
-		ID:          "continuation_1",
-		Description: "Continue the task",
-	}
-
-	_, err := o.ExecuteAdHocStep(ctx, bb, step, "original task", false)
-	if err == nil {
-		t.Fatal("expected function-level error from cancelled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
 

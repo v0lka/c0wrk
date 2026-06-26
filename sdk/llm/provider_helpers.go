@@ -110,7 +110,3 @@ func (a *StreamToolCallAccumulator) Emit(chunks chan<- ChatChunk) {
 	}
 }
 
-// HasToolCalls returns true if any tool calls have been accumulated.
-func (a *StreamToolCallAccumulator) HasToolCalls() bool {
-	return len(a.toolCalls) > 0
-}

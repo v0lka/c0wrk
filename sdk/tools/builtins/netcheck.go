@@ -18,10 +18,6 @@ var privateNetworks []*net.IPNet
 // instead of silently accepting a degraded protection state.
 var privateNetworksInitErr error
 
-// PrivateNetworksInitErr exposes the initialization error so tests and upstream
-// consumers can detect a broken CIDR list at startup or during operation.
-func PrivateNetworksInitErr() error { return privateNetworksInitErr }
-
 func init() {
 	cidrs := []string{
 		"10.0.0.0/8",

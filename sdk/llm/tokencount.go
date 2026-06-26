@@ -153,13 +153,6 @@ func (t *ContextTokenTracker) AddDelta(text string) {
 	t.pendingDelta += t.predictive.Count(text)
 }
 
-// AddDeltaMessages adds the token count of the given messages to pendingDelta.
-func (t *ContextTokenTracker) AddDeltaMessages(msgs []Message) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.pendingDelta += t.predictive.CountMessages(msgs)
-}
-
 // Correct updates lastKnownUsed with the actual API input tokens and resets pendingDelta.
 func (t *ContextTokenTracker) Correct(apiInputTokens int) {
 	t.mu.Lock()

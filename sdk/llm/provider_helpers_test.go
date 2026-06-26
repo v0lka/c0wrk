@@ -257,22 +257,6 @@ func TestStreamToolCallAccumulator_Emit(t *testing.T) {
 	})
 }
 
-func TestStreamToolCallAccumulator_HasToolCalls(t *testing.T) {
-	t.Run("false when empty", func(t *testing.T) {
-		acc := NewStreamToolCallAccumulator()
-		if acc.HasToolCalls() {
-			t.Error("expected HasToolCalls() = false for empty accumulator")
-		}
-	})
-
-	t.Run("true after HandleDelta", func(t *testing.T) {
-		acc := NewStreamToolCallAccumulator()
-		acc.HandleDelta(0, "id", "name", "")
-		if !acc.HasToolCalls() {
-			t.Error("expected HasToolCalls() = true after HandleDelta")
-		}
-	})
-}
 
 // Verify json.RawMessage is properly handled in tool call Input field.
 func TestStreamToolCallAccumulator_JSONInput(t *testing.T) {

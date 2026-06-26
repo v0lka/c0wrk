@@ -160,14 +160,6 @@ func (c *ToolResultCache) CheckCoherence(hash string) (valid bool, reason string
 	return true, ""
 }
 
-// EvictExpired removes all expired MCP entries. Callers may invoke this
-// periodically or before lookups.
-func (c *ToolResultCache) EvictExpired() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.evictExpiredLocked()
-}
-
 // evictExpiredLocked removes all expired MCP entries. Caller must hold c.mu.
 func (c *ToolResultCache) evictExpiredLocked() {
 	for hash, entry := range c.entries {

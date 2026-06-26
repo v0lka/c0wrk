@@ -244,35 +244,6 @@ func TestRouter_Stream_RetriesOnRetryableError(t *testing.T) {
 	}
 }
 
-func TestRouter_GetProvider(t *testing.T) {
-	mock := &mockProvider{name: "test"}
-	router := newTestRouter(
-		map[string]*mockProvider{"primary": mock, "secondary": {name: "secondary"}},
-		"primary", "model",
-	)
-
-	// Existing provider
-	p := router.GetProvider("primary")
-	if p == nil {
-		t.Fatal("expected non-nil provider for 'primary'")
-	}
-	if p.Name() != "test" {
-		t.Errorf("expected name 'test', got %q", p.Name())
-	}
-
-	// Second provider
-	p2 := router.GetProvider("secondary")
-	if p2 == nil {
-		t.Fatal("expected non-nil provider for 'secondary'")
-	}
-
-	// Non-existent provider
-	p3 := router.GetProvider("nonexistent")
-	if p3 != nil {
-		t.Error("expected nil for nonexistent provider")
-	}
-}
-
 func TestRouter_GetDefaultProvider(t *testing.T) {
 	mock := &mockProvider{name: "default-prov"}
 	router := newTestRouter(

@@ -288,44 +288,6 @@ func TestSkillManagerNonexistentDir(t *testing.T) {
 	}
 }
 
-func TestSkillManagerResolveResourcePath(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	skillDir := filepath.Join(tmpDir, "test-skill")
-	if err := os.MkdirAll(filepath.Join(skillDir, "references"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeSkillMD(t, filepath.Join(skillDir, "SKILL.md"), "test-skill", "A test skill.", "Body.")
-
-	mgr := NewSkillManager([]string{tmpDir}, nil)
-	if err := mgr.Scan(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Valid resource path
-	resolved, err := mgr.ResolveResourcePath("test-skill", "references/guide.md")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	wantBase := filepath.Join(skillDir, "references", "guide.md")
-	if resolved != wantBase {
-		t.Errorf("resolved = %q, want %q", resolved, wantBase)
-	}
-
-	// Path traversal should be blocked
-	_, err = mgr.ResolveResourcePath("test-skill", "../../etc/passwd")
-	if err == nil {
-		t.Error("expected error for path traversal, got nil")
-	}
-
-	// Nonexistent skill
-	_, err = mgr.ResolveResourcePath("nonexistent", "README.md")
-	if err == nil {
-		t.Error("expected error for nonexistent skill, got nil")
-	}
-}
-
 // writeSkillMD is a test helper that creates a minimal SKILL.md file.
 func writeSkillMD(t *testing.T, path, name, description, body string) {
 	t.Helper()

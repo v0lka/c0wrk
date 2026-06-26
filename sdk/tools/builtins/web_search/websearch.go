@@ -28,11 +28,6 @@ type SearchProvider interface {
 // Limits is an alias for builtins.WebSearchLimits.
 type Limits = builtins.WebSearchLimits
 
-// DefaultLimits returns the default limits for web_search.
-func DefaultLimits() Limits {
-	return builtins.DefaultWebSearchLimits()
-}
-
 // --- WebSearchTool ---
 
 // WebSearchTool searches the web using a pluggable SearchProvider.

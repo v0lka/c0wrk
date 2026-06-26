@@ -168,10 +168,3 @@ func (s *SystemPromptBuilder) Build() string {
 	return s.b.Build()
 }
 
-// BuildForStep is a convenience method that assembles a system prompt for a
-// plan step. It appends the step description as dynamic content (after the
-// cache break, if one was set).
-func (s *SystemPromptBuilder) BuildForStep(stepDescription string) string {
-	s.b.Core(stepDescription)
-	return s.b.Build()
-}

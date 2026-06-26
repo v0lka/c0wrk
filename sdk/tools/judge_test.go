@@ -192,33 +192,6 @@ func TestJudge_LLMError_FallsBackToConfirm(t *testing.T) {
 	}
 }
 
-func TestJudge_ResetCache(t *testing.T) {
-	mockProvider := &mockLLMProvider{
-		response: &llm.ChatResponse{
-			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
-		},
-	}
-	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
-
-	ctx := context.Background()
-	input := json.RawMessage(`{"command":"ls"}`)
-
-	// First call
-	_, _, _ = judge.Judge(ctx, "bash", input, "list files")
-	if mockProvider.callCount != 1 {
-		t.Errorf("expected 1 LLM call, got %d", mockProvider.callCount)
-	}
-
-	// Reset cache
-	judge.ResetCache()
-
-	// Should hit LLM again after reset
-	_, _, _ = judge.Judge(ctx, "bash", input, "list files")
-	if mockProvider.callCount != 2 {
-		t.Errorf("expected 2 LLM calls after reset, got %d", mockProvider.callCount)
-	}
-}
-
 func TestJudge_TaskContextFromCtx(t *testing.T) {
 	mockProvider := &mockLLMProvider{
 		response: &llm.ChatResponse{

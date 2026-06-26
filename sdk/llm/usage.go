@@ -54,14 +54,6 @@ func (t *UsageTracker) Totals() (inputTokens, outputTokens int) {
 	return t.totalIn, t.totalOut
 }
 
-// SetTotals overwrites the running totals (used for session resume from DB).
-func (t *UsageTracker) SetTotals(inputTokens, outputTokens int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.totalIn = inputTokens
-	t.totalOut = outputTokens
-}
-
 // streamer is a local interface for callers that also support streaming.
 type streamer interface {
 	Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error)
@@ -139,13 +131,6 @@ func (tc *TrackingCaller) Stream(ctx context.Context, req ChatRequest) (<-chan C
 	}()
 
 	return outCh, nil
-}
-
-// SetContextTracker sets the ContextTokenTracker to correct after each call.
-func (tc *TrackingCaller) SetContextTracker(t *ContextTokenTracker) {
-	tc.ctxMu.Lock()
-	defer tc.ctxMu.Unlock()
-	tc.ctxTracker = t
 }
 
 // WithContextTracker returns a new TrackingCaller that shares the same inner
