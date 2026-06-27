@@ -270,3 +270,124 @@ func TestListDefaultSourceIsCore(t *testing.T) {
 		t.Errorf("expected source 'core', got %q", list[0].Source)
 	}
 }
+
+func TestListFiltered_Nil(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(newMockTool("a", "tool a"))
+	reg.Register(newMockTool("b", "tool b"))
+
+	// nil exclude → all tools returned.
+	list := reg.ListFiltered(nil)
+	if len(list) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(list))
+	}
+}
+
+func TestListFiltered_Empty(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(newMockTool("a", "tool a"))
+
+	// empty exclude map → all tools returned.
+	list := reg.ListFiltered(map[string]bool{})
+	if len(list) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(list))
+	}
+}
+
+func TestListFiltered_ExcludeOne(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(newMockTool("keep", "keep me"))
+	reg.Register(newMockTool("drop", "drop me"))
+
+	list := reg.ListFiltered(map[string]bool{"drop": true})
+	if len(list) != 1 {
+		t.Fatalf("expected 1 tool after exclude, got %d", len(list))
+	}
+	if list[0].Name != "keep" {
+		t.Errorf("expected 'keep', got %q", list[0].Name)
+	}
+}
+
+func TestListFiltered_ExcludeAll(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(newMockTool("a", "tool a"))
+	reg.Register(newMockTool("b", "tool b"))
+
+	list := reg.ListFiltered(map[string]bool{"a": true, "b": true})
+	if len(list) != 0 {
+		t.Fatalf("expected 0 tools, got %d", len(list))
+	}
+}
+
+func TestListFiltered_MCPSource(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.RegisterWithSource(newMockTool("mcp_tool", "mcp tool"), "mcp:server")
+
+	list := reg.ListFiltered(map[string]bool{})
+	if len(list) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(list))
+	}
+	if list[0].SourceCategory != SourceCategoryMCP {
+		t.Errorf("expected MCP source category, got %q", list[0].SourceCategory)
+	}
+}
+
+func TestGetToolSource_NotFound(t *testing.T) {
+	reg := NewToolRegistry()
+	if src := reg.GetToolSource("nonexistent"); src != "" {
+		t.Errorf("expected empty string for unknown tool, got %q", src)
+	}
+}
+
+func TestGetToolSource_NoSource(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(newMockTool("plain", "no source"))
+	if src := reg.GetToolSource("plain"); src != "core" {
+		t.Errorf("expected 'core' for plain tool, got %q", src)
+	}
+}
+
+func TestGetToolSource_WithSource(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.RegisterWithSource(newMockTool("ext", "external"), "mcp:server")
+	if src := reg.GetToolSource("ext"); src != "mcp:server" {
+		t.Errorf("expected 'mcp:server', got %q", src)
+	}
+}
+
+func TestIsToolUntrusted_NotFound(t *testing.T) {
+	reg := NewToolRegistry()
+	if reg.IsToolUntrusted("ghost") {
+		t.Error("expected false for unknown tool")
+	}
+}
+
+func TestIsToolUntrusted_TrustedCore(t *testing.T) {
+	reg := NewToolRegistry()
+	tool := newMockTool("safe", "safe tool")
+	tool.Untrusted = false
+	reg.Register(tool)
+	if reg.IsToolUntrusted("safe") {
+		t.Error("expected false for trusted core tool")
+	}
+}
+
+func TestIsToolUntrusted_ToolFlag(t *testing.T) {
+	reg := NewToolRegistry()
+	tool := newMockTool("risky", "risky tool")
+	tool.Untrusted = true
+	reg.Register(tool)
+	if !reg.IsToolUntrusted("risky") {
+		t.Error("expected true for tool with Untrusted=true")
+	}
+}
+
+func TestIsToolUntrusted_MCPSource(t *testing.T) {
+	reg := NewToolRegistry()
+	tool := newMockTool("mcp_tool", "mcp tool")
+	tool.Untrusted = false // tool claims trusted, but MCP source overrides
+	reg.RegisterWithSource(tool, "mcp:server")
+	if !reg.IsToolUntrusted("mcp_tool") {
+		t.Error("expected true for MCP-sourced tool regardless of IsUntrusted()")
+	}
+}

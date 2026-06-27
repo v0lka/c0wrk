@@ -103,6 +103,11 @@ func newONNXSession(modelPath string, seqLen, hiddenDim int) (*onnxSession, erro
 // The caller must ensure len(inputIDs) == len(attMask) == len(tokenTypes) == seqLen.
 // Returns a single pooled, L2-normalized embedding vector.
 func (s *onnxSession) run(inputIDs, attMask, tokenTypes []int64) ([]float32, error) {
+	// Validate input lengths to prevent stale data from prior inferences.
+	if len(inputIDs) != s.seqLen || len(attMask) != s.seqLen || len(tokenTypes) != s.seqLen {
+		return nil, fmt.Errorf("input length mismatch: got (%d,%d,%d), want seqLen=%d",
+			len(inputIDs), len(attMask), len(tokenTypes), s.seqLen)
+	}
 	copy(s.inputIDs.GetData(), inputIDs)
 	copy(s.attMask.GetData(), attMask)
 	copy(s.tokenTypes.GetData(), tokenTypes)

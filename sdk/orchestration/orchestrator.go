@@ -64,11 +64,14 @@ func (o *Orchestrator) Cleanup() {
 	}
 }
 
+// discardLogger is cached to avoid allocating a new slog.Logger on every log() call.
+var discardLogger = slog.New(slog.DiscardHandler)
+
 func (o *Orchestrator) log() *slog.Logger {
 	if o.cfg.Logger != nil {
 		return o.cfg.Logger
 	}
-	return slog.New(slog.DiscardHandler)
+	return discardLogger
 }
 
 // Execute runs the full Plan&Execute loop for a user request.
@@ -156,6 +159,9 @@ func (o *Orchestrator) runPlanExecute(
 		plan, err := o.cfg.Planner.Plan(ctx, userMessage, availableTools, sessionReflections)
 		if err != nil {
 			return nil, fmt.Errorf("planning failed: %w", err)
+		}
+		if plan == nil {
+			return nil, errors.New("planning returned nil plan")
 		}
 		o.log().Debug("orchestrator: Planner.Plan returned", "steps", len(plan.Steps), "firstStepSummary", func() string {
 			if len(plan.Steps) > 0 {
@@ -268,6 +274,9 @@ func (o *Orchestrator) runPlanExecute(
 				if reflectErr != nil {
 					continue // retry without reflection guidance
 				}
+				if reflection == nil {
+					continue
+				}
 				if reflection.SuggestedAction == "abort" {
 					sessionReflections = append(sessionReflections, *reflection)
 					bb.AddReflection(*reflection)
@@ -311,6 +320,10 @@ func (o *Orchestrator) runPlanExecute(
 					newPlan, replanErr := o.cfg.Planner.Replan(ctx, currentPlan, completedSteps, failedStep, reflection, sessionReflections)
 					if replanErr != nil {
 						o.events.OnReplanFailed(replanErr)
+						continue
+					}
+					if newPlan == nil {
+						o.log().Warn("replan returned nil plan, continuing")
 						continue
 					}
 					o.events.OnServiceMeta("replan succeeded", map[string]any{"newSteps": len(newPlan.Steps), "carryForward": len(BuildCarryForward(prevCompletedSteps, newPlan))})
@@ -565,11 +578,17 @@ func (o *Orchestrator) retryFailedSteps(
 	for _, failedStepID := range failedSteps {
 		// Find the failed step in the plan
 		var failedPlanStep PlanStep
+		found := false
 		for _, s := range plan.Steps {
 			if s.ID == failedStepID {
 				failedPlanStep = s
+				found = true
 				break
 			}
+		}
+		if !found {
+			o.log().Warn("failedStepID not found in plan, skipping", "stepID", failedStepID)
+			continue
 		}
 
 		var stepRetryContext string
@@ -588,7 +607,7 @@ func (o *Orchestrator) retryFailedSteps(
 				o.events.OnServiceMeta(fmt.Sprintf("Step %s failed, reflecting...", failedStepID), map[string]any{"phase": "orchestration"})
 				executionSteps := BuildPlanExecutionSteps(*completedList, plan)
 				reflection, reflectErr := o.cfg.Reflection.Reflect(ctx, executionSteps, plan, sessionReflections)
-				if reflectErr == nil {
+				if reflectErr == nil && reflection != nil {
 					if reflection.SuggestedAction == "abort" {
 						sessionReflections = append(sessionReflections, *reflection)
 						bb.AddReflection(*reflection)
@@ -658,6 +677,7 @@ func (o *Orchestrator) retryFailedSteps(
 					ProtectedTools: stepCfg.ProtectedTools,
 				})
 			} else {
+				o.log().Warn("ContextFactory is nil, skipping step retry", "stepID", failedStepID)
 				return sessionReflections
 			}
 
@@ -842,12 +862,18 @@ func (o *Orchestrator) buildStepTask(
 // Uses cfg.Model to look up the registry; falls back to sensible defaults if unavailable.
 func (o *Orchestrator) resolveModelMeta(ctx context.Context) llm.ModelMetadata {
 	if o.cfg.ModelRegistry != nil && o.cfg.Model != "" {
-		meta, _ := o.cfg.ModelRegistry.Resolve(ctx, o.cfg.Model)
+		meta, ok := o.cfg.ModelRegistry.Resolve(ctx, o.cfg.Model)
+		if !ok {
+			o.log().Warn("model not found in registry, using defaults", "model", o.cfg.Model)
+		}
 		return meta
 	}
 	if o.cfg.ModelRegistry != nil {
 		// Fallback: empty model still goes through registry (returns defaults)
-		meta, _ := o.cfg.ModelRegistry.Resolve(ctx, "")
+		meta, ok := o.cfg.ModelRegistry.Resolve(ctx, "")
+		if !ok {
+			o.log().Warn("default model not found in registry, using zero metadata")
+		}
 		return meta
 	}
 	return llm.ModelMetadata{}

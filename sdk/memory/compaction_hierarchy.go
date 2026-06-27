@@ -9,6 +9,7 @@ import (
 
 	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/strutil"
 )
 
 // HierarchicalStrategy divides steps into 3 zones with different compression levels:
@@ -197,7 +198,7 @@ func (h *HierarchicalStrategy) buildBlockText(steps []sdkagent.Step, zoneName st
 			}
 			obs := step.Observation
 			if len(obs) > maxLen {
-				obs = obs[:maxLen] + "..."
+				obs = strutil.TruncateUTF8(obs, maxLen) + "..."
 			}
 			stepText += "\n  Observation: " + obs
 		}

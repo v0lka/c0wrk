@@ -138,6 +138,18 @@ func (e *Embedder) EmbedDocuments(ctx context.Context, texts []string) ([][]floa
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Re-check context after acquiring the lock, since ONNX inference blocks.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Guard against use-after-close.
+	if e.tokenizer == nil {
+		return nil, errors.New("embedder is closed")
+	}
+
 	batchSize := len(texts)
 	inputIDs, attentionMask, tokenTypeIDs := e.tokenizer.EncodeBatch(texts, e.maxSeqLen)
 

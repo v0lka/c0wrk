@@ -52,12 +52,23 @@ type ContextWindow struct {
 	compactedMessages []llm.Message
 }
 
+// noopCounter is a zero-cost TokenCounter used when no tracker is provided.
+type noopCounter struct{}
+
+func (n *noopCounter) Count(string) int         { return 0 }
+func (n *noopCounter) CountMessages([]llm.Message) int { return 0 }
+
 // defaultSafetyMargin is the default percentage of context window reserved as safety margin.
 const defaultSafetyMargin = 5 // 5% of context window
 
 // NewContextWindow creates a new ContextWindow.
 // safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
 func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, injectionDefenseEnabled bool, pruning ...ToolOutputPruning) *ContextWindow {
+	if tracker == nil {
+		// Use a discard tracker to prevent nil dereference panics downstream.
+		// Token accounting (compaction, fill warnings) will be silently disabled.
+		tracker = llm.NewContextTokenTracker(&noopCounter{})
+	}
 	cw := &ContextWindow{
 		systemPrompt:            systemPrompt,
 		modelMeta:               modelMeta,

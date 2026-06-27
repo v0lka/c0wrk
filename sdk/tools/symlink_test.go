@@ -596,6 +596,186 @@ func TestFormatSymlinkReasoning_Both(t *testing.T) {
 	}
 }
 
+func TestFormatSymlinkReasoning_OutsideTruncation(t *testing.T) {
+	// More than 10 outside traversals — should truncate.
+	outside := make([]SymlinkTraversal, 0, 15)
+	for i := 0; i < 15; i++ {
+		outside = append(outside, SymlinkTraversal{
+			OriginalPath: "/ws/link",
+			SymlinkAt:    "/ws/link",
+			FullResolved: "/etc/x",
+		})
+	}
+	msg := FormatSymlinkReasoning(nil, outside, false)
+	if !stringsContains(msg, "and 5 more symlink") {
+		t.Fatalf("expected truncation hint, got: %s", msg)
+	}
+}
+
+func TestFormatSymlinkReasoning_InsideTruncation(t *testing.T) {
+	// More than 10 inside traversals — should truncate.
+	inside := make([]SymlinkTraversal, 0, 12)
+	for i := 0; i < 12; i++ {
+		inside = append(inside, SymlinkTraversal{
+			OriginalPath: "/ws/link",
+			SymlinkAt:    "/ws/link",
+			FullResolved: "/ws/real",
+		})
+	}
+	msg := FormatSymlinkReasoning(inside, nil, false)
+	if !stringsContains(msg, "and 2 more symlink") {
+		t.Fatalf("expected truncation hint, got: %s", msg)
+	}
+}
+
+func TestFormatSymlinkReasoning_Empty(t *testing.T) {
+	msg := FormatSymlinkReasoning(nil, nil, false)
+	if msg != "" {
+		t.Fatalf("expected empty string for no traversals, got: %s", msg)
+	}
+}
+
+// ── looksLikePath tests ──────────────────────────────────────────────────
+
+func TestLooksLikePath_Dot(t *testing.T) {
+	if looksLikePath(".") {
+		t.Error("'.' should not look like a path")
+	}
+	if looksLikePath("..") {
+		t.Error("'..' should not look like a path")
+	}
+}
+
+func TestLooksLikePath_WindowsDriveLetter(t *testing.T) {
+	if !looksLikePath(`C:\Windows\System32`) {
+		t.Error("Windows drive-letter path should be recognized")
+	}
+	if !looksLikePath(`D:/Projects/code`) {
+		t.Error("Windows drive-letter with forward slash should be recognized")
+	}
+}
+
+func TestLooksLikePath_UNC(t *testing.T) {
+	if !looksLikePath(`\\server\share\path`) {
+		t.Error("UNC path should be recognized")
+	}
+}
+
+func TestLooksLikePath_NonPath(t *testing.T) {
+	if looksLikePath("hello") {
+		t.Error("plain string should not look like a path")
+	}
+	if looksLikePath("") {
+		t.Error("empty string should not look like a path")
+	}
+}
+
+// ── looksLikeWindowsDriveLetter tests ────────────────────────────────────
+
+func TestLooksLikeWindowsDriveLetter_Short(t *testing.T) {
+	if looksLikeWindowsDriveLetter("C:") {
+		t.Error("'C:' is too short for drive letter")
+	}
+	if looksLikeWindowsDriveLetter("ab") {
+		t.Error("'ab' is too short")
+	}
+}
+
+func TestLooksLikeWindowsDriveLetter_NoColon(t *testing.T) {
+	if looksLikeWindowsDriveLetter("CD\\foo") {
+		t.Error("no colon should not match")
+	}
+}
+
+func TestLooksLikeWindowsDriveLetter_Digit(t *testing.T) {
+	// Drive letters must be a-z or A-Z, digits are not valid.
+	if looksLikeWindowsDriveLetter("1:\\foo") {
+		t.Error("digit prefix should not match")
+	}
+}
+
+// ── resolvePathCandidate tests ───────────────────────────────────────────
+
+func TestResolvePathCandidate_Empty(t *testing.T) {
+	if got := resolvePathCandidate("", "/ws"); got != "" {
+		t.Errorf("expected empty for empty string, got %q", got)
+	}
+}
+
+func TestResolvePathCandidate_RelativeNoWorkspace(t *testing.T) {
+	if got := resolvePathCandidate("file.txt", ""); got != "" {
+		t.Errorf("expected empty for relative path with no workspace, got %q", got)
+	}
+}
+
+// ── extractBashPathsFromInput tests ──────────────────────────────────────
+
+func TestExtractBashPathsFromInput_EmptyCommand(t *testing.T) {
+	input := json.RawMessage(`{"command":""}`)
+	paths, suspicious := extractBashPathsFromInput(input, "/ws")
+	if len(paths) != 0 {
+		t.Fatalf("expected no paths for empty command, got %v", paths)
+	}
+	if suspicious {
+		t.Error("expected not suspicious for empty command")
+	}
+}
+
+func TestExtractBashPathsFromInput_InvalidJSON(t *testing.T) {
+	input := json.RawMessage(`{bad`)
+	paths, suspicious := extractBashPathsFromInput(input, "/ws")
+	if len(paths) != 0 {
+		t.Fatalf("expected no paths for invalid JSON, got %v", paths)
+	}
+	if suspicious {
+		t.Error("expected not suspicious for invalid JSON")
+	}
+}
+
+func TestExtractBashPathsFromInput_WithWorkingDir(t *testing.T) {
+	// Use a path with separator so looksLikePath matches.
+	input := json.RawMessage(`{"command":"cat subdir/file.txt","working_directory":"/custom/wd"}`)
+	paths, suspicious := extractBashPathsFromInput(input, "/ws")
+	if suspicious {
+		t.Fatal("expected not suspicious")
+	}
+	expected := filepath.Clean("/custom/wd/subdir/file.txt")
+	if len(paths) != 1 || paths[0] != expected {
+		t.Fatalf("expected [%s], got %v", expected, paths)
+	}
+}
+
+// ── walkSymlinkComponents edge cases ─────────────────────────────────────
+
+func TestWalkSymlinkComponents_RootOnly(t *testing.T) {
+	// A path that is just "/" has no components after splitting.
+	result := walkSymlinkComponents("/", "")
+	if result != nil {
+		t.Fatalf("expected nil for root-only path, got %+v", result)
+	}
+}
+
+// ── checkPathsForSymlinks tests ──────────────────────────────────────────
+
+func TestCheckPathsForSymlinks_NoSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	normalPath := filepath.Join(dir, "normal", "file.txt")
+	_ = os.MkdirAll(filepath.Dir(normalPath), 0o755)
+	_ = os.WriteFile(normalPath, []byte("hello"), 0o644)
+
+	inside, outside := checkPathsForSymlinks([]string{normalPath}, dir)
+	if len(inside) != 0 || len(outside) != 0 {
+		t.Fatalf("expected no traversals, got inside=%d outside=%d", len(inside), len(outside))
+	}
+}
+
+func TestCheckPathsForSymlinks_Empty(t *testing.T) {
+	inside, outside := checkPathsForSymlinks(nil, "/ws")
+	if len(inside) != 0 || len(outside) != 0 {
+		t.Fatalf("expected no traversals for empty input, got inside=%d outside=%d", len(inside), len(outside))
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 
 func stringsContains(s, sub string) bool {

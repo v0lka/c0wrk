@@ -759,12 +759,17 @@ func (e *Executor) checkRepeatIdenticalTool(
 		e.lastToolResultIsError = false
 	}
 
-	// Use lower thresholds when the previous identical call produced an error
+	// Use lower thresholds when the previous identical call produced an error.
+	// Guard against zero-value (disabled) thresholds to prevent integer underflow.
 	nudgeThreshold := e.circuitBreaker.RepeatNudgeThreshold
 	abortThreshold := e.circuitBreaker.RepeatAbortThreshold
 	if e.lastToolResultIsError {
-		nudgeThreshold = e.circuitBreaker.RepeatNudgeThreshold - 1
-		abortThreshold = e.circuitBreaker.RepeatAbortThreshold - 1
+		if e.circuitBreaker.RepeatNudgeThreshold > 0 {
+			nudgeThreshold = e.circuitBreaker.RepeatNudgeThreshold - 1
+		}
+		if e.circuitBreaker.RepeatAbortThreshold > 0 {
+			abortThreshold = e.circuitBreaker.RepeatAbortThreshold - 1
+		}
 	}
 
 	if e.consecutiveRepeatCount >= abortThreshold {

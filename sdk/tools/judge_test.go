@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/tools/judge_prompts"
 )
 
 // mockLLMProvider is a mock implementation of llm.Provider for testing.
@@ -990,5 +991,276 @@ func TestJudgeEvaluate_WithEnvInfo(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected environment block with OS info in judge user prompt")
+	}
+}
+
+// TestJudge_WithoutEnvInfo verifies that no env block is appended when EnvInfo is nil.
+func TestJudge_WithoutEnvInfo(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe operation"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
+
+	// No env info, no workspace — falls through to LLM.
+	ctx := context.Background()
+	input := json.RawMessage(`{"query":"SELECT 1"}`)
+
+	verdict, _, err := judge.Judge(ctx, "sql", input, "run query")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+
+	// The user prompt should NOT contain an environment block.
+	if mockProvider.lastRequest == nil {
+		t.Fatal("last request was not captured")
+	}
+	for _, msg := range mockProvider.lastRequest.Messages {
+		if msg.Role == "user" && contains(msg.Content, "## Environment") {
+			t.Error("expected NO environment block when EnvInfo is nil")
+		}
+	}
+}
+
+// TestJudge_CacheEviction verifies that when the cache exceeds maxCacheSize,
+// it is fully cleared before adding the new entry.
+func TestJudge_CacheEviction(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: ALLOW\nREASON: Safe"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model", 3, nil) // tiny cache
+
+	ctx := context.Background()
+
+	// Fill the cache with 3 entries.
+	for i := 0; i < 3; i++ {
+		input := json.RawMessage(`{"key":"` + string(rune('a'+i)) + `"}`)
+		_, _, err := judge.Judge(ctx, "bash", input, "test")
+		if err != nil {
+			t.Fatalf("unexpected error on call %d: %v", i, err)
+		}
+	}
+	if mockProvider.callCount != 3 {
+		t.Fatalf("expected 3 LLM calls, got %d", mockProvider.callCount)
+	}
+
+	// The 4th call should trigger cache eviction.
+	input := json.RawMessage(`{"key":"d"}`)
+	_, _, err := judge.Judge(ctx, "bash", input, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mockProvider.callCount != 4 {
+		t.Fatalf("expected 4 LLM calls (eviction happened), got %d", mockProvider.callCount)
+	}
+
+	// Now re-judge one of the old inputs — should miss cache and call LLM again.
+	oldInput := json.RawMessage(`{"key":"a"}`)
+	_, _, err = judge.Judge(ctx, "bash", oldInput, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mockProvider.callCount != 5 {
+		t.Errorf("expected cache miss after eviction (5th LLM call), got %d", mockProvider.callCount)
+	}
+}
+
+// TestJudge_InternalTools_WithWorkspaceAndTempDir verifies that internal
+// tools short-circuit BEFORE workspace/temp-dir checks.
+func TestJudge_InternalToolSkipsAllChecks(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Content: "VERDICT: CONFIRM\nREASON: Should not reach here"},
+		},
+	}
+	judge := NewToolJudge(mockProvider, "test-model", 0, nil)
+	judge.SetIsInternalFn(func(name string) bool { return name == "internal_tool" })
+
+	// Set up both workspace and temp dir; internal tool should still bypass.
+	ctx := WithWorkspacePath(context.Background(), "/some/workspace")
+	ctx = WithTempDir(ctx, "/some/temp")
+	input := json.RawMessage(`{"path":"/etc/passwd"}`)
+
+	verdict, reason, err := judge.Judge(ctx, "internal_tool", input, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow for internal tool, got %d", verdict)
+	}
+	if reason != "internal tool, always allowed" {
+		t.Errorf("expected 'internal tool, always allowed', got %q", reason)
+	}
+	if mockProvider.callCount != 0 {
+		t.Errorf("expected 0 LLM calls, got %d", mockProvider.callCount)
+	}
+}
+
+// TestSetSystemPrompt verifies SetSystemPrompt with custom and empty values.
+func TestSetSystemPrompt(t *testing.T) {
+	judge := NewToolJudge(nil, "test", 0, nil)
+
+	// Set custom prompt.
+	judge.SetSystemPrompt("Custom system prompt")
+	judge.mu.RLock()
+	if judge.systemPrompt != "Custom system prompt" {
+		t.Errorf("expected 'Custom system prompt', got %q", judge.systemPrompt)
+	}
+	judge.mu.RUnlock()
+
+	// Reset to default via empty string.
+	judge.SetSystemPrompt("")
+	judge.mu.RLock()
+	if judge.systemPrompt != judge_prompts.JudgeSystem {
+		t.Errorf("expected default judge prompt after reset, got different value")
+	}
+	judge.mu.RUnlock()
+}
+
+// TestNewToolJudgeFromConfig tests all configuration paths.
+func TestNewToolJudgeFromConfig(t *testing.T) {
+	// Nil provider → nil judge.
+	j := NewToolJudgeFromConfig(JudgeConfig{}, nil)
+	if j != nil {
+		t.Error("expected nil judge when provider is nil")
+	}
+
+	// No model, no default model → nil judge.
+	mockProvider := &mockLLMProvider{}
+	j = NewToolJudgeFromConfig(JudgeConfig{Provider: mockProvider}, nil)
+	if j != nil {
+		t.Error("expected nil judge when no model is configured")
+	}
+
+	// Model from DefaultModel fallback.
+	j = NewToolJudgeFromConfig(JudgeConfig{
+		Provider:     mockProvider,
+		DefaultModel: "fallback-model",
+	}, nil)
+	if j == nil {
+		t.Fatal("expected non-nil judge when DefaultModel is set")
+	}
+	if j.model != "fallback-model" {
+		t.Errorf("expected model 'fallback-model', got %q", j.model)
+	}
+
+	// Explicit model takes precedence.
+	j = NewToolJudgeFromConfig(JudgeConfig{
+		Provider:     mockProvider,
+		Model:        "explicit-model",
+		DefaultModel: "fallback-model",
+	}, nil)
+	if j == nil {
+		t.Fatal("expected non-nil judge")
+	}
+	if j.model != "explicit-model" {
+		t.Errorf("expected model 'explicit-model', got %q", j.model)
+	}
+
+	// Custom SystemPrompt.
+	j = NewToolJudgeFromConfig(JudgeConfig{
+		Provider:     mockProvider,
+		Model:        "test",
+		SystemPrompt: "My custom prompt",
+	}, nil)
+	if j == nil {
+		t.Fatal("expected non-nil judge")
+	}
+	if j.systemPrompt != "My custom prompt" {
+		t.Errorf("expected custom system prompt, got %q", j.systemPrompt)
+	}
+
+	// Custom IsInternalFn.
+	customFn := func(name string) bool { return name == "special" }
+	j = NewToolJudgeFromConfig(JudgeConfig{
+		Provider:     mockProvider,
+		Model:        "test",
+		IsInternalFn: customFn,
+	}, nil)
+	if j == nil {
+		t.Fatal("expected non-nil judge")
+	}
+	if j.isInternalFn == nil || !j.isInternalFn("special") {
+		t.Error("expected IsInternalFn to be set")
+	}
+
+	// MaxCacheSize propagation.
+	j = NewToolJudgeFromConfig(JudgeConfig{
+		Provider:     mockProvider,
+		Model:        "test",
+		MaxCacheSize: 500,
+	}, nil)
+	if j == nil {
+		t.Fatal("expected non-nil judge")
+	}
+	if j.maxCacheSize != 500 {
+		t.Errorf("expected maxCacheSize 500, got %d", j.maxCacheSize)
+	}
+}
+
+// TestVerdictString tests all verdict string representations.
+func TestVerdictString(t *testing.T) {
+	if s := verdictString(VerdictAllow); s != "ALLOW" {
+		t.Errorf("expected 'ALLOW', got %q", s)
+	}
+	if s := verdictString(VerdictConfirm); s != "CONFIRM" {
+		t.Errorf("expected 'CONFIRM', got %q", s)
+	}
+	// Test the default/unknown branch.
+	if s := verdictString(JudgeVerdict(999)); s != "UNKNOWN" {
+		t.Errorf("expected 'UNKNOWN' for invalid verdict, got %q", s)
+	}
+}
+
+// TestParseJudgeResponse_AllowWithNoReason verifies the default reason when
+// verdict is ALLOW but no REASON line is present.
+func TestParseJudgeResponse_AllowNoReasonDefault(t *testing.T) {
+	verdict, reason := parseJudgeResponse("VERDICT: ALLOW\nOther stuff here")
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+	if reason != "Tool call appears safe and relevant to the task" {
+		t.Errorf("expected default ALLOW reason, got %q", reason)
+	}
+}
+
+// TestParseJudgeResponse_ConfirmNoReasonKeepsDefault verifies CONFIRM default
+// reason is preserved when verdict is CONFIRM and no REASON line.
+func TestParseJudgeResponse_ConfirmNoReasonDefault(t *testing.T) {
+	verdict, reason := parseJudgeResponse("VERDICT: CONFIRM\nno reason here")
+	if verdict != VerdictConfirm {
+		t.Errorf("expected VerdictConfirm, got %d", verdict)
+	}
+	if reason != "Unable to parse judge response; requiring manual confirmation for safety" {
+		t.Errorf("expected default fail-safe reason, got %q", reason)
+	}
+}
+
+// TestParseJudgeResponse_JunkVerdict verifies garbage VERDICT defaults to CONFIRM.
+func TestParseJudgeResponse_JunkVerdict(t *testing.T) {
+	verdict, reason := parseJudgeResponse("VERDICT: GARBAGE\nREASON: Some reason")
+	if verdict != VerdictConfirm {
+		t.Errorf("expected VerdictConfirm for junk verdict, got %d", verdict)
+	}
+	if reason != "Some reason" {
+		t.Errorf("expected reason 'Some reason', got %q", reason)
+	}
+}
+
+// TestParseJudgeResponse_ReasonBeforeVerdict tests parsing when REASON appears before VERDICT.
+func TestParseJudgeResponse_ReasonBeforeVerdict(t *testing.T) {
+	content := "REASON: First line explanation\nVERDICT: ALLOW"
+	verdict, reason := parseJudgeResponse(content)
+	if verdict != VerdictAllow {
+		t.Errorf("expected VerdictAllow, got %d", verdict)
+	}
+	if reason != "First line explanation" {
+		t.Errorf("expected reason 'First line explanation', got %q", reason)
 	}
 }

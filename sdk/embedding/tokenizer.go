@@ -27,9 +27,16 @@ func NewTokenizer(path string) (*Tokenizer, error) {
 // ready for ONNX inference. maxLen controls the maximum sequence length
 // (including [CLS] and [SEP] special tokens).
 func (t *Tokenizer) Encode(text string, maxLen int) (inputIDs, attentionMask, tokenTypeIDs []int64) {
+	// Guard against zero or too-small maxLen which would cause index-out-of-range.
+	if maxLen < 2 {
+		// Return empty slices; caller must provide a valid maxLen >= 2.
+		return nil, nil, nil
+	}
+
 	en, err := t.inner.EncodeSingle(text, true)
 	if err != nil {
 		// Return a minimal valid encoding on error (just [CLS][SEP]).
+		// This is a best-effort fallback; the caller receives a valid but empty embedding.
 		inputIDs = make([]int64, maxLen)
 		attentionMask = make([]int64, maxLen)
 		tokenTypeIDs = make([]int64, maxLen)
@@ -44,14 +51,21 @@ func (t *Tokenizer) Encode(text string, maxLen int) (inputIDs, attentionMask, to
 	mask := en.GetAttentionMask()
 	typeIDs := en.GetTypeIds()
 
-	// Truncate if needed.
+	// Truncate if needed, with bounds safety for mask/typeIDs slices.
 	seqLen := len(ids)
 	if seqLen > maxLen {
 		seqLen = maxLen
-		ids = ids[:maxLen]
-		mask = mask[:maxLen]
-		typeIDs = typeIDs[:maxLen]
 	}
+	// Ensure mask and typeIDs are at least seqLen to avoid panics.
+	if len(mask) < seqLen {
+		seqLen = len(mask)
+	}
+	if len(typeIDs) < seqLen {
+		seqLen = len(typeIDs)
+	}
+	ids = ids[:seqLen]
+	mask = mask[:seqLen]
+	typeIDs = typeIDs[:seqLen]
 
 	// Convert to int64 and pad to maxLen.
 	inputIDs = make([]int64, maxLen)

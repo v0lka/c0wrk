@@ -120,3 +120,17 @@ func TestToolPolicyConstants(t *testing.T) {
 		t.Errorf("PolicyUserConfirm = %d, want 2", PolicyUserConfirm)
 	}
 }
+
+func TestBaseTool_IsUntrusted(t *testing.T) {
+	// Default: not untrusted.
+	bt := &BaseTool{}
+	if bt.IsUntrusted() {
+		t.Error("expected false for default BaseTool")
+	}
+
+	// Explicitly untrusted.
+	bt.Untrusted = true
+	if !bt.IsUntrusted() {
+		t.Error("expected true when Untrusted is set to true")
+	}
+}

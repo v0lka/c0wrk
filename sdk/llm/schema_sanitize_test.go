@@ -5,6 +5,70 @@ import (
 	"testing"
 )
 
+func TestGetTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		input any
+		want []string
+	}{
+		{"nil", nil, nil},
+		{"string", "object", []string{"object"}},
+		{"array of strings", []any{"string", "null"}, []string{"string", "null"}},
+		{"int in array not string", []any{42}, nil},
+		{"mixed array", []any{"string", 42}, []string{"string"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getTypes(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("getTypes() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("getTypes()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestConvertEnumToStrings(t *testing.T) {
+	t.Run("non-array input returns single-element array", func(t *testing.T) {
+		got := convertEnumToStrings(42.0)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 element, got %d", len(got))
+		}
+		// Non-array input is wrapped as-is (no type conversion for single value)
+		if got[0] != 42.0 {
+			t.Errorf("expected 42.0, got %v (%T)", got[0], got[0])
+		}
+	})
+
+	t.Run("string values in array are preserved", func(t *testing.T) {
+		got := convertEnumToStrings([]any{"a", 1.0, "c"})
+		if len(got) != 3 {
+			t.Fatalf("expected 3 elements, got %d", len(got))
+		}
+		if got[0] != "a" {
+			t.Errorf("got[0] = %v, want 'a'", got[0])
+		}
+		if got[1] != "1" {
+			t.Errorf("got[1] = %v, want '1'", got[1])
+		}
+		if got[2] != "c" {
+			t.Errorf("got[2] = %v, want 'c'", got[2])
+		}
+	})
+
+	t.Run("all strings in array", func(t *testing.T) {
+		got := convertEnumToStrings([]any{"x", "y"})
+		if len(got) != 2 || got[0] != "x" || got[1] != "y" {
+			t.Errorf("expected [x y], got %v", got)
+		}
+	})
+}
+
 func TestSanitizeSchemaForGemini(t *testing.T) {
 	t.Run("GeminiConvertsIntegerEnums", func(t *testing.T) {
 		schema := json.RawMessage(`{
@@ -266,6 +330,85 @@ func TestSanitizeSchemaForGemini(t *testing.T) {
 			if _, ok := v.(string); !ok {
 				t.Errorf("oneOf enum[%d] = %v (%T), expected string", i, v, v)
 			}
+		}
+	})
+
+	t.Run("GeminiHandlesAllOf", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"allOf": [
+				{"type": "object", "properties": {"a": {"type": "string"}}},
+				{"type": "object", "properties": {"b": {"type": "integer"}}}
+			]
+		}`)
+
+		result := SanitizeSchemaForGemini(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		allOf := parsed["allOf"].([]interface{}) //nolint:errcheck // type assertion in test, safe to skip check
+		if len(allOf) != 2 {
+			t.Fatalf("expected 2 allOf items, got %d", len(allOf))
+		}
+	})
+
+	t.Run("GeminiHandlesTupleItems", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "array",
+			"items": [
+				{"type": "string"},
+				{"type": "integer", "enum": [1, 2, 3]}
+			]
+		}`)
+
+		result := SanitizeSchemaForGemini(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		items, ok := parsed["items"].([]interface{})
+		if !ok {
+			t.Fatal("items should be an array (tuple)")
+		}
+		if len(items) != 2 {
+			t.Fatalf("expected 2 tuple items, got %d", len(items))
+		}
+		// Second item should have its enum converted to strings
+		second, ok := items[1].(map[string]interface{})
+		if !ok {
+			t.Fatal("second tuple item should be a map")
+		}
+		enum, _ := second["enum"].([]interface{})
+		for i, v := range enum {
+			if _, ok := v.(string); !ok {
+				t.Errorf("tuple enum[%d] = %v (%T), expected string", i, v, v)
+			}
+		}
+	})
+
+	t.Run("GeminiHandlesItemsWithoutType", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "array",
+			"items": {}
+		}`)
+
+		result := SanitizeSchemaForGemini(schema)
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		items, ok := parsed["items"].(map[string]interface{})
+		if !ok {
+			t.Fatal("items not found as map")
+		}
+		if typ, _ := items["type"].(string); typ != "object" {
+			t.Errorf("items.type = %q, expected 'object'", typ)
 		}
 	})
 }
@@ -1358,6 +1501,110 @@ func TestSanitizeSchemaForAnthropic(t *testing.T) {
 		}
 		if addProps["type"] != "string" {
 			t.Errorf("expected type 'string' in additionalProperties, got %v", addProps["type"])
+		}
+	})
+
+	t.Run("flattens anyOf picks first variant", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"anyOf": [
+				{"type": "boolean", "description": "first"},
+				{"type": "string", "description": "second"}
+			]
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		if _, exists := parsed["anyOf"]; exists {
+			t.Error("expected anyOf to be removed after flattening")
+		}
+		if parsed["type"] != "boolean" {
+			t.Errorf("expected type 'boolean' (first variant), got %v", parsed["type"])
+		}
+	})
+
+	t.Run("processes nested anyOf inside properties", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"field": {
+					"anyOf": [
+						{"type": "string"},
+						{"type": "integer"}
+					]
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		props, _ := parsed["properties"].(map[string]any)
+		field, _ := props["field"].(map[string]any)
+		// Nested anyOf should be preserved (not flattened - only top-level)
+		if _, exists := field["anyOf"]; !exists {
+			t.Log("nested anyOf may be preserved or processed")
+		}
+	})
+
+	t.Run("processes nested allOf inside properties", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"field": {
+					"allOf": [
+						{"type": "object", "properties": {"x": {"type": "string"}}}
+					]
+				}
+			}
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		// Must not panic, schema must be valid JSON
+		if parsed["type"] != "object" {
+			t.Errorf("root type should be object, got %v", parsed["type"])
+		}
+	})
+
+	t.Run("processes tuple items recursively", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "array",
+			"items": [
+				{"$comment": "remove me", "type": "string"},
+				{"$comment": "remove me too", "type": "integer"}
+			]
+		}`)
+
+		result := SanitizeSchemaForAnthropic(schema)
+		var parsed map[string]any
+		if err := json.Unmarshal(result, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+
+		items, ok := parsed["items"].([]any)
+		if !ok {
+			t.Fatal("items should be an array (tuple)")
+		}
+		if len(items) != 2 {
+			t.Fatalf("expected 2 tuple items, got %d", len(items))
+		}
+		first, _ := items[0].(map[string]any)
+		if _, exists := first["$comment"]; exists {
+			t.Error("expected $comment in first tuple item to be removed")
+		}
+		if first["type"] != "string" {
+			t.Errorf("expected first item type 'string', got %v", first["type"])
 		}
 	})
 }

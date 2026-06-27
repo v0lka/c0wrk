@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 )
 
@@ -147,6 +148,9 @@ func getTypes(typeVal any) []string {
 }
 
 // convertEnumToStrings converts enum values to strings if they are numbers.
+// Although json.Unmarshal produces float64 for all JSON numbers, intermediate
+// transforms (e.g., Gemini sanitization, anyOf flattening) may produce other
+// numeric types. The broad type switch provides defense-in-depth.
 func convertEnumToStrings(enumVal any) []any {
 	arr, ok := enumVal.([]any)
 	if !ok {
@@ -155,9 +159,9 @@ func convertEnumToStrings(enumVal any) []any {
 
 	result := make([]any, len(arr))
 	for i, val := range arr {
-		switch v := val.(type) {
+		switch val.(type) {
 		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			result[i] = fmt.Sprintf("%v", v)
+			result[i] = fmt.Sprintf("%v", val)
 		default:
 			result[i] = val
 		}
@@ -234,6 +238,133 @@ func resolveRef(schema, defs map[string]any) map[string]any {
 	return cp
 }
 
+// resolveRefRecursive replaces $ref with the referenced definition and recurses
+// to resolve any nested $ref chains within the resolved definition itself.
+func resolveRefRecursive(schema, defs map[string]any) map[string]any {
+	return resolveRefRecursiveWithVisited(schema, defs, nil)
+}
+
+// resolveRefRecursiveWithVisited is the internal implementation that tracks
+// visited definition names to detect and break cycles.
+func resolveRefRecursiveWithVisited(schema, defs map[string]any, visited map[string]struct{}) map[string]any {
+	resolved := resolveRef(schema, defs)
+
+	// Re-resolve if the resolved schema is itself just another $ref chain.
+	// Track visited definition names to break cycles (e.g. A→B→C→A).
+	if visited == nil {
+		visited = make(map[string]struct{})
+	}
+	for {
+		ref, ok := resolved["$ref"].(string)
+		if !ok {
+			break
+		}
+		parts := splitRefPath(ref)
+		if len(parts) == 0 {
+			break
+		}
+		name := parts[len(parts)-1]
+		if _, seen := visited[name]; seen {
+			// Cycle detected: the resolved definition points back to
+			// an already-visited name. Return a safe fallback schema
+			// instead of the bare $ref (which would be filtered to
+			// an empty map by callers).
+			return safeFallbackSchema()
+		}
+		visited[name] = struct{}{}
+		next := resolveRef(resolved, defs)
+		if reflect.DeepEqual(next, resolved) {
+			// No progress; self-reference or already fully resolved.
+			// If the result is still just a bare $ref with no useful
+			// content, return a safe fallback.
+			if _, stillRef := resolved["$ref"]; stillRef && len(resolved) == 1 {
+				return safeFallbackSchema()
+			}
+			break
+		}
+		resolved = next
+	}
+
+	// Recursively process individual property values (not the container itself).
+	if props, ok := resolved["properties"].(map[string]any); ok {
+		newProps := make(map[string]any, len(props))
+		changed := false
+		for propName, propVal := range props {
+			if propMap, ok := propVal.(map[string]any); ok {
+				newProps[propName] = resolveRefRecursiveWithVisited(propMap, defs, visited)
+				changed = true
+			} else {
+				newProps[propName] = propVal
+			}
+		}
+		if changed {
+			resolved = copyMap(resolved)
+			resolved["properties"] = newProps
+		}
+	}
+
+	// Recursively process items (both object and tuple form).
+	if items, ok := resolved["items"]; ok {
+		switch v := items.(type) {
+		case map[string]any:
+			resolved = copyMap(resolved)
+			resolved["items"] = resolveRefRecursiveWithVisited(v, defs, visited)
+		case []any:
+			newItems := make([]any, len(v))
+			changed := false
+			for i, item := range v {
+				if itemMap, ok := item.(map[string]any); ok {
+					newItems[i] = resolveRefRecursiveWithVisited(itemMap, defs, visited)
+					changed = true
+				} else {
+					newItems[i] = item
+				}
+			}
+			if changed {
+				resolved = copyMap(resolved)
+				resolved["items"] = newItems
+			}
+		}
+	}
+
+	// Recursively process additionalProperties if it's a schema object.
+	if addProps, ok := resolved["additionalProperties"].(map[string]any); ok {
+		resolved = copyMap(resolved)
+		resolved["additionalProperties"] = resolveRefRecursiveWithVisited(addProps, defs, visited)
+	}
+
+	// Recursively process composition keywords.
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := resolved[key].([]any); ok {
+			newArr := make([]any, len(arr))
+			changed := false
+			for i, item := range arr {
+				if itemMap, ok := item.(map[string]any); ok {
+					newArr[i] = resolveRefRecursiveWithVisited(itemMap, defs, visited)
+					changed = true
+				} else {
+					newArr[i] = item
+				}
+			}
+			if changed {
+				resolved = copyMap(resolved)
+				resolved[key] = newArr
+			}
+		}
+	}
+
+	return resolved
+}
+
+// copyMap creates a shallow copy of a map.
+func copyMap(m map[string]any) map[string]any {
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
 // splitRefPath splits a $ref string like "#/$defs/Foo" into path segments after "#".
 func splitRefPath(ref string) []string {
 	// Trim leading "#/"
@@ -282,8 +413,8 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]any) map[string]any {
 		return nil
 	}
 
-	// Resolve $ref before processing
-	schema = resolveRef(schema, defs)
+	// Resolve $ref before processing, including nested $ref chains
+	schema = resolveRefRecursive(schema, defs)
 
 	// Copy keys, filtering out forbidden keywords
 	result := make(map[string]any)
@@ -293,20 +424,6 @@ func sanitizeOpenAISchemaWithDefs(schema, defs map[string]any) map[string]any {
 			continue
 		default:
 			result[key] = value
-		}
-	}
-
-	// If the resolved schema itself had a $ref (e.g. nested), re-resolve and re-filter
-	if _, hasRef := result["$ref"]; hasRef {
-		resolved := resolveRef(result, defs)
-		result = make(map[string]any)
-		for key, value := range resolved {
-			switch key {
-			case "$schema", "$id", "$comment", "$defs", "definitions", "default", "examples":
-				continue
-			default:
-				result[key] = value
-			}
 		}
 	}
 
@@ -459,8 +576,8 @@ func sanitizeAnthropicSchema(schema, defs map[string]any) map[string]any {
 		return nil
 	}
 
-	// Resolve $ref before processing
-	schema = resolveRef(schema, defs)
+	// Resolve $ref before processing, including nested $ref chains
+	schema = resolveRefRecursive(schema, defs)
 
 	// Flatten top-level composition keywords before filtering
 	schema = flattenAnthropicComposition(schema, defs)

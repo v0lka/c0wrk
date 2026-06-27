@@ -5,6 +5,7 @@ import (
 
 	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/strutil"
 )
 
 // stepsToMessages converts a slice of Steps to LLM messages.
@@ -99,5 +100,5 @@ func truncateToTokenBudget(text string, maxTokens int) string {
 	if len(text) <= maxChars {
 		return text
 	}
-	return text[:maxChars] + "\n[... truncated for summarization ...]"
+	return strutil.TruncateUTF8(text, maxChars) + "\n[... truncated for summarization ...]"
 }

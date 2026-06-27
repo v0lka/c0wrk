@@ -104,8 +104,14 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 		log.Debug("judge: evaluating tool", "tool", toolName)
 	}
 
+	// Read mutable fields under lock to prevent data races with concurrent setters.
+	j.mu.RLock()
+	isInternalFn := j.isInternalFn
+	systemPrompt := j.systemPrompt
+	j.mu.RUnlock()
+
 	// Internal tools are always allowed (defense-in-depth)
-	if j.isInternalFn != nil && j.isInternalFn(toolName) {
+	if isInternalFn != nil && isInternalFn(toolName) {
 		if log != nil {
 			log.Debug("judge: fast-path internal tool", "tool", toolName, "verdict", "ALLOW")
 		}
@@ -150,8 +156,6 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	// Build LLM request
 	inputStr := string(input)
 
-	systemPrompt := j.systemPrompt
-
 	userPrompt := "Task: " + taskContext + "\n\nTool: " + toolName + "\n\nInput: " + inputStr
 
 	// Append compact environment context for safety reasoning.
@@ -165,7 +169,7 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		MaxTokens:       100,       // Need more tokens for verdict + reason
+		MaxTokens: 100, // Need more tokens for verdict + reason
 	}
 
 	// Create a dedicated context for the judge LLM call with its own timeout.

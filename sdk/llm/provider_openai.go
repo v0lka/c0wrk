@@ -63,7 +63,7 @@ func (p *OpenAIProvider) Name() string {
 // ChatCompletion sends a request and returns the full response.
 func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	if needsResponsesAPI(req.Model) {
-		return responsesAPICompletion(ctx, p.responsesClient, req)
+		return responsesAPICompletion(ctx, p.responsesClient, p.name, req)
 	}
 
 	params := p.buildChatParams(req)
@@ -74,7 +74,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 	}
 
 	if len(resp.Choices) == 0 {
-		return nil, WrapProviderError("openai", 0, errors.New("no choices in response"))
+		return nil, WrapProviderError(p.name, 0, errors.New("no choices in response"))
 	}
 
 	choice := resp.Choices[0]
@@ -95,7 +95,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 // StreamChatCompletion sends a request and returns a channel of streaming chunks.
 func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
 	if needsResponsesAPI(req.Model) {
-		return responsesAPIStream(ctx, p.responsesClient, req)
+		return responsesAPIStream(ctx, p.responsesClient, p.name, req)
 	}
 
 	params := p.buildChatParams(req)

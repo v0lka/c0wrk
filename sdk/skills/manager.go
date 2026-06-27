@@ -135,7 +135,30 @@ func (m *SkillManager) SkillPath(name string) (string, bool) {
 // ReadSkillResourceTool to eliminate duplication (S-19).
 func SafeResolvePath(baseDir, relPath string) (string, error) {
 	cleanBase := filepath.Clean(baseDir)
-	cleanAbs := filepath.Clean(filepath.Join(baseDir, relPath))
+	// Only resolve baseDir symlinks when baseDir itself is a symlink
+	// (not when an ancestor directory like /var → /private/var is).
+	// This preserves textual path consistency on macOS while still
+	// protecting against symlinked skill directories.
+	if fi, err := os.Lstat(cleanBase); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if realBase, err := filepath.EvalSymlinks(cleanBase); err == nil {
+			cleanBase = filepath.Clean(realBase)
+		}
+	}
+
+	// Join and clean the path first (textual resolution of "..").
+	// Use cleanBase (possibly symlink-resolved) so the textual fallback
+	// path is consistent with the containment boundary computed above.
+	joined := filepath.Clean(filepath.Join(cleanBase, relPath))
+	// Resolve any symlinks to their real filesystem paths to prevent symlink-based
+	// traversal bypass (e.g., a symlink inside the skill directory pointing outside).
+	resolved, err := filepath.EvalSymlinks(joined)
+	if err != nil {
+		// If symlink resolution fails (e.g., broken link), fall back to textual check.
+		slog.Debug("SafeResolvePath: EvalSymlinks failed, falling back to textual check",
+			"path", joined, "error", err)
+		resolved = joined
+	}
+	cleanAbs := filepath.Clean(resolved)
 	if cleanAbs != cleanBase {
 		ok, err := pathutil.IsWithinPath(cleanBase, cleanAbs)
 		if err != nil || !ok {

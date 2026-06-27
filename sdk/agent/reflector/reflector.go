@@ -3,6 +3,7 @@ package reflector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -84,6 +85,9 @@ func (r *Reflector) Reflect(
 	resp, err := r.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("reflector LLM call failed: %w", err)
+	}
+	if resp == nil {
+		return nil, errors.New("reflector LLM call returned nil response")
 	}
 
 	reflection, err = r.parseReflectionResponse(resp.Message.Content)

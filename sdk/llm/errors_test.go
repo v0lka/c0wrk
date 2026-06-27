@@ -199,3 +199,30 @@ func TestWrapProviderError(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyNetError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"timeout net.Error", &mockNetError{timeout: true}, true},
+		{"non-timeout net.Error", &mockNetError{timeout: false}, false},
+		{"ECONNREFUSED via OpError", &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}, true},
+		{"ECONNRESET via OpError", &net.OpError{Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}, true},
+		{"EHOSTUNREACH via OpError", &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.EHOSTUNREACH}}, true},
+		{"DNS error", &net.DNSError{Err: "no such host", Name: "example.com"}, true},
+		{"plain error", errors.New("some error"), false},
+		{"io.EOF", io.EOF, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyNetError(tt.err)
+			if got != tt.want {
+				t.Errorf("classifyNetError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

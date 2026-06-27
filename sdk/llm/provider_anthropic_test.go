@@ -547,3 +547,82 @@ func TestAnthropicProvider_BuildRequest_MultiSystem(t *testing.T) {
 func stringPtr(s string) *string {
 	return &s
 }
+
+func TestAnthropicProvider_WrapError_Types(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	t.Run("APIError rate limit is retryable", func(t *testing.T) {
+		apiErr := &anthropic.APIError{
+			Type:    anthropic.ErrTypeRateLimit,
+			Message: "rate limited",
+		}
+		result := p.wrapError(apiErr)
+		var llmErr *Error
+		if !errors.As(result, &llmErr) {
+			t.Fatal("expected *Error")
+		}
+		if !llmErr.Retryable {
+			t.Error("expected retryable for rate limit")
+		}
+	})
+
+	t.Run("APIError overloaded is retryable", func(t *testing.T) {
+		apiErr := &anthropic.APIError{
+			Type:    anthropic.ErrTypeOverloaded,
+			Message: "overloaded",
+		}
+		result := p.wrapError(apiErr)
+		var llmErr *Error
+		if !errors.As(result, &llmErr) {
+			t.Fatal("expected *Error")
+		}
+		if !llmErr.Retryable {
+			t.Error("expected retryable for overloaded")
+		}
+	})
+
+	t.Run("APIError api error is retryable", func(t *testing.T) {
+		apiErr := &anthropic.APIError{
+			Type:    anthropic.ErrTypeApi,
+			Message: "internal error",
+		}
+		result := p.wrapError(apiErr)
+		var llmErr *Error
+		if !errors.As(result, &llmErr) {
+			t.Fatal("expected *Error")
+		}
+		if !llmErr.Retryable {
+			t.Error("expected retryable for api error")
+		}
+	})
+
+	t.Run("APIError invalid request is not retryable", func(t *testing.T) {
+		apiErr := &anthropic.APIError{
+			Type:    anthropic.ErrTypeInvalidRequest,
+			Message: "invalid request",
+		}
+		result := p.wrapError(apiErr)
+		var llmErr *Error
+		if !errors.As(result, &llmErr) {
+			t.Fatal("expected *Error")
+		}
+		if llmErr.Retryable {
+			t.Error("expected not retryable for invalid request")
+		}
+	})
+
+	t.Run("RequestError", func(t *testing.T) {
+		reqErr := &anthropic.RequestError{
+			StatusCode: 400,
+			Err:        errors.New("bad request"),
+		}
+		result := p.wrapError(reqErr)
+		var llmErr *Error
+		if !errors.As(result, &llmErr) {
+			t.Fatal("expected *Error")
+		}
+		if llmErr.StatusCode != 400 {
+			t.Errorf("expected status 400, got %d", llmErr.StatusCode)
+		}
+	})
+}

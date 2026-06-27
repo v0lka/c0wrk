@@ -64,3 +64,10 @@ func TestFinishTool_Execute_InvalidJSON(t *testing.T) {
 		t.Error("expected non-empty error content")
 	}
 }
+
+func TestFinishTool_IsUntrusted(t *testing.T) {
+	ft := NewFinishTool()
+	if ft.IsUntrusted() {
+		t.Error("FinishTool.IsUntrusted() should return false — finish is a trusted internal tool")
+	}
+}

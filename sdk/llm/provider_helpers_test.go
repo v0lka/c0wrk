@@ -255,6 +255,36 @@ func TestStreamToolCallAccumulator_Emit(t *testing.T) {
 			t.Errorf("expected 0 emissions, got %d", count)
 		}
 	})
+
+	t.Run("sparse indices emitted in order", func(t *testing.T) {
+		acc := NewStreamToolCallAccumulator()
+		// Non-sequential indices: 5, 0, 9
+		acc.HandleDelta(5, "id-5", "fifth", `{}`)
+		acc.HandleDelta(0, "id-0", "zeroth", `{}`)
+		acc.HandleDelta(9, "id-9", "ninth", `{}`)
+
+		chunks := make(chan ChatChunk, 10)
+		acc.Emit(chunks)
+		close(chunks)
+
+		var names []string
+		for c := range chunks {
+			if c.ToolCall != nil {
+				names = append(names, c.ToolCall.Name)
+			}
+		}
+
+		if len(names) != 3 {
+			t.Fatalf("expected 3 emissions for sparse indices, got %d", len(names))
+		}
+		// Must be emitted in index order: 0, 5, 9
+		expected := []string{"zeroth", "fifth", "ninth"}
+		for i, n := range names {
+			if n != expected[i] {
+				t.Errorf("emission[%d] = %q, want %q", i, n, expected[i])
+			}
+		}
+	})
 }
 
 

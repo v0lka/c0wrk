@@ -458,3 +458,32 @@ func TestRoute_AppendContextSections_Nil(t *testing.T) {
 		t.Error("system prompt should NOT contain AGENTS.md when AppendContextSections is nil")
 	}
 }
+
+func TestSetModelRegistry(t *testing.T) {
+	mock := &mockLLMCaller{}
+	r := NewRouter(mock, Config{HistoryWindow: 5})
+	if r.modelRegistry != nil {
+		t.Error("modelRegistry should be nil initially")
+	}
+	reg := &llm.ModelRegistry{}
+	r.SetModelRegistry(reg)
+	if r.modelRegistry != reg {
+		t.Error("modelRegistry should be set by SetModelRegistry")
+	}
+}
+
+func TestRoute_NilResponse(t *testing.T) {
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return nil, nil
+		},
+	}
+	r := newTestRouter(mock, 5)
+	_, err := r.Route(context.Background(), "test", nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for nil response")
+	}
+	if !strings.Contains(err.Error(), "nil response") {
+		t.Errorf("expected 'nil response' in error, got: %v", err)
+	}
+}

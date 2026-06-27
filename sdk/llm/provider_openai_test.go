@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -876,4 +877,91 @@ func TestOpenAIProvider_WrapError(t *testing.T) {
 			t.Errorf("expected status 0, got %d", llmErr.StatusCode)
 		}
 	})
+}
+
+func TestConvertSchemaToMap(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
+
+	t.Run("empty schema returns default object", func(t *testing.T) {
+		result := p.convertSchemaToMap(nil)
+		if result["type"] != "object" {
+			t.Errorf("expected type 'object', got %v", result["type"])
+		}
+		if result["additionalProperties"] != false {
+			t.Error("expected additionalProperties: false")
+		}
+	})
+
+	t.Run("invalid JSON returns default object", func(t *testing.T) {
+		result := p.convertSchemaToMap([]byte("{invalid"))
+		if result["type"] != "object" {
+			t.Errorf("expected type 'object', got %v", result["type"])
+		}
+	})
+
+	t.Run("valid JSON is parsed", func(t *testing.T) {
+		result := p.convertSchemaToMap([]byte(`{"type":"string"}`))
+		if result["type"] != "string" {
+			t.Errorf("expected type 'string', got %v", result["type"])
+		}
+	})
+}
+
+func TestOpenAIProvider_WithCustomHTTPClient(t *testing.T) {
+	customClient := &http.Client{}
+	p, err := NewOpenAIProvider(OpenAIProviderConfig{
+		Name:       "custom",
+		APIKey:     "test-key",
+		HTTPClient: customClient,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider with custom HTTP client failed: %v", err)
+	}
+	if p.Name() != "custom" {
+		t.Errorf("expected name 'custom', got %q", p.Name())
+	}
+}
+
+func TestOpenAIProvider_BuildChatParams_ReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfgName string
+		model   string
+		effort  string
+	}{
+		{"qwen with On", "qwen", "qwen-max", "On"},
+		{"glm with On", "glm", "glm-4", "On"},
+		{"deepseek with On", "deepseek", "deepseek-reasoner", "On"},
+		{"openai with low", "openai", "gpt-5", "low"},
+		{"no family in model uses DetectFamily", "custom", "o3-mini", "high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: tt.cfgName, APIKey: "k"})
+			req := ChatRequest{
+				Model:           tt.model,
+				Messages:        []Message{{Role: "user", Content: "Hi"}},
+				ReasoningEffort: tt.effort,
+			}
+			params := p.buildChatParams(req)
+			if params.Model != tt.model {
+				t.Errorf("expected model %q, got %q", tt.model, params.Model)
+			}
+		})
+	}
+}
+
+func TestOpenAIProvider_BuildChatParams_NoReasoningNoFamily(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
+	req := ChatRequest{
+		Model:           "gpt-4o",
+		Messages:        []Message{{Role: "user", Content: "Hi"}},
+		ReasoningEffort: "",
+	}
+	params := p.buildChatParams(req)
+	// Verify no panic and model is correct
+	if params.Model != "gpt-4o" {
+		t.Errorf("expected model 'gpt-4o', got %q", params.Model)
+	}
 }

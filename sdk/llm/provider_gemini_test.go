@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -627,5 +628,29 @@ func TestGeminiProvider_VertexAIConfig(t *testing.T) {
 		if !strings.Contains(err.Error(), "") {
 			_ = err // acceptable
 		}
+	}
+}
+
+func TestGeminiProvider_SetLogger(t *testing.T) {
+	ctx := context.Background()
+	p, err := NewGeminiProvider(ctx, GeminiProviderConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Skipf("Cannot create provider: %v", err)
+	}
+
+	// Initially log() returns discard handler
+	l := p.log()
+	if l == nil {
+		t.Fatal("log() should never return nil")
+	}
+
+	// Set a custom logger
+	customLogger := slog.New(slog.DiscardHandler)
+	p.SetLogger(customLogger)
+
+	// Now log() should return the custom logger
+	l2 := p.log()
+	if l2 != customLogger {
+		t.Error("log() should return the custom logger after SetLogger")
 	}
 }

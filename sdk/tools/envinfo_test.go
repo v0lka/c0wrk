@@ -125,3 +125,74 @@ func TestFormatFullEnvBlock_MissingRuntime(t *testing.T) {
 		t.Errorf("Go should show version, not 'not installed'\nGot:\n%s", out)
 	}
 }
+
+func TestFormatFullEnvBlock_HideHomeDir(t *testing.T) {
+	info := &EnvInfo{
+		OS:      "macOS 15.4",
+		Arch:    "arm64",
+		Shell:   "/bin/zsh",
+		HomeDir: "/Users/secret",
+	}
+
+	out := FormatFullEnvBlock(info, EnvFormatOptions{HideHomeDir: true})
+
+	if strings.Contains(out, "Home directory") {
+		t.Errorf("expected Home directory to be hidden\nGot:\n%s", out)
+	}
+	if strings.Contains(out, "/Users/secret") {
+		t.Errorf("expected home dir path to be absent\nGot:\n%s", out)
+	}
+	// Other fields should still be present.
+	if !strings.Contains(out, "OS: macOS 15.4") {
+		t.Errorf("expected OS info\nGot:\n%s", out)
+	}
+}
+
+func TestFormatTimezoneLabel_Local(t *testing.T) {
+	// When location name is "Local", should use zone abbreviation.
+	label := formatTimezoneLabel("Local", "MST", -25200) // UTC-7
+	if !strings.Contains(label, "MST") {
+		t.Errorf("expected zone abbreviation 'MST' for Local, got %q", label)
+	}
+	if !strings.Contains(label, "UTC-7") {
+		t.Errorf("expected 'UTC-7' in label, got %q", label)
+	}
+}
+
+func TestFormatTimezoneLabel_Empty(t *testing.T) {
+	// Empty location name → falls back to zone.
+	label := formatTimezoneLabel("", "EST", -18000) // UTC-5
+	if !strings.Contains(label, "EST") {
+		t.Errorf("expected zone abbreviation 'EST' for empty location, got %q", label)
+	}
+	if !strings.Contains(label, "UTC-5") {
+		t.Errorf("expected 'UTC-5' in label, got %q", label)
+	}
+}
+
+func TestFormatTimezoneLabel_NamedLocation(t *testing.T) {
+	// Named location like "Europe/Moscow".
+	label := formatTimezoneLabel("Europe/Moscow", "MSK", 10800) // UTC+3
+	if !strings.Contains(label, "Europe/Moscow") {
+		t.Errorf("expected location name 'Europe/Moscow', got %q", label)
+	}
+	if !strings.Contains(label, "UTC+3") {
+		t.Errorf("expected 'UTC+3' in label, got %q", label)
+	}
+}
+
+func TestFormatTimezoneLabel_PositiveOffset(t *testing.T) {
+	label := formatTimezoneLabel("Asia/Tokyo", "JST", 32400) // UTC+9
+	if !strings.Contains(label, "UTC+9") {
+		t.Errorf("expected 'UTC+9', got %q", label)
+	}
+}
+
+func TestRuntimeOrNotInstalled(t *testing.T) {
+	if got := runtimeOrNotInstalled(""); got != "not installed" {
+		t.Errorf("expected 'not installed' for empty, got %q", got)
+	}
+	if got := runtimeOrNotInstalled("1.23.1"); got != "1.23.1" {
+		t.Errorf("expected '1.23.1', got %q", got)
+	}
+}

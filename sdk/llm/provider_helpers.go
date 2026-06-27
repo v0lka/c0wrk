@@ -103,7 +103,14 @@ func (a *StreamToolCallAccumulator) HandleDelta(index int, id, name, arguments s
 // Emit sends all accumulated tool calls to the channel in index order.
 // Should be called when a finish reason is received, regardless of reason type.
 func (a *StreamToolCallAccumulator) Emit(chunks chan<- ChatChunk) {
-	for i := 0; i < len(a.toolCalls); i++ {
+	// Find the maximum index in the map to handle sparse (non-sequential) indices.
+	maxIdx := -1
+	for idx := range a.toolCalls {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	for i := 0; i <= maxIdx; i++ {
 		if tc, ok := a.toolCalls[i]; ok {
 			chunks <- ChatChunk{ToolCall: tc}
 		}

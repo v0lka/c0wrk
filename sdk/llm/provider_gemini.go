@@ -99,7 +99,7 @@ func (p *GeminiProvider) StreamChatCompletion(ctx context.Context, req ChatReque
 	contents, systemInstruction := p.convertMessages(req.Messages)
 	config := p.buildConfig(req, systemInstruction)
 
-	ch := make(chan ChatChunk)
+	ch := make(chan ChatChunk, 64)
 
 	go func() {
 		defer close(ch)

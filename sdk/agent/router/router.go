@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -118,6 +119,9 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	resp, err := r.llm.Call(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("router LLM call failed: %w", err)
+	}
+	if resp == nil {
+		return nil, errors.New("router LLM call returned nil response")
 	}
 
 	// Extract JSON from response (handle markdown code blocks)

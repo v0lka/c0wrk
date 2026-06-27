@@ -257,18 +257,24 @@ func (r *Router) applyDefaultTemperature(ctx context.Context, req *ChatRequest) 
 	}
 
 	// Resolve model metadata for capability check and family
+	var family string
 	if r.registry != nil {
 		meta, _ := r.registry.Resolve(ctx, req.Model)
+		family = meta.Family
 		if !meta.Capabilities.Temperature {
 			return // model doesn't accept temperature (e.g. reasoning models)
 		}
-		if r.sampling != nil {
-			req.Temperature = r.sampling(meta.Family)
-			return
-		}
 	}
 
-	// Fallback: no registry or no sampling func — default to deterministic (0.0)
+	// Apply sampling function regardless of registry presence.
+	// The sampling func is responsible for handling empty family
+	// (e.g. falling back to a default family or passing through).
+	if r.sampling != nil {
+		req.Temperature = r.sampling(family)
+		return
+	}
+
+	// Fallback: no sampling func — default to deterministic (0.0)
 	temp := 0.0
 	req.Temperature = &temp
 }

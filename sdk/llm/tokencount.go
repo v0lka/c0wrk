@@ -51,6 +51,8 @@ func (c *SimpleTokenCounter) CountMessages(msgs []Message) int {
 }
 
 // TiktokenCounter — accurate token counter using tiktoken-go for OpenAI models.
+// The tiktoken-go library's Encode method is NOT safe for concurrent use
+// (it mutates internal caches), hence the exclusive Lock.
 type TiktokenCounter struct {
 	tkm *tiktoken.Tiktoken
 	mu  sync.RWMutex
@@ -70,8 +72,8 @@ func (c *TiktokenCounter) Count(text string) int {
 	if text == "" {
 		return 0
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	tokens := c.tkm.Encode(text, nil, nil)
 	return len(tokens)
 }

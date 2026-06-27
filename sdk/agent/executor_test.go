@@ -2210,3 +2210,172 @@ func TestExecutor_Run_MultiToolCall_EmptyResultHandled(t *testing.T) {
 		t.Errorf("expected 'result2', got %q", result.Steps[1].Observation)
 	}
 }
+
+// --- compactJSON tests ---
+
+func TestCompactJSON_ValidJSON(t *testing.T) {
+	input := json.RawMessage(`{"a":  1,  "b":  [2,  3]}`)
+	result := compactJSON(input)
+	if strings.Contains(result, "  ") {
+		t.Error("compactJSON should remove extra whitespace")
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Errorf("compactJSON result should be valid JSON: %v", err)
+	}
+}
+
+func TestCompactJSON_InvalidJSON(t *testing.T) {
+	input := json.RawMessage(`not json`)
+	result := compactJSON(input)
+	if result != "not json" {
+		t.Errorf("compactJSON with invalid JSON = %q, want raw fallback", result)
+	}
+}
+
+func TestCompactJSON_EmptyObject(t *testing.T) {
+	input := json.RawMessage(`{}`)
+	result := compactJSON(input)
+	if result != "{}" {
+		t.Errorf("compactJSON({}) = %q, want {}", result)
+	}
+}
+
+func TestCompactJSON_Empty(t *testing.T) {
+	input := json.RawMessage(``)
+	result := compactJSON(input)
+	if result != "" {
+		t.Errorf("compactJSON(empty) = %q, want empty", result)
+	}
+}
+
+// --- formatFragmentationNudge test ---
+
+func TestFormatFragmentationNudge(t *testing.T) {
+	result := formatFragmentationNudge("abc123hash", "read_file", 100)
+	if result == "" {
+		t.Fatal("formatFragmentationNudge returned empty string")
+	}
+	if !strings.Contains(result, "truncated to 100 lines") {
+		t.Error("expected 'truncated to 100 lines' in nudge")
+	}
+	if !strings.Contains(result, "read_file") {
+		t.Error("expected tool name in nudge")
+	}
+	if !strings.Contains(result, "abc123hash") {
+		t.Error("expected hash in nudge")
+	}
+	if !strings.Contains(result, "tool_result_read") {
+		t.Error("expected tool_result_read reference in nudge")
+	}
+}
+
+// --- formatPreCompactionNudge tests ---
+
+func TestFormatPreCompactionNudge(t *testing.T) {
+	vulnerable := []VulnerableOutput{
+		{ToolName: "read_file", InputHint: "/path/to/file.go"},
+		{ToolName: "ripgrep", InputHint: "pattern"},
+		{ToolName: "glob", InputHint: ""},
+	}
+	result := formatPreCompactionNudge(75.5, vulnerable)
+
+	if result == "" {
+		t.Fatal("formatPreCompactionNudge returned empty string")
+	}
+	if !strings.Contains(result, "CONTEXT PRESSURE WARNING") {
+		t.Error("expected warning header in nudge")
+	}
+	if !strings.Contains(result, "read_file") {
+		t.Error("expected read_file in nudge")
+	}
+	if !strings.Contains(result, "/path/to/file.go") {
+		t.Error("expected file hint in nudge")
+	}
+	if !strings.Contains(result, "ripgrep") {
+		t.Error("expected ripgrep in nudge")
+	}
+	if !strings.Contains(result, "glob") {
+		t.Error("expected glob in nudge")
+	}
+	if !strings.Contains(result, "store_fact") {
+		t.Error("expected store_fact reference in nudge")
+	}
+}
+
+func TestFormatPreCompactionNudge_Empty(t *testing.T) {
+	result := formatPreCompactionNudge(0.0, nil)
+	if result == "" {
+		t.Fatal("formatPreCompactionNudge with empty input returned empty string")
+	}
+	if !strings.Contains(result, "CONTEXT PRESSURE WARNING") {
+		t.Error("expected warning header even with empty vulnerable list")
+	}
+}
+
+// --- isPathWithinWorkspace tests ---
+
+func TestIsPathWithinWorkspace_Positive(t *testing.T) {
+	if !isPathWithinWorkspace("/home/user/project/src/main.go", "/home/user/project") {
+		t.Error("path within workspace should return true")
+	}
+	if !isPathWithinWorkspace("/home/user/project", "/home/user/project") {
+		t.Error("exact workspace root should return true")
+	}
+	if !isPathWithinWorkspace("/home/user/project/sub/deep/file.txt", "/home/user/project") {
+		t.Error("deep path within workspace should return true")
+	}
+}
+
+func TestIsPathWithinWorkspace_Negative(t *testing.T) {
+	if isPathWithinWorkspace("/etc/passwd", "/home/user/project") {
+		t.Error("path outside workspace should return false")
+	}
+	if isPathWithinWorkspace("/home/user/other", "/home/user/project") {
+		t.Error("sibling directory should return false")
+	}
+	if isPathWithinWorkspace("/home/user/projectsuffix", "/home/user/project") {
+		t.Error("path with shared prefix but not within workspace should return false")
+	}
+}
+
+func TestIsPathWithinWorkspace_DirtyPaths(t *testing.T) {
+	if !isPathWithinWorkspace("/home/user/project/src/../lib/main.go", "/home/user/project") {
+		t.Error("cleaned path within workspace should return true")
+	}
+	if isPathWithinWorkspace("/home/user/project/../../etc/passwd", "/home/user/project") {
+		t.Error("cleaned path escaping workspace should return false")
+	}
+}
+
+// TestCheckRepeatIdenticalTool_ZeroThresholds verifies that zero-valued
+// RepeatNudgeThreshold and RepeatAbortThreshold do not cause integer underflow
+// when the previous tool call produced an error.
+func TestCheckRepeatIdenticalTool_ZeroThresholds(t *testing.T) {
+	cfg := CircuitBreakerConfig{
+		RepeatNudgeThreshold:     0,
+		RepeatAbortThreshold:     0,
+		TruncationAbortThreshold: 3,
+		ParseErrorAbortThreshold: 3,
+	}
+	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+
+	// Simulate two consecutive identical tool calls where the first produced an error.
+	action := llm.ToolCall{Name: "bad_tool", Input: json.RawMessage(`{"x":1}`)}
+	ctx := context.Background()
+	cw := newMockContextManager()
+
+	// First call: set up as if previous call was the same and produced an error.
+	exec.lastToolKey = "bad_tool:" + compactJSON(action.Input)
+	exec.lastToolResultIsError = true
+	exec.consecutiveRepeatCount = 2
+
+	loopAct, result, err := exec.checkRepeatIdenticalTool(ctx, action, 1, "thought", nil, &runState{}, cw)
+	// Should not panic. With zero thresholds, the count (2) >= 0 (abortThreshold),
+	// so the circuit breaker should abort.
+	if err != nil {
+		t.Logf("checkRepeatIdenticalTool returned error (expected abort): %v", err)
+	}
+	_ = loopAct
+	_ = result
+}

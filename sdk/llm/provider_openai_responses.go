@@ -33,24 +33,24 @@ func newResponsesClient(apiKey, baseURL string, httpClient *http.Client) *oai.Cl
 }
 
 // responsesAPICompletion performs a non-streaming Responses API call.
-func responsesAPICompletion(ctx context.Context, client *oai.Client, req ChatRequest) (*ChatResponse, error) {
+func responsesAPICompletion(ctx context.Context, client *oai.Client, providerName string, req ChatRequest) (*ChatResponse, error) {
 	params := buildResponsesParams(req)
 
 	resp, err := client.Responses.New(ctx, params)
 	if err != nil {
-		return nil, wrapResponsesError("openai", err)
+		return nil, wrapResponsesError(providerName, err)
 	}
 
 	return convertResponsesResponse(resp)
 }
 
 // responsesAPIStream performs a streaming Responses API call.
-func responsesAPIStream(ctx context.Context, client *oai.Client, req ChatRequest) (<-chan ChatChunk, error) {
+func responsesAPIStream(ctx context.Context, client *oai.Client, providerName string, req ChatRequest) (<-chan ChatChunk, error) {
 	params := buildResponsesParams(req)
 
 	stream := client.Responses.NewStreaming(ctx, params)
 
-	chunks := make(chan ChatChunk)
+	chunks := make(chan ChatChunk, 64)
 
 	go func() {
 		defer close(chunks)

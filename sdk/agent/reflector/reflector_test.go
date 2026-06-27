@@ -362,3 +362,19 @@ func TestReflector_NoReasoningEffortWhenEmpty(t *testing.T) {
 		t.Errorf("expected empty ReasoningEffort, got %q", got)
 	}
 }
+
+func TestReflector_NilResponse(t *testing.T) {
+	mock := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return nil, nil
+		},
+	}
+	r := newTestReflector(mock)
+	_, err := r.Reflect(context.Background(), nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for nil response")
+	}
+	if !strings.Contains(err.Error(), "nil response") {
+		t.Errorf("expected 'nil response' in error, got: %v", err)
+	}
+}

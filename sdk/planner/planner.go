@@ -70,7 +70,11 @@ type Planner struct {
 }
 
 // NewPlanner creates a new Planner with the given LLM caller and configuration.
+// Returns nil if caller is nil (required dependency).
 func NewPlanner(caller agent.LLMCaller, cfg Config) *Planner {
+	if caller == nil {
+		return nil
+	}
 	if cfg.MaxExploreSteps <= 0 {
 		cfg.MaxExploreSteps = defaultMaxExploreSteps
 	}
@@ -491,7 +495,7 @@ func (p *Planner) buildSystemPromptFromMode(
 
 	result := prompt.NewBuilder().
 		Core(baseTemplate).
-		Core(p.Cfg.Prompts.FamilyPrompt("planner", p.getFamily(ctx))).
+		Core(p.familyPrompt(ctx)).
 		Core(p.Cfg.Prompts.VerificationMandate).
 		CacheBreak().
 		ReplaceAll(substitutions).
@@ -567,7 +571,7 @@ func (p *Planner) buildReplanSystemPrompt(ctx context.Context, rc replanContext)
 
 	result := prompt.NewBuilder().
 		Core(p.Cfg.Prompts.ReplanPrompt).
-		Core(p.Cfg.Prompts.FamilyPrompt("planner", p.getFamily(ctx))).
+		Core(p.familyPrompt(ctx)).
 		Core(p.Cfg.Prompts.VerificationMandate).
 		CacheBreak().
 		ReplaceAll(substitutions).
@@ -735,8 +739,21 @@ func formatSessionReflections(reflections []orchestration.Reflection) string {
 	return prb.String()
 }
 
+// familyPrompt returns the family-specific prompt or the base prompt as fallback.
+// Guards against nil FamilyPrompt function pointer.
+func (p *Planner) familyPrompt(ctx context.Context) string {
+	if p.Cfg.Prompts.FamilyPrompt == nil {
+		return ""
+	}
+	return p.Cfg.Prompts.FamilyPrompt("planner", p.getFamily(ctx))
+}
+
 // FindTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
+// Returns nil for a nil plan.
 func FindTerminalSteps(plan *orchestration.Plan) []string {
+	if plan == nil {
+		return nil
+	}
 	dependedOn := make(map[string]bool)
 	for _, step := range plan.Steps {
 		for _, dep := range step.DependsOn {

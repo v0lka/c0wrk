@@ -10,6 +10,9 @@ import (
 // FindReadySteps returns plan steps whose dependencies are all completed successfully.
 // Steps with failed dependencies or already-completed steps are not included.
 func FindReadySteps(plan *Plan, completed map[string]CompletedStep) []PlanStep {
+	if plan == nil {
+		return nil
+	}
 	ready := []PlanStep{}
 	for _, step := range plan.Steps {
 		// Skip if already completed
@@ -41,6 +44,9 @@ func FindReadySteps(plan *Plan, completed map[string]CompletedStep) []PlanStep {
 // ensuring that a replanned step invalidates all its downstream dependents.
 // Returns nil if no steps can be preserved (triggering full re-execution).
 func BuildCarryForward(completed []CompletedStep, newPlan *Plan) map[string]CompletedStep {
+	if newPlan == nil {
+		return nil
+	}
 	newStepIDs := make(map[string]bool, len(newPlan.Steps))
 	for _, s := range newPlan.Steps {
 		newStepIDs[s.ID] = true
@@ -87,6 +93,9 @@ func BuildCarryForward(completed []CompletedStep, newPlan *Plan) map[string]Comp
 // used directly so the evaluator sees real evidence. Otherwise, a fallback
 // summary step is created from the completion output.
 func BuildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []agent.Step {
+	if plan == nil {
+		return nil
+	}
 	// Build a map from step ID to plan step description
 	stepDescriptions := make(map[string]string)
 	for _, ps := range plan.Steps {
@@ -121,6 +130,9 @@ func BuildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []agent.
 // previous turn's blackboard; these are excluded from output aggregation so that
 // continuation messages only return newly produced output.
 func AggregateOutput(completedSteps map[string]CompletedStep, plan *Plan, preCompletedIDs map[string]bool) string {
+	if plan == nil {
+		return ""
+	}
 	// Find terminal steps (steps that no other step depends on)
 	dependedUpon := make(map[string]bool)
 	for _, step := range plan.Steps {

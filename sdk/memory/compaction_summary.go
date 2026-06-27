@@ -8,6 +8,7 @@ import (
 
 	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/strutil"
 )
 
 // SummarizationStrategy groups the oldest steps into blocks and uses an LLM
@@ -142,7 +143,7 @@ func (s *SummarizationStrategy) buildBlockText(steps []sdkagent.Step) string {
 			// Truncate long observations
 			obs := step.Observation
 			if len(obs) > s.observationTruncate {
-				obs = obs[:s.observationTruncate] + "..."
+				obs = strutil.TruncateUTF8(obs, s.observationTruncate) + "..."
 			}
 			stepText += fmt.Sprintf("  Observation: %s\n", obs)
 		}
