@@ -156,8 +156,6 @@ export interface ModelInfo {
 export interface ConfigLLMResponse {
   default_model: string  // single, global, cross-provider
   anthropic: ConfigProviderFull
-  gemini: ConfigProviderFull
-  lmstudio: ConfigProviderFull
   openai_compatible: ConfigProviderFull
   chatgpt: ConfigProviderFull
   all_models: ModelInfo[]
@@ -187,8 +185,6 @@ export interface ProviderConfigRequest {
 export interface LLMFullConfigRequest {
   default_model?: string
   anthropic?: ProviderConfigRequest
-  gemini?: ProviderConfigRequest
-  lmstudio?: ProviderConfigRequest
   openai_compatible?: ProviderConfigRequest
   chatgpt?: ProviderConfigRequest
 }

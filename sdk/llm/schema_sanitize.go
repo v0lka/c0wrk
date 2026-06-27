@@ -2,128 +2,9 @@ package llm
 
 import (
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"sort"
 )
-
-// SanitizeSchemaForGemini normalizes JSON Schema for Gemini API compatibility.
-// Gemini has specific requirements:
-//   - Enum values must be strings (integer/number enums are converted)
-//   - properties and required fields must not exist on non-object types
-//   - Array items must have explicit type field
-//   - Unsupported keywords ($schema, $id, $ref, $comment) are removed
-func SanitizeSchemaForGemini(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
-		return raw
-	}
-
-	var schema map[string]any
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		// If parsing fails, return original unchanged
-		return raw
-	}
-
-	sanitized := sanitizeGeminiSchema(schema)
-	result, err := json.Marshal(sanitized)
-	if err != nil {
-		return raw
-	}
-	return result
-}
-
-// sanitizeGeminiSchema recursively processes a schema map for Gemini compatibility.
-func sanitizeGeminiSchema(schema map[string]any) map[string]any {
-	if schema == nil {
-		return nil
-	}
-
-	result := make(map[string]any)
-
-	// Remove unsupported JSON Schema keywords
-	for key, value := range schema {
-		switch key {
-		case "$schema", "$id", "$ref", "$comment":
-			// Skip unsupported keywords
-			continue
-		default:
-			result[key] = value
-		}
-	}
-
-	// Get the type(s)
-	typeVal, hasType := result["type"]
-	types := getTypes(typeVal)
-	isObjectType := len(types) == 1 && types[0] == "object"
-
-	// Convert integer/number enum values to strings
-	if enumVal, ok := result["enum"]; ok {
-		result["enum"] = convertEnumToStrings(enumVal)
-	}
-
-	// Strip properties and required from non-object types
-	if hasType && !isObjectType {
-		delete(result, "properties")
-		delete(result, "required")
-	}
-
-	// Process nested objects in properties
-	if props, ok := result["properties"].(map[string]any); ok {
-		newProps := make(map[string]any)
-		for propName, propVal := range props {
-			if propMap, ok := propVal.(map[string]any); ok {
-				newProps[propName] = sanitizeGeminiSchema(propMap)
-			} else {
-				newProps[propName] = propVal
-			}
-		}
-		result["properties"] = newProps
-	}
-
-	// Process items for array type
-	if items, ok := result["items"]; ok {
-		switch v := items.(type) {
-		case map[string]any:
-			// Ensure items has explicit type
-			if _, hasItemsType := v["type"]; !hasItemsType {
-				// Default to "object" if no type specified
-				v["type"] = "object"
-			}
-			result["items"] = sanitizeGeminiSchema(v)
-		case []any:
-			// Tuple items - process each
-			newItems := make([]any, len(v))
-			for i, item := range v {
-				if itemMap, ok := item.(map[string]any); ok {
-					if _, hasItemsType := itemMap["type"]; !hasItemsType {
-						itemMap["type"] = "object"
-					}
-					newItems[i] = sanitizeGeminiSchema(itemMap)
-				} else {
-					newItems[i] = item
-				}
-			}
-			result["items"] = newItems
-		}
-	}
-
-	// Process anyOf, oneOf, allOf recursively
-	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-		if arr, ok := result[key].([]any); ok {
-			newArr := make([]any, len(arr))
-			for i, item := range arr {
-				if itemMap, ok := item.(map[string]any); ok {
-					newArr[i] = sanitizeGeminiSchema(itemMap)
-				} else {
-					newArr[i] = item
-				}
-			}
-			result[key] = newArr
-		}
-	}
-
-	return result
-}
 
 // getTypes extracts type values as a slice of strings.
 func getTypes(typeVal any) []string {
@@ -145,28 +26,6 @@ func getTypes(typeVal any) []string {
 	default:
 		return nil
 	}
-}
-
-// convertEnumToStrings converts enum values to strings if they are numbers.
-// Although json.Unmarshal produces float64 for all JSON numbers, intermediate
-// transforms (e.g., Gemini sanitization, anyOf flattening) may produce other
-// numeric types. The broad type switch provides defense-in-depth.
-func convertEnumToStrings(enumVal any) []any {
-	arr, ok := enumVal.([]any)
-	if !ok {
-		return []any{enumVal}
-	}
-
-	result := make([]any, len(arr))
-	for i, val := range arr {
-		switch val.(type) {
-		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			result[i] = fmt.Sprintf("%v", val)
-		default:
-			result[i] = val
-		}
-	}
-	return result
 }
 
 // SanitizeSchemaForOpenAI ensures strict mode compliance for OpenAI.

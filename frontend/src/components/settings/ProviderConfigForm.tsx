@@ -27,12 +27,12 @@ export function ProviderConfigForm({
   onConfigChange,
   onApply,
 }: ProviderConfigFormProps) {
-  const showBaseUrl = activeProvider === 'lmstudio' || activeProvider === 'openai_compatible'
-  const showApiKey = activeProvider !== 'lmstudio'
+  const showBaseUrl = activeProvider === 'openai_compatible'
+  const showApiKey = true
 
   return (
     <>
-      {/* Base URL - for LM Studio and OpenAI Compatible */}
+      {/* Base URL - for OpenAI Compatible */}
       {showBaseUrl && (
         <div className="flex flex-col gap-2">
           <label className="text-xs text-muted-foreground">Base URL</label>
@@ -43,16 +43,11 @@ export function ProviderConfigForm({
               onChange={(e) => onConfigChange({ base_url: e.target.value })}
               className="h-9 text-sm flex-1"
             />
-            {activeProvider === 'lmstudio' && apiKeyDirty && hasRequiredCredentials && (
-              <Button size="sm" onClick={onApply} disabled={modelsLoading}>
-                {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Apply'}
-              </Button>
-            )}
           </div>
         </div>
       )}
 
-      {/* API Key - for all except LM Studio */}
+      {/* API Key */}
       {showApiKey && (
         <div className="flex flex-col gap-2">
           <label className="text-xs text-muted-foreground">API Key</label>

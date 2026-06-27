@@ -137,25 +137,3 @@ func TestSanitizeSchema_NestedRef(t *testing.T) {
 		t.Errorf("Expected type object, got %v", m["type"])
 	}
 }
-
-func TestConvertEnumToStrings_FloatEnum(t *testing.T) {
-	result := convertEnumToStrings([]any{1.0, 2.0, 3.0})
-	for i, v := range result {
-		s, ok := v.(string)
-		if !ok {
-			t.Errorf("enum[%d] = %T, want string", i, v)
-		}
-		if i == 0 && s != "1" {
-			t.Errorf("enum[0] = %q, want \"1\"", s)
-		}
-	}
-}
-
-func TestConvertEnumToStrings_StringEnum(t *testing.T) {
-	result := convertEnumToStrings([]any{"a", "b", "c"})
-	for i, v := range result {
-		if s, ok := v.(string); !ok || s != string(rune('a'+i)) {
-			t.Errorf("enum[%d] = %v, want %q", i, v, string(rune('a'+i)))
-		}
-	}
-}

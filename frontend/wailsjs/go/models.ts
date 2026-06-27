@@ -221,8 +221,6 @@ export namespace backend {
 	export class ConfigLLMResponse {
 	    default_model: string;
 	    anthropic: ConfigProviderFull;
-	    gemini: ConfigProviderFull;
-	    lmstudio: ConfigProviderFull;
 	    openai_compatible: ConfigProviderFull;
 	    chatgpt: ConfigProviderFull;
 	    all_models: ModelInfo[];
@@ -236,8 +234,6 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.default_model = source["default_model"];
 	        this.anthropic = this.convertValues(source["anthropic"], ConfigProviderFull);
-	        this.gemini = this.convertValues(source["gemini"], ConfigProviderFull);
-	        this.lmstudio = this.convertValues(source["lmstudio"], ConfigProviderFull);
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ConfigProviderFull);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderFull);
 	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
@@ -350,6 +346,18 @@ export namespace backend {
 	        this.icon_color = source["icon_color"];
 	    }
 	}
+	export class FrontendAPILifecycle {
+	
+	
+	    static createFrom(source: any = {}) {
+	        return new FrontendAPILifecycle(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	
+	    }
+	}
 	export class ProviderConfigRequest {
 	    api_key?: string;
 	    base_url?: string;
@@ -369,8 +377,6 @@ export namespace backend {
 	export class LLMFullConfigRequest {
 	    default_model: string;
 	    anthropic?: ProviderConfigRequest;
-	    gemini?: ProviderConfigRequest;
-	    lmstudio?: ProviderConfigRequest;
 	    openai_compatible?: ProviderConfigRequest;
 	    chatgpt?: ProviderConfigRequest;
 	
@@ -382,8 +388,6 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.default_model = source["default_model"];
 	        this.anthropic = this.convertValues(source["anthropic"], ProviderConfigRequest);
-	        this.gemini = this.convertValues(source["gemini"], ProviderConfigRequest);
-	        this.lmstudio = this.convertValues(source["lmstudio"], ProviderConfigRequest);
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ProviderConfigRequest);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ProviderConfigRequest);
 	    }
@@ -810,23 +814,6 @@ export namespace session {
 	        this.session_id = source["session_id"];
 	        this.command = source["command"];
 	        this.created_at = source["created_at"];
-	    }
-	}
-
-}
-
-export namespace vectorindex {
-	
-	export class Manager {
-	
-	
-	    static createFrom(source: any = {}) {
-	        return new Manager(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	
 	    }
 	}
 

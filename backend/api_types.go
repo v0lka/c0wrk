@@ -34,8 +34,6 @@ type ModelInfo struct {
 type ConfigLLMResponse struct {
 	DefaultModel     string             `json:"default_model"` // global, cross-provider
 	Anthropic        ConfigProviderFull `json:"anthropic"`
-	Gemini           ConfigProviderFull `json:"gemini"`
-	LMStudio         ConfigProviderFull `json:"lmstudio"`
 	OpenAICompatible ConfigProviderFull `json:"openai_compatible"`
 	ChatGPT          ConfigProviderFull `json:"chatgpt"`
 	AllModels        []ModelInfo        `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
@@ -65,8 +63,6 @@ type LLMSettingsRequest struct {
 type LLMFullConfigRequest struct {
 	DefaultModel     string                 `json:"default_model"`
 	Anthropic        *ProviderConfigRequest `json:"anthropic,omitempty"`
-	Gemini           *ProviderConfigRequest `json:"gemini,omitempty"`
-	LMStudio         *ProviderConfigRequest `json:"lmstudio,omitempty"`
 	OpenAICompatible *ProviderConfigRequest `json:"openai_compatible,omitempty"`
 	ChatGPT          *ProviderConfigRequest `json:"chatgpt,omitempty"`
 }

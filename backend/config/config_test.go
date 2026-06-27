@@ -194,11 +194,6 @@ llm:
 		t.Errorf("Expected edit_file policy 'user_confirm', got %q", editFilePolicy.Policy)
 	}
 
-	// Check LMStudio default base URL
-	if cfg.LLM.LMStudio.BaseURL != "http://localhost:1234" {
-		t.Errorf("Expected default lmstudio base_url 'http://localhost:1234', got %q", cfg.LLM.LMStudio.BaseURL)
-	}
-
 	// Check LLM retry defaults
 	if cfg.LLM.Retry.MaxRetries != 3 {
 		t.Errorf("Expected default llm.retry.max_retries 3, got %d", cfg.LLM.Retry.MaxRetries)
@@ -271,19 +266,11 @@ func TestGetAllProviderConfigs(t *testing.T) {
 			APIKey: "anthropic-key",
 			Models: []string{"claude-3-haiku", "claude-opus"},
 		},
-		Gemini: GeminiConfig{
-			APIKey: "gemini-key",
-			Models: []string{"gemini-pro"},
-		},
-		LMStudio: LMStudioConfig{
-			BaseURL: "http://localhost:1234",
-			Models:  []string{},
-		},
 	}
 
 	providers := cfg.GetAllProviderConfigs()
-	if len(providers) != 5 {
-		t.Fatalf("Expected 5 providers (all known), got %d", len(providers))
+	if len(providers) != 3 {
+		t.Fatalf("Expected 3 providers (all known), got %d", len(providers))
 	}
 
 	// Check first provider
@@ -298,8 +285,8 @@ func TestGetAllProviderConfigs(t *testing.T) {
 	}
 
 	// Check second provider
-	if providers[1].Name != "gemini" {
-		t.Errorf("Second provider name = %q, want 'gemini'", providers[1].Name)
+	if providers[1].Name != "openai_compatible" {
+		t.Errorf("Second provider name = %q, want 'openai_compatible'", providers[1].Name)
 	}
 }
 
@@ -327,20 +314,6 @@ func TestResolveDefaultModelProvider(t *testing.T) {
 			wantProvType: "anthropic",
 			wantAPIKey:   "anthropic-key",
 			wantModel:    "claude-3-haiku",
-		},
-		{
-			name: "gemini",
-			config: LLMConfig{
-				DefaultModel: "gemini-pro",
-				Gemini: GeminiConfig{
-					APIKey: "gemini-key",
-					Models: []string{"gemini-pro"},
-				},
-			},
-			wantName:     "gemini",
-			wantProvType: "gemini",
-			wantAPIKey:   "gemini-key",
-			wantModel:    "gemini-pro",
 		},
 		{
 			name: "chatgpt",

@@ -21,15 +21,6 @@ llm:
     models:
       - "claude-sonnet-4-20250514"
 
-  gemini:
-    api_key: "${GEMINI_API_KEY}"
-    models: []
-
-  lmstudio:
-    api_key: ""
-    base_url: "http://localhost:1234"
-    models: []
-
   openai_compatible:
     api_key: "${OPENAI_API_KEY}"
     base_url: ""

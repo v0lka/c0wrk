@@ -175,8 +175,6 @@ func TestUpdateLLMConfig_PerProviderFields(t *testing.T) {
 		provider string
 		req      LLMFullConfigRequest
 	}{
-		{"gemini", LLMFullConfigRequest{Gemini: &ProviderConfigRequest{Models: []string{"test-model"}}}},
-		{"lmstudio", LLMFullConfigRequest{LMStudio: &ProviderConfigRequest{Models: []string{"test-model"}}}},
 		{"openai_compatible", LLMFullConfigRequest{OpenAICompatible: &ProviderConfigRequest{Models: []string{"test-model"}}}},
 		{"chatgpt", LLMFullConfigRequest{ChatGPT: &ProviderConfigRequest{Models: []string{"test-model"}}}},
 	}

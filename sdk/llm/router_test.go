@@ -464,11 +464,11 @@ func TestRouter_Call_SkipsTemperatureForReasoningModels(t *testing.T) {
 }
 
 func TestNewRouter(t *testing.T) {
-	// Test with lmstudio provider (doesn't require external services)
-	t.Run("lmstudio provider", func(t *testing.T) {
+	// Test with openai provider (doesn't require external services)
+	t.Run("openai provider", func(t *testing.T) {
 		cfg := RouterConfig{
 			Providers: []ProviderEntry{
-				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+				{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
 			},
 			MaxRetries:     2,
 			InitialBackoff: 100 * time.Millisecond,
@@ -496,11 +496,11 @@ func TestNewRouter(t *testing.T) {
 		}
 	})
 
-	// Test with lmstudio provider and model registry
-	t.Run("lmstudio with registry", func(t *testing.T) {
+	// Test with openai provider and model registry
+	t.Run("openai with registry", func(t *testing.T) {
 		cfg := RouterConfig{
 			Providers: []ProviderEntry{
-				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+				{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
 			},
 			MaxRetries:     1,
 			InitialBackoff: 50 * time.Millisecond,
@@ -515,10 +515,6 @@ func TestNewRouter(t *testing.T) {
 		if router == nil {
 			t.Fatal("expected non-nil router")
 		}
-		// LM Studio provider should have been registered as metadata source
-		if len(registry.sources) == 0 {
-			t.Error("expected metadata source to be registered")
-		}
 	})
 
 	// Test with no active provider
@@ -530,11 +526,29 @@ func TestNewRouter(t *testing.T) {
 		}
 	})
 
-	// Test with zero backoff durations (should use defaults)
+	// Test with openai provider (no key = ok, openai doesn't validate key at creation)
+	t.Run("openai provider without key", func(t *testing.T) {
+		cfg := RouterConfig{
+			Providers: []ProviderEntry{
+				{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+			},
+			MaxRetries:     0,
+		}
+
+		router, err := NewRouter(context.Background(), cfg, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if router.maxRetries != 3 {
+			t.Errorf("expected default maxRetries 3, got %d", router.maxRetries)
+		}
+	})
+
+	// Test with openai provider and zero backoff
 	t.Run("zero backoff durations use defaults", func(t *testing.T) {
 		cfg := RouterConfig{
 			Providers: []ProviderEntry{
-				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
+				{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
 			},
 			InitialBackoff: 0,
 			MaxBackoff:     0,
@@ -550,26 +564,6 @@ func TestNewRouter(t *testing.T) {
 		}
 		if router.maxBackoff != 30*time.Second {
 			t.Errorf("expected default maxBackoff 30s, got %v", router.maxBackoff)
-		}
-	})
-
-	// Test that zero MaxRetries falls back to a non-zero default so transient
-	// errors (HTTP 429/502/503/529) are retried automatically when the caller
-	// hasn't configured retries explicitly.
-	t.Run("zero max retries uses default", func(t *testing.T) {
-		cfg := RouterConfig{
-			Providers: []ProviderEntry{
-				{Name: "lmstudio", ProviderType: "lmstudio", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
-			},
-			MaxRetries:     0,
-		}
-
-		router, err := NewRouter(context.Background(), cfg, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if router.maxRetries != 3 {
-			t.Errorf("expected default maxRetries 3, got %d", router.maxRetries)
 		}
 	})
 
@@ -598,8 +592,8 @@ func TestCreateProviderFromConfig(t *testing.T) {
 		wantName string
 	}{
 		{
-			name:     "lmstudio provider",
-			provType: "lmstudio",
+			name:     "openai provider",
+			provType: "openai",
 			apiKey:   "test-key",
 			baseURL:  "http://localhost:1234",
 			wantErr:  false,

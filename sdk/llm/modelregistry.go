@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -408,7 +407,8 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 
-		// Google Gemini models
+		// Google Gemini models — accessed via the openai_compatible provider
+		// (Google's Gemini API supports the OpenAI /v1/chat/completions protocol).
 		"gemini-3.1-pro": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
@@ -611,19 +611,6 @@ func BuiltInModelNames(tokenizerType string) []string {
 	names := []string{}
 	for name, meta := range registry {
 		if tokenizerType == "" || meta.TokenizerType == tokenizerType {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	return names
-}
-
-// BuiltInModelNamesByPrefix returns model names that start with the given prefix.
-func BuiltInModelNamesByPrefix(prefix string) []string {
-	registry := getBuiltInRegistry()
-	names := []string{}
-	for name := range registry {
-		if strings.HasPrefix(name, prefix) {
 			names = append(names, name)
 		}
 	}

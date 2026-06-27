@@ -170,11 +170,6 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Models = make(map[string]ModelOverride)
 	}
 
-	// LMStudio default base URL
-	if cfg.LLM.LMStudio.BaseURL == "" {
-		cfg.LLM.LMStudio.BaseURL = "http://localhost:1234"
-	}
-
 	// Router defaults
 	if cfg.Router.HistoryWindow == 0 {
 		cfg.Router.HistoryWindow = 10

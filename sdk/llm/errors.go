@@ -10,7 +10,7 @@ import (
 
 // Error wraps provider errors with classification metadata.
 type Error struct {
-	Provider   string // e.g. "openai", "anthropic", "gemini", "lmstudio"
+	Provider   string // e.g. "openai", "anthropic"
 	StatusCode int    // HTTP status code (0 if not applicable, e.g. network error)
 	Retryable  bool   // whether this error is safe to retry
 	Err        error  // the original underlying error

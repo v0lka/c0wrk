@@ -105,7 +105,7 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 		LLM: BuilderLLMConfig{
 			DefaultModel: "local-model",
 			ProviderConfigs: map[string]BuilderProviderConfig{
-				"lmstudio": {ProviderType: "lmstudio", Models: []string{"local-model"}},
+				"openai": {ProviderType: "openai", Models: []string{"local-model"}},
 			},
 			Retry: BuilderRetryConfig{MaxRetries: 1, InitialBackoff: "1s", MaxBackoff: "10s"},
 		},

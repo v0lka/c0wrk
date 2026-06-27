@@ -36,8 +36,8 @@ type RouterConfig struct {
 
 // ProviderEntry describes a single LLM provider with its enabled models.
 type ProviderEntry struct {
-	Name         string   // logical name ("anthropic", "gemini", …)
-	ProviderType string   // provider type: "openai", "lmstudio", "anthropic", "gemini"
+	Name         string   // logical name ("anthropic", "openai_compatible", …)
+	ProviderType string   // provider type: "openai", "anthropic"
 	APIKey       string   // already-expanded API key
 	BaseURL      string   // already-expanded base URL
 	Models       []string // enabled model names for this provider
@@ -69,7 +69,7 @@ type Router struct {
 // NewRouter creates a new Router from the given configuration.
 // The caller is responsible for resolving provider config, expanding env vars,
 // and parsing durations before calling this function.
-// If registry is provided, LM Studio providers will register their metadata sources.
+// If registry is provided, providers may register their metadata sources.
 func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (*Router, error) {
 	if len(cfg.Providers) == 0 {
 		return nil, errors.New("no providers configured")
@@ -87,16 +87,6 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 			return nil, fmt.Errorf("failed to create provider %q: %w", entry.Name, err)
 		}
 		providers[entry.Name] = provider
-
-		// Register LM Studio / Gemini providers as metadata sources
-		if registry != nil {
-			if lms, ok := provider.(*LMStudioProvider); ok {
-				registry.RegisterSource(lms.MetadataSource())
-			}
-			if gp, ok := provider.(*GeminiProvider); ok {
-				registry.RegisterSource(gp.MetadataSource())
-			}
-		}
 
 		// Build reverse index: model name → provider name
 		for _, m := range entry.Models {
@@ -167,22 +157,8 @@ func createProviderFromConfig(ctx context.Context, provType, apiKey, baseURL str
 			HTTPClient: httpClient,
 		})
 
-	case "lmstudio":
-		return NewLMStudioProvider(LMStudioProviderConfig{
-			Name:       "lmstudio",
-			APIKey:     apiKey,
-			BaseURL:    baseURL,
-			HTTPClient: httpClient,
-		})
-
 	case "anthropic":
 		return NewAnthropicProvider(AnthropicProviderConfig{
-			APIKey:     apiKey,
-			HTTPClient: httpClient,
-		})
-
-	case "gemini":
-		return NewGeminiProvider(ctx, GeminiProviderConfig{
 			APIKey:     apiKey,
 			HTTPClient: httpClient,
 		})

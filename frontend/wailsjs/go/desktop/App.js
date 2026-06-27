@@ -18,10 +18,6 @@ export function CancelUnfinishedTask(arg1) {
   return window['go']['desktop']['App']['CancelUnfinishedTask'](arg1);
 }
 
-export function Cleanup() {
-  return window['go']['desktop']['App']['Cleanup']();
-}
-
 export function CreateProject(arg1, arg2) {
   return window['go']['desktop']['App']['CreateProject'](arg1, arg2);
 }
@@ -110,6 +106,10 @@ export function GetVectorIndexStatus() {
   return window['go']['desktop']['App']['GetVectorIndexStatus']();
 }
 
+export function Lifecycle() {
+  return window['go']['desktop']['App']['Lifecycle']();
+}
+
 export function ListDirectory(arg1, arg2) {
   return window['go']['desktop']['App']['ListDirectory'](arg1, arg2);
 }
@@ -174,16 +174,8 @@ export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
-export function SetConfigLoadState(arg1) {
-  return window['go']['desktop']['App']['SetConfigLoadState'](arg1);
-}
-
 export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
-}
-
-export function SetVectorManager(arg1) {
-  return window['go']['desktop']['App']['SetVectorManager'](arg1);
 }
 
 export function StartTerminal(arg1) {

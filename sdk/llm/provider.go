@@ -18,6 +18,6 @@ type Provider interface {
 	// StreamChatCompletion sends a request and returns a channel of streaming chunks.
 	StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error)
 
-	// Name returns the provider name for logging (e.g., "openai", "anthropic", "gemini").
+	// Name returns the provider name for logging (e.g., "openai", "anthropic").
 	Name() string
 }

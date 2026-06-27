@@ -579,8 +579,6 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 	switch provider {
 	case "anthropic":
 		return llm.BuiltInModelNames("anthropic-api"), nil
-	case "gemini":
-		return llm.BuiltInModelNamesByPrefix("gemini-"), nil
 	case "chatgpt":
 		pc, ok := cfg.LLM.ProviderConfigs["chatgpt"]
 		if !ok {
@@ -606,17 +604,6 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 			return nil, errors.New("openAI compatible base URL not configured")
 		}
 		return listOpenAIModels(ctx, baseURL, apiKey)
-	case "lmstudio":
-		pc, ok := cfg.LLM.ProviderConfigs["lmstudio"]
-		baseURL := "http://localhost:1234"
-		apiKey := ""
-		if ok {
-			if u := cfg.ExpandEnvVars(pc.BaseURL); u != "" {
-				baseURL = u
-			}
-			apiKey = cfg.ExpandEnvVars(pc.APIKey)
-		}
-		return listLMStudioModels(ctx, baseURL, apiKey)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -779,7 +766,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Iterate in a deterministic order (matching backend/config allProviderEntries)
 	// to ensure the first provider in the list is predictable.
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
-	providerOrder := []string{"anthropic", "gemini", "lmstudio", "openai_compatible", "chatgpt"}
+	providerOrder := []string{"anthropic", "openai_compatible", "chatgpt"}
 	for _, name := range providerOrder {
 		pc, ok := cfg.LLM.ProviderConfigs[name]
 		if !ok || len(pc.Models) == 0 {
@@ -1166,32 +1153,6 @@ func listOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, er
 
 	names := make([]string, 0, len(modelList.Data))
 	for _, m := range modelList.Data {
-		names = append(names, m.ID)
-	}
-	sort.Strings(names)
-	return names, nil
-}
-
-// listLMStudioModels fetches model names from an LM Studio server.
-func listLMStudioModels(ctx context.Context, baseURL, apiKey string) ([]string, error) {
-	provider, err := llm.NewLMStudioProvider(llm.LMStudioProviderConfig{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create LM Studio provider: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	models, err := provider.ListModels(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list models: %w", err)
-	}
-
-	names := make([]string, 0, len(models))
-	for _, m := range models {
 		names = append(names, m.ID)
 	}
 	sort.Strings(names)

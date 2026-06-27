@@ -35,15 +35,6 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 				APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
 				Models: f.config.LLM.Anthropic.Models,
 			},
-			Gemini: ConfigProviderFull{
-				APIKey: maskAPIKey(f.config.LLM.Gemini.APIKey),
-				Models: f.config.LLM.Gemini.Models,
-			},
-			LMStudio: ConfigProviderFull{
-				APIKey:  maskAPIKey(f.config.LLM.LMStudio.APIKey),
-				BaseURL: f.config.LLM.LMStudio.BaseURL,
-				Models:  f.config.LLM.LMStudio.Models,
-			},
 			OpenAICompatible: ConfigProviderFull{
 				APIKey:  maskAPIKey(f.config.LLM.OpenAICompatible.APIKey),
 				BaseURL: f.config.LLM.OpenAICompatible.BaseURL,
@@ -82,8 +73,6 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 		models []string
 	}{
 		{f.config.LLM.Anthropic.Models},
-		{f.config.LLM.Gemini.Models},
-		{f.config.LLM.LMStudio.Models},
 		{f.config.LLM.OpenAICompatible.Models},
 		{f.config.LLM.ChatGPT.Models},
 	}
@@ -140,25 +129,6 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 		if req.Anthropic.APIKey != "" && req.Anthropic.APIKey != maskedAPIKey {
 			f.config.LLM.Anthropic.APIKey = req.Anthropic.APIKey
-		}
-	}
-	if req.Gemini != nil {
-		if req.Gemini.Models != nil {
-			f.config.LLM.Gemini.Models = req.Gemini.Models
-		}
-		if req.Gemini.APIKey != "" && req.Gemini.APIKey != maskedAPIKey {
-			f.config.LLM.Gemini.APIKey = req.Gemini.APIKey
-		}
-	}
-	if req.LMStudio != nil {
-		if req.LMStudio.Models != nil {
-			f.config.LLM.LMStudio.Models = req.LMStudio.Models
-		}
-		if req.LMStudio.APIKey != "" && req.LMStudio.APIKey != maskedAPIKey {
-			f.config.LLM.LMStudio.APIKey = req.LMStudio.APIKey
-		}
-		if req.LMStudio.BaseURL != "" {
-			f.config.LLM.LMStudio.BaseURL = req.LMStudio.BaseURL
 		}
 	}
 	if req.OpenAICompatible != nil {
@@ -406,8 +376,8 @@ func (f *FrontendAPI) SetLogLevel(level string) error {
 }
 
 // ListProviderModels returns available model names for a given provider.
-// For Anthropic/Gemini: returns hardcoded list from model registry.
-// For ChatGPT/OpenAI Compatible/LM Studio: fetches from the provider's API.
+// For Anthropic: returns hardcoded list from model registry.
+// For ChatGPT/OpenAI Compatible: fetches from the provider's API.
 func (f *FrontendAPI) ListProviderModels(provider string) ([]string, error) {
 	f.configMu.RLock()
 	if f.config == nil {

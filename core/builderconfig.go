@@ -30,7 +30,7 @@ type BuilderConfig struct {
 // BuilderLLMConfig holds the LLM provider settings the builder needs.
 type BuilderLLMConfig struct {
 	DefaultModel    string                           // global, cross-provider default model
-	ProviderConfigs map[string]BuilderProviderConfig // key = provider name ("anthropic", "gemini", …)
+	ProviderConfigs map[string]BuilderProviderConfig // key = provider name ("anthropic", "openai_compatible", …)
 
 	Retry BuilderRetryConfig
 
@@ -40,7 +40,7 @@ type BuilderLLMConfig struct {
 
 // BuilderProviderConfig holds configuration for a single LLM provider.
 type BuilderProviderConfig struct {
-	ProviderType string   // Go provider type: "anthropic", "gemini", "lmstudio", "openai"
+	ProviderType string   // Go provider type: "anthropic", "openai"
 	APIKey       string   // raw value (may contain ${ENV_VAR})
 	BaseURL      string   // raw value
 	Models       []string // enabled models for this one provider

@@ -624,35 +624,6 @@ func TestBuiltInModelNames_ByTokenizer(t *testing.T) {
 	}
 }
 
-func TestBuiltInModelNamesByPrefix(t *testing.T) {
-	tests := []struct {
-		prefix  string
-		wantMin int
-	}{
-		{"gpt-", 3},
-		{"claude-", 3},
-		{"gemini-", 3},
-		{"grok-", 2},
-		{"deepseek-", 2},
-		{"nonexistent-", 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.prefix, func(t *testing.T) {
-			names := BuiltInModelNamesByPrefix(tt.prefix)
-			if len(names) < tt.wantMin {
-				t.Errorf("expected at least %d models with prefix %q, got %d", tt.wantMin, tt.prefix, len(names))
-			}
-			// Verify sorted
-			for i := 1; i < len(names); i++ {
-				if names[i] < names[i-1] {
-					t.Errorf("names not sorted: %q comes after %q", names[i], names[i-1])
-				}
-			}
-		})
-	}
-}
-
 func TestModelRegistry_FetchFromHuggingFace(t *testing.T) {
 	// Test successful fetch
 	t.Run("success", func(t *testing.T) {

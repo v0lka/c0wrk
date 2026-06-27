@@ -75,8 +75,6 @@ type VectorIndexConfig struct {
 type LLMConfig struct {
 	DefaultModel    string                   `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
 	Anthropic        AnthropicConfig          `yaml:"anthropic"`
-	Gemini           GeminiConfig             `yaml:"gemini"`
-	LMStudio         LMStudioConfig           `yaml:"lmstudio"`
 	OpenAICompatible OpenAICompatibleConfig   `yaml:"openai_compatible"`
 	ChatGPT          ChatGPTConfig            `yaml:"chatgpt"`
 	Models           map[string]ModelOverride `yaml:"models"`
@@ -87,19 +85,6 @@ type LLMConfig struct {
 type AnthropicConfig struct {
 	APIKey string   `yaml:"api_key"`
 	Models []string `yaml:"models"` // enabled models for this provider
-}
-
-// GeminiConfig holds Gemini provider configuration.
-type GeminiConfig struct {
-	APIKey string   `yaml:"api_key"`
-	Models []string `yaml:"models"` // enabled models for this provider
-}
-
-// LMStudioConfig holds LM Studio provider configuration.
-type LMStudioConfig struct {
-	BaseURL string   `yaml:"base_url"`
-	APIKey  string   `yaml:"api_key"`
-	Models  []string `yaml:"models"` // enabled models for this provider
 }
 
 // OpenAICompatibleConfig holds OpenAI-compatible provider configuration.
@@ -342,7 +327,7 @@ type LoadResult struct {
 
 // ProviderWithModels pairs a provider config key with its enabled models.
 type ProviderWithModels struct {
-	Name         string   // config key: "anthropic", "gemini", …
+	Name         string   // config key: "anthropic", "openai_compatible", "chatgpt"
 	ProviderType string   // Go type constant
 	APIKey       string
 	BaseURL      string
@@ -357,14 +342,10 @@ type providerEntry struct {
 	models   []string
 }
 
-// allProviderEntries returns the flat list of all five known providers.
-// GetAllProviderConfigs and ResolveDefaultModelProvider both derive from this
-// single slice — adding a sixth provider only requires updating this one function.
+// allProviderEntries returns the flat list of all known providers.
 func (c *LLMConfig) allProviderEntries() []providerEntry {
 	return []providerEntry{
 		{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
-		{"gemini", c.Gemini.APIKey, "", c.Gemini.Models},
-		{"lmstudio", c.LMStudio.APIKey, c.LMStudio.BaseURL, c.LMStudio.Models},
 		{"openai_compatible", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Models},
 		{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
 	}
@@ -375,10 +356,6 @@ func providerType(name string) string {
 	switch name {
 	case "anthropic":
 		return "anthropic"
-	case "gemini":
-		return "gemini"
-	case "lmstudio":
-		return "lmstudio"
 	case "openai_compatible", "chatgpt":
 		return "openai"
 	default:
