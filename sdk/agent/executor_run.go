@@ -21,6 +21,11 @@ const (
 	actionReturn                     // return result
 )
 
+// batchIndexBase is the base multiplier for batch sub-call indices.
+// Multiplied by callIdx in processBatchTool to create unique emitter indices
+// that cannot collide with standalone tool call indices (which are sequential, 0..N-1).
+const batchIndexBase = 10000
+
 // runState holds all loop-local state for a single Run invocation.
 type runState struct {
 	stepNum                   int
@@ -43,10 +48,7 @@ func (e *Executor) handleStepLimitBoundary(ctx context.Context, state *runState,
 		return actionNone
 	}
 	// At the boundary: when we've just exceeded effectiveMaxSteps
-	if e.stepLimitFunc == nil {
-		return actionBreak // no callback configured: exit silently at step limit
-	}
-	resp, err := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, "")
+	resp, err := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, "")
 	if err != nil {
 		// Treat callback errors as deny - exit cleanly without propagating the error
 		state.finishResult = &ExecutorResult{
@@ -235,34 +237,32 @@ func (e *Executor) handleTruncationStopReason(ctx context.Context, resp *llm.Cha
 	if e.consecutiveTruncationCount >= e.circuitBreaker.TruncationAbortThreshold {
 		e.emitter.ExecutorDiagnostic(state.stepNum, "truncation_abort", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
 		abortReason := fmt.Sprintf("Tool '%s' output was truncated %d times consecutively by max output token limit", truncAction.Name, e.consecutiveTruncationCount)
-		if e.stepLimitFunc != nil {
-			slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
-			if slErr == nil {
-				switch slResp {
-				case StepLimitAllowOnce:
-					e.consecutiveTruncationCount = 0
-					nudgeStep := Step{
-						UserNudge: "[System] The user acknowledged the truncation circuit breaker and granted you ONE more chance. " +
-							"You MUST use smaller operations to avoid hitting the output token limit.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					e.emitter.StepComplete(state.stepNum, time.Since(state.stepStartTime))
-					return nil, actionContinue
-				case StepLimitAllowAlways:
-					e.consecutiveTruncationCount = 0
-					e.circuitBreaker.TruncationAbortThreshold = 1 << 30 // disable
-					nudgeStep := Step{
-						UserNudge: "[System] The user has overridden the truncation circuit breaker. " +
-							"You may continue, but try to produce smaller outputs.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					e.emitter.StepComplete(state.stepNum, time.Since(state.stepStartTime))
-					return nil, actionContinue
-				default:
-					// StepLimitDeny or empty — fall through to abort
+		slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
+		if slErr == nil {
+			switch slResp {
+			case StepLimitAllowOnce:
+				e.consecutiveTruncationCount = 0
+				nudgeStep := Step{
+					UserNudge: "[System] The user acknowledged the truncation circuit breaker and granted you ONE more chance. " +
+						"You MUST use smaller operations to avoid hitting the output token limit.",
 				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				e.emitter.StepComplete(state.stepNum, time.Since(state.stepStartTime))
+				return nil, actionContinue
+			case StepLimitAllowAlways:
+				e.consecutiveTruncationCount = 0
+				e.circuitBreaker.TruncationAbortThreshold = 1 << 30 // disable
+				nudgeStep := Step{
+					UserNudge: "[System] The user has overridden the truncation circuit breaker. " +
+						"You may continue, but try to produce smaller outputs.",
+				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				e.emitter.StepComplete(state.stepNum, time.Since(state.stepStartTime))
+				return nil, actionContinue
+			default:
+				// StepLimitDeny or empty — fall through to abort
 			}
 		}
 		return &ExecutorResult{
@@ -414,6 +414,32 @@ func (e *Executor) processSingleToolCall(
 	}
 	// --- End circuit breaker ---
 
+	// --- HITL: allow consumer to intercept/modify tool calls ---
+	input := action.Input
+	if decision, decErr := e.hitl.OnToolCall(ctx, action.Name, input); decErr != nil {
+		return nil, actionNone, fmt.Errorf("HITL handler error for tool %q: %w", action.Name, decErr)
+	} else if decision != nil && !decision.Allow {
+		reason := decision.Reason
+		if reason == "" {
+			reason = "rejected by user"
+		}
+		obs := fmt.Sprintf("[Tool call rejected: %s]", reason)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(obs), obs, true)
+		step := Step{
+			Thought:       thought,
+			Action:        action,
+			Observation:   obs,
+			TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			ResponseGroup: responseGroup,
+		}
+		state.allSteps = append(state.allSteps, step)
+		cw.AddStep(step)
+		state.circuitBreakerTriggered = true
+		return nil, actionNone, nil
+	} else if decision != nil && len(decision.ModifiedInput) > 0 {
+		input = decision.ModifiedInput
+	}
+
 	// Execute the tool (task context should already be set by the caller)
 	// Inject tool result cache into context so tool_result_read can access it.
 	// Also inject per-tool truncation config for num_lines enforcement.
@@ -422,7 +448,7 @@ func (e *Executor) processSingleToolCall(
 		execCtx = WithToolResultCache(ctx, e.toolCache)
 		execCtx = WithPerToolTruncation(execCtx, e.perToolTruncation)
 	}
-	result, err := e.tools.Execute(execCtx, action.Name, action.Input)
+	result, err := e.tools.Execute(execCtx, action.Name, input)
 	if err != nil {
 		// Infrastructure error
 		return nil, actionNone, err
@@ -573,7 +599,6 @@ func (e *Executor) processBatchTool(
 
 	// Use unique index space for batch sub-calls to avoid collisions
 	// with standalone tool call indices in the emitter's localToolIDs map.
-	const batchIndexBase = 10000
 	baseIdx := callIdx * batchIndexBase
 
 	for subIdx, sub := range batchInput.Calls {
@@ -619,7 +644,41 @@ func (e *Executor) processBatchTool(
 			execCtx = WithToolResultCache(ctx, e.toolCache)
 			execCtx = WithPerToolTruncation(execCtx, e.perToolTruncation)
 		}
-		result, execErr := e.tools.Execute(execCtx, subCall.Name, subCall.Input)
+
+		// --- HITL: allow consumer to intercept/modify batch sub-calls ---
+		var result tools.ToolResult
+		var execErr error
+		subInput := subCall.Input
+		if decision, decErr := e.hitl.OnToolCall(ctx, subCall.Name, subInput); decErr != nil {
+			result = tools.ToolResult{Content: fmt.Sprintf("HITL handler error for tool %q: %v", subCall.Name, decErr), IsError: true}
+		} else if decision != nil {
+			if !decision.Allow {
+				reason := decision.Reason
+				if reason == "" {
+					reason = "rejected by user"
+				}
+				obs := fmt.Sprintf("[Tool call rejected: %s]", reason)
+				e.emitter.ToolResult(state.stepNum, effectiveIdx, len(obs), obs, true)
+				step := Step{
+					Thought:     thought,
+					Action:      subCall,
+					Observation: obs,
+					IsUntrusted: false,
+					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+					ResponseGroup: responseGroup,
+				}
+				state.allSteps = append(state.allSteps, step)
+				cw.AddStep(step)
+				state.circuitBreakerTriggered = true
+				continue
+			}
+			if len(decision.ModifiedInput) > 0 {
+				subInput = decision.ModifiedInput
+			}
+		}
+		if !result.IsError && result.Content == "" {
+			result, execErr = e.tools.Execute(execCtx, subCall.Name, subInput)
+		}
 		if execErr != nil {
 			// Infrastructure error — capture as error result, continue.
 			result = tools.ToolResult{Content: fmt.Sprintf("error executing %q: %v", subCall.Name, execErr), IsError: true}
@@ -775,32 +834,30 @@ func (e *Executor) checkRepeatIdenticalTool(
 	if e.consecutiveRepeatCount >= abortThreshold {
 		e.emitter.ExecutorDiagnostic(state.stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
 		abortReason := fmt.Sprintf("Tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount)
-		if e.stepLimitFunc != nil {
-			slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
-			if slErr == nil {
-				switch slResp {
-				case StepLimitAllowOnce:
-					e.consecutiveRepeatCount = 0
-					nudgeStep := Step{
-						UserNudge: "[System] The user acknowledged the circuit breaker and granted you ONE more chance. " +
-							"You MUST change your approach immediately — do NOT repeat the same tool call.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					state.circuitBreakerTriggered = true
-				case StepLimitAllowAlways:
-					e.consecutiveRepeatCount = 0
-					e.circuitBreaker.RepeatAbortThreshold = 1 << 30 // disable
-					nudgeStep := Step{
-						UserNudge: "[System] The user has overridden the circuit breaker. You may continue, " +
-							"but try to vary your approach to avoid repeating the same failing pattern.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					state.circuitBreakerTriggered = true
-				default:
-					// StepLimitDeny or empty — fall through to abort
+		slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
+		if slErr == nil {
+			switch slResp {
+			case StepLimitAllowOnce:
+				e.consecutiveRepeatCount = 0
+				nudgeStep := Step{
+					UserNudge: "[System] The user acknowledged the circuit breaker and granted you ONE more chance. " +
+						"You MUST change your approach immediately — do NOT repeat the same tool call.",
 				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				state.circuitBreakerTriggered = true
+			case StepLimitAllowAlways:
+				e.consecutiveRepeatCount = 0
+				e.circuitBreaker.RepeatAbortThreshold = 1 << 30 // disable
+				nudgeStep := Step{
+					UserNudge: "[System] The user has overridden the circuit breaker. You may continue, " +
+						"but try to vary your approach to avoid repeating the same failing pattern.",
+				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				state.circuitBreakerTriggered = true
+			default:
+				// StepLimitDeny or empty — fall through to abort
 			}
 		}
 		if state.circuitBreakerTriggered {
@@ -873,34 +930,32 @@ func (e *Executor) checkFruitlessResult(
 		e.emitter.ExecutorDiagnostic(state.stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
 		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
 		abortReason := fmt.Sprintf("%d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount)
-		if e.stepLimitFunc != nil {
-			slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
-			if slErr == nil {
-				switch slResp {
-				case StepLimitAllowOnce:
-					e.consecutiveFruitlessCount = 0
-					e.fruitlessNudgeAttempted = false
-					nudgeStep := Step{
-						UserNudge: "[System] The user acknowledged the fruitless-results circuit breaker and granted you ONE more chance. " +
-							"Try a fundamentally different approach to find the information you need.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					state.circuitBreakerTriggered = true
-				case StepLimitAllowAlways:
-					e.consecutiveFruitlessCount = 0
-					e.fruitlessNudgeAttempted = false
-					e.circuitBreaker.FruitlessAbortThreshold = 0 // disable
-					nudgeStep := Step{
-						UserNudge: "[System] The user has overridden the fruitless-results circuit breaker. " +
-							"You may continue searching, but consider varying your approach.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					state.circuitBreakerTriggered = true
-				default:
-					// StepLimitDeny or empty — fall through to abort
+		slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
+		if slErr == nil {
+			switch slResp {
+			case StepLimitAllowOnce:
+				e.consecutiveFruitlessCount = 0
+				e.fruitlessNudgeAttempted = false
+				nudgeStep := Step{
+					UserNudge: "[System] The user acknowledged the fruitless-results circuit breaker and granted you ONE more chance. " +
+						"Try a fundamentally different approach to find the information you need.",
 				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				state.circuitBreakerTriggered = true
+			case StepLimitAllowAlways:
+				e.consecutiveFruitlessCount = 0
+				e.fruitlessNudgeAttempted = false
+				e.circuitBreaker.FruitlessAbortThreshold = 0 // disable
+				nudgeStep := Step{
+					UserNudge: "[System] The user has overridden the fruitless-results circuit breaker. " +
+						"You may continue searching, but consider varying your approach.",
+				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				state.circuitBreakerTriggered = true
+			default:
+				// StepLimitDeny or empty — fall through to abort
 			}
 		}
 		if state.circuitBreakerTriggered {
@@ -967,34 +1022,32 @@ func (e *Executor) checkSameToolRepetition(
 			e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
 			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
 			abortReason := fmt.Sprintf("Tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount)
-			if e.stepLimitFunc != nil {
-				slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
-				if slErr == nil {
-					switch slResp {
-					case StepLimitAllowOnce:
-						e.sameToolConsecutiveCount = 0
-						e.sameToolNudgeAttempted = false
-						nudgeStep := Step{
-							UserNudge: "[System] The user acknowledged the same-tool circuit breaker and granted you ONE more chance. " +
-								"Try a completely different tool or approach instead of repeating the same tool.",
-						}
-						state.allSteps = append(state.allSteps, nudgeStep)
-						cw.AddStep(nudgeStep)
-						state.circuitBreakerTriggered = true
-					case StepLimitAllowAlways:
-						e.sameToolConsecutiveCount = 0
-						e.sameToolNudgeAttempted = false
-						e.circuitBreaker.SameToolRepeatAbortThreshold = 0 // disable
-						nudgeStep := Step{
-							UserNudge: "[System] The user has overridden the same-tool circuit breaker. " +
-								"You may continue, but consider using different tools or approaches.",
-						}
-						state.allSteps = append(state.allSteps, nudgeStep)
-						cw.AddStep(nudgeStep)
-						state.circuitBreakerTriggered = true
-					default:
-						// StepLimitDeny or empty — fall through to abort
+			slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
+			if slErr == nil {
+				switch slResp {
+				case StepLimitAllowOnce:
+					e.sameToolConsecutiveCount = 0
+					e.sameToolNudgeAttempted = false
+					nudgeStep := Step{
+						UserNudge: "[System] The user acknowledged the same-tool circuit breaker and granted you ONE more chance. " +
+							"Try a completely different tool or approach instead of repeating the same tool.",
 					}
+					state.allSteps = append(state.allSteps, nudgeStep)
+					cw.AddStep(nudgeStep)
+					state.circuitBreakerTriggered = true
+				case StepLimitAllowAlways:
+					e.sameToolConsecutiveCount = 0
+					e.sameToolNudgeAttempted = false
+					e.circuitBreaker.SameToolRepeatAbortThreshold = 0 // disable
+					nudgeStep := Step{
+						UserNudge: "[System] The user has overridden the same-tool circuit breaker. " +
+							"You may continue, but consider using different tools or approaches.",
+					}
+					state.allSteps = append(state.allSteps, nudgeStep)
+					cw.AddStep(nudgeStep)
+					state.circuitBreakerTriggered = true
+				default:
+					// StepLimitDeny or empty — fall through to abort
 				}
 			}
 			if state.circuitBreakerTriggered {
@@ -1053,32 +1106,30 @@ func (e *Executor) checkParseErrors(
 			e.emitter.ExecutorDiagnostic(state.stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
 			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
 			abortReason := fmt.Sprintf("Tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount)
-			if e.stepLimitFunc != nil {
-				slResp, slErr := e.stepLimitFunc(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
-				if slErr == nil {
-					switch slResp {
-					case StepLimitAllowOnce:
-						e.consecutiveParseErrorCount = 0
-						nudgeStep := Step{
-							UserNudge: "[System] The user acknowledged the parse-error circuit breaker and granted you ONE more chance. " +
-								"You MUST fix your tool call arguments — they are malformed. Try a simpler approach.",
-						}
-						state.allSteps = append(state.allSteps, nudgeStep)
-						cw.AddStep(nudgeStep)
-						state.circuitBreakerTriggered = true
-					case StepLimitAllowAlways:
-						e.consecutiveParseErrorCount = 0
-						e.circuitBreaker.ParseErrorAbortThreshold = 1 << 30 // disable
-						nudgeStep := Step{
-							UserNudge: "[System] The user has overridden the parse-error circuit breaker. " +
-								"You may continue, but fix your tool call argument formatting.",
-						}
-						state.allSteps = append(state.allSteps, nudgeStep)
-						cw.AddStep(nudgeStep)
-						state.circuitBreakerTriggered = true
-					default:
-						// StepLimitDeny or empty — fall through to abort
+			slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
+			if slErr == nil {
+				switch slResp {
+				case StepLimitAllowOnce:
+					e.consecutiveParseErrorCount = 0
+					nudgeStep := Step{
+						UserNudge: "[System] The user acknowledged the parse-error circuit breaker and granted you ONE more chance. " +
+							"You MUST fix your tool call arguments — they are malformed. Try a simpler approach.",
 					}
+					state.allSteps = append(state.allSteps, nudgeStep)
+					cw.AddStep(nudgeStep)
+					state.circuitBreakerTriggered = true
+				case StepLimitAllowAlways:
+					e.consecutiveParseErrorCount = 0
+					e.circuitBreaker.ParseErrorAbortThreshold = 1 << 30 // disable
+					nudgeStep := Step{
+						UserNudge: "[System] The user has overridden the parse-error circuit breaker. " +
+							"You may continue, but fix your tool call argument formatting.",
+					}
+					state.allSteps = append(state.allSteps, nudgeStep)
+					cw.AddStep(nudgeStep)
+					state.circuitBreakerTriggered = true
+				default:
+					// StepLimitDeny or empty — fall through to abort
 				}
 			}
 			if state.circuitBreakerTriggered {

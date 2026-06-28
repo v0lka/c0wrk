@@ -46,9 +46,9 @@ type Config struct {
 	// Created by the session layer. If nil, per-step dumps are a no-op.
 	StepDumpTracker *StepDumpTracker
 
-	// StepLimitFunc is called when an executor reaches its step limit.
-	// If nil, the executor will stop with a budget exhausted error.
-	StepLimitFunc agent.StepLimitFunc
+	// HITLHandler is called when an executor reaches its step limit.
+	// If nil, a default handler is used (deny all extensions).
+	HITLHandler agent.HITLHandler
 
 	// Tuning
 	MaxRetries                int

@@ -15,7 +15,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/core/tools/mcp"
+	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -37,7 +37,7 @@ type ApplicationConfig struct {
 	UIEmitFunc    func(session.Event)  // Wails event emission
 	AskUserFunc   coretools.AskUserFunc // ask_user tool callback
 	ConfirmFunc   sdktools.ConfirmFunc    // tool confirmation callback
-	StepLimitFunc agent.StepLimitFunc  // step limit callback
+	HITLHandler  agent.HITLHandler  // step limit and tool confirmation callback
 
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     builtins.VectorSearchFunc
@@ -54,8 +54,8 @@ type Application struct {
 	envInfo   *sdktools.EnvInfo
 	logger    *slog.Logger
 
-	// stepLimitFunc is captured for the orchestrator factory closure.
-	stepLimitFunc agent.StepLimitFunc
+	// hitlHandler is captured for the orchestrator factory closure.
+	hitlHandler agent.HITLHandler
 }
 
 func (app *Application) log() *slog.Logger {
@@ -71,7 +71,7 @@ func (app *Application) log() *slog.Logger {
 func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	app := &Application{
 		logger:        cfg.Logger,
-		stepLimitFunc: cfg.StepLimitFunc,
+		hitlHandler: cfg.HITLHandler,
 	}
 
 	// Collect environment info once for all sessions.
@@ -118,7 +118,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
-		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.stepLimitFunc, dumpWriter, stepDumpTracker)
+		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
 	}
 
 	// 6. Session manager.

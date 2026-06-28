@@ -30,11 +30,7 @@ func NewLoggingLLMCaller(inner LLMCaller, provider string, logger *slog.Logger) 
 }
 
 // Call delegates to the wrapped LLMCaller, logging the request before the call
-// and token usage / errors after.
-//
-// Streaming (StreamChatCompletion) is not covered because ChatChunk does not
-// carry token usage data; there is no final-chunk usage signal at the provider
-// level.
+// and token usage / errors after. Streaming is not supported.
 func (l *loggingCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	l.logger.Debug("llm: request",
 		"provider", l.provider,

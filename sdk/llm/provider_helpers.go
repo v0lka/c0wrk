@@ -1,7 +1,5 @@
 package llm
 
-import "encoding/json"
-
 // openAIStopReasonMap maps OpenAI-style finish reasons to our standard format.
 // Shared by OpenAI and LM Studio (OpenAI-compat mode) providers.
 var openAIStopReasonMap = map[string]string{
@@ -59,61 +57,5 @@ func ExtractSystemPromptParts(messages []Message) (parts []string, filtered []Me
 	return parts, filtered
 }
 
-// StreamToolCallAccumulator tracks partial tool calls across streaming chunks.
-// OpenAI-style streaming sends tool call data incrementally: first the ID and name,
-// then argument fragments across multiple deltas. This accumulator assembles
-// complete ToolCall objects from those fragments.
-type StreamToolCallAccumulator struct {
-	toolCalls map[int]*ToolCall
-}
 
-// NewStreamToolCallAccumulator creates a new empty accumulator.
-func NewStreamToolCallAccumulator() *StreamToolCallAccumulator {
-	return &StreamToolCallAccumulator{
-		toolCalls: make(map[int]*ToolCall),
-	}
-}
-
-// HandleDelta processes a single tool call delta from a streaming chunk.
-// index is the tool call index within the response (used to correlate fragments).
-// Non-empty id, name, and arguments values update/accumulate into the tracked call.
-func (a *StreamToolCallAccumulator) HandleDelta(index int, id, name, arguments string) {
-	tc, exists := a.toolCalls[index]
-	if !exists {
-		tc = &ToolCall{
-			ID:    id,
-			Name:  name,
-			Input: json.RawMessage(""),
-		}
-		a.toolCalls[index] = tc
-	}
-
-	if arguments != "" {
-		existing := string(tc.Input)
-		tc.Input = json.RawMessage(existing + arguments)
-	}
-	if name != "" {
-		tc.Name = name
-	}
-	if id != "" {
-		tc.ID = id
-	}
-}
-
-// Emit sends all accumulated tool calls to the channel in index order.
-// Should be called when a finish reason is received, regardless of reason type.
-func (a *StreamToolCallAccumulator) Emit(chunks chan<- ChatChunk) {
-	// Find the maximum index in the map to handle sparse (non-sequential) indices.
-	maxIdx := -1
-	for idx := range a.toolCalls {
-		if idx > maxIdx {
-			maxIdx = idx
-		}
-	}
-	for i := 0; i <= maxIdx; i++ {
-		if tc, ok := a.toolCalls[i]; ok {
-			chunks <- ChatChunk{ToolCall: tc}
-		}
-	}
-}
 

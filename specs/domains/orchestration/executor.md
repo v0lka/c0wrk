@@ -89,6 +89,9 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │
 │   │   ├─ 2. If tool_call:
 │   │      ├─ If batch meta-tool → processBatchTool() (see Batch Tool below)
+│   │      ├─ HITL: OnToolCall(ctx, name, input) — consumer may deny or modify input
+│   │      │      → Denied: inject rejection observation, skip execution, continue loop
+│   │      │      → Modified input: use modified input for execution
 │   │      ├─ Inject ToolResultCache into context (for fragmentation reader)
 │   │      ├─ Execute tool via ToolExecutor.Execute(ctx, name, input)
 │   │      ├─ Set Step.IsUntrusted ← tool.IsUntrusted() || source starts with "mcp"
@@ -103,11 +106,11 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │      → Extract output, return success
 │   │
 │   ├─ 4. Circuit breaker check (see below)
-│   │      → If abort threshold reached: call StepLimitFunc(reason)
+│   │      → If abort threshold reached: call HITLHandler.OnStepLimit(reason)
 │   │      → AllowOnce: reset + nudge, AllowAlways: disable + nudge, Deny: stop
 │   │
 │   └─ 5. If step limit reached:
-│          → Call StepLimitFunc(reason="")
+│          → Call HITLHandler.OnStepLimit(reason="")
 │          → AllowOnce: +N steps, AllowAlways: unlimited, Deny: stop
 │
 └─ Return ExecutorResult {Steps, Output, Finished}
@@ -119,19 +122,19 @@ Detects pathological patterns. Each detector has a nudge threshold and an abort 
 
 | Detection   | Trigger                                     | Nudge Action               | Abort Action                   |
 | ----------- | ------------------------------------------- | -------------------------- | ------------------------------ |
-| Repeat      | Same tool + same args + same error N times  | "try a different approach" | Call StepLimitFunc with reason |
-| Truncation  | LLM output truncated (tool call incomplete) | "split into smaller calls" | Call StepLimitFunc with reason |
-| Parse error | Invalid tool input N times                  | "simplify your input"      | Call StepLimitFunc with reason |
-| Fruitless   | Last N tool results are empty/minimal       | "consider wrapping up"     | Call StepLimitFunc with reason |
-| Same tool   | Same tool name N times with similar results | "try a different strategy" | Call StepLimitFunc with reason |
+| Repeat      | Same tool + same args + same error N times  | "try a different approach" | Call HITLHandler.OnStepLimit with reason |
+| Truncation  | LLM output truncated (tool call incomplete) | "split into smaller calls" | Call HITLHandler.OnStepLimit with reason |
+| Parse error | Invalid tool input N times                  | "simplify your input"      | Call HITLHandler.OnStepLimit with reason |
+| Fruitless   | Last N tool results are empty/minimal       | "consider wrapping up"     | Call HITLHandler.OnStepLimit with reason |
+| Same tool   | Same tool name N times with similar results | "try a different strategy" | Call HITLHandler.OnStepLimit with reason |
 
-When a circuit breaker abort threshold is reached, the executor calls `StepLimitFunc` with a reason string describing the trigger (same mechanism as the step limit). The user receives the same three options:
+When a circuit breaker abort threshold is reached, the executor calls `HITLHandler.OnStepLimit` with a reason string describing the trigger (same mechanism as the step limit). The user receives the same three options:
 
 - **AllowOnce**: resets the counter, injects a nudge urging the LLM to change approach, continues one more iteration
 - **AllowAlways**: resets the counter, disables that specific circuit breaker for the remainder of the execution, injects a permissive nudge
 - **Deny**: aborts execution (returns `ExecutorResult{Finished: false}`)
 
-If `StepLimitFunc` is nil (no UI connected), the executor aborts immediately (preserving headless/test behavior).
+If `HITLHandler` is nil (no UI connected), the executor aborts immediately (preserving headless/test behavior).
 
 Config: `CircuitBreakerConfig` (thresholds per detection type).
 
@@ -188,6 +191,9 @@ processBatchTool(ctx, action, callIdx, toolCalls, resp, thought, state, cw)
 │   │
 │   ├─ Emit ToolCall as "<tool_name> (batched)"
 │   ├─ Circuit breaker: checkRepeatIdenticalTool, checkFruitlessResult, checkSameToolRepetition
+│   ├─ HITL: OnToolCall(ctx, name, input) — consumer may deny or modify input
+│   │      → Denied: inject rejection observation, skip to next sub-call
+│   │      → Modified input: use modified input for execution
 │   ├─ Execute sub-call through full policy pipeline: e.tools.Execute(ctx, name, input)
 │   ├─ Set IsUntrusted via e.tools.IsToolUntrusted(name)
 │   ├─ Stage 1: Per-tool truncation + ToolResultCache.Store() + fragmentation nudge
@@ -201,6 +207,7 @@ processBatchTool(ctx, action, callIdx, toolCalls, resp, thought, state, cw)
 Key behaviors:
 - Errors in individual sub-calls do not abort the batch — the error is captured as the tool result and processing continues
 - Sub-calls go through the full policy + truncation + caching pipeline (same as standalone tool calls)
+- HITL OnToolCall check runs before each sub-call; denied sub-calls inject a rejection observation and continue to the next sub-call without aborting the batch
 - Circuit breakers (repeat, fruitless, same-tool) are checked per sub-call; if triggered, the batch aborts and returns the circuit breaker action
 - Each sub-call is emitted to the frontend with the suffix `" (batched)"` (e.g., `read_file (batched)`)
 - Only the first sub-call in the first response group carries `Thought` and `ReasoningContent`
@@ -216,7 +223,7 @@ Key behaviors:
 
 - `finish` tool is ALWAYS available in every step (never filtered out)
 - Context window never exceeds model limit (compaction triggers automatically)
-- MaxSteps bounds total iterations (StepLimitFunc may extend)
+- MaxSteps bounds total iterations (HITLHandler.OnStepLimit may extend)
 - Each step has its own ContextManager (isolated memory)
 - Parallel steps run in separate goroutines with independent contexts
 - A step's output is immutable once stored on Blackboard

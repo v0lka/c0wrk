@@ -140,7 +140,7 @@ type RouterConfig struct {
 // ToolResultBudgetConfig configures tool result size limits to prevent single tool outputs
 // from consuming too much of the context window.
 type ToolResultBudgetConfig struct {
-	HardCapTokens   int     `yaml:"hard_cap_tokens"`   // absolute max tokens per tool result (default: 8192)
+	HardCapTokens   int     `yaml:"hard_cap_tokens"`   // absolute max tokens per tool result (default: 4096)
 	MaxFillFraction float64 `yaml:"max_fill_fraction"` // max fraction of available context space (default: 0.3)
 	CacheTTLSeconds int     `yaml:"cacheTTLSeconds"`   // TTL in seconds for MCP tool cache entries (default: 300)
 }

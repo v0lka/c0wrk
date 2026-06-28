@@ -28,7 +28,7 @@ Desktop AI research and development agent for really complex tasks.
 - **Circuit breakers** for repeat / truncation / parse-error / fruitless / same-tool loops
 - Configurable **context compaction** (sliding window / summarization / hierarchical) tied to task domain
 - SQLite persistence (CGO-free `modernc.org/sqlite`) — full session resume across restarts
-- Configurable LLM providers: **Anthropic, Gemini, LM Studio, OpenAI-compatible (incl. Responses API), ChatGPT** with per-role reasoning effort
+- Configurable LLM providers: **Anthropic, OpenAI-compatible, ChatGPT** (Gemini, LM Studio, and other OpenAI-compatible models via `openai_compatible` provider) with per-role reasoning effort
 - Configurable runtime limits (timeouts, tool output caps, compaction thresholds, bash blacklist)
 
 ## Architecture
@@ -41,8 +41,7 @@ High-level layers and responsibilities:
 - **`sdk/`** — reusable engine components: agent executor, LLM providers, memory/compaction, prompt/tool primitives.
 - **`frontend/`** — React + TypeScript UI; communicates with Go via generated Wails bindings (`frontend/wailsjs/go/desktop/App`).
 
-> Important layering rule: SDK usage is routed through `core/`; `backend/` wraps `core`.
-> The layering is enforced at build time: `backend/` never imports `sdk/` directly. See `specs/decisions/002-sdk-isolation.md`.
+> Important layering rule: `backend/` and `desktop/` import `core` and `sdk/` directly. `core/` remains the primary consumer of `sdk`. No convenience re-export layers exist — all types are imported from their source packages. See `specs/decisions/008-backend-sdk-direct-import.md`.
 
 ### Frontend Stack
 
@@ -136,7 +135,7 @@ Primary config reference: **`config.example.yaml`**.
 Key points:
 
 - Environment placeholders are supported as `${ENV_VAR}`.
-- Active LLM provider is selected via `llm.active_provider`.
+- Active LLM provider is resolved from `llm.default_model` — the Router looks up which provider has the model in its enabled `models` list.
 - MCP servers are configured under `mcp.servers`.
 - Security defaults and per-tool policies are configured under `security`.
 - Runtime limits are configurable under `toolLimits`, `timeouts`, and `executor`.

@@ -329,3 +329,26 @@ func llmResponseWithMultipleToolCalls(thought string, calls []llm.ToolCall) *llm
 		Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
 	}
 }
+
+// --- Test HITLHandler adapter providing only OnStepLimit (step-limit-only usage) ---
+
+// testStepLimitAdapter adapts a step-limit-only function to the HITLHandler interface.
+// OnToolCall always allows all tool calls; OnStepLimit delegates to the wrapped function.
+type testStepLimitAdapter struct {
+	fn func(ctx context.Context, currentStep, maxSteps int, reason string) (StepLimitResponse, error)
+}
+
+func (a *testStepLimitAdapter) OnToolCall(_ context.Context, _ string, _ json.RawMessage) (*HITLToolDecision, error) {
+	d := allowDecisionSentinel
+	return &d, nil
+}
+
+func (a *testStepLimitAdapter) OnStepLimit(ctx context.Context, currentStep, maxSteps int, reason string) (StepLimitResponse, error) {
+	return a.fn(ctx, currentStep, maxSteps, reason)
+}
+
+// newExecutorDefaultHITL creates an Executor with a nil HITLHandler (uses NoopHITLHandler default).
+// Convenience wrapper for tests that don't need custom HITL behavior.
+func newExecutorDefaultHITL(llmCaller LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget, circuitBreaker CircuitBreakerConfig) *Executor {
+	return NewExecutor(llmCaller, toolRegistry, counter, maxSteps, emitter, suppressAssistantEvents, toolResultBudget, circuitBreaker, nil)
+}

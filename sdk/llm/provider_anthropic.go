@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -68,112 +67,6 @@ func (p *AnthropicProvider) ChatCompletion(ctx context.Context, req ChatRequest)
 	}
 
 	return p.parseResponse(resp)
-}
-
-// StreamChatCompletion sends a request and returns a channel of streaming chunks.
-func (p *AnthropicProvider) StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
-	anthropicReq, err := p.buildRequest(req)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: failed to build request: %w", err)
-	}
-
-	chunks := make(chan ChatChunk, 64)
-
-	// Track current tool use for accumulating input JSON
-	var currentToolID string
-	var currentToolName string
-	var currentToolInput []byte
-	var streamUsage TokenUsage
-
-	streamReq := anthropic.MessagesStreamRequest{
-		MessagesRequest: *anthropicReq,
-
-		OnMessageStart: func(data anthropic.MessagesEventMessageStartData) {
-			streamUsage.InputTokens = data.Message.Usage.InputTokens
-		},
-
-		OnContentBlockStart: func(data anthropic.MessagesEventContentBlockStartData) {
-			if data.ContentBlock.Type == anthropic.MessagesContentTypeToolUse {
-				currentToolID = data.ContentBlock.ID
-				currentToolName = data.ContentBlock.Name
-				currentToolInput = nil
-			}
-		},
-
-		OnContentBlockDelta: func(data anthropic.MessagesEventContentBlockDeltaData) {
-			switch data.Delta.Type {
-			case anthropic.MessagesContentTypeText:
-				select {
-				case chunks <- ChatChunk{Delta: data.Delta.GetText()}:
-				case <-ctx.Done():
-					return
-				}
-			case anthropic.MessagesContentTypeThinkingDelta:
-				select {
-				case chunks <- ChatChunk{Reasoning: data.Delta.GetText()}:
-				case <-ctx.Done():
-					return
-				}
-			case anthropic.MessagesContentTypeToolUse, anthropic.MessagesContentTypeInputJsonDelta:
-				// Accumulate tool input JSON
-				if data.Delta.PartialJson != nil {
-					currentToolInput = append(currentToolInput, []byte(*data.Delta.PartialJson)...)
-				}
-			}
-		},
-
-		OnContentBlockStop: func(data anthropic.MessagesEventContentBlockStopData, content anthropic.MessageContent) {
-			// If we were accumulating a tool call, emit it now
-			if currentToolID != "" {
-				select {
-				case chunks <- ChatChunk{
-					ToolCall: &ToolCall{
-						ID:    currentToolID,
-						Name:  currentToolName,
-						Input: json.RawMessage(currentToolInput),
-					},
-				}:
-				case <-ctx.Done():
-				}
-				currentToolID = ""
-				currentToolName = ""
-				currentToolInput = nil
-			}
-		},
-
-		OnMessageDelta: func(data anthropic.MessagesEventMessageDeltaData) {
-			streamUsage.OutputTokens = data.Usage.OutputTokens
-			if data.Delta.StopReason != "" {
-				select {
-				case chunks <- ChatChunk{
-					StopReason: string(data.Delta.StopReason),
-					Usage:      &streamUsage,
-				}:
-				case <-ctx.Done():
-				}
-			}
-		},
-
-		OnError: func(errResp anthropic.ErrorResponse) {
-			select {
-			case chunks <- ChatChunk{StopReason: "error", Delta: errResp.Error.Message}:
-			case <-ctx.Done():
-			}
-		},
-	}
-
-	go func() {
-		defer close(chunks)
-		_, err := p.client.CreateMessagesStream(ctx, streamReq)
-		if err != nil {
-			select {
-			case chunks <- ChatChunk{StopReason: "error"}:
-			case <-ctx.Done():
-			}
-		}
-	}()
-
-	return chunks, nil
 }
 
 // buildRequest converts ChatRequest to anthropic.MessagesRequest.

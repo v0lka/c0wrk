@@ -42,15 +42,6 @@ type ChatResponse struct {
 	StopReason string     `json:"stop_reason"` // "end_turn" | "tool_use" | "max_tokens"
 }
 
-// ChatChunk — streaming response fragment.
-type ChatChunk struct {
-	Delta      string      `json:"delta"`
-	Reasoning  string      `json:"reasoning,omitempty"` // Reasoning delta
-	ToolCall   *ToolCall   `json:"tool_call,omitempty"`
-	StopReason string      `json:"stop_reason,omitempty"`
-	Usage      *TokenUsage `json:"usage,omitempty"` // Final chunk may include token usage
-}
-
 // TokenUsage — token consumption tracking.
 type TokenUsage struct {
 	InputTokens  int `json:"input_tokens"`

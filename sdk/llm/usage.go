@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"errors"
 	"sync"
 )
 
@@ -54,15 +53,9 @@ func (t *UsageTracker) Totals() (inputTokens, outputTokens int) {
 	return t.totalIn, t.totalOut
 }
 
-// streamer is a local interface for callers that also support streaming.
-type streamer interface {
-	Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error)
-}
-
 // TrackingCaller wraps a Caller and automatically:
 //   - Records usage from Call() responses into UsageTracker
 //   - Corrects the active ContextTokenTracker (if set) after each call
-//   - Wraps Stream() channels to capture usage from the final ChatChunk
 type TrackingCaller struct {
 	inner      Caller
 	session    *UsageTracker
@@ -96,41 +89,6 @@ func (tc *TrackingCaller) Call(ctx context.Context, req ChatRequest) (*ChatRespo
 	}
 
 	return resp, nil
-}
-
-// Stream delegates to the inner caller's Stream method (if supported), wrapping
-// the returned channel to capture token usage from the final chunk.
-func (tc *TrackingCaller) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
-	s, ok := tc.inner.(streamer)
-	if !ok {
-		return nil, errors.New("inner caller does not support streaming")
-	}
-
-	inCh, err := s.Stream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	outCh := make(chan ChatChunk)
-	go func() {
-		defer close(outCh)
-		for chunk := range inCh {
-			if chunk.Usage != nil {
-				tc.session.Record(*chunk.Usage, req.Model, "")
-
-				tc.ctxMu.RLock()
-				ct := tc.ctxTracker
-				tc.ctxMu.RUnlock()
-
-				if ct != nil && chunk.Usage.InputTokens > 0 {
-					ct.Correct(chunk.Usage.InputTokens)
-				}
-			}
-			outCh <- chunk
-		}
-	}()
-
-	return outCh, nil
 }
 
 // WithContextTracker returns a new TrackingCaller that shares the same inner

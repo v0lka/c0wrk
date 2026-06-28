@@ -145,7 +145,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ### Source
 
-`core/tools/registry_symlink.go` — detection, traversal, formatting, and integration method `checkSymlinksAndConfirm()`. Injected in `core/tools/registry.go` `Execute()` between ParamInjector and policy resolution. The `SymlinkTraversal` type and `DetectSymlinksInToolInput` function live in `sdk/tools`.
+`core/tools/registry_symlink.go` — detection, traversal, formatting, and integration method `checkSymlinksAndConfirm()`. Injected in `core/tools/registry.go` `Execute()` between ParamManager and policy resolution. The `SymlinkTraversal` type and `DetectSymlinksInToolInput` function live in `sdk/tools`.
 
 ## Bash Blacklist
 
@@ -168,7 +168,7 @@ Tool output from untrusted sources is wrapped in `<untrusted-content>` XML tags 
 The wrapping occurs in `sdk/memory/context.go` `buildStepMessages()` — the last point before content reaches the LLM API.
 
 Untrusted tools:
-- All MCP tools (`IsUntrusted()` returns `true` on `core/tools/mcp/mcptool.go`)
+- All MCP tools (`IsUntrusted()` returns `true` on `sdk/tools/mcp/mcptool.go`)
 - Built-in: `web_search`, `web_fetch`, `bash_exec`, `ripgrep`, `glob`, `read_file` (`Untrusted: true` on `BaseTool`)
 - `finish` tool is trusted (`IsUntrusted()` returns `false`)
 

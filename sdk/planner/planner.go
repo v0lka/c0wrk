@@ -411,13 +411,14 @@ func (p *Planner) planWithExploration(
 		p.Cfg.MaxExploreSteps,
 		executorEmitter,
 		true,
-		agent.ToolResultBudget{HardCapTokens: 30000, MaxFillFraction: 0.4},
+		agent.DefaultToolResultBudget(),
 		agent.CircuitBreakerConfig{
 			RepeatNudgeThreshold:     defaultRepeatNudgeThreshold,
 			RepeatAbortThreshold:     defaultRepeatAbortThreshold,
 			TruncationAbortThreshold: defaultTruncationAbortThreshold,
 			ParseErrorAbortThreshold: defaultParseErrorAbortThreshold,
 		},
+		nil,
 	)
 	exec.SetReasoningEffort(p.Cfg.ReasoningEffort)
 

@@ -1289,22 +1289,38 @@ func TestToolFilter_NilAllowsAll(t *testing.T) {
 	}
 }
 
-// --- ParamInjector tests ---
+// --- ParamManager tests ---
 
-// TestParamInjector_ModifiesInput verifies that the param injector transforms input before execution.
-func TestParamInjector_ModifiesInput(t *testing.T) {
+// injectOnlyParamManager is a test helper that implements sdktools.ParamManager
+// with a user-supplied InjectParams implementation. SanitizeSchema passes through unchanged.
+type injectOnlyParamManager struct {
+	injectFn func(ctx context.Context, toolName, source string, input json.RawMessage) json.RawMessage
+}
+
+func (m *injectOnlyParamManager) SanitizeSchema(_ string, schema json.RawMessage) json.RawMessage {
+	return schema
+}
+
+func (m *injectOnlyParamManager) InjectParams(ctx context.Context, toolName, source string, input json.RawMessage) json.RawMessage {
+	return m.injectFn(ctx, toolName, source, input)
+}
+
+// TestParamManager_ModifiesInput verifies that ParamManager transforms input before execution.
+func TestParamManager_ModifiesInput(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockReadOnlyTool("echo_tool", "An echo tool")
 	registry.Register(tool)
 
-	registry.SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
-		var m map[string]any
-		if err := json.Unmarshal(input, &m); err != nil {
-			return input
-		}
-		m["injected"] = "value"
-		out, _ := json.Marshal(m)
-		return out
+	registry.SetParamManager(&injectOnlyParamManager{
+		injectFn: func(_ context.Context, _, _ string, input json.RawMessage) json.RawMessage {
+			var m map[string]any
+			if err := json.Unmarshal(input, &m); err != nil {
+				return input
+			}
+			m["injected"] = "value"
+			out, _ := json.Marshal(m)
+			return out
+		},
 	})
 
 	ctx := context.Background()
@@ -1325,12 +1341,12 @@ func TestParamInjector_ModifiesInput(t *testing.T) {
 	}
 }
 
-// TestParamInjector_NilPassesThrough verifies that nil injector passes input unchanged.
-func TestParamInjector_NilPassesThrough(t *testing.T) {
+// TestParamManager_NilPassesThrough verifies that nil ParamManager passes input unchanged.
+func TestParamManager_NilPassesThrough(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockReadOnlyTool("echo_tool", "An echo tool")
 	registry.Register(tool)
-	// No injector set
+	// No ParamManager set
 
 	ctx := context.Background()
 	input := json.RawMessage(`{"data":"test"}`)
@@ -1344,9 +1360,9 @@ func TestParamInjector_NilPassesThrough(t *testing.T) {
 	}
 }
 
-// TestParamInjector_RunsAfterPreExecuteHook verifies that the param injector runs
+// TestParamManager_RunsAfterPreExecuteHook verifies that ParamManager injection runs
 // only after the pre-execute hook completes.
-func TestParamInjector_RunsAfterPreExecuteHook(t *testing.T) {
+func TestParamManager_RunsAfterPreExecuteHook(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockReadOnlyTool("ordered_tool", "A tool for ordering test")
 	registry.Register(tool)
@@ -1359,11 +1375,13 @@ func TestParamInjector_RunsAfterPreExecuteHook(t *testing.T) {
 
 	var mu sync.Mutex
 	injectorCalled := false
-	registry.SetParamInjector(func(toolName, source string, input json.RawMessage) json.RawMessage {
-		mu.Lock()
-		injectorCalled = true
-		mu.Unlock()
-		return input
+	registry.SetParamManager(&injectOnlyParamManager{
+		injectFn: func(_ context.Context, _, _ string, input json.RawMessage) json.RawMessage {
+			mu.Lock()
+			injectorCalled = true
+			mu.Unlock()
+			return input
+		},
 	})
 
 	ctx := context.Background()

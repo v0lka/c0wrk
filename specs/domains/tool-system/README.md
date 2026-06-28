@@ -15,7 +15,7 @@ Provides tool infrastructure for the agent: discovery, registration, policy enfo
 - `core/tools/builtin_registration.go` — RegisterBuiltinTools function
 - `sdk/tools/builtins/batch.go` — batch meta-tool (intercepted at executor level)
 - `core/tools/judge.go` — ToolJudge (LLM-based safety evaluation)
-- `core/tools/mcp/gateway.go` — MCP Gateway (dynamic tool discovery)
+- `sdk/tools/mcp/gateway.go` — MCP Gateway (dynamic tool discovery)
 - `core/toolnames.go` — tool name constants, NoProjectDisabledTools, NoProjectBashBlacklist
 
 ## Core Types
@@ -80,7 +80,7 @@ const (
 │  + SetJudge()             LLM safety evaluation        │
 │  + SetPreExecuteHook()    pre-execution gate          │
 │  + SetToolFilter()         registration filter         │
-│  + SetParamInjector()     input transformation        │
+│  + SetParamManager()      input transformation        │
 │  + RegisterWithSource()   filtered registration       │
 │  + SetDisabledTools()     block tools by name (e.g., No Project) │
 │  + DisabledTools()        read disabled-tool set       │
@@ -98,7 +98,7 @@ ToolRegistry.Execute(ctx, name, input)
 ├─ 3. Extra bash blacklist match? → return error result (per-session, e.g., No Project blocks dev commands)
 ├─ 4. Internal tool? → execute immediately (bypass remaining policy/judge/hook checks)
 ├─ 5. PreExecuteHook (blocking gate, e.g., index ready)
-├─ 6. ParamInjector (transform input, e.g., scope paths)
+├─ 6. ParamManager (transform input, e.g., scope paths)
 ├─ 7. Symlink Gate: detect symlinks in input paths
 │      ├─ Symlinks found → force confirmation (unless always_deny)
 │      └─ No symlinks → continue
@@ -164,7 +164,7 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 
 - `PreExecuteHook` — block until preconditions met (e.g., vector index ready)
 - `ToolFilter` — reject tools during registration (e.g., filter MCP tools by server)
-- `ParamInjector` — transform tool input (e.g., inject workspace path for MCP tools)
+- `ParamManager` — transform tool input (e.g., inject workspace path for MCP tools)
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
 - New built-in tools: implement `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools`
 - To disable tools at runtime (e.g., for No Project mode): call `SetDisabledTools(names)` on the core registry; all tools including internal ones are blocked at execution time

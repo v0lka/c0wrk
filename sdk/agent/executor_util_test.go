@@ -25,7 +25,7 @@ func TestBuildCacheMeta_FileTool_Nonexistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 	mockTools := newMockToolExecutor()
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	meta := exec.buildCacheMeta(ctx, tools.ToolReadFile, json.RawMessage(`{"path": "/nonexistent/file.txt"}`))
 	if meta.FilePath != "" {
 		t.Error("buildCacheMeta should return empty FilePath for nonexistent file")
@@ -34,7 +34,7 @@ func TestBuildCacheMeta_FileTool_Nonexistent(t *testing.T) {
 
 func TestBuildCacheMeta_MCPTool(t *testing.T) {
 	mcpTools := &mockToolExecutorMCP{}
-	exec := NewExecutor(&mockLLMCaller{}, mcpTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mcpTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	meta := exec.buildCacheMeta(context.Background(), "mcp_search", json.RawMessage(`{}`))
 	if !meta.IsMCP {
 		t.Error("buildCacheMeta should set IsMCP=true for MCP tools")
@@ -48,7 +48,7 @@ func TestBuildCacheMeta_PathOutsideWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 	mockTools := newMockToolExecutor()
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	meta := exec.buildCacheMeta(ctx, tools.ToolReadFile, json.RawMessage(`{"path": "/etc/hosts"}`))
 	if meta.FilePath != "" {
 		t.Error("buildCacheMeta should return empty meta for path outside workspace")
@@ -57,7 +57,7 @@ func TestBuildCacheMeta_PathOutsideWorkspace(t *testing.T) {
 
 func TestBuildCacheMeta_NonFileTool(t *testing.T) {
 	mockTools := newMockToolExecutor()
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	meta := exec.buildCacheMeta(context.Background(), "search", json.RawMessage(`{}`))
 	if meta.FilePath != "" {
 		t.Error("non-file tool should not have FilePath")
@@ -75,7 +75,7 @@ func TestBuildCacheMeta_ExistingFile(t *testing.T) {
 	}
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 	mockTools := newMockToolExecutor()
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	input, _ := json.Marshal(map[string]string{"path": "test.txt"})
 	meta := exec.buildCacheMeta(ctx, tools.ToolReadFile, input)
 	if meta.FilePath == "" {
@@ -101,7 +101,7 @@ func TestBuildCacheMeta_WriteFile_ExistingFile(t *testing.T) {
 	}
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 	mockTools := newMockToolExecutor()
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	input, _ := json.Marshal(map[string]string{"path": "output.txt"})
 	meta := exec.buildCacheMeta(ctx, tools.ToolWriteFile, input)
 	if meta.FilePath == "" {
@@ -117,7 +117,7 @@ func TestBuildCacheMeta_EditFile_ExistingFile(t *testing.T) {
 	}
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
 	mockTools := newMockToolExecutor()
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	input, _ := json.Marshal(map[string]string{"path": "edit_me.txt"})
 	meta := exec.buildCacheMeta(ctx, tools.ToolEditFile, input)
 	if meta.FilePath == "" {

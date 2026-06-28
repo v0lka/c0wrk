@@ -230,73 +230,6 @@ func TestConvertMCPResult_MixedContent(t *testing.T) {
 	}
 }
 
-// --- StripParamsFromSchema tests ---
-
-func TestStripParamsFromSchema_NoParamsToRemove(t *testing.T) {
-	orig := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)
-	result := StripParamsFromSchema(orig, nil)
-	if string(result) != string(orig) {
-		t.Errorf("expected unchanged schema when paramsToRemove is nil, got %s", result)
-	}
-}
-
-func TestStripParamsFromSchema_StripsProject(t *testing.T) {
-	orig := json.RawMessage(`{"type":"object","properties":{"project":{"type":"string"},"query":{"type":"string"}},"required":["project","query"]}`)
-	result := StripParamsFromSchema(orig, map[string]bool{"project": true})
-
-	var schema map[string]json.RawMessage
-	if err := json.Unmarshal(result, &schema); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// "project" should be gone from properties
-	var props map[string]json.RawMessage
-	if err := json.Unmarshal(schema["properties"], &props); err != nil {
-		t.Fatalf("properties is not valid JSON: %v", err)
-	}
-	if _, ok := props["project"]; ok {
-		t.Error("'project' should be stripped from properties")
-	}
-	if _, ok := props["query"]; !ok {
-		t.Error("'query' should still be present in properties")
-	}
-
-	// "project" should be gone from required
-	var required []string
-	if err := json.Unmarshal(schema["required"], &required); err != nil {
-		t.Fatalf("required is not valid JSON: %v", err)
-	}
-	for _, r := range required {
-		if r == "project" {
-			t.Error("'project' should be stripped from required")
-		}
-	}
-}
-
-func TestStripParamsFromSchema_NoProperties(t *testing.T) {
-	orig := json.RawMessage(`{"type":"object"}`)
-	result := StripParamsFromSchema(orig, map[string]bool{"project": true})
-	if string(result) != string(orig) {
-		t.Errorf("expected unchanged schema when no properties key, got %s", result)
-	}
-}
-
-func TestStripParamsFromSchema_ParamNotPresent(t *testing.T) {
-	orig := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)
-	result := StripParamsFromSchema(orig, map[string]bool{"project": true})
-	if string(result) != string(orig) {
-		t.Errorf("expected unchanged schema when param not present, got %s", result)
-	}
-}
-
-func TestStripParamsFromSchema_InvalidJSON(t *testing.T) {
-	orig := json.RawMessage(`not json`)
-	result := StripParamsFromSchema(orig, map[string]bool{"project": true})
-	if string(result) != string(orig) {
-		t.Errorf("expected unchanged schema for invalid JSON, got %s", result)
-	}
-}
-
 func TestNewTool_WithSanitizer(t *testing.T) {
 	server := newServer("test-mcp")
 	info := ToolInfo{
@@ -309,7 +242,11 @@ func TestNewTool_WithSanitizer(t *testing.T) {
 		if source != "test-mcp" {
 			return schema
 		}
-		return StripParamsFromSchema(schema, map[string]bool{"project": true})
+		stripped, err := sdktools.StripParamsFromSchema(schema, map[string]bool{"project": true})
+		if err != nil {
+			return schema
+		}
+		return stripped
 	}
 
 	tool := NewTool(server, info, sanitizer)
@@ -370,7 +307,11 @@ func TestNewTool_SanitizerSkippedForOtherSource(t *testing.T) {
 		if source != "test-mcp" {
 			return schema
 		}
-		return StripParamsFromSchema(schema, map[string]bool{"project": true})
+		stripped, err := sdktools.StripParamsFromSchema(schema, map[string]bool{"project": true})
+		if err != nil {
+			return schema
+		}
+		return stripped
 	}
 
 	tool := NewTool(server, info, sanitizer)

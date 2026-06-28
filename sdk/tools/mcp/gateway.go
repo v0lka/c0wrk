@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // Gateway manages connections to multiple MCP servers and provides
@@ -48,15 +48,6 @@ func (g *Gateway) SetDefaultWorkDir(dir string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.defaultWorkDir = dir
-}
-
-// SetSchemaSanitizer sets a function that transforms tool input schemas before
-// they are registered. This allows stripping parameters that are auto-injected
-// at execution time and should not be exposed to the LLM.
-func (g *Gateway) SetSchemaSanitizer(fn SchemaSanitizer) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.schemaSanitizer = fn
 }
 
 // Start connects to all configured MCP servers and discovers their tools.
@@ -104,7 +95,7 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 // RegisterTools registers all discovered MCP tools into the ToolRegistry.
 // Each tool is wrapped as a Tool that implements the tools.Tool interface.
 // Tools are registered with the server name as their source for proper unregistration.
-func (g *Gateway) RegisterTools(registry *tools.ToolRegistry) error {
+func (g *Gateway) RegisterTools(registry *sdktools.ToolRegistry) error {
 	g.mu.RLock()
 	sanitizer := g.schemaSanitizer
 	g.mu.RUnlock()
@@ -153,7 +144,7 @@ func (g *Gateway) Stop() error {
 // Reconfigure updates the gateway's server connections based on a new configuration.
 // It handles added, removed, and changed servers while preserving unchanged connections.
 func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
-	registry *tools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) error {
+	registry *sdktools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -445,6 +436,12 @@ type GatewayConfig struct {
 	Servers        map[string]ServerEntry
 	DefaultWorkDir string       // fallback working directory for stdio servers
 	HTTPClient     *http.Client // optional proxy-configured HTTP client for HTTP transport servers
+
+	// SchemaSanitizer transforms tool input schemas before registration.
+	// When set, it is called for every tool registered from MCP servers.
+	// Use this to strip auto-injected parameters that should not be visible
+	// to the LLM. Nil means no sanitization.
+	SchemaSanitizer SchemaSanitizer
 }
 
 // ServerEntry describes how to launch a single MCP server.
@@ -461,7 +458,7 @@ type ServerEntry struct {
 // StartGateway creates, configures, starts, and registers an Gateway.
 // expandEnv resolves ${VAR} references in environment values.
 // Returns (nil, nil) if no servers are configured.
-func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) (*Gateway, error) {
+func StartGateway(ctx context.Context, cfg GatewayConfig, registry *sdktools.ToolRegistry, expandEnv func(string) string, logger *slog.Logger) (*Gateway, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, nil
 	}
@@ -493,6 +490,7 @@ func StartGateway(ctx context.Context, cfg GatewayConfig, registry *tools.ToolRe
 	gateway := newGateway()
 	gateway.config = cfg // Store the original config for diffing in Reconfigure
 	gateway.defaultWorkDir = cfg.DefaultWorkDir
+	gateway.schemaSanitizer = cfg.SchemaSanitizer
 	gateway.logger = logger
 
 	if err := gateway.Start(ctx, mcpConfigs); err != nil {

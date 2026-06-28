@@ -149,7 +149,7 @@ func (a *App) Startup(ctx context.Context) {
 	uiEmitFunc := a.buildUIEmitFunc()
 	askUserFunc := a.buildAskUserCallback(uiEmitFunc)
 	confirmFunc := a.buildConfirmCallback(uiEmitFunc)
-	stepLimitFunc := a.buildStepLimitCallback(uiEmitFunc)
+	hitlHandler := a.buildStepLimitCallback(uiEmitFunc)
 
 	var vectorMgrPtr atomic.Pointer[vectorindex.Manager]
 	vectorReady := make(chan struct{})
@@ -165,7 +165,7 @@ func (a *App) Startup(ctx context.Context) {
 		UIEmitFunc:           uiEmitFunc,
 		AskUserFunc:          askUserFunc,
 		ConfirmFunc:          confirmFunc,
-		StepLimitFunc:        stepLimitFunc,
+		HITLHandler:         hitlHandler,
 		VectorSearchFunc:     vectorSearchFunc,
 		VectorSearchWaitFunc: vectorSearchWaitFunc,
 	}, log, startTime)

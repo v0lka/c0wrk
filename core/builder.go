@@ -21,7 +21,7 @@ import (
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/core/tools/mcp"
+	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/agent/reflector"
@@ -50,6 +50,7 @@ type OrchestratorBuilder struct {
 	vectorSearchFunc builtins.VectorSearchFunc
 	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
+	paramManager     sdktools.ParamManager
 
 	// Cached reasoning effort string. Always empty at builder level;
 	// per-request overrides flow through HandleOptions.ReasoningEffort
@@ -111,6 +112,12 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 	// 1. Tool registry + built-in tools (fast — synchronous)
 	b.registry = tools.NewToolRegistry()
 
+	// Wire unified ParamManager for both schema sanitization (MCP gateway)
+	// and param injection (tool execution). Both sides share the same instance
+	// so auto-injected parameters stay in sync.
+	b.paramManager = sdktools.DefaultParamManager()
+	b.registry.SetParamManager(b.paramManager)
+
 	toolsCfg := configToBuiltinToolsConfig(cfg)
 	toolsCfg.AskUserFunc = askUserFunc
 	toolsCfg.HTTPClient = b.proxyClient
@@ -145,7 +152,8 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	// MCP Gateway (optional — failures are non-fatal)
 	mcpCfg := configToGatewayConfig(cfg)
 	mcpCfg.HTTPClient = b.proxyClient
-	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry, cfg.ExpandEnvVars, b.logger)
+	mcpCfg.SchemaSanitizer = b.paramManager.SanitizeSchema
+	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable
 		// but the orchestrator can still operate with built-in tools.
@@ -156,10 +164,8 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	b.gatewayErr = err
 	b.mu.Unlock()
 
-	// Wire schema sanitizer on successful gateway startup (S-17).
-	if gw != nil {
-		gw.SetSchemaSanitizer(defaultSchemaSanitizer())
-	}
+	// Schema sanitizer is configured via GatewayConfig.SchemaSanitizer above;
+	// the unified ParamManager handles both sanitization and injection.
 
 	// LLM Router
 	llmRouter, modelReg, err := b.buildRouter(ctx, cfg)
@@ -256,7 +262,7 @@ func (b *OrchestratorBuilder) Build(
 	logger *slog.Logger,
 	workspacePath string,
 	bbFactory BlackboardFactory,
-	stepLimitFunc agent.StepLimitFunc,
+	hitlHandler agent.HITLHandler,
 	dumpWriter io.Writer,
 	stepDumpTracker *orchestration.StepDumpTracker,
 ) (*Orchestrator, error) {
@@ -323,7 +329,7 @@ func (b *OrchestratorBuilder) Build(
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		Model:                     cfg.LLM.DefaultModel,
 		ReasoningEffort:           reasoningEffort,
-		StepLimitFunc:             stepLimitFunc,
+		HITLHandler:               hitlHandler,
 		PreWarningPercent:         cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 		InjectionDefenseEnabled:   cfg.Security.InjectionDefenseEnabled,
 		AgentsMDMaxBytes:          cfg.Security.AgentsMDMaxBytes,
@@ -374,6 +380,12 @@ func (b *OrchestratorBuilder) Build(
 	// the underlying SDK ToolRegistry (tools themselves are stateless), but each
 	// session has its own policyOverrides/skillPolicyOverrides view.
 	sessionRegistry := b.registry.Clone()
+
+	// HITLHandler.OnToolCall is invoked by the executor before every tool call
+	// (see executor_run.go processSingleToolCall). PolicyUserConfirm tools fall
+	// through to auto-execute when ConfirmFunc is nil (CLI-mode behavior), which
+	// is the intended path — the HITL handler already intercepted at the executor
+	// level. No explicit ConfirmFunc bridge is needed.
 
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:            coreRouter,
@@ -1048,15 +1060,6 @@ func (p *judgeDumpProvider) ChatCompletion(ctx context.Context, req llm.ChatRequ
 		caller = agent.NewDumpCaller(caller, dw, p.logger)
 	}
 	return caller.Call(ctx, req)
-}
-
-func (p *judgeDumpProvider) StreamChatCompletion(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatChunk, error) {
-	// Streaming dump support is not yet implemented (dumpCaller only wraps
-	// non-streaming Call). The judge currently only uses ChatCompletion, so
-	// this path is unreachable in practice. If a future provider switches
-	// the judge to streaming, this bypass must be addressed — either by
-	// adding a streaming-aware DumpCaller or by buffering the stream.
-	return p.inner.StreamChatCompletion(ctx, req)
 }
 
 func (p *judgeDumpProvider) Name() string { return p.inner.Name() }

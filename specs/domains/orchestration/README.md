@@ -67,7 +67,7 @@ type OrchestratorConfig struct {
     PreWarningPercent         int    // default: 75 (context-fill notification threshold)
     Model                     string
     ReasoningEffort           string
-    StepLimitFunc             agent.StepLimitFunc          // from sdk/agent
+    HITLHandler               agent.HITLHandler            // from sdk/agent (OnStepLimit + OnToolCall)
     InjectionDefenseEnabled   bool   // gates <untrusted-content> wrapping and prompt text
     AgentsMDMaxBytes          int    // cap on AGENTS.md content; 0 = default (65536), negative = unlimited
 }
@@ -191,7 +191,7 @@ Note: yaml key casing is mixed across config sections — `executor.*` keys use 
 
 - Custom `ContextManagerFactory` for alternative memory strategies
 - Custom `BlackboardFactory` for alternative persistence
-- Custom `StepLimitFunc` for step limit and circuit breaker handling
+- Custom `HITLHandler` for step limit and circuit breaker handling
 - System prompt customization via `buildSystemPrompt` function
 
 ## Related Specs

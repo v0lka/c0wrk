@@ -337,7 +337,7 @@ func TestBuildStepLimitCallback_NoAppContext(t *testing.T) {
 	a := &App{}
 	cb := a.buildStepLimitCallback(func(session.Event) {})
 
-	resp, err := cb(context.Background(), 10, 5, "")
+	resp, err := cb.OnStepLimit(context.Background(), 10, 5, "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestBuildStepLimitCallback_NoSessionID(t *testing.T) {
 	a := &App{ctx: context.Background()}
 	cb := a.buildStepLimitCallback(func(session.Event) {})
 
-	resp, err := cb(context.Background(), 10, 5, "")
+	resp, err := cb.OnStepLimit(context.Background(), 10, 5, "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

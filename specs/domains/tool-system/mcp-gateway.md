@@ -6,9 +6,9 @@ Manages connections to external MCP (Model Context Protocol) servers, discovers 
 
 ## Key Files
 
-- `core/tools/mcp/gateway.go` — Gateway struct (Start, Stop, RegisterTools, Status) + config types
-- `core/tools/mcp/server.go` — Server struct (Connect, DiscoverTools, CallTool, Close)
-- `core/tools/mcp/mcptool.go` — MCPTool (wraps MCP tool as sdk Tool interface)
+- `sdk/tools/mcp/gateway.go` — Gateway struct (Start, Stop, RegisterTools, Status) + config types
+- `sdk/tools/mcp/server.go` — Server struct (Connect, DiscoverTools, CallTool, Close)
+- `sdk/tools/mcp/mcptool.go` — MCPTool (wraps MCP tool as sdk Tool interface)
 
 ## Behavior
 
@@ -58,7 +58,7 @@ MCP tools are wrapped in `MCPTool` struct that implements `sdk/tools.Tool`:
 
 ### Schema Sanitization
 
-The gateway's `SchemaSanitizer` removes parameters from tool schemas that are auto-injected at execution time (via `ParamInjector`). This prevents the LLM from seeing and filling parameters that will be overwritten.
+The gateway's `SchemaSanitizer` removes parameters from tool schemas that are auto-injected at execution time (via `ParamManager`). This prevents the LLM from seeing and filling parameters that will be overwritten.
 
 ### Status Reporting
 

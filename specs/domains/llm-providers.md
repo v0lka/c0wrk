@@ -14,9 +14,9 @@ Abstracts multiple LLM providers behind a unified interface, with model routing,
 - `sdk/llm/tokencount.go` — token counting
 - `sdk/llm/usage.go` — TrackingCaller (usage tracking wrapper)
 - `sdk/llm/errors.go` — typed provider errors (rate limit, context exceeded, etc.)
-- `sdk/llm/message.go` — Message / ChatRequest / ChatResponse / ChatChunk / TokenUsage / ToolDefinition types
+- `sdk/llm/message.go` — Message / ChatRequest / ChatResponse / TokenUsage / ToolDefinition types
 - `sdk/llm/schema_sanitize.go` — JSON Schema sanitization for function calling
-- `sdk/llm/provider_helpers.go` — shared provider helpers (retry, streaming)
+- `sdk/llm/provider_helpers.go` — shared provider helpers (retry, stop-reason mapping, message extraction)
 - `sdk/llm/provider_openai.go` — OpenAI provider (ChatGPT / OpenAI-compatible Chat Completions transport)
 - `sdk/llm/provider_openai_responses.go` — OpenAI Responses API transport (for reasoning-capable models)
 - `sdk/llm/provider_anthropic.go` — Anthropic provider
@@ -31,7 +31,6 @@ Abstracts multiple LLM providers behind a unified interface, with model routing,
 // Provider interface
 type Provider interface {
     ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error)
-    StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error)
     Name() string
 }
 
@@ -103,7 +102,7 @@ core.Orchestrator needs LLM call
 llm.Router.Call(ctx, ChatRequest)
   ├─ Select active provider via reverse index (modelToProvider)
   ├─ Add reasoning effort to request
-  ├─ Call provider.ChatCompletion() or .StreamChatCompletion()
+  ├─ Call provider.ChatCompletion()
   ├─ On rate limit: exponential backoff + retry
   ├─ On context window exceeded: return specific error
   └─ Return ChatResponse

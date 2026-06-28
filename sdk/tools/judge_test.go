@@ -27,10 +27,6 @@ func (m *mockLLMProvider) ChatCompletion(ctx context.Context, req llm.ChatReques
 	return m.response, nil
 }
 
-func (m *mockLLMProvider) StreamChatCompletion(ctx context.Context, req llm.ChatRequest) (<-chan llm.ChatChunk, error) {
-	return nil, errors.New("not implemented")
-}
-
 func (m *mockLLMProvider) Name() string {
 	return "mock"
 }

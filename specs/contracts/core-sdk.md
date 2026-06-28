@@ -17,7 +17,7 @@
 | `CompactionStrategy`   | sdk/agent | core/stepconfig                  | Memory compaction                     |
 | `AgentEvents`          | sdk/agent | core/types (embedded in Emitter) | Lifecycle event hooks                 |
 | `ContextManager`       | sdk/agent | core/types (extended)            | Context window management             |
-| `StepLimitFunc`        | sdk/agent | core/orchestrator config         | Step limit / circuit breaker callback |
+| `HITLHandler`          | sdk/agent | core/orchestrator config         | Human-in-the-loop handler (OnStepLimit + OnToolCall) |
 | `Step`                 | sdk/agent | core/types (direct)              | Single ReAct iteration (incl. IsUntrusted flag) |
 | `ExecutorResult`       | sdk/agent | core/types (direct)              | Executor output                       |
 | `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds            |
@@ -71,8 +71,9 @@
 | `ConfirmFunc`          | sdk/tools | core/tools, backend, desktop   | User confirmation callback                    |
 | `ConfirmationRequest`  | sdk/tools | core/tools, backend, desktop   | Confirmation request payload                  |
 | `ConfirmationResponse` | sdk/tools | core/tools, backend, desktop   | Confirmation response enum (`ConfirmAllowOnce`, `ConfirmDeny`, `ConfirmDenyAndStop`) |
-| `ToolJudger`           | sdk/tools | core/tools, core/tools/mcp     | Tool self-judging interface                   |
-| `AutoInjectedParamProject` | sdk/tools | core/tools/mcp (schema sanitizer) | Constant for auto-injected parameter name   |
+| `ToolJudger`           | sdk/tools | core/tools, sdk/tools/mcp     | Tool self-judging interface                   |
+| `AutoInjectedParamProject` | sdk/tools | sdk/tools/mcp (schema sanitizer) | Constant for auto-injected parameter name   |
+| `ParamManager`          | sdk/tools | core/tools, core/builder       | Auto-injected param management (SanitizeSchema + InjectParams) |
 | `FileCoherenceChecker` | sdk/tools | core/tools (re-exported)       | Cross-session file conflict detection          |
 | `FileSig`              | sdk/tools | core/tools (re-exported)       | File signature (mtime + size) for coherence    |
 | `CoherenceConflict`    | sdk/tools | core/tools (re-exported)       | Conflict record with session and timing detail |
@@ -107,12 +108,12 @@ All layers above sdk import source packages directly, e.g.:
 // desktop/startup_phases.go
 import "github.com/v0lka/c0wrk/sdk/tools"  // → sdktools.ConfirmFunc, ...
 import "github.com/v0lka/c0wrk/core/tools" // → coretools.AskUserFunc, coretools.WithNoProject
-import "github.com/v0lka/c0wrk/sdk/agent"   // → agent.StepLimitFunc, agent.StepLimitDeny, ...
+import "github.com/v0lka/c0wrk/sdk/agent"   // → agent.HITLHandler, agent.StepLimitDeny, ...
 
 // backend/application.go
 import "github.com/v0lka/c0wrk/sdk/tools"      // → sdktools.ConfirmFunc, sdktools.EnvInfo, ...
-import "github.com/v0lka/c0wrk/core/tools/mcp"  // → mcp.ServerStatus
-import "github.com/v0lka/c0wrk/sdk/agent"       // → agent.StepLimitFunc
+import "github.com/v0lka/c0wrk/sdk/tools/mcp"  // → mcp.ServerStatus
+import "github.com/v0lka/c0wrk/sdk/agent"       // → agent.HITLHandler
 import "github.com/v0lka/c0wrk/core/proxy"       // → proxy.MaskURL, proxy.Config
 import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 ```
@@ -121,7 +122,7 @@ import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 
 `core/builder.go` → `NewOrchestratorBuilder`:
 
-1. Creates `sdk/tools.ToolRegistry`
+1. Creates `sdk/tools.ToolRegistry` and sets `ParamManager` on it (handles schema sanitization for MCP + param injection at execution time)
 2. Registers built-in tools from `sdk/tools/builtins`
 3. Starts MCP gateway (async)
 4. Creates `ToolResultCache` with TTL and passes per-tool truncation to orchestrator config
@@ -168,7 +169,7 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 - If you add a field to `sdk/orchestration.Config` → update `NewOrchestrator` in `core/orchestrator.go`
 - If you change `CallerForStep` signature (sdk/orchestration or sdk/planner) → update all closures in `core/orchestrator.go` and `core/builder.go`, plus all call sites in `sdk/orchestration/orchestrator.go` and `sdk/planner/planner.go`
 - If you modify `sdk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
-- If you change `sdk/tools.Tool` interface → update `core/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
+- If you change `sdk/tools.Tool` interface → update `sdk/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sdk type that backend or desktop needs → import directly from the source package
 - If you modify `sdk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation
 - If you change `IsUntrusted()` semantics → update ALL built-in tool registrations (`sdk/tools/builtins/*.go`) AND `sdk/security/wrap.go`

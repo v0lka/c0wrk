@@ -10,9 +10,10 @@ import (
 // ToolRegistry stores all available tools and provides them to Executor.
 // Thread-safe via sync.RWMutex.
 type ToolRegistry struct {
-	tools       map[string]Tool
-	toolSources map[string]string
-	mu          sync.RWMutex
+	tools        map[string]Tool
+	toolSources  map[string]string
+	paramManager ParamManager // optional param injector for execution-time injection
+	mu           sync.RWMutex
 }
 
 // NewToolRegistry creates a new ToolRegistry with an empty tool map.
@@ -125,11 +126,22 @@ func (r *ToolRegistry) ListFiltered(excludeNames map[string]bool) []ToolDescript
 // Execute looks up a tool by name and executes it with the given input.
 // Returns an error if the tool is not found.
 // This is a simple execute with NO policy enforcement, NO confirmation, NO judge.
+// Param injection is applied if a ParamManager is configured.
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (ToolResult, error) {
 	tool, ok := r.Get(name)
 	if !ok {
 		return ToolResult{Content: "tool not found: " + name, IsError: true}, nil
 	}
+
+	// Apply param injection if configured (e.g., project scoping for MCP tools).
+	r.mu.RLock()
+	pm := r.paramManager
+	source := r.toolSources[name]
+	r.mu.RUnlock()
+	if pm != nil {
+		input = pm.InjectParams(ctx, name, source, input)
+	}
+
 	return tool.Execute(ctx, input)
 }
 
@@ -173,5 +185,14 @@ func (r *ToolRegistry) IsToolUntrusted(name string) bool {
 		return true
 	}
 	return false
+}
+
+// SetParamManager sets a ParamManager that handles param injection at execution time.
+// When set, it is consulted during Execute() to inject auto-managed parameters
+// (e.g., "project") before invoking the tool.
+func (r *ToolRegistry) SetParamManager(pm ParamManager) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.paramManager = pm
 }
 

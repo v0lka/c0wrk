@@ -52,7 +52,7 @@ func TestRunSubAgent_Successful(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig)
+	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -89,7 +89,7 @@ func TestRunSubAgent_ContextCancellation(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig)
+	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -132,7 +132,7 @@ func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 			},
 		}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig)
+		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
 	}
 
 	agents := []agent.SubAgentTask{
@@ -202,7 +202,7 @@ func TestRunSubAgentsParallel_EmptyInput(t *testing.T) {
 func TestNewSubAgent(t *testing.T) {
 	mockLLM := &mockLLMCaller{}
 	mockTools := &mockToolExecutor{}
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig)
+	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
 
 	subAgent := agent.NewSubAgent("test_id", executor)
 
@@ -222,7 +222,7 @@ func TestRunSubAgentsParallel_WithContextCancellation(t *testing.T) {
 	createMockExecutor := func() *agent.Executor {
 		mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{}}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig)
+		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
 	}
 
 	agents := []agent.SubAgentTask{

@@ -2,11 +2,9 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/tools/mcp"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 )
 
 // ReconfigureMCP reconfigures the MCP gateway with the given config.
@@ -23,14 +21,14 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 	defer b.mu.Unlock()
 
 	if b.gateway != nil {
-		return b.gateway.Reconfigure(ctx, mcpCfg, b.registry, cfg.ExpandEnvVars, b.logger)
+		return b.gateway.Reconfigure(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	}
 
-	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry, cfg.ExpandEnvVars, b.logger)
+	mcpCfg.SchemaSanitizer = b.paramManager.SanitizeSchema
+	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		return err
 	}
-	gw.SetSchemaSanitizer(defaultSchemaSanitizer())
 	b.gateway = gw
 	return nil
 }
@@ -78,16 +76,5 @@ func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
 	return mcp.GatewayConfig{
 		Servers:        entries,
 		DefaultWorkDir: cfg.MCP.DefaultWorkDir,
-	}
-}
-
-// defaultSchemaSanitizer returns a SchemaSanitizer that strips parameters which
-// are auto-injected at execution time and should not be visible to the LLM.
-func defaultSchemaSanitizer() mcp.SchemaSanitizer {
-	autoInjected := map[string]bool{
-		sdktools.AutoInjectedParamProject: true,
-	}
-	return func(_ string, schema json.RawMessage) json.RawMessage {
-		return mcp.StripParamsFromSchema(schema, autoInjected)
 	}
 }

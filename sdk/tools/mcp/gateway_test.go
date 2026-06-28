@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/v0lka/c0wrk/core/tools"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
@@ -125,7 +124,7 @@ func TestGatewayRegisterTools(t *testing.T) {
 	gateway.servers["mock-server"] = server
 
 	// Create a registry and register tools
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 	err := gateway.RegisterTools(registry)
 	if err != nil {
 		t.Fatalf("RegisterTools failed: %v", err)
@@ -394,7 +393,7 @@ func TestGateway_Stop_ClearsServers(t *testing.T) {
 
 func TestGateway_RegisterTools_Empty(t *testing.T) {
 	gateway := newGateway()
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 
 	err := gateway.RegisterTools(registry)
 	if err != nil {
@@ -423,7 +422,7 @@ func TestGateway_RegisterTools_MultipleServers(t *testing.T) {
 	gateway.servers["s1"] = server1
 	gateway.servers["s2"] = server2
 
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 	err := gateway.RegisterTools(registry)
 	if err != nil {
 		t.Fatalf("RegisterTools failed: %v", err)
@@ -548,7 +547,7 @@ func TestGatewayIntegration(t *testing.T) {
 	}
 
 	// Test registering tools
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 	if err := gateway.RegisterTools(registry); err != nil {
 		t.Fatalf("failed to register tools: %v", err)
 	}
@@ -613,7 +612,7 @@ func TestToolExecuteIntegration(t *testing.T) {
 
 func TestGateway_Reconfigure_AddServer(t *testing.T) {
 	gateway := newGateway()
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 
 	// Start with one mock server
 	server1 := newServer("server1")
@@ -670,7 +669,7 @@ func TestGateway_Reconfigure_AddServer(t *testing.T) {
 
 func TestGateway_Reconfigure_RemoveServer(t *testing.T) {
 	gateway := newGateway()
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 
 	// Start with two mock servers
 	server1 := newServer("server1")
@@ -734,7 +733,7 @@ func TestGateway_Reconfigure_RemoveServer(t *testing.T) {
 
 func TestGateway_Reconfigure_UnchangedServer(t *testing.T) {
 	gateway := newGateway()
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 
 	// Start with one mock server
 	server1 := newServer("server1")
@@ -782,7 +781,7 @@ func TestGateway_Reconfigure_UnchangedServer(t *testing.T) {
 
 func TestGateway_Reconfigure_EmptyConfig(t *testing.T) {
 	gateway := newGateway()
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 
 	// Start with one mock server
 	server1 := newServer("server1")
@@ -828,7 +827,7 @@ func TestGateway_Reconfigure_EmptyConfig(t *testing.T) {
 
 func TestGateway_Reconfigure_ChangedConfig(t *testing.T) {
 	gateway := newGateway()
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 
 	// Start with one mock server
 	server1 := newServer("server1")
@@ -1205,7 +1204,7 @@ func TestGateway_SetDefaultWorkDir(t *testing.T) {
 	}
 }
 
-func TestGateway_SetSchemaSanitizer(t *testing.T) {
+func TestGateway_SchemaSanitizer(t *testing.T) {
 	gateway := newGateway()
 
 	// Add a test MCP server with a project parameter
@@ -1219,15 +1218,19 @@ func TestGateway_SetSchemaSanitizer(t *testing.T) {
 	}
 	gateway.servers["test-mcp"] = server
 
-	// Set sanitizer to strip 'project' param from test-mcp tools
-	gateway.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
+	// Set sanitizer via GatewayConfig to strip 'project' param from test-mcp tools
+	gateway.schemaSanitizer = func(source string, schema json.RawMessage) json.RawMessage {
 		if source != "test-mcp" {
 			return schema
 		}
-		return StripParamsFromSchema(schema, map[string]bool{"project": true})
-	})
+		stripped, err := sdktools.StripParamsFromSchema(schema, map[string]bool{"project": true})
+		if err != nil {
+			return schema
+		}
+		return stripped
+	}
 
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 	if err := gateway.RegisterTools(registry); err != nil {
 		t.Fatalf("RegisterTools failed: %v", err)
 	}
@@ -1266,7 +1269,7 @@ func TestGateway_SetSchemaSanitizer(t *testing.T) {
 	}
 }
 
-func TestGateway_SetSchemaSanitizer_OtherSourceUntouched(t *testing.T) {
+func TestGateway_SchemaSanitizer_OtherSourceUntouched(t *testing.T) {
 	gateway := newGateway()
 
 	// Add a non-test-mcp server with a project parameter
@@ -1280,15 +1283,19 @@ func TestGateway_SetSchemaSanitizer_OtherSourceUntouched(t *testing.T) {
 	}
 	gateway.servers["other-mcp"] = server
 
-	// Set sanitizer that only strips project for test-mcp
-	gateway.SetSchemaSanitizer(func(source string, schema json.RawMessage) json.RawMessage {
+	// Set sanitizer via GatewayConfig that only strips project for test-mcp
+	gateway.schemaSanitizer = func(source string, schema json.RawMessage) json.RawMessage {
 		if source != "test-mcp" {
 			return schema
 		}
-		return StripParamsFromSchema(schema, map[string]bool{"project": true})
-	})
+		stripped, err := sdktools.StripParamsFromSchema(schema, map[string]bool{"project": true})
+		if err != nil {
+			return schema
+		}
+		return stripped
+	}
 
-	registry := tools.NewToolRegistry()
+	registry := sdktools.NewToolRegistry()
 	if err := gateway.RegisterTools(registry); err != nil {
 		t.Fatalf("RegisterTools failed: %v", err)
 	}
@@ -1319,7 +1326,7 @@ func TestStartGateway_DefaultWorkDir(t *testing.T) {
 		DefaultWorkDir: "/my/workspace",
 	}
 
-	gw, err := StartGateway(context.Background(), cfg, tools.NewToolRegistry(), func(s string) string { return s }, nil)
+	gw, err := StartGateway(context.Background(), cfg, sdktools.NewToolRegistry(), func(s string) string { return s }, nil)
 	// No servers configured, returns nil gateway
 	if gw != nil {
 		t.Error("expected nil gateway when no servers configured")

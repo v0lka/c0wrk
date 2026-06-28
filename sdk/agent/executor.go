@@ -37,10 +37,8 @@ const executorWrapUpNudge = "[System] You are running low on tool call iteration
 
 const executorFinishNudge = "[System] You must call the finish tool to complete your task. Simply responding with text does not count as completion. Call the finish tool now with your final answer."
 
-// Circuit-breaker nudge messages. These are kept as Go constants (rather than
-// embedded .md templates) because several use fmt.Sprintf interpolation with
-// runtime values (tool name, iteration count). Moving them to markdown would
-// require a template engine for a marginal readability gain.
+// Circuit-breaker nudge messages. Kept as Go constants because they use fmt.Sprintf
+// with runtime values that would require a template engine if moved to markdown.
 const (
 	repeatNudgeMessage = "[System] You have called the same tool with the same arguments " +
 		"multiple times in a row and it keeps failing. Try a different approach: " +
@@ -81,7 +79,7 @@ type Executor struct {
 	suppressAssistantEvents bool        // if true, don't emit AssistantChunk/AssistantDone
 	toolResultBudget        ToolResultBudget
 	circuitBreaker          CircuitBreakerConfig
-	stepLimitFunc           StepLimitFunc // callback when step limit is reached
+	hitl                    HITLHandler // human-in-the-loop hooks (uses NoopHITLHandler if nil)
 
 	// Tool result caching and per-tool truncation (Stage 1).
 	toolCache         *ToolResultCache
@@ -133,10 +131,14 @@ type Executor struct {
 // emitter is optional (nil-safe).
 // suppressAssistantEvents disables AssistantChunk/AssistantDone events; set to true for plan-step
 // executors to avoid duplicate assistant messages when the orchestrator handles final output.
-func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget, circuitBreaker CircuitBreakerConfig) *Executor {
+// hitl is optional (nil-safe) — uses NoopHITLHandler if nil.
+func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget, circuitBreaker CircuitBreakerConfig, hitl HITLHandler) *Executor {
 	// Use NoopEvents if nil to avoid nil checks throughout the code
 	if emitter == nil {
 		emitter = &NoopEvents{}
+	}
+	if hitl == nil {
+		hitl = &NoopHITLHandler{}
 	}
 	return &Executor{
 		llm:                     llmRouter,
@@ -147,6 +149,7 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		suppressAssistantEvents: suppressAssistantEvents,
 		toolResultBudget:        toolResultBudget,
 		circuitBreaker:          circuitBreaker,
+		hitl:                    hitl,
 	}
 }
 
@@ -177,9 +180,12 @@ func (e *Executor) SetPlanContext(stepID string, index, total int) {
 	e.planStepTotal = total
 }
 
-// SetStepLimitFunc sets the callback invoked when the executor reaches its step limit.
-func (e *Executor) SetStepLimitFunc(fn StepLimitFunc) {
-	e.stepLimitFunc = fn
+// SetHITLHandler sets the human-in-the-loop handler for tool call interception and step limit decisions.
+func (e *Executor) SetHITLHandler(h HITLHandler) {
+	if h == nil {
+		h = &NoopHITLHandler{}
+	}
+	e.hitl = h
 }
 
 // SetToolCache sets the shared tool result cache for this executor.

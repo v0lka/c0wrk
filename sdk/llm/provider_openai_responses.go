@@ -14,9 +14,6 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
-// responseEventPrefix is the common prefix for Responses API streaming event types.
-const responseEventPrefix = "response."
-
 // newResponsesClient creates an official OpenAI SDK client for the Responses API.
 func newResponsesClient(apiKey, baseURL string, httpClient *http.Client) *oai.Client {
 	opts := []option.RequestOption{
@@ -42,85 +39,6 @@ func responsesAPICompletion(ctx context.Context, client *oai.Client, providerNam
 	}
 
 	return convertResponsesResponse(resp)
-}
-
-// responsesAPIStream performs a streaming Responses API call.
-func responsesAPIStream(ctx context.Context, client *oai.Client, providerName string, req ChatRequest) (<-chan ChatChunk, error) {
-	params := buildResponsesParams(req)
-
-	stream := client.Responses.NewStreaming(ctx, params)
-
-	chunks := make(chan ChatChunk, 64)
-
-	go func() {
-		defer close(chunks)
-		defer func() { _ = stream.Close() }()
-
-		acc := NewStreamToolCallAccumulator()
-		toolIdx := 0
-
-		for stream.Next() {
-			event := stream.Current()
-
-			switch event.Type {
-			case responseEventPrefix + "output_text.delta":
-				if event.Delta.OfString != "" {
-					chunks <- ChatChunk{Delta: event.Delta.OfString}
-				}
-
-			case responseEventPrefix + "reasoning_summary_text.delta":
-				if event.Delta.OfString != "" {
-					chunks <- ChatChunk{Reasoning: event.Delta.OfString}
-				}
-
-			case responseEventPrefix + "function_call_arguments.delta":
-				acc.HandleDelta(toolIdx, event.ItemID, "", event.Delta.OfString)
-
-			case responseEventPrefix + "function_call_arguments.done":
-				// The item is complete; pick up the name from the output_item.added event
-				// which was handled earlier. Just ensure the arguments are finalized.
-				acc.HandleDelta(toolIdx, "", "", "")
-
-			case responseEventPrefix + "output_item.added":
-				if event.Item.Type == "function_call" {
-					acc.HandleDelta(toolIdx, event.Item.CallID, event.Item.Name, "")
-				}
-
-			case responseEventPrefix + "output_item.done":
-				if event.Item.Type == "function_call" {
-					toolIdx++
-				}
-
-			case responseEventPrefix + "completed":
-				acc.Emit(chunks)
-				stopReason := mapResponsesStopReason(&event.Response)
-				chunks <- ChatChunk{
-					StopReason: stopReason,
-					Usage: &TokenUsage{
-						InputTokens:  int(event.Response.Usage.InputTokens),
-						OutputTokens: int(event.Response.Usage.OutputTokens),
-					},
-				}
-
-			case responseEventPrefix + "failed", responseEventPrefix + "incomplete":
-				acc.Emit(chunks)
-				stopReason := mapResponsesStopReason(&event.Response)
-				chunks <- ChatChunk{StopReason: stopReason}
-
-			case "error":
-				chunks <- ChatChunk{StopReason: "error", Delta: event.Message}
-			}
-		}
-
-		if err := stream.Err(); err != nil {
-			select {
-			case chunks <- ChatChunk{StopReason: "error"}:
-			default:
-			}
-		}
-	}()
-
-	return chunks, nil
 }
 
 // buildResponsesParams constructs ResponseNewParams from a ChatRequest.

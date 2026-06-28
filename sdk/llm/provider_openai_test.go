@@ -84,51 +84,6 @@ func TestOpenAIProvider_Integration(t *testing.T) {
 	}
 }
 
-func TestOpenAIProvider_StreamIntegration(t *testing.T) {
-	t.Skip("integration test disabled: requires valid OPENAI_API_KEY")
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
-
-	p, err := NewOpenAIProvider(OpenAIProviderConfig{
-		Name:   "openai",
-		APIKey: apiKey,
-	})
-	if err != nil {
-		t.Fatalf("NewOpenAIProvider failed: %v", err)
-	}
-
-	ctx := context.Background()
-	chunks, err := p.StreamChatCompletion(ctx, ChatRequest{
-		Model: "gpt-4o-mini",
-		Messages: []Message{
-			{Role: "user", Content: "Say hello in exactly one word."},
-		},
-		MaxTokens: 10,
-	})
-	if err != nil {
-		t.Fatalf("StreamChatCompletion failed: %v", err)
-	}
-
-	var sb strings.Builder
-	var gotStopReason bool
-	for chunk := range chunks {
-		sb.WriteString(chunk.Delta)
-		if chunk.StopReason != "" {
-			gotStopReason = true
-		}
-	}
-	content := sb.String()
-
-	if content == "" {
-		t.Error("expected non-empty streamed content")
-	}
-	if !gotStopReason {
-		t.Error("expected stop reason in stream")
-	}
-}
-
 func TestOpenAIProvider_BuildChatParams(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "openai", APIKey: "k"})
 

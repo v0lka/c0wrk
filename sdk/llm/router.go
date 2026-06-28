@@ -19,7 +19,7 @@ type SamplingFunc func(family string) *float64
 // MaxRetries defaults to 3 when unset or zero. This means transient errors (HTTP 429,
 // 502, 503, 529, network blips) recover automatically with exponential backoff
 // (1s → 2s → 4s, capped at MaxBackoff). This adds up to ~7s of latency on the
-// worst-case retry path and may partially consume streaming tokens on retried requests.
+// worst-case retry path.
 // Callers that rely on error propagation for compaction timing, circuit-breaker resets,
 // or budget control should account for this default. To disable retries entirely,
 // set MaxRetries to a negative value (e.g. -1).
@@ -340,37 +340,3 @@ func (r *Router) SetModel(ctx context.Context, model string) error {
 	return nil
 }
 
-// Stream sends a streaming chat request to the active provider.
-func (r *Router) Stream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
-	if err := r.prepareRequest(ctx, &req); err != nil {
-		return nil, err
-	}
-
-	var lastErr error
-	backoff := r.initialBackoff
-
-	for attempt := 0; attempt <= r.maxRetries; attempt++ {
-		ch, err := r.activeProvider.StreamChatCompletion(ctx, req)
-		if err == nil {
-			return ch, nil
-		}
-
-		lastErr = err
-
-		if !IsRetryable(err) || attempt == r.maxRetries {
-			return nil, err
-		}
-
-		// Sleep with jitter, respecting context cancellation
-		if !retryBackoff(ctx, backoff) {
-			return nil, lastErr
-		}
-
-		backoff *= 2
-		if backoff > r.maxBackoff {
-			backoff = r.maxBackoff
-		}
-	}
-
-	return nil, lastErr
-}

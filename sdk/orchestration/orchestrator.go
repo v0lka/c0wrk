@@ -22,7 +22,8 @@ type Orchestrator struct {
 	cfg        Config
 	events     Events // non-nil (NoopEvents as default)
 	maxRetries int    // resolved from Config (default 2)
-	maxSteps   int    // resolved from Config (default 30)
+	maxSteps   int    // resolved from Config (default 50)
+	bbShutdown func() // set in Execute() when blackboard implements Shutdown; called in Cleanup()
 }
 
 // ErrExecutionIncomplete is returned by Execute/Resume when the plan was not
@@ -41,11 +42,11 @@ func New(cfg Config) *Orchestrator {
 	}
 	maxRetries := cfg.MaxRetries
 	if maxRetries == 0 {
-		maxRetries = 2
+		maxRetries = DefaultOrchestrationConfig().MaxRetries
 	}
 	maxSteps := cfg.MaxSteps
 	if maxSteps == 0 {
-		maxSteps = 30
+		maxSteps = DefaultOrchestrationConfig().MaxSteps
 	}
 	return &Orchestrator{
 		cfg:        cfg,
@@ -55,12 +56,16 @@ func New(cfg Config) *Orchestrator {
 	}
 }
 
-// Cleanup releases held resources (per-step dump files). Idempotent.
+// Cleanup releases held resources (per-step dump files, checkpointed blackboard worker). Idempotent.
 func (o *Orchestrator) Cleanup() {
 	if o.cfg.StepDumpTracker != nil {
 		if err := o.cfg.StepDumpTracker.CloseAll(); err != nil {
 			o.log().Warn("orchestrator cleanup: error closing step dump files", "error", err)
 		}
+	}
+	if o.bbShutdown != nil {
+		o.bbShutdown()
+		o.bbShutdown = nil
 	}
 }
 
@@ -83,6 +88,16 @@ func (o *Orchestrator) Execute(ctx context.Context, userMessage string) (*Execut
 	} else {
 		bb = NewMapBlackboard()
 	}
+
+	// Wire persistence context and shutdown for checkpointed blackboards.
+	if cpb, ok := bb.(interface {
+		SetPersistContext(context.Context)
+		Shutdown()
+	}); ok {
+		cpb.SetPersistContext(ctx)
+		o.bbShutdown = cpb.Shutdown
+	}
+
 	bb.SetOriginalRequest(userMessage)
 
 	// Get available tools
@@ -93,6 +108,10 @@ func (o *Orchestrator) Execute(ctx context.Context, userMessage string) (*Execut
 }
 
 // Resume continues execution from a previously persisted blackboard state.
+// The caller retains ownership of the blackboard — if bb implements Shutdown()
+// (e.g., *CheckpointedBlackboard), the caller is responsible for calling it
+// when done. Unlike Execute(), Resume() does NOT register the blackboard for
+// automatic cleanup via o.Cleanup().
 func (o *Orchestrator) Resume(ctx context.Context, bb Blackboard) (*ExecutionResult, error) {
 	plan := bb.GetPlan()
 	if plan == nil {
@@ -460,7 +479,7 @@ func (o *Orchestrator) executePlanWithSteps(
 
 			scopedEvents := o.scopeEvents(step.ID)
 			stepCaller := o.callerForStep(cm, step.ID)
-			executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, false, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
+			executor := agent.NewExecutor(stepCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, false, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker, o.cfg.HITLHandler)
 			executor.SetPlanContext(step.ID, stepIndex+1, len(plan.Steps))
 			o.configureExecutor(executor, stepCfg)
 
@@ -687,7 +706,7 @@ func (o *Orchestrator) retryFailedSteps(
 			}
 
 			retryCaller := o.callerForStep(cm, failedStepID)
-			executor := agent.NewExecutor(retryCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker)
+			executor := agent.NewExecutor(retryCaller, o.cfg.Tools, o.cfg.TokenCounter, maxSteps, scopedEvents, true, o.cfg.ToolResultBudget, o.cfg.CircuitBreaker, o.cfg.HITLHandler)
 			executor.SetPlanContext(failedStepID, stepIndex+1, len(plan.Steps))
 			o.configureExecutor(executor, stepCfg)
 
@@ -924,8 +943,8 @@ func (o *Orchestrator) findStepIndex(plan *Plan, stepID string) int {
 
 // configureExecutor applies shared executor settings from orchestrator config.
 func (o *Orchestrator) configureExecutor(executor *agent.Executor, stepCfg StepConfig) {
-	if o.cfg.StepLimitFunc != nil {
-		executor.SetStepLimitFunc(o.cfg.StepLimitFunc)
+	if o.cfg.HITLHandler != nil {
+		executor.SetHITLHandler(o.cfg.HITLHandler)
 	}
 	if o.cfg.PreWarningPercent > 0 {
 		executor.SetPreWarningPercent(o.cfg.PreWarningPercent)

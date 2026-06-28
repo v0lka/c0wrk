@@ -37,9 +37,6 @@ func IsInternalTool(name string) bool {
 // ToolFilter decides whether a tool should be registered. Return false to reject.
 type ToolFilter func(toolName, source string) bool
 
-// ParamInjector transforms tool input before execution (e.g., injecting scoping params).
-type ParamInjector func(toolName, source string, input json.RawMessage) json.RawMessage
-
 // ToolRegistry stores all available tools and provides them to Executor.
 // It embeds the SDK ToolRegistry for basic operations and adds policy enforcement on top.
 // Thread-safe via sync.RWMutex.
@@ -60,7 +57,7 @@ type ToolRegistry struct {
 	hasDefaultPolicy           bool
 	preExecuteHook              PreExecuteHook
 	toolFilter                  ToolFilter
-	paramInjector               ParamInjector
+	paramManager                sdktools.ParamManager
 	disabledTools               map[string]bool
 	extraBashBlacklist          []*regexp.Regexp
 	logger                      *slog.Logger
@@ -97,7 +94,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		hasDefaultPolicy:          r.hasDefaultPolicy,
 		preExecuteHook:            r.preExecuteHook,
 		toolFilter:                r.toolFilter,
-		paramInjector:             r.paramInjector,
+		paramManager:              r.paramManager,
 		extraBashBlacklist:        r.extraBashBlacklist, // shared (compiled regexps are read-only)
 		logger:                    r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
@@ -251,11 +248,12 @@ func (r *ToolRegistry) SetToolFilter(f ToolFilter) {
 	r.toolFilter = f
 }
 
-// SetParamInjector sets an injector that transforms tool input before execution.
-func (r *ToolRegistry) SetParamInjector(fn ParamInjector) {
+// SetParamManager sets a ParamManager that handles both schema sanitization
+// (for MCP gateway) and param injection (for tool execution).
+func (r *ToolRegistry) SetParamManager(pm sdktools.ParamManager) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.paramInjector = fn
+	r.paramManager = pm
 }
 
 // RegisterWithSource registers a tool with the given source, subject to the tool filter.
@@ -359,10 +357,10 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	// Param injection (e.g., project scoping for MCP tools)
 	r.mu.RLock()
-	injector := r.paramInjector
+	pm := r.paramManager
 	r.mu.RUnlock()
-	if injector != nil {
-		input = injector(name, source, input)
+	if pm != nil {
+		input = pm.InjectParams(ctx, name, source, input)
 	}
 
 	// Symlink detection gate: force-confirm when any tool input contains paths

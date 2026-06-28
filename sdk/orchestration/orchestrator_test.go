@@ -77,8 +77,8 @@ func TestNew_Defaults(t *testing.T) {
 	if o.maxRetries != 2 {
 		t.Errorf("expected default maxRetries=2, got %d", o.maxRetries)
 	}
-	if o.maxSteps != 30 {
-		t.Errorf("expected default maxSteps=30, got %d", o.maxSteps)
+	if o.maxSteps != 50 {
+		t.Errorf("expected default maxSteps=50, got %d", o.maxSteps)
 	}
 	if o.events == nil {
 		t.Fatal("events should default to NoopEvents, not nil")
@@ -1347,7 +1347,7 @@ func TestScopeRetryAttempt_Scopable(t *testing.T) {
 
 func TestConfigureExecutor_AllFields(t *testing.T) {
 	o := New(Config{
-		StepLimitFunc:     func(_ context.Context, _ int, _ int, _ string) (agent.StepLimitResponse, error) { return agent.StepLimitAllowOnce, nil },
+		HITLHandler:       nil,
 		PreWarningPercent: 75,
 		ToolCache:         &agent.ToolResultCache{},
 		PerToolTruncation: map[string]agent.ToolTruncationConfig{"finish": {}},
@@ -1355,7 +1355,7 @@ func TestConfigureExecutor_AllFields(t *testing.T) {
 	})
 	// Create a minimal executor — we don't need it to work, just to receive config
 	cm := &mockContextManager{}
-	executor := agent.NewExecutor(&mockLLM{}, &mockToolExecutor{}, llm.NewSimpleTokenCounter(), 10, &NoopEvents{}, false, agent.ToolResultBudget{}, agent.CircuitBreakerConfig{})
+	executor := agent.NewExecutor(&mockLLM{}, &mockToolExecutor{}, llm.NewSimpleTokenCounter(), 10, &NoopEvents{}, false, agent.ToolResultBudget{}, agent.CircuitBreakerConfig{}, nil)
 	o.configureExecutor(executor, StepConfig{})
 	// No assertions needed — we just ensure no panic and full branch coverage
 	_ = cm
@@ -1364,7 +1364,7 @@ func TestConfigureExecutor_AllFields(t *testing.T) {
 
 func TestConfigureExecutor_ZeroPreWarning(t *testing.T) {
 	o := New(Config{PreWarningPercent: 0})
-	executor := agent.NewExecutor(&mockLLM{}, &mockToolExecutor{}, llm.NewSimpleTokenCounter(), 10, &NoopEvents{}, false, agent.ToolResultBudget{}, agent.CircuitBreakerConfig{})
+	executor := agent.NewExecutor(&mockLLM{}, &mockToolExecutor{}, llm.NewSimpleTokenCounter(), 10, &NoopEvents{}, false, agent.ToolResultBudget{}, agent.CircuitBreakerConfig{}, nil)
 	o.configureExecutor(executor, StepConfig{})
 }
 

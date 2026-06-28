@@ -65,9 +65,9 @@ type OrchestratorConfig struct {
 	// When non-empty, each executor gets this value directly (no role adaptation).
 	ReasoningEffort string
 
-	// StepLimitFunc is called when an executor reaches its step limit.
-	// If nil, the executor will stop with a budget exhausted error.
-	StepLimitFunc agent.StepLimitFunc
+	// HITLHandler is called when an executor reaches its step limit.
+	// If nil, a default handler is used (deny all extensions).
+	HITLHandler agent.HITLHandler
 
 	// PreWarningPercent is the context fill % that triggers the pre-compaction
 	// store_fact nudge. When fill reaches this threshold (but below predictive),
@@ -203,7 +203,7 @@ type OrchestratorDeps struct {
 // reflector, logger, and emitter are optional (nil-safe).
 func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrator {
 	if cfg.MaxSteps == 0 {
-		cfg.MaxSteps = 30
+		cfg.MaxSteps = orchestration.DefaultOrchestrationConfig().MaxSteps
 	}
 	if cfg.KeepFirst == 0 {
 		cfg.KeepFirst = 3
@@ -309,7 +309,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		PerToolTruncation:         deps.PerToolTruncation,
 		ReasoningEffort:           cfg.ReasoningEffort,
 		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger, buildSystemPrompt, taskCtxProvider, deps.SkillManager),
-		StepLimitFunc:             cfg.StepLimitFunc,
+		HITLHandler:               cfg.HITLHandler,
 		StepDumpTracker:           deps.StepDumpTracker,
 	}
 

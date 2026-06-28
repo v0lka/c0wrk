@@ -31,7 +31,7 @@ var defaultCircuitBreakerConfig = CircuitBreakerConfig{
 // --- NewExecutor tests ---
 
 func TestNewExecutor_NilEmitter(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	if exec.emitter == nil {
 		t.Fatal("emitter should not be nil when nil is passed")
 	}
@@ -41,7 +41,7 @@ func TestNewExecutor_NilEmitter(t *testing.T) {
 }
 
 func TestSetPlanContext(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.SetPlanContext("step_3", 3, 5)
 	if exec.planStepID != "step_3" {
 		t.Errorf("planStepID = %q, want %q", exec.planStepID, "step_3")
@@ -64,7 +64,7 @@ func TestExecutor_Run_FinishTool(t *testing.T) {
 		},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	result, err := exec.Run(context.Background(), nil, cm)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestExecutor_Run_ToolCallThenFinish(t *testing.T) {
 	mockTools.results["read_file"] = tools.ToolResult{Content: "hello world"}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "read_file", Description: "read a file", Source: "core"},
@@ -125,7 +125,7 @@ func TestExecutor_Run_MaxStepsExhausted(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 3, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 3, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -147,7 +147,7 @@ func TestExecutor_Run_NudgeOnImplicitFinish(t *testing.T) {
 		},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -180,7 +180,7 @@ func TestExecutor_Run_NudgeOnNoToolsNoEndTurn(t *testing.T) {
 		},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool1", Description: "t", Source: "core"},
@@ -201,7 +201,7 @@ func TestExecutor_Run_NoToolsImplicitFinish(t *testing.T) {
 		},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	result, err := exec.Run(context.Background(), nil, cm)
 	if err != nil {
@@ -220,7 +220,7 @@ func TestExecutor_Run_LLMError(t *testing.T) {
 		errors: []error{errors.New("api error")},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	_, err := exec.Run(context.Background(), nil, cm)
 	if err == nil {
@@ -236,7 +236,7 @@ func TestExecutor_Run_ContextCancelled(t *testing.T) {
 		responses: []*llm.ChatResponse{llmResponseEndTurn("hi")},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	_, err := exec.Run(ctx, nil, cm)
 	if err == nil {
@@ -255,7 +255,7 @@ func TestExecutor_Run_ToolExecutionError(t *testing.T) {
 	mockTools.errors["broken_tool"] = errors.New("infrastructure failure")
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	_, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "broken_tool", Description: "broken", Source: "core"},
@@ -280,7 +280,7 @@ func TestExecutor_Run_ToolNotFound_Recovers(t *testing.T) {
 	mockTools.results["ghost_tool"] = tools.ToolResult{Content: "tool not found: ghost_tool", IsError: true}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "read_file", Description: "read a file", Source: "core"},
@@ -314,7 +314,7 @@ func TestExecutor_Run_CircuitBreaker_Abort(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -342,7 +342,7 @@ func TestExecutor_Run_CircuitBreaker_Nudge(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -369,7 +369,7 @@ func TestExecutor_Run_ToolResultBudget(t *testing.T) {
 	cm := newMockContextManager()
 	cm.availableTokens = 5000
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   500,
 		MaxFillFraction: 0.3,
 	}, defaultCircuitBreakerConfig)
@@ -406,7 +406,7 @@ func TestExecutor_Run_EmptyToolResult(t *testing.T) {
 	mockTools.results["empty_tool"] = tools.ToolResult{Content: ""}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "empty_tool", Description: "empty", Source: "core"},
 	}, cm)
@@ -431,7 +431,7 @@ func TestExecutor_Run_CompactionTriggered(t *testing.T) {
 	cm := newMockContextManager()
 	cm.fillCheck = FillCheck{Percent: 80, Status: "compact", Used: 80000, Max: 100000}
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool1", Description: "t", Source: "core"},
 	}, cm)
@@ -458,7 +458,7 @@ func TestExecutor_Run_EmergencyCompaction(t *testing.T) {
 	cm := newMockContextManager()
 	cm.fillCheck = FillCheck{Percent: 95, Status: "emergency", Used: 95000, Max: 100000}
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool1", Description: "t", Source: "core"},
 	}, cm)
@@ -485,7 +485,7 @@ func TestExecutor_Run_ContextExceededError_ReactiveCompaction(t *testing.T) {
 		},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	result, err := exec.Run(context.Background(), nil, cm)
 	if err != nil {
@@ -513,7 +513,7 @@ func TestExecutor_Run_RejectFillStatus(t *testing.T) {
 	cm := newMockContextManager()
 	cm.fillCheck = FillCheck{Percent: 99, Status: "reject", Used: 99000, Max: 100000}
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	_, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool1", Description: "t", Source: "core"},
 	}, cm)
@@ -532,7 +532,7 @@ func TestExecutor_Run_SuppressAssistantEvents(t *testing.T) {
 	cm := newMockContextManager()
 	events := &recordingEvents{}
 
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, events, true, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, events, true, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	_, err := exec.Run(context.Background(), nil, cm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -552,7 +552,7 @@ func TestExecutor_Run_EmitsAssistantEvents(t *testing.T) {
 	cm := newMockContextManager()
 	events := &recordingEvents{}
 
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, events, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, events, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	_, err := exec.Run(context.Background(), nil, cm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -582,7 +582,7 @@ func TestExecutor_Run_FinishInTaskTools(t *testing.T) {
 		responses: []*llm.ChatResponse{llmResponseFinish("done", "42")},
 	}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	taskTools := []tools.ToolDescriptor{
 		{Name: "finish", Description: "custom finish", Source: "core", InputSchema: json.RawMessage(`{}`)},
@@ -621,7 +621,7 @@ func TestExecutor_Run_PlanContextLogging(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.SetPlanContext("step_2", 2, 5)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
@@ -671,7 +671,7 @@ func TestIsContextExceededError(t *testing.T) {
 // --- applyToolResultBudget tests ---
 
 func TestApplyToolResultBudget_NoBudget(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	cm := newMockContextManager()
 	result := exec.applyToolResultBudget("hello world", cm, "some_tool")
 	if result != "hello world" {
@@ -680,7 +680,7 @@ func TestApplyToolResultBudget_NoBudget(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_UnderBudget(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   1000,
 		MaxFillFraction: 0.5,
 	}, defaultCircuitBreakerConfig)
@@ -694,7 +694,7 @@ func TestApplyToolResultBudget_UnderBudget(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_Truncated(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   100,
 		MaxFillFraction: 0.5,
 	}, defaultCircuitBreakerConfig)
@@ -712,7 +712,7 @@ func TestApplyToolResultBudget_Truncated(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_MinFloor(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   10, // very small
 		MaxFillFraction: 0.01,
 	}, defaultCircuitBreakerConfig)
@@ -728,7 +728,7 @@ func TestApplyToolResultBudget_MinFloor(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_ReadFileHint(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   100,
 		MaxFillFraction: 0.5,
 	}, defaultCircuitBreakerConfig)
@@ -746,7 +746,7 @@ func TestApplyToolResultBudget_ReadFileHint(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_RipgrepHint(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   100,
 		MaxFillFraction: 0.5,
 	}, defaultCircuitBreakerConfig)
@@ -764,7 +764,7 @@ func TestApplyToolResultBudget_RipgrepHint(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_GrepHint(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   100,
 		MaxFillFraction: 0.5,
 	}, defaultCircuitBreakerConfig)
@@ -782,7 +782,7 @@ func TestApplyToolResultBudget_GrepHint(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_GlobHint(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   100,
 		MaxFillFraction: 0.5,
 	}, defaultCircuitBreakerConfig)
@@ -800,7 +800,7 @@ func TestApplyToolResultBudget_GlobHint(t *testing.T) {
 }
 
 func TestApplyToolResultBudget_DefaultHint(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
 		HardCapTokens:   100,
 		MaxFillFraction: 0.5,
 	}, defaultCircuitBreakerConfig)
@@ -820,7 +820,7 @@ func TestApplyToolResultBudget_DefaultHint(t *testing.T) {
 // --- buildToolDefinitions tests ---
 
 func TestBuildToolDefinitions_AddsFinish(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	defs := exec.buildToolDefinitions([]tools.ToolDescriptor{
 		{Name: "search", Description: "search"},
 	})
@@ -841,7 +841,7 @@ func TestBuildToolDefinitions_AddsFinish(t *testing.T) {
 }
 
 func TestBuildToolDefinitions_NoDoubleFinish(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	defs := exec.buildToolDefinitions([]tools.ToolDescriptor{
 		{Name: "finish", Description: "custom finish"},
 	})
@@ -858,7 +858,7 @@ func TestBuildToolDefinitions_NoDoubleFinish(t *testing.T) {
 }
 
 func TestBuildToolDefinitions_EmptyInput(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	defs := exec.buildToolDefinitions(nil)
 	if len(defs) != 1 {
 		t.Errorf("expected 1 definition (finish only), got %d", len(defs))
@@ -882,7 +882,7 @@ func TestExecutor_Run_CircuitBreaker_JSONNormalization(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -911,7 +911,7 @@ func TestExecutor_Run_CircuitBreaker_ErrorAwareAbort(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "not found", IsError: true}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -953,7 +953,7 @@ func TestExecutor_Run_CircuitBreaker_ErrorAwareNudge(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "not found", IsError: true}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -1002,7 +1002,7 @@ func TestExecutor_Run_TruncatedToolCall_SkipsExecution(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "write_file", Description: "write a file", Source: "core"},
 	}, cm)
@@ -1055,7 +1055,7 @@ func TestExecutor_Run_ConsecutiveTruncation_Aborts(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "write_file", Description: "write a file", Source: "core"},
 	}, cm)
@@ -1095,7 +1095,7 @@ func TestExecutor_Run_ConsecutiveParseErrors_Aborts(t *testing.T) {
 	}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "create_file", Description: "create a file", Source: "core"},
 	}, cm)
@@ -1121,7 +1121,7 @@ func TestExecutor_Run_MaxTokens_SetFromOutputLimit(t *testing.T) {
 	cm := newMockContextManager()
 	// OutputLimit() returns 8192 by default in the mock
 
-	exec := NewExecutor(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	_, err := exec.Run(context.Background(), nil, cm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1173,7 +1173,7 @@ func TestExecutor_Run_TruncationCounterResets(t *testing.T) {
 	mockTools.results["write_file"] = tools.ToolResult{Content: "written"}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "write_file", Description: "write a file", Source: "core"},
 	}, cm)
@@ -1206,7 +1206,7 @@ func TestExecutor_WrapUpNudge(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool_1", Description: "t", Source: "core"},
 	}, cm)
@@ -1246,7 +1246,7 @@ func TestExecutor_WrapUpNudge_OnlyOnce(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool_1", Description: "t", Source: "core"},
 	}, cm)
@@ -1269,7 +1269,7 @@ func TestExecutor_WrapUpNudge_OnlyOnce(t *testing.T) {
 // --- StepLimit tests ---
 
 func TestStepLimit_NilCallback(t *testing.T) {
-	// Create executor with maxSteps=2, NO StepLimitFunc set
+	// Create executor with maxSteps=2, NO HITLHandler set (uses NoopHITLHandler)
 	// Mock LLM to always request a tool call
 	toolInput := json.RawMessage(`{"q":"test"}`)
 	mockLLM := &mockLLMCaller{
@@ -1282,8 +1282,8 @@ func TestStepLimit_NilCallback(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	// NO StepLimitFunc set - testing silent exit at step limit
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	// NoopHITLHandler (default) - testing silent exit at step limit
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1305,7 +1305,7 @@ func TestStepLimit_NilCallback(t *testing.T) {
 
 func TestStepLimit_Deny(t *testing.T) {
 	// Create executor with maxSteps=2
-	// Set StepLimitFunc that returns StepLimitDeny
+	// Set HITLHandler.OnStepLimit that returns StepLimitDeny
 	// Mock LLM to always request a tool call
 	toolInput := json.RawMessage(`{"q":"test"}`)
 	mockLLM := &mockLLMCaller{
@@ -1321,13 +1321,13 @@ func TestStepLimit_Deny(t *testing.T) {
 	callbackCallCount := 0
 	var receivedCurrentStep, receivedMaxSteps int
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callbackCallCount++
 		receivedCurrentStep = currentStep
 		receivedMaxSteps = maxSteps
 		return StepLimitDeny, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1358,7 +1358,7 @@ func TestStepLimit_Deny(t *testing.T) {
 
 func TestStepLimit_AllowOnce(t *testing.T) {
 	// Create executor with maxSteps=2
-	// Set StepLimitFunc that returns StepLimitAllowOnce on first call, then StepLimitDeny on second
+	// Set HITLHandler.OnStepLimit that returns StepLimitAllowOnce on first call, then StepLimitDeny on second
 	// Mock LLM to always request a tool call
 	toolInput := json.RawMessage(`{"q":"test"}`)
 	mockLLM := &mockLLMCaller{
@@ -1374,14 +1374,14 @@ func TestStepLimit_AllowOnce(t *testing.T) {
 
 	callbackCallCount := 0
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callbackCallCount++
 		if callbackCallCount == 1 {
 			return StepLimitAllowOnce, nil
 		}
 		return StepLimitDeny, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1427,7 +1427,7 @@ func TestStepLimit_AllowOnce(t *testing.T) {
 
 func TestStepLimit_AllowAlways(t *testing.T) {
 	// Create executor with maxSteps=2
-	// Set StepLimitFunc that returns StepLimitAllowAlways
+	// Set HITLHandler.OnStepLimit that returns StepLimitAllowAlways
 	// Mock LLM to request tool calls for 5 iterations, then return a final text response (finish)
 	// Use different tool inputs to avoid triggering the circuit breaker
 	mockLLM := &mockLLMCaller{
@@ -1445,11 +1445,11 @@ func TestStepLimit_AllowAlways(t *testing.T) {
 
 	callbackCallCount := 0
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 2, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callbackCallCount++
 		return StepLimitAllowAlways, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1528,7 +1528,7 @@ func TestExecutor_Run_FruitlessDetector_Nudge(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1585,7 +1585,7 @@ func TestExecutor_Run_FruitlessDetector_Abort(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "not found", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1647,7 +1647,7 @@ func TestExecutor_Run_FruitlessDetector_Reset(t *testing.T) {
 	}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1717,7 +1717,7 @@ func TestExecutor_Run_FruitlessDetector_IgnoresErrors(t *testing.T) {
 	}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1773,7 +1773,7 @@ func TestExecutor_Run_SameToolRepeat_Nudge(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1830,7 +1830,7 @@ func TestExecutor_Run_SameToolRepeat_Abort(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1888,7 +1888,7 @@ func TestExecutor_Run_SameToolRepeat_ResetOnToolChange(t *testing.T) {
 	mockTools.results["other_tool"] = tools.ToolResult{Content: strings.Repeat("y", 50), IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -1961,7 +1961,7 @@ func TestExecutor_Run_SameToolRepeat_ResetOnSizeChange(t *testing.T) {
 	}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -2016,7 +2016,7 @@ func TestExecutor_Run_SameToolRepeat_StoreFactExcluded(t *testing.T) {
 	mockTools.results["store_fact"] = tools.ToolResult{Content: "Fact stored.", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "store_fact", Description: "store a fact", Source: "core"},
@@ -2056,7 +2056,7 @@ func TestExecutor_Run_MultiToolCall_AllExecuted(t *testing.T) {
 	mockTools.results["read_file"] = tools.ToolResult{Content: "file content"}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "read_file", Description: "read a file", Source: "core"},
 	}, cm)
@@ -2116,7 +2116,7 @@ func TestExecutor_Run_MultiToolCall_SingleCallStandalone(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "read_file", Description: "read a file", Source: "core"},
 	}, cm)
@@ -2147,7 +2147,7 @@ func TestExecutor_Run_MultiToolCall_FinishInGroup(t *testing.T) {
 	mockTools.results["read_file"] = tools.ToolResult{Content: "content"}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "read_file", Description: "read a file", Source: "core"},
 	}, cm)
@@ -2189,7 +2189,7 @@ func TestExecutor_Run_MultiToolCall_EmptyResultHandled(t *testing.T) {
 	mockTools.results["tool2"] = tools.ToolResult{Content: "result2"}
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool1", Description: "t", Source: "core"},
 		{Name: "tool2", Description: "t", Source: "core"},
@@ -2358,7 +2358,7 @@ func TestCheckRepeatIdenticalTool_ZeroThresholds(t *testing.T) {
 		TruncationAbortThreshold: 3,
 		ParseErrorAbortThreshold: 3,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 
 	// Simulate two consecutive identical tool calls where the first produced an error.
 	action := llm.ToolCall{Name: "bad_tool", Input: json.RawMessage(`{"x":1}`)}

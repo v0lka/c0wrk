@@ -15,7 +15,7 @@ import (
 // --- Setter method tests ---
 
 func TestSetLogger(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	if exec.logger != nil {
 		t.Error("logger should be nil before SetLogger")
 	}
@@ -26,7 +26,7 @@ func TestSetLogger(t *testing.T) {
 }
 
 func TestSetReasoningEffort(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	if exec.reasoningEffort != "" {
 		t.Error("reasoningEffort should be empty initially")
 	}
@@ -37,7 +37,7 @@ func TestSetReasoningEffort(t *testing.T) {
 }
 
 func TestSetToolCache(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	if exec.toolCache != nil {
 		t.Error("toolCache should be nil initially")
 	}
@@ -49,7 +49,7 @@ func TestSetToolCache(t *testing.T) {
 }
 
 func TestSetPreWarningPercent(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	if exec.preWarningPercent != 0 {
 		t.Error("preWarningPercent should be 0 initially")
 	}
@@ -60,7 +60,7 @@ func TestSetPreWarningPercent(t *testing.T) {
 }
 
 func TestSetPerToolTruncation(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	if exec.perToolTruncation != nil {
 		t.Error("perToolTruncation should be nil initially")
 	}
@@ -91,7 +91,7 @@ func TestCheckFruitlessResult_ThresholdZero_Disabled(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.consecutiveFruitlessCount = 100
 	act, result, err := exec.checkFruitlessResult(
 		context.Background(),
@@ -124,7 +124,7 @@ func TestCheckFruitlessResult_ErrorDoesNotCount(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	for i := 0; i < 5; i++ {
 		_, _, _ = exec.checkFruitlessResult(
 			context.Background(),
@@ -152,7 +152,7 @@ func TestCheckFruitlessResult_LargeResultResets(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	_, _, _ = exec.checkFruitlessResult(
 		context.Background(),
 		llm.ToolCall{Name: "search"},
@@ -190,7 +190,7 @@ func TestCheckSameToolRepetition_StoreFactResets(t *testing.T) {
 		SameToolRepeatAbortThreshold: 6,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	for i := 0; i < 4; i++ {
 		_, _, _ = exec.checkSameToolRepetition(
 			context.Background(),
@@ -227,7 +227,7 @@ func TestCheckSameToolRepetition_ThresholdZero_Disabled(t *testing.T) {
 		SameToolRepeatAbortThreshold: 0,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.sameToolConsecutiveCount = 100
 	exec.sameToolLastName = "search"
 	exec.sameToolLastResultLen = 50
@@ -265,7 +265,7 @@ func TestCheckParseErrors_NudgeBeforeAbort(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	obs, act, result, err := exec.checkParseErrors(
 		context.Background(),
 		llm.ToolCall{Name: "create_file"},
@@ -304,7 +304,7 @@ func TestCheckParseErrors_ResetOnSuccess(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	for i := 0; i < 2; i++ {
 		_, _, _, _ = exec.checkParseErrors(
 			context.Background(),
@@ -344,7 +344,7 @@ func TestCheckParseErrors_DifferentTool(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	_, _, _, _ = exec.checkParseErrors(
 		context.Background(),
 		llm.ToolCall{Name: "create_file"},
@@ -371,7 +371,7 @@ func TestCheckParseErrors_DifferentTool(t *testing.T) {
 
 func TestCheckParseErrors_NonParseError(t *testing.T) {
 	cfg := defaultCircuitBreakerConfig
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	obs, act, result, err := exec.checkParseErrors(
 		context.Background(),
 		llm.ToolCall{Name: "tool"},
@@ -450,7 +450,7 @@ func TestFactStoreFromContext_Nil(t *testing.T) {
 
 // --- handleTruncationStopReason edge cases ---
 
-func TestHandleTruncationStopReason_Abort_NoStepLimitFunc(t *testing.T) {
+func TestHandleTruncationStopReason_Abort_DefaultHandler(t *testing.T) {
 	cfg := CircuitBreakerConfig{
 		RepeatNudgeThreshold:         3,
 		RepeatAbortThreshold:         4,
@@ -463,7 +463,7 @@ func TestHandleTruncationStopReason_Abort_NoStepLimitFunc(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.emitter = &NoopEvents{}
 	exec.consecutiveTruncationCount = 2 // exactly at threshold
 
@@ -504,12 +504,12 @@ func TestHandleTruncationStopReason_Abort_StepLimitDeny(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.emitter = &NoopEvents{}
 	exec.consecutiveTruncationCount = 2
-	exec.SetStepLimitFunc(func(ctx context.Context, stepNum, effectiveMaxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, stepNum, effectiveMaxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, nil
-	})
+	}})
 
 	resp := &llm.ChatResponse{
 		Message: llm.Message{
@@ -535,7 +535,7 @@ func TestHandleTruncationStopReason_Abort_StepLimitDeny(t *testing.T) {
 	}
 }
 
-func TestHandleTruncationStopReason_Abort_StepLimitFuncError(t *testing.T) {
+func TestHandleTruncationStopReason_Abort_OnStepLimitError(t *testing.T) {
 	cfg := CircuitBreakerConfig{
 		RepeatNudgeThreshold:         3,
 		RepeatAbortThreshold:         4,
@@ -548,12 +548,12 @@ func TestHandleTruncationStopReason_Abort_StepLimitFuncError(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.emitter = &NoopEvents{}
 	exec.consecutiveTruncationCount = 2
-	exec.SetStepLimitFunc(func(ctx context.Context, stepNum, effectiveMaxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, stepNum, effectiveMaxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, errors.New("callback error")
-	})
+	}})
 
 	resp := &llm.ChatResponse{
 		Message: llm.Message{
@@ -569,7 +569,7 @@ func TestHandleTruncationStopReason_Abort_StepLimitFuncError(t *testing.T) {
 
 	result, act := exec.handleTruncationStopReason(context.Background(), resp, "thinking", state, cw)
 	if result == nil {
-		t.Fatal("expected non-nil result when stepLimitFunc errors")
+		t.Fatal("expected non-nil result when OnStepLimit errors")
 	}
 	if act != actionNone {
 		t.Errorf("expected actionNone, got %v", act)
@@ -591,7 +591,7 @@ func TestCheckParseErrors_AbortThreshold(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.emitter = &NoopEvents{}
 	exec.consecutiveParseErrorCount = 2
 	exec.consecutiveParseErrorTool = "create_file"
@@ -631,13 +631,13 @@ func TestCheckParseErrors_Abort_StepLimitAllowOnce(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.emitter = &NoopEvents{}
 	exec.consecutiveParseErrorCount = 2
 	exec.consecutiveParseErrorTool = "create_file"
-	exec.SetStepLimitFunc(func(ctx context.Context, stepNum, effectiveMaxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, stepNum, effectiveMaxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitAllowOnce, nil
-	})
+	}})
 
 	state := &runState{effectiveMaxSteps: 10}
 	cw := newMockContextManager()
@@ -665,7 +665,7 @@ func TestCheckParseErrors_Abort_StepLimitAllowOnce(t *testing.T) {
 // --- applyPerToolTruncation ---
 
 func TestApplyPerToolTruncation_NilConfig(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	content, truncated := exec.applyPerToolTruncation("some content", "read_file")
 	if truncated {
 		t.Error("should not be truncated with nil config")
@@ -677,7 +677,7 @@ func TestApplyPerToolTruncation_NilConfig(t *testing.T) {
 
 func TestApplyPerToolTruncation_ToolNotInConfig(t *testing.T) {
 	cfg := map[string]ToolTruncationConfig{"search": {MaxLines: 10}}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.SetPerToolTruncation(cfg)
 	content, truncated := exec.applyPerToolTruncation("some content", "read_file")
 	if truncated {
@@ -690,7 +690,7 @@ func TestApplyPerToolTruncation_ToolNotInConfig(t *testing.T) {
 
 func TestApplyPerToolTruncation_LineTruncation(t *testing.T) {
 	cfg := map[string]ToolTruncationConfig{"read_file": {MaxLines: 3}}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.SetPerToolTruncation(cfg)
 	content := "line1\nline2\nline3\nline4\nline5"
 	result, truncated := exec.applyPerToolTruncation(content, "read_file")
@@ -705,7 +705,7 @@ func TestApplyPerToolTruncation_LineTruncation(t *testing.T) {
 
 func TestApplyPerToolTruncation_ByteTruncation(t *testing.T) {
 	cfg := map[string]ToolTruncationConfig{"read_file": {MaxBytes: 5}}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.SetPerToolTruncation(cfg)
 	content := "hello world"
 	result, truncated := exec.applyPerToolTruncation(content, "read_file")
@@ -722,7 +722,7 @@ func TestApplyPerToolTruncation_ByteTruncation(t *testing.T) {
 
 func TestApplyPerToolTruncation_UTF8Safe(t *testing.T) {
 	cfg := map[string]ToolTruncationConfig{"read_file": {MaxBytes: 4}}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.SetPerToolTruncation(cfg)
 	// "héllo" = 6 bytes: h(1) + é(2) + l(1) + l(1) + o(1). MaxBytes=4 cuts at byte 4 (middle of 'é')
 	content := "héllo"
@@ -742,7 +742,7 @@ func TestApplyPerToolTruncation_UTF8Safe(t *testing.T) {
 
 func TestApplyPerToolTruncation_UTF8SafeWalkBack(t *testing.T) {
 	cfg := map[string]ToolTruncationConfig{"read_file": {MaxBytes: 5}}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.SetPerToolTruncation(cfg)
 	// "héllo" = h(1) + é(2) + l(1) + l(1) + o(1) = 6 bytes
 	// bytes[0:5] = h(1) + é(2) + l(1) + l(1) = "héll" valid UTF-8
@@ -769,7 +769,7 @@ func TestHandleTruncationStopReason_BelowThreshold(t *testing.T) {
 		SameToolRepeatAbortThreshold: 60,
 		SameToolResultSizeDelta:      64,
 	}
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 	exec.emitter = &NoopEvents{}
 	exec.consecutiveTruncationCount = 1 // below threshold of 5
 
@@ -803,7 +803,7 @@ func TestHandleTruncationStopReason_BelowThreshold(t *testing.T) {
 // --- processBatchTool tests (via processSingleToolCall) ---
 
 func TestProcessBatchTool_ParseError(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.emitter = &NoopEvents{}
 
 	batchInput := json.RawMessage(`invalid json`)
@@ -829,7 +829,7 @@ func TestProcessBatchTool_ParseError(t *testing.T) {
 }
 
 func TestProcessBatchTool_EmptyCalls(t *testing.T) {
-	exec := NewExecutor(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.emitter = &NoopEvents{}
 
 	batchInput, _ := json.Marshal(map[string]interface{}{"calls": []interface{}{}})
@@ -859,7 +859,7 @@ func TestProcessBatchTool_SubCalls(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "search result"}
 	mockTools.results["read"] = tools.ToolResult{Content: "file content"}
 
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.emitter = &NoopEvents{}
 
 	subInput1, _ := json.Marshal(map[string]string{"query": "test"})
@@ -900,7 +900,7 @@ func TestProcessBatchTool_SubCalls(t *testing.T) {
 func TestProcessBatchTool_NestedBatch(t *testing.T) {
 	mockTools := newMockToolExecutor()
 
-	exec := NewExecutor(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	exec.emitter = &NoopEvents{}
 
 	nestedInput, _ := json.Marshal(map[string]string{})

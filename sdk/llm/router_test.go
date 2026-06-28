@@ -9,13 +9,12 @@ import (
 
 // mockProvider implements Provider for testing.
 type mockProvider struct {
-	name           string
-	lastReq        ChatRequest
-	response       *ChatResponse
-	streamResponse []ChatChunk
-	err            error // error to return
-	callCount      int   // track number of calls
-	errUntil       int   // return error for calls <= errUntil, then succeed
+	name      string
+	lastReq   ChatRequest
+	response  *ChatResponse
+	err       error // error to return
+	callCount int   // track number of calls
+	errUntil  int   // return error for calls <= errUntil, then succeed
 }
 
 func (m *mockProvider) Name() string {
@@ -32,25 +31,6 @@ func (m *mockProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*Ch
 		return nil, m.err
 	}
 	return m.response, nil
-}
-
-func (m *mockProvider) StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
-	m.lastReq = req
-	m.callCount++
-	if m.errUntil > 0 && m.callCount <= m.errUntil {
-		return nil, m.err
-	}
-	if m.err != nil && m.errUntil == 0 {
-		return nil, m.err
-	}
-	ch := make(chan ChatChunk)
-	go func() {
-		defer close(ch)
-		for _, chunk := range m.streamResponse {
-			ch <- chunk
-		}
-	}()
-	return ch, nil
 }
 
 // newTestRouter creates a router with mock providers for testing.
@@ -218,32 +198,6 @@ func TestRouter_Call_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestRouter_Stream_RetriesOnRetryableError(t *testing.T) {
-	mock := &mockProvider{
-		name:           "test",
-		streamResponse: []ChatChunk{{Delta: "Hello"}, {StopReason: "end_turn"}},
-		err:            NewError("test", 502, true, errors.New("bad gateway")),
-		errUntil:       1,
-	}
-	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
-
-	ch, err := router.Stream(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "Hi"}}})
-	if err != nil {
-		t.Fatalf("expected success after retry, got: %v", err)
-	}
-
-	chunks := make([]ChatChunk, 0, len(mock.streamResponse))
-	for chunk := range ch {
-		chunks = append(chunks, chunk)
-	}
-	if len(chunks) != 2 {
-		t.Errorf("expected 2 chunks, got %d", len(chunks))
-	}
-	if mock.callCount != 2 {
-		t.Errorf("expected 2 calls, got %d", mock.callCount)
-	}
-}
-
 func TestRouter_GetDefaultProvider(t *testing.T) {
 	mock := &mockProvider{name: "default-prov"}
 	router := newTestRouter(
@@ -257,57 +211,6 @@ func TestRouter_GetDefaultProvider(t *testing.T) {
 	}
 	if p.Name() != "default-prov" {
 		t.Errorf("expected name 'default-prov', got %q", p.Name())
-	}
-}
-
-func TestRouter_Stream_NoRetryOnNonRetryableError(t *testing.T) {
-	mock := &mockProvider{
-		name: "test",
-		err:  NewError("test", 401, false, errors.New("unauthorized")),
-	}
-	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
-
-	_, err := router.Stream(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "Hi"}}})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if mock.callCount != 1 {
-		t.Errorf("expected 1 call (no retry), got %d", mock.callCount)
-	}
-}
-
-func TestRouter_Stream_ExhaustsRetries(t *testing.T) {
-	mock := &mockProvider{
-		name: "test",
-		err:  NewError("test", 503, true, errors.New("service unavailable")),
-	}
-	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
-
-	_, err := router.Stream(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "Hi"}}})
-	if err == nil {
-		t.Fatal("expected error after exhausting retries")
-	}
-	if mock.callCount != 4 {
-		t.Errorf("expected 4 calls (1 initial + 3 retries), got %d", mock.callCount)
-	}
-}
-
-func TestRouter_Stream_RespectsContextCancellation(t *testing.T) {
-	mock := &mockProvider{
-		name: "test",
-		err:  NewError("test", 429, true, errors.New("rate limited")),
-	}
-	router := newTestRouter(map[string]*mockProvider{"primary": mock}, "primary", "model")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := router.Stream(ctx, ChatRequest{Messages: []Message{{Role: "user", Content: "Hi"}}})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if mock.callCount > 2 {
-		t.Errorf("expected at most 2 calls with cancelled context, got %d", mock.callCount)
 	}
 }
 
@@ -643,50 +546,6 @@ func TestCreateProviderFromConfig(t *testing.T) {
 	}
 }
 
-func TestRouter_Stream_DelegatesToProvider(t *testing.T) {
-	mock := &mockProvider{
-		name: "test-provider",
-		streamResponse: []ChatChunk{
-			{Delta: "Hello"},
-			{Delta: " World"},
-			{StopReason: "end_turn"},
-		},
-	}
-
-	router := newTestRouter(
-		map[string]*mockProvider{"primary": mock},
-		"primary", "claude-3",
-	)
-
-	req := ChatRequest{
-		Messages: []Message{{Role: "user", Content: "Stream test"}},
-	}
-
-	ch, err := router.Stream(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify model was set
-	if mock.lastReq.Model != "claude-3" {
-		t.Errorf("expected model 'claude-3', got %q", mock.lastReq.Model)
-	}
-
-	// Collect chunks (preallocate with capacity from mock)
-	chunks := make([]ChatChunk, 0, len(mock.streamResponse))
-	for chunk := range ch {
-		chunks = append(chunks, chunk)
-	}
-
-	if len(chunks) != 3 {
-		t.Errorf("expected 3 chunks, got %d", len(chunks))
-	}
-
-	if chunks[0].Delta != "Hello" {
-		t.Errorf("expected first chunk 'Hello', got %q", chunks[0].Delta)
-	}
-}
-
 // newTestRouterWithRegistry creates a router with mock provider, model registry and token counter.
 func newTestRouterWithRegistry(mock *mockProvider, activeModel string, registry *ModelRegistry) *Router {
 	return &Router{
@@ -845,54 +704,6 @@ func TestRouter_ContextWindowValidation(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
-				}
-				if mock.callCount != 1 {
-					t.Errorf("expected 1 provider call, got %d", mock.callCount)
-				}
-			}
-		})
-
-		t.Run(tt.name+" (Stream)", func(t *testing.T) {
-			mock := &mockProvider{
-				name:           "test",
-				streamResponse: []ChatChunk{{Delta: "hi"}, {StopReason: "end_turn"}},
-			}
-
-			var registry *ModelRegistry
-			if tt.useRegistry {
-				overrides := map[string]ModelMetadata{
-					tt.model: {
-						ContextWindow: tt.contextWindow,
-						OutputLimit:   tt.outputLimit,
-						TokenizerType: "approximate",
-					},
-				}
-				registry = NewModelRegistry(overrides)
-			}
-
-			router := newTestRouterWithRegistry(mock, tt.model, registry)
-
-			req := ChatRequest{
-				Messages: []Message{{Role: "user", Content: makeContent(tt.msgTokens)}},
-			}
-
-			ch, err := router.Stream(context.Background(), req)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if tt.errSentinel != nil && !errors.Is(err, tt.errSentinel) {
-					t.Errorf("expected errors.Is(%v), got: %v", tt.errSentinel, err)
-				}
-				if mock.callCount != 0 {
-					t.Errorf("expected 0 provider calls, got %d", mock.callCount)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				for range ch { //nolint:revive // intentionally draining channel
 				}
 				if mock.callCount != 1 {
 					t.Errorf("expected 1 provider call, got %d", mock.callCount)

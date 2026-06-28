@@ -92,77 +92,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*
 	}, nil
 }
 
-// StreamChatCompletion sends a request and returns a channel of streaming chunks.
-func (p *OpenAIProvider) StreamChatCompletion(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {
-	if needsResponsesAPI(req.Model) {
-		return responsesAPIStream(ctx, p.responsesClient, p.name, req)
-	}
-
-	params := p.buildChatParams(req)
-
-	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
-
-	chunks := make(chan ChatChunk)
-
-	go func() {
-		defer close(chunks)
-		defer func() { _ = stream.Close() }()
-
-		// Track tool call state across chunks
-		acc := NewStreamToolCallAccumulator()
-		var streamUsage *TokenUsage
-
-		for stream.Next() {
-			event := stream.Current()
-
-			// Capture usage from the usage field when available
-			if event.Usage.PromptTokens > 0 || event.Usage.CompletionTokens > 0 {
-				streamUsage = &TokenUsage{
-					InputTokens:  int(event.Usage.PromptTokens),
-					OutputTokens: int(event.Usage.CompletionTokens),
-				}
-			}
-
-			if len(event.Choices) == 0 {
-				continue
-			}
-
-			choice := event.Choices[0]
-			delta := choice.Delta
-
-			// Handle content delta
-			if delta.Content != "" {
-				chunks <- ChatChunk{Delta: delta.Content}
-			}
-
-			// Handle reasoning_content delta (DeepSeek extension)
-			if rc := extractReasoningContent(delta.RawJSON()); rc != "" {
-				chunks <- ChatChunk{Reasoning: rc}
-			}
-
-			// Handle tool calls delta
-			for _, tc := range delta.ToolCalls {
-				acc.HandleDelta(int(tc.Index), tc.ID, tc.Function.Name, tc.Function.Arguments)
-			}
-
-			// Handle finish reason
-			if choice.FinishReason != "" {
-				stopReason := MapStopReason(choice.FinishReason, openAIStopReasonMap)
-				acc.Emit(chunks)
-				chunks <- ChatChunk{StopReason: stopReason, Usage: streamUsage}
-			}
-		}
-
-		if err := stream.Err(); err != nil {
-			// Send error as final chunk with stop reason
-			chunks <- ChatChunk{StopReason: "error"}
-		}
-	}()
-
-	return chunks, nil
-}
-
-// buildChatParams converts our ChatRequest to OpenAI's ChatCompletionNewParams.
+// buildChatParams converts our ChatRequest to OpenAI ChatCompletionNewParams.
 func (p *OpenAIProvider) buildChatParams(req ChatRequest) oai.ChatCompletionNewParams {
 	messages := make([]oai.ChatCompletionMessageParamUnion, 0, len(req.Messages))
 	for _, msg := range req.Messages {

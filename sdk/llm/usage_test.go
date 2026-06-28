@@ -19,25 +19,6 @@ func (m *mockCaller) Call(_ context.Context, _ ChatRequest) (*ChatResponse, erro
 	return m.resp, m.err
 }
 
-// mockStreamCaller implements both Caller and streamer for testing.
-type mockStreamCaller struct {
-	mockCaller
-	chunks []ChatChunk
-	strErr error
-}
-
-func (m *mockStreamCaller) Stream(_ context.Context, _ ChatRequest) (<-chan ChatChunk, error) {
-	if m.strErr != nil {
-		return nil, m.strErr
-	}
-	ch := make(chan ChatChunk, len(m.chunks))
-	for _, c := range m.chunks {
-		ch <- c
-	}
-	close(ch)
-	return ch, nil
-}
-
 // --- UsageTracker tests ---
 
 func TestUsageTracker_Record(t *testing.T) {
@@ -205,82 +186,6 @@ func TestTrackingCaller_CallNoError(t *testing.T) {
 	in, out := tracker.Totals()
 	if in != 0 || out != 0 {
 		t.Errorf("tracker should be 0/0 on error, got %d/%d", in, out)
-	}
-}
-
-func TestTrackingCaller_Stream(t *testing.T) {
-	usage := &TokenUsage{InputTokens: 150, OutputTokens: 60}
-	inner := &mockStreamCaller{
-		chunks: []ChatChunk{
-			{Delta: "hello "},
-			{Delta: "world"},
-			{Delta: "", Usage: usage}, // final chunk with usage
-		},
-	}
-	tracker := NewUsageTracker()
-	tc := NewTrackingCaller(inner, tracker)
-
-	ch, err := tc.Stream(context.Background(), ChatRequest{Model: "gpt-4o"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	chunks := make([]ChatChunk, 0, 3)
-	for c := range ch {
-		chunks = append(chunks, c)
-	}
-
-	if len(chunks) != 3 {
-		t.Fatalf("got %d chunks, want 3", len(chunks))
-	}
-
-	in, out := tracker.Totals()
-	if in != 150 || out != 60 {
-		t.Errorf("tracker totals after stream: %d/%d, want 150/60", in, out)
-	}
-}
-
-func TestTrackingCaller_StreamNoSupport(t *testing.T) {
-	// mockCaller does not implement streamer
-	inner := &mockCaller{
-		resp: &ChatResponse{},
-	}
-	tracker := NewUsageTracker()
-	tc := NewTrackingCaller(inner, tracker)
-
-	_, err := tc.Stream(context.Background(), ChatRequest{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("expected error for non-streaming caller")
-	}
-}
-
-func TestTrackingCaller_StreamCorrectContextTracker(t *testing.T) {
-	usage := &TokenUsage{InputTokens: 300, OutputTokens: 40}
-	inner := &mockStreamCaller{
-		chunks: []ChatChunk{
-			{Delta: "data"},
-			{Delta: "", Usage: usage},
-		},
-	}
-	tracker := NewUsageTracker()
-	tc := NewTrackingCaller(inner, tracker)
-
-	ctxTracker := NewContextTokenTracker(NewSimpleTokenCounter())
-	ctxTracker.AddDelta("some pending text")
-	tc = tc.WithContextTracker(ctxTracker)
-
-	ch, err := tc.Stream(context.Background(), ChatRequest{Model: "m"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Drain channel
-	for range ch {
-	}
-
-	est := ctxTracker.EstimateTotal()
-	if est != 300 {
-		t.Errorf("context tracker estimate = %d, want 300", est)
 	}
 }
 

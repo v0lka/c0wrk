@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/liushuangls/go-anthropic/v2"
@@ -77,56 +76,6 @@ func TestAnthropicProvider_Integration(t *testing.T) {
 
 	if resp.Usage.InputTokens == 0 || resp.Usage.OutputTokens == 0 {
 		t.Error("expected non-zero token usage")
-	}
-}
-
-// TestAnthropicProvider_IntegrationStream is an integration test for streaming.
-func TestAnthropicProvider_IntegrationStream(t *testing.T) {
-	t.Skip("integration test disabled: requires real Anthropic API connection")
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		t.Skip("ANTHROPIC_API_KEY not set")
-	}
-
-	provider, err := NewAnthropicProvider(AnthropicProviderConfig{
-		APIKey: apiKey,
-	})
-	if err != nil {
-		t.Fatalf("failed to create provider: %v", err)
-	}
-
-	ctx := context.Background()
-	req := ChatRequest{
-		Model:     "claude-3-haiku-20240307",
-		MaxTokens: 100,
-		Messages: []Message{
-			{Role: "user", Content: "Say 'hello' and nothing else."},
-		},
-	}
-
-	chunks, err := provider.StreamChatCompletion(ctx, req)
-	if err != nil {
-		t.Fatalf("StreamChatCompletion failed: %v", err)
-	}
-
-	var sb strings.Builder
-	var gotStopReason bool
-
-	for chunk := range chunks {
-		sb.WriteString(chunk.Delta)
-		if chunk.StopReason != "" {
-			gotStopReason = true
-		}
-	}
-
-	content := sb.String()
-
-	if content == "" {
-		t.Error("expected non-empty streamed content")
-	}
-
-	if !gotStopReason {
-		t.Error("expected stop reason in stream")
 	}
 }
 

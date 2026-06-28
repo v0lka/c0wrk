@@ -73,13 +73,13 @@ type CircuitBreakerConfig struct {
 	ParseErrorAbortThreshold int // consecutive parse errors on same tool before abort
 
 	// Fruitless result detector: catches consecutive minimal-result calls
-	FruitlessNudgeThreshold int // consecutive minimal-result calls before nudge (default: 5)
-	FruitlessAbortThreshold int // consecutive minimal-result calls before abort (default: 8)
+	FruitlessNudgeThreshold int // consecutive minimal-result calls before nudge (default: 4)
+	FruitlessAbortThreshold int // consecutive minimal-result calls before abort (default: 6)
 	FruitlessMaxResultLen   int // result length at or below which a call is "fruitless" (default: 32)
 
 	// Same-tool repetition detector: catches same tool with varied args but similar results
-	SameToolRepeatNudgeThreshold int // same tool with varied args, similar results (default: 8)
-	SameToolRepeatAbortThreshold int // abort threshold (default: 12)
+	SameToolRepeatNudgeThreshold int // same tool with varied args, similar results (default: 6)
+	SameToolRepeatAbortThreshold int // abort threshold (default: 10)
 	SameToolResultSizeDelta      int // max result length difference to consider "similar" (default: 64)
 }
 
@@ -142,8 +142,3 @@ const (
 	// StepLimitDeny terminates execution (current behavior).
 	StepLimitDeny StepLimitResponse = "deny"
 )
-
-// StepLimitFunc is called when the agent exhausts its step limit or a circuit
-// breaker abort threshold is reached. It blocks until the user responds with a decision.
-// The reason parameter describes why execution was paused (empty string for normal step limit).
-type StepLimitFunc func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -372,39 +373,60 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 	}
 }
 
-// buildStepLimitCallback returns the step-limit prompt closure.
-func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) agent.StepLimitFunc {
-	return func(ctx context.Context, currentStep int, maxSteps int, reason string) (agent.StepLimitResponse, error) {
-		if a.ctx == nil {
-			return agent.StepLimitDeny, nil
-		}
-		sessionID := session.SessionIDFromContext(ctx)
-		if sessionID == "" {
-			return agent.StepLimitDeny, nil
-		}
+// buildStepLimitCallback returns a HITLHandler that handles step-limit prompts.
+// Tool confirmation is handled separately via buildConfirmCallback → ToolRegistry.ConfirmFunc.
+func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) agent.HITLHandler {
+	return &stepLimitHITLAdapter{
+		ctx:              a.ctx,
+		pendingStepLimit: &a.pendingStepLimit,
+		uiEmit:           uiEmit,
+	}
+}
 
-		requestID := uuid.New().String()
-		ch := make(chan agent.StepLimitResponse, 1)
-		a.pendingStepLimit.Store(requestID, ch)
+// stepLimitHITLAdapter wraps the step-limit UI prompt logic as an agent.HITLHandler.
+// Tool confirmation is handled separately by the ToolRegistry's ConfirmFunc (policy-driven).
+type stepLimitHITLAdapter struct {
+	ctx              context.Context
+	pendingStepLimit *sync.Map
+	uiEmit           func(session.Event)
+}
 
-		payload := session.StepLimitPayload{
-			RequestID:   requestID,
-			CurrentStep: currentStep,
-			MaxSteps:    maxSteps,
-			Reason:      reason,
-		}
-		uiEmit(session.Event{SessionID: sessionID, Type: "step_limit", Data: payload})
+// OnToolCall allows all tool calls unchanged. Tool confirmation is handled
+// by the ToolRegistry's ConfirmFunc (policy-driven, only for PolicyUserConfirm tools).
+func (s *stepLimitHITLAdapter) OnToolCall(_ context.Context, _ string, _ json.RawMessage) (*agent.HITLToolDecision, error) {
+	return &agent.HITLToolDecision{Allow: true}, nil
+}
 
-		select {
-		case resp := <-ch:
-			return resp, nil
-		case <-ctx.Done():
-			a.pendingStepLimit.Delete(requestID)
-			return agent.StepLimitDeny, ctx.Err()
-		case <-a.ctx.Done():
-			a.pendingStepLimit.Delete(requestID)
-			return agent.StepLimitDeny, a.ctx.Err()
-		}
+func (s *stepLimitHITLAdapter) OnStepLimit(ctx context.Context, currentStep, maxSteps int, reason string) (agent.StepLimitResponse, error) {
+	if s.ctx == nil {
+		return agent.StepLimitDeny, nil
+	}
+	sessionID := session.SessionIDFromContext(ctx)
+	if sessionID == "" {
+		return agent.StepLimitDeny, nil
+	}
+
+	requestID := uuid.New().String()
+	ch := make(chan agent.StepLimitResponse, 1)
+	s.pendingStepLimit.Store(requestID, ch)
+
+	payload := session.StepLimitPayload{
+		RequestID:   requestID,
+		CurrentStep: currentStep,
+		MaxSteps:    maxSteps,
+		Reason:      reason,
+	}
+	s.uiEmit(session.Event{SessionID: sessionID, Type: "step_limit", Data: payload})
+
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-ctx.Done():
+		s.pendingStepLimit.Delete(requestID)
+		return agent.StepLimitDeny, ctx.Err()
+	case <-s.ctx.Done():
+		s.pendingStepLimit.Delete(requestID)
+		return agent.StepLimitDeny, s.ctx.Err()
 	}
 }
 

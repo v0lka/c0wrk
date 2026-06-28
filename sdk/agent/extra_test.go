@@ -15,7 +15,7 @@ import (
 )
 
 // ============================================================================
-// Fruitless Result Detector: stepLimitFunc paths for abort
+// Fruitless Result Detector: OnStepLimit paths for abort
 // ============================================================================
 
 func TestExecutor_Run_FruitlessDetector_Abort_StepLimitAllowOnce(t *testing.T) {
@@ -47,13 +47,13 @@ func TestExecutor_Run_FruitlessDetector_Abort_StepLimitAllowOnce(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "short", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowOnce, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -65,7 +65,7 @@ func TestExecutor_Run_FruitlessDetector_Abort_StepLimitAllowOnce(t *testing.T) {
 		t.Error("expected Finished=true after fruitless abort → AllowOnce → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -98,13 +98,13 @@ func TestExecutor_Run_FruitlessDetector_Abort_StepLimitAllowAlways(t *testing.T)
 	mockTools.results["search"] = tools.ToolResult{Content: "short", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowAlways, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -116,7 +116,7 @@ func TestExecutor_Run_FruitlessDetector_Abort_StepLimitAllowAlways(t *testing.T)
 		t.Error("expected Finished=true after fruitless abort → AllowAlways → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -148,11 +148,11 @@ func TestExecutor_Run_FruitlessDetector_Abort_StepLimitDeny(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "short", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, fruitlessConfig)
 
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -169,7 +169,7 @@ func TestExecutor_Run_FruitlessDetector_Abort_StepLimitDeny(t *testing.T) {
 }
 
 // ============================================================================
-// SameTool Repetition: stepLimitFunc paths for abort
+// SameTool Repetition: OnStepLimit paths for abort
 // ============================================================================
 
 func TestExecutor_Run_SameToolRepeat_Abort_StepLimitAllowOnce(t *testing.T) {
@@ -201,13 +201,13 @@ func TestExecutor_Run_SameToolRepeat_Abort_StepLimitAllowOnce(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowOnce, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -219,7 +219,7 @@ func TestExecutor_Run_SameToolRepeat_Abort_StepLimitAllowOnce(t *testing.T) {
 		t.Error("expected Finished=true after same-tool abort → AllowOnce → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -252,13 +252,13 @@ func TestExecutor_Run_SameToolRepeat_Abort_StepLimitAllowAlways(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowAlways, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -270,7 +270,7 @@ func TestExecutor_Run_SameToolRepeat_Abort_StepLimitAllowAlways(t *testing.T) {
 		t.Error("expected Finished=true after same-tool abort → AllowAlways → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -302,11 +302,11 @@ func TestExecutor_Run_SameToolRepeat_Abort_StepLimitDeny(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: strings.Repeat("x", 50), IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, sameToolConfig)
 
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -323,7 +323,7 @@ func TestExecutor_Run_SameToolRepeat_Abort_StepLimitDeny(t *testing.T) {
 }
 
 // ============================================================================
-// Parse Error: stepLimitFunc paths for abort + reset test
+// Parse Error: OnStepLimit paths for abort + reset test
 // ============================================================================
 
 func TestExecutor_Run_ConsecutiveParseErrors_Abort_StepLimitAllowOnce(t *testing.T) {
@@ -344,13 +344,13 @@ func TestExecutor_Run_ConsecutiveParseErrors_Abort_StepLimitAllowOnce(t *testing
 	}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowOnce, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "create_file", Description: "create a file", Source: "core"},
@@ -364,7 +364,7 @@ func TestExecutor_Run_ConsecutiveParseErrors_Abort_StepLimitAllowOnce(t *testing
 		t.Error("expected Finished=true after AllowOnce → one more parse error → end_turn")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -387,13 +387,13 @@ func TestExecutor_Run_ConsecutiveParseErrors_Abort_StepLimitAllowAlways(t *testi
 	}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowAlways, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "create_file", Description: "create a file", Source: "core"},
@@ -405,7 +405,7 @@ func TestExecutor_Run_ConsecutiveParseErrors_Abort_StepLimitAllowAlways(t *testi
 		t.Error("expected Finished=true after AllowAlways → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -427,11 +427,11 @@ func TestExecutor_Run_ConsecutiveParseErrors_Abort_StepLimitDeny(t *testing.T) {
 	}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "create_file", Description: "create a file", Source: "core"},
@@ -470,7 +470,7 @@ func TestExecutor_Run_ParseErrorResetsOnSuccess(t *testing.T) {
 	}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "tool_a", Description: "tool a", Source: "core"},
@@ -485,7 +485,7 @@ func TestExecutor_Run_ParseErrorResetsOnSuccess(t *testing.T) {
 }
 
 // ============================================================================
-// Truncation: stepLimitFunc paths for abort
+// Truncation: OnStepLimit paths for abort
 // ============================================================================
 
 func TestExecutor_Run_ConsecutiveTruncation_Abort_StepLimitAllowOnce(t *testing.T) {
@@ -509,12 +509,12 @@ func TestExecutor_Run_ConsecutiveTruncation_Abort_StepLimitAllowOnce(t *testing.
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowOnce, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "write_file", Description: "write a file", Source: "core"},
@@ -526,7 +526,7 @@ func TestExecutor_Run_ConsecutiveTruncation_Abort_StepLimitAllowOnce(t *testing.
 		t.Error("expected Finished=true after truncation abort → AllowOnce → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -551,12 +551,12 @@ func TestExecutor_Run_ConsecutiveTruncation_Abort_StepLimitAllowAlways(t *testin
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
 
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowAlways, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "write_file", Description: "write a file", Source: "core"},
@@ -568,12 +568,12 @@ func TestExecutor_Run_ConsecutiveTruncation_Abort_StepLimitAllowAlways(t *testin
 		t.Error("expected Finished=true after truncation abort → AllowAlways → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
 // ============================================================================
-// Repeat Identical Tool: stepLimitFunc paths for abort
+// Repeat Identical Tool: OnStepLimit paths for abort
 // ============================================================================
 
 func TestExecutor_Run_CircuitBreaker_Abort_StepLimitAllowOnce(t *testing.T) {
@@ -590,13 +590,13 @@ func TestExecutor_Run_CircuitBreaker_Abort_StepLimitAllowOnce(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "found", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowOnce, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -608,7 +608,7 @@ func TestExecutor_Run_CircuitBreaker_Abort_StepLimitAllowOnce(t *testing.T) {
 		t.Error("expected Finished=true after circuit breaker abort → AllowOnce → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -626,13 +626,13 @@ func TestExecutor_Run_CircuitBreaker_Abort_StepLimitAllowAlways(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "found", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
 	callCount := 0
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		callCount++
 		return StepLimitAllowAlways, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -644,7 +644,7 @@ func TestExecutor_Run_CircuitBreaker_Abort_StepLimitAllowAlways(t *testing.T) {
 		t.Error("expected Finished=true after circuit breaker abort → AllowAlways → finish")
 	}
 	if callCount != 1 {
-		t.Errorf("expected stepLimitFunc to be called once, got %d", callCount)
+		t.Errorf("expected OnStepLimit to be called once, got %d", callCount)
 	}
 }
 
@@ -661,11 +661,11 @@ func TestExecutor_Run_CircuitBreaker_Abort_StepLimitDeny(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "found", IsError: false}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -693,11 +693,11 @@ func TestExecutor_Run_CircuitBreaker_ErrorAware_AbortWithDeny(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "error: not found", IsError: true}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, nil
-	})
+	}})
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
@@ -723,7 +723,7 @@ func TestExecutor_Run_ImplicitFinish_FinishNudge(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: responses}
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, true, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, true, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -746,7 +746,7 @@ func TestExecutor_Run_ImplicitFinish_NonEndTurn_Nudge(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	mockTools.results["search"] = tools.ToolResult{Content: "result", IsError: false}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -767,7 +767,7 @@ func TestExecutor_Run_ImplicitFinish_NonEndTurn_ImplicitFinish(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: responses}
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -788,7 +788,7 @@ func TestExecutor_Run_ImplicitFinish_NonEndTurn_FinishNudge(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: responses}
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, true, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, true, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -821,7 +821,7 @@ func TestExecutor_Run_ProcessToolResult_TruncationCache(t *testing.T) {
 	mockTools.results["search"] = tools.ToolResult{Content: "line1\nline2\nline3\nline4\nline5", IsError: false}
 	cm := newMockContextManager()
 	tc := NewToolResultCache(5 * time.Minute)
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, tb, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, tb, defaultCircuitBreakerConfig)
 	exec.SetPerToolTruncation(ptt)
 	exec.SetToolCache(tc)
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
@@ -843,7 +843,7 @@ func TestExecutor_Run_ProcessToolResult_TruncationCache(t *testing.T) {
 func TestExecutor_Log_WithLogger(t *testing.T) {
 	mockLLM := &mockLLMCaller{}
 	mockTools := newMockToolExecutor()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	// SetLogger sets e.logger to non-nil, so log() returns it (not discard)
 	logger := slog.New(slog.NewTextHandler(&nopWriter{}, nil))
 	exec.SetLogger(logger)
@@ -893,10 +893,10 @@ func TestExecutor_Run_FruitlessDetector_AllowAlways_NotReAbort(t *testing.T) {
 	mockTools := newMockToolExecutor()
 	mockTools.results["search"] = tools.ToolResult{Content: "short", IsError: false}
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, cfg)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, cfg)
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitAllowAlways, nil
-	})
+	}})
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
 		{Name: "search", Description: "search", Source: "core"},
 	}, cm)
@@ -942,7 +942,7 @@ func TestApplyToolResultBudget_NoHardCap(t *testing.T) {
 	mockLLM := &mockLLMCaller{}
 	mockTools := newMockToolExecutor()
 	// HardCapTokens=0 → early return, no truncation
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{HardCapTokens: 0, MaxFillFraction: 0.5}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{HardCapTokens: 0, MaxFillFraction: 0.5}, defaultCircuitBreakerConfig)
 	cm := newMockContextManager()
 	result := exec.applyToolResultBudget("some observation", cm, "search")
 	if result != "some observation" {
@@ -960,7 +960,7 @@ func TestCallLLMWithReactiveCompaction_NilResponse(t *testing.T) {
 	}
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	state := &runState{effectiveMaxSteps: 5, stepNum: 1}
 	resp, _, err := exec.callLLMWithReactiveCompaction(context.Background(), state, cm, nil)
 	if err == nil {
@@ -972,17 +972,17 @@ func TestCallLLMWithReactiveCompaction_NilResponse(t *testing.T) {
 }
 
 // ============================================================================
-// handleStepLimitBoundary: error from stepLimitFunc
+// handleStepLimitBoundary: error from OnStepLimit
 // ============================================================================
 
 func TestHandleStepLimitBoundary_CallbackError(t *testing.T) {
 	mockLLM := &mockLLMCaller{}
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	exec.SetStepLimitFunc(func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec.SetHITLHandler(&testStepLimitAdapter{fn: func(ctx context.Context, currentStep int, maxSteps int, reason string) (StepLimitResponse, error) {
 		return StepLimitDeny, errors.New("callback error")
-	})
+	}})
 	// Run with only 1 step to hit the boundary quickly
 	responses := []*llm.ChatResponse{
 		llmResponseWithToolCall("step1", "search", json.RawMessage(`{"q":"x"}`)),
@@ -1018,7 +1018,7 @@ func TestExecutor_Run_ReactiveCompaction(t *testing.T) {
 	}
 	mockTools := newMockToolExecutor()
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	result, err := exec.Run(context.Background(), nil, cm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

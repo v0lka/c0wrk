@@ -192,7 +192,7 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   ├─ 1. Lookup tool by name
   ├─ 2. Internal tool? → execute immediately, skip all checks
   ├─ 3. PreExecuteHook? → call (may block for indexing gate)
-  ├─ 4. ParamInjector? → transform input
+  ├─ 4. ParamManager? → transform input
   ├─ 5. Symlink gate: detect symlinks in input paths → force confirmation
   ├─ 6. Resolve policy: per-tool > skill > default > tool's own
   ├─ 7. Auto-approval check: paths in workspace/temp? → execute
