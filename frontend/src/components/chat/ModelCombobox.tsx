@@ -74,7 +74,7 @@ export function ModelCombobox() {
       </button>
 
       {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-72 rounded-md border bg-popover shadow-md z-50 max-h-64 overflow-y-auto">
+        <div className="absolute bottom-full left-0 mb-1 w-72 rounded-md border bg-popover shadow-md z-50 max-h-64 overflow-y-auto custom-scrollbar">
           {isLoading ? (
             <div className="px-3 py-4 text-xs text-muted-foreground text-center">
               Loading models…

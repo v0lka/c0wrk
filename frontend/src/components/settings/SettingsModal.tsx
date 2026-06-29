@@ -138,7 +138,7 @@ export function SettingsModal() {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="general" className="mt-4 overflow-y-auto min-h-0">
+          <TabsContent value="general" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <div className="space-y-6">
               <LogLevelSelector />
               <div className="border-t border-border pt-4">
@@ -148,23 +148,23 @@ export function SettingsModal() {
             </div>
           </TabsContent>
 
-          <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0">
+          <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <LLMSettings onSettingsSaved={handleSettingsSaved} onDefaultModelChange={handleDefaultModelChange} />
           </TabsContent>
 
-          <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0">
+          <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <SearchSettings />
           </TabsContent>
 
-          <TabsContent value="mcp" className="mt-4 overflow-y-auto min-h-0">
+          <TabsContent value="mcp" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <MCPSettings />
           </TabsContent>
 
-          <TabsContent value="security" className="mt-4 overflow-y-auto min-h-0">
+          <TabsContent value="security" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <SecuritySettings />
           </TabsContent>
 
-          <TabsContent value="about" className="mt-4 overflow-y-auto min-h-0">
+          <TabsContent value="about" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <div className="space-y-4">
               <div className="flex items-center gap-3">
                 <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">

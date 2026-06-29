@@ -432,7 +432,7 @@ function ProviderAccordion({
             {modelsError && (
               <span className="text-xs text-destructive">{modelsError}</span>
             )}
-            <div className="flex max-h-48 flex-col gap-1 overflow-y-auto rounded-md border p-2">
+            <div className="flex max-h-48 flex-col gap-1 overflow-y-auto custom-scrollbar rounded-md border p-2">
               {isEmpty && !modelsLoading && (
                 <span className="text-xs text-muted-foreground">
                   {hasRequiredCredentials

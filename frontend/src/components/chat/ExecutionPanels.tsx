@@ -52,7 +52,7 @@ export function ExecutionPanels() {
           <span className="text-xs text-muted-foreground">{planCompleted}/{planTotal} completed</span>
         </button>
         {planOpen && (
-          <div className="max-h-48 overflow-y-auto px-3 pb-2">
+          <div className="max-h-48 overflow-y-auto px-3 pb-2 custom-scrollbar">
             {planGroups.map((group) => (
               <div key={group.id} className="flex items-start">
                 <DAGGraph items={group.items} expandedItems={expandedItems} />

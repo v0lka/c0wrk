@@ -59,7 +59,7 @@ export function ReasoningCombobox() {
       </button>
 
       {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-48 rounded-md border bg-popover shadow-md z-50 max-h-64 overflow-y-auto">
+        <div className="absolute bottom-full left-0 mb-1 w-48 rounded-md border bg-popover shadow-md z-50 max-h-64 overflow-y-auto custom-scrollbar">
           {/* Default option */}
           <button
             type="button"

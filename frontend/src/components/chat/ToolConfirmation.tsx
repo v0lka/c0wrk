@@ -111,7 +111,7 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
         {args && (
           <div className="min-w-0 overflow-hidden">
             <p className="text-xs text-muted-foreground mb-1">Input:</p>
-            <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto border border-border max-w-full min-w-0">
+            <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto custom-scrollbar border border-border max-w-full min-w-0">
               <code>{formatJson(args)}</code>
             </pre>
           </div>

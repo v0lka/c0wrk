@@ -99,7 +99,7 @@ export function PlanReviewPanel({ item }: PlanReviewPanelProps) {
             {planContent && (
               <div className="min-w-0 overflow-hidden">
                 <p className="text-xs text-muted-foreground mb-1">Preview:</p>
-                <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto border border-border max-w-full min-w-0 max-h-24 overflow-y-auto">
+                <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto custom-scrollbar border border-border max-w-full min-w-0 max-h-24 overflow-y-auto">
                   <code>{planContent.length > 500 ? planContent.slice(0, 500) + '\u2026' : planContent}</code>
                 </pre>
               </div>

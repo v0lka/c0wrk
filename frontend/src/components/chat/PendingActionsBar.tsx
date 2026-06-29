@@ -25,7 +25,7 @@ export function PendingActionsBar() {
   return (
     <div
       className={cn(
-        'border-t border-x border-border bg-background/95 backdrop-blur-sm max-h-64 overflow-y-auto',
+        'border-t border-x border-border bg-background/95 backdrop-blur-sm max-h-64 overflow-y-auto custom-scrollbar',
         sidebarCollapsed && 'ml-1',
         viewerCollapsed && 'mr-1',
       )}
