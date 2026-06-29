@@ -605,19 +605,25 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 			return nil, err
 		}
 		return filterKnownFamilyModels(models), nil
-	case "openai_compatible":
-		pc, ok := cfg.LLM.ProviderConfigs["openai_compatible"]
-		if !ok {
-			return nil, errors.New("openAI compatible provider not configured")
-		}
-		baseURL := cfg.ExpandEnvVars(pc.BaseURL)
-		apiKey := cfg.ExpandEnvVars(pc.APIKey)
-		if baseURL == "" {
-			return nil, errors.New("openAI compatible base URL not configured")
-		}
-		return listOpenAIModels(ctx, baseURL, apiKey)
 	default:
-		return nil, fmt.Errorf("unknown provider: %s", provider)
+		// Type-based dispatch: look up the provider by name, then dispatch on ProviderType.
+		pc, ok := cfg.LLM.ProviderConfigs[provider]
+		if !ok {
+			return nil, fmt.Errorf("unknown provider: %s", provider)
+		}
+		switch pc.ProviderType {
+		case "openai":
+			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
+			apiKey := cfg.ExpandEnvVars(pc.APIKey)
+			if baseURL == "" {
+				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
+			}
+			return listOpenAIModels(ctx, baseURL, apiKey)
+		case "anthropic":
+			return llm.BuiltInModelNames("anthropic-api"), nil
+		default:
+			return nil, fmt.Errorf("unsupported provider type %q for provider %q", pc.ProviderType, provider)
+		}
 	}
 }
 
@@ -778,7 +784,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Iterate in a deterministic order (matching backend/config allProviderEntries)
 	// to ensure the first provider in the list is predictable.
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
-	providerOrder := []string{"anthropic", "openai_compatible", "chatgpt"}
+	providerOrder := []string{"anthropic", "chatgpt"}
 	for _, name := range providerOrder {
 		pc, ok := cfg.LLM.ProviderConfigs[name]
 		if !ok || len(pc.Models) == 0 {

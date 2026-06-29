@@ -175,7 +175,7 @@ func TestUpdateLLMConfig_PerProviderFields(t *testing.T) {
 		provider string
 		req      LLMFullConfigRequest
 	}{
-		{"openai_compatible", LLMFullConfigRequest{OpenAICompatible: &ProviderConfigRequest{Models: []string{"test-model"}}}},
+		{"openai_compatible", LLMFullConfigRequest{OpenAICompatible: map[string]ProviderConfigRequest{"openai_compatible": {Models: []string{"test-model"}}}}},
 		{"chatgpt", LLMFullConfigRequest{ChatGPT: &ProviderConfigRequest{Models: []string{"test-model"}}}},
 	}
 	for _, tt := range tests {

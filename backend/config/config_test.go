@@ -219,9 +219,10 @@ func TestOpenAICompatibleRequiresBaseURL(t *testing.T) {
 llm:
   default_model: deepseek-chat
   openai_compatible:
-    api_key: "test-key"
-    models:
-      - deepseek-chat
+    deepseek:
+      api_key: "test-key"
+      models:
+        - deepseek-chat
     # No base_url specified — ok, defaults to empty, validated at router level
 `
 	configPath := writeTestConfig(t, content)
@@ -231,8 +232,8 @@ llm:
 		t.Fatalf("Load() failed: %v", err)
 	}
 
-	if cfg.LLM.OpenAICompatible.BaseURL != "" {
-		t.Errorf("Expected empty base_url for openai_compatible without base_url in config, got %q", cfg.LLM.OpenAICompatible.BaseURL)
+	if cfg.LLM.OpenAICompatible["deepseek"].BaseURL != "" {
+		t.Errorf("Expected empty base_url for openai_compatible without base_url in config, got %q", cfg.LLM.OpenAICompatible["deepseek"].BaseURL)
 	}
 }
 
@@ -266,11 +267,23 @@ func TestGetAllProviderConfigs(t *testing.T) {
 			APIKey: "anthropic-key",
 			Models: []string{"claude-3-haiku", "claude-opus"},
 		},
+		OpenAICompatible: map[string]OpenAICompatibleConfig{
+			"deepseek": {
+				APIKey:  "deepseek-key",
+				BaseURL: "https://api.deepseek.com",
+				Models:  []string{"deepseek-chat"},
+			},
+			"openrouter": {
+				APIKey:  "openrouter-key",
+				BaseURL: "https://openrouter.ai/api",
+				Models:  []string{"openai/gpt-4o"},
+			},
+		},
 	}
 
 	providers := cfg.GetAllProviderConfigs()
-	if len(providers) != 3 {
-		t.Fatalf("Expected 3 providers (all known), got %d", len(providers))
+	if len(providers) != 4 {
+		t.Fatalf("Expected 4 providers (anthropic + 2 openai_compatible + chatgpt), got %d", len(providers))
 	}
 
 	// Check first provider
@@ -284,9 +297,31 @@ func TestGetAllProviderConfigs(t *testing.T) {
 		t.Errorf("Expected 2 anthropic models, got %d", len(providers[0].Models))
 	}
 
-	// Check second provider
-	if providers[1].Name != "openai_compatible" {
-		t.Errorf("Second provider name = %q, want 'openai_compatible'", providers[1].Name)
+	// Check second provider (chatgpt — sorted after anthropic)
+	if providers[1].Name != "chatgpt" {
+		t.Errorf("Second provider name = %q, want 'chatgpt'", providers[1].Name)
+	}
+	if providers[1].ProviderType != "openai" {
+		t.Errorf("Second provider type = %q, want 'openai'", providers[1].ProviderType)
+	}
+
+	// Check third provider (deepseek — sorted after chatgpt)
+	if providers[2].Name != "deepseek" {
+		t.Errorf("Third provider name = %q, want 'deepseek'", providers[2].Name)
+	}
+	if providers[2].ProviderType != "openai" {
+		t.Errorf("Third provider type = %q, want 'openai'", providers[2].ProviderType)
+	}
+	if providers[2].BaseURL != "https://api.deepseek.com" {
+		t.Errorf("Third provider BaseURL = %q, want 'https://api.deepseek.com'", providers[2].BaseURL)
+	}
+
+	// Check fourth provider (openrouter — sorted after deepseek)
+	if providers[3].Name != "openrouter" {
+		t.Errorf("Fourth provider name = %q, want 'openrouter'", providers[3].Name)
+	}
+	if providers[3].ProviderType != "openai" {
+		t.Errorf("Fourth provider type = %q, want 'openai'", providers[3].ProviderType)
 	}
 }
 

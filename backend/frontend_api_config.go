@@ -29,22 +29,7 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		Loaded:       true,
 		LogLevel:     f.config.LogLevel,
 		ConfigErrors: nonNilStringSlice(f.configLoadErrors),
-		LLM: ConfigLLMResponse{
-			DefaultModel: f.config.LLM.DefaultModel,
-			Anthropic: ConfigProviderFull{
-				APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
-				Models: f.config.LLM.Anthropic.Models,
-			},
-			OpenAICompatible: ConfigProviderFull{
-				APIKey:  maskAPIKey(f.config.LLM.OpenAICompatible.APIKey),
-				BaseURL: f.config.LLM.OpenAICompatible.BaseURL,
-				Models:  f.config.LLM.OpenAICompatible.Models,
-			},
-			ChatGPT: ConfigProviderFull{
-				APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
-				Models: f.config.LLM.ChatGPT.Models,
-			},
-		},
+		LLM: f.buildLLMResponse(),
 		Search: ConfigSearchResp{
 			Provider: f.config.Search.Provider,
 			APIKey:   maskAPIKey(f.config.Search.APIKey),
@@ -73,18 +58,45 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 	return resp
 }
 
+// buildLLMResponse constructs the sanitized ConfigLLMResponse from config.
+func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
+	resp := ConfigLLMResponse{
+		DefaultModel: f.config.LLM.DefaultModel,
+		Anthropic: ConfigProviderFull{
+			APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
+			Models: f.config.LLM.Anthropic.Models,
+		},
+		ChatGPT: ConfigProviderFull{
+			APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
+			Models: f.config.LLM.ChatGPT.Models,
+		},
+		OpenAICompatible: make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
+	}
+	for name, cfg := range f.config.LLM.OpenAICompatible {
+		resp.OpenAICompatible[name] = ConfigProviderFull{
+			APIKey:  maskAPIKey(cfg.APIKey),
+			BaseURL: cfg.BaseURL,
+			Models:  cfg.Models,
+		}
+	}
+	return resp
+}
+
 // collectAllModels iterates all enabled provider models and builds ModelInfo
 // entries. When reg is non-nil, family and reasoning metadata are resolved
 // from the registry. When reg is nil (registry not yet initialized), models
 // are returned without metadata so the frontend still sees configured models.
 func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
-	providers := []struct {
+	// Collect all model lists from known providers
+	type modelsEntry struct {
 		models []string
-	}{
-		{f.config.LLM.Anthropic.Models},
-		{f.config.LLM.OpenAICompatible.Models},
-		{f.config.LLM.ChatGPT.Models},
 	}
+	providers := make([]modelsEntry, 0, len(f.config.LLM.OpenAICompatible)+2)
+	providers = append(providers, modelsEntry{f.config.LLM.Anthropic.Models})
+	for _, cfg := range f.config.LLM.OpenAICompatible {
+		providers = append(providers, modelsEntry{cfg.Models})
+	}
+	providers = append(providers, modelsEntry{f.config.LLM.ChatGPT.Models})
 
 	seen := make(map[string]bool)
 	var result []ModelInfo
@@ -146,15 +158,21 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 	if req.OpenAICompatible != nil {
-		if req.OpenAICompatible.Models != nil {
-			f.config.LLM.OpenAICompatible.Models = req.OpenAICompatible.Models
+		newMap := make(map[string]config.OpenAICompatibleConfig, len(req.OpenAICompatible))
+		for name, ocReq := range req.OpenAICompatible {
+			apiKey := ocReq.APIKey
+			if apiKey == maskedAPIKey || apiKey == "" {
+				if existing, ok := f.config.LLM.OpenAICompatible[name]; ok {
+					apiKey = existing.APIKey
+				}
+			}
+			newMap[name] = config.OpenAICompatibleConfig{
+				APIKey:  apiKey,
+				BaseURL: ocReq.BaseURL,
+				Models:  ocReq.Models,
+			}
 		}
-		if req.OpenAICompatible.APIKey != "" && req.OpenAICompatible.APIKey != maskedAPIKey {
-			f.config.LLM.OpenAICompatible.APIKey = req.OpenAICompatible.APIKey
-		}
-		if req.OpenAICompatible.BaseURL != "" {
-			f.config.LLM.OpenAICompatible.BaseURL = req.OpenAICompatible.BaseURL
-		}
+		f.config.LLM.OpenAICompatible = newMap
 	}
 	if req.ChatGPT != nil {
 		if req.ChatGPT.Models != nil {

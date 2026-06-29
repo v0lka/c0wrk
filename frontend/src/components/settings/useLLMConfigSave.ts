@@ -2,7 +2,7 @@ import { useCallback, useRef, useEffect } from 'react'
 import { updateLLMConfig, MASKED_API_KEY } from '@/api/config'
 import { invalidateConfigCache } from '@/hooks/useConfigData'
 import { logger } from '@/lib/logger'
-import { PROVIDERS, PROVIDERS_WITH_BASE_URL } from '@/lib/llm-providers'
+import { isOpenAICompatibleProvider, PROVIDERS_WITH_BASE_URL } from '@/lib/llm-providers'
 import type { LLMFullConfigRequest } from '@/types/models'
 import type { ProviderConfig } from './useLLMConfig'
 
@@ -17,7 +17,8 @@ interface UseLLMConfigSaveResult {
 
 /**
  * Encapsulates the save/persist side of LLM config management:
- *   - Builds the LLMFullConfigRequest dynamically from PROVIDERS (fixes #1, #8)
+ *   - Builds the LLMFullConfigRequest: fixed providers as flat fields,
+ *     OpenAI-compatible providers nested under openai_compatible map (fixes #1, #8)
  *   - Debounces saves (300 ms)
  *   - Filters out the MASKED_API_KEY sentinel so we never overwrite a real key
  */
@@ -30,9 +31,9 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   const saveFullConfig = useCallback(
     (defModel: string, configs: Record<string, ProviderConfig>) => {
       const req: LLMFullConfigRequest & Record<string, unknown> = { default_model: defModel }
+      const openaiCompatible: Record<string, { api_key: string; base_url?: string; models: string[] }> = {}
 
-      for (const p of PROVIDERS) {
-        const cfg = configs[p]
+      for (const [p, cfg] of Object.entries(configs)) {
         if (!cfg) continue
         const entry: { api_key: string; base_url?: string; models: string[] } = {
           api_key: cfg.api_key,
@@ -41,7 +42,15 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
         if (PROVIDERS_WITH_BASE_URL.has(p)) {
           entry.base_url = cfg.base_url
         }
-        req[p] = entry
+        if (isOpenAICompatibleProvider(p)) {
+          openaiCompatible[p] = entry
+        } else {
+          req[p] = entry
+        }
+      }
+
+      if (Object.keys(openaiCompatible).length > 0) {
+        req.openai_compatible = openaiCompatible
       }
 
       updateLLMConfig(req as LLMFullConfigRequest)

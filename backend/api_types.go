@@ -34,7 +34,7 @@ type ModelInfo struct {
 type ConfigLLMResponse struct {
 	DefaultModel     string             `json:"default_model"` // global, cross-provider
 	Anthropic        ConfigProviderFull `json:"anthropic"`
-	OpenAICompatible ConfigProviderFull `json:"openai_compatible"`
+	OpenAICompatible map[string]ConfigProviderFull `json:"openai_compatible"`
 	ChatGPT          ConfigProviderFull `json:"chatgpt"`
 	AllModels        []ModelInfo        `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
 	ModelsReady      bool               `json:"models_ready"` // false during async LLM init; true once registry is wired
@@ -63,7 +63,7 @@ type LLMSettingsRequest struct {
 type LLMFullConfigRequest struct {
 	DefaultModel     string                 `json:"default_model"`
 	Anthropic        *ProviderConfigRequest `json:"anthropic,omitempty"`
-	OpenAICompatible *ProviderConfigRequest `json:"openai_compatible,omitempty"`
+	OpenAICompatible map[string]ProviderConfigRequest `json:"openai_compatible,omitempty"`
 	ChatGPT          *ProviderConfigRequest `json:"chatgpt,omitempty"`
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 
 	"github.com/v0lka/c0wrk/core/tools"
 
@@ -75,7 +76,7 @@ type VectorIndexConfig struct {
 type LLMConfig struct {
 	DefaultModel    string                   `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
 	Anthropic        AnthropicConfig          `yaml:"anthropic"`
-	OpenAICompatible OpenAICompatibleConfig   `yaml:"openai_compatible"`
+	OpenAICompatible map[string]OpenAICompatibleConfig `yaml:"openai_compatible"`
 	ChatGPT          ChatGPTConfig            `yaml:"chatgpt"`
 	Models           map[string]ModelOverride `yaml:"models"`
 	Retry            LLMRetryConfig           `yaml:"retry"`
@@ -327,7 +328,7 @@ type LoadResult struct {
 
 // ProviderWithModels pairs a provider config key with its enabled models.
 type ProviderWithModels struct {
-	Name         string   // config key: "anthropic", "openai_compatible", "chatgpt"
+	Name         string   // config key: "anthropic", "chatgpt", or a named openai_compatible provider
 	ProviderType string   // Go type constant
 	APIKey       string
 	BaseURL      string
@@ -344,21 +345,35 @@ type providerEntry struct {
 
 // allProviderEntries returns the flat list of all known providers.
 func (c *LLMConfig) allProviderEntries() []providerEntry {
-	return []providerEntry{
-		{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
-		{"openai_compatible", c.OpenAICompatible.APIKey, c.OpenAICompatible.BaseURL, c.OpenAICompatible.Models},
-		{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
+	// Sort openai_compatible keys for deterministic order
+	openaiKeys := make([]string, 0, len(c.OpenAICompatible))
+	for k := range c.OpenAICompatible {
+		openaiKeys = append(openaiKeys, k)
 	}
+	sort.Strings(openaiKeys)
+	entries := make([]providerEntry, 0, 2+len(openaiKeys))
+	entries = append(entries,
+		providerEntry{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
+		providerEntry{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
+	)
+	for _, name := range openaiKeys {
+		cfg := c.OpenAICompatible[name]
+		entries = append(entries, providerEntry{name, cfg.APIKey, cfg.BaseURL, cfg.Models})
+	}
+	return entries
 }
 
 // providerType maps a config-level provider name to the Go provider type.
-func providerType(name string) string {
+func (c *LLMConfig) providerType(name string) string {
 	switch name {
 	case "anthropic":
 		return "anthropic"
-	case "openai_compatible", "chatgpt":
+	case "chatgpt":
 		return "openai"
 	default:
+		if _, ok := c.OpenAICompatible[name]; ok {
+			return "openai"
+		}
 		return ""
 	}
 }
@@ -371,7 +386,7 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 	for _, p := range c.allProviderEntries() {
 		result = append(result, ProviderWithModels{
 			Name:         p.name,
-			ProviderType: providerType(p.name),
+			ProviderType: c.providerType(p.name),
 			APIKey:       p.apiKey,
 			BaseURL:      p.baseURL,
 			Models:       p.models,
@@ -393,7 +408,7 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 			if m == c.DefaultModel {
 				return ProviderWithModels{
 					Name:         p.name,
-					ProviderType: providerType(p.name),
+					ProviderType: c.providerType(p.name),
 					APIKey:       p.apiKey,
 					BaseURL:      p.baseURL,
 					Models:       p.models,

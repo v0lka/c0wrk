@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
-import { PROVIDERS } from '@/lib/llm-providers'
+import { FIXED_PROVIDERS } from '@/lib/llm-providers'
 import type { ConfigProviderFull } from '@/types/models'
 import { useLLMConfigSave } from './useLLMConfigSave'
 
@@ -12,16 +12,20 @@ export interface ProviderConfig {
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
-    PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [] }]),
+    FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [] }]),
 )
 
 interface UseLLMConfigResult {
     defaultModel: string
     providerConfigs: Record<string, ProviderConfig>
+    /** Names of providers loaded from the openai_compatible map (non-fixed providers). */
+    openaiCompatibleProviderNames: Set<string>
     isLoading: boolean
     setDefaultModel: (model: string) => void
     updateProviderConfig: (provider: string, updates: Partial<ProviderConfig>) => void
     toggleModel: (provider: string, model: string) => void
+    addProvider: (name: string, config: ProviderConfig) => void
+    deleteProvider: (name: string) => void
 }
 
 function toProviderConfig(p: ConfigProviderFull): ProviderConfig {
@@ -39,13 +43,14 @@ function toProviderConfig(p: ConfigProviderFull): ProviderConfig {
 export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?: (model: string) => void): UseLLMConfigResult {
     const [defaultModel, setDefaultModelState] = useState('')
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
+    const [openaiCompatibleProviderNames, setOpenaiCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
 
     // Mutable ref for providerConfigs so setDefaultModel stays stable (fix #5).
     const configsRef = useRef(providerConfigs)
     configsRef.current = providerConfigs
 
-    const { debouncedSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
+    const { debouncedSave, buildSafeUpdates, saveFullConfig } = useLLMConfigSave(onSettingsSaved)
 
     const loadConfig = useCallback(async () => {
         try {
@@ -54,18 +59,37 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             if (llm) {
                 setDefaultModelState(llm.default_model || '')
                 const configs: Record<string, ProviderConfig> = {}
-                for (const p of PROVIDERS) {
-                    configs[p] = toProviderConfig(llm[p])
+                const openaiNames = new Set<string>()
+
+                // Load fixed providers (anthropic, chatgpt).
+                for (const p of FIXED_PROVIDERS) {
+                    const cfg = llm[p]
+                    if (cfg) {
+                        configs[p] = toProviderConfig(cfg)
+                    }
                 }
+
+                // Load openai_compatible providers from the map.
+                const ocProviders = llm.openai_compatible
+                if (ocProviders && typeof ocProviders === 'object') {
+                    for (const [name, cfg] of Object.entries(ocProviders)) {
+                        configs[name] = toProviderConfig(cfg)
+                        openaiNames.add(name)
+                    }
+                }
+
                 setProviderConfigs(configs)
+                setOpenaiCompatibleProviderNames(openaiNames)
             } else {
                 setDefaultModelState('')
                 setProviderConfigs({ ...defaultProviderConfigs })
+                setOpenaiCompatibleProviderNames(new Set())
             }
         } catch (error) {
             logger.error('Failed to load LLM config:', error)
             setDefaultModelState('')
             setProviderConfigs({ ...defaultProviderConfigs })
+            setOpenaiCompatibleProviderNames(new Set())
         } finally {
             setIsLoading(false)
         }
@@ -103,12 +127,40 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         })
     }, [defaultModel, debouncedSave])
 
+    const addProvider = useCallback((name: string, config: ProviderConfig) => {
+        setProviderConfigs((prev) => {
+            const updated = { ...prev, [name]: config }
+            // Save immediately so the new provider is persisted.
+            saveFullConfig(defaultModel, updated)
+            return updated
+        })
+        setOpenaiCompatibleProviderNames((prev) => new Set(prev).add(name))
+    }, [defaultModel, saveFullConfig])
+
+    const deleteProvider = useCallback((name: string) => {
+        setProviderConfigs((prev) => {
+            const next = { ...prev }
+            delete next[name]
+            // Save immediately so the deletion is persisted.
+            saveFullConfig(defaultModel, next)
+            return next
+        })
+        setOpenaiCompatibleProviderNames((prev) => {
+            const next = new Set(prev)
+            next.delete(name)
+            return next
+        })
+    }, [defaultModel, saveFullConfig])
+
     return {
         defaultModel,
         providerConfigs,
+        openaiCompatibleProviderNames,
         isLoading,
         setDefaultModel,
         updateProviderConfig,
         toggleModel,
+        addProvider,
+        deleteProvider,
     }
 }

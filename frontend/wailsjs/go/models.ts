@@ -221,7 +221,7 @@ export namespace backend {
 	export class ConfigLLMResponse {
 	    default_model: string;
 	    anthropic: ConfigProviderFull;
-	    openai_compatible: ConfigProviderFull;
+	    openai_compatible: Record<string, ConfigProviderFull>;
 	    chatgpt: ConfigProviderFull;
 	    all_models: ModelInfo[];
 	    models_ready: boolean;
@@ -234,7 +234,7 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.default_model = source["default_model"];
 	        this.anthropic = this.convertValues(source["anthropic"], ConfigProviderFull);
-	        this.openai_compatible = this.convertValues(source["openai_compatible"], ConfigProviderFull);
+	        this.openai_compatible = this.convertValues(source["openai_compatible"], ConfigProviderFull, true);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderFull);
 	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
 	        this.models_ready = source["models_ready"];
@@ -377,7 +377,7 @@ export namespace backend {
 	export class LLMFullConfigRequest {
 	    default_model: string;
 	    anthropic?: ProviderConfigRequest;
-	    openai_compatible?: ProviderConfigRequest;
+	    openai_compatible?: Record<string, ProviderConfigRequest>;
 	    chatgpt?: ProviderConfigRequest;
 	
 	    static createFrom(source: any = {}) {
@@ -388,7 +388,7 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.default_model = source["default_model"];
 	        this.anthropic = this.convertValues(source["anthropic"], ProviderConfigRequest);
-	        this.openai_compatible = this.convertValues(source["openai_compatible"], ProviderConfigRequest);
+	        this.openai_compatible = this.convertValues(source["openai_compatible"], ProviderConfigRequest, true);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ProviderConfigRequest);
 	    }
 	

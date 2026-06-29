@@ -2,6 +2,7 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Loader2 } from 'lucide-react'
+import { isOpenAICompatibleProvider } from '@/lib/llm-providers'
 
 interface ProviderConfig {
   api_key: string
@@ -27,7 +28,7 @@ export function ProviderConfigForm({
   onConfigChange,
   onApply,
 }: ProviderConfigFormProps) {
-  const showBaseUrl = activeProvider === 'openai_compatible'
+  const showBaseUrl = isOpenAICompatibleProvider(activeProvider)
   const showApiKey = true
 
   return (

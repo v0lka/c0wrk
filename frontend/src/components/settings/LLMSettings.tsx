@@ -1,22 +1,113 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { ProviderConfigForm } from './ProviderConfigForm'
 import { useLLMConfig } from './useLLMConfig'
 import { useModelFetch } from './useModelFetch'
-import { ChevronDown, ChevronRight } from 'lucide-react'
-import { PROVIDERS, PROVIDER_LABELS } from '@/lib/llm-providers'
+import { ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
+import {
+  FIXED_PROVIDERS,
+  PROVIDER_LABELS,
+} from '@/lib/llm-providers'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 
-export function LLMSettings({ onSettingsSaved, onDefaultModelChange }: { onSettingsSaved?: () => void; onDefaultModelChange?: (model: string) => void }) {
+// ---------------------------------------------------------------------------
+// Provider name validation
+// ---------------------------------------------------------------------------
+
+const RESERVED_NAMES = new Set<string>(FIXED_PROVIDERS)
+
+/** Regex: must start with a letter, then letters / digits / underscores / hyphens. */
+const PROVIDER_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/
+
+interface AddFormErrors {
+  name?: string
+  baseUrl?: string
+  apiKey?: string
+}
+
+function validateProviderName(
+  name: string,
+  existingNames: Set<string>,
+): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) return 'Name is required.'
+  if (RESERVED_NAMES.has(trimmed)) return `"${trimmed}" is a reserved name.`
+  if (existingNames.has(trimmed)) return `A provider named "${trimmed}" already exists.`
+  if (!PROVIDER_NAME_RE.test(trimmed)) {
+    return 'Name must start with a letter and contain only a-z, A-Z, 0-9, _, -.'
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
+export function LLMSettings({
+  onSettingsSaved,
+  onDefaultModelChange,
+}: {
+  onSettingsSaved?: () => void
+  onDefaultModelChange?: (model: string) => void
+}) {
   const {
     defaultModel,
     providerConfigs,
+    openaiCompatibleProviderNames,
     isLoading,
     setDefaultModel,
     updateProviderConfig,
     toggleModel,
+    addProvider,
+    deleteProvider,
   } = useLLMConfig(onSettingsSaved, onDefaultModelChange)
 
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
 
+  // --- Add-provider form state -------------------------------------------
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [addFormName, setAddFormName] = useState('')
+  const [addFormBaseUrl, setAddFormBaseUrl] = useState('')
+  const [addFormApiKey, setAddFormApiKey] = useState('')
+  const [addFormErrors, setAddFormErrors] = useState<AddFormErrors>({})
+  const [addFormSubmitting, setAddFormSubmitting] = useState(false)
+
+  const resetAddForm = useCallback(() => {
+    setShowAddForm(false)
+    setAddFormName('')
+    setAddFormBaseUrl('')
+    setAddFormApiKey('')
+    setAddFormErrors({})
+  }, [])
+
+  const handleAddProvider = useCallback(() => {
+    const nameErr = validateProviderName(addFormName, openaiCompatibleProviderNames)
+    const errors: AddFormErrors = {}
+    if (nameErr) errors.name = nameErr
+    setAddFormErrors(errors)
+    if (Object.keys(errors).length > 0) return
+
+    setAddFormSubmitting(true)
+    const name = addFormName.trim()
+    addProvider(name, {
+      api_key: addFormApiKey,
+      base_url: addFormBaseUrl,
+      models: [],
+    })
+    // Expand the new provider immediately.
+    setExpandedProviders((prev) => new Set(prev).add(name))
+    resetAddForm()
+    setAddFormSubmitting(false)
+  }, [
+    addFormName,
+    addFormBaseUrl,
+    addFormApiKey,
+    openaiCompatibleProviderNames,
+    addProvider,
+    resetAddForm,
+  ])
+
+  // --- Accordion helpers -------------------------------------------------
   const toggleExpanded = (provider: string) => {
     setExpandedProviders((prev) => {
       const next = new Set(prev)
@@ -29,7 +120,7 @@ export function LLMSettings({ onSettingsSaved, onDefaultModelChange }: { onSetti
   // Collect all enabled models across all providers for the global default dropdown.
   const allEnabledModels = useMemo(() => {
     const result: { model: string; provider: string }[] = []
-    for (const p of PROVIDERS) {
+    for (const p of Object.keys(providerConfigs)) {
       const cfg = providerConfigs[p]
       if (cfg) {
         for (const m of cfg.models) {
@@ -60,16 +151,19 @@ export function LLMSettings({ onSettingsSaved, onDefaultModelChange }: { onSetti
         >
           <option value="">— Select a default model —</option>
           {allEnabledModels.map(({ model, provider }) => (
-            <option key={`${provider}:${model}`} value={model}>{model}</option>
+            <option key={`${provider}:${model}`} value={model}>
+              {model}
+            </option>
           ))}
         </select>
         <p className="text-xs text-muted-foreground">
-          The default model is used when no per-message override is set. It must be enabled in at least one provider below.
+          The default model is used when no per-message override is set. It must
+          be enabled in at least one provider below.
         </p>
       </div>
 
-      {/* Provider Accordions */}
-      {PROVIDERS.map((provider) => {
+      {/* Fixed Provider Accordions */}
+      {FIXED_PROVIDERS.map((provider) => {
         const config = providerConfigs[provider]
         if (!config) return null
         const isExpanded = expandedProviders.has(provider)
@@ -85,12 +179,129 @@ export function LLMSettings({ onSettingsSaved, onDefaultModelChange }: { onSetti
             onConfigChange={(updates) => updateProviderConfig(provider, updates)}
             onToggleModel={(model) => toggleModel(provider, model)}
             defaultModel={defaultModel}
+            providerConfigs={providerConfigs}
           />
         )
       })}
+
+      {/* OpenAI-Compatible Provider Accordions */}
+      {[...openaiCompatibleProviderNames].sort().map((name) => {
+        const config = providerConfigs[name]
+        if (!config) return null
+        const isExpanded = expandedProviders.has(name)
+        const label = `OpenAI Compatible: ${name}`
+
+        return (
+          <ProviderAccordion
+            key={name}
+            provider={name}
+            label={label}
+            config={config}
+            isExpanded={isExpanded}
+            onToggle={() => toggleExpanded(name)}
+            onConfigChange={(updates) => updateProviderConfig(name, updates)}
+            onToggleModel={(model) => toggleModel(name, model)}
+            onDelete={() => deleteProvider(name)}
+            defaultModel={defaultModel}
+            providerConfigs={providerConfigs}
+          />
+        )
+      })}
+
+      {/* Add OpenAI-compatible provider */}
+      <div className="flex flex-col gap-3">
+        {!showAddForm && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="self-start gap-2"
+            onClick={() => setShowAddForm(true)}
+          >
+            <Plus className="h-4 w-4" />
+            Add OpenAI-compatible provider
+          </Button>
+        )}
+
+        {showAddForm && (
+          <div className="rounded-lg border p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h4 className="text-sm font-medium">New OpenAI-compatible provider</h4>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={resetAddForm}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {/* Name */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Name</label>
+                <Input
+                  placeholder="e.g. deepseek"
+                  value={addFormName}
+                  onChange={(e) => setAddFormName(e.target.value)}
+                  className="h-9 text-sm"
+                />
+                {addFormErrors.name && (
+                  <span className="text-xs text-destructive">{addFormErrors.name}</span>
+                )}
+              </div>
+
+              {/* Base URL */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Base URL</label>
+                <Input
+                  placeholder="http://localhost:1234"
+                  value={addFormBaseUrl}
+                  onChange={(e) => setAddFormBaseUrl(e.target.value)}
+                  className="h-9 text-sm"
+                />
+              </div>
+
+              {/* API Key */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">API Key</label>
+                <Input
+                  type={addFormApiKey.startsWith('${') ? 'text' : 'password'}
+                  placeholder="Enter API key"
+                  value={addFormApiKey}
+                  onChange={(e) => setAddFormApiKey(e.target.value)}
+                  className="h-9 text-sm"
+                />
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-2 pt-1">
+                <Button
+                  size="sm"
+                  onClick={handleAddProvider}
+                  disabled={addFormSubmitting}
+                >
+                  Add Provider
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={resetAddForm}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// ProviderAccordion — shared by fixed and OpenAI-compatible providers
+// ---------------------------------------------------------------------------
 
 function ProviderAccordion({
   provider,
@@ -100,7 +311,9 @@ function ProviderAccordion({
   onToggle,
   onConfigChange,
   onToggleModel,
+  onDelete,
   defaultModel,
+  providerConfigs,
 }: {
   provider: string
   label: string
@@ -109,7 +322,9 @@ function ProviderAccordion({
   onToggle: () => void
   onConfigChange: (updates: Partial<{ api_key: string; base_url: string }>) => void
   onToggleModel: (model: string) => void
+  onDelete?: () => void
   defaultModel: string
+  providerConfigs: Record<string, { api_key: string; base_url: string; models: string[] }>
 }) {
   const {
     models,
@@ -118,7 +333,7 @@ function ProviderAccordion({
     apiKeyDirty,
     handleApply,
     hasRequiredCredentials,
-  } = useModelFetch(provider, { [provider]: config })
+  } = useModelFetch(provider, providerConfigs)
 
   // Show configured models immediately when the provider API hasn't been
   // fetched yet. Once the user clicks "Fetch Models" / "Apply", the full
@@ -130,6 +345,18 @@ function ProviderAccordion({
 
   const isEmpty = displayModels.length === 0
 
+  // Deletion confirmation: warn when the provider owns the default model.
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const ownsDefaultModel = config.models.includes(defaultModel)
+
+  const handleDeleteClick = () => {
+    if (ownsDefaultModel && !confirmDelete) {
+      setConfirmDelete(true)
+      return
+    }
+    onDelete?.()
+  }
+
   return (
     <div className="rounded-lg border">
       <button
@@ -138,13 +365,51 @@ function ProviderAccordion({
         onClick={onToggle}
       >
         <span className="flex items-center gap-2">
-          {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          {isExpanded ? (
+            <ChevronDown className="h-4 w-4" />
+          ) : (
+            <ChevronRight className="h-4 w-4" />
+          )}
           {label}
         </span>
-        <span className="text-xs text-muted-foreground">
-          {config.models.length} model{config.models.length !== 1 ? 's' : ''} enabled
+        <span className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {config.models.length} model{config.models.length !== 1 ? 's' : ''} enabled
+          </span>
+          {onDelete && (
+            <span
+              role="button"
+              tabIndex={0}
+              className="ml-1 flex h-5 w-5 cursor-pointer items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleDeleteClick()
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  handleDeleteClick()
+                }
+              }}
+              title={
+                confirmDelete
+                  ? 'Click again to confirm deletion'
+                  : 'Delete provider'
+              }
+            >
+              <X className="h-3.5 w-3.5" />
+            </span>
+          )}
         </span>
       </button>
+
+      {confirmDelete && (
+        <div className="border-t px-4 py-2 text-xs text-destructive">
+          This provider contains the default model &ldquo;{defaultModel}&rdquo;.
+          Click the X again to confirm deletion.
+        </div>
+      )}
 
       {isExpanded && (
         <div className="flex flex-col gap-4 border-t px-4 py-4">
