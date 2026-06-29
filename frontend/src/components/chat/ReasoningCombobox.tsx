@@ -15,7 +15,7 @@ export function ReasoningCombobox() {
   const selectedReasoning = useInputModeStore((s) => s.selectedReasoning)
   const setSelectedReasoning = useInputModeStore((s) => s.setSelectedReasoning)
 
-  const { allModels, defaultModel } = useConfigData()
+  const { allModels, defaultModel, loaded } = useConfigData()
   const { isOpen, setIsOpen, containerRef } = useDropdown()
 
   // When selectedModel changes, reset reasoning if the new model's family doesn't support it.
@@ -32,6 +32,9 @@ export function ReasoningCombobox() {
   const effectiveModel = selectedModel ?? defaultModel
   const modelInfo = allModels.find((m) => m.name === effectiveModel)
   const reasoning = modelInfo?.reasoning
+
+  // If still loading config, render nothing (matches pre-loaded behavior).
+  if (!loaded) return null
 
   // If family doesn't support reasoning, render nothing.
   if (!reasoning) return null

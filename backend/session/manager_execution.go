@@ -134,12 +134,27 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 	// Launch goroutine to handle the message
 	go func(ctx context.Context, msg string, skills []string) {
 		defer close(doneCh)
+		planReviewActive := false
 		defer func() {
 			session.mu.Lock()
 			session.active = false
 			session.cancel = nil
 			session.done = nil
 			session.mu.Unlock()
+
+			// Clear persisted plan review state when the session
+			// completes, unless the goroutine took the plan review
+			// path (which persists its own state and must survive).
+			if !planReviewActive {
+				m.mu.RLock()
+				prs := m.planReviewStore
+				m.mu.RUnlock()
+				if prs != nil {
+					if err := prs.UpdateSessionPlanReview(context.Background(), id, "", ""); err != nil {
+						m.log().Warn("failed to clear plan review state on completion", "session", id, "error", err)
+					}
+				}
+			}
 		}()
 
 		// Get last completed task ID for continuation
@@ -160,6 +175,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 		// Plan review: if orchestrator returned a plan for review, store state
 		// and emit plan_review_ready, then exit the goroutine (don't block).
 		if result != nil && result.PlanReviewPhase != "" {
+			planReviewActive = true
 			planReviewPhase := PlanReviewPhase(result.PlanReviewPhase)
 			session.mu.Lock()
 			session.planReviewPhase = planReviewPhase

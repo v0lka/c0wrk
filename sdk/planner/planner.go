@@ -60,6 +60,10 @@ const (
 	defaultParseErrorAbortThreshold = 3
 )
 
+// parsePlanMaxRetries is the maximum number of retries when the LLM produces
+// a plan response that cannot be parsed as valid JSON.
+const parsePlanMaxRetries = 5
+
 // defaultMaxExploreSteps is the default step budget for the planner's exploration loop.
 const defaultMaxExploreSteps = 7
 
@@ -216,19 +220,9 @@ func (p *Planner) Replan(
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: "Please provide the updated plan."})
 
-	req := llm.ChatRequest{
-		Messages:        messages,
-		ReasoningEffort: p.Cfg.ReasoningEffort,
-	}
-
-	resp, err := p.llm.Call(ctx, req)
+	plan, err := p.callAndParsePlan(ctx, messages, availableSkills)
 	if err != nil {
-		return nil, fmt.Errorf("planner replan LLM call failed: %w", err)
-	}
-
-	plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse replan response: %w", err)
+		return nil, err
 	}
 
 	p.emitService("Plan refined", map[string]any{"phase": "planning", "step_count": len(plan.Steps)})
@@ -245,30 +239,21 @@ func (p *Planner) PlanContinuation(
 	availableTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
+	conversationHistory []llm.Message,
 ) (*orchestration.Plan, error) {
 	mode := p.continuationMultiMode()
 	if singleStep {
 		mode = p.continuationSingleMode()
 	}
 
-	systemPrompt := p.buildContinuationSystemPrompt(ctx, mode, originalRequest, existingPlan, completedSteps, availableTools, availableSkills)
+	systemPrompt := p.buildContinuationSystemPrompt(ctx, mode, originalRequest, existingPlan, completedSteps, availableTools, availableSkills, conversationHistory)
 
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: newMessage})
 
-	req := llm.ChatRequest{
-		Messages:        messages,
-		ReasoningEffort: p.Cfg.ReasoningEffort,
-	}
-
-	resp, err := p.llm.Call(ctx, req)
+	plan, err := p.callAndParsePlan(ctx, messages, availableSkills)
 	if err != nil {
-		return nil, fmt.Errorf("planner continuation LLM call failed: %w", err)
-	}
-
-	plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse continuation plan: %w", err)
+		return nil, err
 	}
 
 	if singleStep && len(plan.Steps) > 1 {
@@ -297,19 +282,9 @@ func (p *Planner) planDirect(
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
 
-	req := llm.ChatRequest{
-		Messages:        messages,
-		ReasoningEffort: p.Cfg.ReasoningEffort,
-	}
-
-	resp, err := p.llm.Call(ctx, req)
+	plan, err := p.callAndParsePlan(ctx, messages, availableSkills)
 	if err != nil {
-		return nil, fmt.Errorf("planner LLM call failed: %w", err)
-	}
-
-	plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse plan response: %w", err)
+		return nil, err
 	}
 
 	if singleStep && len(plan.Steps) > 1 {
@@ -593,6 +568,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 	completedSteps []orchestration.CompletedStep,
 	availableTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
+	conversationHistory []llm.Message,
 ) string {
 	var planSummaryBuilder strings.Builder
 	for _, step := range existingPlan.Steps {
@@ -620,14 +596,86 @@ func (p *Planner) buildContinuationSystemPrompt(
 		"ORIGINAL-REQUEST":       originalRequest,
 		"COMPLETED-PLAN-SUMMARY": completedPlanSummary,
 		"TERMINAL-STEPS":         terminalStepsStr,
+		"RECENT-CONVERSATION":    formatConversationHistory(conversationHistory),
 	}
 
 	return p.buildSystemPromptFromMode(ctx, mode, p.Cfg.Prompts.BasePrompt, availableTools, nil, availableSkills, extraSubs)
 }
 
+// formatConversationHistory formats a conversation history slice for inclusion
+// in the continuation planner prompt. Returns a human-readable dialogue.
+func formatConversationHistory(history []llm.Message) string {
+	if len(history) == 0 {
+		return "(no previous conversation)"
+	}
+	var b strings.Builder
+	for _, msg := range history {
+		b.WriteString(msg.Role)
+		b.WriteString(": ")
+		b.WriteString(msg.Content)
+		b.WriteString("\n\n")
+	}
+	return b.String()
+}
+
 // ---------------------------------------------------------------------------
 // Plan parsing
 // ---------------------------------------------------------------------------
+
+// callAndParsePlan calls the LLM with the given messages, parses the response
+// as a plan, and retries with error feedback if parsing fails. Retries up to
+// parsePlanMaxRetries times. The initialMessages slice is not mutated.
+func (p *Planner) callAndParsePlan(
+	ctx context.Context,
+	initialMessages []llm.Message,
+	availableSkills []skills.SkillDescriptor,
+) (*orchestration.Plan, error) {
+	messages := make([]llm.Message, len(initialMessages))
+	copy(messages, initialMessages)
+	req := llm.ChatRequest{
+		Messages:        messages,
+		ReasoningEffort: p.Cfg.ReasoningEffort,
+	}
+
+	var lastParseErr error
+	for attempt := 0; attempt < parsePlanMaxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		resp, err := p.llm.Call(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("planner LLM call failed: %w", err)
+		}
+
+		plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
+		if err == nil {
+			return plan, nil
+		}
+
+		lastParseErr = err
+		p.log().Warn("planner: parse failed, retrying",
+			"attempt", attempt+1,
+			"max_retries", parsePlanMaxRetries,
+			"error", err,
+		)
+
+		req.Messages = append(req.Messages,
+			llm.Message{Role: "assistant", Content: resp.Message.Content},
+			llm.Message{Role: "user", Content: fmt.Sprintf(
+				"Your response was invalid JSON. Error: %s\n\n"+
+					"Respond ONLY with a valid JSON object. "+
+					"Do NOT use markdown code fences (```json ... ```). "+
+					"Do NOT include any text, HTML, or commentary before or after the JSON. "+
+					"Your entire response must start with { and end with } "+
+					"and be parseable by a standard JSON parser.",
+				err,
+			)},
+		)
+	}
+
+	return nil, fmt.Errorf("failed to parse plan response after %d attempts: %w", parsePlanMaxRetries, lastParseErr)
+}
 
 func (p *Planner) parsePlanResponse(content string, availableSkills []skills.SkillDescriptor) (*orchestration.Plan, error) {
 	content = strings.TrimSpace(content)

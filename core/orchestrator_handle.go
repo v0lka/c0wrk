@@ -280,7 +280,7 @@ func (o *Orchestrator) executeContinuation(
 	}
 
 	o.logDebug("orchestrator: calling PlanContinuation", "singleStep", singleStep)
-	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep)
+	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep, o.conversationHistory)
 	if planErr != nil {
 		o.logDebug("orchestrator: PlanContinuation failed", "error", planErr)
 		if pbb, ok := bb.(PersistableBlackboard); ok {

@@ -120,6 +120,16 @@ function ProviderAccordion({
     hasRequiredCredentials,
   } = useModelFetch(provider, { [provider]: config })
 
+  // Show configured models immediately when the provider API hasn't been
+  // fetched yet. Once the user clicks "Fetch Models" / "Apply", the full
+  // provider model list replaces the configured subset.
+  const displayModels = useMemo(() => {
+    if (models.length > 0) return models
+    return config.models
+  }, [models, config.models])
+
+  const isEmpty = displayModels.length === 0
+
   return (
     <div className="rounded-lg border">
       <button
@@ -158,14 +168,14 @@ function ProviderAccordion({
               <span className="text-xs text-destructive">{modelsError}</span>
             )}
             <div className="flex max-h-48 flex-col gap-1 overflow-y-auto rounded-md border p-2">
-              {models.length === 0 && !modelsLoading && (
+              {isEmpty && !modelsLoading && (
                 <span className="text-xs text-muted-foreground">
                   {hasRequiredCredentials
                     ? 'No models available. Click "Fetch Models" to load them.'
                     : 'Configure API key and click "Fetch Models" to load available models.'}
                 </span>
               )}
-              {models.map((model) => {
+              {displayModels.map((model) => {
                 const isEnabled = config.models.includes(model)
                 const isDefault = model === defaultModel
                 return (

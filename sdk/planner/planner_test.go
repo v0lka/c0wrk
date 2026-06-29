@@ -636,7 +636,7 @@ func TestBuildContinuationSystemPrompt(t *testing.T) {
 	mode := p.continuationMultiMode()
 	result := p.buildContinuationSystemPrompt(
 		context.Background(), mode, "original request text",
-		existingPlan, completedSteps, nil, nil,
+		existingPlan, completedSteps, nil, nil, nil,
 	)
 
 	if result == "" {
@@ -672,7 +672,7 @@ func TestBuildContinuationSystemPrompt_SingleStep(t *testing.T) {
 	mode := p.continuationSingleMode()
 	result := p.buildContinuationSystemPrompt(
 		context.Background(), mode, "original",
-		existingPlan, nil, nil, nil,
+		existingPlan, nil, nil, nil, nil,
 	)
 
 	if !strings.Contains(result, "original") {
@@ -804,7 +804,7 @@ func TestPlanContinuation_Success(t *testing.T) {
 		Steps: []orchestration.PlanStep{{ID: "step_1", Description: "done step"}},
 	}
 
-	plan, err := p.PlanContinuation(context.Background(), "original", existingPlan, nil, "continue work", nil, nil, false)
+	plan, err := p.PlanContinuation(context.Background(), "original", existingPlan, nil, "continue work", nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -823,7 +823,7 @@ func TestPlanContinuation_SingleStepTruncation(t *testing.T) {
 	cfg.Prompts.SingleStepGuidance = ""
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	plan, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, true)
+	plan, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, true, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1251,7 +1251,7 @@ func TestPlanContinuation_LLMError(t *testing.T) {
 	cfg.Prompts.ContinuationPreamble = "cont-preamble"
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false)
+	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false, nil)
 	if err == nil {
 		t.Error("expected error from LLM failure")
 	}
@@ -1269,7 +1269,7 @@ func TestPlanContinuation_ParseError(t *testing.T) {
 	cfg.Prompts.ContinuationPreamble = "cont-preamble"
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false)
+	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false, nil)
 	if err == nil {
 		t.Error("expected error from parse failure")
 	}

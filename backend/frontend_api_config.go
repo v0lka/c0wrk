@@ -57,17 +57,26 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		},
 	}
 
-	// Populate AllModels: flat list of all enabled models with family + reasoning metadata.
-	if b := f.builder(); b != nil && b.ModelRegistry() != nil {
-		resp.LLM.AllModels = f.collectAllModels(b.ModelRegistry())
-		resp.LLM.ModelsReady = true
+	// Populate AllModels: flat list of all enabled models.
+	// Always build from the per-provider config lists so the frontend sees
+	// configured models immediately, even before the async ModelRegistry
+	// finishes initializing. When the registry is ready, enrich with family
+	// and reasoning metadata.
+	b := f.builder()
+	var reg *llm.ModelRegistry
+	if b != nil {
+		reg = b.ModelRegistry()
 	}
+	resp.LLM.AllModels = f.collectAllModels(reg)
+	resp.LLM.ModelsReady = reg != nil
 
 	return resp
 }
 
-// collectAllModels iterates all enabled provider models, resolves their family,
-// and builds ModelInfo entries with reasoning metadata from FamilyReasoningOptions.
+// collectAllModels iterates all enabled provider models and builds ModelInfo
+// entries. When reg is non-nil, family and reasoning metadata are resolved
+// from the registry. When reg is nil (registry not yet initialized), models
+// are returned without metadata so the frontend still sees configured models.
 func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 	providers := []struct {
 		models []string
@@ -86,18 +95,23 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 			}
 			seen[modelName] = true
 
-			meta, _ := reg.Resolve(f.ctx(), modelName)
-			family := meta.Family
+			var family string
+			if reg != nil {
+				meta, _ := reg.Resolve(f.ctx(), modelName)
+				family = meta.Family
+			}
 
 			info := ModelInfo{
 				Name:   modelName,
 				Family: family,
 			}
 
-			if opts, def, ok := llm.FamilyReasoningOptions(family); ok {
-				info.Reasoning = &ReasoningInfo{
-					Options: opts,
-					Default: def,
+			if family != "" {
+				if opts, def, ok := llm.FamilyReasoningOptions(family); ok {
+					info.Reasoning = &ReasoningInfo{
+						Options: opts,
+						Default: def,
+					}
 				}
 			}
 

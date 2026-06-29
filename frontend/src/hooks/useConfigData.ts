@@ -14,11 +14,21 @@ let cacheVersion = 0
  *  hook pushes a callback to bump its local setVersion. */
 const listeners: Array<() => void> = []
 
+/** Retry timer for when models_ready is false on first fetch.
+ *  The backend LLM registry initializes asynchronously after startup;
+ *  this timer polls until it's ready so that reasoning metadata
+ *  eventually populates. */
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+let retryCount = 0
+const MAX_RETRIES = 30 // ~90 seconds at 3s interval
+
 interface ConfigData {
   /** All enabled models with reasoning metadata. */
   allModels: ModelInfo[]
   /** The global default_model from config. */
   defaultModel: string
+  /** Whether config data has been loaded at least once (from cache or fetch). */
+  loaded: boolean
 }
 
 /**
@@ -31,6 +41,11 @@ export function invalidateConfigCache(): void {
   cachedModels = null
   cachedDefaultModel = null
   cacheVersion++
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = null
+  }
+  retryCount = 0
   for (const fn of listeners) {
     fn()
   }
@@ -44,6 +59,7 @@ export function invalidateConfigCache(): void {
 export function useConfigData(): ConfigData {
   const [allModels, setAllModels] = useState<ModelInfo[]>(cachedModels ?? [])
   const [defaultModel, setDefaultModel] = useState<string>(cachedDefaultModel ?? '')
+  const [loaded, setLoaded] = useState(cachedModels !== null)
   const [version, setVersion] = useState(cacheVersion)
 
   // Subscribe to cache invalidation so this hook re-fetches when
@@ -66,14 +82,41 @@ export function useConfigData(): ConfigData {
         if (cancelled) return
         const models: ModelInfo[] = cfg.llm?.all_models ?? []
         const def = cfg.llm?.default_model ?? ''
-        cachedModels = models
-        cachedDefaultModel = def
+        const modelsReady = cfg.llm?.models_ready ?? false
+        // Only cache when the backend confirms models are ready.
+        // If not ready (async LLM registry still initializing), don't cache
+        // so that we can re-fetch later and get reasoning metadata.
+        if (modelsReady) {
+          cachedModels = models
+          cachedDefaultModel = def
+          if (retryTimer) {
+            clearTimeout(retryTimer)
+            retryTimer = null
+          }
+          retryCount = 0
+        } else if (cachedModels === null && retryCount < MAX_RETRIES) {
+          // No cached data yet and registry not ready — schedule a retry.
+          // Each retry bumps version in all hooks via listeners, triggering
+          // a re-fetch. Once models_ready becomes true, data is cached and
+          // retries stop.
+          if (!retryTimer) {
+            retryCount++
+            retryTimer = setTimeout(() => {
+              retryTimer = null
+              for (const fn of listeners) fn()
+            }, 3000)
+          }
+        }
         setVersion(cacheVersion)
         setAllModels(models)
         setDefaultModel(def)
+        setLoaded(true)
       })
       .catch((err) => {
-        if (!cancelled) logger.error('useConfigData: failed to load config:', err)
+        if (!cancelled) {
+          logger.error('useConfigData: failed to load config:', err)
+          setLoaded(true)
+        }
       })
 
     return () => {
@@ -81,5 +124,5 @@ export function useConfigData(): ConfigData {
     }
   }, [version])
 
-  return { allModels, defaultModel }
+  return { allModels, defaultModel, loaded }
 }

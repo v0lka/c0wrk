@@ -749,7 +749,7 @@ func TestFrameworkPlannerAdapter_PlanContinuation_NilPlannerPanics(t *testing.T)
 			t.Error("expected panic from nil planner")
 		}
 	}()
-	_, _ = adapter.PlanContinuation(context.Background(), "req", nil, nil, "new msg", nil)
+	_, _ = adapter.PlanContinuation(context.Background(), "req", nil, nil, "new msg", nil, nil)
 }
 
 func TestFrameworkPlannerAdapter_WithRealPlanner(t *testing.T) {

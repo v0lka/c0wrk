@@ -5,6 +5,7 @@ import { ClipboardList, Check, X } from 'lucide-react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { usePlanReviewStore } from '@/stores/planReviewStore'
 import { approvePlan, rejectPlan } from '@/api/planReview'
 import { planReviewResolved } from '@/types/messages'
 import type { DisplayItem } from '@/types/messages'
@@ -15,12 +16,12 @@ interface PlanReviewPanelProps {
 
 export function PlanReviewPanel({ item }: PlanReviewPanelProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const planReview = usePlanReviewStore((s) => s.planReview)
   const [feedback, setFeedback] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   if (!activeSessionId) return null
-
   const planPath = item.message.metadata?.planPath as string | undefined
   const planContent = item.message.metadata?.planContent as string | undefined
   const isResolved = item.message.metadata?.resolved === true
@@ -82,26 +83,30 @@ export function PlanReviewPanel({ item }: PlanReviewPanelProps) {
 
   return (
     <div className="border-2 border-highlight/50 rounded-lg p-4 bg-highlight/5 max-w-full overflow-hidden">
-      <div className="flex items-center gap-2 mb-3">
-        <ClipboardList className="h-4 w-4 text-highlight shrink-0" />
-        <span className="text-sm font-medium">Plan is ready for review — open in right panel</span>
-      </div>
-      <div className="mb-4 space-y-2">
-        {planPath && (
-          <p className="text-sm">
-            <span className="text-muted-foreground">Plan:</span>{' '}
-            <span className="font-medium font-mono text-xs break-all">{planPath}</span>
-          </p>
-        )}
-        {planContent && (
-          <div className="min-w-0 overflow-hidden">
-            <p className="text-xs text-muted-foreground mb-1">Preview:</p>
-            <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto border border-border max-w-full min-w-0 max-h-24 overflow-y-auto">
-              <code>{planContent.length > 500 ? planContent.slice(0, 500) + '\u2026' : planContent}</code>
-            </pre>
+      {!planReview && (
+        <>
+          <div className="flex items-center gap-2 mb-3">
+            <ClipboardList className="h-4 w-4 text-highlight shrink-0" />
+            <span className="text-sm font-medium">Plan is ready for review — open in right panel</span>
           </div>
-        )}
-      </div>
+          <div className="mb-4 space-y-2">
+            {planPath && (
+              <p className="text-sm">
+                <span className="text-muted-foreground">Plan:</span>{' '}
+                <span className="font-medium font-mono text-xs break-all">{planPath}</span>
+              </p>
+            )}
+            {planContent && (
+              <div className="min-w-0 overflow-hidden">
+                <p className="text-xs text-muted-foreground mb-1">Preview:</p>
+                <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto border border-border max-w-full min-w-0 max-h-24 overflow-y-auto">
+                  <code>{planContent.length > 500 ? planContent.slice(0, 500) + '\u2026' : planContent}</code>
+                </pre>
+              </div>
+            )}
+          </div>
+        </>
+      )}
       {error && (
         <div className="mb-4 p-3 bg-destructive/10 border border-destructive/30 rounded-md">
           <p className="text-xs text-destructive">{error}</p>

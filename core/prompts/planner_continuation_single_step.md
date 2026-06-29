@@ -9,6 +9,12 @@ A task was completed successfully, and the user has sent a follow-up message. Cr
 Original request:
 ORIGINAL-REQUEST
 
+## Recent conversation
+
+Use this conversation history to understand what the user is responding to:
+
+RECENT-CONVERSATION
+
 Completed plan (step summaries):
 COMPLETED-PLAN-SUMMARY
 
