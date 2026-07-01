@@ -743,6 +743,8 @@ export namespace session {
 	    session_id: string;
 	    role: string;
 	    content: string;
+	    reasoning_content?: string;
+	    tool_calls?: number[];
 	    metadata: number[];
 	    created_at: string;
 	
@@ -756,6 +758,8 @@ export namespace session {
 	        this.session_id = source["session_id"];
 	        this.role = source["role"];
 	        this.content = source["content"];
+	        this.reasoning_content = source["reasoning_content"];
+	        this.tool_calls = source["tool_calls"];
 	        this.metadata = source["metadata"];
 	        this.created_at = source["created_at"];
 	    }

@@ -88,17 +88,23 @@ export function useProjectSwitchState() {
     }
 
     // Deterministic fallback:
-    // 1) saved session when valid in destination project
-    // 2) latest session for destination project
+    // 1) latest session by last_active_at (most reliable — based on actual activity)
+    // 2) saved session from previous project switch (only valid if it still exists)
     // 3) create new session for empty project
-    if (savedSessionId && isSessionForProject(savedSessionId, sessions)) {
-      sessionStore.setActiveSessionId(savedSessionId)
-      return
-    }
-
+    //
+    // IMPORTANT: pickLatestSession must come FIRST. On app restart, savedSessionId
+    // is stale because it's only persisted when switching *away* from a project.
+    // If the user created newer sessions after the last project switch but before
+    // closing the app, savedSessionId would point to an older session. Picking the
+    // latest by last_active_at prevents this stale-session bug.
     const latestSession = pickLatestSession(sessions)
     if (latestSession) {
       sessionStore.setActiveSessionId(latestSession.id)
+      return
+    }
+
+    if (savedSessionId && isSessionForProject(savedSessionId, sessions)) {
+      sessionStore.setActiveSessionId(savedSessionId)
       return
     }
 

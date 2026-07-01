@@ -153,6 +153,13 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 			return nil //nolint:nilerr // skip unreadable files
 		}
 
+		// Skip binary and empty files — they are never added to the
+		// collection by processFile, so reporting them as "new" every
+		// pass would cause an infinite reindexing loop.
+		if isBinaryFile(content) || len(content) == 0 {
+			return nil //nolint:nilerr // skip unindexable files
+		}
+
 		currentHash := computeHash(content)
 
 		if storedHash, exists := storedHashes[absPath]; exists {

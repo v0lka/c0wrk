@@ -170,4 +170,36 @@ describe('useProjectSwitchState', () => {
     expect(useSessionStore.getState().activeSessionId).toBe('created-session')
     expect(useSessionStore.getState().sessions?.map((s) => s.id)).toContain('created-session')
   })
+
+  it('prefers latest session by activity when saved session exists but is stale', async () => {
+    // Simulates the restart scenario: savedSessionId is stale (saved during a
+    // previous app session), but newer sessions were created afterward with
+    // more recent last_active_at timestamps.
+    useProjectStore.getState().setActiveProjectId('old-project')
+
+    mocks.getProjectSwitchStateMock.mockResolvedValue({
+      project_id: 'target-project',
+      saved_session_id: 'stale-saved-session', // was active 4 sessions ago
+      open_tabs: ['dest/stale.ts'],
+      active_file: 'dest/stale.ts',
+      updated_at: '2026-03-01T00:00:00Z',
+    })
+
+    mocks.listSessionsMock.mockResolvedValue([
+      makeSession({ id: 'session-1', project_id: 'target-project', last_active_at: '2026-03-05T00:00:00Z' }),
+      makeSession({ id: 'session-2', project_id: 'target-project', last_active_at: '2026-03-04T00:00:00Z' }),
+      makeSession({ id: 'session-3', project_id: 'target-project', last_active_at: '2026-03-03T00:00:00Z' }),
+      makeSession({ id: 'stale-saved-session', project_id: 'target-project', last_active_at: '2026-03-02T00:00:00Z' }),
+      makeSession({ id: 'session-5', project_id: 'target-project', last_active_at: '2026-03-01T00:00:00Z' }),
+    ])
+
+    const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+    const runSwitch = useProjectSwitchState()
+    await runSwitch('target-project')
+
+    // Must pick the most recently active session (session-1), NOT the stale saved one.
+    const sessionState = useSessionStore.getState()
+    expect(sessionState.activeSessionId).toBe('session-1')
+    expect(mocks.createSessionMock).not.toHaveBeenCalled()
+  })
 })
