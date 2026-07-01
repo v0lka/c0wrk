@@ -78,14 +78,24 @@ func (p *EventPersister) Persist(evt Event) {
 	case "task_complete":
 		switch d := evt.Data.(type) {
 		case TaskCompleteData:
-			if d.Output != "" {
-				role = "assistant"
-				content = d.Output
+			role = "assistant"
+			content = d.Output
+			// Guard against empty output: a task that completes with
+			// no content must still persist a message so that session
+			// continuations can see the full conversation history.
+			// Without this, an empty-output completion is silently
+			// dropped from the message store, breaking continuation
+			// context.
+			if content == "" {
+				content = "[Task completed]"
 			}
 		case map[string]any:
-			if output, ok := d["output"].(string); ok && output != "" {
+			if output, ok := d["output"].(string); ok {
 				role = "assistant"
 				content = output
+				if content == "" {
+					content = "[Task completed]"
+				}
 			}
 		}
 	case "thought":

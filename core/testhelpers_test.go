@@ -290,6 +290,7 @@ func (t *testPersistableBlackboard) SetRouting(routing *router.RoutingDecision) 
 		_ = t.store.PersistRouting(t.taskID, routing)
 	}
 }
+func (t *testPersistableBlackboard) Routing() *router.RoutingDecision { return nil }
 func (t *testPersistableBlackboard) CompleteTask(attemptCount int) {
 	t.completed = true
 	if t.store != nil {

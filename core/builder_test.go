@@ -111,7 +111,6 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 		},
 		Security: BuilderSecurityConfig{DefaultPolicy: "user_confirm"},
 		Orchestration: BuilderOrchestrationConfig{
-			MaxHistoryMessages:        20,
 			MaxDependencyContextChars: 8000,
 			MaxJudgeCacheSize:         1000,
 		},

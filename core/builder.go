@@ -321,18 +321,19 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
-		MaxSteps:                  cfg.Executor.MaxReactSteps,
-		KeepFirst:                 cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:                  cfg.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries:                cfg.Executor.MaxRetries,
-		MaxHistoryMessages:        cfg.Orchestration.MaxHistoryMessages,
-		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
-		Model:                     cfg.LLM.DefaultModel,
-		ReasoningEffort:           reasoningEffort,
-		HITLHandler:               hitlHandler,
-		PreWarningPercent:         cfg.Executor.Compaction.Thresholds.PreWarningPercent,
-		InjectionDefenseEnabled:   cfg.Security.InjectionDefenseEnabled,
-		AgentsMDMaxBytes:          cfg.Security.AgentsMDMaxBytes,
+		MaxSteps:                      cfg.Executor.MaxReactSteps,
+		KeepFirst:                     cfg.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:                      cfg.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxRetries:                    cfg.Executor.MaxRetries,
+		PlannerHistoryBudgetTokens:    cfg.Orchestration.PlannerHistoryBudgetTokens,
+		PlannerHistoryKeepRecentRatio: cfg.Orchestration.PlannerHistoryKeepRecentRatio,
+		MaxDependencyContextChars:     cfg.Orchestration.MaxDependencyContextChars,
+		Model:                         cfg.LLM.DefaultModel,
+		ReasoningEffort:               reasoningEffort,
+		HITLHandler:                   hitlHandler,
+		PreWarningPercent:             cfg.Executor.Compaction.Thresholds.PreWarningPercent,
+		InjectionDefenseEnabled:       cfg.Security.InjectionDefenseEnabled,
+		AgentsMDMaxBytes:              cfg.Security.AgentsMDMaxBytes,
 	}
 
 	// Create tool result cache (per-session lifetime).

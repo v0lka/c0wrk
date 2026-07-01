@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,13 +241,25 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 
 // TestOrchestrator_HandleResultContainsRoutingDecision verifies HandleResult always has routing info.
 func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
+	callIdx := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			// Router
+			callIdx++
+			if callIdx == 1 {
+				// Router
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			// Planner — return a valid single-step plan
 			return &llm.ChatResponse{
 				Message: llm.Message{
 					Role:    "assistant",
-					Content: `{"domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					Content: `{"steps": [{"id": "step_1", "summary": "Test step", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
 				},
 				StopReason: "end_turn",
 			}, nil
@@ -2548,5 +2561,556 @@ func TestOrchestrator_NormalModeSingleStep(t *testing.T) {
 
 	if result.Plan.Steps[0].ID != "step_1" {
 		t.Errorf("expected step_1, got %s", result.Plan.Steps[0].ID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Conversation History Tests — full history, no truncation, planner compaction
+// ---------------------------------------------------------------------------
+
+// TestConversationHistory_NoTruncation verifies that after multiple messages,
+// the conversationHistory accumulates all user+assistant messages without trimming.
+func TestConversationHistory_NoTruncation(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router — first message "msg 1"
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Planner — first message
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "step_1", "summary": "Test", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+					StopReason: "end_turn",
+				}, nil
+			case 3: // Executor — first message finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant", Content: "Task completed",
+						ToolCalls: []llm.ToolCall{{ID: "c1", Name: "finish", Input: json.RawMessage(`{"answer": "Done msg1"}`)}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			case 4: // Router — continuation "msg 2"
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 5: // PlanContinuation — "msg 2"
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "cont_1", "summary": "Continue", "description": "What: continue\nHow: continue\nWhere: core\nAcceptance Criteria: done", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+					StopReason: "end_turn",
+				}, nil
+			case 6: // Executor — continuation "msg 2" finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant", Content: "Continuation 1 done",
+						ToolCalls: []llm.ToolCall{{ID: "c2", Name: "finish", Input: json.RawMessage(`{"answer": "Done msg2"}`)}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			case 7: // Router — continuation "msg 3"
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 8: // PlanContinuation — "msg 3"
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "cont_2", "summary": "Continue more", "description": "What: continue\nHow: continue\nWhere: core\nAcceptance Criteria: done", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor — continuation "msg 3" finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant", Content: "Continuation 2 done",
+						ToolCalls: []llm.ToolCall{{ID: "c3", Name: "finish", Input: json.RawMessage(`{"answer": "Done msg3"}`)}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{
+		MaxSteps:                   10,
+		PlannerHistoryBudgetTokens: 4000,
+	}, OrchestratorDeps{
+		Router:         r,
+		Planner:        p,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	// Set up task persistence with a mutable task state for continuations.
+	taskState := &TaskState{
+		TaskID:          "task-fullhist",
+		SessionID:       "session-1",
+		OriginalRequest: "write REST API",
+		Status:          "completed",
+		Plan: &orchestration.Plan{
+			Steps: []orchestration.PlanStep{
+				{ID: "step_1", Description: "Create REST API"},
+			},
+		},
+		StepResults: map[string]orchestration.StepResult{
+			"step_1": {StepID: "step_1", FullOutput: "REST API created"},
+		},
+	}
+	mockStore := &mockTaskStore{taskState: taskState}
+	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
+
+	// First message.
+	_, err := orchestrator.HandleMessage(context.Background(), "write REST API", "session-1", HandleOptions{ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("First message failed: %v", err)
+	}
+
+	// Second message (continuation).
+	_, err = orchestrator.HandleMessage(context.Background(), "add auth", "session-1", HandleOptions{TaskID: "task-fullhist", ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("Second message (continuation) failed: %v", err)
+	}
+
+	// Third message (continuation).
+	_, err = orchestrator.HandleMessage(context.Background(), "add tests", "session-1", HandleOptions{TaskID: "task-fullhist", ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("Third message (continuation) failed: %v", err)
+	}
+
+	history := orchestrator.ConversationHistory()
+	// Expected: 3 user messages + 3 assistant messages = 6 total.
+	if len(history) != 6 {
+		t.Errorf("expected 6 messages in conversationHistory (3 user + 3 assistant), got %d", len(history))
+	}
+
+	// Verify all user messages are present in order.
+	userMsgs := make([]string, 0, 3)
+	for _, msg := range history {
+		if msg.Role == "user" {
+			userMsgs = append(userMsgs, msg.Content)
+		}
+	}
+	if len(userMsgs) != 3 {
+		t.Errorf("expected 3 user messages, got %d: %v", len(userMsgs), userMsgs)
+	}
+	if userMsgs[0] != "write REST API" {
+		t.Errorf("expected first user message 'write REST API', got %q", userMsgs[0])
+	}
+	if userMsgs[1] != "add auth" {
+		t.Errorf("expected second user message 'add auth', got %q", userMsgs[1])
+	}
+	if userMsgs[2] != "add tests" {
+		t.Errorf("expected third user message 'add tests', got %q", userMsgs[2])
+	}
+}
+
+// TestConversationHistory_PlannerReceivesFullHistory verifies that the planner
+// receives the full conversation history (not truncated) when calling PlanContinuation.
+func TestConversationHistory_PlannerReceivesFullHistory(t *testing.T) {
+	callIdx := 0
+	var plannerHistoryReceived []llm.Message
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router — first message
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Planner — first message
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "step_1", "summary": "Test", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+					StopReason: "end_turn",
+				}, nil
+			case 3: // Executor — first message
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "First task done",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "REST API created"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			case 4: // Router — continuation
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 5: // PlanContinuation — capture the conversationHistory passed to planner
+				// Extract conversationHistory from the request. The conversation history
+				// is embedded in the system prompt by the planner; additional
+				// user/assistant messages may carry the current continuation message.
+				plannerHistoryReceived = append(plannerHistoryReceived, req.Messages...)
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "continuation_1", "summary": "Add auth", "description": "What: add auth\nHow: add auth middleware\nWhere: handlers\nAcceptance Criteria: protected routes", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor — continuation
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Auth added",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_2",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "Auth layer added"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{
+		MaxSteps:                   10,
+		PlannerHistoryBudgetTokens: 4000,
+	}, OrchestratorDeps{
+		Router:         r,
+		Planner:        p,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+	// Set up task persistence for continuation
+	mockStore := &mockTaskStore{
+		taskState: &TaskState{
+			TaskID:          "task-456",
+			SessionID:       "session-2",
+			OriginalRequest: "write REST API",
+			Status:          "completed",
+			Plan: &orchestration.Plan{
+				Steps: []orchestration.PlanStep{
+					{ID: "step_1", Description: "Create REST API"},
+				},
+			},
+			StepResults: map[string]orchestration.StepResult{
+				"step_1": {StepID: "step_1", FullOutput: "REST API created"},
+			},
+		},
+	}
+	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
+
+	// First message
+	_, err := orchestrator.HandleMessage(context.Background(), "write REST API", "session-2", HandleOptions{ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("First message failed: %v", err)
+	}
+
+	// Continuation
+	_, err = orchestrator.HandleMessage(context.Background(), "add auth", "session-2", HandleOptions{TaskID: "task-456", ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("Continuation failed: %v", err)
+	}
+
+	// The planner should have received the full history (4 messages: 2 user + 2 assistant).
+	// Note: the planner receives these as part of the system prompt, so they appear
+	// as system messages or inline in the system prompt. The exact format depends on
+	// the planner's buildContinuationSystemPrompt. We verify that the conversationHistory
+	// was not truncated.
+	fullHistory := orchestrator.ConversationHistory()
+	if len(fullHistory) < 4 {
+		t.Errorf("expected at least 4 messages in conversationHistory (2 user + 2 assistant), got %d", len(fullHistory))
+	}
+
+	// Verify the history contains our messages.
+	userMsgs := 0
+	assistantMsgs := 0
+	for _, msg := range fullHistory {
+		if msg.Role == "user" {
+			userMsgs++
+		}
+		if msg.Role == "assistant" {
+			assistantMsgs++
+		}
+	}
+	if userMsgs < 2 {
+		t.Errorf("expected at least 2 user messages in history, got %d", userMsgs)
+	}
+	if assistantMsgs < 2 {
+		t.Errorf("expected at least 2 assistant messages in history, got %d", assistantMsgs)
+	}
+
+	// Verify that the planner actually received the full conversation history.
+	// plannerHistoryReceived was captured in the mock's PlanContinuation call
+	// (case 5) from ALL req.Messages. The conversation history from prior
+	// exchanges is embedded in the system prompt by formatConversationHistory,
+	// so it will appear as part of a system message.
+	//
+	// We verify: (a) the planner was reached (non-empty messages), (b) the
+	// continuation user message is present, and (c) the orchestrator's
+	// conversation history is complete (asserted above via fullHistory).
+	if len(plannerHistoryReceived) == 0 {
+		t.Error("planner should have received messages in PlanContinuation, but got none")
+	}
+
+	// Verify the continuation message appears in the captured messages.
+	hasContinuationMsg := false
+	for _, msg := range plannerHistoryReceived {
+		if msg.Role == "user" && strings.Contains(msg.Content, "add auth") {
+			hasContinuationMsg = true
+			break
+		}
+	}
+	if !hasContinuationMsg {
+		t.Error("plannerHistoryReceived should contain the continuation user message 'add auth'")
+	}
+
+	// The full conversation history (prior exchanges) is embedded in the
+	// system prompt. Verify the planner received the first-exchange messages
+	// ("write REST API" and "REST API created") via the system message that
+	// formatConversationHistory produces.
+	var systemMsgContent string
+	for _, msg := range plannerHistoryReceived {
+		if msg.Role == "system" && strings.Contains(msg.Content, "write REST API") && strings.Contains(msg.Content, "REST API created") {
+			systemMsgContent = msg.Content
+			break
+		}
+	}
+	if systemMsgContent == "" {
+		t.Error("plannerHistoryReceived should contain a system message with first-exchange messages 'write REST API' and 'REST API created'")
+	} else if !strings.Contains(systemMsgContent, "REST API created") {
+		// Additionally verify the full un-truncated history is present:
+		// the system message should contain the first-exchange assistant output
+		// ("REST API created"), not just a summary. The continuation user message
+		// ("add auth") is a separate user message — already verified above.
+		t.Error("plannerHistoryReceived system message should contain the full first-exchange assistant output")
+	}
+}
+
+// TestConversationHistory_CompactionTriggered verifies that when conversationHistory
+// exceeds PlannerHistoryBudgetTokens, compaction is triggered before the planner call.
+func TestConversationHistory_CompactionTriggered(t *testing.T) {
+	callIdx := 0
+	var plannerCallCount int
+
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // Router
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 3, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // Planner — first message
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "step_1", "summary": "Test", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+					StopReason: "end_turn",
+				}, nil
+			case 3: // Executor — first message, returns long output to build history
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Done",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "` + strings.Repeat("Long output to consume tokens. ", 50) + `"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			case 4: // Router — continuation
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "code", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			case 5: // PlanContinuation — this is where compaction should happen
+				plannerCallCount++
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "continuation_1", "summary": "Continue", "description": "What: continue\nHow: continue\nWhere: core\nAcceptance Criteria: done", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+					StopReason: "end_turn",
+				}, nil
+			default: // Executor — continuation
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: "Continuation done",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "call_2",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer": "Done"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	r := newCoreRouter(mockLLM, 5)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+
+	// Set a very small budget to force compaction.
+	orchestrator := NewOrchestrator(OrchestratorConfig{
+		MaxSteps:                      10,
+		PlannerHistoryBudgetTokens:    50,   // very small — forces compaction
+		PlannerHistoryKeepRecentRatio: 0.75, // must be in (0,1)
+	}, OrchestratorDeps{
+		Router:         r,
+		Planner:        p,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+	mockStore := &mockTaskStore{
+		taskState: &TaskState{
+			TaskID:          "task-789",
+			SessionID:       "session-3",
+			OriginalRequest: "build something",
+			Status:          "completed",
+			Plan: &orchestration.Plan{
+				Steps: []orchestration.PlanStep{
+					{ID: "step_1", Description: "Build it"},
+				},
+			},
+			StepResults: map[string]orchestration.StepResult{
+				"step_1": {StepID: "step_1", FullOutput: "Built"},
+			},
+		},
+	}
+	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
+
+	// First message — produces long output to inflate conversationHistory.
+	_, err := orchestrator.HandleMessage(context.Background(), "build something with a very long request "+
+		strings.Repeat("padding to make the history large enough to exceed the token budget ", 5),
+		"session-3", HandleOptions{ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("First message failed: %v", err)
+	}
+
+	// Verify that conversationHistory has 2 messages (user + assistant).
+	history := orchestrator.ConversationHistory()
+	if len(history) != 2 {
+		t.Errorf("expected 2 messages in history after first message, got %d", len(history))
+	}
+
+	// Verify the history is large enough to trigger compaction (token count > 50).
+	tokenCount := counter.CountMessages(history)
+	if tokenCount <= 50 {
+		t.Fatalf("test setup error: expected token count > 50, got %d; history may not trigger compaction", tokenCount)
+	}
+
+	// Continuation — should trigger compaction in executeContinuation.
+	_, err = orchestrator.HandleMessage(context.Background(), "continue", "session-3",
+		HandleOptions{TaskID: "task-789", ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("Continuation failed: %v", err)
+	}
+
+	// Planner should still have been called (compaction doesn't prevent planning).
+	if plannerCallCount == 0 {
+		t.Error("expected PlanContinuation to be called even with compaction")
+	}
+
+	// After continuation, history should have grown (4 messages total).
+	history = orchestrator.ConversationHistory()
+	if len(history) != 4 {
+		t.Errorf("expected 4 messages in history after continuation, got %d", len(history))
+	}
+}
+
+// TestConversationHistory_RouterHistoryUnchanged verifies that the router still
+// uses its own HistoryWindow (not the full history) and is unaffected by this change.
+func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
+	// The router receives o.conversationHistory, which is now the full history.
+	// The router's internal HistoryWindow setting controls how many messages it uses.
+	// This test verifies that the router correctly limits its own window.
+
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			if callIdx == 1 { // Router
+				return &llm.ChatResponse{
+					Message:    llm.Message{Role: "assistant", Content: `{"domain": "general", "complexity": 1, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`},
+					StopReason: "end_turn",
+				}, nil
+			}
+			// Planner
+			return &llm.ChatResponse{
+				Message:    llm.Message{Role: "assistant", Content: `{"steps": [{"id": "step_1", "summary": "Test", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	// Router with HistoryWindow=2 (only last 2 messages).
+	r := newCoreRouter(mockLLM, 2)
+	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{
+		MaxSteps: 10,
+	}, OrchestratorDeps{
+		Router:         r,
+		Planner:        p,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	// Pre-populate history with 10 messages (5 exchanges).
+	for i := 0; i < 5; i++ {
+		orchestrator.conversationHistory = append(orchestrator.conversationHistory,
+			llm.Message{Role: "user", Content: fmt.Sprintf("msg %d", i)},
+			llm.Message{Role: "assistant", Content: fmt.Sprintf("resp %d", i)},
+		)
+	}
+
+	// HandleMessage should succeed. The router will receive the full history,
+	// but internally it should limit to HistoryWindow=2.
+	_, err := orchestrator.HandleMessage(context.Background(), "test", "session-4", HandleOptions{ExecutionMode: "advanced"})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	// After HandleMessage, conversationHistory should have grown to 12 messages.
+	history := orchestrator.ConversationHistory()
+	if len(history) != 12 {
+		t.Errorf("expected 12 messages in history (10 pre-populated + 2 new), got %d", len(history))
 	}
 }

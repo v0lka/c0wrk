@@ -53,13 +53,14 @@ var InjectionDefenseKey = injectionDefenseKeyType{}
 
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
-	MaxSteps                  int
-	KeepFirst                 int    // for sliding window compaction
-	KeepLast                  int    // for sliding window compaction
-	MaxRetries                int    // max retry attempts (default: 2, yielding 3 total executions)
-	MaxHistoryMessages        int    // max conversation history messages to retain (default: 20)
-	MaxDependencyContextChars int    // max chars for dependency context in step tasks (default: 8000)
-	Model                     string // active model name for ModelRegistry.Resolve()
+	MaxSteps                       int
+	KeepFirst                      int     // for sliding window compaction
+	KeepLast                       int     // for sliding window compaction
+	MaxRetries                     int     // max retry attempts (default: 2, yielding 3 total executions)
+	PlannerHistoryBudgetTokens     int     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation compaction when exceeded
+	PlannerHistoryKeepRecentRatio  float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages during compaction (default: 0.75)
+	MaxDependencyContextChars      int     // max chars for dependency context in step tasks (default: 8000)
+	Model                          string  // active model name for ModelRegistry.Resolve()
 
 	// ReasoningEffort is the reasoning effort applied to step executors.
 	// When non-empty, each executor gets this value directly (no role adaptation).
@@ -122,6 +123,7 @@ type Orchestrator struct {
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
 	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
+	tokenCounter        llm.TokenCounter      // for token counting in planner history compaction
 	vectorSearchFunc    builtins.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
 
@@ -234,6 +236,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		modelRegistry:    deps.ModelRegistry,
 		bbFactory:        deps.BBFactory,
 		trackingCaller:   deps.TrackingCaller,
+		tokenCounter:     deps.TokenCounter,
 		vectorSearchFunc: deps.VectorSearchFunc,
 		skillManager:     deps.SkillManager,
 		coreToolRegistry: deps.CoreToolRegistry,
@@ -730,6 +733,18 @@ func (o *Orchestrator) SetTaskStore(store TaskPersistence) {
 	o.taskStore = store
 }
 
+// SetConversationHistory sets the full conversation history for the session.
+// Call this during session restore to pre-populate the history from persistent storage,
+// ensuring the planner sees all previous messages even after a backend restart.
+func (o *Orchestrator) SetConversationHistory(history []llm.Message) {
+	o.conversationHistory = history
+}
+
+// ConversationHistory returns the current conversation history (for testing).
+func (o *Orchestrator) ConversationHistory() []llm.Message {
+	return o.conversationHistory
+}
+
 // SetBlackboardRestoreFunc sets the function used to restore a PersistableBlackboard from persistence.
 func (o *Orchestrator) SetBlackboardRestoreFunc(fn BlackboardRestoreFunc) {
 	o.bbRestoreFunc = fn
@@ -808,6 +823,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 
 	// 5. Execute (first message or continuation).
+	// Persist the routing decision on the blackboard so executeFirstMessage /
+	// executeContinuation can retrieve it without taking it as a parameter.
+	if pbb, ok := bb.(PersistableBlackboard); ok {
+		pbb.SetRouting(routing)
+	}
+
 	// Plan review: bypass normal execution and return early with plan review phase set.
 	if opts.PlanReview && opts.TaskID == "" {
 		reviewResult, reviewErr := o.HandlePlanReview(ctx, message, sessionID, bb, availableTools, activeSkills, opts, routing)

@@ -73,7 +73,8 @@ func (b *Builder) CacheBreak() *Builder {
 
 // BuildParts returns the prompt split at the CacheBreak boundary.
 // If no CacheBreak was set, stable contains the full prompt and dynamic is empty.
-// Substitutions are applied to each part independently.
+// Substitutions are applied to each part independently, with multiple passes to
+// resolve nested placeholders (e.g. RECENT-CONVERSATION inside MODE-PREAMBLE).
 func (b *Builder) BuildParts() (stable, dynamic string) {
 	if b.cacheBreakIdx < 0 {
 		return b.Build(), ""
@@ -82,12 +83,34 @@ func (b *Builder) BuildParts() (stable, dynamic string) {
 	stable = joinSections(b.sections[:b.cacheBreakIdx])
 	dynamic = joinSections(b.sections[b.cacheBreakIdx:])
 
-	for placeholder, value := range b.substitutions {
-		stable = strings.ReplaceAll(stable, placeholder, value)
-		dynamic = strings.ReplaceAll(dynamic, placeholder, value)
-	}
+	stable = applySubstitutionsIteratively(stable, b.substitutions)
+	dynamic = applySubstitutionsIteratively(dynamic, b.substitutions)
 
 	return stable, dynamic
+}
+
+// maxSubstitutionPasses caps iterative substitution to prevent infinite loops
+// from circular placeholders.
+const maxSubstitutionPasses = 5
+
+// applySubstitutionsIteratively replaces all placeholders in text until the
+// text stabilises or maxSubstitutionPasses is reached. This handles cases
+// where one substitution value itself contains another placeholder key
+// (e.g. MODE-PREAMBLE contains RECENT-CONVERSATION).
+func applySubstitutionsIteratively(text string, substitutions map[string]string) string {
+	for range maxSubstitutionPasses {
+		var changed bool
+		for placeholder, value := range substitutions {
+			if strings.Contains(text, placeholder) {
+				text = strings.ReplaceAll(text, placeholder, value)
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return text
 }
 
 // Build assembles the final prompt string.
@@ -104,10 +127,9 @@ func (b *Builder) Build() string {
 
 	result := joinSections(b.sections)
 
-	// Apply substitutions
-	for placeholder, value := range b.substitutions {
-		result = strings.ReplaceAll(result, placeholder, value)
-	}
+	// Apply substitutions iteratively to resolve nested placeholders
+	// (e.g. RECENT-CONVERSATION inside MODE-PREAMBLE).
+	result = applySubstitutionsIteratively(result, b.substitutions)
 
 	return result
 }

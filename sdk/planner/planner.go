@@ -623,8 +623,9 @@ func formatConversationHistory(history []llm.Message) string {
 // ---------------------------------------------------------------------------
 
 // callAndParsePlan calls the LLM with the given messages, parses the response
-// as a plan, and retries with error feedback if parsing fails. Retries up to
-// parsePlanMaxRetries times. The initialMessages slice is not mutated.
+// as a plan, and retries with error feedback if parsing fails or the plan has
+// zero steps. Retries up to parsePlanMaxRetries times. The initialMessages
+// slice is not mutated.
 func (p *Planner) callAndParsePlan(
 	ctx context.Context,
 	initialMessages []llm.Message,
@@ -650,6 +651,32 @@ func (p *Planner) callAndParsePlan(
 
 		plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
 		if err == nil {
+			// Defense-in-depth: reject plans with zero steps — the LLM
+			// may return valid JSON with an empty steps array ({"steps": []}),
+			// which causes the orchestrator to complete silently with no
+			// output. Treat this as a retryable error with an explicit
+			// prompt instructing the model to generate at least one step.
+			if len(plan.Steps) == 0 {
+				err = errors.New("plan has zero steps — at least one step is required")
+				lastParseErr = err
+				p.log().Warn("planner: empty plan returned, retrying",
+					"attempt", attempt+1,
+					"max_retries", parsePlanMaxRetries,
+					"error", err,
+				)
+				req.Messages = append(req.Messages,
+					llm.Message{Role: "assistant", Content: resp.Message.Content},
+					llm.Message{Role: "user", Content: fmt.Sprintf(
+						"Your response was valid JSON but contained zero steps. Error: %s\n\n"+
+							"The plan MUST contain at least one step with a summary, description, "+
+							"and dependencies. Decompose the user's task into at least one concrete, "+
+							"executable step. Respond ONLY with a valid JSON object containing a "+
+							"non-empty \"steps\" array.",
+						err,
+					)},
+				)
+				continue
+			}
 			return plan, nil
 		}
 

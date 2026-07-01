@@ -20,6 +20,7 @@ type PersistableBlackboard interface {
 	orchestration.Blackboard
 	SetEmitter(emitter Emitter)
 	SetRouting(routing *router.RoutingDecision)
+	Routing() *router.RoutingDecision
 	CompleteTask(attemptCount int)
 	FailTask()
 	CancelTask()

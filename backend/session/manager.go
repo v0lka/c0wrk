@@ -20,6 +20,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
+	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -416,6 +417,21 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 			}
 			return pbb, err
 		})
+	}
+
+	// Restore full conversation history from persistent storage so the planner
+	// sees all previous messages across backend restarts.
+	if m.sessionStore != nil {
+		storedMsgs, loadErr := m.sessionStore.LoadMessages(context.Background(), id)
+		if loadErr != nil {
+			m.log().Warn("failed to load session messages for history restore", "session_id", id, "error", loadErr)
+		} else {
+			history := m.convertChatMessagesToLLM(storedMsgs)
+			if len(history) > 0 {
+				orchestrator.SetConversationHistory(history)
+				m.log().Debug("restored conversation history from store", "session_id", id, "messages", len(history))
+			}
+		}
 	}
 
 	// Parse creation time from stored info.
@@ -1073,4 +1089,33 @@ func (m *Manager) Shutdown() {
 		}
 		p.session.mu.Unlock()
 	}
+}
+
+// convertChatMessagesToLLM converts stored ChatMessages to llm.Message format,
+// filtering to only "user" and "assistant" roles which form the conversation history
+// used by the router and planner. Non-conversational roles (system, tool, etc.) are
+// skipped with a warning log.
+func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage) []llm.Message {
+	result := make([]llm.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		switch msg.Role {
+		case "user":
+			result = append(result, llm.Message{Role: "user", Content: msg.Content})
+		case "assistant":
+			lm := llm.Message{Role: "assistant", Content: msg.Content}
+			if msg.ReasoningContent != nil {
+				lm.ReasoningContent = *msg.ReasoningContent
+			}
+			if msg.ToolCalls != nil {
+				var toolCalls []llm.ToolCall
+				if err := json.Unmarshal(*msg.ToolCalls, &toolCalls); err == nil {
+					lm.ToolCalls = toolCalls
+				}
+			}
+			result = append(result, lm)
+		default:
+			m.log().Warn("convertChatMessagesToLLM: skipping non-conversational role", "role", msg.Role)
+		}
+	}
+	return result
 }

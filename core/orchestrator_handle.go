@@ -10,6 +10,7 @@ import (
 	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -218,6 +219,30 @@ func (o *Orchestrator) executeFirstMessage(
 	}
 	o.logDebug("orchestrator: plan ready", "steps", len(plan.Steps))
 
+	// Guard against empty plans (0 steps): the planner may return a
+	// structurally valid but semantically useless plan when the LLM fails
+	// to generate step descriptions (e.g. {"steps": []}). Without this
+	// check a 0-step plan flows into the SDK engine which completes
+	// instantly with empty output — silently terminating the session
+	// without any error visible in the chat or persisted to the message
+	// store.
+	if len(plan.Steps) == 0 {
+		o.logDebug("orchestrator: plan has zero steps, treating as planning failure")
+		o.emitter.ServiceWithMeta("Planning did not produce any steps. The model may have been unable to decompose the task. Try rephrasing your request.", map[string]any{"phase": "orchestration"})
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			if r := pbb.Routing(); r != nil {
+				pbb.SetRouting(r)
+			}
+			pbb.FailTask()
+		}
+		// Persist the rejected request in conversationHistory so it is visible on session restore.
+		o.conversationHistory = append(o.conversationHistory,
+			llm.Message{Role: "user", Content: message},
+			llm.Message{Role: "assistant", Content: "I wasn't able to create a plan for your request. Please try rephrasing."},
+		)
+		return nil, errors.New("planning produced an empty plan (0 steps)")
+	}
+
 	// Execute in Plan&Execute mode
 	o.logDebug("orchestrator: executing in full Plan&Execute mode")
 	o.emitter.ServiceWithMeta("Preparing execution...", map[string]any{"phase": "orchestration", "step_count": len(plan.Steps)})
@@ -280,7 +305,20 @@ func (o *Orchestrator) executeContinuation(
 	}
 
 	o.logDebug("orchestrator: calling PlanContinuation", "singleStep", singleStep)
-	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep, o.conversationHistory)
+
+	// Compact conversation history for the planner if it exceeds the token budget.
+	// The in-memory conversationHistory is NOT modified; only the planner sees the compacted version.
+	plannerHistory := o.conversationHistory
+	if o.config.PlannerHistoryBudgetTokens > 0 && o.tokenCounter != nil && len(plannerHistory) > 0 {
+		compacted, compactErr := sdkmemory.CompactConversationHistory(plannerHistory, o.config.PlannerHistoryBudgetTokens, o.tokenCounter, o.config.PlannerHistoryKeepRecentRatio)
+		if compactErr != nil {
+			o.logDebug("orchestrator: conversation history compaction failed, using raw history", "error", compactErr)
+		} else {
+			plannerHistory = compacted
+		}
+	}
+
+	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep, plannerHistory)
 	if planErr != nil {
 		o.logDebug("orchestrator: PlanContinuation failed", "error", planErr)
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -292,6 +330,28 @@ func (o *Orchestrator) executeContinuation(
 	// Merge continuation plan's steps into existing plan
 	mergedPlan := &orchestration.Plan{
 		Steps: append(existingPlan.Steps, continuationPlan.Steps...),
+	}
+
+	// Guard against continuation plans that add zero new steps when all
+	// existing steps are already completed. This is the same silent-
+	// termination bug as the first-message path: a 0-step merged plan
+	// flows into the SDK engine which completes instantly with empty
+	// output — no error visible in chat, no message persisted.
+	if len(continuationPlan.Steps) == 0 && len(completedSteps) == len(existingPlan.Steps) {
+		o.logDebug("orchestrator: continuation plan has zero new steps and all existing steps are completed")
+		o.emitter.ServiceWithMeta("The continuation did not produce any new steps. Try rephrasing your request or providing more specific instructions.", map[string]any{"phase": "orchestration"})
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			if r := pbb.Routing(); r != nil {
+				pbb.SetRouting(r)
+			}
+			pbb.FailTask()
+		}
+		// Persist the rejected request in conversationHistory so it is visible on session restore.
+		o.conversationHistory = append(o.conversationHistory,
+			llm.Message{Role: "user", Content: message},
+			llm.Message{Role: "assistant", Content: "I wasn't able to create a continuation plan for your request. Please try rephrasing or providing more specific instructions."},
+		)
+		return nil, errors.New("continuation planning produced an empty plan (0 new steps) with all existing steps already completed")
 	}
 	bb.SetPlan(mergedPlan)
 
@@ -344,18 +404,11 @@ func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *rout
 
 	o.logDebug("orchestrator: handle_message completed", "attemptCount", result.AttemptCount)
 
-	// Accumulate conversation history for future routing context
+	// Accumulate conversation history for future routing context (no truncation).
 	o.conversationHistory = append(o.conversationHistory,
 		llm.Message{Role: "user", Content: message},
 		llm.Message{Role: "assistant", Content: result.Output, ReasoningContent: lastReasoningContent(bb)},
 	)
-	maxHistory := o.config.MaxHistoryMessages
-	if maxHistory == 0 {
-		maxHistory = 20
-	}
-	if len(o.conversationHistory) > maxHistory {
-		o.conversationHistory = o.conversationHistory[len(o.conversationHistory)-maxHistory:]
-	}
 
 	return result
 }

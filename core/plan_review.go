@@ -67,6 +67,18 @@ func (o *Orchestrator) HandlePlanReview(
 	}
 	o.logDebug("orchestrator: plan ready for review", "steps", len(plan.Steps))
 
+	// Guard against empty plans (0 steps): same silent-termination bug as
+	// the execution path — showing a plan review with zero steps is
+	// meaningless and confusing to the user.
+	if len(plan.Steps) == 0 {
+		o.logDebug("orchestrator: plan review produced zero steps")
+		o.emitter.ServiceWithMeta("Planning did not produce any steps for review. Try rephrasing your request with more detail.", map[string]any{"phase": "orchestration"})
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			pbb.FailTask()
+		}
+		return nil, errors.New("plan review produced an empty plan (0 steps)")
+	}
+
 	// Emit plan step events so frontend knows about the steps
 	planStepEvents := make([]orchestration.PlanStepEvent, len(plan.Steps))
 	for i, s := range plan.Steps {

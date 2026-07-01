@@ -42,6 +42,11 @@ type PersistentBlackboard struct {
 	persistenceTimeout time.Duration           // timeout for persistence operations
 	onChanged          func(changeType string) // optional callback for BB change notifications, nil-safe
 	persistCh          chan persistOp          // buffered channel for serializing DB writes
+
+	// routing is cached when SetRouting is called, so that Routing() can return
+	// the value without a DB round-trip in active execution paths.
+	routingMu sync.RWMutex
+	routing   *router.RoutingDecision
 }
 
 // persistOp is a single persistence operation sent to the worker goroutine.
@@ -265,9 +270,19 @@ func (pb *PersistentBlackboard) SetFinalResult(result string) {
 
 // SetRouting persists the routing decision for the task.
 func (pb *PersistentBlackboard) SetRouting(routing *router.RoutingDecision) {
+	pb.routingMu.Lock()
+	pb.routing = routing
+	pb.routingMu.Unlock()
 	pb.persistSafe("routing", func() error {
 		return pb.store.PersistRouting(pb.taskID, routing)
 	})
+}
+
+// Routing returns the cached routing decision, or nil if none has been set.
+func (pb *PersistentBlackboard) Routing() *router.RoutingDecision {
+	pb.routingMu.RLock()
+	defer pb.routingMu.RUnlock()
+	return pb.routing
 }
 
 // ---------------------------------------------------------------------------

@@ -32,12 +32,14 @@ type SessionInfo struct {
 
 // ChatMessage represents a stored chat message.
 type ChatMessage struct {
-	ID        int64           `json:"id"`
-	SessionID string          `json:"session_id"`
-	Role      string          `json:"role"` // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
-	Content   string          `json:"content"`
-	Metadata  json.RawMessage `json:"metadata"`   // JSON blob for extra data
-	CreatedAt string          `json:"created_at"` // RFC 3339 formatted timestamp
+	ID               int64            `json:"id"`
+	SessionID        string           `json:"session_id"`
+	Role             string           `json:"role"`              // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
+	Content          string           `json:"content"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"` // chain-of-thought / reasoning content (DeepSeek)
+	ToolCalls        *json.RawMessage `json:"tool_calls,omitempty"`        // JSON-encoded tool calls (for assistant)
+	Metadata         json.RawMessage  `json:"metadata"`                    // JSON blob for extra data
+	CreatedAt        string           `json:"created_at"`                  // RFC 3339 formatted timestamp
 }
 
 // TerminalCommand represents a stored terminal command.
@@ -231,6 +233,38 @@ func (s *SQLiteSessionStore) createTables() error {
 		}
 		if lastErr != nil {
 			s.log().Warn("migration ALTER TABLE failed", "column", col.name, "error", lastErr)
+		}
+	}
+
+	// Migration: add reasoning_content and tool_calls columns for preserving
+	// chain-of-thought reasoning and tool call metadata across app restarts.
+	for _, col := range []struct {
+		name string
+		def  string
+	}{
+		{"reasoning_content", "TEXT"},
+		{"tool_calls", "TEXT"},
+	} {
+		if s.columnExists("session_messages", col.name) {
+			continue
+		}
+
+		var lastErr error
+		for attempt := range 3 {
+			_, lastErr = s.db.ExecContext(context.Background(),
+				fmt.Sprintf("ALTER TABLE session_messages ADD COLUMN %s %s", col.name, col.def))
+			if lastErr == nil {
+				break
+			}
+			if !strings.Contains(lastErr.Error(), "database is locked") {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+			}
+		}
+		if lastErr != nil {
+			s.log().Warn("migration ALTER TABLE failed", "table", "session_messages", "column", col.name, "error", lastErr)
 		}
 	}
 
@@ -511,10 +545,17 @@ func (s *SQLiteSessionStore) HasResolvedPlanReviewMessage(ctx context.Context, s
 
 // SaveMessage saves a chat message.
 func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) error {
+	var reasoningStr, toolCallsStr string
+	if msg.ReasoningContent != nil {
+		reasoningStr = *msg.ReasoningContent
+	}
+	if msg.ToolCalls != nil {
+		toolCallsStr = string(*msg.ToolCalls)
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO session_messages (session_id, role, content, metadata, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		msg.SessionID, msg.Role, msg.Content, string(msg.Metadata), msg.CreatedAt,
+		INSERT INTO session_messages (session_id, role, content, reasoning_content, tool_calls, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msg.SessionID, msg.Role, msg.Content, reasoningStr, toolCallsStr, string(msg.Metadata), msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save message: %w", err)
@@ -525,7 +566,7 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 // LoadMessages loads all messages for a session ordered by creation time.
 func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, session_id, role, content, metadata, created_at
+		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at
 		FROM session_messages
 		WHERE session_id = ?
 		ORDER BY created_at ASC`,
@@ -544,8 +585,17 @@ func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string)
 	for rows.Next() {
 		var msg ChatMessage
 		var metadataStr string
-		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &metadataStr, &msg.CreatedAt); err != nil {
+		var reasoningStr, toolCallsStr sql.NullString
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &reasoningStr, &toolCallsStr, &metadataStr, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		if reasoningStr.Valid {
+			v := reasoningStr.String
+			msg.ReasoningContent = &v
+		}
+		if toolCallsStr.Valid {
+			raw := json.RawMessage(toolCallsStr.String)
+			msg.ToolCalls = &raw
 		}
 		if metadataStr != "" {
 			msg.Metadata = json.RawMessage(metadataStr)

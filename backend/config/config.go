@@ -293,11 +293,12 @@ type TimeoutsConfig struct {
 
 // OrchestrationConfig holds orchestration-specific limits and settings.
 type OrchestrationConfig struct {
-	MaxDependencyContextChars int `yaml:"maxDependencyContextChars"` // default: 8000
-	MaxSummaryLength          int `yaml:"maxSummaryLength"`          // default: 500
-	MaxHistoryMessages        int `yaml:"maxHistoryMessages"`        // default: 20
-	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
-	MaxPlannerExploreSteps    int `yaml:"maxPlannerExploreSteps"`    // default: 7
+	MaxDependencyContextChars      int     `yaml:"maxDependencyContextChars"`      // default: 8000
+	MaxSummaryLength               int     `yaml:"maxSummaryLength"`               // default: 500
+	PlannerHistoryBudgetTokens     int     `yaml:"plannerHistoryBudgetTokens"`     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation when exceeded
+	PlannerHistoryKeepRecentRatio  float64 `yaml:"plannerHistoryKeepRecentRatio"`  // fraction of token budget for recent messages during compaction (default: 0.75)
+	MaxJudgeCacheSize              int     `yaml:"maxJudgeCacheSize"`              // default: 1000
+	MaxPlannerExploreSteps         int     `yaml:"maxPlannerExploreSteps"`         // default: 7
 }
 
 // SkillsConfig holds Agent Skills discovery configuration.
