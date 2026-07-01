@@ -6,6 +6,7 @@ import {backend} from '../models';
 import {workspace} from '../models';
 import {config} from '../models';
 import {mcp} from '../models';
+import {desktop} from '../models';
 
 export function ApprovePlan(arg1:string,arg2:string):Promise<void>;
 
@@ -94,6 +95,8 @@ export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<back
 export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
+
+export function SetWailsLogger(arg1:desktop.wailsLogAdapter):Promise<void>;
 
 export function StartTerminal(arg1:string):Promise<void>;
 

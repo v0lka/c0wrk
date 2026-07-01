@@ -545,17 +545,17 @@ func (s *SQLiteSessionStore) HasResolvedPlanReviewMessage(ctx context.Context, s
 
 // SaveMessage saves a chat message.
 func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) error {
-	var reasoningStr, toolCallsStr string
+	var reasoningVal, toolCallsVal any
 	if msg.ReasoningContent != nil {
-		reasoningStr = *msg.ReasoningContent
+		reasoningVal = *msg.ReasoningContent
 	}
-	if msg.ToolCalls != nil {
-		toolCallsStr = string(*msg.ToolCalls)
+	if msg.ToolCalls != nil && len(*msg.ToolCalls) > 0 {
+		toolCallsVal = string(*msg.ToolCalls)
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO session_messages (session_id, role, content, reasoning_content, tool_calls, metadata, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		msg.SessionID, msg.Role, msg.Content, reasoningStr, toolCallsStr, string(msg.Metadata), msg.CreatedAt,
+		msg.SessionID, msg.Role, msg.Content, reasoningVal, toolCallsVal, string(msg.Metadata), msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save message: %w", err)
@@ -589,11 +589,11 @@ func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string)
 		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &reasoningStr, &toolCallsStr, &metadataStr, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
-		if reasoningStr.Valid {
+		if reasoningStr.Valid && reasoningStr.String != "" {
 			v := reasoningStr.String
 			msg.ReasoningContent = &v
 		}
-		if toolCallsStr.Valid {
+		if toolCallsStr.Valid && toolCallsStr.String != "" {
 			raw := json.RawMessage(toolCallsStr.String)
 			msg.ToolCalls = &raw
 		}

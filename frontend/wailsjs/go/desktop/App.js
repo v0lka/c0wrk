@@ -178,6 +178,10 @@ export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
 }
 
+export function SetWailsLogger(arg1) {
+  return window['go']['desktop']['App']['SetWailsLogger'](arg1);
+}
+
 export function StartTerminal(arg1) {
   return window['go']['desktop']['App']['StartTerminal'](arg1);
 }

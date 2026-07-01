@@ -680,6 +680,23 @@ export namespace backend {
 
 }
 
+export namespace desktop {
+	
+	export class wailsLogAdapter {
+	
+	
+	    static createFrom(source: any = {}) {
+	        return new wailsLogAdapter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	
+	    }
+	}
+
+}
+
 export namespace mcp {
 	
 	export class ServerStatus {

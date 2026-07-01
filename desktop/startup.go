@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +39,18 @@ type pendingConfirmData struct {
 
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
+	// Catch any unrecovered panic during startup so a stack trace lands in
+	// the session log (if available) or the wails.log fallback before exit.
+	defer func() {
+		if r := recover(); r != nil {
+			a.log().Error("unrecovered panic during startup",
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			panic(r) // re-panic so Wails can still tear down gracefully
+		}
+	}()
+
 	// ══════════════════════════════════════════════════════════════════
 	// STARTUP MANIFEST — Critical Path Time Budget: <500ms (subsequent runs)
 	//

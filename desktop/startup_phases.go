@@ -36,6 +36,10 @@ import (
 // startup errors land on disk. Returns the active logger plus the underlying
 // SessionLogger so the caller can re-init it later if config requests a
 // different level. Errors are logged via slog.Default() but never block startup.
+//
+// Once the session logger is ready, the Wails log adapter is updated so that
+// Wails-internal messages (including fatal RPC errors) also appear in the
+// session log.
 func (a *App) initLogger(logDir string) (*slog.Logger, *logger.SessionLogger) {
 	sessionLogger, err := logger.Init("INFO", logDir)
 	if err != nil {
@@ -44,6 +48,9 @@ func (a *App) initLogger(logDir string) (*slog.Logger, *logger.SessionLogger) {
 	var log *slog.Logger
 	if sessionLogger != nil {
 		log = sessionLogger.Logger()
+		if a.wailsLogger != nil {
+			a.wailsLogger.SetDelegate(log)
+		}
 	} else {
 		log = slog.Default()
 	}
@@ -69,6 +76,9 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 	}
 	log := newLogger.Logger()
 	a.logger = log
+	if a.wailsLogger != nil {
+		a.wailsLogger.SetDelegate(log)
+	}
 	return log, newLogger
 }
 

@@ -30,6 +30,11 @@ type App struct {
 	// logger used during Startup before FrontendAPI is constructed.
 	logger *slog.Logger
 
+	// wailsLogger bridges Wails internal messages (including Fatal/Error)
+	// to a persistent wails.log file. Once the session logger is ready,
+	// messages are also duplicated to the session log.
+	wailsLogger *wailsLogAdapter
+
 	db *sql.DB // shared SQLite connection; lifecycle: opened in Startup, closed in Shutdown
 
 	// sessionLogger is stored so Shutdown can close it on early Startup exits
@@ -71,6 +76,12 @@ func NewApp() *App {
 	return &App{
 		FrontendAPI: &backend.FrontendAPI{},
 	}
+}
+
+// SetWailsLogger stores the Wails log adapter so that the session logger
+// can be wired as a delegate once it is initialized in Startup.
+func (a *App) SetWailsLogger(wl *wailsLogAdapter) {
+	a.wailsLogger = wl
 }
 
 // PickDirectory opens a native directory picker dialog.
