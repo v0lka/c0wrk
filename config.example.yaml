@@ -216,28 +216,30 @@ toolLimits:
   webSearchMaxResults: 5 # Max web search results
 
   # --- Per-tool Stage 1 truncation (applied before token budget) ------------
-  # WARNING: These are SAFETY limits, not performance settings. Changing
-  # these values can expose the system to memory exhaustion attacks from
-  # malicious or runaway tool output. The defaults are deliberately generous
-  # so that normal usage on an average project never triggers truncation.
-  # If you see truncation notices at these limits, the output is likely
-  # anomalous or malicious — REDUCE THE LIMIT to tighten protection.
-  #
-  # These values also serve as default page sizes for tool_result_read.
+  # These limits trigger output fragmentation: when tool output exceeds the
+  # limit, it is truncated and a nudge with a cache hash is appended so the
+  # LLM can read the full result in fragments via tool_result_read.
+  # Set conservative values here so fragmentation activates for realistic
+  # large-output scenarios (e.g. reading files >2000 lines).
   # Omitted tools receive no Stage 1 truncation. Use 0 to disable a dimension.
+  #
+  # Lowering these limits increases fragmentation frequency and thus LLM call
+  # count (each fragment read costs an extra tool-call iteration), but reduces
+  # memory and context overhead per individual tool result. Balance these
+  # values based on your typical file sizes and available context window.
   perToolTruncation:
     read_file:
-      maxLines: 50000
+      maxLines: 2000
     ripgrep:
-      maxLines: 5000
+      maxLines: 2000
     glob:
-      maxLines: 5000
+      maxLines: 2000
     list_directory:
-      maxLines: 5000
+      maxLines: 2000
     web_fetch:
       maxBytes: 2097152  # 2 MiB
     bash_exec:
-      maxLines: 10000
+      maxLines: 5000
 
 # ---------------------------------------------------------------------------
 # Timeouts (in seconds)

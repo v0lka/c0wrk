@@ -944,7 +944,7 @@ func TestApplyToolResultBudget_NoHardCap(t *testing.T) {
 	// HardCapTokens=0 → early return, no truncation
 	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{HardCapTokens: 0, MaxFillFraction: 0.5}, defaultCircuitBreakerConfig)
 	cm := newMockContextManager()
-	result := exec.applyToolResultBudget("some observation", cm, "search")
+	result := exec.applyToolResultBudget("some observation", cm, "search", "")
 	if result != "some observation" {
 		t.Errorf("expected unchanged observation, got %q", result)
 	}

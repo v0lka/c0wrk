@@ -68,6 +68,17 @@ Consecutive empty or minimal results are a signal to stop, not to try harder. Wh
 - If you need to write intermediate files (large datasets, temporary configs, scratch work), use the session temp directory (specified in Workspace section)
 - Write intermediate files ONLY to the session temp directory (specified in Workspace section)
 
+## Truncated Outputs
+
+Large tool outputs may be truncated in two stages:
+
+1. **Stage 1 (per-tool line/byte limits):** When the output exceeds the configurable per-tool limit, the output is truncated and a **fragmentation nudge** is appended containing a cache hash. Example:
+   `[This output was truncated to 2000 lines for 'read_file'. The full result is cached with hash: abc123. Use tool_result_read(hash="abc123", start_line=1, num_lines=N) to read fragments. num_lines must not exceed 2000.]`
+
+2. **Stage 2 (token budget):** When the output fits within per-tool limits but exceeds the available token budget, a truncation notice with the hash is appended instead of the full output.
+
+**How to retrieve the full result:** Call `tool_result_read(hash="...", start_line=N, num_lines=M)` with the hash from the truncation notice. Read fragments in small line ranges (e.g. 100-500 lines) to conserve context — do not try to read the entire output at once. Do NOT re-run the original tool or re-read the file; the cached result is already available and avoids redundant work.
+
 ## Fact Memory
 
 Use `store_fact` and `search_facts` to maintain knowledge across execution steps:

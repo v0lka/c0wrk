@@ -243,3 +243,38 @@ func TestToolResultCache_Get_RecheckAfterLockUpgrade(t *testing.T) {
 		t.Error("entry should not be nil")
 	}
 }
+
+// --- ComputeToolResultHash tests ---
+
+func TestComputeToolResultHash(t *testing.T) {
+	// Determinism: same inputs → same hash.
+	h1 := ComputeToolResultHash("read_file", "some content")
+	h2 := ComputeToolResultHash("read_file", "some content")
+	if h1 != h2 {
+		t.Errorf("ComputeToolResultHash should be deterministic: %s != %s", h1, h2)
+	}
+	if h1 == "" {
+		t.Error("ComputeToolResultHash returned empty string")
+	}
+	if len(h1) != 64 {
+		t.Errorf("ComputeToolResultHash length = %d, want 64 (SHA256 hex)", len(h1))
+	}
+
+	// Different tool names → different hashes.
+	h3 := ComputeToolResultHash("ripgrep", "some content")
+	if h1 == h3 {
+		t.Error("different tool names should produce different hashes")
+	}
+
+	// Different content → different hashes.
+	h4 := ComputeToolResultHash("read_file", "different content")
+	if h1 == h4 {
+		t.Error("different content should produce different hashes")
+	}
+
+	// Different content AND different tool → different hashes.
+	h5 := ComputeToolResultHash("ripgrep", "different content")
+	if h1 == h5 {
+		t.Error("different tool+content should produce different hashes")
+	}
+}

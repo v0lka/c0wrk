@@ -52,12 +52,19 @@ func NewToolResultCache(ttl time.Duration) *ToolResultCache {
 	}
 }
 
+// ComputeToolResultHash returns the hex-encoded SHA256 hash for a tool result.
+// This uses the same formula as Store: SHA256(toolName + "\x00" + content).
+// Use this when you need the hash before/without calling Store.
+func ComputeToolResultHash(toolName, content string) string {
+	return sha256hex(toolName + "\x00" + content)
+}
+
 // Store caches raw tool output and returns its SHA256 hash.
 // The hash includes both toolName and content so that identical content from
 // different tools gets different hashes.
 // Repeated identical calls produce the same hash (no duplicate entries).
 func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) string {
-	hash := sha256hex(toolName + "\x00" + content)
+	hash := ComputeToolResultHash(toolName, content)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

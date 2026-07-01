@@ -766,19 +766,20 @@ func (e *Executor) processToolResult(
 		observation = truncated
 	}
 
+	var cacheHash string
 	if e.toolCache != nil {
 		if _, isNonCacheable := nonCacheableTools[toolName]; !isNonCacheable {
 			meta := e.buildCacheMeta(execCtx, toolName, input)
-			hash := e.toolCache.Store(toolName, fullResult, meta)
+			cacheHash = e.toolCache.Store(toolName, fullResult, meta)
 
 			if wasTruncated {
-				maxLines := 0
+				maxSliceHint := 0
 				if e.perToolTruncation != nil {
 					if cfg, ok := e.perToolTruncation[toolName]; ok {
-						maxLines = cfg.MaxLines
+						maxSliceHint = cfg.MaxLines
 					}
 				}
-				nudge := formatFragmentationNudge(hash, toolName, maxLines)
+				nudge := formatFragmentationNudge(cacheHash, toolName, maxSliceHint)
 				observation += nudge
 			}
 		}
@@ -791,7 +792,14 @@ func (e *Executor) processToolResult(
 		stage1Nudge = observation[idx:]
 		observation = observation[:idx]
 	}
-	observation = e.applyToolResultBudget(observation, cw, toolName)
+	// Suppress the Stage‑2 hash hint when Stage‑1 already appended a
+	// fragmentation nudge containing the cache hash — avoids redundant
+	// "Use tool_result_read…" instructions.
+	budgetHash := cacheHash
+	if stage1Nudge != "" {
+		budgetHash = ""
+	}
+	observation = e.applyToolResultBudget(observation, cw, toolName, budgetHash)
 	observation += stage1Nudge
 
 	return observation

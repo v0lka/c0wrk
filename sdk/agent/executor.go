@@ -21,6 +21,11 @@ const executorNudge = "[System] You have tools available that can help answer th
 
 // nonCacheableTools is the set of tool names whose results are NOT cached.
 // These are internal meta-tools or produce tiny outputs where caching adds overhead.
+//
+// NOTE: Tools listed here will not receive Stage‑2 hash hints either, because
+// the caching step (which produces the hash) is skipped. The exclusion from
+// both caching and hash hints is a deliberate dual-purpose: if a tool's results
+// are not worth caching, they are also not worth offering for fragment retrieval.
 var nonCacheableTools = map[string]struct{}{
 	"tool_result_read":  {},
 	"finish":            {},
@@ -201,8 +206,9 @@ func (e *Executor) SetPerToolTruncation(cfg map[string]ToolTruncationConfig) {
 
 // applyToolResultBudget truncates a tool result if it exceeds the budget.
 // The budget is min(HardCapTokens, AvailableTokens * MaxFillFraction) with a 256-token floor.
-// When truncated, a notice is appended to inform the model.
-func (e *Executor) applyToolResultBudget(observation string, cw ContextManager, toolName string) string {
+// When truncated, a notice is appended to inform the model. If cacheHash is non-empty,
+// the notice includes the hash and an instruction to use tool_result_read.
+func (e *Executor) applyToolResultBudget(observation string, cw ContextManager, toolName, cacheHash string) string {
 	if e.toolResultBudget.HardCapTokens <= 0 {
 		return observation
 	}
@@ -237,9 +243,19 @@ func (e *Executor) applyToolResultBudget(observation string, cw ContextManager, 
 	// Generate context-aware hint based on tool name
 	hint := getTruncationHint(toolName)
 
+	// Include hash and tool_result_read instruction when available
+	hashHint := ""
+	if cacheHash != "" {
+		hashHint = fmt.Sprintf(
+			" This output was truncated by token budget. Hash: %s. "+
+				"Use tool_result_read(hash=\"%s\", start_line=N, num_lines=M) to read the full cached result in fragments.",
+			cacheHash, cacheHash,
+		)
+	}
+
 	return truncated + fmt.Sprintf(
-		"\n\n[OUTPUT TRUNCATED: showing ~%d of ~%d tokens (%.0f%%). %s]",
-		capTokens, observationTokens, float64(capTokens)/float64(observationTokens)*100, hint,
+		"\n\n[OUTPUT TRUNCATED: showing ~%d of ~%d tokens (%.0f%%).%s %s]",
+		capTokens, observationTokens, float64(capTokens)/float64(observationTokens)*100, hashHint, hint,
 	)
 }
 
@@ -295,13 +311,24 @@ func (e *Executor) applyPerToolTruncation(content, toolName string) (string, boo
 
 // formatFragmentationNudge returns a message instructing the LLM how to read
 // truncated output in fragments via tool_result_read.
-func formatFragmentationNudge(hash, toolName string, maxLines int) string {
+// When maxSliceHint is 0, the truncation was triggered by a byte limit
+// (MaxLines was 0); the message is adjusted accordingly.
+func formatFragmentationNudge(hash, toolName string, maxSliceHint int) string {
+	if maxSliceHint == 0 {
+		return fmt.Sprintf(
+			"\n\n[This output was truncated to the configured byte limit for '%s'. "+
+				"The full result is cached with hash: %s. "+
+				"Use tool_result_read(hash=\"%s\", start_line=1, num_lines=N) to read fragments. "+
+				"num_lines must not exceed 2000.]",
+			toolName, hash, hash,
+		)
+	}
 	return fmt.Sprintf(
 		"\n\n[This output was truncated to %d lines for '%s'. "+
 			"The full result is cached with hash: %s. "+
 			"Use tool_result_read(hash=\"%s\", start_line=1, num_lines=N) to read fragments. "+
 			"num_lines must not exceed %d.]",
-		maxLines, toolName, hash, hash, maxLines,
+		maxSliceHint, toolName, hash, hash, maxSliceHint,
 	)
 }
 

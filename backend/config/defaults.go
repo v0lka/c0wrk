@@ -239,18 +239,19 @@ func ApplyDefaults(cfg *Config) {
 	}
 
 	// Per-tool Stage 1 truncation defaults (applied before token budget).
-	// These values are generous safety valves — normal usage should never trigger
-	// truncation. Stage 1 is a memory-exhaustion prevention layer, not a token
-	// optimizer. If you see truncation notices at these limits, the output is
-	// likely anomalous or malicious.
+	// These limits trigger output fragmentation: when tool output exceeds the
+	// limit, it is truncated and a nudge with a cache hash is appended so the
+	// LLM can read the full result in fragments via tool_result_read.
+	// Set conservative values so fragmentation activates for realistic
+	// large-output scenarios (e.g. reading files >2000 lines).
 	if cfg.ToolLimits.PerToolTruncation == nil {
 		cfg.ToolLimits.PerToolTruncation = map[string]ToolTruncationConfig{
-			"read_file":      {MaxLines: 50000, MaxBytes: 0},
-			"ripgrep":        {MaxLines: 5000, MaxBytes: 0},
-			"glob":           {MaxLines: 5000, MaxBytes: 0},
-			"list_directory": {MaxLines: 5000, MaxBytes: 0},
+			"read_file":      {MaxLines: 2000, MaxBytes: 0},
+			"ripgrep":        {MaxLines: 2000, MaxBytes: 0},
+			"glob":           {MaxLines: 2000, MaxBytes: 0},
+			"list_directory": {MaxLines: 2000, MaxBytes: 0},
 			"web_fetch":      {MaxLines: 0, MaxBytes: 2097152},
-			"bash_exec":      {MaxLines: 10000, MaxBytes: 0},
+			"bash_exec":      {MaxLines: 5000, MaxBytes: 0},
 		}
 	}
 

@@ -673,7 +673,7 @@ func TestIsContextExceededError(t *testing.T) {
 func TestApplyToolResultBudget_NoBudget(t *testing.T) {
 	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	cm := newMockContextManager()
-	result := exec.applyToolResultBudget("hello world", cm, "some_tool")
+	result := exec.applyToolResultBudget("hello world", cm, "some_tool", "")
 	if result != "hello world" {
 		t.Errorf("expected unchanged result, got %q", result)
 	}
@@ -687,7 +687,7 @@ func TestApplyToolResultBudget_UnderBudget(t *testing.T) {
 	cm := newMockContextManager()
 	cm.availableTokens = 10000
 
-	result := exec.applyToolResultBudget("short result", cm, "some_tool")
+	result := exec.applyToolResultBudget("short result", cm, "some_tool", "")
 	if result != "short result" {
 		t.Errorf("expected unchanged result, got %q", result)
 	}
@@ -702,7 +702,7 @@ func TestApplyToolResultBudget_Truncated(t *testing.T) {
 	cm.availableTokens = 200 // adaptive cap = 100
 
 	longContent := strings.Repeat("x", 2000) // ~500 tokens at len/4
-	result := exec.applyToolResultBudget(longContent, cm, "some_tool")
+	result := exec.applyToolResultBudget(longContent, cm, "some_tool", "")
 	if !strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("expected truncation notice")
 	}
@@ -721,7 +721,7 @@ func TestApplyToolResultBudget_MinFloor(t *testing.T) {
 
 	// Content that would be under 256 tokens (floor) → no truncation
 	shortContent := strings.Repeat("x", 500) // ~125 tokens
-	result := exec.applyToolResultBudget(shortContent, cm, "some_tool")
+	result := exec.applyToolResultBudget(shortContent, cm, "some_tool", "")
 	if strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("floor should prevent truncation of small content")
 	}
@@ -736,7 +736,7 @@ func TestApplyToolResultBudget_ReadFileHint(t *testing.T) {
 	cm.availableTokens = 200
 
 	longContent := strings.Repeat("x", 2000)
-	result := exec.applyToolResultBudget(longContent, cm, "read_file")
+	result := exec.applyToolResultBudget(longContent, cm, "read_file", "")
 	if !strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("expected truncation notice")
 	}
@@ -754,7 +754,7 @@ func TestApplyToolResultBudget_RipgrepHint(t *testing.T) {
 	cm.availableTokens = 200
 
 	longContent := strings.Repeat("x", 2000)
-	result := exec.applyToolResultBudget(longContent, cm, "ripgrep")
+	result := exec.applyToolResultBudget(longContent, cm, "ripgrep", "")
 	if !strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("expected truncation notice")
 	}
@@ -772,7 +772,7 @@ func TestApplyToolResultBudget_GrepHint(t *testing.T) {
 	cm.availableTokens = 200
 
 	longContent := strings.Repeat("x", 2000)
-	result := exec.applyToolResultBudget(longContent, cm, "grep")
+	result := exec.applyToolResultBudget(longContent, cm, "grep", "")
 	if !strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("expected truncation notice")
 	}
@@ -790,7 +790,7 @@ func TestApplyToolResultBudget_GlobHint(t *testing.T) {
 	cm.availableTokens = 200
 
 	longContent := strings.Repeat("x", 2000)
-	result := exec.applyToolResultBudget(longContent, cm, "glob")
+	result := exec.applyToolResultBudget(longContent, cm, "glob", "")
 	if !strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("expected truncation notice")
 	}
@@ -808,12 +808,33 @@ func TestApplyToolResultBudget_DefaultHint(t *testing.T) {
 	cm.availableTokens = 200
 
 	longContent := strings.Repeat("x", 2000)
-	result := exec.applyToolResultBudget(longContent, cm, "unknown_tool")
+	result := exec.applyToolResultBudget(longContent, cm, "unknown_tool", "")
 	if !strings.Contains(result, "OUTPUT TRUNCATED") {
 		t.Error("expected truncation notice")
 	}
 	if !strings.Contains(result, "Break into smaller operations") {
 		t.Error("expected default hint about breaking into smaller operations")
+	}
+}
+
+func TestApplyToolResultBudget_WithHash(t *testing.T) {
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{
+		HardCapTokens:   100,
+		MaxFillFraction: 0.5,
+	}, defaultCircuitBreakerConfig)
+	cm := newMockContextManager()
+	cm.availableTokens = 200
+
+	longContent := strings.Repeat("x", 2000)
+	result := exec.applyToolResultBudget(longContent, cm, "read_file", "abc123hash")
+	if !strings.Contains(result, "OUTPUT TRUNCATED") {
+		t.Error("expected truncation notice")
+	}
+	if !strings.Contains(result, "Hash: abc123hash") {
+		t.Error("expected cache hash in truncation message")
+	}
+	if !strings.Contains(result, "tool_result_read") {
+		t.Error("expected tool_result_read reference in truncation message")
 	}
 }
 
@@ -2261,6 +2282,25 @@ func TestFormatFragmentationNudge(t *testing.T) {
 	}
 	if !strings.Contains(result, "read_file") {
 		t.Error("expected tool name in nudge")
+	}
+	if !strings.Contains(result, "abc123hash") {
+		t.Error("expected hash in nudge")
+	}
+	if !strings.Contains(result, "tool_result_read") {
+		t.Error("expected tool_result_read reference in nudge")
+	}
+}
+
+func TestFormatFragmentationNudge_ByteOnly(t *testing.T) {
+	result := formatFragmentationNudge("abc123hash", "web_fetch", 0)
+	if result == "" {
+		t.Fatal("formatFragmentationNudge with maxSliceHint=0 returned empty string")
+	}
+	if strings.Contains(result, "truncated to 0 lines") {
+		t.Error("byte-only truncation must not say '0 lines'")
+	}
+	if !strings.Contains(result, "byte limit") {
+		t.Error("expected 'byte limit' in byte-only nudge")
 	}
 	if !strings.Contains(result, "abc123hash") {
 		t.Error("expected hash in nudge")
