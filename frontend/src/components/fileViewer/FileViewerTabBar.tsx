@@ -64,14 +64,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
   if (openTabs.length === 0) return null;
 
   return (
-    <div className="flex flex-col flex-shrink-0 border-b border-border bg-secondary/50 h-10">
-      {/* Full file path */}
-      {activeFile && (
-        <div className="h-3.5 flex items-center overflow-hidden px-2 flex-shrink-0">
-          <span className="font-mono text-[8px] text-accent/35 truncate">{activeFile}</span>
-        </div>
-      )}
-
+    <div className="flex flex-col shrink-0 border-b border-border bg-secondary/50 h-10">
       {/* Tab strip + controls */}
       <div className="flex items-end flex-1 min-h-0">
         {/* Scrollable tab strip */}
@@ -84,17 +77,17 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                 data-file-path={path}
                 className={cn(
                   "group flex items-center gap-1 px-2 py-1 h-full text-xs whitespace-nowrap",
-                  "border-r border-border transition-colors flex-shrink-0",
+                  "border-r border-border transition-colors shrink-0",
                   isActive
                     ? "bg-background text-foreground"
                     : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
                 )}
                 onClick={() => handleTabClick(path)}
               >
-                <span className="flex-shrink-0">
+                <span className="shrink-0">
                   <TabFileIcon path={path} />
                 </span>
-                <span className="truncate max-w-[120px]">{name}</span>
+                <span className="truncate max-w-30">{name}</span>
                 <span
                   role="button"
                   tabIndex={-1}
@@ -113,12 +106,12 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
         </div>
 
         {/* Right-side controls */}
-        <div className="flex items-center self-center flex-shrink-0 pr-2">
+        <div className="flex items-center self-center shrink-0 pr-2">
           {openTabs.length > 1 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
-                  className="flex items-center justify-center w-6 h-full text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors flex-shrink-0"
+                  className="flex items-center justify-center w-6 h-full text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors shrink-0"
                   aria-label="View all open files"
                 >
                   <ChevronDown className="h-3.5 w-3.5" />
@@ -146,7 +139,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
           <Button
             variant="ghost"
             size="icon-xs"
-            className="flex-shrink-0"
+            className="shrink-0"
             onClick={onToggleCollapse}
             title={collapsed ? "Expand file viewer" : "Collapse file viewer"}
           >

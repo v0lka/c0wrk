@@ -25,6 +25,7 @@ type appBuilder interface {
 	ListProviderModels(context.Context, string, *core.BuilderConfig) ([]string, error)
 	SetMCPWorkDir(string)
 	OptimizePrompt(context.Context, string) (*core.OptimizePromptResult, error)
+	GenerateCommitMessage(context.Context, string) (string, error)
 	GetBaseSkillDirs() []string
 	GetSkillDescriptors(projectSkillDir string) []skills.SkillDescriptor
 	ModelRegistry() *llm.ModelRegistry

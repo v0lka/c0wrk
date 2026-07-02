@@ -23,6 +23,9 @@ import {
   commit,
   getBranches,
   getCurrentBranch,
+  checkoutBranch,
+  createBranch,
+  generateCommitMessage,
   getDiffStat,
 } from '@/api/git'
 
@@ -332,5 +335,92 @@ describe('getDiffStat', () => {
   it('propagates errors from backend', async () => {
     mockApp.GetDiffStat = vi.fn().mockRejectedValue(new Error('git error'))
     await expect(getDiffStat('/file.ts')).rejects.toThrow('git error')
+  })
+})
+
+describe('checkoutBranch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.CheckoutBranch with the branch name', async () => {
+    mockApp.CheckoutBranch = vi.fn().mockResolvedValue(undefined)
+    await checkoutBranch('feature/x')
+    expect(mockApp.CheckoutBranch).toHaveBeenCalledWith('feature/x')
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.CheckoutBranch = vi.fn().mockRejectedValue(
+      new Error('local changes would be overwritten'),
+    )
+    await expect(checkoutBranch('main')).rejects.toThrow(
+      'local changes would be overwritten',
+    )
+  })
+})
+
+describe('createBranch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.CreateBranch with the branch name', async () => {
+    mockApp.CreateBranch = vi.fn().mockResolvedValue(undefined)
+    await createBranch('feature/new')
+    expect(mockApp.CreateBranch).toHaveBeenCalledWith('feature/new')
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.CreateBranch = vi.fn().mockRejectedValue(
+      new Error('branch "feature/new" already exists'),
+    )
+    await expect(createBranch('feature/new')).rejects.toThrow(
+      'branch "feature/new" already exists',
+    )
+  })
+})
+
+describe('generateCommitMessage', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns the generated commit message string', async () => {
+    mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue(
+      'feat(api): add commit message generation',
+    )
+    const result = await generateCommitMessage('diff --git ...')
+    expect(result).toBe('feat(api): add commit message generation')
+    expect(mockApp.GenerateCommitMessage).toHaveBeenCalledWith('diff --git ...')
+  })
+
+  it('throws when backend returns non-string', async () => {
+    mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue({ message: 'x' })
+    await expect(generateCommitMessage('diff')).rejects.toThrow(
+      'backend returned non-string data',
+    )
+  })
+
+  it('throws when backend returns null', async () => {
+    mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue(null)
+    await expect(generateCommitMessage('diff')).rejects.toThrow(
+      'backend returned non-string data',
+    )
+  })
+
+  it('throws when backend returns number', async () => {
+    mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue(42)
+    await expect(generateCommitMessage('diff')).rejects.toThrow(
+      'backend returned non-string data',
+    )
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.GenerateCommitMessage = vi.fn().mockRejectedValue(
+      new Error('llm router not available'),
+    )
+    await expect(generateCommitMessage('diff')).rejects.toThrow(
+      'llm router not available',
+    )
   })
 })

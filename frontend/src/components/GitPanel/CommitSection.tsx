@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Sparkles } from 'lucide-react'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
-import { commit } from '@/api/git'
+import { commit, generateCommitMessage } from '@/api/git'
+import { getFileDiff } from '@/api/workspace'
 import { cn } from '@/lib/utils'
 
 export function CommitSection() {
@@ -16,6 +17,9 @@ export function CommitSection() {
   const stagedCount = entries.filter((e) => e.staged).length
   const isEmpty = commitMessage.trim().length === 0
   const isDisabled = stagedCount === 0 || isEmpty || isCommitting
+  const isGenerating = useGitPanelStore((s) => s.isGeneratingCommit)
+  const setGenerating = useGitPanelStore((s) => s.setGeneratingCommit)
+  const isGenerateDisabled = stagedCount === 0 || isGenerating || isCommitting
 
   // Auto-height: expand up to ~6 lines
   const adjustHeight = useCallback(() => {
@@ -47,6 +51,35 @@ export function CommitSection() {
       setError(err instanceof Error ? err.message : 'Commit failed')
     } finally {
       setIsCommitting(false)
+    }
+  }
+
+  const handleGenerate = async () => {
+    const stagedEntries = entries.filter((e) => e.staged)
+    if (stagedEntries.length === 0 || isGenerating) return
+
+    setGenerating(true)
+    setError(null)
+    try {
+      // Collect the diff for each staged file. getFileDiff returns the
+      // staged + unstaged diff for a path; failures for individual files
+      // are swallowed so one bad file does not abort the whole request.
+      const diffs = await Promise.all(
+        stagedEntries.map((e) => getFileDiff(e.path).catch(() => '')),
+      )
+      const diff = diffs.filter((d) => d.trim().length > 0).join('\n')
+      if (!diff.trim()) {
+        setError('No staged changes to generate a commit message from')
+        return
+      }
+      const message = await generateCommitMessage(diff)
+      setCommitMessage(message)
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to generate commit message',
+      )
+    } finally {
+      setGenerating(false)
     }
   }
 
@@ -94,21 +127,44 @@ export function CommitSection() {
             ? `${stagedCount} staged file${stagedCount !== 1 ? 's' : ''}`
             : 'No staged changes'}
         </span>
-        <button
-          type="button"
-          onClick={handleCommit}
-          disabled={isDisabled}
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
-            'focus:outline-none focus:ring-1 focus:ring-ring',
-            isDisabled
-              ? 'bg-muted text-muted-foreground cursor-not-allowed'
-              : 'bg-primary text-primary-foreground hover:bg-foreground/80',
-          )}
-        >
-          {isCommitting && <Loader2 className="h-3 w-3 animate-spin" />}
-          {buttonLabel}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={isGenerateDisabled}
+            title="Generate commit message with AI"
+            aria-label="Generate commit message with AI"
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
+              'focus:outline-none focus:ring-1 focus:ring-ring',
+              isGenerateDisabled
+                ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                : 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+            )}
+          >
+            {isGenerating ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Sparkles className="h-3 w-3" />
+            )}
+            Generate
+          </button>
+          <button
+            type="button"
+            onClick={handleCommit}
+            disabled={isDisabled}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+              'focus:outline-none focus:ring-1 focus:ring-ring',
+              isDisabled
+                ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                : 'bg-primary text-primary-foreground hover:bg-foreground/80',
+            )}
+          >
+            {isCommitting && <Loader2 className="h-3 w-3 animate-spin" />}
+            {buttonLabel}
+          </button>
+        </div>
       </div>
     </div>
   )

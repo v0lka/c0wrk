@@ -587,6 +587,49 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 	return resp.Message.Content, nil
 }
 
+// GenerateCommitMessage produces a Conventional Commits-formatted commit
+// message from the given staged diff using the cached LLM router. The diff
+// is typically the output of `git diff --staged`. The caller is responsible
+// for enforcing any request timeout via the supplied context.
+func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff string) (string, error) {
+	if err := b.waitReady(ctx); err != nil {
+		return "", err
+	}
+
+	b.mu.RLock()
+	llmRouter := b.llmRouter
+	reasoningEffort := b.reasoningEffort
+	b.mu.RUnlock()
+
+	if llmRouter == nil {
+		return "", errors.New("llm router not available")
+	}
+
+	temp := 0.4
+	req := llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: coreprompts.CommitMessage},
+			{Role: "user", Content: "## Staged Diff\n\n" + diff},
+		},
+		MaxTokens:       200,
+		Temperature:     &temp,
+		ReasoningEffort: reasoningEffort,
+	}
+	caller := agent.LLMCaller(llmRouter)
+	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
+		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
+		caller = agent.NewDumpCaller(caller, dw, b.logger)
+	}
+	resp, err := caller.Call(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(resp.Message.Content), nil
+}
+
 // ListProviderModels returns available model names for a given provider.
 func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
 	switch provider {

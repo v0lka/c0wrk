@@ -166,6 +166,11 @@ var PromptOptimizeExtract string
 //go:embed prompt_optimize_rewrite.md
 var PromptOptimizeRewrite string
 
+// Commit message generator prompt (conventional commits)
+
+//go:embed commit_message.md
+var CommitMessage string
+
 // FamilyPrompt returns the family-specific prompt for the given agent and family.
 // Falls back to the "default" family if no specific prompt exists.
 // Returns empty string if the agent has no family-specific prompts (auxiliary agents).

@@ -1,8 +1,9 @@
 import { useState, useCallback } from 'react'
-import { GitBranch, List, FolderTree, RefreshCw, Loader2, Plus, Minus } from 'lucide-react'
+import { GitBranch, List, FolderTree, RefreshCw, Loader2, Plus, Minus, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { stageAll, unstageAll } from '@/api/git'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
 
 interface GitPanelToolbarProps {
   branch: string
@@ -17,6 +18,7 @@ export function GitPanelToolbar({
   onViewModeChange,
   onRefresh,
 }: GitPanelToolbarProps) {
+  const openBranchPicker = useGitPanelStore((s) => s.openBranchPicker)
   const [isStagingAll, setIsStagingAll] = useState(false)
   const [isUnstagingAll, setIsUnstagingAll] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -62,13 +64,19 @@ export function GitPanelToolbar({
 
   return (
     <div className="flex items-center gap-1 px-2 py-1 min-h-[32px] shrink-0 border-b border-border bg-secondary/30">
-      {/* Branch indicator */}
-      <div className="flex items-center gap-1.5 px-1.5 py-0.5 text-xs text-muted-foreground min-w-0 mr-1">
+      {/* Branch indicator — click to open the branch picker */}
+      <button
+        type="button"
+        onClick={openBranchPicker}
+        title="Switch or create branch"
+        className="flex items-center gap-1.5 px-1.5 py-0.5 text-xs text-muted-foreground min-w-0 mr-1 rounded-md hover:bg-muted transition-colors focus:outline-none focus:ring-1 focus:ring-ring"
+      >
         <GitBranch className="size-3.5 shrink-0" />
         <span className="truncate font-mono text-[11px]">
           {branch || <span className="italic opacity-50">no branch</span>}
         </span>
-      </div>
+        <ChevronDown className="size-3 shrink-0 opacity-60" />
+      </button>
 
       {/* Separator */}
       <div className="w-px h-4 bg-border mx-0.5" />

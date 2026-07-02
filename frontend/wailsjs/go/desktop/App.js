@@ -18,8 +18,16 @@ export function CancelUnfinishedTask(arg1) {
   return window['go']['desktop']['App']['CancelUnfinishedTask'](arg1);
 }
 
+export function CheckoutBranch(arg1) {
+  return window['go']['desktop']['App']['CheckoutBranch'](arg1);
+}
+
 export function Commit(arg1) {
   return window['go']['desktop']['App']['Commit'](arg1);
+}
+
+export function CreateBranch(arg1) {
+  return window['go']['desktop']['App']['CreateBranch'](arg1);
 }
 
 export function CreateProject(arg1, arg2) {
@@ -36,6 +44,10 @@ export function DeleteProject(arg1) {
 
 export function DeleteSession(arg1) {
   return window['go']['desktop']['App']['DeleteSession'](arg1);
+}
+
+export function GenerateCommitMessage(arg1) {
+  return window['go']['desktop']['App']['GenerateCommitMessage'](arg1);
 }
 
 export function GetBlackboardState(arg1) {

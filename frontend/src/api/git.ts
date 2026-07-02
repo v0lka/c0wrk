@@ -102,6 +102,26 @@ export async function getCurrentBranch(): Promise<string> {
   }
 }
 
+export async function checkoutBranch(name: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CheckoutBranch(name)
+  } catch (err) {
+    logger.error('checkoutBranch failed:', err)
+    throw err
+  }
+}
+
+export async function createBranch(name: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CreateBranch(name)
+  } catch (err) {
+    logger.error('createBranch failed:', err)
+    throw err
+  }
+}
+
 // --- Diff statistics ---
 
 export async function getDiffStat(path: string): Promise<DiffStat> {
@@ -114,6 +134,22 @@ export async function getDiffStat(path: string): Promise<DiffStat> {
     return result
   } catch (err) {
     logger.error('getDiffStat failed:', err)
+    throw err
+  }
+}
+
+// --- AI commit message generation ---
+
+export async function generateCommitMessage(diff: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.GenerateCommitMessage(diff)
+    if (typeof result !== 'string') {
+      throw new Error('generateCommitMessage: backend returned non-string data')
+    }
+    return result
+  } catch (err) {
+    logger.error('generateCommitMessage failed:', err)
     throw err
   }
 }

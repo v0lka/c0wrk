@@ -217,6 +217,13 @@ func (f *FrontendAPI) runGitCmd(dir string, args ...string) (string, error) {
 
 	out, err := cmd.Output()
 	if err != nil {
+		// Surface git's stderr so callers can match on specific failure
+		// messages (e.g. "already exists", "local changes would be
+		// overwritten"). cmd.Output captures stderr into *exec.ExitError.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("git: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return "", fmt.Errorf("git: %w", err)
 	}
 	return string(out), nil
@@ -318,4 +325,112 @@ func (f *FrontendAPI) GetCurrentBranch() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// ---------------------------------------------------------------------------
+// Branch management RPCs (Phase 4)
+// ---------------------------------------------------------------------------
+
+// CheckoutBranch switches the active project's repository to the named
+// local branch (git checkout <name>). Emits git:status_changed on
+// success. Returns an error when no project is active, the project is
+// No Project, the branch name is empty, or the git command fails (for
+// example, when local changes would be overwritten by the checkout).
+func (f *FrontendAPI) CheckoutBranch(name string) error {
+	branchName := strings.TrimSpace(name)
+	if branchName == "" {
+		return errors.New("branch name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.runGitCmd(repoPath, "checkout", branchName); err != nil {
+		if isLocalChangesOverwritten(err) {
+			return errors.New("cannot switch branch: local changes would be overwritten. Commit or stash your changes first")
+		}
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// CreateBranch creates a new branch from the current HEAD and checks it
+// out (git checkout -b <name>). Emits git:status_changed on success.
+// Returns an error when no project is active, the project is No Project,
+// the branch name is empty, the branch already exists, or the git
+// command fails.
+func (f *FrontendAPI) CreateBranch(name string) error {
+	branchName := strings.TrimSpace(name)
+	if branchName == "" {
+		return errors.New("branch name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.runGitCmd(repoPath, "checkout", "-b", branchName); err != nil {
+		if isBranchAlreadyExists(err) {
+			return fmt.Errorf("branch %q already exists", branchName)
+		}
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// isLocalChangesOverwritten reports whether err is a git checkout failure
+// caused by uncommitted/untracked changes that would be overwritten. git
+// emits variants like "Your local changes ... would be overwritten by
+// checkout" (tracked) and "untracked working tree files would be
+// overwritten by checkout" (untracked) on stderr (captured by runGitCmd
+// via cmd.Output's *exec.ExitError).
+func isLocalChangesOverwritten(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "would be overwritten")
+}
+
+// isBranchAlreadyExists reports whether err is a git checkout -b failure
+// because the branch name is already taken.
+func isBranchAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "already exists")
+}
+
+// ---------------------------------------------------------------------------
+// AI commit message RPC (Phase 4)
+// ---------------------------------------------------------------------------
+
+// commitMsgGenTimeout caps the LLM request used to generate a commit
+// message so the UI does not hang on a slow or unresponsive provider.
+const commitMsgGenTimeout = 15 * time.Second
+
+// GenerateCommitMessage asks the configured LLM to produce a Conventional
+// Commits-formatted commit message from the given staged diff (typically
+// the output of `git diff --staged`). The LLM request is bounded by a
+// 15-second timeout. Returns an error when the application is not
+// initialised, the diff is empty, or the LLM call fails.
+func (f *FrontendAPI) GenerateCommitMessage(diff string) (string, error) {
+	b := f.builder()
+	if b == nil {
+		return "", errors.New("application not initialized")
+	}
+
+	trimmed := strings.TrimSpace(diff)
+	if trimmed == "" {
+		return "", errors.New("no staged changes to generate a commit message from")
+	}
+
+	ctx, cancel := context.WithTimeout(f.ctx(), commitMsgGenTimeout)
+	defer cancel()
+
+	return b.GenerateCommitMessage(ctx, trimmed)
 }

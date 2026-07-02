@@ -10,6 +10,7 @@ import { stageFile, unstageFile, getCurrentBranch } from '@/api/git'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
+import { BranchPicker } from './BranchPicker'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 import type { GitStatusEntry } from '@/types/models'
 
@@ -159,6 +160,7 @@ export function GitPanel() {
       )}
       <ChangesList onToggleFile={onToggleFile} onOpenDiff={onOpenDiff} />
       <CommitSection />
+      <BranchPicker />
     </div>
   )
 }

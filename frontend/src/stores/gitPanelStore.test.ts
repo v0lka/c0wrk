@@ -32,9 +32,12 @@ describe('gitPanelStore', () => {
     expect(s.entries).toEqual([])
     expect(s.commitMessage).toBe('')
     expect(s.branch).toBe('')
+    expect(s.branches).toEqual([])
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
+    expect(s.isBranchPickerOpen).toBe(false)
+    expect(s.isGeneratingCommit).toBe(false)
     expect(s.error).toBeNull()
   })
 
@@ -216,6 +219,55 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().expandedDirs.has('src/components')).toBe(true)
   })
 
+  // ── setBranches ──
+
+  it('setBranches updates the branch list', () => {
+    const { setBranches } = useGitPanelStore.getState()
+    setBranches([
+      { name: 'main', is_current: true },
+      { name: 'feature/x', is_current: false },
+    ])
+    expect(useGitPanelStore.getState().branches).toEqual([
+      { name: 'main', is_current: true },
+      { name: 'feature/x', is_current: false },
+    ])
+  })
+
+  it('setBranches allows empty array', () => {
+    const { setBranches } = useGitPanelStore.getState()
+    setBranches([{ name: 'main', is_current: true }])
+    setBranches([])
+    expect(useGitPanelStore.getState().branches).toEqual([])
+  })
+
+  // ── openBranchPicker / closeBranchPicker ──
+
+  it('openBranchPicker sets isBranchPickerOpen to true', () => {
+    const { openBranchPicker } = useGitPanelStore.getState()
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+    openBranchPicker()
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(true)
+  })
+
+  it('closeBranchPicker sets isBranchPickerOpen to false', () => {
+    const { openBranchPicker, closeBranchPicker } = useGitPanelStore.getState()
+    openBranchPicker()
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(true)
+    closeBranchPicker()
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+  })
+
+  // ── setGeneratingCommit ──
+
+  it('setGeneratingCommit toggles isGeneratingCommit', () => {
+    const { setGeneratingCommit } = useGitPanelStore.getState()
+    expect(useGitPanelStore.getState().isGeneratingCommit).toBe(false)
+    setGeneratingCommit(true)
+    expect(useGitPanelStore.getState().isGeneratingCommit).toBe(true)
+    setGeneratingCommit(false)
+    expect(useGitPanelStore.getState().isGeneratingCommit).toBe(false)
+  })
+
   // ── reset ──
 
   it('reset clears all state to initial values', () => {
@@ -224,10 +276,13 @@ describe('gitPanelStore', () => {
     store.loadEntries([makeEntry({ path: 'a.ts' })])
     store.setCommitMessage('fix: bug')
     store.setBranch('feature/x')
+    store.setBranches([{ name: 'main', is_current: true }])
     store.setGitRepo(true)
     store.setLoading(true)
     store.setError('some error')
     store.toggleExpandedDir('src')
+    store.openBranchPicker()
+    store.setGeneratingCommit(true)
 
     store.reset()
 
@@ -236,9 +291,12 @@ describe('gitPanelStore', () => {
     expect(s.entries).toEqual([])
     expect(s.commitMessage).toBe('')
     expect(s.branch).toBe('')
+    expect(s.branches).toEqual([])
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
+    expect(s.isBranchPickerOpen).toBe(false)
+    expect(s.isGeneratingCommit).toBe(false)
     expect(s.error).toBeNull()
   })
 

@@ -16,7 +16,11 @@ export function CancelTask(arg1:string):Promise<void>;
 
 export function CancelUnfinishedTask(arg1:string):Promise<void>;
 
+export function CheckoutBranch(arg1:string):Promise<void>;
+
 export function Commit(arg1:string):Promise<void>;
+
+export function CreateBranch(arg1:string):Promise<void>;
 
 export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;
 
@@ -25,6 +29,8 @@ export function CreateSession():Promise<session.SessionInfo>;
 export function DeleteProject(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
+
+export function GenerateCommitMessage(arg1:string):Promise<string>;
 
 export function GetBlackboardState(arg1:string):Promise<backend.BlackboardStateResponse>;
 

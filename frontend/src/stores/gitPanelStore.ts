@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import type { Branch } from '@/types/models'
 
 // --- Types ---
 
@@ -18,6 +19,9 @@ interface GitPanelState {
   entries: GitPanelEntry[]
   commitMessage: string
   branch: string
+  branches: Branch[]
+  isBranchPickerOpen: boolean
+  isGeneratingCommit: boolean
   expandedDirs: Set<string>
   isLoading: boolean
   isGitRepo: boolean
@@ -30,6 +34,10 @@ interface GitPanelActions {
   loadEntries: (entries: GitPanelEntry[]) => void
   toggleStage: (path: string) => void
   setBranch: (branch: string) => void
+  setBranches: (branches: Branch[]) => void
+  openBranchPicker: () => void
+  closeBranchPicker: () => void
+  setGeneratingCommit: (generating: boolean) => void
   setGitRepo: (isRepo: boolean) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -44,9 +52,12 @@ const initialState: GitPanelState = {
   entries: [],
   commitMessage: '',
   branch: '',
+  branches: [],
   expandedDirs: new Set<string>(),
   isLoading: false,
   isGitRepo: false,
+  isBranchPickerOpen: false,
+  isGeneratingCommit: false,
   error: null,
 }
 
@@ -77,6 +88,14 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
         })),
 
       setBranch: (branch) => set({ branch }),
+
+      setBranches: (branches) => set({ branches }),
+
+      openBranchPicker: () => set({ isBranchPickerOpen: true }),
+
+      closeBranchPicker: () => set({ isBranchPickerOpen: false }),
+
+      setGeneratingCommit: (generating) => set({ isGeneratingCommit: generating }),
 
       setGitRepo: (isRepo) => set({ isGitRepo: isRepo }),
 

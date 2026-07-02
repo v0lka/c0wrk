@@ -26,6 +26,7 @@ type mockBuilder struct {
 	setMCPWorkDirCalls      int
 	optimizePromptCalls     int
 	getBaseSkillDirsCalls   int
+	generateCommitMsgCalls  int
 
 	// Configurable return values for methods that have them.
 	rebuildRouterErr      error
@@ -35,6 +36,8 @@ type mockBuilder struct {
 	listProviderModelsErr error
 	optimizePromptRes     *core.OptimizePromptResult
 	optimizePromptErr     error
+	generateCommitMsgRes  string
+	generateCommitMsgErr  error
 }
 
 func (m *mockBuilder) RebuildJudge(_ *core.BuilderConfig) {
@@ -86,6 +89,12 @@ func (m *mockBuilder) OptimizePrompt(_ context.Context, _ string) (*core.Optimiz
 	m.optimizePromptCalls++
 	m.mu.Unlock()
 	return m.optimizePromptRes, m.optimizePromptErr
+}
+func (m *mockBuilder) GenerateCommitMessage(_ context.Context, _ string) (string, error) {
+	m.mu.Lock()
+	m.generateCommitMsgCalls++
+	m.mu.Unlock()
+	return m.generateCommitMsgRes, m.generateCommitMsgErr
 }
 func (m *mockBuilder) GetBaseSkillDirs() []string {
 	m.mu.Lock()

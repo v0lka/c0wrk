@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -914,4 +915,205 @@ func TestEventNotEmitted_OnError(t *testing.T) {
 		// Commit with nothing staged should fail without emitting.
 		_ = f.Commit("nothing to commit")
 	})
+}
+
+// --- CheckoutBranch tests ---
+
+func TestCheckoutBranch_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	if err := f.CheckoutBranch("main"); err == nil {
+		t.Fatal("expected error when no active project")
+	}
+}
+
+func TestCheckoutBranch_EmptyName(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		if err := f.CheckoutBranch("   "); err == nil {
+			t.Fatal("expected error for empty branch name")
+		}
+	})
+}
+
+func TestCheckoutBranch_Success(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Create a second branch to switch to.
+		runGit(t, dir, "branch", "feature-x")
+
+		var emitted string
+		f.emitEvent = func(name string, args ...any) {
+			if name == EventGitStatusChanged && len(args) >= 1 {
+				if p, ok := args[0].(string); ok {
+					emitted = p
+				}
+			}
+		}
+
+		if err := f.CheckoutBranch("feature-x"); err != nil {
+			t.Fatalf("CheckoutBranch: %v", err)
+		}
+
+		current, err := f.GetCurrentBranch()
+		if err != nil {
+			t.Fatalf("GetCurrentBranch: %v", err)
+		}
+		if current != "feature-x" {
+			t.Errorf("current branch: got %q, want %q", current, "feature-x")
+		}
+		if emitted != dir {
+			t.Errorf("event payload: got %q, want %q", emitted, dir)
+		}
+	})
+}
+
+func TestCheckoutBranch_LocalChangesOverwritten(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Create a feature branch with a divergent commit that modifies
+		// the tracked file committed.txt. Using a tracked-file conflict
+		// (rather than an untracked one) exercises git's "local changes
+		// would be overwritten by checkout" path.
+		mustGit := func(args ...string) {
+			t.Helper()
+			cmd := exec.CommandContext(context.Background(), "git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+			}
+		}
+		defaultBranch := gitDefaultBranch(t, dir)
+
+		mustGit("branch", "feature-y")
+		mustGit("checkout", "feature-y")
+		// Modify the tracked file on feature-y and commit.
+		if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("v2\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		mustGit("add", "committed.txt")
+		mustGit("commit", "-m", "modify on feature-y")
+		mustGit("checkout", defaultBranch)
+
+		// Modify the same tracked file on the current branch without
+		// committing — this conflicts with feature-y's version.
+		if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("local-change\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		err := f.CheckoutBranch("feature-y")
+		if err == nil {
+			t.Fatal("expected error when local changes would be overwritten")
+		}
+		if !strings.Contains(err.Error(), "local changes") {
+			t.Errorf("expected friendly message, got: %v", err)
+		}
+	})
+}
+
+func TestCheckoutBranch_NonexistentBranch(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		if err := f.CheckoutBranch("does-not-exist"); err == nil {
+			t.Fatal("expected error for nonexistent branch")
+		}
+	})
+}
+
+// --- CreateBranch tests ---
+
+func TestCreateBranch_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	if err := f.CreateBranch("main"); err == nil {
+		t.Fatal("expected error when no active project")
+	}
+}
+
+func TestCreateBranch_EmptyName(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		if err := f.CreateBranch(""); err == nil {
+			t.Fatal("expected error for empty branch name")
+		}
+	})
+}
+
+func TestCreateBranch_Success(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		var emitted string
+		f.emitEvent = func(name string, args ...any) {
+			if name == EventGitStatusChanged && len(args) >= 1 {
+				if p, ok := args[0].(string); ok {
+					emitted = p
+				}
+			}
+		}
+
+		if err := f.CreateBranch("new-feature"); err != nil {
+			t.Fatalf("CreateBranch: %v", err)
+		}
+
+		current, err := f.GetCurrentBranch()
+		if err != nil {
+			t.Fatalf("GetCurrentBranch: %v", err)
+		}
+		if current != "new-feature" {
+			t.Errorf("current branch: got %q, want %q", current, "new-feature")
+		}
+		if emitted != dir {
+			t.Errorf("event payload: got %q, want %q", emitted, dir)
+		}
+	})
+}
+
+func TestCreateBranch_AlreadyExists(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// The default branch already exists.
+		err := f.CreateBranch(gitDefaultBranch(t, dir))
+		if err == nil {
+			t.Fatal("expected error for existing branch")
+		}
+		if !strings.Contains(err.Error(), "already exists") {
+			t.Errorf("expected 'already exists' message, got: %v", err)
+		}
+	})
+}
+
+// --- GenerateCommitMessage tests ---
+
+func TestGenerateCommitMessage_NoBuilder(t *testing.T) {
+	f := &FrontendAPI{}
+	if _, err := f.GenerateCommitMessage("diff"); err == nil {
+		t.Fatal("expected error when application not initialized")
+	}
+}
+
+func TestGenerateCommitMessage_EmptyDiff(t *testing.T) {
+	f := &FrontendAPI{builderOverride: &mockBuilder{}}
+	if _, err := f.GenerateCommitMessage("   "); err == nil {
+		t.Fatal("expected error for empty diff")
+	}
+}
+
+func TestGenerateCommitMessage_Delegates(t *testing.T) {
+	mock := &mockBuilder{
+		generateCommitMsgRes: "feat: add new thing",
+	}
+	f := &FrontendAPI{builderOverride: mock}
+
+	out, err := f.GenerateCommitMessage("diff --staged ...")
+	if err != nil {
+		t.Fatalf("GenerateCommitMessage: %v", err)
+	}
+	if out != "feat: add new thing" {
+		t.Errorf("got %q, want %q", out, "feat: add new thing")
+	}
+	if mock.generateCommitMsgCalls != 1 {
+		t.Errorf("expected 1 builder call, got %d", mock.generateCommitMsgCalls)
+	}
+}
+
+func TestGenerateCommitMessage_PropagatesError(t *testing.T) {
+	mock := &mockBuilder{
+		generateCommitMsgErr: errors.New("llm router not available"),
+	}
+	f := &FrontendAPI{builderOverride: mock}
+
+	if _, err := f.GenerateCommitMessage("diff"); err == nil {
+		t.Fatal("expected error to propagate")
+	}
 }
