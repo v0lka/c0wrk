@@ -1,7 +1,7 @@
 // Action events: ask_user, step_limit, task_failed_resumable, task_resumed
 
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isAskUserData, isStepLimitData, isTaskFailedResumableData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { generateMessageId } from '@/lib/ids'
@@ -15,7 +15,7 @@ export function useActionEvents(sessionId: string | null): void {
     // --- ask_user ---
     cleanups.push(
       onSessionEvent(sessionId, 'ask_user', (data) => {
-        if (!isAskUserData(data)) return
+        if (!isAskUserData(data)) { reportDroppedEvent('ask_user', data); return }
         useChatStore.getState().addMessage(sessionId, {
           id: `ask-user-${data.request_id}`,
           sessionId,
@@ -34,7 +34,7 @@ export function useActionEvents(sessionId: string | null): void {
     // --- step_limit ---
     cleanups.push(
       onSessionEvent(sessionId, 'step_limit', (data) => {
-        if (!isStepLimitData(data)) return
+        if (!isStepLimitData(data)) { reportDroppedEvent('step_limit', data); return }
         useChatStore.getState().addMessage(sessionId, {
           id: `step-limit-${data.request_id}`,
           sessionId,

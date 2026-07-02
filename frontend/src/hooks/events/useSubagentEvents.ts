@@ -1,7 +1,7 @@
 // Subagent events: subagent_launch, subagent_complete
 
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isSubAgentLaunchData, isSubAgentCompleteData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
@@ -15,7 +15,7 @@ export function useSubagentEvents(sessionId: string | null): void {
     // --- subagent_launch ---
     cleanups.push(
       onSessionEvent(sessionId, 'subagent_launch', (data) => {
-        if (!isSubAgentLaunchData(data)) return
+        if (!isSubAgentLaunchData(data)) { reportDroppedEvent('subagent_launch', data); return }
         useChatStore.getState().setActivityStatus('Launching sub-agent...')
         useChatStore.getState().addMessage(sessionId, {
           id: `subagent-${data.step_id}-launch`,
@@ -31,7 +31,7 @@ export function useSubagentEvents(sessionId: string | null): void {
     // --- subagent_complete ---
     cleanups.push(
       onSessionEvent(sessionId, 'subagent_complete', (data) => {
-        if (!isSubAgentCompleteData(data)) return
+        if (!isSubAgentCompleteData(data)) { reportDroppedEvent('subagent_complete', data); return }
         useChatStore.getState().updateMessage(sessionId, `subagent-${data.step_id}-launch`, {
           metadata: {
             tool: 'subagent',

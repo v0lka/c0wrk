@@ -87,6 +87,14 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
     case 'task_cancelled': return 'Task was cancelled'
     case 'status': return (meta.content as string) || rawContent
     case 'task_resumed': return rawContent
+    case 'task_failed_resumable':
+      return (meta.message as string) || 'Plan execution failed. You can resume to retry from where it left off.'
+    case 'step_limit': {
+      const reason = meta.reason as string | undefined
+      if (reason) return `Circuit breaker: ${reason}`
+      const cur = meta.current_step as number | undefined, max = meta.max_steps as number | undefined
+      return (cur !== undefined && max !== undefined) ? `Step limit reached: ${cur} of ${max}` : rawContent
+    }
     default: return rawContent
   }
 }
@@ -166,6 +174,12 @@ export function buildHistoryId(
       return `status-${dbId}`
     case 'task_resumed':
       return `task-resumed-${timestamp}`
+    case 'task_failed_resumable':
+      return `resume-${timestamp}`
+    case 'step_limit': {
+      const requestId = meta.request_id as string | undefined
+      return requestId ? `step-limit-${requestId}` : `history-${dbId}`
+    }
     default:
       return `history-${dbId}`
   }

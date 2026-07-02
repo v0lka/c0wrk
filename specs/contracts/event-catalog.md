@@ -55,7 +55,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | Event Type    | Payload                                                            | Handler Hook  | Description             |
 | ------------- | ------------------------------------------------------------------ | ------------- | ----------------------- |
 | `tool_call`   | `{tool_call_id, step, call_idx, tool, args, source, parsed_args?}` | useToolEvents | Tool invocation started |
-| `tool_result` | `{tool_call_id?, step, call_idx, result_len, result}`              | useToolEvents | Tool execution result   |
+| `tool_result` | `{tool_call_id?, step, call_idx, result_len, result, error?}`      | useToolEvents | Tool execution result (`error: true` when the tool failed; propagated into live tool card status) |
 
 ### User Interaction
 
@@ -77,9 +77,9 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 
 | Event Type              | Payload                                                                       | Handler Hook       | Description                                                 |
 | ----------------------- | ----------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------- |
-| `task_complete`         | `{session_id, output, routing_decision, plan?, attempt_count?, reflections?}` | useLifecycleEvents | Task finished successfully                                  |
+| `task_complete`         | `{session_id, output, routing_decision, plan?, attempt_count?, reflections?, success, completion?, failed_steps?}` | useLifecycleEvents | Task finished. `success: false` + `completion: "partial"/"failed"/"aborted"` for degraded executions delivered with best-effort output; the UI renders an explicit warning. A degraded completion is always followed by `task_failed_resumable` or a `service` warning (never a silent visual success) |
 | `task_cancelled`        | `{session_id}`                                                                | useLifecycleEvents | Task cancelled by user                                      |
-| `task_failed_resumable` | `{message}`                                                                   | useLifecycleEvents | Task failed, can resume                                     |
+| `task_failed_resumable` | `{message}`                                                                   | useLifecycleEvents | Task failed/incomplete, can resume                          |
 | `error`                 | `{session_id, error}`                                                         | useChatEvents      | Execution error                                             |
 | `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`) |
 

@@ -1,7 +1,7 @@
 // Context events: context_fill, context_compaction, session_tokens
 
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { generateMessageId } from '@/lib/ids'
@@ -15,7 +15,7 @@ export function useContextEvents(sessionId: string | null): void {
     // --- context_fill ---
     cleanups.push(
       onSessionEvent(sessionId, 'context_fill', (data) => {
-        if (!isContextFillData(data)) return
+        if (!isContextFillData(data)) { reportDroppedEvent('context_fill', data); return }
         const store = useChatStore.getState()
         if (data.plan_step_id) {
           store.setStepContextFill(data.plan_step_id, data.fill_percent)
@@ -32,7 +32,7 @@ export function useContextEvents(sessionId: string | null): void {
     // --- context_compaction ---
     cleanups.push(
       onSessionEvent(sessionId, 'context_compaction', (data) => {
-        if (!isContextCompactionData(data)) return
+        if (!isContextCompactionData(data)) { reportDroppedEvent('context_compaction', data); return }
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -47,7 +47,7 @@ export function useContextEvents(sessionId: string | null): void {
     // --- session_tokens ---
     cleanups.push(
       onSessionEvent(sessionId, 'session_tokens', (data) => {
-        if (!isSessionTokensData(data)) return
+        if (!isSessionTokensData(data)) { reportDroppedEvent('session_tokens', data); return }
         useChatStore.getState().setSessionTokens(sessionId, {
           total_input_tokens: data.session_input_tokens,
           total_output_tokens: data.session_output_tokens,

@@ -1,7 +1,7 @@
 // Blackboard events: blackboard_updated (debounced RPC fetch)
 
 import { useEffect, useRef } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { getBlackboardState } from '@/api/blackboard'
 import { isBlackboardUpdatedData } from '@/types/events'
 import { useBlackboardStore } from '@/stores/blackboardStore'
@@ -22,7 +22,7 @@ export function useBlackboardEvents(sessionId: string | null): void {
     fetchBlackboard(sessionId)
 
     const cleanup = onSessionEvent(sessionId, 'blackboard_updated', (data) => {
-      if (!isBlackboardUpdatedData(data)) return
+      if (!isBlackboardUpdatedData(data)) { reportDroppedEvent('blackboard_updated', data); return }
 
       // Debounce: clear any pending fetch and schedule a new one.
       if (timerRef.current !== null) {

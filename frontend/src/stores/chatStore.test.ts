@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupMessages, extractPendingActions, type ChatMessageUI, type MessageType, type DisplayItem } from '@/stores/chatStore'
+import { useChatStore, groupMessages, extractPendingActions, type ChatMessageUI, type MessageType, type DisplayItem } from '@/stores/chatStore'
 
 let msgCounter = 0
 function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
@@ -438,5 +438,52 @@ describe('extractPendingActions', () => {
     const result = extractPendingActions(msgs)
     expect(result).toHaveLength(1)
     expect((result[0]! as Extract<DisplayItem, { kind: 'plan_review' }>).message.metadata?.planPath).toBe('/tmp/plan2.md')
+  })
+})
+
+describe('mergeHistoryMessages', () => {
+  const SESSION = 'merge-sess'
+
+  function resetStore(): void {
+    useChatStore.setState({ messages: {}, messageOrder: {} })
+  }
+
+  function liveMsg(id: string, timestamp: number, type: MessageType = 'assistant'): ChatMessageUI {
+    return { id, sessionId: SESSION, type, content: `live-${id}`, timestamp }
+  }
+
+  it('replaces messages with history when no live messages arrived during load', () => {
+    resetStore()
+    const store = useChatStore.getState()
+    store.addMessage(SESSION, liveMsg('old-1', 500))
+    const history = [liveMsg('h-1', 100), liveMsg('h-2', 200)]
+
+    useChatStore.getState().mergeHistoryMessages(SESSION, history, 1000)
+
+    expect(useChatStore.getState().messageOrder[SESSION]).toEqual(['h-1', 'h-2'])
+  })
+
+  it('preserves live messages that arrived while the history RPC was in flight', () => {
+    resetStore()
+    const store = useChatStore.getState()
+    // Error event delivered after the load started but before it resolved.
+    store.addMessage(SESSION, liveMsg('live-error', 1500, 'error'))
+    const history = [liveMsg('h-1', 100)]
+
+    useChatStore.getState().mergeHistoryMessages(SESSION, history, 1000)
+
+    expect(useChatStore.getState().messageOrder[SESSION]).toEqual(['h-1', 'live-error'])
+    expect(useChatStore.getState().messages[SESSION]!['live-error']!.type).toBe('error')
+  })
+
+  it('does not duplicate messages already present in the history snapshot', () => {
+    resetStore()
+    const store = useChatStore.getState()
+    store.addMessage(SESSION, liveMsg('shared-id', 1500))
+    const history = [liveMsg('shared-id', 100), liveMsg('h-2', 200)]
+
+    useChatStore.getState().mergeHistoryMessages(SESSION, history, 1000)
+
+    expect(useChatStore.getState().messageOrder[SESSION]).toEqual(['shared-id', 'h-2'])
   })
 })

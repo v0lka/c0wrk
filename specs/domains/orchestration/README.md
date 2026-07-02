@@ -139,18 +139,24 @@ HandleMessage(ctx, message, sessionID, opts)
 │     ├─ First message (TaskID == ""):
 │     │     ├─ opts.ExecutionMode == "normal" → Plan(singleStep=true) → 1 step
 │     │     └─ otherwise → Plan(singleStep=false) → full DAG
+│     │     → Plan receives the (compacted) conversation history
 │     │     → Set plan on BB → engine.Resume(ctx, bb)
 │     │
 │     └─ Continuation (TaskID != ""):
 │           ├─ opts.ExecutionMode == "normal" → PlanContinuation(singleStep=true)
 │           └─ otherwise → PlanContinuation(singleStep=false)
+│           → PlanContinuation receives the (compacted) conversation history
 │           → Merge into existing plan → engine.Resume(ctx, bb)
 │
 ├─ 7. SDK engine executes (Plan&Execute loop with retry/replan)
 │
-├─ 8. Persist task completion on BB
+├─ 8. Persist task outcome on BB per typed status (persistTaskOutcome):
+│     success → completed; partial → left in_progress (resumable);
+│     failed/aborted → failed (resumable)
 │
-└─ 9. Return HandleResult
+└─ 9. Return HandleResult (carries Status + FailedSteps).
+      A recordConversationOutcome defer updates conversationHistory for EVERY
+      terminal outcome (success, clarification, plan review, failure, cancel)
 ```
 
 ## Execution Modes
@@ -166,11 +172,21 @@ HandleMessage(ctx, message, sessionID, opts)
 - Routing always produces a valid domain from {"code", "research", "general", "mixed"}
 - Complexity is always in range [1, 5]
 - MaxRetries bounds total attempts at MaxRetries + 1
+- `ExecutionResult.Status` (`sdk/orchestration.ExecutionStatus`) is the typed
+  success contract: success | partial | failed | aborted | cancelled. Callers
+  must consult it instead of parsing Output suffixes; a nil error does NOT
+  imply success (reflector abort and exhausted retries return nil error with
+  Status failed/aborted)
 - Blackboard is created once per first message and restored for continuations
 - Vector search hints are non-blocking (2s timeout, failure is acceptable)
 - Skills are activated task-wide but rendered per-step by StepConfigurator
 - NeedsClarification is suppressed when UserSkills is non-empty (explicit `/skill` invocation implies clear intent)
 - currentRequestCtx and currentRequestSkills are cleared at end of HandleMessage
+- conversationHistory is updated for every terminal outcome of HandleMessage
+  and Resume (see session-lifecycle.md § Conversation History); failure and
+  cancellation record `[Task failed before completion: …]` /
+  `[Task was cancelled before completion]` assistant notes shared with the
+  backend's history restore (core.HistoryNoteFailed / core.HistoryNoteCancelled)
 - isNoProject: routing domain "code" is overridden to "general" after classification
 - SetNoProjectMode(): disables code tools (ripgrep, glob, edit_file, semantic_search) and adds extended bash command blacklist on the core tool registry
 

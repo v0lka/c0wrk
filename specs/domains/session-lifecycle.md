@@ -169,8 +169,8 @@ clarification message instead.
 User clicks "Cancel" on the resume prompt
   → Frontend: CancelUnfinishedTask(sessionId)
   → Backend: FrontendAPI.CancelUnfinishedTask()
-      └─ TaskStoreAdapter.PersistCompletion(taskID, "", 0)
-          (marks the unfinished task as completed; no further resume prompt)
+      └─ TaskStoreAdapter.PersistCancellation(taskID)
+          (marks the unfinished task as cancelled; no further resume prompt)
 ```
 
 ### Task Cancellation
@@ -237,12 +237,31 @@ A separate `PlanReviewStore` interface (in `backend/session/persistence.go`) pro
 
 ### Conversation History
 
-The orchestrator maintains a conversation history window:
+The orchestrator maintains an in-memory conversation history (`conversationHistory`)
+that accumulates one user/assistant pair per exchange, without truncation:
 
-- `MaxHistoryMessages` (default: 20) messages retained
-- Older messages pruned from history (not from persistence)
-- History sent to Router for context-aware classification
-- History NOT sent to executor (executor has its own context window)
+- Updated centrally for EVERY terminal outcome of `HandleMessage` (via a
+  `recordConversationOutcome` defer): success, partial success, clarification,
+  plan review initiation (user message only), failure (`[Task failed before
+  completion: …]` note), and cancellation (`[Task was cancelled before
+  completion]` note). `Orchestrator.Resume` (interrupted-task resume, plan
+  review approval) appends the assistant-side outcome the same way.
+- A failed attempt retried with the same message (continuation fallback)
+  replaces the failed pair instead of duplicating the user message.
+- History sent to Router for context-aware classification (last
+  `router.history_window` messages, default 10).
+- History sent to the planner: `PlanContinuation` and first-message `Plan`
+  both receive the history (compacted to `PlannerHistoryBudgetTokens`).
+- History NOT sent to executor (executor has its own context window).
+
+On lazy session restore (`getOrRestoreSession`), the history is reconstructed
+from the message store via `convertChatMessagesToLLM` to match what the live
+session saw: user rows are re-preprocessed (`@file` → `fileref://`),
+consecutive assistant rows (per-step `assistant_done` + final `task_complete`)
+collapse to the most recent one, and `error`/`task_cancelled` rows become the
+same assistant notes the orchestrator records live. The continuation anchor
+(`lastCompletedTaskID`) is restored from the task store (`GetLatestTaskID`) so
+the next message takes the continuation path after a backend restart.
 
 ### Auto Title Generation
 
@@ -354,7 +373,23 @@ type HandleResult struct {
   planner has not run yet and the just-created task record is closed before
   the orchestrator returns.
 - The Cancel button on the resume prompt is a hard discard: it persists
-  completion on the unfinished task without launching the orchestrator.
+  cancellation on the unfinished task without launching the orchestrator.
+- Every cancellation path (CancelTask, mid-task ctx-cancel, resume-cancel)
+  persists the task status as `cancelled` — never `completed` — so the
+  persisted status always reflects the real outcome.
+- Task outcome persistence follows the typed execution status
+  (`orchestration.ExecutionStatus` → `core.persistTaskOutcome`):
+  `success` → `completed`; `partial` → left `in_progress` (resumable);
+  `failed`/`aborted` → `failed` (resumable); `cancelled` → handled by the
+  session manager's cancellation paths.
+- `task_complete` carries the typed success contract (`success`,
+  `completion`, `failed_steps`). A degraded completion (`success=false`) is
+  always followed by `task_failed_resumable` or a `service` warning — never
+  delivered as a silent visual success (`Manager.emitTaskComplete`).
+- `GetSessionRuntimeStatus(sessionID)` exposes `{active,
+  has_unfinished_task, unfinished_task_id}`; the frontend calls it after
+  every history load to reconcile UI state (running flag, resume banner,
+  stale step_limit prompts) instead of defaulting to idle.
 - Plan review state survives app restart via SQLite persistence in the sessions table
 - Startup recovery queries `GetSessionsInPlanReview()` for all projects and re-emits `plan_review_ready` events
 - Stale plan review state (missing .md file) is cleared on recovery to prevent stuck sessions

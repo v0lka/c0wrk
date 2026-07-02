@@ -1,7 +1,7 @@
 // Tool judge response events: tool_judge_response
 
 import { useEffect, useRef } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isToolJudgeResponseData } from '@/types/events'
 
 interface UseToolJudgeEventsCallbacks {
@@ -25,7 +25,7 @@ export function useToolJudgeEvents(
     if (!confirmId || !sessionId) return
     const unsub = onSessionEvent(sessionId, 'tool_judge_response', (data) => {
       if (!data) return
-      if (!isToolJudgeResponseData(data)) return
+      if (!isToolJudgeResponseData(data)) { reportDroppedEvent('tool_judge_response', data); return }
       if (data.confirm_id !== confirmId) return
       callbacksRef.current.onResponse(data.reasoning ?? null, data.error ?? null)
     })

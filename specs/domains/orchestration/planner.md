@@ -38,7 +38,7 @@ User message + routing decision
                   → Then generates informed plan
 ```
 
-All modes receive full Tree of Thoughts reasoning and structured step descriptions (What/How/Where/Acceptance Criteria). The `planPromptMode` struct parameterizes mode-varying prompt segments with fields `preamble`, `tot`, `guidance`, `extraSections`, `tail`, `jsonExample`, and `maxSteps`:
+All modes receive full Tree of Thoughts reasoning and structured step descriptions (What/How/Where/Acceptance Criteria). All planning entry points (`Plan` and `PlanContinuation`) receive the conversation history: the plan-mode preambles (`planner_plan_preamble.md`, `planner_single_step_preamble.md`) and the continuation preamble substitute it into the `RECENT-CONVERSATION` placeholder, so follow-up requests (including the first message after a backend restart) are planned with dialogue context. The `planPromptMode` struct parameterizes mode-varying prompt segments with fields `preamble`, `tot`, `guidance`, `extraSections`, `tail`, `jsonExample`, and `maxSteps`:
 
 | Mode Config              | maxSteps | ToT variant     | Guidance variant     | Used by                   |
 | ------------------------ | ---------- | --------------- | -------------------- | ------------------------- |

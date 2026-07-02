@@ -198,6 +198,9 @@ type HandleResult struct {
 	// Retry-loop fields (Phase 3)
 	AttemptCount int                    `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
 	Reflections  []orchestration.Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
+	// Typed execution outcome (empty = success for legacy/short-circuit paths).
+	Status      orchestration.ExecutionStatus `json:"status,omitempty"`
+	FailedSteps int                           `json:"failed_steps,omitempty"` // steps that finished with an error in the final attempt
 	// Plan review fields
 	PlanReviewPhase string `json:"plan_review_phase,omitempty"` // non-empty = orchestrator paused in plan review
 	PlanReviewPath  string `json:"plan_review_path,omitempty"`  // path to the .md plan file for review

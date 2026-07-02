@@ -200,6 +200,7 @@ func (o *Orchestrator) runPlanExecute(
 
 	var lastOutput string
 	var stepRetryContext string
+	var lastFailedCount int
 
 	// Retry loop
 	for attempt := 0; attempt <= o.maxRetries; attempt++ {
@@ -211,6 +212,7 @@ func (o *Orchestrator) runPlanExecute(
 				Blackboard:   bb,
 				AttemptCount: attempt,
 				Reflections:  sessionReflections,
+				Status:       ExecutionStatusCancelled,
 			}, ctx.Err()
 		}
 		if attempt > 0 {
@@ -235,6 +237,8 @@ func (o *Orchestrator) runPlanExecute(
 					Blackboard:   bb,
 					AttemptCount: attempt + 1,
 					Reflections:  sessionReflections,
+					Status:       ExecutionStatusCancelled,
+					FailedSteps:  countFailedSteps(completedSteps),
 				}, ctx.Err()
 			}
 			// Check if all steps were executed (some may have failed but all were attempted)
@@ -252,6 +256,8 @@ func (o *Orchestrator) runPlanExecute(
 					Blackboard:   bb,
 					AttemptCount: attempt + 1,
 					Reflections:  sessionReflections,
+					Status:       ExecutionStatusPartial,
+					FailedSteps:  countFailedSteps(completedSteps),
 				}, fmt.Errorf("%w: %w", ErrExecutionIncomplete, execErr)
 			}
 			// All steps executed but some had errors — check if we should retry or reflect
@@ -269,17 +275,14 @@ func (o *Orchestrator) runPlanExecute(
 		}
 
 		// Check for step execution errors
-		var hasStepErrors bool
-		for _, cs := range completedSteps {
-			if cs.Error != nil {
-				hasStepErrors = true
-				break
-			}
-		}
+		failedCount := countFailedSteps(completedSteps)
+		hasStepErrors := failedCount > 0
+		lastFailedCount = failedCount
 
 		// Success - no step errors
 		if !hasStepErrors {
 			o.events.OnServiceMeta("plan execution completed successfully", nil)
+			result.Status = ExecutionStatusSuccess
 			return result, nil
 		}
 
@@ -301,6 +304,8 @@ func (o *Orchestrator) runPlanExecute(
 					bb.AddReflection(*reflection)
 					result.Reflections = sessionReflections
 					result.Output = finalOutput + "\n\n[Execution: some steps failed. Reflector suggests abort.]"
+					result.Status = ExecutionStatusAborted
+					result.FailedSteps = failedCount
 					return result, nil
 				}
 
@@ -371,8 +376,21 @@ func (o *Orchestrator) runPlanExecute(
 		Blackboard:   bb,
 		AttemptCount: o.maxRetries + 1,
 		Reflections:  sessionReflections,
+		Status:       ExecutionStatusFailed,
+		FailedSteps:  lastFailedCount,
 	}
 	return result, nil
+}
+
+// countFailedSteps returns the number of completed steps that finished with an error.
+func countFailedSteps(completedSteps []CompletedStep) int {
+	var n int
+	for _, cs := range completedSteps {
+		if cs.Error != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // executePlanWithSteps runs a DAG plan to completion and returns completed steps.

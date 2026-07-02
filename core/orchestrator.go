@@ -21,6 +21,7 @@ import (
 	"github.com/v0lka/c0wrk/sdk/agent/reflector"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/sdk/planner"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -245,12 +246,16 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 	// plannerAdapter adapts core.*Planner (which now takes an additional
 	// availableSkills parameter) to sdk/orchestration.Planner. For Replan it
 	// reads the router-matched skill pool captured at the top of HandleMessage.
-	plannerAdapter := &plannerSDKAdapter{planner: deps.Planner, skillsFor: func() []skills.SkillDescriptor {
-		if ptr := o.currentRequestSkills.Load(); ptr != nil {
-			return *ptr
-		}
-		return nil
-	}}
+	plannerAdapter := &plannerSDKAdapter{
+		planner: deps.Planner,
+		skillsFor: func() []skills.SkillDescriptor {
+			if ptr := o.currentRequestSkills.Load(); ptr != nil {
+				return *ptr
+			}
+			return nil
+		},
+		historyFor: o.plannerHistory,
+	}
 
 	// taskCtxProvider returns the ctx captured at the top of HandleMessage so
 	// the step configurator can derive a step-local WithActiveSkills ctx.
@@ -354,10 +359,17 @@ func (o *Orchestrator) Cleanup() {
 type plannerSDKAdapter struct {
 	planner   *planner.Planner
 	skillsFor func() []skills.SkillDescriptor
+	// historyFor returns the (compacted) conversation history of the owning
+	// Orchestrator so engine-initiated planning sees the dialogue context.
+	historyFor func() []llm.Message
 }
 
 func (a *plannerSDKAdapter) Plan(ctx context.Context, task string, availableTools []sdktools.ToolDescriptor, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	return a.planner.Plan(ctx, task, filterPlannerPromptTools(availableTools), reflections, a.skillsFor(), false)
+	var history []llm.Message
+	if a.historyFor != nil {
+		history = a.historyFor()
+	}
+	return a.planner.Plan(ctx, task, filterPlannerPromptTools(availableTools), reflections, a.skillsFor(), false, history)
 }
 
 func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan, completed []orchestration.CompletedStep, failedStep orchestration.CompletedStep, reflection *orchestration.Reflection, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
@@ -440,8 +452,16 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
 // and use the returned HandleResult for partial output, plan state, and blackboard.
 // All other errors indicate complete failure; the task is marked failed and nil is returned.
-func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision) (*HandleResult, error) {
+func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision) (result *HandleResult, err error) {
 	o.logDebug("orchestrator: resume started")
+
+	// Record the resumed execution's outcome in the in-memory conversation
+	// history so future routing and continuation planning see this exchange.
+	// The user message that spawned the task was recorded when the task first
+	// ran (or restored from the message store after a restart).
+	defer func() {
+		o.recordResumeOutcome(ctx, bb, result, err)
+	}()
 
 	// Generate RAG hints from vector index using the original request.
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
@@ -472,12 +492,14 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// Delegate to SDK engine
 	o.logDebug("orchestrator: invoking SDK engine for resume", "planSteps", len(plan.Steps))
 	execResult, err := o.engine.Resume(ctx, bb)
+	var incompleteErr error
 	if err != nil {
 		if errors.Is(err, orchestration.ErrExecutionIncomplete) {
 			if execResult == nil {
 				return nil, fmt.Errorf("orchestrator: ErrExecutionIncomplete with nil result: %w", err)
 			}
 			o.logDebug("orchestrator: SDK engine resume reported incomplete execution", "error", err)
+			incompleteErr = err
 		} else {
 			o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
 			if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -488,22 +510,27 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	}
 	o.logDebug("orchestrator: SDK engine resume completed", "attemptCount", execResult.AttemptCount)
 
-	result := &HandleResult{
+	result = &HandleResult{
 		Output:          execResult.Output,
 		RoutingDecision: routing,
 		Plan:            execResult.Plan,
 		Blackboard:      execResult.Blackboard,
 		AttemptCount:    execResult.AttemptCount,
 		Reflections:     execResult.Reflections,
+		Status:          execResult.Status,
+		FailedSteps:     execResult.FailedSteps,
 	}
 
-	// Persist task completion if using persistent blackboard.
+	// Persist the task outcome according to the typed execution status.
+	// Partial executions stay resumable; see persistTaskOutcome.
 	if pbb, ok := bb.(PersistableBlackboard); ok {
-		pbb.CompleteTask(execResult.AttemptCount)
+		persistTaskOutcome(pbb, execResult)
 	}
 
 	o.logDebug("orchestrator: resume completed", "attemptCount", result.AttemptCount)
-	return result, nil
+	// Propagate ErrExecutionIncomplete alongside the best-effort result, as
+	// documented: callers must errors.Is-check and still use the result.
+	return result, incompleteErr
 }
 
 // lastReasoningContent extracts the last non-empty reasoning content from the
@@ -745,6 +772,115 @@ func (o *Orchestrator) ConversationHistory() []llm.Message {
 	return o.conversationHistory
 }
 
+// plannerHistory returns the conversation history prepared for planner
+// prompts: compacted to the configured token budget when necessary.
+// The in-memory conversationHistory is never modified; only the planner
+// sees the compacted version.
+func (o *Orchestrator) plannerHistory() []llm.Message {
+	history := o.conversationHistory
+	if o.config.PlannerHistoryBudgetTokens > 0 && o.tokenCounter != nil && len(history) > 0 {
+		compacted, err := sdkmemory.CompactConversationHistory(history, o.config.PlannerHistoryBudgetTokens, o.tokenCounter, o.config.PlannerHistoryKeepRecentRatio)
+		if err != nil {
+			o.logDebug("orchestrator: conversation history compaction failed, using raw history", "error", err)
+			return history
+		}
+		return compacted
+	}
+	return history
+}
+
+// HistoryNoteCancelled is the assistant-side conversation-history note
+// recorded when a task is cancelled before completion. The backend uses the
+// same note when reconstructing history from the message store so live and
+// restored histories stay identical.
+const HistoryNoteCancelled = "[Task was cancelled before completion]"
+
+// historyNoteFailedPrefix is the prefix of failure notes produced by
+// HistoryNoteFailed; used to recognize a previously recorded failed attempt.
+const historyNoteFailedPrefix = "[Task failed before completion: "
+
+// HistoryNoteFailed formats the assistant-side conversation-history note
+// recorded when a task fails before completion. Shared with the backend's
+// history reconstruction (see HistoryNoteCancelled).
+func HistoryNoteFailed(errText string) string {
+	return historyNoteFailedPrefix + errText + "]"
+}
+
+// recordConversationOutcome appends the current exchange to the in-memory
+// conversation history. It is invoked (via defer) for EVERY terminal outcome
+// of HandleMessage — success, partial success, clarification, plan review,
+// failure, and cancellation — so the router and continuation planner always
+// see the full dialogue, not just successful exchanges.
+func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message string, result *HandleResult, err error) {
+	userMsg := llm.Message{Role: "user", Content: message}
+
+	// Continuation fallback: the session manager retries a failed
+	// continuation as a fresh workflow with the same message. If the last
+	// recorded exchange is a failed attempt of this exact message, replace
+	// it with the retry's outcome instead of duplicating the user message.
+	// This also matches how the persisted store reads after a restart
+	// (consecutive assistant entries collapse to the most recent one).
+	if n := len(o.conversationHistory); n >= 2 {
+		prev, last := o.conversationHistory[n-2], o.conversationHistory[n-1]
+		if prev.Role == "user" && prev.Content == message &&
+			last.Role == "assistant" && strings.HasPrefix(last.Content, historyNoteFailedPrefix) {
+			o.conversationHistory = o.conversationHistory[:n-2]
+		}
+	}
+
+	switch {
+	case err == nil || errors.Is(err, orchestration.ErrExecutionIncomplete):
+		if result == nil {
+			// Defensive: no output to record; keep the user message so
+			// future routing/planning still sees the request.
+			o.conversationHistory = append(o.conversationHistory, userMsg)
+			return
+		}
+		if result.PlanReviewPhase != "" {
+			// Plan review: the exchange is not complete yet. Record the
+			// user message now; the assistant output is recorded by Resume
+			// once the approved plan finishes executing.
+			o.conversationHistory = append(o.conversationHistory, userMsg)
+			return
+		}
+		var reasoning string
+		if result.Blackboard != nil {
+			reasoning = lastReasoningContent(result.Blackboard)
+		}
+		o.conversationHistory = append(o.conversationHistory, userMsg,
+			llm.Message{Role: "assistant", Content: result.Output, ReasoningContent: reasoning})
+	case ctx.Err() != nil:
+		// Cancellation (or deadline): the manager persists a task_cancelled
+		// event; mirror it in the in-memory history.
+		o.conversationHistory = append(o.conversationHistory, userMsg,
+			llm.Message{Role: "assistant", Content: HistoryNoteCancelled})
+	default:
+		// Hard failure: the manager persists an error event; mirror it so
+		// the rejected request stays visible to future routing/planning.
+		o.conversationHistory = append(o.conversationHistory, userMsg,
+			llm.Message{Role: "assistant", Content: HistoryNoteFailed(err.Error())})
+	}
+}
+
+// recordResumeOutcome appends the outcome of a resumed execution (interrupted
+// task or approved plan review) to the in-memory conversation history. The
+// user message that spawned the task was recorded when the task first ran (or
+// restored from the message store after a restart), so only the assistant
+// side is appended here.
+func (o *Orchestrator) recordResumeOutcome(ctx context.Context, bb orchestration.Blackboard, result *HandleResult, err error) {
+	switch {
+	case (err == nil || errors.Is(err, orchestration.ErrExecutionIncomplete)) && result != nil:
+		o.conversationHistory = append(o.conversationHistory,
+			llm.Message{Role: "assistant", Content: result.Output, ReasoningContent: lastReasoningContent(bb)})
+	case ctx.Err() != nil:
+		o.conversationHistory = append(o.conversationHistory,
+			llm.Message{Role: "assistant", Content: HistoryNoteCancelled})
+	case err != nil:
+		o.conversationHistory = append(o.conversationHistory,
+			llm.Message{Role: "assistant", Content: HistoryNoteFailed(err.Error())})
+	}
+}
+
 // SetBlackboardRestoreFunc sets the function used to restore a PersistableBlackboard from persistence.
 func (o *Orchestrator) SetBlackboardRestoreFunc(fn BlackboardRestoreFunc) {
 	o.bbRestoreFunc = fn
@@ -756,12 +892,21 @@ func (o *Orchestrator) SetBlackboardRestoreFunc(fn BlackboardRestoreFunc) {
 // For continuations (TaskID != ""), the P&E continuation path is used.
 //   - TaskID="": First message (create new blackboard)
 //   - TaskID!="": Continuation (restore existing blackboard)
-func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID string, opts HandleOptions) (*HandleResult, error) {
+func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID string, opts HandleOptions) (result *HandleResult, err error) {
 	// W-8: Enforce single-flight — only one HandleMessage per *Orchestrator.
 	if !o.requestInFlight.CompareAndSwap(false, true) {
 		return nil, ErrRequestInFlight
 	}
 	defer o.requestInFlight.Store(false)
+
+	// Record the exchange in the in-memory conversation history for EVERY
+	// terminal outcome (success, clarification, plan review, failure,
+	// cancellation) so future routing and continuation planning always see
+	// the full dialogue. Registered after the single-flight guard so a
+	// rejected concurrent request is not recorded.
+	defer func() {
+		o.recordConversationOutcome(ctx, message, result, err)
+	}()
 
 	// 0. Apply per-request overrides to all LLM-calling components.
 	o.SetReasoningEffort(opts.ReasoningEffort)
@@ -857,8 +1002,9 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		execResult = &orchestration.ExecutionResult{}
 	}
 
-	// 6. Finalize: persist routing, build result, update history.
-	result := o.finalizeResult(bb, routing, execResult, message)
+	// 6. Finalize: persist routing and build result. The conversation
+	// history is updated by the recordConversationOutcome defer above.
+	result = o.finalizeResult(bb, routing, execResult)
 
 	if incompleteErr != nil {
 		return result, incompleteErr

@@ -1,7 +1,7 @@
 // Terminal output events: terminal_output
 
 import { useEffect, useRef } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isTerminalOutputData } from '@/types/events'
 
 interface UseTerminalEventsOptions {
@@ -24,7 +24,7 @@ export function useTerminalEvents({ sessionId, onOutput }: UseTerminalEventsOpti
     if (!sessionId) return
     const unsub = onSessionEvent(sessionId, 'terminal_output', (data) => {
       if (!data) return
-      if (!isTerminalOutputData(data)) return
+      if (!isTerminalOutputData(data)) { reportDroppedEvent('terminal_output', data); return }
       const decoded = atob(data.data)
       const bytes = new Uint8Array(decoded.length)
       for (let i = 0; i < decoded.length; i++) {

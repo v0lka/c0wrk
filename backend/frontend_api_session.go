@@ -211,6 +211,17 @@ func (f *FrontendAPI) CancelUnfinishedTask(id string) error {
 	return f.app.Manager().CancelUnfinishedTask(id)
 }
 
+// GetSessionRuntimeStatus returns whether a task is currently running in the
+// session and whether the session has an unfinished (resumable) task persisted
+// in the task store. The frontend calls this after loading history so the UI
+// reflects real execution state instead of defaulting to "idle/completed".
+func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntimeStatus, error) {
+	if f.app == nil || f.app.Manager() == nil {
+		return session.SessionRuntimeStatus{}, errors.New("session manager not initialized")
+	}
+	return f.app.Manager().GetSessionRuntimeStatus(id)
+}
+
 // GetSessionHistory returns chat history for a session.
 func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	if f.store != nil {

@@ -2,7 +2,7 @@
 // service, finishing, session_renamed
 
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import {
   isRoutingData, isStepData, isRetryData, isStepRetryData,
   isServiceData, isSessionRenamedData, isSkillsActivatedData,
@@ -24,7 +24,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- routing ---
     cleanups.push(
       onSessionEvent(sessionId, 'routing', (data) => {
-        if (!isRoutingData(data)) return
+        if (!isRoutingData(data)) { reportDroppedEvent('routing', data); return }
         useChatStore.getState().setActivityStatus('Analyzing request...')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
@@ -43,7 +43,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- step_start ---
     cleanups.push(
       onSessionEvent(sessionId, 'step_start', (data) => {
-        if (!isStepData(data)) return
+        if (!isStepData(data)) { reportDroppedEvent('step_start', data); return }
         useChatStore.getState().setActivityStatus('Thinking...')
         const id = generateMessageId()
         stepIdMap.set(data.step_num, id)
@@ -60,7 +60,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- step_complete ---
     cleanups.push(
       onSessionEvent(sessionId, 'step_complete', (data) => {
-        if (!isStepData(data)) return
+        if (!isStepData(data)) { reportDroppedEvent('step_complete', data); return }
         const msgId = stepIdMap.get(data.step_num)
         if (msgId) {
           useChatStore.getState().updateMessage(sessionId, msgId, {
@@ -74,7 +74,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- retry ---
     cleanups.push(
       onSessionEvent(sessionId, 'retry', (data) => {
-        if (!isRetryData(data)) return
+        if (!isRetryData(data)) { reportDroppedEvent('retry', data); return }
         useChatStore.getState().setActivityStatus(`Retrying (attempt ${data.attempt}/${data.max_attempts})...`)
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
@@ -94,7 +94,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- step_retry ---
     cleanups.push(
       onSessionEvent(sessionId, 'step_retry', (data) => {
-        if (!isStepRetryData(data)) return
+        if (!isStepRetryData(data)) { reportDroppedEvent('step_retry', data); return }
         useChatStore.getState().setActivityStatus(`Retrying step ${data.attempt}/${data.max_attempts}...`)
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
@@ -110,7 +110,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- service ---
     cleanups.push(
       onSessionEvent(sessionId, 'service', (data) => {
-        if (!isServiceData(data)) return
+        if (!isServiceData(data)) { reportDroppedEvent('service', data); return }
         if (data.content) {
           useChatStore.getState().setActivityStatus(data.content)
         }
@@ -136,7 +136,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- session_renamed ---
     cleanups.push(
       onSessionEvent(sessionId, 'session_renamed', (data) => {
-        if (!isSessionRenamedData(data)) return
+        if (!isSessionRenamedData(data)) { reportDroppedEvent('session_renamed', data); return }
         useSessionStore.getState().updateSession(sessionId, { name: data.new_name })
       }),
     )
@@ -144,7 +144,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- skills_activated ---
     cleanups.push(
       onSessionEvent(sessionId, 'skills_activated', (data) => {
-        if (!isSkillsActivatedData(data)) return
+        if (!isSkillsActivatedData(data)) { reportDroppedEvent('skills_activated', data); return }
         const skillList = data.skills.join(', ')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),

@@ -3,7 +3,8 @@ import { useChatStore, useSessionMessages } from '@/stores/chatStore'
 import { groupMessages, chatMessageToUI, rebuildPlanFromHistory } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore } from '@/stores/planStore'
-import { getSessionHistory } from '@/api/chat'
+import { getSessionHistory, getSessionRuntimeStatus } from '@/api/chat'
+import { reconcileRuntimeStatus } from '@/lib/sessionRuntime'
 import { useLatestAsync } from '@/hooks/useLatestAsync'
 import { generateMessageId } from '@/lib/ids'
 import { UserMessage } from './UserMessage'
@@ -54,13 +55,21 @@ export function ChatArea() {
       return
     }
     usePlanStore.getState().clearPlan()
-    wrap(getSessionHistory(activeSessionId)).then((history) => {
+    const loadStartedAt = Date.now()
+    wrap(getSessionHistory(activeSessionId)).then(async (history) => {
       if (!history) return // stale — superseded by a newer session switch
       if (history.length > 0) {
         const uiMessages = history.map((msg) => chatMessageToUI(msg))
-        useChatStore.getState().setMessages(activeSessionId, uiMessages)
+        // Merge (not replace) so live events delivered while the RPC was in
+        // flight — e.g. a terminal `error` — are not clobbered.
+        useChatStore.getState().mergeHistoryMessages(activeSessionId, uiMessages, loadStartedAt)
         rebuildPlanFromHistory(uiMessages, usePlanStore.getState())
       }
+      // Reconcile visual state with the backend runtime status: restores the
+      // running flag after reload and surfaces unfinished (resumable) tasks
+      // instead of defaulting to "idle/completed".
+      const status = await wrap(getSessionRuntimeStatus(activeSessionId))
+      if (status) reconcileRuntimeStatus(activeSessionId, status)
     }).catch((err) => {
       logger.error('Failed to load session history:', err)
       useChatStore.getState().addMessage(activeSessionId, {

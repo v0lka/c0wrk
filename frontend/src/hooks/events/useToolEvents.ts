@@ -1,7 +1,7 @@
 // Tool events: tool_call, tool_result, tool_confirm, tool_judge_response
 
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isToolCallData, isToolResultData, isToolConfirmData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 
@@ -24,7 +24,7 @@ export function useToolEvents(sessionId: string | null): void {
     // --- tool_call ---
     cleanups.push(
       onSessionEvent(sessionId, 'tool_call', (data) => {
-        if (!isToolCallData(data)) return
+        if (!isToolCallData(data)) { reportDroppedEvent('tool_call', data); return }
         const isMemoryTool = ['read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts'].includes(data.tool)
         const activityLabel = isMemoryTool
           ? 'Using memory...'
@@ -51,7 +51,7 @@ export function useToolEvents(sessionId: string | null): void {
     // --- tool_result ---
     cleanups.push(
       onSessionEvent(sessionId, 'tool_result', (data) => {
-        if (!isToolResultData(data)) return
+        if (!isToolResultData(data)) { reportDroppedEvent('tool_result', data); return }
         const toolMsgId = buildToolMsgId(data)
         const store = useChatStore.getState()
         const sessionIndex = store.messages[sessionId]
@@ -63,6 +63,9 @@ export function useToolEvents(sessionId: string | null): void {
           result_preview: data.result_preview, result_len: data.result_len,
           plan_step_id: data.plan_step_id, call_idx: data.call_idx,
           retry_attempt: data.retry_attempt, tool_call_id: data.tool_call_id,
+          // Preserve the backend error flag so failed tool calls render as
+          // errors in the live view, matching the reloaded-history view.
+          error: data.error === true,
         }
 
         if (exists) {
@@ -83,7 +86,7 @@ export function useToolEvents(sessionId: string | null): void {
     // --- tool_confirm ---
     cleanups.push(
       onSessionEvent(sessionId, 'tool_confirm', (data) => {
-        if (!isToolConfirmData(data)) return
+        if (!isToolConfirmData(data)) { reportDroppedEvent('tool_confirm', data); return }
         const store = useChatStore.getState()
         const msgs = selectSessionMessages(store, sessionId)
 

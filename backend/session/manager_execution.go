@@ -228,14 +228,15 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 		}
 
 		// Distinguish partial-success (incomplete plan) from total failure: the
-		// SDK now wraps partial executions in ErrExecutionIncomplete and returns
-		// a non-nil result. Treat that as a successful-with-warning task so the
-		// best-effort output is delivered and the user can resume via the
-		// resumable-task safety net.
+		// SDK wraps partial executions in ErrExecutionIncomplete and returns a
+		// non-nil result. Deliver the best-effort output via task_complete, but
+		// NOT as a silent success — result.Status carries the typed outcome, so
+		// emitTaskComplete marks the event success=false/completion="partial"
+		// and guarantees a resumable action or a fallback warning.
 		incomplete := err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil
 		if incomplete {
 			m.log().Warn("task completed with incomplete execution", "session_id", id, "task_id", lastTaskID, "error", err)
-			err = nil // fall through to the success path below; emitResumableIfUnfinished will surface resumability
+			err = nil // fall through to the completion path below; the typed status keeps the degradation visible
 		}
 
 		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh
@@ -269,18 +270,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 						SessionID: id,
 					},
 				})
-				// Mark any in-progress task as completed so it's not left resumable.
-				m.mu.RLock()
-				ts := m.taskStore
-				m.mu.RUnlock()
-				if ts != nil {
-					adapter := NewTaskStoreAdapter(ts)
-					if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
-						if pErr := adapter.PersistCompletion(tid, "", 0); pErr != nil {
-							m.log().Warn("failed to persist completion on session done", "task", tid, "error", pErr)
-						}
-					}
-				}
+				// Mark any in-progress task as cancelled so it's not left
+				// resumable and the persisted status reflects reality.
+				m.persistCancellationIfUnfinished(id)
 				return
 			}
 
@@ -314,34 +306,13 @@ func (m *Manager) SendMessage(ctx context.Context, id, text, mode string, active
 					SessionID: id,
 				},
 			})
-			m.mu.RLock()
-			ts := m.taskStore
-			m.mu.RUnlock()
-			if ts != nil {
-				adapter := NewTaskStoreAdapter(ts)
-				if tid, tErr := adapter.GetUnfinishedTaskID(id); tErr == nil && tid != "" {
-					if pErr := adapter.PersistCompletion(tid, "", 0); pErr != nil {
-						m.log().Warn("failed to persist completion on cancel safety-net", "task", tid, "error", pErr)
-					}
-				}
-			}
+			m.persistCancellationIfUnfinished(id)
 			return
 		}
 
-		// Emit done event with result
-		m.emitFunc(Event{
-			SessionID: id,
-			Type:      "task_complete",
-			Data: TaskCompleteData{
-				SessionID:       id,
-				Output:          result.Output,
-				RoutingDecision: result.RoutingDecision,
-				Plan:            result.Plan,
-				AttemptCount:    result.AttemptCount,
-				Reflections:     result.Reflections,
-			},
-		})
-		m.emitResumableIfUnfinished(id)
+		// Emit done event with result (carries the typed success contract;
+		// degraded outcomes surface a resumable action or a fallback warning).
+		m.emitTaskComplete(id, result, nil)
 	}(taskCtx, text, activeSkills)
 
 	return nil
@@ -463,8 +434,9 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 						SessionID: id,
 					},
 				})
-				// Mark the restored task as completed so it's not left resumable.
-				bb.CompleteTask(0)
+				// Mark the restored task as cancelled so it's not left
+				// resumable and the persisted status reflects reality.
+				bb.CancelTask()
 				return
 			}
 
@@ -487,19 +459,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 			session.mu.Unlock()
 		}
 
-		m.emitFunc(Event{
-			SessionID: id,
-			Type:      "task_complete",
-			Data: TaskCompleteData{
-				SessionID:       id,
-				Output:          result.Output,
-				RoutingDecision: result.RoutingDecision,
-				Plan:            result.Plan,
-				AttemptCount:    result.AttemptCount,
-				Reflections:     result.Reflections,
-			},
-		})
-		m.emitResumableIfUnfinished(id)
+		m.emitTaskComplete(id, result, nil)
 	}()
 
 	return nil
@@ -696,12 +656,7 @@ func (m *Manager) ApprovePlan(ctx context.Context, sessionID, planPath string) e
 			}
 		}
 
-		output := ""
-		if result != nil {
-			output = result.Output
-		}
-		m.emitFunc(Event{SessionID: sessionID, Type: "task_complete", Data: TaskCompleteData{SessionID: sessionID, Output: output, Plan: mergedPlan}})
-		m.emitResumableIfUnfinished(sessionID)
+		m.emitTaskComplete(sessionID, result, mergedPlan)
 	}()
 
 	return nil
@@ -945,7 +900,7 @@ func (m *Manager) handleReplanWithFeedback(ctx context.Context, session *Session
 }
 
 // CancelUnfinishedTask discards any unfinished task in the given session by
-// marking it as completed in the task store. After this returns successfully,
+// marking it as cancelled in the task store. After this returns successfully,
 // the session no longer has a resumable task and emitResumableIfUnfinished
 // will not emit a "task_failed_resumable" event for it.
 // Returns nil if no task store is configured or no unfinished task exists.
@@ -965,30 +920,99 @@ func (m *Manager) CancelUnfinishedTask(sessionID string) error {
 	if taskID == "" {
 		return nil
 	}
-	if err := adapter.PersistCompletion(taskID, "", 0); err != nil {
-		return fmt.Errorf("failed to mark task as completed: %w", err)
+	if err := adapter.PersistCancellation(taskID); err != nil {
+		return fmt.Errorf("failed to mark task as cancelled: %w", err)
 	}
 	return nil
 }
 
-// emitResumableIfUnfinished checks whether the session has an unfinished task
-// in the task store and, if so, emits a "task_failed_resumable" event so the
-// frontend can offer a Resume button.
-func (m *Manager) emitResumableIfUnfinished(sessionID string) {
+// SessionRuntimeStatus describes the live and persisted execution state of a
+// session, so the frontend can reconstruct "is something running / resumable"
+// after app restart or session switch instead of assuming idle.
+type SessionRuntimeStatus struct {
+	Active            bool   `json:"active"`
+	HasUnfinishedTask bool   `json:"has_unfinished_task"`
+	UnfinishedTaskID  string `json:"unfinished_task_id,omitempty"`
+}
+
+// GetSessionRuntimeStatus returns whether a task is currently running in the
+// session (in-memory) and whether an unfinished (resumable) task is persisted
+// in the task store. It never restores a session as a side effect.
+func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatus, error) {
+	var status SessionRuntimeStatus
+
+	// Memory-only lookup: a session that is not in memory cannot be active,
+	// and restoring it here would be an unwanted side effect for a status poll.
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if sess != nil {
+		status.Active = sess.IsActive()
+	}
+
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts != nil {
+		adapter := NewTaskStoreAdapter(ts)
+		taskID, err := adapter.GetUnfinishedTaskID(sessionID)
+		if err != nil {
+			return status, fmt.Errorf("failed to look up unfinished task: %w", err)
+		}
+		if taskID != "" {
+			status.HasUnfinishedTask = true
+			status.UnfinishedTaskID = taskID
+		}
+	}
+
+	return status, nil
+}
+
+// persistCancellationIfUnfinished marks the session's unfinished task (if any)
+// as cancelled in the task store. Best-effort: errors are logged only.
+func (m *Manager) persistCancellationIfUnfinished(sessionID string) {
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
 	if ts == nil {
 		return
 	}
+	adapter := NewTaskStoreAdapter(ts)
+	tid, err := adapter.GetUnfinishedTaskID(sessionID)
+	if err != nil {
+		m.log().Warn("failed to look up unfinished task on cancel", "session", sessionID, "error", err)
+		return
+	}
+	if tid == "" {
+		return
+	}
+	if err := adapter.PersistCancellation(tid); err != nil {
+		m.log().Warn("failed to persist cancellation", "task", tid, "error", err)
+	}
+}
+
+// emitResumableIfUnfinished checks whether the session has an unfinished task
+// in the task store and, if so, emits a "task_failed_resumable" event so the
+// frontend can offer a Resume button. It returns true when the event was
+// emitted, so callers that KNOW the execution was degraded can surface a
+// fallback warning when the resumable safety net is unavailable (nil task
+// store, lookup error, or no unfinished record).
+func (m *Manager) emitResumableIfUnfinished(sessionID string) bool {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return false
+	}
 
 	adapter := NewTaskStoreAdapter(ts)
 	taskID, err := adapter.GetUnfinishedTaskID(sessionID)
 	if err != nil {
 		m.log().Warn("failed to get unfinished task ID", "session", sessionID, "error", err)
+		return false
 	}
 	if taskID == "" {
-		return
+		return false
 	}
 
 	m.emitFunc(Event{
@@ -998,6 +1022,64 @@ func (m *Manager) emitResumableIfUnfinished(sessionID string) {
 			Message: "Plan execution failed. You can resume to retry from where it left off.",
 		},
 	})
+	return true
+}
+
+// taskCompletionInfo derives the frontend-facing success contract from the
+// typed execution status on a HandleResult.
+func taskCompletionInfo(result *core.HandleResult) (success bool, completion string, failedSteps int) {
+	if result == nil {
+		return true, "full", 0
+	}
+	switch result.Status {
+	case orchestration.ExecutionStatusPartial:
+		return false, "partial", result.FailedSteps
+	case orchestration.ExecutionStatusFailed:
+		return false, "failed", result.FailedSteps
+	case orchestration.ExecutionStatusAborted:
+		return false, "aborted", result.FailedSteps
+	default:
+		return true, "full", result.FailedSteps
+	}
+}
+
+// emitTaskComplete emits the "task_complete" event with the typed success
+// contract and guarantees the degraded-outcome surfacing: for non-successful
+// completions it either emits "task_failed_resumable" or, when the resumable
+// safety net cannot deliver (no task store, lookup failure, no unfinished
+// record), a visible service warning — never a silent visual success.
+func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, plan *orchestration.Plan) {
+	success, completion, failedSteps := taskCompletionInfo(result)
+	data := TaskCompleteData{
+		SessionID:   sessionID,
+		Success:     success,
+		Completion:  completion,
+		FailedSteps: failedSteps,
+	}
+	if result != nil {
+		data.Output = result.Output
+		data.RoutingDecision = result.RoutingDecision
+		data.Plan = result.Plan
+		data.AttemptCount = result.AttemptCount
+		data.Reflections = result.Reflections
+	}
+	if plan != nil {
+		data.Plan = plan
+	}
+	m.emitFunc(Event{SessionID: sessionID, Type: "task_complete", Data: data})
+
+	resumableEmitted := m.emitResumableIfUnfinished(sessionID)
+	if !success && !resumableEmitted {
+		m.log().Warn("degraded task completion without resumable safety net", "session", sessionID, "completion", completion)
+		m.emitFunc(Event{
+			SessionID: sessionID,
+			Type:      "service",
+			Data: map[string]any{
+				"content": fmt.Sprintf("Task finished with %s execution, but it cannot be resumed. Review the output above.", completion),
+				"phase":   "orchestration",
+			},
+		})
+	}
 }
 
 // CancelTask cancels the currently running task in a session.

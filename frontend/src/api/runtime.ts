@@ -1,6 +1,16 @@
 // Wails runtime wrapper — single access point for window.go and window.runtime
 
 import type { GlobalEventKey, GlobalEventMap, SessionEventKey, SessionEventMap } from '@/types/events'
+import { logger } from '@/lib/logger'
+
+/**
+ * Report a session event whose payload failed its type guard and was dropped.
+ * Malformed events must never disappear silently — a dropped `error` or
+ * `task_complete` leaves the UI in a state that no longer matches the backend.
+ */
+export function reportDroppedEvent(event: string, data: unknown): void {
+  logger.warn(`[events] dropped malformed session event "${event}"`, data)
+}
 
 // Extend Window to include Wails runtime bindings
 declare global {

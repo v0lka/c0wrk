@@ -69,13 +69,35 @@ type Reflection struct {
 	Timestamp       time.Time `json:"timestamp"`
 }
 
+// ExecutionStatus classifies the terminal outcome of a plan execution.
+// It is the typed success contract: callers must consult Status instead of
+// parsing Output suffixes to distinguish full success from degraded outcomes.
+type ExecutionStatus string
+
+const (
+	// ExecutionStatusSuccess — all plan steps completed without errors.
+	ExecutionStatusSuccess ExecutionStatus = "success"
+	// ExecutionStatusPartial — some steps were never attempted (execution
+	// incomplete); accompanies ErrExecutionIncomplete.
+	ExecutionStatusPartial ExecutionStatus = "partial"
+	// ExecutionStatusFailed — all steps were attempted, some failed, and the
+	// retry budget is exhausted.
+	ExecutionStatusFailed ExecutionStatus = "failed"
+	// ExecutionStatusAborted — the reflector recommended aborting after step failures.
+	ExecutionStatusAborted ExecutionStatus = "aborted"
+	// ExecutionStatusCancelled — the context was cancelled mid-execution.
+	ExecutionStatusCancelled ExecutionStatus = "cancelled"
+)
+
 // ExecutionResult is the output of Orchestrator.Execute.
 type ExecutionResult struct {
-	Output       string       `json:"output"`
-	Plan         *Plan        `json:"plan,omitempty"`
-	Blackboard   Blackboard   `json:"-"`
-	AttemptCount int          `json:"attempt_count,omitempty"`
-	Reflections  []Reflection `json:"reflections,omitempty"`
+	Output       string          `json:"output"`
+	Plan         *Plan           `json:"plan,omitempty"`
+	Blackboard   Blackboard      `json:"-"`
+	AttemptCount int             `json:"attempt_count,omitempty"`
+	Reflections  []Reflection    `json:"reflections,omitempty"`
+	Status       ExecutionStatus `json:"status,omitempty"`
+	FailedSteps  int             `json:"failed_steps,omitempty"` // steps that finished with an error in the final attempt
 }
 
 // PlanStepEvent represents a step in a plan for event emission.

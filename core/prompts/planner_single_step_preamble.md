@@ -6,4 +6,10 @@ The step must be executable by a single agent with access to tools. Do NOT decom
 
 The step must be bounded so a single executor can complete it within its context window. If the task is broad, the step's How section should outline a phased approach that the executor can follow sequentially.
 
+## Recent conversation
+
+Prior dialogue with the user. Use it to resolve references in the task (e.g. "it", "the same file", "try again"):
+
+RECENT-CONVERSATION
+
 Limit plans to MAX-STEPS steps maximum.

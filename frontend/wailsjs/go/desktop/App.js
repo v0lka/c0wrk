@@ -102,6 +102,10 @@ export function GetSessionHistory(arg1) {
   return window['go']['desktop']['App']['GetSessionHistory'](arg1);
 }
 
+export function GetSessionRuntimeStatus(arg1) {
+  return window['go']['desktop']['App']['GetSessionRuntimeStatus'](arg1);
+}
+
 export function GetSessionTokens(arg1) {
   return window['go']['desktop']['App']['GetSessionTokens'](arg1);
 }

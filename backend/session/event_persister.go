@@ -147,7 +147,11 @@ func (p *EventPersister) Persist(evt Event) {
 		role = "status"
 	case "step_todo_update":
 		role = "step_todo_update"
-	case "session_tokens":
+	case "session_tokens",
+		"assistant_chunk", "context_fill", "context_compaction", "finishing",
+		"memory_read", "message_received", "blackboard_updated",
+		"tool_judge_response", "session_created", "session_deleted",
+		"session_renamed":
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"
@@ -179,7 +183,10 @@ func (p *EventPersister) Persist(evt Event) {
 			evt.Data = map[string]any{"resolved": true, "decision": "rejected"}
 		}
 	default:
-		return // unknown transient events — skip
+		// Unknown event types are dropped from history. Log so schema drift
+		// between emitters and the persister is visible instead of silent.
+		p.log().Warn("skipping unknown event type in persister", "type", evt.Type, "session", evt.SessionID)
+		return
 	}
 
 	if role == "" {

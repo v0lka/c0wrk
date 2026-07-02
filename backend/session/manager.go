@@ -434,6 +434,22 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 	}
 
+	// Restore the continuation anchor from the task store so the next user
+	// message continues the previous task via PlanContinuation (which receives
+	// the conversation history) instead of planning from scratch. Mirrors the
+	// in-memory behavior where lastCompletedTaskID survives between messages.
+	var restoredTaskID string
+	if ts != nil {
+		latestTaskID, taskErr := ts.GetLatestTaskID(context.Background(), id)
+		switch {
+		case taskErr != nil:
+			m.log().Warn("failed to restore last task ID for session", "session_id", id, "error", taskErr)
+		case latestTaskID != "":
+			restoredTaskID = latestTaskID
+			m.log().Debug("restored last task ID from store", "session_id", id, "task_id", latestTaskID)
+		}
+	}
+
 	// Parse creation time from stored info.
 	createdAt, parseErr := time.Parse(time.RFC3339, info.CreatedAt)
 	if parseErr != nil {
@@ -447,17 +463,18 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	}
 
 	sess := &Session{
-		ID:            id,
-		ProjectID:     info.ProjectID,
-		Name:          info.Name,
-		CreatedAt:     createdAt,
-		Archived:      info.Archived,
-		WorkspacePath: workspacePath,
-		TempDir:       tempDir,
-		orchestrator:  orchestrator,
-		logFile:       logFile,
-		dumpFile:      dumpFile,
-		active:        false,
+		ID:                  id,
+		ProjectID:           info.ProjectID,
+		Name:                info.Name,
+		CreatedAt:           createdAt,
+		Archived:            info.Archived,
+		WorkspacePath:       workspacePath,
+		TempDir:             tempDir,
+		orchestrator:        orchestrator,
+		logFile:             logFile,
+		dumpFile:            dumpFile,
+		active:              false,
+		lastCompletedTaskID: restoredTaskID,
 	}
 
 	// Restore plan review state from persistence.
@@ -1092,15 +1109,39 @@ func (m *Manager) Shutdown() {
 }
 
 // convertChatMessagesToLLM converts stored ChatMessages to llm.Message format,
-// filtering to only "user" and "assistant" roles which form the conversation history
-// used by the router and planner. Non-conversational roles (system, tool, etc.) are
-// skipped with a warning log.
+// reconstructing the conversation history exactly as the router and planner
+// saw it during the live session:
+//
+//   - "user" rows keep only user/assistant conversational content; the raw
+//     text is normalized with the same preprocessing the orchestrator applied
+//     live (@file → fileref:// URIs).
+//   - Consecutive "assistant" rows are collapsed to the most recent one: the
+//     store records every intermediate step output (assistant_done) plus the
+//     final task output (task_complete), while the live history keeps only
+//     the final output per exchange.
+//   - "error" and "task_cancelled" rows are converted to the same assistant
+//     notes that recordConversationOutcome appends live, so failed and
+//     cancelled exchanges survive a restart identically.
+//
+// Other roles (tool calls, thoughts, status, etc.) are non-conversational and
+// skipped.
 func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage) []llm.Message {
 	result := make([]llm.Message, 0, len(msgs))
+	appendAssistant := func(lm llm.Message) {
+		if len(result) > 0 && result[len(result)-1].Role == "assistant" {
+			result[len(result)-1] = lm
+			return
+		}
+		result = append(result, lm)
+	}
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "user":
-			result = append(result, llm.Message{Role: "user", Content: msg.Content})
+			// The store keeps the raw text (with /skill and @file markers)
+			// for display; the live history stored the preprocessed form.
+			// Skill names are unknown at restore time, so only the @file
+			// normalization is applied.
+			result = append(result, llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil)})
 		case "assistant":
 			lm := llm.Message{Role: "assistant", Content: msg.Content}
 			if msg.ReasoningContent != nil {
@@ -1112,10 +1153,28 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage) []llm.Message {
 					lm.ToolCalls = toolCalls
 				}
 			}
-			result = append(result, lm)
+			appendAssistant(lm)
+		case "error":
+			appendAssistant(llm.Message{Role: "assistant", Content: core.HistoryNoteFailed(extractPersistedError(msg))})
+		case "task_cancelled":
+			appendAssistant(llm.Message{Role: "assistant", Content: core.HistoryNoteCancelled})
 		default:
-			m.log().Warn("convertChatMessagesToLLM: skipping non-conversational role", "role", msg.Role)
+			m.log().Debug("convertChatMessagesToLLM: skipping non-conversational role", "role", msg.Role)
 		}
 	}
 	return result
+}
+
+// extractPersistedError extracts the error text from a persisted "error" row.
+// The event persister stores ErrorData as metadata JSON ({"error": "..."}).
+func extractPersistedError(msg ChatMessage) string {
+	var data struct {
+		Error string `json:"error"`
+	}
+	if len(msg.Metadata) > 0 {
+		if err := json.Unmarshal(msg.Metadata, &data); err == nil && data.Error != "" {
+			return data.Error
+		}
+	}
+	return "unknown error"
 }

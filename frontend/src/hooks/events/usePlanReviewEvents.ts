@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isPlanReviewReadyData, isPlanValidationFailedData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -14,7 +14,7 @@ export function usePlanReviewEvents(sessionId: string | null): void {
     // plan_review_ready
     cleanups.push(
       onSessionEvent(sessionId, 'plan_review_ready', (data) => {
-        if (!isPlanReviewReadyData(data)) return
+        if (!isPlanReviewReadyData(data)) { reportDroppedEvent('plan_review_ready', data); return }
 
         const store = useChatStore.getState()
         const msgs = selectSessionMessages(store, sessionId)
@@ -51,7 +51,7 @@ export function usePlanReviewEvents(sessionId: string | null): void {
     // plan_validation_failed
     cleanups.push(
       onSessionEvent(sessionId, 'plan_validation_failed', (data) => {
-        if (!isPlanValidationFailedData(data)) return
+        if (!isPlanValidationFailedData(data)) { reportDroppedEvent('plan_validation_failed', data); return }
         const issues = data.issues
           .map((i) => `${i.step_index != null ? `Step ${i.step_index}: ` : ''}${i.field}: ${i.description}`)
           .join('; ')

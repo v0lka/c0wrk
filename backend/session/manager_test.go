@@ -942,8 +942,185 @@ func TestEmitResumableIfUnfinished_NoEventWithoutTaskStore(t *testing.T) {
 	}
 }
 
+// TestTaskCompletionInfo verifies the mapping from typed execution status to
+// the frontend-facing success contract.
+func TestTaskCompletionInfo(t *testing.T) {
+	tests := []struct {
+		name           string
+		result         *core.HandleResult
+		wantSuccess    bool
+		wantCompletion string
+		wantFailed     int
+	}{
+		{name: "nil result", result: nil, wantSuccess: true, wantCompletion: "full"},
+		{name: "empty status (legacy)", result: &core.HandleResult{}, wantSuccess: true, wantCompletion: "full"},
+		{name: "success", result: &core.HandleResult{Status: orchestration.ExecutionStatusSuccess}, wantSuccess: true, wantCompletion: "full"},
+		{name: "partial", result: &core.HandleResult{Status: orchestration.ExecutionStatusPartial, FailedSteps: 2}, wantSuccess: false, wantCompletion: "partial", wantFailed: 2},
+		{name: "failed", result: &core.HandleResult{Status: orchestration.ExecutionStatusFailed, FailedSteps: 1}, wantSuccess: false, wantCompletion: "failed", wantFailed: 1},
+		{name: "aborted", result: &core.HandleResult{Status: orchestration.ExecutionStatusAborted, FailedSteps: 3}, wantSuccess: false, wantCompletion: "aborted", wantFailed: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			success, completion, failed := taskCompletionInfo(tt.result)
+			if success != tt.wantSuccess {
+				t.Errorf("success = %v, want %v", success, tt.wantSuccess)
+			}
+			if completion != tt.wantCompletion {
+				t.Errorf("completion = %q, want %q", completion, tt.wantCompletion)
+			}
+			if failed != tt.wantFailed {
+				t.Errorf("failedSteps = %d, want %d", failed, tt.wantFailed)
+			}
+		})
+	}
+}
+
+// collectEvents drains up to n events from ch, waiting briefly for each.
+func collectEvents(ch chan Event, n int) []Event {
+	var events []Event
+	for range n {
+		select {
+		case e := <-ch:
+			events = append(events, e)
+		case <-time.After(200 * time.Millisecond):
+			return events
+		}
+	}
+	return events
+}
+
+// TestEmitTaskComplete_SuccessEmitsTypedContract verifies that a successful
+// completion emits task_complete with Success=true and no degraded-outcome
+// follow-up events.
+func TestEmitTaskComplete_SuccessEmitsTypedContract(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+	manager.SetTaskStore(&mockTaskStoreForResumable{unfinished: nil})
+	drainEvents(eventChan)
+
+	manager.emitTaskComplete("sess-1", &core.HandleResult{
+		Output: "done",
+		Status: orchestration.ExecutionStatusSuccess,
+	}, nil)
+
+	events := collectEvents(eventChan, 2)
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 event, got %d: %+v", len(events), events)
+	}
+	data, ok := events[0].Data.(TaskCompleteData)
+	if !ok {
+		t.Fatalf("expected TaskCompleteData, got %T", events[0].Data)
+	}
+	if !data.Success || data.Completion != "full" {
+		t.Errorf("expected success=true/completion=full, got %v/%q", data.Success, data.Completion)
+	}
+}
+
+// TestEmitTaskComplete_PartialEmitsResumable verifies that a partial completion
+// emits task_complete with Success=false followed by task_failed_resumable
+// when the task store holds an unfinished record.
+func TestEmitTaskComplete_PartialEmitsResumable(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: &TaskRecord{ID: "task-1", SessionID: "sess-1", Status: "in_progress"},
+	})
+	drainEvents(eventChan)
+
+	manager.emitTaskComplete("sess-1", &core.HandleResult{
+		Output:      "partial output",
+		Status:      orchestration.ExecutionStatusPartial,
+		FailedSteps: 2,
+	}, nil)
+
+	events := collectEvents(eventChan, 2)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
+	}
+	data, ok := events[0].Data.(TaskCompleteData)
+	if !ok {
+		t.Fatalf("expected TaskCompleteData, got %T", events[0].Data)
+	}
+	if data.Success {
+		t.Error("expected success=false for partial completion")
+	}
+	if data.Completion != "partial" || data.FailedSteps != 2 {
+		t.Errorf("expected completion=partial/failed_steps=2, got %q/%d", data.Completion, data.FailedSteps)
+	}
+	if events[1].Type != "task_failed_resumable" {
+		t.Errorf("expected task_failed_resumable follow-up, got %s", events[1].Type)
+	}
+}
+
+// TestEmitTaskComplete_DegradedWithoutSafetyNetEmitsWarning verifies the
+// fallback: when a degraded completion cannot be surfaced as resumable (no
+// task store), a visible service warning is emitted instead of a silent
+// visual success.
+func TestEmitTaskComplete_DegradedWithoutSafetyNetEmitsWarning(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+	// No SetTaskStore — resumable safety net unavailable.
+	drainEvents(eventChan)
+
+	manager.emitTaskComplete("sess-1", &core.HandleResult{
+		Output: "partial output",
+		Status: orchestration.ExecutionStatusPartial,
+	}, nil)
+
+	events := collectEvents(eventChan, 2)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "task_complete" {
+		t.Errorf("expected task_complete first, got %s", events[0].Type)
+	}
+	if events[1].Type != "service" {
+		t.Fatalf("expected service warning follow-up, got %s", events[1].Type)
+	}
+	svc, ok := events[1].Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map service payload, got %T", events[1].Data)
+	}
+	if phase, _ := svc["phase"].(string); phase != "orchestration" {
+		t.Errorf("expected orchestration phase, got %q", phase)
+	}
+}
+
+// TestGetSessionRuntimeStatus verifies active/unfinished reporting without
+// restoring sessions as a side effect.
+func TestGetSessionRuntimeStatus(t *testing.T) {
+	t.Run("unfinished task, session not in memory", func(t *testing.T) {
+		manager, _, _ := testManager(t)
+		manager.SetTaskStore(&mockTaskStoreForResumable{
+			unfinished: &TaskRecord{ID: "task-9", SessionID: "sess-9", Status: "in_progress"},
+		})
+
+		status, err := manager.GetSessionRuntimeStatus("sess-9")
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus returned error: %v", err)
+		}
+		if status.Active {
+			t.Error("expected active=false for session not in memory")
+		}
+		if !status.HasUnfinishedTask || status.UnfinishedTaskID != "task-9" {
+			t.Errorf("expected unfinished task task-9, got %+v", status)
+		}
+	})
+
+	t.Run("no task store, no session", func(t *testing.T) {
+		manager, _, _ := testManager(t)
+
+		status, err := manager.GetSessionRuntimeStatus("sess-x")
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus returned error: %v", err)
+		}
+		if status.Active || status.HasUnfinishedTask {
+			t.Errorf("expected idle status, got %+v", status)
+		}
+	})
+}
+
 // recordingCancelTaskStore extends mockTaskStoreForResumable by capturing
-// CompleteTask invocations so CancelUnfinishedTask tests can assert on them.
+// CompleteTask and CancelTask invocations so CancelUnfinishedTask tests can
+// assert on them.
 type recordingCancelTaskStore struct {
 	mockTaskStoreForResumable
 	mu              sync.Mutex
@@ -951,6 +1128,8 @@ type recordingCancelTaskStore struct {
 	completedOutput string
 	completedCount  int
 	completedCalls  int
+	cancelledID     string
+	cancelledCalls  int
 }
 
 func (m *recordingCancelTaskStore) CompleteTask(_ context.Context, taskID, finalOutput string, attemptCount int) error {
@@ -963,9 +1142,19 @@ func (m *recordingCancelTaskStore) CompleteTask(_ context.Context, taskID, final
 	return nil
 }
 
-// TestCancelUnfinishedTask_PersistsCompletion verifies that CancelUnfinishedTask
-// looks up the unfinished task and marks it as completed in the store.
-func TestCancelUnfinishedTask_PersistsCompletion(t *testing.T) {
+func (m *recordingCancelTaskStore) CancelTask(_ context.Context, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cancelledID = taskID
+	m.cancelledCalls++
+	return nil
+}
+
+// TestCancelUnfinishedTask_PersistsCancellation verifies that
+// CancelUnfinishedTask looks up the unfinished task and marks it as
+// cancelled (NOT completed) in the store, so the persisted status
+// reflects the real outcome.
+func TestCancelUnfinishedTask_PersistsCancellation(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	store := &recordingCancelTaskStore{
@@ -981,11 +1170,14 @@ func TestCancelUnfinishedTask_PersistsCompletion(t *testing.T) {
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.completedCalls != 1 {
-		t.Errorf("expected exactly one CompleteTask call, got %d", store.completedCalls)
+	if store.cancelledCalls != 1 {
+		t.Errorf("expected exactly one CancelTask call, got %d", store.cancelledCalls)
 	}
-	if store.completedID != "task-abc" {
-		t.Errorf("expected CompleteTask to be called with task-abc, got %q", store.completedID)
+	if store.cancelledID != "task-abc" {
+		t.Errorf("expected CancelTask to be called with task-abc, got %q", store.cancelledID)
+	}
+	if store.completedCalls != 0 {
+		t.Errorf("expected no CompleteTask calls, got %d", store.completedCalls)
 	}
 }
 
@@ -1007,6 +1199,9 @@ func TestCancelUnfinishedTask_NoUnfinished(t *testing.T) {
 	defer store.mu.Unlock()
 	if store.completedCalls != 0 {
 		t.Errorf("expected no CompleteTask calls, got %d", store.completedCalls)
+	}
+	if store.cancelledCalls != 0 {
+		t.Errorf("expected no CancelTask calls, got %d", store.cancelledCalls)
 	}
 }
 

@@ -20,6 +20,8 @@ export interface ToolResultData {
   tool_call_id?: string; step: number; result_len: number; result: string
   result_preview?: string; plan_step_id?: string
   call_idx?: number; retry_attempt?: number
+  /** True when the tool call finished with an error (backend emitter flag). */
+  error?: boolean
 }
 
 export interface ThoughtData { step_num: number; content: string; reasoning?: string; plan_step_id?: string }
@@ -55,7 +57,15 @@ export interface ContextFillData {
 export interface ContextCompactionData { before_percent: number; after_percent: number; plan_step_id?: string }
 export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string }
 export interface AssistantChunkData { content: string; accumulated_content?: string }
-export interface TaskCompleteData { session_id?: string; output?: string; attempt_count?: number; routing_decision?: Record<string, unknown> }
+export interface TaskCompleteData {
+  session_id?: string; output?: string; attempt_count?: number; routing_decision?: Record<string, unknown>
+  /** Typed success contract: false for partial/failed/aborted executions delivered as task_complete. */
+  success?: boolean
+  /** Refines the outcome: 'full' | 'partial' | 'failed' | 'aborted'. */
+  completion?: string
+  /** Number of plan steps that finished with an error in the final attempt. */
+  failed_steps?: number
+}
 export interface SubAgentLaunchData { step_id: string; description: string; plan_step_id?: string }
 export interface SubAgentCompleteData { step_id: string; success: boolean; duration: number; plan_step_id?: string }
 export interface RetryData { attempt: number; max_attempts: number }
@@ -219,10 +229,13 @@ export function isTaskCompleteData(d: unknown): d is TaskCompleteData {
   const hasValidOutput = typeof d.output === 'string'
   const hasValidAttempt = typeof d.attempt_count === 'number'
   const hasValidRouting = isObj(d.routing_decision)
+  const hasValidSuccess = typeof d.success === 'boolean'
   // Accept any valid field as sufficient evidence of a task_complete event;
   // a missing output field (e.g. Wails serialization edge case) is tolerable
-  // as long as attempt_count or routing_decision validates.
-  if (!(hasValidOutput || hasValidAttempt || hasValidRouting)) return false
+  // as long as another field validates.
+  if (!(hasValidOutput || hasValidAttempt || hasValidRouting || hasValidSuccess)) return false
+  if ('completion' in d && d.completion !== undefined && typeof d.completion !== 'string') return false
+  if ('failed_steps' in d && d.failed_steps !== undefined && typeof d.failed_steps !== 'number') return false
   if ('session_id' in d && d.session_id !== undefined && typeof d.session_id !== 'string') return false
   // Allow missing output when other validators pass (defensive fallback).
   if ('output' in d && d.output !== undefined && typeof d.output !== 'string') return false

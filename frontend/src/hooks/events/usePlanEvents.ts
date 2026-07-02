@@ -1,7 +1,7 @@
 // Plan lifecycle events: plan_generated, plan_step_start, plan_step_complete
 
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isPlanData, isPlanStepStartData, isPlanStepCompleteData, isStepTodoUpdateData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
@@ -28,7 +28,7 @@ export function usePlanEvents(sessionId: string | null): void {
 
     cleanups.push(
       onSessionEvent(sessionId, 'plan_generated', (data) => {
-        if (!isPlanData(data)) return
+        if (!isPlanData(data)) { reportDroppedEvent('plan_generated', data); return }
         useChatStore.getState().setActivityStatus('Executing plan...')
         if (data.steps) {
           const items = data.steps.map(toPlanItem)
@@ -60,7 +60,7 @@ export function usePlanEvents(sessionId: string | null): void {
 
     cleanups.push(
       onSessionEvent(sessionId, 'plan_step_start', (data) => {
-        if (!isPlanStepStartData(data)) return
+        if (!isPlanStepStartData(data)) { reportDroppedEvent('plan_step_start', data); return }
         useChatStore.getState().setActivityStatus(`Executing step ${data.step_id}...`)
         usePlanStore.getState().updateStepStatus(data.step_id, 'running')
         useChatStore.getState().addMessage(sessionId, {
@@ -76,7 +76,7 @@ export function usePlanEvents(sessionId: string | null): void {
 
     cleanups.push(
       onSessionEvent(sessionId, 'plan_step_complete', (data) => {
-        if (!isPlanStepCompleteData(data)) return
+        if (!isPlanStepCompleteData(data)) { reportDroppedEvent('plan_step_complete', data); return }
         usePlanStore.getState().updateStepStatus(
           data.step_id,
           data.success ? 'completed' : 'failed',
@@ -100,7 +100,7 @@ export function usePlanEvents(sessionId: string | null): void {
 
     cleanups.push(
       onSessionEvent(sessionId, 'step_todo_update', (data) => {
-        if (!isStepTodoUpdateData(data)) return
+        if (!isStepTodoUpdateData(data)) { reportDroppedEvent('step_todo_update', data); return }
         usePlanStore.getState().updateStepTodo(
           data.step_id,
           data.items.map((item) => ({ text: item.text, checked: item.checked })),

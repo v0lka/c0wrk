@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { ChevronDown, ListChecks, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { usePlanStore, usePlanCompleted, usePlanTotal } from '@/stores/planStore'
+import { usePlanStore, usePlanCompleted, usePlanFailed, usePlanTotal } from '@/stores/planStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -12,6 +12,7 @@ export function ExecutionPanels() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const planGroups = usePlanStore(s => s.planGroups)
   const planCompleted = usePlanCompleted()
+  const planFailed = usePlanFailed()
   const planTotal = usePlanTotal()
   const sidebarCollapsed = useUIStore(s => s.sidebarCollapsed)
   const viewerCollapsed = useFileViewerStore(s => s.collapsed)
@@ -50,6 +51,9 @@ export function ExecutionPanels() {
           <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
           <span className="text-sm font-medium">Execution plan</span>
           <span className="text-xs text-muted-foreground">{planCompleted}/{planTotal} completed</span>
+          {planFailed > 0 && (
+            <span className="text-xs text-destructive">{planFailed} failed</span>
+          )}
         </button>
         {planOpen && (
           <div className="max-h-48 overflow-y-auto px-3 pb-2 custom-scrollbar">

@@ -57,6 +57,12 @@ type TaskCompleteData struct {
 	Plan            *orchestration.Plan            `json:"plan,omitempty"`
 	AttemptCount    int                   `json:"attempt_count,omitempty"`
 	Reflections     []orchestration.Reflection     `json:"reflections,omitempty"`
+	// Typed success contract: Success is false for partial/failed/aborted
+	// executions that are still delivered as task_complete so the best-effort
+	// output reaches the user. Completion refines the outcome.
+	Success     bool   `json:"success"`
+	Completion  string `json:"completion,omitempty"` // "full" | "partial" | "failed" | "aborted"
+	FailedSteps int    `json:"failed_steps,omitempty"`
 }
 
 // TaskCancelledData is the payload for "task_cancelled" events.

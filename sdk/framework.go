@@ -475,7 +475,7 @@ type frameworkPlannerAdapter struct {
 }
 
 func (a *frameworkPlannerAdapter) Plan(ctx context.Context, task string, availableTools []tools.ToolDescriptor, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	return a.planner.Plan(ctx, task, availableTools, reflections, nil, false)
+	return a.planner.Plan(ctx, task, availableTools, reflections, nil, false, nil)
 }
 
 func (a *frameworkPlannerAdapter) Replan(ctx context.Context, plan *orchestration.Plan, completed []orchestration.CompletedStep, failedStep orchestration.CompletedStep, reflection *orchestration.Reflection, reflections []orchestration.Reflection) (*orchestration.Plan, error) {

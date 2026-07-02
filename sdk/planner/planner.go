@@ -171,6 +171,10 @@ func (p *Planner) emitService(content string, meta map[string]any) {
 // ---------------------------------------------------------------------------
 
 // Plan generates an execution plan for the given task.
+// conversationHistory carries prior user/assistant exchanges so that plans for
+// follow-up requests (e.g. the first message after a backend restart) are
+// generated with full dialogue context. It may be nil for genuinely first
+// messages.
 func (p *Planner) Plan(
 	ctx context.Context,
 	task string,
@@ -178,6 +182,7 @@ func (p *Planner) Plan(
 	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
+	conversationHistory []llm.Message,
 ) (*orchestration.Plan, error) {
 	mode := p.multiStepMode()
 	if singleStep {
@@ -190,11 +195,11 @@ func (p *Planner) Plan(
 	complexity := p.Cfg.ComplexityFromContext(ctx)
 	if (domain == "general" && complexity < 4) || len(plannerTools) == 0 {
 		p.log().Debug("planner: using direct planning", "domain", domain, "planner_tools", len(plannerTools), "singleStep", singleStep)
-		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep, conversationHistory)
 	}
 
 	p.log().Debug("planner: using informed exploration planning", "domain", domain, "planner_tools", len(plannerTools), "singleStep", singleStep)
-	return p.planWithExploration(ctx, task, mode, availableTools, reflections, plannerTools, availableSkills, singleStep)
+	return p.planWithExploration(ctx, task, mode, availableTools, reflections, plannerTools, availableSkills, singleStep, conversationHistory)
 }
 
 // Replan generates a revised plan after a step failure.
@@ -283,8 +288,9 @@ func (p *Planner) planDirect(
 	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
+	conversationHistory []llm.Message,
 ) (*orchestration.Plan, error) {
-	systemPrompt := p.buildPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills)
+	systemPrompt := p.buildPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills, conversationHistory)
 
 	messages := systemMessagesFromPrompt(systemPrompt)
 	messages = append(messages, llm.Message{Role: "user", Content: task})
@@ -335,8 +341,9 @@ func (p *Planner) buildInformedPlanSystemPrompt(
 	availableTools []tools.ToolDescriptor,
 	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
+	conversationHistory []llm.Message,
 ) string {
-	return p.buildSystemPromptFromMode(ctx, mode, p.Cfg.Prompts.InformedPrompt, availableTools, reflections, availableSkills, nil)
+	return p.buildSystemPromptFromMode(ctx, mode, p.Cfg.Prompts.InformedPrompt, availableTools, reflections, availableSkills, conversationSubstitutions(conversationHistory))
 }
 
 func (p *Planner) planWithExploration(
@@ -348,8 +355,9 @@ func (p *Planner) planWithExploration(
 	plannerTools []tools.ToolDescriptor,
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
+	conversationHistory []llm.Message,
 ) (*orchestration.Plan, error) {
-	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills)
+	systemPrompt := p.buildInformedPlanSystemPrompt(ctx, mode, availableTools, reflections, availableSkills, conversationHistory)
 
 	var modelMeta llm.ModelMetadata
 	if p.Cfg.ModelRegistry != nil {
@@ -363,7 +371,7 @@ func (p *Planner) planWithExploration(
 
 	if p.Cfg.ContextFactory == nil {
 		p.log().Warn("planner: ContextFactory is nil, falling back to direct planning")
-		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep, conversationHistory)
 	}
 	cm := p.Cfg.ContextFactory(systemPrompt, modelMeta, "sliding")
 
@@ -412,19 +420,19 @@ func (p *Planner) planWithExploration(
 			return nil, ctx.Err()
 		}
 		p.log().Warn("planner: exploration executor failed, falling back to direct planning", "error", err)
-		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep, conversationHistory)
 	}
 
 	p.emitService("Generating plan...", map[string]any{"phase": "planning"})
 	if result.Output == "" {
 		p.log().Warn("planner: exploration produced no output, falling back to direct planning")
-		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep, conversationHistory)
 	}
 
 	plan, err := p.parsePlanResponse(result.Output, availableSkills)
 	if err != nil {
 		p.log().Warn("planner: failed to parse exploration plan output, falling back to direct", "error", err)
-		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep)
+		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep, conversationHistory)
 	}
 
 	if singleStep && len(plan.Steps) > 1 {
@@ -493,8 +501,17 @@ func (p *Planner) buildPlanSystemPrompt(
 	availableTools []tools.ToolDescriptor,
 	reflections []orchestration.Reflection,
 	availableSkills []skills.SkillDescriptor,
+	conversationHistory []llm.Message,
 ) string {
-	return p.buildSystemPromptFromMode(ctx, mode, p.Cfg.Prompts.BasePrompt, availableTools, reflections, availableSkills, nil)
+	return p.buildSystemPromptFromMode(ctx, mode, p.Cfg.Prompts.BasePrompt, availableTools, reflections, availableSkills, conversationSubstitutions(conversationHistory))
+}
+
+// conversationSubstitutions builds the RECENT-CONVERSATION substitution used
+// by plan-mode preambles so first-message plans see the dialogue context.
+func conversationSubstitutions(conversationHistory []llm.Message) map[string]string {
+	return map[string]string{
+		"RECENT-CONVERSATION": formatConversationHistory(conversationHistory),
+	}
 }
 
 // ---------------------------------------------------------------------------

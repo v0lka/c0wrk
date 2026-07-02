@@ -9,8 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
@@ -209,7 +207,10 @@ func (o *Orchestrator) executeFirstMessage(
 	o.logDebug("orchestrator: generating plan", "mode", opts.ExecutionMode, "singleStep", singleStep)
 	o.emitter.ServiceWithMeta("Planning approach...", map[string]any{"phase": "orchestration"})
 
-	plan, planErr := o.planner.Plan(ctx, message, availableTools, nil, activeSkills, singleStep)
+	// Pass the (compacted) conversation history so plans for follow-up
+	// requests — e.g. the first message after a backend restart, when the
+	// continuation anchor may be unavailable — still see the dialogue context.
+	plan, planErr := o.planner.Plan(ctx, message, availableTools, nil, activeSkills, singleStep, o.plannerHistory())
 	if planErr != nil {
 		o.logDebug("orchestrator: planning failed", "error", planErr)
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -235,11 +236,8 @@ func (o *Orchestrator) executeFirstMessage(
 			}
 			pbb.FailTask()
 		}
-		// Persist the rejected request in conversationHistory so it is visible on session restore.
-		o.conversationHistory = append(o.conversationHistory,
-			llm.Message{Role: "user", Content: message},
-			llm.Message{Role: "assistant", Content: "I wasn't able to create a plan for your request. Please try rephrasing."},
-		)
+		// The rejected request is recorded in conversationHistory by the
+		// recordConversationOutcome defer in HandleMessage.
 		return nil, errors.New("planning produced an empty plan (0 steps)")
 	}
 
@@ -317,17 +315,7 @@ func (o *Orchestrator) executeContinuation(
 
 	// Compact conversation history for the planner if it exceeds the token budget.
 	// The in-memory conversationHistory is NOT modified; only the planner sees the compacted version.
-	plannerHistory := o.conversationHistory
-	if o.config.PlannerHistoryBudgetTokens > 0 && o.tokenCounter != nil && len(plannerHistory) > 0 {
-		compacted, compactErr := sdkmemory.CompactConversationHistory(plannerHistory, o.config.PlannerHistoryBudgetTokens, o.tokenCounter, o.config.PlannerHistoryKeepRecentRatio)
-		if compactErr != nil {
-			o.logDebug("orchestrator: conversation history compaction failed, using raw history", "error", compactErr)
-		} else {
-			plannerHistory = compacted
-		}
-	}
-
-	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep, plannerHistory, taskComplete)
+	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep, o.plannerHistory(), taskComplete)
 	if planErr != nil {
 		o.logDebug("orchestrator: PlanContinuation failed", "error", planErr)
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -355,11 +343,8 @@ func (o *Orchestrator) executeContinuation(
 			}
 			pbb.FailTask()
 		}
-		// Persist the rejected request in conversationHistory so it is visible on session restore.
-		o.conversationHistory = append(o.conversationHistory,
-			llm.Message{Role: "user", Content: message},
-			llm.Message{Role: "assistant", Content: "I wasn't able to create a continuation plan for your request. Please try rephrasing or providing more specific instructions."},
-		)
+		// The rejected request is recorded in conversationHistory by the
+		// recordConversationOutcome defer in HandleMessage.
 		return nil, errors.New("continuation planning produced an empty plan (0 new steps) with all existing steps already completed")
 	}
 	bb.SetPlan(mergedPlan)
@@ -386,15 +371,17 @@ func (o *Orchestrator) executeContinuation(
 	return execResult, nil
 }
 
-// finalizeResult persists the routing decision, builds the HandleResult, and
-// updates conversationHistory for future routing context.
+// finalizeResult persists the routing decision and builds the HandleResult.
+// The conversation history is updated centrally by recordConversationOutcome
+// (deferred in HandleMessage), NOT here — this keeps history updates uniform
+// across all terminal outcomes.
 // execResult must never be nil; callers must guard with a zero-value fallback.
-func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *router.RoutingDecision, execResult *orchestration.ExecutionResult, message string) *HandleResult {
+func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *router.RoutingDecision, execResult *orchestration.ExecutionResult) *HandleResult {
 	// Persist routing decision on PersistentBlackboard (post-execution)
 	o.logDebug("orchestrator: persisting routing decision")
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetRouting(routing)
-		pbb.CompleteTask(execResult.AttemptCount)
+		persistTaskOutcome(pbb, execResult)
 	}
 
 	// Build HandleResult
@@ -404,6 +391,8 @@ func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *rout
 		Blackboard:      bb,
 		AttemptCount:    execResult.AttemptCount,
 		Reflections:     execResult.Reflections,
+		Status:          execResult.Status,
+		FailedSteps:     execResult.FailedSteps,
 	}
 
 	// Get plan from blackboard if available
@@ -413,11 +402,23 @@ func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *rout
 
 	o.logDebug("orchestrator: handle_message completed", "attemptCount", result.AttemptCount)
 
-	// Accumulate conversation history for future routing context (no truncation).
-	o.conversationHistory = append(o.conversationHistory,
-		llm.Message{Role: "user", Content: message},
-		llm.Message{Role: "assistant", Content: result.Output, ReasoningContent: lastReasoningContent(bb)},
-	)
-
 	return result
+}
+
+// persistTaskOutcome maps the typed execution status onto the persisted task
+// status. Partial executions are deliberately left "in_progress" so the
+// resumable-task safety net (GetUnfinishedTask) can offer a Resume action;
+// failed/aborted executions are marked "failed" (also resumable). Only a
+// genuinely successful execution closes the task as "completed".
+func persistTaskOutcome(pbb PersistableBlackboard, execResult *orchestration.ExecutionResult) {
+	switch execResult.Status {
+	case orchestration.ExecutionStatusPartial, orchestration.ExecutionStatusCancelled:
+		// Partial: keep in_progress — resumable.
+		// Cancelled: the session manager persists the cancellation itself.
+	case orchestration.ExecutionStatusFailed, orchestration.ExecutionStatusAborted:
+		pbb.FailTask()
+	default:
+		// Success or legacy empty status.
+		pbb.CompleteTask(execResult.AttemptCount)
+	}
 }

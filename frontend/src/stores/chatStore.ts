@@ -33,6 +33,7 @@ interface ChatActions {
   updateMessage: (sessionId: string, messageId: string, updates: Partial<ChatMessageUI>) => void
   removeMessage: (sessionId: string, messageId: string) => void
   setMessages: (sessionId: string, messages: ChatMessageUI[]) => void
+  mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => void
   setStreamingText: (text: string, sessionId: string) => void
   appendStreamingText: (delta: string) => void
   flushStreaming: () => ChatMessageUI | null
@@ -170,6 +171,29 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     messages: { ...s.messages, [sessionId]: indexMessages(messages) },
     messageOrder: { ...s.messageOrder, [sessionId]: messages.map(m => m.id) },
   })),
+
+  // Replace the session's messages with the persisted history, but preserve
+  // live-event messages that arrived while the history RPC was in flight
+  // (timestamp >= loadStartedAt and not present in the snapshot). A plain
+  // setMessages would clobber e.g. an `error` event delivered between the
+  // backend's DB read and this state update, leaving the session looking
+  // cleanly finished when it actually failed.
+  mergeHistoryMessages: (sessionId, history, loadStartedAt) => set((s) => {
+    const liveIndex = s.messages[sessionId] ?? {}
+    const liveOrder = s.messageOrder[sessionId] ?? []
+    const historyIds = new Set(history.map(m => m.id))
+    const preserved: ChatMessageUI[] = []
+    for (const id of liveOrder) {
+      const msg = liveIndex[id]
+      if (!msg || historyIds.has(id)) continue
+      if (msg.timestamp >= loadStartedAt) preserved.push(msg)
+    }
+    const merged = [...history, ...preserved]
+    return {
+      messages: { ...s.messages, [sessionId]: indexMessages(merged) },
+      messageOrder: { ...s.messageOrder, [sessionId]: merged.map(m => m.id) },
+    }
+  }),
 
   setStreamingText: (text, sessionId) => set({
     streamingText: text,

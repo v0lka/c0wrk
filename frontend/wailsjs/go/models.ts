@@ -819,6 +819,22 @@ export namespace session {
 	        this.plan_review_context = source["plan_review_context"];
 	    }
 	}
+	export class SessionRuntimeStatus {
+	    active: boolean;
+	    has_unfinished_task: boolean;
+	    unfinished_task_id?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionRuntimeStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.active = source["active"];
+	        this.has_unfinished_task = source["has_unfinished_task"];
+	        this.unfinished_task_id = source["unfinished_task_id"];
+	    }
+	}
 	export class TerminalCommand {
 	    id: number;
 	    session_id: string;

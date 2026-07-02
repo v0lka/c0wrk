@@ -31,7 +31,10 @@ export const roleToType: Record<ChatRole, MessageType> = {
   subagent_launch: 'subagent_launch', subagent_complete: 'subagent_complete',
   tool_confirm: 'tool_confirm', ask_user: 'ask_user', task_cancelled: 'error',
   status: 'status', task_resumed: 'task_resumed',
-  task_failed_resumable: 'error', step_limit: 'assistant', context_compaction: 'assistant',
+  // task_failed_resumable and step_limit keep their own types on reload so
+  // extractPendingActions can restore the Resume / decision affordances
+  // (their staleness is reconciled against GetSessionRuntimeStatus after load).
+  task_failed_resumable: 'task_failed_resumable', step_limit: 'step_limit', context_compaction: 'context_compaction',
   step_todo_update: 'step_todo_update',
   memory_read: 'memory_read',
   plan_review: 'plan_review',
@@ -195,6 +198,7 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanSto
     items,
     progress: meta?.progress as number | undefined,
     completedCount: 0,
+    failedCount: 0,
     totalCount: items.length,
   }
 
@@ -226,9 +230,8 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanSto
     }
   }
 
-  group.completedCount = group.items.filter(
-    it => it.status === 'completed' || it.status === 'failed'
-  ).length
+  group.completedCount = group.items.filter(it => it.status === 'completed').length
+  group.failedCount = group.items.filter(it => it.status === 'failed').length
 
   store.setPlan(group)
 }

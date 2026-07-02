@@ -695,7 +695,7 @@ func TestPlanDirect_Success(t *testing.T) {
 	p := &Planner{llm: caller, Cfg: cfg}
 
 	mode := p.multiStepMode()
-	plan, err := p.planDirect(context.Background(), "do task", mode, nil, nil, nil, false)
+	plan, err := p.planDirect(context.Background(), "do task", mode, nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestPlanDirect_LLMError(t *testing.T) {
 	p := &Planner{llm: caller, Cfg: cfg}
 
 	mode := p.multiStepMode()
-	_, err := p.planDirect(context.Background(), "task", mode, nil, nil, nil, false)
+	_, err := p.planDirect(context.Background(), "task", mode, nil, nil, nil, false, nil)
 	if err == nil {
 		t.Error("expected error from LLM call failure")
 	}
@@ -730,7 +730,7 @@ func TestPlanDirect_SingleStepTruncation(t *testing.T) {
 	p := &Planner{llm: caller, Cfg: cfg}
 
 	mode := p.singleStepMode()
-	plan, err := p.planDirect(context.Background(), "task", mode, nil, nil, nil, true)
+	plan, err := p.planDirect(context.Background(), "task", mode, nil, nil, nil, true, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -956,7 +956,7 @@ func TestPlan_DirectPath_NoPlannerTools(t *testing.T) {
 	cfg.PlannerToolNames = map[string]bool{}
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	plan, err := p.Plan(context.Background(), "do task", nil, nil, nil, false)
+	plan, err := p.Plan(context.Background(), "do task", nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -978,7 +978,7 @@ func TestPlan_DirectPath_DomainGeneralLowComplexity(t *testing.T) {
 	cfg.PlannerToolNames = map[string]bool{"read_file": true}
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	plan, err := p.Plan(context.Background(), "task", nil, nil, nil, false)
+	plan, err := p.Plan(context.Background(), "task", nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1162,7 +1162,7 @@ func TestPlan_ExplorationPath_NilContextFactory(t *testing.T) {
 	// ContextFactory is nil => fallback to planDirect inside planWithExploration
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	plan, err := p.Plan(context.Background(), "explore this task", nil, nil, nil, false)
+	plan, err := p.Plan(context.Background(), "explore this task", nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1287,7 +1287,7 @@ func TestPlanDirect_ParseError(t *testing.T) {
 	p := &Planner{llm: caller, Cfg: cfg}
 
 	mode := p.multiStepMode()
-	_, err := p.planDirect(context.Background(), "task", mode, nil, nil, nil, false)
+	_, err := p.planDirect(context.Background(), "task", mode, nil, nil, nil, false, nil)
 	if err == nil {
 		t.Error("expected error from parse failure")
 	}
@@ -1377,7 +1377,7 @@ func TestBuildInformedPlanSystemPrompt(t *testing.T) {
 	cfg.Prompts.InformedPrompt = "INFORMED: {MODE-PREAMBLE} | {MAX-STEPS}"
 	p := &Planner{Cfg: cfg}
 	mode := makeTestMode()
-	result := p.buildInformedPlanSystemPrompt(context.Background(), mode, nil, nil, nil)
+	result := p.buildInformedPlanSystemPrompt(context.Background(), mode, nil, nil, nil, nil)
 	if result == "" {
 		t.Fatal("expected non-empty prompt")
 	}
@@ -1589,5 +1589,87 @@ func TestBuildContinuationSystemPrompt_TerminalStepsIncluded(t *testing.T) {
 	}
 	if !strings.Contains(result, "original request") {
 		t.Error("expected original request in prompt")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Conversation history in plan prompts
+// ---------------------------------------------------------------------------
+
+// capturingLLMCaller records requests and replies with a fixed response.
+type capturingLLMCaller struct {
+	resp *llm.ChatResponse
+	reqs []llm.ChatRequest
+}
+
+func (c *capturingLLMCaller) Call(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	c.reqs = append(c.reqs, req)
+	return c.resp, nil
+}
+
+// TestPlanDirect_ConversationHistoryInPrompt verifies that Plan substitutes
+// the conversation history into the RECENT-CONVERSATION placeholder of the
+// plan-mode preamble.
+func TestPlanDirect_ConversationHistoryInPrompt(t *testing.T) {
+	caller := &capturingLLMCaller{
+		resp: newPlanResponse(`{"steps":[{"id":"step_1","description":"task"}]}`),
+	}
+	cfg := makeTestConfig("Plan: MODE-PREAMBLE")
+	cfg.Prompts.PlanPreamble = "History:\nRECENT-CONVERSATION"
+	p := &Planner{llm: caller, Cfg: cfg}
+
+	history := []llm.Message{
+		{Role: "user", Content: "add auth to the API"},
+		{Role: "assistant", Content: "auth added"},
+	}
+	if _, err := p.Plan(context.Background(), "now add tests", nil, nil, nil, false, history); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(caller.reqs) != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", len(caller.reqs))
+	}
+	var systemPrompt strings.Builder
+	for _, msg := range caller.reqs[0].Messages {
+		if msg.Role == "system" {
+			systemPrompt.WriteString(msg.Content)
+		}
+	}
+	got := systemPrompt.String()
+	if !strings.Contains(got, "user: add auth to the API") {
+		t.Errorf("system prompt should contain the prior user message, got:\n%s", got)
+	}
+	if !strings.Contains(got, "assistant: auth added") {
+		t.Errorf("system prompt should contain the prior assistant message, got:\n%s", got)
+	}
+}
+
+// TestPlanDirect_EmptyConversationHistoryPlaceholder verifies that an empty
+// history substitutes the "(no previous conversation)" marker instead of
+// leaving the placeholder in the prompt.
+func TestPlanDirect_EmptyConversationHistoryPlaceholder(t *testing.T) {
+	caller := &capturingLLMCaller{
+		resp: newPlanResponse(`{"steps":[{"id":"step_1","description":"task"}]}`),
+	}
+	cfg := makeTestConfig("Plan: MODE-PREAMBLE")
+	cfg.Prompts.PlanPreamble = "History:\nRECENT-CONVERSATION"
+	p := &Planner{llm: caller, Cfg: cfg}
+
+	if _, err := p.Plan(context.Background(), "first task", nil, nil, nil, false, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var systemPrompt strings.Builder
+	for _, msg := range caller.reqs[0].Messages {
+		if msg.Role == "system" {
+			systemPrompt.WriteString(msg.Content)
+		}
+	}
+	got := systemPrompt.String()
+	if !strings.Contains(got, "(no previous conversation)") {
+		t.Errorf("system prompt should contain the empty-history marker, got:\n%s", got)
+	}
+	if strings.Contains(got, "RECENT-CONVERSATION") {
+		t.Errorf("RECENT-CONVERSATION placeholder should be substituted, got:\n%s", got)
 	}
 }

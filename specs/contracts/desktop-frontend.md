@@ -43,6 +43,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ArchiveSession`       | id                           | error                     | Archive/unarchive session                             |
 | `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
+| `GetSessionRuntimeStatus` | id                        | (SessionRuntimeStatus, error) | Live/persisted execution state: `{active, has_unfinished_task, unfinished_task_id?}`. Called after history load to reconcile the UI (running flag, resume banner, stale prompts) instead of defaulting to idle |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
 | `SendMessage`          | id, text, mode, activeSkills, modelOverride, reasoningEffort, planReview | error                     | Send user message (async execution)                   |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |

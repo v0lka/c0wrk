@@ -5,6 +5,12 @@ CRITICAL: Do NOT attempt to solve or execute the task yourself. Your sole job is
 Each step should be atomic and executable by a single agent with access to tools.
 Steps can depend on other steps (DependsOn) and can be parallelizable.
 
+## Recent conversation
+
+Prior dialogue with the user. Use it to resolve references in the task (e.g. "it", "the same file", "try again"):
+
+RECENT-CONVERSATION
+
 ## Granularity
 
 Match step granularity to task scope. Each step must be bounded so a single executor can complete it within its context window.

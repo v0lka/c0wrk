@@ -32,7 +32,18 @@ const selectPlanCompleted = (state: PlanState): number => {
   if (latest.completedCount !== undefined) return latest.completedCount
   let count = 0
   for (const item of latest.items) {
-    if (item.status === 'completed' || item.status === 'failed') count++
+    if (item.status === 'completed') count++
+  }
+  return count
+}
+
+const selectPlanFailed = (state: PlanState): number => {
+  const latest = state.planGroups[0]
+  if (!latest) return 0
+  if (latest.failedCount !== undefined) return latest.failedCount
+  let count = 0
+  for (const item of latest.items) {
+    if (item.status === 'failed') count++
   }
   return count
 }
@@ -46,6 +57,10 @@ const selectPlanTotal = (state: PlanState): number => {
 
 export function usePlanCompleted(): number {
   return usePlanStore(selectPlanCompleted)
+}
+
+export function usePlanFailed(): number {
+  return usePlanStore(selectPlanFailed)
 }
 
 export function usePlanTotal(): number {
@@ -69,11 +84,10 @@ export const usePlanStore = create<PlanState & PlanActions>((set) => ({
         ? { ...item, status, ...(duration !== undefined ? { duration } : {}) }
         : item
     )
-    const completedCount = updatedItems.filter(
-      (item) => item.status === 'completed' || item.status === 'failed'
-    ).length
+    const completedCount = updatedItems.filter((item) => item.status === 'completed').length
+    const failedCount = updatedItems.filter((item) => item.status === 'failed').length
     return {
-      planGroups: [{ ...latest, items: updatedItems, completedCount }, ...rest],
+      planGroups: [{ ...latest, items: updatedItems, completedCount, failedCount }, ...rest],
     }
   }),
 

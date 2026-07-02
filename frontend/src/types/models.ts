@@ -139,7 +139,10 @@ export interface PlanGroup {
   id: string
   items: PlanItem[]
   progress?: number
+  /** Steps that finished successfully (status === 'completed'). */
   completedCount?: number
+  /** Steps that finished with an error (status === 'failed'). */
+  failedCount?: number
   totalCount?: number
 }
 

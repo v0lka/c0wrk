@@ -58,6 +58,8 @@ export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
 
+export function GetSessionRuntimeStatus(arg1:string):Promise<session.SessionRuntimeStatus>;
+
 export function GetSessionTokens(arg1:string):Promise<backend.SessionTokensResponse>;
 
 export function GetSessionWorkspace(arg1:string):Promise<string>;

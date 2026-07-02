@@ -2,7 +2,7 @@
 // task_complete, task_cancelled, reflection
 
 import { useEffect } from 'react'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isAssistantChunkData, isThoughtData, isErrorData, isTaskCompleteData, isReflectionData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { generateMessageId } from '@/lib/ids'
@@ -16,7 +16,7 @@ export function useChatEvents(sessionId: string | null): void {
     // --- assistant_chunk ---
     cleanups.push(
       onSessionEvent(sessionId, 'assistant_chunk', (data) => {
-        if (!isAssistantChunkData(data)) return
+        if (!isAssistantChunkData(data)) { reportDroppedEvent('assistant_chunk', data); return }
         const store = useChatStore.getState()
         store.setActivityStatus('Generating response...')
         if (data.accumulated_content !== undefined) {
@@ -53,7 +53,7 @@ export function useChatEvents(sessionId: string | null): void {
     // --- thought ---
     cleanups.push(
       onSessionEvent(sessionId, 'thought', (data) => {
-        if (!isThoughtData(data)) return
+        if (!isThoughtData(data)) { reportDroppedEvent('thought', data); return }
         useChatStore.getState().setActivityStatus('Reasoning...')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
@@ -69,7 +69,7 @@ export function useChatEvents(sessionId: string | null): void {
     // --- error ---
     cleanups.push(
       onSessionEvent(sessionId, 'error', (data) => {
-        if (!isErrorData(data)) return
+        if (!isErrorData(data)) { reportDroppedEvent('error', data); return }
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -87,7 +87,7 @@ export function useChatEvents(sessionId: string | null): void {
     // --- task_complete ---
     cleanups.push(
       onSessionEvent(sessionId, 'task_complete', (data) => {
-        if (!isTaskCompleteData(data)) return
+        if (!isTaskCompleteData(data)) { reportDroppedEvent('task_complete', data); return }
         const store = useChatStore.getState()
         store.clearStreamingText()
         store.setActivityStatus(null)
@@ -98,6 +98,20 @@ export function useChatEvents(sessionId: string | null): void {
             sessionId,
             type: 'assistant',
             content: data.output,
+            timestamp: Date.now(),
+          })
+        }
+        // Degraded completion (partial/failed/aborted): surface it explicitly
+        // instead of letting the task end look like a clean success.
+        if (data.success === false) {
+          const failed = data.failed_steps
+            ? ` (${data.failed_steps} step${data.failed_steps === 1 ? '' : 's'} failed)`
+            : ''
+          store.addMessage(sessionId, {
+            id: generateMessageId(),
+            sessionId,
+            type: 'error',
+            content: `Task finished with ${data.completion ?? 'incomplete'} execution${failed}. The output above may be incomplete.`,
             timestamp: Date.now(),
           })
         }
@@ -124,7 +138,7 @@ export function useChatEvents(sessionId: string | null): void {
     // --- reflection ---
     cleanups.push(
       onSessionEvent(sessionId, 'reflection', (data) => {
-        if (!isReflectionData(data)) return
+        if (!isReflectionData(data)) { reportDroppedEvent('reflection', data); return }
         useChatStore.getState().setActivityStatus('Reflecting on results...')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),

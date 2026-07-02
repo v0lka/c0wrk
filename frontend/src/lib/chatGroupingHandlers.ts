@@ -87,12 +87,13 @@ export function handleToolCall(
   const key = meta ? resolveToolKey(meta, planStepId) : undefined
   const hasResult = meta?.completed === true
   const isAwaiting = meta?.awaiting_confirmation === true
+  const isError = meta?.error === true
   const toolItem: DisplayItem & { kind: 'tool' } = {
     kind: 'tool', id: msg.id, toolName: toolName || 'Tool', args: (meta?.args as string) || '',
     parsedArgs: meta?.parsed_args as Record<string, unknown> | undefined,
     result: hasResult ? ((meta?.result as string) ?? (meta?.result_preview as string)) : undefined,
     resultLen: hasResult ? (meta?.result_len as number) : undefined,
-    status: hasResult ? 'success' : (isAwaiting ? 'awaiting_confirmation' : 'running'),
+    status: hasResult ? (isError ? 'error' : 'success') : (isAwaiting ? 'awaiting_confirmation' : 'running'),
     source: meta?.source as string | undefined,
   }
   applyPending(toolItem, key, toolItemsByKey, pendingResults)

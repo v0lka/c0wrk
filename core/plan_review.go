@@ -57,7 +57,7 @@ func (o *Orchestrator) HandlePlanReview(
 	singleStep := o.shouldUseSingleStep(opts.ExecutionMode)
 	o.logDebug("orchestrator: HandlePlanReview generating plan", "mode", opts.ExecutionMode, "singleStep", singleStep)
 
-	plan, planErr := o.planner.Plan(ctx, message, availableTools, nil, activeSkills, singleStep)
+	plan, planErr := o.planner.Plan(ctx, message, availableTools, nil, activeSkills, singleStep, o.plannerHistory())
 	if planErr != nil {
 		o.logDebug("orchestrator: planning failed", "error", planErr)
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -177,7 +177,7 @@ func (o *Orchestrator) PlanWithFeedback(
 
 	o.logDebug("orchestrator: PlanWithFeedback", "originalMsgLen", len(originalMessage), "feedbackLen", len(feedback))
 
-	plan, err := o.planner.Plan(ctx, enrichedMsg.String(), availableTools, nil, activeSkills, singleStep)
+	plan, err := o.planner.Plan(ctx, enrichedMsg.String(), availableTools, nil, activeSkills, singleStep, o.plannerHistory())
 	if err != nil {
 		return nil, fmt.Errorf("replanning with feedback failed: %w", err)
 	}

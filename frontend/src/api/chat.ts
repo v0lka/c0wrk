@@ -73,3 +73,36 @@ export async function cancelUnfinishedTask(sessionId: string): Promise<void> {
     throw err
   }
 }
+
+/** Live/persisted execution state of a session (see backend GetSessionRuntimeStatus). */
+export interface SessionRuntimeStatus {
+  active: boolean
+  has_unfinished_task: boolean
+  unfinished_task_id?: string
+}
+
+function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {
+  return typeof d === 'object' && d !== null
+    && typeof (d as Record<string, unknown>).active === 'boolean'
+    && typeof (d as Record<string, unknown>).has_unfinished_task === 'boolean'
+}
+
+/**
+ * Query whether a task is running in the session and whether an unfinished
+ * (resumable) task is persisted. Returns null on failure — callers must treat
+ * null as "unknown", not as "idle".
+ */
+export async function getSessionRuntimeStatus(sessionId: string): Promise<SessionRuntimeStatus | null> {
+  try {
+    const app = getApp()
+    const result = await app.GetSessionRuntimeStatus(sessionId)
+    if (!isSessionRuntimeStatus(result)) {
+      logger.error('getSessionRuntimeStatus: unexpected response shape', result)
+      return null
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get session runtime status:', err)
+    return null
+  }
+}
