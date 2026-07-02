@@ -70,7 +70,7 @@ const defaultMaxExploreSteps = 7
 // Planner generates DAG execution plans for complex tasks.
 type Planner struct {
 	llm agent.LLMCaller
-	Cfg Config  // public so the builder can wire dependencies after creation
+	Cfg Config // public so the builder can wire dependencies after creation
 }
 
 // NewPlanner creates a new Planner with the given LLM caller and configuration.
@@ -581,7 +581,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 				break
 			}
 		}
-		fmt.Fprintf(&planSummaryBuilder, "- %s: %s", step.ID, step.Description)
+		fmt.Fprintf(&planSummaryBuilder, "- [COMPLETED] %s: %s", step.ID, step.Description)
 		if summary != "" {
 			fmt.Fprintf(&planSummaryBuilder, " → %s", summary)
 		}
