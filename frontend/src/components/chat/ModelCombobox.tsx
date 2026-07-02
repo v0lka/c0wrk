@@ -1,7 +1,9 @@
-import { useMemo } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
 import { useDropdown } from '@/hooks/useDropdown'
+import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
 import { PROVIDER_LABELS, type ProviderKey } from '@/lib/llm-providers'
 
 interface ModelEntry {
@@ -11,16 +13,39 @@ interface ModelEntry {
 }
 
 /**
+ * Portal positioning constants (viewport-space, pixels).
+ *  - MAX_DROPDOWN_HEIGHT mirrors the `max-h-64` (256px) cap on the menu so the
+ *    up/down decision is correct before the first measurement is available.
+ *  - MIN_WIDTH keeps long model names readable (matches the previous `w-72`).
+ *  - GAP is the space kept between the trigger and the menu.
+ *  - Z_INDEX sits above the message input area (auto), chat area (z-10/z-20)
+ *    and pending actions bar (auto), matching the project's popover/dialog
+ *    `z-50` layer so the portaled menu is never covered.
+ */
+const MAX_DROPDOWN_HEIGHT = 256
+const MIN_WIDTH = 288
+const GAP = 6
+const Z_INDEX = 50
+
+/**
  * ModelCombobox renders a compact dropdown in the chat toolbar for selecting
  * a per-message model override.  "Default" means the global default_model is used.
  * The selection is persisted in inputModeStore and survives restarts.
+ *
+ * The menu is rendered through a React portal to `document.body` with
+ * `position: fixed` so it is never clipped by the message input area's
+ * `overflow-hidden` ancestor (see ChatInput). It opens upward or downward
+ * depending on available space and tracks window resize/scroll while open.
  */
 export function ModelCombobox() {
   const selectedModel = useInputModeStore((s) => s.selectedModel)
   const setSelectedModel = useInputModeStore((s) => s.setSelectedModel)
 
   const { allModels: modelInfos, defaultModel, loaded } = useConfigData()
-  const { isOpen, setIsOpen, containerRef } = useDropdown()
+  const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown()
+
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [position, setPosition] = useState<DropdownPosition | null>(null)
 
   // Convert ModelInfo[] → ModelEntry[] (flat list of enabled models per provider).
   const allModels: ModelEntry[] = useMemo(() => {
@@ -58,13 +83,57 @@ export function ModelCombobox() {
 
   const isLoading = !loaded
 
+  // Position the portaled menu whenever it is open, and recompute on resize or
+  // any scroll (capture phase so nested scroll containers are covered too).
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPosition(null)
+      return
+    }
+
+    const recompute = () => {
+      const trigger = triggerRef.current
+      if (!trigger) return
+      const rect = trigger.getBoundingClientRect()
+      const menu = menuRef.current
+      // Use the rendered height once available; otherwise fall back to the
+      // max-height cap so the direction decision is correct on first paint.
+      const dropdownHeight = menu && menu.offsetHeight > 0 ? menu.offsetHeight : MAX_DROPDOWN_HEIGHT
+      setPosition(
+        computeDropdownPosition({
+          triggerRect: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width },
+          dropdownHeight,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+          gap: GAP,
+          minWidth: MIN_WIDTH,
+        }),
+      )
+    }
+
+    recompute()
+    window.addEventListener('resize', recompute)
+    window.addEventListener('scroll', recompute, true)
+    return () => {
+      window.removeEventListener('resize', recompute)
+      window.removeEventListener('scroll', recompute, true)
+    }
+  }, [isOpen, menuRef])
+
+  const close = () => {
+    setIsOpen(false)
+    triggerRef.current?.focus()
+  }
+
   return (
     <div className="relative shrink-0" ref={containerRef}>
       <button
+        ref={triggerRef}
         type="button"
         disabled={isLoading}
         className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[200px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
         onClick={() => setIsOpen((v) => !v)}
+        onKeyDown={(e) => { if (e.key === 'Escape' && isOpen) { e.stopPropagation(); close() } }}
         title={isLoading ? 'Loading models…' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveModel}` : displayLabel}
       >
         <span className="truncate">{isLoading ? 'Loading models\u2026' : displayLabel}</span>
@@ -73,8 +142,22 @@ export function ModelCombobox() {
         </svg>
       </button>
 
-      {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-72 rounded-md border bg-popover shadow-md z-50 max-h-64 overflow-y-auto custom-scrollbar">
+      {isOpen && createPortal(
+        <div
+          ref={menuRef}
+          role="listbox"
+          aria-label="Select model"
+          className="rounded-md border bg-popover shadow-md max-h-64 overflow-y-auto custom-scrollbar"
+          style={{
+            position: 'fixed',
+            top: position?.top ?? 0,
+            left: position?.left ?? 0,
+            width: position?.width ?? MIN_WIDTH,
+            visibility: position ? 'visible' : 'hidden',
+            zIndex: Z_INDEX,
+          }}
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); close() } }}
+        >
           {isLoading ? (
             <div className="px-3 py-4 text-xs text-muted-foreground text-center">
               Loading models…
@@ -131,7 +214,8 @@ export function ModelCombobox() {
               )}
             </>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
