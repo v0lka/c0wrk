@@ -265,6 +265,35 @@ body {
     color: var(--tw-prose-bold);
 }
 
+/* ==========================================================================
+   User Message Prose — Overflow prevention for user messages
+   ========================================================================== */
+
+/* Links: force long URLs to wrap instead of overflowing */
+.user-message-prose a {
+    word-break: break-all;
+    overflow-wrap: anywhere;
+}
+
+/* Inline code (not inside pre): allow breaking on long tokens */
+.user-message-prose :where(code):not(:where(pre *)) {
+    word-break: break-all;
+}
+
+/* Pre blocks: wrap lines, no horizontal scroll */
+.user-message-prose pre {
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-width: 100%;
+}
+
+/* Pre code: inherit wrapping */
+.user-message-prose pre code {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
 .prose h1,
 .prose h2,
 .prose h3,
@@ -464,8 +493,31 @@ body {
 }
 
 /* ==========================================================================
-   CodeMirror — Chat Input Editor
+   User Message Prose — Overflow prevention for user messages
+   Forces long content (URLs, code blocks) to wrap/break instead of
+   stretching the message bubble beyond its max-width.
    ========================================================================== */
+
+.user-message-prose a {
+    word-break: break-all;
+    overflow-wrap: anywhere;
+}
+
+.user-message-prose :where(code):not(:where(pre *)) {
+    word-break: break-all;
+}
+
+.user-message-prose pre {
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-width: 100%;
+}
+
+.user-message-prose pre code {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
 
 .cm-chat-container {
     height: 100%;

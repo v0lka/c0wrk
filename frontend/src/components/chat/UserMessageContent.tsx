@@ -79,7 +79,7 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
 
     // If no references, fall back to standard Markdown rendering.
     if (!hasRefs) {
-        return <Markdown content={content} />
+        return <Markdown content={content} className="user-message-prose" />
     }
 
     return (

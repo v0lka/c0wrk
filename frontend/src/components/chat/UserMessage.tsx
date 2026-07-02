@@ -45,8 +45,8 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
 
   if (!isPinned) {
     return (
-      <div className="flex flex-col items-end gap-1 max-w-[80%] ml-auto" data-message-id={item.message.id}>
-        <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5">
+      <div className="flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0" data-message-id={item.message.id}>
+        <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden">
           <UserMessageContent content={content} />
         </div>
         <span className="text-xs text-muted-foreground px-1">{formattedTime}</span>
@@ -65,8 +65,8 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
       tabIndex={isOverflowing ? 0 : undefined}
       aria-expanded={isOverflowing ? effectiveExpanded : undefined}
     >
-      <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto">
-        <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5">
+      <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0">
+        <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden">
           <UserMessageContent content={content} />
         </div>
         <span className="text-xs text-muted-foreground px-1">{formattedTime}</span>
