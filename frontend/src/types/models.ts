@@ -61,6 +61,18 @@ export interface FileEntry {
 export interface GitStatusEntry {
   status: string
   staged: boolean
+  index_status: string
+  worktree_status: string
+}
+
+export interface DiffStat {
+  added: number
+  deleted: number
+}
+
+export interface Branch {
+  name: string
+  is_current: boolean
 }
 
 export type SearchMode = 'hybrid' | 'vector' | 'lexical'

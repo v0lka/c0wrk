@@ -58,6 +58,7 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"PlannerAgentProfiles", PlannerAgentProfiles},
 		{"PlannerExtraSections", PlannerExtraSections},
 		{"PlannerContinuationPreamble", PlannerContinuationPreamble},
+		{"PlannerContinuationIncompletePreamble", PlannerContinuationIncompletePreamble},
 		{"PlannerContinuationSingleStep", PlannerContinuationSingleStep},
 	}
 

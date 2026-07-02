@@ -842,6 +842,34 @@ export namespace session {
 
 export namespace workspace {
 	
+	export class Branch {
+	    name: string;
+	    is_current: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Branch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.is_current = source["is_current"];
+	    }
+	}
+	export class DiffStat {
+	    added: number;
+	    deleted: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.added = source["added"];
+	        this.deleted = source["deleted"];
+	    }
+	}
 	export class FileNode {
 	    name: string;
 	    path: string;

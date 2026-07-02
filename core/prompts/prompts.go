@@ -84,6 +84,9 @@ var PlannerExtraSections string
 //go:embed planner_continuation_preamble.md
 var PlannerContinuationPreamble string
 
+//go:embed planner_incomplete_continuation_preamble.md
+var PlannerContinuationIncompletePreamble string
+
 //go:embed planner_continuation_single_step.md
 var PlannerContinuationSingleStep string
 

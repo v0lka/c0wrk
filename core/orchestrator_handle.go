@@ -294,17 +294,26 @@ func (o *Orchestrator) executeContinuation(
 	singleStep := o.shouldUseSingleStep(opts.ExecutionMode)
 	allResults := bb.GetAllStepResults()
 	completedSteps := make([]orchestration.CompletedStep, 0, len(allResults))
+	var succeededCount int
 	for _, step := range existingPlan.Steps {
 		if sr, ok := allResults[step.ID]; ok {
 			completedSteps = append(completedSteps, orchestration.CompletedStep{
 				StepID: step.ID,
 				Output: sr.FullOutput,
 				Steps:  sr.Steps,
+				Error:  sr.Error, // Populate Error for accurate status labels in buildContinuationSystemPrompt.
 			})
+			if sr.Error == nil {
+				succeededCount++
+			}
 		}
 	}
 
-	o.logDebug("orchestrator: calling PlanContinuation", "singleStep", singleStep)
+	// Determine whether the task is fully complete (all plan steps have a
+	// successful result). Used to select the appropriate continuation preamble.
+	taskComplete := succeededCount == len(existingPlan.Steps)
+
+	o.logDebug("orchestrator: calling PlanContinuation", "singleStep", singleStep, "taskComplete", taskComplete)
 
 	// Compact conversation history for the planner if it exceeds the token budget.
 	// The in-memory conversationHistory is NOT modified; only the planner sees the compacted version.
@@ -318,7 +327,7 @@ func (o *Orchestrator) executeContinuation(
 		}
 	}
 
-	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep, plannerHistory)
+	continuationPlan, planErr := o.planner.PlanContinuation(ctx, bb.GetOriginalRequest(), existingPlan, completedSteps, message, availableTools, activeSkills, singleStep, plannerHistory, taskComplete)
 	if planErr != nil {
 		o.logDebug("orchestrator: PlanContinuation failed", "error", planErr)
 		if pbb, ok := bb.(PersistableBlackboard); ok {

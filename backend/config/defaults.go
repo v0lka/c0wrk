@@ -283,10 +283,10 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Orchestration.MaxSummaryLength = 500
 	}
 	if cfg.Orchestration.PlannerHistoryBudgetTokens == 0 {
-		cfg.Orchestration.PlannerHistoryBudgetTokens = 4000
+		cfg.Orchestration.PlannerHistoryBudgetTokens = 8000
 	}
 	if cfg.Orchestration.PlannerHistoryKeepRecentRatio == 0 {
-		cfg.Orchestration.PlannerHistoryKeepRecentRatio = 0.75
+		cfg.Orchestration.PlannerHistoryKeepRecentRatio = 0.85
 	}
 	if cfg.Orchestration.MaxJudgeCacheSize == 0 {
 		cfg.Orchestration.MaxJudgeCacheSize = 1000

@@ -48,12 +48,12 @@ func (w *wailsLogAdapter) SetDelegate(l *slog.Logger) {
 func (w *wailsLogAdapter) write(level slog.Level, msg string) {
 	w.logger.Log(nil, level, msg) //nolint:staticcheck // nil ctx acceptable for this adapter
 	if w.delegate != nil {
-		w.delegate.Log(nil, level, msg) //nolint:staticcheck
+		w.delegate.Log(nil, level, msg) //nolint:staticcheck // nil ctx acceptable for this adapter
 	}
 }
 
 func (w *wailsLogAdapter) Print(message string)      { w.write(slog.LevelInfo, strings.TrimRight(message, "\n")) }
-func (w *wailsLogAdapter) Trace(message string)      { w.write(slog.LevelDebug-4, strings.TrimRight(message, "\n")) } //nolint:mnd
+func (w *wailsLogAdapter) Trace(message string)      { w.write(slog.LevelDebug-4, strings.TrimRight(message, "\n")) } //nolint:mnd // trace level 4 below debug
 func (w *wailsLogAdapter) Debug(message string)      { w.write(slog.LevelDebug, strings.TrimRight(message, "\n")) }
 func (w *wailsLogAdapter) Info(message string)       { w.write(slog.LevelInfo, strings.TrimRight(message, "\n")) }
 func (w *wailsLogAdapter) Warning(message string)    { w.write(slog.LevelWarn, strings.TrimRight(message, "\n")) }

@@ -48,6 +48,11 @@ const EventProjectSwitched = "project:switched"
 // in the active workspace.
 const EventWorkspaceTreeChanged = "workspace:tree_changed"
 
+// EventGitStatusChanged is emitted when the git staging area changes
+// (stage, unstage, commit). The payload is the repository path so the
+// frontend knows which project was affected.
+const EventGitStatusChanged = "git:status_changed"
+
 // EventSessionsLoaded is emitted when all sessions have been loaded from disk.
 const EventSessionsLoaded = "sessions:loaded"
 

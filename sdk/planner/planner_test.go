@@ -804,7 +804,7 @@ func TestPlanContinuation_Success(t *testing.T) {
 		Steps: []orchestration.PlanStep{{ID: "step_1", Description: "done step"}},
 	}
 
-	plan, err := p.PlanContinuation(context.Background(), "original", existingPlan, nil, "continue work", nil, nil, false, nil)
+	plan, err := p.PlanContinuation(context.Background(), "original", existingPlan, nil, "continue work", nil, nil, false, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -823,7 +823,7 @@ func TestPlanContinuation_SingleStepTruncation(t *testing.T) {
 	cfg.Prompts.SingleStepGuidance = ""
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	plan, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, true, nil)
+	plan, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, true, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1251,7 +1251,7 @@ func TestPlanContinuation_LLMError(t *testing.T) {
 	cfg.Prompts.ContinuationPreamble = "cont-preamble"
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false, nil)
+	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false, nil, true)
 	if err == nil {
 		t.Error("expected error from LLM failure")
 	}
@@ -1269,7 +1269,7 @@ func TestPlanContinuation_ParseError(t *testing.T) {
 	cfg.Prompts.ContinuationPreamble = "cont-preamble"
 	p := &Planner{llm: caller, Cfg: cfg}
 
-	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false, nil)
+	_, err := p.PlanContinuation(context.Background(), "original", &orchestration.Plan{}, nil, "continue", nil, nil, false, nil, true)
 	if err == nil {
 		t.Error("expected error from parse failure")
 	}
@@ -1412,5 +1412,182 @@ func TestParsePlanResponse_MarkdownJSONNoClosingBackticks(t *testing.T) {
 	}
 	if len(plan.Steps) != 1 {
 		t.Fatalf("expected 1 step, got %d", len(plan.Steps))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildContinuationSystemPrompt: step status labels
+// ---------------------------------------------------------------------------
+
+func TestBuildContinuationSystemPrompt_AllCompleted(t *testing.T) {
+	cfg := makeTestConfig("CONT: {ORIGINAL-REQUEST} | {COMPLETED-PLAN-SUMMARY} | {TERMINAL-STEPS} | {RECENT-CONVERSATION}")
+	cfg.Prompts.ContinuationPreamble = "cont-preamble"
+	p := &Planner{Cfg: cfg}
+
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "first task"},
+			{ID: "step_2", Description: "second task"},
+		},
+	}
+	completedSteps := []orchestration.CompletedStep{
+		{StepID: "step_1", Output: "done 1", Error: nil},
+		{StepID: "step_2", Output: "done 2", Error: nil},
+	}
+
+	mode := p.continuationMultiMode()
+	result := p.buildContinuationSystemPrompt(context.Background(), mode, "original request", existingPlan, completedSteps, nil, nil, nil)
+
+	if !strings.Contains(result, "[COMPLETED] step_1: first task") {
+		t.Error("expected step_1 to be marked [COMPLETED]")
+	}
+	if !strings.Contains(result, "[COMPLETED] step_2: second task") {
+		t.Error("expected step_2 to be marked [COMPLETED]")
+	}
+	if strings.Contains(result, "[FAILED]") {
+		t.Error("expected no [FAILED] labels when all steps succeeded")
+	}
+	if strings.Contains(result, "[PENDING]") {
+		t.Error("expected no [PENDING] labels when all steps completed")
+	}
+}
+
+func TestBuildContinuationSystemPrompt_MixedStatus(t *testing.T) {
+	cfg := makeTestConfig("CONT: {ORIGINAL-REQUEST} | {COMPLETED-PLAN-SUMMARY} | {TERMINAL-STEPS} | {RECENT-CONVERSATION}")
+	cfg.Prompts.ContinuationPreamble = "cont-preamble"
+	p := &Planner{Cfg: cfg}
+
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "first task"},
+			{ID: "step_2", Description: "second task"},
+			{ID: "step_3", Description: "third task"},
+		},
+	}
+	completedSteps := []orchestration.CompletedStep{
+		{StepID: "step_1", Output: "done", Error: nil},             // COMPLETED
+		{StepID: "step_2", Output: "partial", Error: errors.New("timeout")}, // FAILED
+		// step_3: not present → PENDING
+	}
+
+	mode := p.continuationMultiMode()
+	result := p.buildContinuationSystemPrompt(context.Background(), mode, "original request", existingPlan, completedSteps, nil, nil, nil)
+
+	if !strings.Contains(result, "[COMPLETED] step_1: first task") {
+		t.Error("expected step_1 to be marked [COMPLETED]")
+	}
+	if !strings.Contains(result, "[FAILED] step_2: second task") {
+		t.Error("expected step_2 to be marked [FAILED]")
+	}
+	if !strings.Contains(result, "[PENDING] step_3: third task") {
+		t.Error("expected step_3 to be marked [PENDING]")
+	}
+}
+
+func TestBuildContinuationSystemPrompt_AllFailed(t *testing.T) {
+	cfg := makeTestConfig("CONT: {ORIGINAL-REQUEST} | {COMPLETED-PLAN-SUMMARY} | {TERMINAL-STEPS} | {RECENT-CONVERSATION}")
+	cfg.Prompts.ContinuationPreamble = "cont-preamble"
+	p := &Planner{Cfg: cfg}
+
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "first task"},
+			{ID: "step_2", Description: "second task"},
+		},
+	}
+	completedSteps := []orchestration.CompletedStep{
+		{StepID: "step_1", Output: "oops", Error: errors.New("crash")},
+		{StepID: "step_2", Output: "", Error: errors.New("panic")},
+	}
+
+	mode := p.continuationMultiMode()
+	result := p.buildContinuationSystemPrompt(context.Background(), mode, "original request", existingPlan, completedSteps, nil, nil, nil)
+
+	if strings.Contains(result, "[COMPLETED]") {
+		t.Error("expected no [COMPLETED] labels when all steps failed")
+	}
+	if !strings.Contains(result, "[FAILED] step_1: first task") {
+		t.Error("expected step_1 to be marked [FAILED]")
+	}
+	if !strings.Contains(result, "[FAILED] step_2: second task") {
+		t.Error("expected step_2 to be marked [FAILED]")
+	}
+	if strings.Contains(result, "[PENDING]") {
+		t.Error("expected no [PENDING] labels when all steps have results")
+	}
+}
+
+func TestBuildContinuationSystemPrompt_AllPending(t *testing.T) {
+	cfg := makeTestConfig("CONT: {ORIGINAL-REQUEST} | {COMPLETED-PLAN-SUMMARY} | {TERMINAL-STEPS} | {RECENT-CONVERSATION}")
+	cfg.Prompts.ContinuationPreamble = "cont-preamble"
+	p := &Planner{Cfg: cfg}
+
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "first task"},
+			{ID: "step_2", Description: "second task"},
+		},
+	}
+	// No completed steps at all — all pending.
+
+	mode := p.continuationMultiMode()
+	result := p.buildContinuationSystemPrompt(context.Background(), mode, "original request", existingPlan, nil, nil, nil, nil)
+
+	if strings.Contains(result, "[COMPLETED]") {
+		t.Error("expected no [COMPLETED] labels when no steps have results")
+	}
+	if strings.Contains(result, "[FAILED]") {
+		t.Error("expected no [FAILED] labels when no steps have results")
+	}
+	if !strings.Contains(result, "[PENDING] step_1: first task") {
+		t.Error("expected step_1 to be marked [PENDING]")
+	}
+	if !strings.Contains(result, "[PENDING] step_2: second task") {
+		t.Error("expected step_2 to be marked [PENDING]")
+	}
+}
+
+func TestBuildContinuationSystemPrompt_IncludesErrorDetails(t *testing.T) {
+	cfg := makeTestConfig("CONT: {ORIGINAL-REQUEST} | {COMPLETED-PLAN-SUMMARY} | {TERMINAL-STEPS} | {RECENT-CONVERSATION}")
+	cfg.Prompts.ContinuationPreamble = "cont-preamble"
+	p := &Planner{Cfg: cfg}
+
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "compile"},
+		},
+	}
+	completedSteps := []orchestration.CompletedStep{
+		{StepID: "step_1", Output: "build output", Error: errors.New("syntax error at line 42")},
+	}
+
+	mode := p.continuationMultiMode()
+	result := p.buildContinuationSystemPrompt(context.Background(), mode, "original request", existingPlan, completedSteps, nil, nil, nil)
+
+	if !strings.Contains(result, "syntax error at line 42") {
+		t.Error("expected error message to appear in the prompt summary")
+	}
+}
+
+func TestBuildContinuationSystemPrompt_TerminalStepsIncluded(t *testing.T) {
+	cfg := makeTestConfig("CONT: {ORIGINAL-REQUEST} | {COMPLETED-PLAN-SUMMARY} | {TERMINAL-STEPS} | {RECENT-CONVERSATION}")
+	cfg.Prompts.ContinuationPreamble = "cont-preamble"
+	p := &Planner{Cfg: cfg}
+
+	existingPlan := &orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Description: "first"},
+			{ID: "step_2", Description: "second", DependsOn: []string{"step_1"}},
+		},
+	}
+
+	mode := p.continuationMultiMode()
+	result := p.buildContinuationSystemPrompt(context.Background(), mode, "original request", existingPlan, nil, nil, nil, nil)
+
+	if !strings.Contains(result, "step_2") {
+		t.Error("expected terminal step ID in prompt")
+	}
+	if !strings.Contains(result, "original request") {
+		t.Error("expected original request in prompt")
 	}
 }

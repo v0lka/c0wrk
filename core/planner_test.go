@@ -1217,7 +1217,7 @@ func TestPlanContinuation(t *testing.T) {
 	}
 	newMessage := "Now add a version flag"
 
-	plan, err := p.PlanContinuation(context.Background(), originalRequest, existingPlan, completedSteps, newMessage, nil, nil, false, nil)
+	plan, err := p.PlanContinuation(context.Background(), originalRequest, existingPlan, completedSteps, newMessage, nil, nil, false, nil, true)
 	if err != nil {
 		t.Fatalf("PlanContinuation() returned error: %v", err)
 	}
@@ -1392,7 +1392,7 @@ func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
 		{StepID: "step_1", Output: "done"},
 	}
 
-	_, err := p.PlanContinuation(ctx, "Original request", existingPlan, completedSteps, "Follow-up", nil, nil, false, nil)
+	_, err := p.PlanContinuation(ctx, "Original request", existingPlan, completedSteps, "Follow-up", nil, nil, false, nil, true)
 	if err != nil {
 		t.Fatalf("PlanContinuation() returned error: %v", err)
 	}

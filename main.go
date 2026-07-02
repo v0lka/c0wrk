@@ -19,6 +19,10 @@ import (
 var assets embed.FS
 
 func main() {
+	os.Exit(mainImpl())
+}
+
+func mainImpl() int {
 	// Top-level panic recovery captures any unrecovered panic in the
 	// main goroutine (e.g. a nil dereference in a goroutine without its
 	// own recover). Logs the stack trace to the default logger and the
@@ -77,6 +81,7 @@ func main() {
 		_ = wlog.Close()
 	}
 	if runErr != nil {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }

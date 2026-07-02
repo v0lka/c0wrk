@@ -15,8 +15,9 @@ type PromptSet struct {
 	SingleStepToT          string
 	MultiStepGuidance      string
 	SingleStepGuidance     string
-	ContinuationPreamble   string
-	ContinuationSingleStep string
+	ContinuationPreamble           string
+	ContinuationIncompletePreamble string
+	ContinuationSingleStep         string
 
 	// Shared sections
 	DomainAssignment string

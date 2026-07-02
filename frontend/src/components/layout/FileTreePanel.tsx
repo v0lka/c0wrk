@@ -45,11 +45,11 @@ function propagateGitStatus(gitStatus: Record<string, GitStatusEntry>): {
     if (signatures.size === 1) {
       for (const sig of signatures) {
         const parts = sig.split(':')
-        result[dir] = { status: parts[0]!, staged: parts[1] === 'true' }
+          result[dir] = { status: parts[0]!, staged: parts[1] === 'true', index_status: parts[1] === 'true' ? parts[0]! : '', worktree_status: parts[1] === 'true' ? '' : parts[0]! }
         break
       }
     } else {
-      result[dir] = { status: 'M', staged: false }
+      result[dir] = { status: 'M', staged: false, index_status: '', worktree_status: 'M' }
     }
   }
 

@@ -47,10 +47,10 @@ High-level layers and responsibilities:
 
 - **React 19** + **TypeScript ~5.7** + **Vite 6**
 - **Tailwind CSS v4** (One Dark theme via `@theme` custom properties)
-- **Zustand 5** for state management (12 domain stores: chat, plan, sessions, projects, file tree, file viewer, input mode, execution mode, blackboard, settings, UI, vector index)
+- **Zustand 5** for state management (13 domain stores: chat, plan, plan review, session, projects, file tree, file viewer, input mode, execution mode, blackboard, settings, UI, vector index)
 - **shadcn/ui** (new-york style) + **Radix UI** primitives
 - **lucide-react** icons, **react-markdown** 10, **highlight.js** 11, **Mermaid** 11 (lazy-loaded)
-- Communication with Go via Wails-generated RPC bindings + session-scoped events (25+ event types)
+- Communication with Go via Wails-generated RPC bindings + session-scoped events (41+ event types)
 
 ## Requirements
 
@@ -139,7 +139,7 @@ Key points:
 - MCP servers are configured under `mcp.servers`.
 - Security defaults and per-tool policies are configured under `security`.
 - Runtime limits are configurable under `toolLimits`, `timeouts`, and `executor`.
-- Database path defaults to the app directory when `memory.database` is empty (commented in sample config as `${c0wrk}/database.db`).
+- SQLite database is always stored at `~/.c0wrk/database.db` (the `memory.database` config key has been retired).
 
 ## Development Commands
 

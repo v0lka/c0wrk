@@ -364,8 +364,8 @@ func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan
 	return a.planner.Replan(ctx, plan, completed, failedStep, reflection, reflections, a.skillsFor())
 }
 
-func (a *plannerSDKAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []sdktools.ToolDescriptor, conversationHistory []llm.Message) (*orchestration.Plan, error) {
-	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, filterPlannerPromptTools(availableTools), a.skillsFor(), false, conversationHistory)
+func (a *plannerSDKAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []sdktools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*orchestration.Plan, error) {
+	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, filterPlannerPromptTools(availableTools), a.skillsFor(), false, conversationHistory, taskComplete)
 }
 
 // logInfo logs an INFO level message if logger is not nil.

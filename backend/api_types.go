@@ -123,6 +123,14 @@ type FileIconResponse struct {
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type GitStatusEntry = workspace.GitStatusEntry
 
+// DiffStat reports the number of added and deleted lines in a diff.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type DiffStat = workspace.DiffStat
+
+// Branch represents a local git branch.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type Branch = workspace.Branch
+
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {
 	TotalInputTokens  int    `json:"total_input_tokens"`

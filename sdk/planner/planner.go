@@ -240,10 +240,17 @@ func (p *Planner) PlanContinuation(
 	availableSkills []skills.SkillDescriptor,
 	singleStep bool,
 	conversationHistory []llm.Message,
+	taskComplete bool,
 ) (*orchestration.Plan, error) {
 	mode := p.continuationMultiMode()
 	if singleStep {
 		mode = p.continuationSingleMode()
+	}
+	// When the task was not fully completed, use the incomplete-continuation
+	// preamble that instructs the planner to finish only remaining work and
+	// not re-execute already-completed steps.
+	if !taskComplete && p.Cfg.Prompts.ContinuationIncompletePreamble != "" {
+		mode.preamble = p.Cfg.Prompts.ContinuationIncompletePreamble
 	}
 
 	systemPrompt := p.buildContinuationSystemPrompt(ctx, mode, originalRequest, existingPlan, completedSteps, availableTools, availableSkills, conversationHistory)
@@ -570,20 +577,35 @@ func (p *Planner) buildContinuationSystemPrompt(
 	availableSkills []skills.SkillDescriptor,
 	conversationHistory []llm.Message,
 ) string {
+	// Build a map for O(1) lookup of completed steps by ID.
+	completedMap := make(map[string]orchestration.CompletedStep, len(completedSteps))
+	for _, cs := range completedSteps {
+		completedMap[cs.StepID] = cs
+	}
+
 	var planSummaryBuilder strings.Builder
 	for _, step := range existingPlan.Steps {
-		var summary string
-		for _, cs := range completedSteps {
-			if cs.StepID == step.ID {
-				if cs.Output != "" {
-					summary = cs.Output
-				}
-				break
-			}
+		cs, hasResult := completedMap[step.ID]
+
+		var status string
+		switch {
+		case hasResult && cs.Error == nil:
+			status = "[COMPLETED]"
+		case hasResult && cs.Error != nil:
+			status = "[FAILED]"
+		default:
+			status = "[PENDING]"
 		}
-		fmt.Fprintf(&planSummaryBuilder, "- [COMPLETED] %s: %s", step.ID, step.Description)
-		if summary != "" {
-			fmt.Fprintf(&planSummaryBuilder, " → %s", summary)
+
+		planSummaryBuilder.WriteString("- ")
+		planSummaryBuilder.WriteString(status)
+		fmt.Fprintf(&planSummaryBuilder, " %s: %s", step.ID, step.Description)
+
+		if hasResult && cs.Output != "" {
+			fmt.Fprintf(&planSummaryBuilder, " → %s", cs.Output)
+		}
+		if hasResult && cs.Error != nil {
+			fmt.Fprintf(&planSummaryBuilder, " [Error: %v]", cs.Error)
 		}
 		planSummaryBuilder.WriteString("\n")
 	}

@@ -18,6 +18,10 @@ export function CancelUnfinishedTask(arg1) {
   return window['go']['desktop']['App']['CancelUnfinishedTask'](arg1);
 }
 
+export function Commit(arg1) {
+  return window['go']['desktop']['App']['Commit'](arg1);
+}
+
 export function CreateProject(arg1, arg2) {
   return window['go']['desktop']['App']['CreateProject'](arg1, arg2);
 }
@@ -38,8 +42,20 @@ export function GetBlackboardState(arg1) {
   return window['go']['desktop']['App']['GetBlackboardState'](arg1);
 }
 
+export function GetBranches() {
+  return window['go']['desktop']['App']['GetBranches']();
+}
+
 export function GetConfig() {
   return window['go']['desktop']['App']['GetConfig']();
+}
+
+export function GetCurrentBranch() {
+  return window['go']['desktop']['App']['GetCurrentBranch']();
+}
+
+export function GetDiffStat(arg1) {
+  return window['go']['desktop']['App']['GetDiffStat'](arg1);
 }
 
 export function GetFileDiff(arg1) {
@@ -182,6 +198,14 @@ export function SetWailsLogger(arg1) {
   return window['go']['desktop']['App']['SetWailsLogger'](arg1);
 }
 
+export function StageAll() {
+  return window['go']['desktop']['App']['StageAll']();
+}
+
+export function StageFile(arg1) {
+  return window['go']['desktop']['App']['StageFile'](arg1);
+}
+
 export function StartTerminal(arg1) {
   return window['go']['desktop']['App']['StartTerminal'](arg1);
 }
@@ -200,6 +224,14 @@ export function TerminalInput(arg1, arg2) {
 
 export function TerminalResize(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['TerminalResize'](arg1, arg2, arg3);
+}
+
+export function UnstageAll() {
+  return window['go']['desktop']['App']['UnstageAll']();
+}
+
+export function UnstageFile(arg1) {
+  return window['go']['desktop']['App']['UnstageFile'](arg1);
 }
 
 export function UnwatchDirectory(arg1) {

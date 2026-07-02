@@ -43,7 +43,10 @@ func IsGitTracked(ctx context.Context, dir, relPath string) bool {
 }
 
 // GitStatus runs git status --porcelain in repoPath and returns a map of
-// absolute file paths to their git status entries.
+// absolute file paths to their git status entries.  Each entry captures
+// both the index (staged) and work-tree (unstaged) status when both are
+// present.  For backward compatibility the legacy Status/Staged fields
+// reflect the index side when available, falling back to the work tree.
 func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error) {
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-uall")
 	cmd.Dir = repoPath
@@ -75,28 +78,41 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 			}
 		}
 
+		xStatus := porcelainStatus(x)
+		yStatus := porcelainStatus(y)
+
 		if x == '?' && y == '?' {
+			// Untracked file — not in index, present in work tree.
 			path := filepath.Join(repoPath, rawPath)
-			result[path] = GitStatusEntry{Status: "A", Staged: false}
+			result[path] = GitStatusEntry{
+				Status:         "A",
+				Staged:         false,
+				IndexStatus:    "",
+				WorkTreeStatus: "?",
+			}
 			continue
 		}
 
-		status := ' '
-		staged := false
-		if x == 'M' || x == 'A' || x == 'R' || x == 'C' || x == 'U' {
-			status = rune(x)
-			staged = true
-		} else if y == 'M' || y == 'A' || y == 'R' || y == 'C' || y == 'U' {
-			status = rune(y)
-			staged = false
+		// Compute legacy Status/Staged: prefer index (staged) over
+		// work-tree (unstaged) for backward compatibility.
+		legacyStatus := yStatus
+		legacyStaged := false
+		if xStatus != "" {
+			legacyStatus = xStatus
+			legacyStaged = true
 		}
 
-		if status == ' ' {
+		if legacyStatus == "" {
 			continue
 		}
 
 		path := filepath.Join(repoPath, rawPath)
-		result[path] = GitStatusEntry{Status: string(status), Staged: staged}
+		result[path] = GitStatusEntry{
+			Status:         legacyStatus,
+			Staged:         legacyStaged,
+			IndexStatus:    xStatus,
+			WorkTreeStatus: yStatus,
+		}
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
@@ -104,6 +120,19 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 	}
 
 	return result, nil
+}
+
+// porcelainStatus maps a single git-status --porcelain status column
+// character to its letter string.  Returns empty string for unmodified.
+func porcelainStatus(c byte) string {
+	switch c {
+	case 'M', 'A', 'R', 'C', 'U':
+		return string(c)
+	case '?':
+		return "?"
+	default:
+		return ""
+	}
 }
 
 // GetFileDiff returns the unified diff of uncommitted changes for a file

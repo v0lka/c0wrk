@@ -21,7 +21,7 @@ import (
 type mockPlanner struct {
 	planFn             func(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
 	replanFn           func(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
-	planContinuationFn func(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message) (*Plan, error)
+	planContinuationFn func(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*Plan, error)
 }
 
 func (m *mockPlanner) Plan(ctx context.Context, task string, t []tools.ToolDescriptor, r []Reflection) (*Plan, error) {
@@ -38,9 +38,9 @@ func (m *mockPlanner) Replan(ctx context.Context, plan *Plan, completed []Comple
 	return plan, nil
 }
 
-func (m *mockPlanner) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message) (*Plan, error) {
+func (m *mockPlanner) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*Plan, error) {
 	if m.planContinuationFn != nil {
-		return m.planContinuationFn(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, conversationHistory)
+		return m.planContinuationFn(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, conversationHistory, taskComplete)
 	}
 	return &Plan{Steps: []PlanStep{{ID: "continuation_1", Description: "default continuation step"}}}, nil
 }

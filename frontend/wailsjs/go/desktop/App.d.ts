@@ -16,6 +16,8 @@ export function CancelTask(arg1:string):Promise<void>;
 
 export function CancelUnfinishedTask(arg1:string):Promise<void>;
 
+export function Commit(arg1:string):Promise<void>;
+
 export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;
 
 export function CreateSession():Promise<session.SessionInfo>;
@@ -26,7 +28,13 @@ export function DeleteSession(arg1:string):Promise<void>;
 
 export function GetBlackboardState(arg1:string):Promise<backend.BlackboardStateResponse>;
 
+export function GetBranches():Promise<Array<workspace.Branch>>;
+
 export function GetConfig():Promise<backend.ConfigResponse>;
+
+export function GetCurrentBranch():Promise<string>;
+
+export function GetDiffStat(arg1:string):Promise<workspace.DiffStat>;
 
 export function GetFileDiff(arg1:string):Promise<string>;
 
@@ -98,6 +106,10 @@ export function SetLogLevel(arg1:string):Promise<void>;
 
 export function SetWailsLogger(arg1:desktop.wailsLogAdapter):Promise<void>;
 
+export function StageAll():Promise<void>;
+
+export function StageFile(arg1:string):Promise<void>;
+
 export function StartTerminal(arg1:string):Promise<void>;
 
 export function StopTerminal(arg1:string):Promise<void>;
@@ -107,6 +119,10 @@ export function SwitchProject(arg1:string):Promise<void>;
 export function TerminalInput(arg1:string,arg2:string):Promise<void>;
 
 export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void>;
+
+export function UnstageAll():Promise<void>;
+
+export function UnstageFile(arg1:string):Promise<void>;
 
 export function UnwatchDirectory(arg1:string):Promise<void>;
 

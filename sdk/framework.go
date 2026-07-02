@@ -482,6 +482,6 @@ func (a *frameworkPlannerAdapter) Replan(ctx context.Context, plan *orchestratio
 	return a.planner.Replan(ctx, plan, completed, failedStep, reflection, reflections, nil)
 }
 
-func (a *frameworkPlannerAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message) (*orchestration.Plan, error) {
-	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, nil, false, conversationHistory)
+func (a *frameworkPlannerAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*orchestration.Plan, error) {
+	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, nil, false, conversationHistory, taskComplete)
 }

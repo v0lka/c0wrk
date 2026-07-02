@@ -259,8 +259,8 @@ orchestration:
   maxDependencyContextChars: 8000 # Max chars for dependency context injection
   maxSummaryLength: 500 # Max summary length in characters
   maxHistoryMessages: 20 # Max history messages retained
-  plannerHistoryBudgetTokens: 4000 # Max tokens for conversation history sent to planner; triggers summarisation when exceeded
-  plannerHistoryKeepRecentRatio: 0.75 # Fraction of token budget reserved for recent (un-summarised) messages during compaction
+  plannerHistoryBudgetTokens: 8000 # Max tokens for conversation history sent to planner; triggers summarisation when exceeded
+  plannerHistoryKeepRecentRatio: 0.85 # Fraction of token budget reserved for recent (un-summarised) messages during compaction
   maxJudgeCacheSize: 1000 # Max entries in judge decision cache
   # maxPlannerExploreSteps: 7 # Max exploration steps before falling back to direct planning
 
