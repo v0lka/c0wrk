@@ -10,11 +10,20 @@ import (
 
 // Step — single iteration of the ReAct loop.
 type Step struct {
-	Thought          string       `json:"thought"`
-	ReasoningContent string       `json:"reasoning_content,omitempty"` // chain-of-thought from reasoning models (DeepSeek)
-	Action           llm.ToolCall `json:"action"`
-	Observation      string       `json:"observation"`
-	TokensUsed       int          `json:"tokens_used"`
+	Thought          string `json:"thought"`
+	ReasoningContent string `json:"reasoning_content,omitempty"` // chain-of-thought from reasoning models (DeepSeek)
+	// ReasoningItems carries reasoning output items from the OpenAI Responses API.
+	// Each item has an ID required for round-tripping to the API to maintain the
+	// reasoning chain across ReAct iterations. Populated only by the Responses API
+	// provider; mirrors llm.Message.ReasoningItems so it survives the Step boundary.
+	ReasoningItems []llm.ReasoningItem `json:"reasoning_items,omitempty"`
+	Action         llm.ToolCall        `json:"action"`
+	Observation    string              `json:"observation"`
+	// IsError is true when the tool execution returned an error result
+	// (ToolResult.IsError). Used by the mutation gate to avoid counting failed
+	// mutating tools (e.g. a write_file that errored) as successful mutations.
+	IsError    bool `json:"is_error,omitempty"`
+	TokensUsed int  `json:"tokens_used"`
 	// UserNudge is an optional user message injected into the context (e.g., step limit nudges).
 	// When set, this is added as a user message after the step's normal messages.
 	UserNudge string `json:"user_nudge,omitempty"`

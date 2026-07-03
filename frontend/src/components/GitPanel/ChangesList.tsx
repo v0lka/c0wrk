@@ -61,10 +61,18 @@ export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
 
   // Group entries into 3 sections — must be before any conditional return
   // to satisfy React rules-of-hooks (useMemo order must be consistent).
+  //
+  // Untracked files are identified by the precise porcelain field
+  // `worktreeStatus === '?'` (the backend sets WorkTreeStatus "?" and
+  // Status "A" for untracked files — see core/workspace/git.go). The
+  // legacy `status === 'U'` check was wrong: "U" means *unmerged* (merge
+  // conflict), not untracked. All conflict combos carry a non-empty index
+  // status (hence `staged: true`), so the `!e.staged` guard routes them to
+  // "Staged Changes" and out of "Untracked Files".
   const sections = useMemo<SectionData[]>(() => {
     const staged = entries.filter((e) => e.staged)
-    const unstaged = entries.filter((e) => !e.staged && e.status !== 'U')
-    const untracked = entries.filter((e) => e.status === 'U')
+    const unstaged = entries.filter((e) => !e.staged && e.worktreeStatus !== '?')
+    const untracked = entries.filter((e) => !e.staged && e.worktreeStatus === '?')
 
     return [
       { key: 'staged', title: 'Staged Changes', entries: staged },

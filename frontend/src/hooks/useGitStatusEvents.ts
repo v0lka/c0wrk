@@ -7,22 +7,7 @@ import { getCurrentBranch, getRebaseMergeState } from '@/api/git'
 import { subscribe } from '@/api/runtime'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
-import type { GitPanelEntry } from '@/stores/gitPanelStore'
-import type { GitStatusEntry } from '@/types/models'
-
-/**
- * Convert backend GitStatusEntry map into GitPanelEntry[] for the store.
- */
-function toEntries(statusMap: Record<string, GitStatusEntry>): GitPanelEntry[] {
-  return Object.entries(statusMap).map(([path, entry]) => ({
-    path,
-    status: entry.status,
-    staged: entry.staged,
-    diffStat: null,
-    indexStatus: entry.index_status,
-    worktreeStatus: entry.worktree_status,
-  }))
-}
+import { toEntries } from '@/lib/gitStatus'
 
 /**
  * Subscribes to `git:status_changed` events and refreshes the git panel store.

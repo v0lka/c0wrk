@@ -538,13 +538,15 @@ func TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1(t *testing.T) {
 		t.Fatal("expected at least one step to be added to context manager")
 	}
 
-	// The first step should be the nudge step with the nudge observation
+	// The first step should be the nudge step. The nudge is stored as a user
+	// nudge (rendered as a user message via buildNudgeMsg), not an Observation
+	// (which buildStandaloneMessages only renders for steps with an Action).
 	nudgeStep := mockCW.steps[0]
-	if nudgeStep.Observation == "" {
-		t.Error("expected nudge step to have observation")
+	if nudgeStep.UserNudge == "" {
+		t.Error("expected nudge step to have user nudge")
 	}
-	if !containsIgnoreCase(nudgeStep.Observation, "tools available") {
-		t.Errorf("expected nudge observation to mention tools, got: %s", nudgeStep.Observation)
+	if !containsIgnoreCase(nudgeStep.UserNudge, "tools available") {
+		t.Errorf("expected nudge user nudge to mention tools, got: %s", nudgeStep.UserNudge)
 	}
 
 	// Verify the search tool was executed

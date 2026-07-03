@@ -8,6 +8,7 @@ import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
 import { getGitStatus } from '@/api/workspace'
 import { getFileDiff } from '@/api/workspace'
 import { stageFile, unstageFile, getCurrentBranch } from '@/api/git'
+import { toEntries } from '@/lib/gitStatus'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
@@ -15,24 +16,8 @@ import { BranchPicker } from './BranchPicker'
 import { GitHistoryTab } from './GitHistoryTab'
 import { GitGraph } from './GitGraph'
 import { GitPanelFooter } from './GitPanelFooter'
-import type { GitPanelEntry } from '@/stores/gitPanelStore'
-import type { GitStatusEntry } from '@/types/models'
 
 // ─────────────────────────────── Helpers ─────────────────────────────────────
-
-/** Convert backend GitStatusEntry map into store-compatible GitPanelEntry[]. */
-function toEntries(
-  statusMap: Record<string, GitStatusEntry>,
-): GitPanelEntry[] {
-  return Object.entries(statusMap).map(([path, entry]) => ({
-    path,
-    status: entry.status,
-    staged: entry.staged,
-    diffStat: null,
-    indexStatus: entry.index_status,
-    worktreeStatus: entry.worktree_status,
-  }))
-}
 
 /** Resolve the current workspace path from the project store. */
 function getWorkspacePath(): string | null {

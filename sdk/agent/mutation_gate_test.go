@@ -249,6 +249,36 @@ func TestHasMutatingToolExecuted(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "failed write_file (IsError) does not count",
+			steps: []Step{
+				{Action: llm.ToolCall{Name: "write_file"}, Observation: "error: path is outside workspace", IsError: true},
+			},
+			want: false,
+		},
+		{
+			name: "failed edit_file (IsError) does not count, successful one does",
+			steps: []Step{
+				{Action: llm.ToolCall{Name: "edit_file"}, Observation: "error: old string not found", IsError: true},
+				{Action: llm.ToolCall{Name: "edit_file"}, Observation: "file edited", IsError: false},
+			},
+			want: true,
+		},
+		{
+			name: "failed write_file (IsError) does not count",
+			steps: []Step{
+				{Action: llm.ToolCall{Name: "write_file"}, Observation: "error: permission denied", IsError: true},
+			},
+			want: false,
+		},
+		{
+			name: "failed then successful write_file counts",
+			steps: []Step{
+				{Action: llm.ToolCall{Name: "write_file"}, Observation: "error: invalid path", IsError: true},
+				{Action: llm.ToolCall{Name: "write_file"}, Observation: "file written"},
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

@@ -76,9 +76,11 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
 
   const closeContextMenu = useCallback(() => setContextMenuPos(null), [])
 
-  // Strip workspace root prefix from the absolute path for display
+  // Strip workspace root prefix from the absolute path for display.
+  // Match only at a path-separator boundary to avoid a sibling directory
+  // sharing the same prefix (e.g. "/repo" vs "/repo-extra").
   const displayPath =
-    workspaceRoot && entry.path.startsWith(workspaceRoot)
+    workspaceRoot && (entry.path === workspaceRoot || entry.path.startsWith(workspaceRoot + '/'))
       ? entry.path.slice(workspaceRoot.length).replace(/^\//, '')
       : entry.path
 

@@ -26,10 +26,11 @@ describe('hunkToRange', () => {
     expect(hunkToRange(hunk(7, 1))).toEqual({ start_line: 7, end_line: 7 })
   })
 
-  it('clamps a pure-addition hunk (oldCount 0) so end_line >= start_line', () => {
-    // oldCount 0 means no old-file lines existed; the backend expects
-    // end_line = start_line (clamped), not start_line - 1.
-    expect(hunkToRange(hunk(5, 0))).toEqual({ start_line: 5, end_line: 5 })
+  it('maps a pure-addition hunk (oldCount 0) to end_line = start_line - 1', () => {
+    // oldCount 0 means no old-file lines existed. The backend hunkInRange
+    // derives end = start + count - 1, so for zero old lines end_line is
+    // start_line - 1 — exactly what the backend HunkRange expects (no clamp).
+    expect(hunkToRange(hunk(5, 0))).toEqual({ start_line: 5, end_line: 4 })
   })
 
   it('ignores new-file coordinates (only old-file matters for the range)', () => {

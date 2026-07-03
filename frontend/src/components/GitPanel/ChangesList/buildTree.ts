@@ -21,10 +21,14 @@ export function buildTree(entries: GitPanelEntry[], workspaceRoot: string): Tree
     displayPath: string
   }
   const indexed: IndexedEntry[] = entries.map((entry) => {
-    const displayPath =
-      workspaceRoot && entry.path.startsWith(workspaceRoot)
-        ? entry.path.slice(workspaceRoot.length).replace(/^\//, '')
-        : entry.path
+    // Match workspaceRoot only at a path-separator boundary to avoid a
+    // sibling directory sharing the same prefix (e.g. "/repo" vs "/repo-extra").
+    const isUnderRoot =
+      workspaceRoot !== '' &&
+      (entry.path === workspaceRoot || entry.path.startsWith(workspaceRoot + '/'))
+    const displayPath = isUnderRoot
+      ? entry.path.slice(workspaceRoot.length).replace(/^\//, '')
+      : entry.path
     return { entry, displayPath }
   })
 

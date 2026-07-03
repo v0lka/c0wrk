@@ -25,9 +25,11 @@ interface GitFileContextMenuProps {
   onClose: () => void
 }
 
-/** Repo-relative path suitable as a .gitignore pattern / display string. */
+/** Repo-relative path suitable as a .gitignore pattern / display string.
+ *  Matches workspaceRoot only at a path-separator boundary to avoid a sibling
+ *  directory sharing the same prefix (e.g. "/repo" vs "/repo-extra"). */
 function toRelativePath(path: string, workspaceRoot?: string): string {
-  if (workspaceRoot && path.startsWith(workspaceRoot)) {
+  if (workspaceRoot && (path === workspaceRoot || path.startsWith(workspaceRoot + '/'))) {
     return path.slice(workspaceRoot.length).replace(/^\//, '')
   }
   return path

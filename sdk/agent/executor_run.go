@@ -135,6 +135,12 @@ func (e *Executor) hasMutatingToolExecuted(state *runState) bool {
 			if strings.HasPrefix(s.Observation, "[Tool call rejected") {
 				continue
 			}
+			// A failed tool execution (ToolResult.IsError, e.g. an edit_file
+			// that did not match or a write_file to an invalid path) made no
+			// real change — don't count it as a successful mutation.
+			if s.IsError {
+				continue
+			}
 			return true
 		}
 	}
@@ -151,9 +157,10 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 			state.nudgeAttempted = true
 			// Create a nudge step to encourage tool usage
 			nudgeStep := Step{
-				Thought:     thought,
-				Observation: executorNudge,
-				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:        thought,
+				UserNudge:      executorNudge,
+				ReasoningItems: resp.Message.ReasoningItems,
+				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			state.allSteps = append(state.allSteps, nudgeStep)
 			cw.AddStep(nudgeStep)
@@ -166,9 +173,10 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 		if e.suppressAssistantEvents && !e.finishNudgeAttempted {
 			e.finishNudgeAttempted = true
 			nudgeStep := Step{
-				Thought:     thought,
-				Observation: executorFinishNudge,
-				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:        thought,
+				UserNudge:      executorFinishNudge,
+				ReasoningItems: resp.Message.ReasoningItems,
+				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			state.allSteps = append(state.allSteps, nudgeStep)
 			cw.AddStep(nudgeStep)
@@ -179,6 +187,7 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 		step := Step{
 			Thought:          thought,
 			ReasoningContent: resp.Message.ReasoningContent,
+			ReasoningItems:   resp.Message.ReasoningItems,
 			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}
 		state.allSteps = append(state.allSteps, step)
@@ -202,9 +211,10 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 	if hasTools && !state.nudgeAttempted {
 		state.nudgeAttempted = true
 		nudgeStep := Step{
-			Thought:     thought,
-			Observation: executorNudge,
-			TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			Thought:        thought,
+			UserNudge:      executorNudge,
+			ReasoningItems: resp.Message.ReasoningItems,
+			TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}
 		state.allSteps = append(state.allSteps, nudgeStep)
 		cw.AddStep(nudgeStep)
@@ -217,9 +227,10 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 	if e.suppressAssistantEvents && !e.finishNudgeAttempted {
 		e.finishNudgeAttempted = true
 		nudgeStep := Step{
-			Thought:     thought,
-			Observation: executorFinishNudge,
-			TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			Thought:        thought,
+			UserNudge:      executorFinishNudge,
+			ReasoningItems: resp.Message.ReasoningItems,
+			TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}
 		state.allSteps = append(state.allSteps, nudgeStep)
 		cw.AddStep(nudgeStep)
@@ -231,6 +242,7 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 	step := Step{
 		Thought:          thought,
 		ReasoningContent: resp.Message.ReasoningContent,
+		ReasoningItems:   resp.Message.ReasoningItems,
 		TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 	}
 	state.allSteps = append(state.allSteps, step)
@@ -396,9 +408,10 @@ func (e *Executor) processSingleToolCall(
 		if e.mutationRequired && !e.hasMutatingToolExecuted(state) && !e.mutationNudgeAttempted {
 			e.mutationNudgeAttempted = true
 			nudgeStep := Step{
-				Thought:     thought,
-				Observation: executorMutationNudge,
-				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:        thought,
+				UserNudge:      executorMutationNudge,
+				ReasoningItems: resp.Message.ReasoningItems,
+				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			state.allSteps = append(state.allSteps, nudgeStep)
 			cw.AddStep(nudgeStep)
@@ -410,13 +423,16 @@ func (e *Executor) processSingleToolCall(
 
 		stepThought := ""
 		stepReasoning := ""
+		var stepReasoningItems []llm.ReasoningItem
 		if callIdx == 0 {
 			stepThought = thought
 			stepReasoning = resp.Message.ReasoningContent
+			stepReasoningItems = resp.Message.ReasoningItems
 		}
 		step := Step{
 			Thought:          stepThought,
 			ReasoningContent: stepReasoning,
+			ReasoningItems:   stepReasoningItems,
 			Action:           action,
 			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			ResponseGroup:    responseGroup,
@@ -481,6 +497,7 @@ func (e *Executor) processSingleToolCall(
 			Thought:       thought,
 			Action:        action,
 			Observation:   obs,
+			IsError:       true,
 			TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			ResponseGroup: responseGroup,
 		}
@@ -572,16 +589,20 @@ func (e *Executor) processSingleToolCall(
 	// Create step - only first tool call in the group carries the Thought
 	stepThought := ""
 	stepReasoning := ""
+	var stepReasoningItems []llm.ReasoningItem
 	if callIdx == 0 {
 		stepThought = thought
 		stepReasoning = resp.Message.ReasoningContent
+		stepReasoningItems = resp.Message.ReasoningItems
 	}
 	step := Step{
 		Thought:          stepThought,
 		ReasoningContent: stepReasoning,
+		ReasoningItems:   stepReasoningItems,
 		Action:           action,
 		Observation:      observation,
 		IsUntrusted:      isUntrusted,
+		IsError:          result.IsError,
 		TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		ResponseGroup:    responseGroup,
 	}

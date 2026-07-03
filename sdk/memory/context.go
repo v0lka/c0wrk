@@ -317,7 +317,7 @@ func (cw *ContextWindow) buildGroupedMessages(groupStart int, protectedIndices m
 	groupSteps := cw.steps[groupStart:groupEnd]
 
 	// Build ONE assistant message with all tool calls
-	assistantMsg := cw.buildAssistantMsg(groupSteps[0].Thought, groupSteps[0].ReasoningContent)
+	assistantMsg := cw.buildAssistantMsg(groupSteps[0].Thought, groupSteps[0].ReasoningContent, groupSteps[0].ReasoningItems)
 	for _, gs := range groupSteps {
 		if gs.Action.ID != "" {
 			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, gs.Action)
@@ -346,7 +346,7 @@ func (cw *ContextWindow) buildGroupedMessages(groupStart int, protectedIndices m
 
 // buildStandaloneMessages builds assistant+tool+nudge messages for a single step.
 func (cw *ContextWindow) buildStandaloneMessages(step sdkagent.Step, i int, protectedIndices map[int]struct{}) []llm.Message {
-	assistantMsg := cw.buildAssistantMsg(step.Thought, step.ReasoningContent)
+	assistantMsg := cw.buildAssistantMsg(step.Thought, step.ReasoningContent, step.ReasoningItems)
 	if step.Action.ID != "" {
 		assistantMsg.ToolCalls = []llm.ToolCall{step.Action}
 	}
@@ -365,13 +365,15 @@ func (cw *ContextWindow) buildStandaloneMessages(step sdkagent.Step, i int, prot
 	return out
 }
 
-// buildAssistantMsg creates a normalized assistant message from thought and reasoning.
-// Empty content is replaced with a placeholder to prevent API 400 errors.
-func (cw *ContextWindow) buildAssistantMsg(thought, reasoningContent string) llm.Message {
+// buildAssistantMsg creates a normalized assistant message from thought, reasoning,
+// and (for the Responses API) reasoning items. Empty content is replaced with a
+// placeholder to prevent API 400 errors.
+func (cw *ContextWindow) buildAssistantMsg(thought, reasoningContent string, reasoningItems []llm.ReasoningItem) llm.Message {
 	msg := llm.Message{
 		Role:             "assistant",
 		Content:          strings.TrimRight(thought, invisibleChars),
 		ReasoningContent: reasoningContent,
+		ReasoningItems:   reasoningItems,
 	}
 	if msg.Content == "" {
 		msg.Content = "(proceeding)"
