@@ -1,9 +1,8 @@
-import { useState, useCallback } from 'react'
 import { GitBranch, List, FolderTree, RefreshCw, Loader2, Plus, Minus, ChevronDown, Ban } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { stageAll, unstageAll, abortMerge, abortRebase } from '@/api/git'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useGitToolbarActions } from '@/hooks/useGitToolbarActions'
 import { GitStashButtons } from './GitStashButtons'
 import type { BranchInfo } from '@/types/models'
 
@@ -22,68 +21,19 @@ export function GitPanelToolbar({
 }: GitPanelToolbarProps) {
   const openBranchPicker = useGitPanelStore((s) => s.openBranchPicker)
   const mergeRebaseState = useGitPanelStore((s) => s.mergeRebaseState)
-  const [isStagingAll, setIsStagingAll] = useState(false)
-  const [isUnstagingAll, setIsUnstagingAll] = useState(false)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-  const [isAborting, setIsAborting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const isBusy = isStagingAll || isUnstagingAll || isAborting
-
-  const handleStageAll = useCallback(async () => {
-    setIsStagingAll(true)
-    setError(null)
-    try {
-      await stageAll()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to stage all files')
-    } finally {
-      setIsStagingAll(false)
-    }
-  }, [])
-
-  const handleUnstageAll = useCallback(async () => {
-    setIsUnstagingAll(true)
-    setError(null)
-    try {
-      await unstageAll()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to unstage all files')
-    } finally {
-      setIsUnstagingAll(false)
-    }
-  }, [])
-
-  const handleRefresh = useCallback(async () => {
-    setIsRefreshing(true)
-    setError(null)
-    try {
-      await onRefresh()
-    } catch {
-      // onRefresh handles its own errors
-    } finally {
-      setIsRefreshing(false)
-    }
-  }, [onRefresh])
-
-  /** Abort an in-progress merge or rebase (Phase 6). */
-  const handleAbort = useCallback(async (op: 'merge' | 'rebase') => {
-    setIsAborting(true)
-    setError(null)
-    try {
-      if (op === 'merge') {
-        await abortMerge()
-      } else {
-        await abortRebase()
-      }
-      // Backend emits git:status_changed → useGitStatusEvents refreshes
-      // (and re-fetches merge/rebase state).
-    } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to abort ${op}`)
-    } finally {
-      setIsAborting(false)
-    }
-  }, [])
+  const {
+    isStagingAll,
+    isUnstagingAll,
+    isRefreshing,
+    isAborting,
+    isBusy,
+    error,
+    setError,
+    handleStageAll,
+    handleUnstageAll,
+    handleRefresh,
+    handleAbort,
+  } = useGitToolbarActions(onRefresh)
 
   return (
     <div className="flex items-center gap-1 px-2 py-1 min-h-[32px] shrink-0 border-b border-border bg-secondary/30">

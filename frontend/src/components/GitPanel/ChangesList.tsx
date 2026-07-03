@@ -2,7 +2,9 @@ import { useMemo } from 'react'
 import { ChevronDown, ChevronRight, File, Loader2 } from 'lucide-react'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { sortEntries } from '@/lib/gitSortGroup'
 import { Section } from './ChangesList/Section'
+import { SortGroupControls } from './ChangesList/SortGroupControls'
 import type { SectionData } from './ChangesList/types'
 
 // ─────────────────────────────────── Types ───────────────────────────────────
@@ -48,6 +50,8 @@ export function SectionHeader({ title, count, expanded, onToggle }: SectionHeade
 export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
   const entries = useGitPanelStore((s) => s.entries)
   const viewMode = useGitPanelStore((s) => s.viewMode)
+  const sortBy = useGitPanelStore((s) => s.sortBy)
+  const groupBy = useGitPanelStore((s) => s.groupBy)
   const expandedDirs = useGitPanelStore((s) => s.expandedDirs)
   const isLoading = useGitPanelStore((s) => s.isLoading)
   const toggleExpandedDir = useGitPanelStore((s) => s.toggleExpandedDir)
@@ -59,8 +63,9 @@ export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
     return s.projects.find((p) => p.id === activeProjectId)?.workspace_path ?? ''
   })
 
-  // Group entries into 3 sections — must be before any conditional return
-  // to satisfy React rules-of-hooks (useMemo order must be consistent).
+  // Group entries into 3 structural sections and sort each section by the
+  // selected criterion. The structural split (Staged / Changes / Untracked)
+  // is always preserved — `sortBy` only reorders entries *within* each section.
   //
   // Untracked files are identified by the precise porcelain field
   // `worktreeStatus === '?'` (the backend sets WorkTreeStatus "?" and
@@ -70,44 +75,25 @@ export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
   // status (hence `staged: true`), so the `!e.staged` guard routes them to
   // "Staged Changes" and out of "Untracked Files".
   const sections = useMemo<SectionData[]>(() => {
-    const staged = entries.filter((e) => e.staged)
-    const unstaged = entries.filter((e) => !e.staged && e.worktreeStatus !== '?')
-    const untracked = entries.filter((e) => !e.staged && e.worktreeStatus === '?')
+    const staged = sortEntries(entries.filter((e) => e.staged), sortBy)
+    const unstaged = sortEntries(
+      entries.filter((e) => !e.staged && e.worktreeStatus !== '?'),
+      sortBy,
+    )
+    const untracked = sortEntries(
+      entries.filter((e) => !e.staged && e.worktreeStatus === '?'),
+      sortBy,
+    )
 
     return [
       { key: 'staged', title: 'Staged Changes', entries: staged },
       { key: 'unstaged', title: 'Changes', entries: unstaged },
       { key: 'untracked', title: 'Untracked Files', entries: untracked },
     ]
-  }, [entries])
+  }, [entries, sortBy])
 
-  // ── Loading state ──
-  if (isLoading && entries.length === 0) {
-    return (
-      <div className="flex flex-1 items-center justify-center min-h-0">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  // ── Empty state ──
-  if (entries.length === 0) {
-    return (
-      <div className="flex flex-1 items-center justify-center min-h-0">
-        <div className="flex flex-col items-center gap-2 text-muted-foreground">
-          <File className="size-6 opacity-40" />
-          <span className="text-sm">No changes</span>
-          <span className="text-xs opacity-60">
-            Working tree is clean
-          </span>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Section defaults ──
-  // "Staged Changes" open by default; others collapsed when empty except
-  // "Changes" also opens by default when it has entries.
+  // Section defaults: "Staged Changes" and "Changes" open by default;
+  // "Untracked Files" collapsed by default.
   const sectionDefaults: Record<string, boolean> = {
     staged: true,
     unstaged: true,
@@ -115,20 +101,45 @@ export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
   }
 
   return (
-    <div className="custom-scrollbar flex-1 overflow-y-auto min-h-0" role="list">
-      {sections.map((section) => (
-        <Section
-          key={section.key}
-          section={section}
-          defaultExpanded={sectionDefaults[section.key] ?? true}
-          viewMode={viewMode}
-          workspaceRoot={workspaceRoot}
-          expandedDirs={expandedDirs}
-          onToggleExpandedDir={toggleExpandedDir}
-          onToggleFile={onToggleFile}
-          onOpenDiff={onOpenDiff}
-        />
-      ))}
+    <div className="flex flex-col flex-1 min-h-0">
+      <SortGroupControls viewMode={viewMode} />
+
+      {isLoading && entries.length === 0 ? (
+        // ── Loading state ──
+        <div className="flex flex-1 items-center justify-center min-h-0">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : entries.length === 0 ? (
+        // ── Empty state ──
+        <div className="flex flex-1 items-center justify-center min-h-0">
+          <div className="flex flex-col items-center gap-2 text-muted-foreground">
+            <File className="size-6 opacity-40" />
+            <span className="text-sm">No changes</span>
+            <span className="text-xs opacity-60">
+              Working tree is clean
+            </span>
+          </div>
+        </div>
+      ) : (
+        // ── Sections ──
+        <div className="custom-scrollbar flex-1 overflow-y-auto min-h-0" role="list">
+          {sections.map((section) => (
+            <Section
+              key={section.key}
+              section={section}
+              defaultExpanded={sectionDefaults[section.key] ?? true}
+              viewMode={viewMode}
+              sortBy={sortBy}
+              groupBy={groupBy}
+              workspaceRoot={workspaceRoot}
+              expandedDirs={expandedDirs}
+              onToggleExpandedDir={toggleExpandedDir}
+              onToggleFile={onToggleFile}
+              onOpenDiff={onOpenDiff}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

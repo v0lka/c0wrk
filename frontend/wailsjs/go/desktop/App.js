@@ -98,6 +98,10 @@ export function GetDiffStat(arg1) {
   return window['go']['desktop']['App']['GetDiffStat'](arg1);
 }
 
+export function GetDiffStats() {
+  return window['go']['desktop']['App']['GetDiffStats']();
+}
+
 export function GetFileDiff(arg1) {
   return window['go']['desktop']['App']['GetFileDiff'](arg1);
 }
@@ -106,8 +110,8 @@ export function GetFileIcon(arg1) {
   return window['go']['desktop']['App']['GetFileIcon'](arg1);
 }
 
-export function GetGitGraph() {
-  return window['go']['desktop']['App']['GetGitGraph']();
+export function GetGitGraph(arg1, arg2) {
+  return window['go']['desktop']['App']['GetGitGraph'](arg1, arg2);
 }
 
 export function GetGitStatus(arg1) {
@@ -284,6 +288,10 @@ export function StartTerminal(arg1) {
 
 export function StashCreate(arg1) {
   return window['go']['desktop']['App']['StashCreate'](arg1);
+}
+
+export function StashDrop(arg1) {
+  return window['go']['desktop']['App']['StashDrop'](arg1);
 }
 
 export function StashList() {

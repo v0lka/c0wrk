@@ -125,10 +125,15 @@ export async function unstageAll(): Promise<void> {
 
 // --- Commit ---
 
-export async function commit(message: string): Promise<void> {
+/** Create a git commit with the given message and return the new commit's SHA. */
+export async function commit(message: string): Promise<string> {
   try {
     const app = getApp()
-    await app.Commit(message)
+    const result = await app.Commit(message)
+    if (typeof result !== 'string' || result.length === 0) {
+      throw new Error('commit: backend returned an invalid commit SHA')
+    }
+    return result
   } catch (err) {
     logger.error('commit failed:', err)
     throw err
@@ -265,6 +270,17 @@ export async function stashPop(index: number): Promise<void> {
   }
 }
 
+/** Drop a stash entry by index (`git stash drop stash@{index}`). */
+export async function stashDrop(index: number): Promise<void> {
+  try {
+    const app = getApp()
+    await app.StashDrop(index)
+  } catch (err) {
+    logger.error('stashDrop failed:', err)
+    throw err
+  }
+}
+
 export async function stashList(): Promise<StashEntry[]> {
   try {
     const app = getApp()
@@ -312,6 +328,34 @@ export async function getDiffStat(path: string): Promise<DiffStat> {
     return result
   } catch (err) {
     logger.error('getDiffStat failed:', err)
+    throw err
+  }
+}
+
+/**
+ * Batch-fetch added/deleted line counts for ALL uncommitted changes in a
+ * single `git diff --numstat HEAD` call. Keys are absolute file paths,
+ * matching the GitStatus key convention so entries can be enriched by a
+ * direct path comparison. Returns an empty map when the tree is clean.
+ */
+export async function getDiffStats(): Promise<Record<string, DiffStat>> {
+  try {
+    const app = getApp()
+    const result = await app.GetDiffStats()
+    if (result === null || typeof result !== 'object') {
+      logger.error('getDiffStats: unexpected response shape, returning {}', result)
+      return {}
+    }
+    const map = result as Record<string, unknown>
+    for (const value of Object.values(map)) {
+      if (!isDiffStat(value)) {
+        logger.error('getDiffStats: invalid DiffStat entry, returning {}', result)
+        return {}
+      }
+    }
+    return map as Record<string, DiffStat>
+  } catch (err) {
+    logger.error('getDiffStats failed:', err)
     throw err
   }
 }
@@ -433,11 +477,16 @@ export async function getRebaseMergeState(): Promise<MergeRebaseState> {
 
 // --- Commit graph (Phase 6) ---
 
-/** Fetch the commit graph (SHAs, parents, messages, decorations) for visualization. */
-export async function getGitGraph(): Promise<GraphCommit[]> {
+/**
+ * Fetch one page of the commit graph (SHAs, parents, messages, decorations)
+ * for visualization. `limit` caps the page size and `skip` offsets from the
+ * newest commit, enabling server-side lazy loading. A non-positive `limit`
+ * defaults to 100 on the backend.
+ */
+export async function getGitGraph(limit: number, skip: number): Promise<GraphCommit[]> {
   try {
     const app = getApp()
-    const result = await app.GetGitGraph()
+    const result = await app.GetGitGraph(limit, skip)
     if (!isArrayOf(result, isGraphCommit)) {
       logger.error('getGitGraph: unexpected response shape, returning []', result)
       return []

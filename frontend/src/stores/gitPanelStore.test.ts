@@ -1,7 +1,7 @@
 // Unit tests for gitPanelStore — Zustand store actions and state transitions
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, type GitPanelEntry } from '@/stores/gitPanelStore'
+import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, partializeGitPanel, mergeGitPanel, type GitPanelEntry } from '@/stores/gitPanelStore'
 
 /** Reset the store to initial state before each test */
 function resetStore() {
@@ -31,6 +31,8 @@ describe('gitPanelStore', () => {
   it('has correct initial state', () => {
     const s = useGitPanelStore.getState()
     expect(s.viewMode).toBe('flat')
+    expect(s.sortBy).toBe('path')
+    expect(s.groupBy).toBe('none')
     expect(s.entries).toEqual([])
     expect(s.commitMessage).toBe('')
     expect(s.branch).toEqual({ name: '', upstream: '', ahead: 0, behind: 0 })
@@ -450,5 +452,105 @@ describe('gitPanelStore — Phase 6 (merge/rebase state & graph tab)', () => {
     expect(useGitPanelStore.getState().activeTab).toBe('history')
     setActiveTab('changes')
     expect(useGitPanelStore.getState().activeTab).toBe('changes')
+  })
+})
+
+// --- D8: sortBy / groupBy state & persistence ---
+
+describe('gitPanelStore — D8 (sortBy / groupBy)', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('initializes sortBy to "path" and groupBy to "none"', () => {
+    const s = useGitPanelStore.getState()
+    expect(s.sortBy).toBe('path')
+    expect(s.groupBy).toBe('none')
+  })
+
+  it('setSortBy updates the sort criterion', () => {
+    const { setSortBy } = useGitPanelStore.getState()
+    setSortBy('status')
+    expect(useGitPanelStore.getState().sortBy).toBe('status')
+    setSortBy('extension')
+    expect(useGitPanelStore.getState().sortBy).toBe('extension')
+    setSortBy('path')
+    expect(useGitPanelStore.getState().sortBy).toBe('path')
+  })
+
+  it('setGroupBy updates the group criterion', () => {
+    const { setGroupBy } = useGitPanelStore.getState()
+    setGroupBy('status')
+    expect(useGitPanelStore.getState().groupBy).toBe('status')
+    setGroupBy('directory')
+    expect(useGitPanelStore.getState().groupBy).toBe('directory')
+    setGroupBy('none')
+    expect(useGitPanelStore.getState().groupBy).toBe('none')
+  })
+
+  it('setSortBy and setGroupBy are independent', () => {
+    const { setSortBy, setGroupBy } = useGitPanelStore.getState()
+    setSortBy('extension')
+    setGroupBy('status')
+    const s = useGitPanelStore.getState()
+    expect(s.sortBy).toBe('extension')
+    expect(s.groupBy).toBe('status')
+  })
+
+  it('reset restores sortBy and groupBy to defaults', () => {
+    const { setSortBy, setGroupBy, reset } = useGitPanelStore.getState()
+    setSortBy('status')
+    setGroupBy('directory')
+    reset()
+    const s = useGitPanelStore.getState()
+    expect(s.sortBy).toBe('path')
+    expect(s.groupBy).toBe('none')
+  })
+
+  it('partialize persists sortBy and groupBy alongside viewMode and expandedDirs', () => {
+    const { setSortBy, setGroupBy, toggleExpandedDir, setViewMode } =
+      useGitPanelStore.getState()
+    setViewMode('tree')
+    setSortBy('extension')
+    setGroupBy('directory')
+    toggleExpandedDir('src')
+
+    const partial = partializeGitPanel(useGitPanelStore.getState())
+    expect(partial.viewMode).toBe('tree')
+    expect(partial.sortBy).toBe('extension')
+    expect(partial.groupBy).toBe('directory')
+    expect(partial.expandedDirs).toEqual(['src'])
+  })
+
+  it('merge applies defaults when persisted state lacks sortBy/groupBy', () => {
+    const current = useGitPanelStore.getState()
+    // Simulate an older localStorage entry written before D8 existed.
+    const merged = mergeGitPanel({ viewMode: 'tree', expandedDirs: ['src'] }, current)
+    expect(merged.sortBy).toBe('path')
+    expect(merged.groupBy).toBe('none')
+    expect(merged.viewMode).toBe('tree')
+    expect(merged.expandedDirs).toEqual(new Set(['src']))
+  })
+
+  it('merge restores valid persisted sortBy/groupBy', () => {
+    const current = useGitPanelStore.getState()
+    const merged = mergeGitPanel(
+      {
+        viewMode: 'flat',
+        expandedDirs: [],
+        sortBy: 'status',
+        groupBy: 'directory',
+      },
+      current,
+    )
+    expect(merged.sortBy).toBe('status')
+    expect(merged.groupBy).toBe('directory')
+  })
+
+  it('merge falls back to defaults for invalid persisted sortBy/groupBy', () => {
+    const current = useGitPanelStore.getState()
+    const merged = mergeGitPanel({ sortBy: 'bogus', groupBy: 'nope' }, current)
+    expect(merged.sortBy).toBe('path')
+    expect(merged.groupBy).toBe('none')
   })
 })

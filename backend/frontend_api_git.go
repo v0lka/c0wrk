@@ -120,6 +120,31 @@ func (f *FrontendAPI) GetDiffStat(path string) (*DiffStat, error) {
 	return parseDiffStat(stdout.String())
 }
 
+// GetDiffStats returns added and deleted line counts for every file with
+// uncommitted changes in the active project's repository, in a single
+// `git diff --numstat HEAD` call (covering both staged and unstaged
+// changes relative to HEAD). The result maps absolute file paths —
+// filepath.Join(repoRoot, numstatPath), matching the GitStatus key
+// convention so the frontend can enrich status entries by direct key
+// equality — to their DiffStat. Binary files report zero added/deleted
+// (their "-" numstat fields). Untracked files are not included (git diff
+// does not report them). Returns an empty map (not nil) when the working
+// tree is clean. Returns an error when no project is active, the project
+// is No Project, or the git command fails.
+func (f *FrontendAPI) GetDiffStats() (map[string]DiffStat, error) {
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := f.runGitCmd(repoPath, "diff", "--numstat", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+
+	return parseDiffStats(out, repoPath), nil
+}
+
 // parseDiffStat parses the output of git diff --numstat.
 // Format: <added>\t<deleted>\t<path>
 // Lines in binary files are counted as "-".
@@ -154,6 +179,43 @@ func parseNumstatField(s string) (int, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+// parseDiffStats parses the output of `git diff --numstat HEAD` into a
+// map keyed by absolute path (filepath.Join(repoPath, rawPath)), matching
+// the GitStatus key convention. Each line is
+// "<added>\t<deleted>\t<path>"; binary files use "-" for their counts and
+// map to zero. Paths are kept exactly as git emits them (quoted for
+// special characters) to stay consistent with GitStatus keys. Lines that
+// do not parse are skipped. Returns an empty (non-nil) map when output is
+// empty.
+func parseDiffStats(output, repoPath string) map[string]DiffStat {
+	stats := make(map[string]DiffStat)
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return stats
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) < 3 {
+			continue
+		}
+		added, err := parseNumstatField(fields[0])
+		if err != nil {
+			continue
+		}
+		deleted, err := parseNumstatField(fields[1])
+		if err != nil {
+			continue
+		}
+		absPath := filepath.Join(repoPath, fields[2])
+		stats[absPath] = DiffStat{Added: added, Deleted: deleted}
+	}
+	return stats
 }
 
 // ---------------------------------------------------------------------------
@@ -296,25 +358,37 @@ func (f *FrontendAPI) emitGitStatusChanged(repoPath string) {
 var commitMsgRe = regexp.MustCompile(`\S`)
 
 // Commit creates a git commit with the given message at the active
-// project's repository root. The message must be non-empty. Emits
-// git:status_changed on success. Returns an error when no project is
+// project's repository root and returns the SHA of the newly created
+// commit. The message must be non-empty and is passed to git as a
+// separate argv element (never interpolated into the command line) to
+// prevent shell injection. Emits git:status_changed on success. Returns
+// the new commit's 40-character SHA, or an error when no project is
 // active, the project is No Project, the message is empty, there is
-// nothing to commit, or the git command fails.
-func (f *FrontendAPI) Commit(message string) error {
+// nothing to commit, or a git command fails.
+func (f *FrontendAPI) Commit(message string) (string, error) {
 	if !commitMsgRe.MatchString(message) {
-		return errors.New("commit message must not be empty")
+		return "", errors.New("commit message must not be empty")
 	}
 
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if _, err := f.runGitCmd(repoPath, "commit", "-m", message); err != nil {
-		return err
+		return "", err
 	}
+
+	// Resolve the SHA of the commit just created so the frontend can
+	// display it. git rev-parse HEAD yields the 40-character commit SHA.
+	sha, err := f.runGitCmd(repoPath, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve new commit SHA: %w", err)
+	}
+	sha = strings.TrimSpace(sha)
+
 	f.emitGitStatusChanged(repoPath)
-	return nil
+	return sha, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -775,6 +849,30 @@ func (f *FrontendAPI) StashPop(index int) error {
 	return nil
 }
 
+// StashDrop removes the stash at the given index without applying it
+// (git stash drop stash@{<index>}). Emits git:status_changed on success.
+// Returns an error when no project is active, the project is No Project,
+// the index is negative, or the git command fails (for example, when the
+// stash does not exist).
+func (f *FrontendAPI) StashDrop(index int) error {
+	if index < 0 {
+		return errors.New("stash index must not be negative")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	stashRef := fmt.Sprintf("stash@{%d}", index)
+	f.log().Debug("git stash drop", "index", index)
+	if _, err := f.runGitCmd(repoPath, "stash", "drop", stashRef); err != nil {
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
 // StashList returns the list of stashes in the active project's
 // repository (git stash list). Each entry carries its index and message.
 // Returns an empty slice (not nil) when there are no stashes. Returns an
@@ -1069,26 +1167,36 @@ func isRebaseActive(gitDir string) bool {
 // Commit graph RPC (Phase 6)
 // ---------------------------------------------------------------------------
 
-// defaultGitGraphLimit is the number of commits GetGitGraph returns. The
-// RPC has no pagination parameters (see roadmap), so a single capped
-// batch of recent history is returned for visualization.
+// defaultGitGraphLimit is the page size used by GetGitGraph when the
+// caller does not request a positive limit.
 const defaultGitGraphLimit = 100
 
-// GetGitGraph returns a recent slice of commit history for graph
-// visualization, each carrying its parent SHAs (so the frontend computes
-// lane layout) and decorated ref names. The graph ASCII output (--graph)
-// is intentionally omitted: the frontend derives lanes from the parents.
+// GetGitGraph returns a page of commit history for graph visualization,
+// each carrying its parent SHAs (so the frontend computes the lane
+// layout) and decorated ref names. limit caps the number of commits
+// returned; skip offsets into the history for lazy-load pagination ("Load
+// more"). A non-positive limit defaults to defaultGitGraphLimit; a
+// negative skip is treated as zero. The graph ASCII output (--graph) is
+// intentionally omitted: the frontend derives lanes from the parents.
 // Returns an empty slice (not nil) when there are no commits. Returns an
 // error when no project is active, the project is No Project, or the git
 // command fails.
-func (f *FrontendAPI) GetGitGraph() ([]GraphCommit, error) {
+func (f *FrontendAPI) GetGitGraph(limit, skip int) ([]GraphCommit, error) {
+	if limit <= 0 {
+		limit = defaultGitGraphLimit
+	}
+	if skip < 0 {
+		skip = 0
+	}
+
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
 		return nil, err
 	}
 
 	out, err := f.runGitCmd(repoPath, "log",
-		"-n", strconv.Itoa(defaultGitGraphLimit),
+		"-n", strconv.Itoa(limit),
+		"--skip", strconv.Itoa(skip),
 		"--format=%H%x1f%P%x1f%s%x1f%d%x1e",
 	)
 	if err != nil {

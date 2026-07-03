@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { SectionHeader } from '../ChangesList'
 import { FlatSection } from './FlatSection'
 import { TreeSection } from './TreeSection'
+import type { SortBy, GroupBy } from '@/stores/gitPanelStore'
 import type { SectionData } from './types'
 
 // ────────────────────────── Collapsible Section ──────────────────────────────
@@ -10,6 +11,10 @@ interface SectionProps {
   section: SectionData
   defaultExpanded?: boolean
   viewMode: 'flat' | 'tree'
+  /** Sort criterion forwarded to flat (pre-sorted entries) and tree renderers (D8). */
+  sortBy: SortBy
+  /** Sub-grouping criterion forwarded to the flat renderer (D8). */
+  groupBy: GroupBy
   workspaceRoot: string
   expandedDirs: Set<string>
   onToggleExpandedDir: (dir: string) => void
@@ -21,6 +26,8 @@ export function Section({
   section,
   defaultExpanded = true,
   viewMode,
+  sortBy,
+  groupBy,
   workspaceRoot,
   expandedDirs,
   onToggleExpandedDir,
@@ -44,6 +51,7 @@ export function Section({
           {viewMode === 'flat' ? (
             <FlatSection
               entries={section.entries}
+              groupBy={groupBy}
               workspaceRoot={workspaceRoot}
               onToggleFile={onToggleFile}
               onOpenDiff={onOpenDiff}
@@ -51,6 +59,7 @@ export function Section({
           ) : (
             <TreeSection
               entries={section.entries}
+              sortBy={sortBy}
               workspaceRoot={workspaceRoot}
               expandedDirs={expandedDirs}
               onToggleExpandedDir={onToggleExpandedDir}

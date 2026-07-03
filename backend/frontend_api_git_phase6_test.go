@@ -758,7 +758,7 @@ func TestGetRebaseMergeState_DoesNotEmit(t *testing.T) {
 
 func TestGetGitGraph_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
-	if _, err := f.GetGitGraph(); err == nil {
+	if _, err := f.GetGitGraph(0, 0); err == nil {
 		t.Fatal("GetGitGraph: expected error when no active project")
 	}
 }
@@ -768,7 +768,7 @@ func TestGetGitGraph_Success(t *testing.T) {
 		// withGitRepo commits committed.txt (1 commit). Add a second.
 		commitFile(t, dir, "b.txt", "b\n")
 
-		graph, err := f.GetGitGraph()
+		graph, err := f.GetGitGraph(0, 0)
 		if err != nil {
 			t.Fatalf("GetGitGraph: %v", err)
 		}
@@ -803,6 +803,50 @@ func TestGetGitGraph_Success(t *testing.T) {
 	})
 }
 
+func TestGetGitGraph_Pagination(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// withGitRepo creates 1 commit (committed.txt). Add two more so the
+		// repo has 3 commits: newest=oldest order is b2, b1, committed.
+		commitFile(t, dir, "b1.txt", "b1\n")
+		commitFile(t, dir, "b2.txt", "b2\n")
+
+		// limit caps the page size.
+		page, err := f.GetGitGraph(2, 0)
+		if err != nil {
+			t.Fatalf("GetGitGraph(2,0): %v", err)
+		}
+		if len(page) != 2 {
+			t.Fatalf("GetGitGraph(2,0) len: got %d, want 2", len(page))
+		}
+		// Newest first: the first page starts at the most recent commit.
+		if page[0].Message != "add b2.txt" {
+			t.Errorf("GetGitGraph(2,0)[0].Message: got %q, want %q", page[0].Message, "add b2.txt")
+		}
+
+		// skip offsets into older history: skipping 2 leaves the root commit.
+		older, err := f.GetGitGraph(2, 2)
+		if err != nil {
+			t.Fatalf("GetGitGraph(2,2): %v", err)
+		}
+		if len(older) != 1 {
+			t.Fatalf("GetGitGraph(2,2) len: got %d, want 1 (only root remains)", len(older))
+		}
+
+		// Non-positive limit defaults to defaultGitGraphLimit (100): with
+		// skip=1 the newest commit is skipped, returning the 2 older ones.
+		rest, err := f.GetGitGraph(0, 1)
+		if err != nil {
+			t.Fatalf("GetGitGraph(0,1): %v", err)
+		}
+		if len(rest) != 2 {
+			t.Fatalf("GetGitGraph(0,1) len: got %d, want 2", len(rest))
+		}
+		if rest[0].Message != "add b1.txt" {
+			t.Errorf("GetGitGraph(0,1)[0].Message: got %q, want %q", rest[0].Message, "add b1.txt")
+		}
+	})
+}
+
 func TestGetGitGraph_DoesNotEmit(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, _ string) {
 		emitted := false
@@ -811,7 +855,7 @@ func TestGetGitGraph_DoesNotEmit(t *testing.T) {
 				emitted = true
 			}
 		}
-		if _, err := f.GetGitGraph(); err != nil {
+		if _, err := f.GetGitGraph(0, 0); err != nil {
 			t.Fatalf("GetGitGraph: %v", err)
 		}
 		if emitted {
@@ -1008,7 +1052,7 @@ func TestPhase6Git_NoProject(t *testing.T) {
 	if _, err := f.GetRebaseMergeState(); err == nil {
 		t.Error("GetRebaseMergeState: expected error")
 	}
-	if _, err := f.GetGitGraph(); err == nil {
+	if _, err := f.GetGitGraph(0, 0); err == nil {
 		t.Error("GetGitGraph: expected error")
 	}
 	if err := f.StageHunks("/f.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
@@ -1039,7 +1083,7 @@ func TestPhase6Git_NoProjectMode(t *testing.T) {
 	if _, err := f.GetRebaseMergeState(); err == nil {
 		t.Error("GetRebaseMergeState: expected error")
 	}
-	if _, err := f.GetGitGraph(); err == nil {
+	if _, err := f.GetGitGraph(0, 0); err == nil {
 		t.Error("GetGitGraph: expected error")
 	}
 	if err := f.StageHunks(filepath.Join(f.activeProjectPath, "f.txt"), []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {

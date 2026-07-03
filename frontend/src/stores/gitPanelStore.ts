@@ -30,6 +30,18 @@ export interface GitPanelEntry {
   worktreeStatus: string
 }
 
+/** Sort criterion for the Changes list (D8). Persisted across sessions. */
+export type SortBy = 'path' | 'status' | 'extension'
+
+/** Grouping criterion for the Changes list (D8). Persisted across sessions. */
+export type GroupBy = 'none' | 'status' | 'directory'
+
+/** Valid SortBy values — used by persist `merge` to validate localStorage. */
+const SORT_BY_VALUES = new Set<SortBy>(['path', 'status', 'extension'])
+
+/** Valid GroupBy values — used by persist `merge` to validate localStorage. */
+const GROUP_BY_VALUES = new Set<GroupBy>(['none', 'status', 'directory'])
+
 // --- State types ---
 
 interface GitPanelState {
@@ -50,6 +62,12 @@ interface GitPanelState {
   activeTab: 'changes' | 'history' | 'graph'
   /** Transient: whether a merge or rebase is currently in progress (Phase 6). Not persisted. */
   mergeRebaseState: MergeRebaseState
+  /** Transient: SHA of the most recently created commit (FE-1). Not persisted. */
+  lastCommitSha: string | null
+  /** Sort criterion for the Changes list, persisted across sessions (D8). */
+  sortBy: SortBy
+  /** Grouping criterion for the Changes list, persisted across sessions (D8). */
+  groupBy: GroupBy
 }
 
 interface GitPanelActions {
@@ -69,6 +87,9 @@ interface GitPanelActions {
   setRemoteOperationInProgress: (inProgress: boolean) => void
   setActiveTab: (tab: 'changes' | 'history' | 'graph') => void
   setMergeRebaseState: (state: MergeRebaseState) => void
+  setLastCommitSha: (sha: string | null) => void
+  setSortBy: (mode: SortBy) => void
+  setGroupBy: (mode: GroupBy) => void
   reset: () => void
 }
 
@@ -89,6 +110,63 @@ const initialState: GitPanelState = {
   remoteOperationInProgress: false,
   activeTab: 'changes',
   mergeRebaseState: EMPTY_MERGE_REBASE_STATE,
+  lastCommitSha: null,
+  sortBy: 'path',
+  groupBy: 'none',
+}
+
+// --- Persist helpers (exported for direct unit testing) ---
+
+/**
+ * Select the slice of state persisted to localStorage. `expandedDirs` (a Set)
+ * is serialized to an array; `sortBy`/`groupBy` are persisted directly (D8).
+ */
+export function partializeGitPanel(
+  state: GitPanelState & GitPanelActions,
+): {
+  viewMode: 'flat' | 'tree'
+  expandedDirs: string[]
+  sortBy: SortBy
+  groupBy: GroupBy
+} {
+  return {
+    viewMode: state.viewMode,
+    expandedDirs: Array.from(state.expandedDirs),
+    sortBy: state.sortBy,
+    groupBy: state.groupBy,
+  }
+}
+
+/**
+ * Rehydrate persisted state into the current state. Older localStorage entries
+ * (written before D8) lack `sortBy`/`groupBy`; corrupt or unknown values are
+ * rejected — both fall back to the current (default) values.
+ */
+export function mergeGitPanel(
+  persisted: unknown,
+  current: GitPanelState & GitPanelActions,
+): GitPanelState & GitPanelActions {
+  const p = persisted as {
+    viewMode?: 'flat' | 'tree'
+    expandedDirs?: string[]
+    sortBy?: SortBy
+    groupBy?: GroupBy
+  }
+  const sortBy: SortBy =
+    p.sortBy !== undefined && SORT_BY_VALUES.has(p.sortBy)
+      ? p.sortBy
+      : current.sortBy
+  const groupBy: GroupBy =
+    p.groupBy !== undefined && GROUP_BY_VALUES.has(p.groupBy)
+      ? p.groupBy
+      : current.groupBy
+  return {
+    ...current,
+    viewMode: p.viewMode ?? current.viewMode,
+    expandedDirs: new Set(p.expandedDirs ?? []),
+    sortBy,
+    groupBy,
+  }
 }
 
 // --- Store ---
@@ -147,25 +225,18 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
 
       setMergeRebaseState: (state) => set({ mergeRebaseState: state }),
 
+      setLastCommitSha: (sha) => set({ lastCommitSha: sha }),
+
+      setSortBy: (mode) => set({ sortBy: mode }),
+
+      setGroupBy: (mode) => set({ groupBy: mode }),
+
       reset: () => set({ ...initialState, expandedDirs: new Set<string>() }),
     }),
     {
       name: 'git-panel-settings',
-      partialize: (state) => ({
-        viewMode: state.viewMode,
-        expandedDirs: Array.from(state.expandedDirs),
-      }),
-      merge: (persisted, current) => {
-        const p = persisted as {
-          viewMode?: 'flat' | 'tree'
-          expandedDirs?: string[]
-        }
-        return {
-          ...current,
-          viewMode: p.viewMode ?? current.viewMode,
-          expandedDirs: new Set(p.expandedDirs ?? []),
-        }
-      },
+      partialize: partializeGitPanel,
+      merge: mergeGitPanel,
     },
   ),
 )

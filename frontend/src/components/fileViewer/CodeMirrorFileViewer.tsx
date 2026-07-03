@@ -18,6 +18,7 @@ import {
   setDiffEffect,
   setHighlightLineEffect,
 } from '@/lib/cmDiffDecorations'
+import { conflictMarkerPlugin } from '@/lib/cmConflictMarkers'
 import { loadLanguageByName } from '@/lib/cmLanguages'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
 
@@ -134,6 +135,7 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
         langCompartment.current.of([]),
         diffDecorationField,
         highlightLineField,
+        conflictMarkerPlugin,
       ],
     })
 

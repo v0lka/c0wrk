@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Loader2, Sparkles } from 'lucide-react'
+import { Loader2, Sparkles, Check } from 'lucide-react'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { commit, generateCommitMessage } from '@/api/git'
 import { getFileDiff } from '@/api/workspace'
@@ -12,6 +12,8 @@ export function CommitSection() {
 
   const [isCommitting, setIsCommitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [successSha, setSuccessSha] = useState<string | null>(null)
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const stagedCount = entries.filter((e) => e.staged).length
@@ -38,13 +40,31 @@ export function CommitSection() {
     adjustHeight()
   }, [commitMessage, adjustHeight])
 
+  // Clear the success-banner timer on unmount to avoid leaking.
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current !== null) {
+        clearTimeout(successTimerRef.current)
+        successTimerRef.current = null
+      }
+    }
+  }, [])
+
   const handleCommit = async () => {
     if (isDisabled) return
     setIsCommitting(true)
     setError(null)
+    if (successTimerRef.current !== null) {
+      clearTimeout(successTimerRef.current)
+      successTimerRef.current = null
+    }
     try {
-      await commit(commitMessage)
+      // commit() now returns the new commit's full SHA (FE-1 / B1).
+      const sha = await commit(commitMessage)
       setCommitMessage('')
+      setSuccessSha(sha)
+      // Auto-clear the success banner after a few seconds.
+      successTimerRef.current = setTimeout(() => setSuccessSha(null), 4000)
       // Status refresh is handled by the git:status_changed event emitted
       // by the backend after a successful commit (picked up by useGitStatusEvents)
     } catch (err) {
@@ -117,9 +137,17 @@ export function CommitSection() {
         )}
       />
 
-      {error && (
+      {error ? (
         <div className="mt-1.5 text-xs text-destructive">{error}</div>
-      )}
+      ) : successSha ? (
+        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-success">
+          <Check className="size-3 shrink-0" />
+          <span>
+            Committed{' '}
+            <span className="font-mono">{successSha.slice(0, 7)}</span>
+          </span>
+        </div>
+      ) : null}
 
       <div className="mt-2 flex items-center justify-between">
         <span className="text-xs text-muted-foreground">

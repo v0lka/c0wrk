@@ -228,10 +228,16 @@ describe('commit', () => {
     Object.keys(mockApp).forEach(k => delete mockApp[k])
   })
 
-  it('calls app.Commit with message', async () => {
-    mockApp.Commit = vi.fn().mockResolvedValue(undefined)
-    await commit('fix: update config')
+  it('calls app.Commit with message and returns the new SHA', async () => {
+    mockApp.Commit = vi.fn().mockResolvedValue('abc123def456789012345678901234567890abcd')
+    const result = await commit('fix: update config')
     expect(mockApp.Commit).toHaveBeenCalledWith('fix: update config')
+    expect(result).toBe('abc123def456789012345678901234567890abcd')
+  })
+
+  it('throws when backend returns an invalid SHA', async () => {
+    mockApp.Commit = vi.fn().mockResolvedValue('')
+    await expect(commit('fix: empty sha')).rejects.toThrow('invalid commit SHA')
   })
 
   it('propagates errors', async () => {
@@ -880,7 +886,7 @@ describe('getGitGraph', () => {
       { sha: 'aaa', parents: ['bbb'], message: 'feat: x', refs: ['HEAD -> main'] },
       { sha: 'bbb', parents: [], message: 'init', refs: [] },
     ])
-    const result = await getGitGraph()
+    const result = await getGitGraph(100, 0)
     expect(result).toEqual([
       { sha: 'aaa', parents: ['bbb'], message: 'feat: x', refs: ['HEAD -> main'] },
       { sha: 'bbb', parents: [], message: 'init', refs: [] },
@@ -889,7 +895,7 @@ describe('getGitGraph', () => {
 
   it('returns empty array when backend returns a non-array', async () => {
     mockApp.GetGitGraph = vi.fn().mockResolvedValue('invalid')
-    expect(await getGitGraph()).toEqual([])
+    expect(await getGitGraph(100, 0)).toEqual([])
   })
 
   it('returns empty array when an element fails the guard', async () => {
@@ -897,23 +903,23 @@ describe('getGitGraph', () => {
       { sha: 'aaa', parents: [], message: 'ok', refs: [] },
       { sha: 123, parents: [], message: 'bad', refs: [] },
     ])
-    expect(await getGitGraph()).toEqual([])
+    expect(await getGitGraph(100, 0)).toEqual([])
   })
 
   it('returns empty array when backend returns empty array', async () => {
     mockApp.GetGitGraph = vi.fn().mockResolvedValue([])
-    expect(await getGitGraph()).toEqual([])
+    expect(await getGitGraph(100, 0)).toEqual([])
   })
 
   it('returns empty array when parents is not an array', async () => {
     mockApp.GetGitGraph = vi.fn().mockResolvedValue([
       { sha: 'aaa', parents: 'bbb', message: 'ok', refs: [] },
     ])
-    expect(await getGitGraph()).toEqual([])
+    expect(await getGitGraph(100, 0)).toEqual([])
   })
 
   it('propagates errors', async () => {
     mockApp.GetGitGraph = vi.fn().mockRejectedValue(new Error('git error'))
-    await expect(getGitGraph()).rejects.toThrow('git error')
+    await expect(getGitGraph(100, 0)).rejects.toThrow('git error')
   })
 })

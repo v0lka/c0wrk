@@ -1,10 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useMemo } from 'react'
 import { Loader2, AlertCircle, GitCommit } from 'lucide-react'
-import { getGitGraph } from '@/api/git'
 import { computeGraphLayout, shortSha, type GraphNode } from '@/lib/gitGraphLayout'
-import type { GraphCommit } from '@/types/models'
+import { useGitGraph } from '@/hooks/useGitGraph'
 
-const PAGE_SIZE = 25
 const ROW_SPACING = 28
 const LANE_SPACING = 22
 const LEFT_PAD = 12
@@ -47,36 +45,15 @@ function refColor(ref: string): string {
 }
 
 /**
- * Commit graph tab (Phase 6). Fetches the full graph once and paginates
- * rendering client-side (the backend returns all commits). The left SVG
- * draws branch lanes + commit nodes; the right column shows messages and
- * decorations, row-aligned with the SVG.
+ * Commit graph tab (Phase 6). Loads the graph one page at a time from the
+ * backend (server-side pagination via GetGitGraph(limit, skip)) and appends
+ * older commits on "Load more" (FE-2 / B5). Data loading lives in
+ * `useGitGraph`; this component is purely rendering + layout.
  */
 export function GitGraph() {
-  const [commits, setCommits] = useState<GraphCommit[]>([])
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { commits, hasMore, isLoading, isLoadingMore, error, loadMore } = useGitGraph()
 
-  const load = useCallback(async () => {
-    setIsLoading(true)
-    setError(null)
-    try {
-      const result = await getGitGraph()
-      setCommits(result)
-      setVisibleCount(PAGE_SIZE)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load graph')
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  // Layout is computed over all commits; rendering is sliced for lazy-load.
+  // Layout is computed over the accumulated commits; all are rendered.
   const nodes = useMemo(() => computeGraphLayout(commits), [commits])
   const shaToNode = useMemo(() => {
     const map = new Map<string, GraphNode>()
@@ -84,9 +61,7 @@ export function GitGraph() {
     return map
   }, [nodes])
 
-  const visibleNodes = nodes.slice(0, visibleCount)
-  const hasMore = commits.length > visibleCount
-
+  const visibleNodes = nodes
   const maxLane = nodes.reduce((m, n) => Math.max(m, n.lane), 0)
   const svgWidth = xFor(maxLane) + LANE_SPACING
   const svgHeight = visibleNodes.length * ROW_SPACING + ROW_SPACING / 2
@@ -125,8 +100,7 @@ export function GitGraph() {
           {visibleNodes.map((node) =>
             node.parents.map((edge) => {
               const parent = shaToNode.get(edge.sha)
-              const targetRow =
-                parent && parent.row < visibleCount ? parent.row : visibleCount
+              const targetRow = parent ? parent.row : nodes.length
               return (
                 <path
                   key={`${node.sha}-${edge.sha}`}
@@ -179,9 +153,11 @@ export function GitGraph() {
       {hasMore && (
         <button
           type="button"
-          onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+          onClick={loadMore}
+          disabled={isLoadingMore}
           className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground hover:bg-muted/50 transition-colors"
         >
+          {isLoadingMore && <Loader2 className="size-3.5 animate-spin" />}
           Load more
         </button>
       )}

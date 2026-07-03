@@ -1,8 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import {
   GitBranch,
-  Check,
-  Plus,
   Loader2,
   Search,
   AlertCircle,
@@ -13,11 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
-import { getBranches, checkoutBranch, createBranch } from '@/api/git'
-import { cn } from '@/lib/utils'
+import { getBranches, checkoutBranch } from '@/api/git'
+import { BranchPickerRow } from './BranchPickerRow'
+import { NewBranchSection } from './NewBranchSection'
 
 /**
  * Modal picker for switching and creating local git branches.
@@ -38,10 +36,8 @@ export function BranchPicker() {
 
   const [branches, setBranches] = useState<string[]>([])
   const [filter, setFilter] = useState('')
-  const [newBranchName, setNewBranchName] = useState('')
   const [loadingBranches, setLoadingBranches] = useState(false)
   const [checkingOut, setCheckingOut] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
 
@@ -49,7 +45,6 @@ export function BranchPicker() {
   useEffect(() => {
     if (!isOpen) return
     setFilter('')
-    setNewBranchName('')
     setError(null)
     setLoadingBranches(true)
     getBranches()
@@ -96,31 +91,6 @@ export function BranchPicker() {
     [currentBranch, closeBranchPicker],
   )
 
-  const handleCreateBranch = useCallback(async () => {
-    const name = newBranchName.trim()
-    if (!name || creating) return
-    setCreating(true)
-    setError(null)
-    try {
-      await createBranch(name)
-      // Backend emits git:status_changed → store updates automatically.
-      closeBranchPicker()
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to create branch',
-      )
-    } finally {
-      setCreating(false)
-    }
-  }, [newBranchName, creating, closeBranchPicker])
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && newBranchName.trim()) {
-      e.preventDefault()
-      handleCreateBranch()
-    }
-  }
-
   return (
     <Dialog
       open={isOpen}
@@ -166,73 +136,31 @@ export function BranchPicker() {
             </div>
           ) : (
             <ul className="flex flex-col gap-0.5">
-              {filteredBranches.map((name) => {
-                const isCurrent = name === currentBranch.name
-                const isBusy = checkingOut === name
-                return (
-                  <li key={name}>
-                    <button
-                      type="button"
-                      onClick={() => handleCheckout(name)}
-                      disabled={isCurrent || checkingOut !== null || creating}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
-                        'focus:outline-none focus:ring-1 focus:ring-ring',
-                        isCurrent
-                          ? 'bg-primary/10 text-primary'
-                          : 'hover:bg-muted text-foreground',
-                        !isCurrent &&
-                          (checkingOut !== null || creating) &&
-                          'cursor-not-allowed opacity-50',
-                      )}
-                    >
-                      <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
-                      <span className="flex-1 truncate font-mono">{name}</span>
-                      {isBusy ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : isCurrent ? (
-                        <Check className="size-3.5" />
-                      ) : null}
-                    </button>
-                  </li>
-                )
-              })}
+              {filteredBranches.map((name) => (
+                <li key={name}>
+                  <BranchPickerRow
+                    name={name}
+                    isCurrent={name === currentBranch.name}
+                    isBusy={checkingOut !== null}
+                    currentBranchName={currentBranch.name}
+                    onCheckout={handleCheckout}
+                    onError={setError}
+                    onActionSuccess={closeBranchPicker}
+                  />
+                </li>
+              ))}
             </ul>
           )}
         </div>
 
-        {/* New branch */}
-        <div className="border-t border-border px-4 py-3">
-          <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-            Create new branch
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Input
-              value={newBranchName}
-              onChange={(e) => {
-                setNewBranchName(e.target.value)
-                if (error) setError(null)
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="branch-name"
-              className="h-8 text-xs"
-            />
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleCreateBranch}
-              disabled={!newBranchName.trim() || creating || checkingOut !== null}
-              title="Create and switch to new branch"
-            >
-              {creating ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Plus className="size-3.5" />
-              )}
-              New
-            </Button>
-          </div>
-        </div>
+        {/* New branch — key on isOpen so the field resets when reopened. */}
+        <NewBranchSection
+          key={isOpen ? 'open' : 'closed'}
+          disabled={checkingOut !== null}
+          onClearError={() => setError(null)}
+          onError={(msg) => setError(msg)}
+          onCreated={closeBranchPicker}
+        />
 
         {/* Error */}
         {error && (

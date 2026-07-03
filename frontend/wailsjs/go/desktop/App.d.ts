@@ -24,7 +24,7 @@ export function CancelUnfinishedTask(arg1:string):Promise<void>;
 
 export function CheckoutBranch(arg1:string):Promise<void>;
 
-export function Commit(arg1:string):Promise<void>;
+export function Commit(arg1:string):Promise<string>;
 
 export function CreateBranch(arg1:string):Promise<void>;
 
@@ -56,11 +56,13 @@ export function GetCurrentBranch():Promise<workspace.BranchInfo>;
 
 export function GetDiffStat(arg1:string):Promise<workspace.DiffStat>;
 
+export function GetDiffStats():Promise<Record<string, workspace.DiffStat>>;
+
 export function GetFileDiff(arg1:string):Promise<string>;
 
 export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
 
-export function GetGitGraph():Promise<Array<workspace.GraphCommit>>;
+export function GetGitGraph(arg1:number,arg2:number):Promise<Array<workspace.GraphCommit>>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
@@ -149,6 +151,8 @@ export function StageHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promise<
 export function StartTerminal(arg1:string):Promise<void>;
 
 export function StashCreate(arg1:string):Promise<void>;
+
+export function StashDrop(arg1:number):Promise<void>;
 
 export function StashList():Promise<Array<workspace.StashEntry>>;
 

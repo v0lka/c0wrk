@@ -377,6 +377,80 @@ func TestGetDiffStat_DeletedLines(t *testing.T) {
 	})
 }
 
+// --- GetDiffStats (batch) tests ---
+
+func TestGetDiffStats_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	_, err := f.GetDiffStats()
+	if err == nil {
+		t.Fatal("expected error when no active project")
+	}
+}
+
+func TestGetDiffStats_Clean(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		stats, err := f.GetDiffStats()
+		if err != nil {
+			t.Fatalf("GetDiffStats: %v", err)
+		}
+		if stats == nil {
+			t.Fatal("expected non-nil map when clean")
+		}
+		if len(stats) != 0 {
+			t.Errorf("expected empty map when clean, got %d entries", len(stats))
+		}
+	})
+}
+
+func TestGetDiffStats_MultiFile(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Modify a tracked file (unstaged): +2/-0.
+		path := filepath.Join(dir, "committed.txt")
+		fh, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if _, err := fh.WriteString("line 2\nline 3\n"); err != nil {
+			_ = fh.Close()
+			t.Fatalf("write: %v", err)
+		}
+		_ = fh.Close()
+
+		// Stage a brand-new file: +1/-0 vs HEAD.
+		newPath := filepath.Join(dir, "staged.txt")
+		if err := os.WriteFile(newPath, []byte("new\n"), 0o644); err != nil {
+			t.Fatalf("write staged: %v", err)
+		}
+		runGit(t, dir, "add", "staged.txt")
+
+		// An untracked file is NOT reported by git diff --numstat HEAD.
+		if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("u\n"), 0o644); err != nil {
+			t.Fatalf("write untracked: %v", err)
+		}
+
+		stats, err := f.GetDiffStats()
+		if err != nil {
+			t.Fatalf("GetDiffStats: %v", err)
+		}
+		if len(stats) != 2 {
+			t.Fatalf("expected 2 entries, got %d (%v)", len(stats), stats)
+		}
+
+		// Keys are absolute paths matching the GitStatus key convention.
+		committed := stats[filepath.Join(dir, "committed.txt")]
+		if committed.Added != 2 || committed.Deleted != 0 {
+			t.Errorf("committed.txt: expected 2/0, got %d/%d", committed.Added, committed.Deleted)
+		}
+		staged := stats[filepath.Join(dir, "staged.txt")]
+		if staged.Added != 1 || staged.Deleted != 0 {
+			t.Errorf("staged.txt: expected 1/0, got %d/%d", staged.Added, staged.Deleted)
+		}
+		if _, ok := stats[filepath.Join(dir, "untracked.txt")]; ok {
+			t.Error("untracked.txt should not be present in diff stats")
+		}
+	})
+}
+
 // --- parseDiffStat unit tests ---
 
 func TestParseDiffStat_Empty(t *testing.T) {
@@ -526,7 +600,7 @@ func TestGitStatus_WorkTreeOnly(t *testing.T) {
 
 func TestCommit_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
-	err := f.Commit("test")
+	_, err := f.Commit("test")
 	if err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -534,7 +608,7 @@ func TestCommit_NoProject(t *testing.T) {
 
 func TestCommit_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
-	err := f.Commit("test")
+	_, err := f.Commit("test")
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
 	}
@@ -542,7 +616,7 @@ func TestCommit_NoProjectMode(t *testing.T) {
 
 func TestCommit_EmptyMessage(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		err := f.Commit("")
+		_, err := f.Commit("")
 		if err == nil {
 			t.Fatal("expected error for empty commit message")
 		}
@@ -551,7 +625,7 @@ func TestCommit_EmptyMessage(t *testing.T) {
 
 func TestCommit_WhitespaceMessage(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		err := f.Commit("\n  \t")
+		_, err := f.Commit("\n  \t")
 		if err == nil {
 			t.Fatal("expected error for whitespace-only commit message")
 		}
@@ -569,12 +643,28 @@ func TestCommit_Success(t *testing.T) {
 			t.Fatalf("StageFile: %v", err)
 		}
 
-		// Commit.
-		if err := f.Commit("add commitme.txt"); err != nil {
+		// Commit and capture the returned SHA.
+		sha, err := f.Commit("add commitme.txt")
+		if err != nil {
 			t.Fatalf("Commit: %v", err)
 		}
+		if sha == "" {
+			t.Fatal("Commit: expected non-empty commit SHA")
+		}
 
-		// Verify via git log.
+		// The returned SHA must match git rev-parse HEAD.
+		revCmd := exec.CommandContext(context.Background(), "git", "rev-parse", "HEAD")
+		revCmd.Dir = dir
+		revOut, err := revCmd.Output()
+		if err != nil {
+			t.Fatalf("git rev-parse: %v", err)
+		}
+		wantSHA := strings.TrimSpace(string(revOut))
+		if sha != wantSHA {
+			t.Errorf("Commit SHA: got %q, want %q", sha, wantSHA)
+		}
+
+		// Verify the commit subject via git log.
 		cmd := exec.CommandContext(context.Background(), "git", "log", "-1", "--format=%s")
 		cmd.Dir = dir
 		out, err := cmd.Output()
@@ -591,7 +681,7 @@ func TestCommit_Success(t *testing.T) {
 func TestCommit_NothingToCommit(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
 		// No changes staged — commit should fail.
-		err := f.Commit("empty commit")
+		_, err := f.Commit("empty commit")
 		if err == nil {
 			t.Fatal("expected error when nothing to commit")
 		}
@@ -903,7 +993,7 @@ func TestEventEmitted_Commit(t *testing.T) {
 			t.Fatalf("StageFile: %v", err)
 		}
 
-		if err := f.Commit("event commit"); err != nil {
+		if _, err := f.Commit("event commit"); err != nil {
 			t.Fatalf("Commit: %v", err)
 		}
 
@@ -922,7 +1012,7 @@ func TestEventNotEmitted_OnError(t *testing.T) {
 			t.Errorf("unexpected event %q emitted on error path", name)
 		}
 		// Commit with nothing staged should fail without emitting.
-		_ = f.Commit("nothing to commit")
+		_, _ = f.Commit("nothing to commit")
 	})
 }
 
@@ -1417,6 +1507,76 @@ func TestStashPop_NegativeIndex(t *testing.T) {
 	if err := f.StashPop(-1); err == nil {
 		t.Fatal("expected error for negative stash index")
 	}
+}
+
+func TestStashDrop_NegativeIndex(t *testing.T) {
+	f := &FrontendAPI{}
+	if err := f.StashDrop(-1); err == nil {
+		t.Fatal("expected error for negative stash index")
+	}
+}
+
+func TestStashDrop_RemovesStash(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Stash a modification.
+		if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("modified\n"), 0o644); err != nil {
+			t.Fatalf("write committed: %v", err)
+		}
+		if err := f.StashCreate("drop me"); err != nil {
+			t.Fatalf("StashCreate: %v", err)
+		}
+
+		list, err := f.StashList()
+		if err != nil {
+			t.Fatalf("StashList: %v", err)
+		}
+		if len(list) != 1 {
+			t.Fatalf("stash list: got %d, want 1", len(list))
+		}
+
+		// Drop removes the stash without applying it.
+		if err := f.StashDrop(0); err != nil {
+			t.Fatalf("StashDrop: %v", err)
+		}
+		list, err = f.StashList()
+		if err != nil {
+			t.Fatalf("StashList (after drop): %v", err)
+		}
+		if len(list) != 0 {
+			t.Errorf("after drop stash list: got %d, want 0", len(list))
+		}
+
+		// Dropping does not restore the working-tree change.
+		got, _ := os.ReadFile(filepath.Join(dir, "committed.txt"))
+		if string(got) != "v1\n" {
+			t.Errorf("after drop: committed.txt = %q, want %q", string(got), "v1\n")
+		}
+	})
+}
+
+func TestEventEmitted_StashDrop(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		var emitted string
+		f.emitEvent = func(name string, args ...any) {
+			if name == EventGitStatusChanged && len(args) >= 1 {
+				emitted, _ = args[0].(string)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("changed\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := f.StashCreate("to drop"); err != nil {
+			t.Fatalf("StashCreate: %v", err)
+		}
+		// Reset the captured payload from StashCreate before dropping.
+		emitted = ""
+		if err := f.StashDrop(0); err != nil {
+			t.Fatalf("StashDrop: %v", err)
+		}
+		if emitted != dir {
+			t.Errorf("event payload: got %q, want %q", emitted, dir)
+		}
+	})
 }
 
 func TestEventEmitted_StashCreate(t *testing.T) {

@@ -1,4 +1,5 @@
-import type { GitPanelEntry } from '@/stores/gitPanelStore'
+import type { GitPanelEntry, SortBy } from '@/stores/gitPanelStore'
+import { compareEntries } from '@/lib/gitSortGroup'
 import type { TreeDirNode, TreeFileNode, TreeNode } from './types'
 
 // ──────────────────────────────── Tree Builder ───────────────────────────────
@@ -10,8 +11,15 @@ import type { TreeDirNode, TreeFileNode, TreeNode } from './types'
  *
  * @param entries  Flat list of git file entries (absolute paths preserved for callbacks).
  * @param workspaceRoot  Workspace root path (to compute display-relative paths for tree structure).
+ * @param sortBy  Sort criterion applied to leaf (file) nodes within each directory.
+ *                Defaults to `'path'` (alphabetical). Directories always sort
+ *                alphabetically and precede files. (D8)
  */
-export function buildTree(entries: GitPanelEntry[], workspaceRoot: string): TreeNode[] {
+export function buildTree(
+  entries: GitPanelEntry[],
+  workspaceRoot: string,
+  sortBy: SortBy = 'path',
+): TreeNode[] {
   const root: TreeNode[] = []
   const dirMap = new Map<string, TreeDirNode>()
 
@@ -80,11 +88,20 @@ export function buildTree(entries: GitPanelEntry[], workspaceRoot: string): Tree
     }
   }
 
-  // Sort each directory's children: dirs first, then files, alphabetical
+  // Sort each directory's children: directories first (alphabetical), then
+  // files ordered by the selected sort criterion (D8).
   const sortChildren = (nodes: TreeNode[]) => {
     nodes.sort((a, b) => {
+      // Directories always precede files.
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-      return a.name.localeCompare(b.name)
+      // Both are directories — alphabetical by name.
+      if (a.isDir && b.isDir) return a.name.localeCompare(b.name)
+      // Both are files — compare by the selected criterion.
+      return compareEntries(
+        (a as TreeFileNode).entry,
+        (b as TreeFileNode).entry,
+        sortBy,
+      )
     })
     for (const node of nodes) {
       if (node.isDir) sortChildren(node.children)

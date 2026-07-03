@@ -483,6 +483,26 @@ body {
 }
 
 /* ==========================================================================
+   CodeMirror — Conflict Markers (git merge conflicts, FE-6 / D4)
+   ========================================================================== */
+
+.cm-conflict-ours {
+    background-color: rgba(var(--color-success-rgb), 0.12);
+    border-left: 2px solid var(--color-success);
+}
+
+.cm-conflict-separator {
+    background-color: rgba(var(--color-destructive-rgb), 0.18);
+    border-left: 2px solid var(--color-destructive);
+    font-weight: 600;
+}
+
+.cm-conflict-theirs {
+    background-color: rgba(var(--color-success-rgb), 0.07);
+    border-left: 2px solid var(--color-hljs-literal);
+}
+
+/* ==========================================================================
    CodeMirror — Line Highlight (e.g. from vector store click-to-jump)
    ========================================================================== */
 

@@ -3,11 +3,36 @@
 
 import { useEffect, useCallback, useRef } from 'react'
 import { getGitStatus } from '@/api/workspace'
-import { getCurrentBranch, getRebaseMergeState } from '@/api/git'
+import { getCurrentBranch, getRebaseMergeState, getDiffStats } from '@/api/git'
 import { subscribe } from '@/api/runtime'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { toEntries } from '@/lib/gitStatus'
+import type { GitPanelEntry } from '@/stores/gitPanelStore'
+import type { DiffStat } from '@/types/models'
+
+/**
+ * Enrich raw `toEntries` output with per-file DiffStat (+N/-M indicators).
+ *
+ * `getDiffStats()` performs a single batched `git diff --numstat HEAD` call
+ * whose keys are absolute paths — the same key convention used by GitStatus —
+ * so a direct path comparison populates `entry.diffStat`. Failures (e.g. no
+ * repo) leave the original entries untouched with `diffStat: null`.
+ */
+async function enrichWithDiffStats(entries: GitPanelEntry[]): Promise<GitPanelEntry[]> {
+  if (entries.length === 0) return entries
+  let stats: Record<string, DiffStat>
+  try {
+    stats = await getDiffStats()
+  } catch {
+    return entries
+  }
+  if (!stats || Object.keys(stats).length === 0) return entries
+  return entries.map((entry) => {
+    const stat = stats[entry.path]
+    return stat ? { ...entry, diffStat: { added: stat.added, deleted: stat.deleted } } : entry
+  })
+}
 
 /**
  * Subscribes to `git:status_changed` events and refreshes the git panel store.
@@ -59,11 +84,14 @@ export function useGitStatusEvents(): void {
     }
 
     if (statusResult.status === 'fulfilled') {
-      const entries = toEntries(statusResult.value)
+      const rawEntries = toEntries(statusResult.value)
       const store = useGitPanelStore.getState()
-      store.loadEntries(entries)
       store.setGitRepo(true)
       store.setError(null)
+      // Enrich with batched +N/-M DiffStat before loading so GitFileEntry's
+      // conditional rendering becomes live (FE-3 / D1). toEntries stays pure.
+      const enriched = await enrichWithDiffStats(rawEntries)
+      store.loadEntries(enriched)
     } else {
       const store = useGitPanelStore.getState()
       store.setGitRepo(false)

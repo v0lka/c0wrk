@@ -1,12 +1,14 @@
 import { useMemo } from 'react'
 import { TreeRow } from './TreeRow'
 import { buildTree } from './buildTree'
-import type { GitPanelEntry } from '@/stores/gitPanelStore'
+import type { GitPanelEntry, SortBy } from '@/stores/gitPanelStore'
 
 // ───────────────────────────── Tree Section ──────────────────────────────────
 
 interface TreeSectionProps {
   entries: GitPanelEntry[]
+  /** Sort criterion applied to leaf (file) nodes within the tree (D8). */
+  sortBy: SortBy
   workspaceRoot: string
   expandedDirs: Set<string>
   onToggleExpandedDir: (dir: string) => void
@@ -16,13 +18,17 @@ interface TreeSectionProps {
 
 export function TreeSection({
   entries,
+  sortBy,
   workspaceRoot,
   expandedDirs,
   onToggleExpandedDir,
   onToggleFile,
   onOpenDiff,
 }: TreeSectionProps) {
-  const tree = useMemo(() => buildTree(entries, workspaceRoot), [entries, workspaceRoot])
+  const tree = useMemo(
+    () => buildTree(entries, workspaceRoot, sortBy),
+    [entries, workspaceRoot, sortBy],
+  )
 
   return (
     <>
